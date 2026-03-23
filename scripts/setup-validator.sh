@@ -235,9 +235,9 @@ if [ -f "$KEYPAIR_PATH" ]; then
 else
     print_info "Generating new validator keypair..."
     
-    # Generate keypair using licn CLI or create manually
-    if [ -f "$PROJECT_ROOT/target/release/licn" ]; then
-        "$PROJECT_ROOT/target/release/licn" init --output "$KEYPAIR_PATH"
+    # Generate keypair using lichen CLI or create manually
+    if [ -f "$PROJECT_ROOT/target/release/lichen" ]; then
+        "$PROJECT_ROOT/target/release/lichen" init --output "$KEYPAIR_PATH"
         print_success "Keypair generated: $KEYPAIR_PATH"
     else
         # Fallback: create a placeholder that validator will initialize
@@ -251,8 +251,8 @@ else
 fi
 
 # Display public key if possible
-if command -v licn &> /dev/null && [ -s "$KEYPAIR_PATH" ]; then
-    PUBKEY=$(licn pubkey "$KEYPAIR_PATH" 2>/dev/null || echo "Unable to extract")
+if command -v lichen &> /dev/null && [ -s "$KEYPAIR_PATH" ]; then
+    PUBKEY=$(lichen pubkey "$KEYPAIR_PATH" 2>/dev/null || echo "Unable to extract")
     print_info "Public key: ${PUBKEY}"
 fi
 
@@ -513,7 +513,7 @@ fi
 
 if [ "$AUTO_STAKE" = true ]; then
     print_warning "Auto-staking not yet implemented"
-    print_info "To stake manually, use the licn CLI after validator starts"
+    print_info "To stake manually, use the lichen CLI after validator starts"
 fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

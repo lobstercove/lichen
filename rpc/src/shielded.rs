@@ -725,8 +725,7 @@ pub(crate) async fn handle_generate_shield_proof(
     let mut proof = prover.prove_shield(circuit).map_err(internal_rpc_err)?;
     proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), commitment];
 
-    let vk =
-        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = lichen_core::zk::Verifier::from_vk_shield(vk);
     let valid = verifier
         .verify(&proof)
@@ -885,8 +884,7 @@ pub(crate) async fn handle_generate_unshield_proof(
         fr_to_bytes(&recipient_hash_fr),
     ];
 
-    let vk =
-        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = lichen_core::zk::Verifier::from_vk_unshield(vk);
     let valid = verifier
         .verify(&proof)
@@ -1161,8 +1159,7 @@ pub(crate) async fn handle_generate_transfer_proof(
         output_commitments_bytes[1],
     ];
 
-    let vk =
-        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = lichen_core::zk::Verifier::from_vk_transfer(vk);
     let valid = verifier
         .verify(&proof)

@@ -12,9 +12,7 @@ use axum::{
     routing::get,
     Router,
 };
-use lichen_core::{
-    Block, FinalityTracker, Hash, MarketActivity, Pubkey, StateStore, Transaction,
-};
+use lichen_core::{Block, FinalityTracker, Hash, MarketActivity, Pubkey, StateStore, Transaction};
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────

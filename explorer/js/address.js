@@ -386,10 +386,16 @@ function renderIdentityPane(profile) {
     const repPct = Math.max(0, Math.min(100, (reputationScore / maxRep) * 100));
     const nextTierInfo = getNextTierInfo(reputationScore);
     const ladder = trustTierLadder(reputationTier);
-    const registeredAtRaw = formatTimestamp(identity.created_at || profile.created_at);
-    const updatedAtRaw = formatTimestamp(identity.updated_at || profile.updated_at);
-    const registeredAt = registeredAtRaw === 'Unknown' ? 'Registered (timestamp unavailable)' : registeredAtRaw;
-    const updatedAt = updatedAtRaw === 'Unknown' ? 'No updates recorded' : updatedAtRaw;
+    const rawCreatedAt = Number(identity.created_at || profile.created_at || 0);
+    const rawUpdatedAt = Number(identity.updated_at || profile.updated_at || 0);
+    const registeredAtRaw = formatTimestamp(rawCreatedAt);
+    const updatedAtRaw = formatTimestamp(rawUpdatedAt);
+    const registeredAt = registeredAtRaw === 'Unknown'
+        ? (rawCreatedAt === 0 ? 'Genesis' : 'Registered (timestamp unavailable)')
+        : registeredAtRaw;
+    const updatedAt = updatedAtRaw === 'Unknown'
+        ? (rawUpdatedAt === 0 ? 'Genesis' : 'No updates recorded')
+        : updatedAtRaw;
     const rawName = identity?.display_name || identity?.name || 'Unnamed';
     const displayName = escapeHtml(rawName);
     const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
@@ -443,15 +449,22 @@ function renderIdentityPane(profile) {
         : `<span class="identity-chip">No given vouches</span>`;
 
     const achievedIds = new Set(achievements.map(a => Number(a.id)).filter(Boolean));
+    // Build a lookup map from ACHIEVEMENT_DEFS for icons
+    const achDefMap = {};
+    for (const def of ACHIEVEMENT_DEFS) achDefMap[def.id] = def;
     const achievedHtml = achievements.length
-        ? achievements.map(a => `<span class="badge success"><i class="fas fa-trophy" style="margin-right:4px;font-size:0.7em;"></i>${escapeHtml(String(a.name || `Achievement #${a.id}`))}</span>`).join(' ')
+        ? achievements.map(a => {
+            const def = achDefMap[Number(a.id)];
+            const icon = def ? def.icon : 'fa-trophy';
+            return `<span class="identity-chip achievement-earned"><i class="fas ${icon}"></i>${escapeHtml(String(a.name || `Achievement #${a.id}`))}</span>`;
+        }).join('')
         : `<span class="identity-chip">No achievements yet</span>`;
     // Use shared achievement definitions from shared/utils.js
     const allAchievements = ACHIEVEMENT_DEFS;
     const lockedHtml = allAchievements
         .filter(a => !achievedIds.has(a.id))
-        .map(a => `<span class="identity-chip" style="opacity:0.5;"><i class="fas ${a.icon}" style="font-size:0.7em;margin-right:4px;"></i>${a.name}</span>`)
-        .join(' ');
+        .map(a => `<span class="identity-chip achievement-locked"><i class="fas ${a.icon}"></i>${a.name}</span>`)
+        .join('');
 
     const primaryName = profile?.lichenName
         ? escapeHtml(profile.lichenName.endsWith('.lichen') ? profile.lichenName : profile.lichenName + '.lichen')

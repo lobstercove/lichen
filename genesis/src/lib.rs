@@ -2285,13 +2285,55 @@ pub fn genesis_seed_margin_prices(
 /// based on what that wallet actually does on the chain.
 fn genesis_role_achievements(role: &str) -> &'static [(u8, &'static str)] {
     match role {
-        "validator_rewards" => &[(1, "First Transaction")],
-        "community_treasury" => &[(1, "First Transaction"), (2, "Governance Voter")],
-        "builder_grants" => &[(1, "First Transaction"), (3, "Program Builder")],
-        "founding_symbionts" => &[(1, "First Transaction"), (41, "First Stake")],
-        "ecosystem_partnerships" => &[(1, "First Transaction")],
-        "reserve_pool" => &[(1, "First Transaction")],
-        _ => &[(1, "First Transaction")],
+        "validator_rewards" => &[
+            (1, "First Transaction"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (124, "Contract Interactor"),
+        ],
+        "community_treasury" => &[
+            (1, "First Transaction"),
+            (2, "Governance Voter"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (71, "Proposal Creator"),
+            (72, "First Vote"),
+        ],
+        "builder_grants" => &[
+            (1, "First Transaction"),
+            (3, "Program Builder"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (112, "Agent Creator"),
+            (124, "Contract Interactor"),
+        ],
+        "founding_symbionts" => &[
+            (1, "First Transaction"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (41, "First Stake"),
+            (43, "Liquid Staking Pioneer"),
+        ],
+        "ecosystem_partnerships" => &[
+            (1, "First Transaction"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (51, "Bridge Pioneer"),
+            (53, "Bridge User"),
+        ],
+        "reserve_pool" => &[
+            (1, "First Transaction"),
+            (4, "Trusted Agent"),
+            (5, "Veteran Agent"),
+            (6, "Legendary Agent"),
+            (121, "Vault Depositor"),
+        ],
+        _ => &[(1, "First Transaction"), (4, "Trusted Agent")],
     }
 }
 
@@ -2362,6 +2404,9 @@ pub fn genesis_assign_achievements(
     let deployer_achs: &[(u8, &str)] = &[
         (1, "First Transaction"),
         (3, "Program Builder"),
+        (4, "Trusted Agent"),
+        (5, "Veteran Agent"),
+        (6, "Legendary Agent"),
         (109, "Identity Created"),
         (124, "Contract Interactor"),
     ];
@@ -2477,7 +2522,7 @@ fn register_genesis_identity(
     // Build identity record — same layout as LichenID contract (127 bytes)
     let name_bytes = name.as_bytes();
     let name_len = name_bytes.len().min(64);
-    let initial_reputation: u64 = 100;
+    let initial_reputation: u64 = 10_000;
 
     let mut record = [0u8; 127];
     // Bytes 0..32: owner pubkey

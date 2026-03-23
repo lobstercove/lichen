@@ -20,11 +20,11 @@ pub mod genesis;
 pub mod hash;
 pub mod marketplace;
 pub mod mempool;
+pub mod mossstake; // Liquid staking protocol
 pub mod multisig; // Multi-signature wallet support
 pub mod network;
 pub mod nft;
 pub mod processor;
-pub mod mossstake; // Liquid staking protocol
 pub mod state;
 pub mod transaction;
 #[cfg(feature = "zk")]
@@ -59,13 +59,12 @@ pub use contract::{
 };
 pub use contract_instruction::ContractInstruction;
 pub use evm::{
-    decode_evm_transaction, evm_tx_hash, execute_evm_transaction, spores_to_u256,
-    simulate_evm_call, supported_precompiles, topics_match, u256_is_multiple_of_spore,
-    u256_to_spores, EvmAccount, EvmExecutionResult, EvmLog, EvmLogEntry, EvmReceipt,
-    EvmStateChange, EvmStateChanges, EvmTx, EvmTxRecord, EVM_PROGRAM_ID, LICHEN_CHAIN_ID,
-    PRECOMPILE_BLAKE2F, PRECOMPILE_BN256_ADD, PRECOMPILE_BN256_MUL, PRECOMPILE_BN256_PAIRING,
-    PRECOMPILE_ECRECOVER, PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_RIPEMD160,
-    PRECOMPILE_SHA256,
+    decode_evm_transaction, evm_tx_hash, execute_evm_transaction, simulate_evm_call,
+    spores_to_u256, supported_precompiles, topics_match, u256_is_multiple_of_spore, u256_to_spores,
+    EvmAccount, EvmExecutionResult, EvmLog, EvmLogEntry, EvmReceipt, EvmStateChange,
+    EvmStateChanges, EvmTx, EvmTxRecord, EVM_PROGRAM_ID, LICHEN_CHAIN_ID, PRECOMPILE_BLAKE2F,
+    PRECOMPILE_BN256_ADD, PRECOMPILE_BN256_MUL, PRECOMPILE_BN256_PAIRING, PRECOMPILE_ECRECOVER,
+    PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_RIPEMD160, PRECOMPILE_SHA256,
 };
 pub use genesis::{
     ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisValidator, NetworkConfig,
@@ -75,6 +74,9 @@ pub use marketplace::{
     decode_market_activity, encode_market_activity, MarketActivity, MarketActivityKind,
 };
 pub use mempool::Mempool;
+pub use mossstake::{
+    MossStakePool, StLicnToken, StakingPosition, UnstakeRequest, MOSSSTAKE_BLOCK_SHARE_BPS,
+};
 pub use multisig::{DistributionWallet, GenesisWallet, MultiSigConfig, GENESIS_DISTRIBUTION};
 pub use nft::{
     CollectionState, CreateCollectionData, MintNftData, NftActivity, NftActivityKind, TokenState,
@@ -91,9 +93,6 @@ pub use processor::{
     MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE, NONCE_ACCOUNT_MARKER,
     NONCE_ACCOUNT_MIN_BALANCE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
     RENT_FREE_BYTES, SYSTEM_PROGRAM_ID,
-};
-pub use mossstake::{
-    MossStakePool, StLicnToken, StakingPosition, UnstakeRequest, MOSSSTAKE_BLOCK_SHARE_BPS,
 };
 pub use state::AccountProof;
 pub use state::CheckpointMeta;

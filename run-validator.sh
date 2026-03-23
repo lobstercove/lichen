@@ -72,7 +72,7 @@ LOCAL_LISTEN_ADDR="${LICHEN_LOCAL_LISTEN_ADDR:-127.0.0.1}"
 VALIDATOR_KEYPAIR_FILE="${DB_PATH}/validator-keypair.json"
 GENESIS_WALLET_FILE="${DB_PATH}/genesis-wallet.json"
 LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
-CLI_BIN="${REPO_ROOT}/target/release/licn"
+CLI_BIN="${REPO_ROOT}/target/release/lichen"
 GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
 VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
 

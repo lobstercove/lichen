@@ -3700,7 +3700,63 @@ async fn activate_pending_validators_for_height(
     new_height: u64,
     min_validator_stake: u64,
 ) {
-    let validator_snapshot: Vec<(Pubkey, u64, bool, u64)> = validator_set
+    // ── Phase 1: Discover validators from on-chain pool that are NOT in
+    //    the in-memory set yet.  This closes the race where a
+    //    RegisterValidator tx lands on-chain before the P2P announcement
+    //    propagates, causing different nodes to have asymmetric validator
+    //    sets.  The on-chain pool is deterministic (same blocks → same pool).
+    {
+        let known: std::collections::HashSet<Pubkey> = validator_set
+            .read()
+            .await
+            .validators()
+            .iter()
+            .map(|v| v.pubkey)
+            .collect();
+
+        let mut discovered = Vec::new();
+        for stake_info in height_pool.stake_entries() {
+            let pubkey = stake_info.validator;
+            if !known.contains(&pubkey)
+                && stake_info.total_stake() >= min_validator_stake
+                && stake_info.start_slot > 0
+            {
+                discovered.push((pubkey, stake_info.total_stake(), stake_info.start_slot));
+            }
+        }
+
+        if !discovered.is_empty() {
+            let mut vs = validator_set.write().await;
+            for (pubkey, stake, start_slot) in &discovered {
+                if vs.get_validator(pubkey).is_none() {
+                    vs.add_validator(ValidatorInfo {
+                        pubkey: *pubkey,
+                        stake: *stake,
+                        reputation: 100,
+                        blocks_proposed: 0,
+                        votes_cast: 0,
+                        correct_votes: 0,
+                        joined_slot: *start_slot,
+                        last_active_slot: *start_slot,
+                        commission_rate: 500,
+                        transactions_processed: 0,
+                        pending_activation: true,
+                    });
+                    info!(
+                        "📋 Height {}: Discovered validator {} from on-chain pool (stake: {} LICN, start_slot: {})",
+                        new_height,
+                        pubkey.to_base58(),
+                        stake / 1_000_000_000,
+                        start_slot,
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Phase 2: Reconcile in-memory set with pool stakes and activate
+    //    pending validators deterministically using on-chain start_slot.
+    let validator_snapshot: Vec<(Pubkey, u64, bool)> = validator_set
         .read()
         .await
         .validators()
@@ -3710,7 +3766,6 @@ async fn activate_pending_validators_for_height(
                 validator.pubkey,
                 validator.stake,
                 validator.pending_activation,
-                validator.joined_slot,
             )
         })
         .collect();
@@ -3720,7 +3775,7 @@ async fn activate_pending_validators_for_height(
     }
 
     let mut reconciled = Vec::new();
-    for (pubkey, current_stake, pending_activation, joined_slot) in validator_snapshot {
+    for (pubkey, current_stake, pending_activation) in validator_snapshot {
         // Resolve stake: pool first, then on-chain account, then keep current.
         // The pool may not have the validator yet (P2P announcement arrives
         // before RegisterValidator tx is processed), so fall back to the
@@ -3740,7 +3795,7 @@ async fn activate_pending_validators_for_height(
         // Always include pending validators so they get checked for activation
         // every height, even if their stake hasn't changed yet.
         if resolved_stake != current_stake || pending_activation {
-            reconciled.push((pubkey, resolved_stake, pending_activation, joined_slot));
+            reconciled.push((pubkey, resolved_stake, pending_activation));
         }
     }
 
@@ -3751,7 +3806,7 @@ async fn activate_pending_validators_for_height(
     let mut vs = validator_set.write().await;
     let mut activated = Vec::new();
     let mut changed = false;
-    for (pubkey, resolved_stake, pending_activation, joined_slot) in reconciled {
+    for (pubkey, resolved_stake, pending_activation) in reconciled {
         if let Some(validator) = vs.get_validator_mut(&pubkey) {
             if validator.stake != resolved_stake {
                 validator.stake = resolved_stake;
@@ -3760,11 +3815,21 @@ async fn activate_pending_validators_for_height(
             if pending_activation
                 && validator.pending_activation
                 && resolved_stake >= min_validator_stake
-                && new_height > joined_slot.saturating_add(1)
             {
-                validator.pending_activation = false;
-                changed = true;
-                activated.push(pubkey);
+                // Use the on-chain stake pool start_slot for deterministic
+                // activation timing.  Every node processes the same blocks so
+                // the pool entry's start_slot is identical everywhere, unlike
+                // the in-memory joined_slot which depends on P2P arrival order.
+                let deterministic_join = height_pool
+                    .get_stake(&pubkey)
+                    .map(|si| si.start_slot)
+                    .unwrap_or(0);
+                if deterministic_join > 0 && new_height > deterministic_join.saturating_add(1) {
+                    validator.pending_activation = false;
+                    validator.joined_slot = deterministic_join;
+                    changed = true;
+                    activated.push(pubkey);
+                }
             }
         }
     }
@@ -13917,8 +13982,9 @@ mod tests {
 
         let validator_set = Arc::new(RwLock::new(validator_set));
         let mut height_pool = StakePool::new();
+        // Use start_slot=1 (realistic: RegisterValidator tx processed at slot 1)
         height_pool
-            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 0)
+            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 1)
             .expect("stake validator in height pool");
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -13939,6 +14005,7 @@ mod tests {
                 .expect("validator exists")
         });
 
+        // height 2 == start_slot(1) + 1, so not yet activated (need > start_slot+1)
         assert!(reconciled.pending_activation);
         assert_eq!(reconciled.stake, MIN_VALIDATOR_STAKE);
     }
@@ -13972,8 +14039,9 @@ mod tests {
 
         let validator_set = Arc::new(RwLock::new(validator_set));
         let mut height_pool = StakePool::new();
+        // Use start_slot=1 (realistic: RegisterValidator tx processed at slot 1)
         height_pool
-            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 0)
+            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 1)
             .expect("stake validator in height pool");
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -13994,6 +14062,7 @@ mod tests {
                 .expect("validator exists")
         });
 
+        // height 3 > start_slot(1) + 1 = 2, so activated
         assert!(!reconciled.pending_activation);
         assert_eq!(reconciled.stake, MIN_VALIDATOR_STAKE);
     }

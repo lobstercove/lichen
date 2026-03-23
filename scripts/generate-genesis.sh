@@ -130,10 +130,10 @@ for i in $(seq 1 $NUM_VALIDATORS); do
     KEYPAIR_FILE="/tmp/lichen-genesis-validator-${i}.json"
     
     if [ "$NETWORK" == "testnet" ]; then
-        # For testnet: generate a real keypair using licn CLI or openssl
-        if command -v licn &> /dev/null; then
-            print_info "  Validator $i: Generating keypair via licn CLI..."
-            licn keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
+        # For testnet: generate a real keypair using lichen CLI or openssl
+        if command -v lichen &> /dev/null; then
+            print_info "  Validator $i: Generating keypair via lichen CLI..."
+            lichen keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
             PUBKEY=$(grep -o '"publicKeyBase58":"[^"]*"' "$KEYPAIR_FILE" | cut -d'"' -f4)
         elif command -v openssl &> /dev/null; then
             # Generate Ed25519 keypair via openssl, extract raw pubkey as Base58
@@ -149,14 +149,14 @@ for i in $(seq 1 $NUM_VALIDATORS); do
                 print_warning "  Install basenc (coreutils 8.31+) for proper Base58 keys"
             fi
         else
-            print_error "  Validator $i: Neither licn CLI nor openssl available"
-            print_error "  Cannot generate real keypairs. Install licn CLI: cargo install --path cli"
+            print_error "  Validator $i: Neither lichen CLI nor openssl available"
+            print_error "  Cannot generate real keypairs. Install lichen CLI: cargo install --path cli"
             exit 1
         fi
     else
         # For mainnet: REQUIRE real keypair files — never generate placeholder keys
         print_error "  Mainnet genesis REQUIRES pre-generated validator keypairs"
-        print_error "  Generate keypairs securely: licn keygen --output validator-${i}.json"
+        print_error "  Generate keypairs securely: lichen keygen --output validator-${i}.json"
         print_error "  Then re-run with: --validator-keys validator-1.json,validator-2.json,..."
         exit 1
     fi

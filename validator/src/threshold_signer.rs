@@ -268,8 +268,7 @@ mod tests {
 
     #[test]
     fn test_signer_keypair_roundtrip() {
-        let dir =
-            std::env::temp_dir().join(format!("lichen_signer_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lichen_signer_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test-signer-keypair.json");
         let _ = fs::remove_file(&path);

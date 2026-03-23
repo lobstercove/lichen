@@ -976,9 +976,7 @@ impl P2PNetwork {
                     Some(version.as_str()),
                 )
                 .ok()
-                .map(|message| {
-                    lichen_core::account::Keypair::verify(&pubkey, &message, &signature)
-                })
+                .map(|message| lichen_core::account::Keypair::verify(&pubkey, &message, &signature))
                 .unwrap_or(false)
                     || validator_announcement_signing_message(
                         &pubkey,

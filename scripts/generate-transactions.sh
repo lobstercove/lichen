@@ -3,7 +3,7 @@
 
 set -e
 
-LICN_CLI="./target/release/licn"
+LICN_CLI="./target/release/lichen"
 RPC_URL="http://localhost:8899"
 
 echo "🦞 Lichen Transaction Generator"
