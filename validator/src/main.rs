@@ -3816,15 +3816,23 @@ async fn activate_pending_validators_for_height(
                 && validator.pending_activation
                 && resolved_stake >= min_validator_stake
             {
-                // Use the on-chain stake pool start_slot for deterministic
-                // activation timing.  Every node processes the same blocks so
-                // the pool entry's start_slot is identical everywhere, unlike
-                // the in-memory joined_slot which depends on P2P arrival order.
+                // Activation warmup: new validators must wait ACTIVATION_WARMUP
+                // slots before entering the consensus set.  This ensures the
+                // joining node has time to fully sync, enter the BFT loop, and
+                // be ready to propose/vote.  Without this, a validator activated
+                // 1 slot after registration gets selected as BFT leader before
+                // it has even finished syncing, causing the chain to stall.
+                //
+                // 100 slots ≈ 40s at 400ms/slot — enough for sync + BFT entry.
+                // Ethereum uses ~6.4min activation queue for comparison.
+                const ACTIVATION_WARMUP: u64 = 100;
                 let deterministic_join = height_pool
                     .get_stake(&pubkey)
                     .map(|si| si.start_slot)
                     .unwrap_or(0);
-                if deterministic_join > 0 && new_height > deterministic_join.saturating_add(1) {
+                if deterministic_join > 0
+                    && new_height > deterministic_join.saturating_add(ACTIVATION_WARMUP)
+                {
                     validator.pending_activation = false;
                     validator.joined_slot = deterministic_join;
                     changed = true;
@@ -7015,8 +7023,6 @@ async fn run_validator() {
                             let gap = end.saturating_sub(current_slot);
                             if gap > sync::WARP_SYNC_THRESHOLD {
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                            } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
-                                sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
                             } else {
                                 sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
                             }
@@ -7141,13 +7147,29 @@ async fn run_validator() {
                 // Genesis block (slot 0) uses SYSTEM_ACCOUNT_OWNER as validator,
                 // which is not in the active set — allow it through.
                 //
-                // During header-first sync, skip this check for blocks outside
-                // the full-execution window.  RegisterValidator TXs are not
-                // replayed for those blocks, so the in-memory validator set
-                // only contains the genesis producer.  The parent-hash chain
-                // and signature verification still protect against invalid
-                // blocks; the active-set gate is enforced once the node enters
-                // the full-execution window where TXs are replayed.
+                // With full TX replay during sync, the in-memory validator set
+                // is kept in sync with on-chain state at every block height.
+                // Verification is safe to perform during both InitialSync and
+                // LiveSync.  should_full_validate() always returns true, so
+                // the guard below simply skips slot 0 (genesis).
+                //
+                // PRE-VERIFICATION ACTIVATION: The producing network freezes
+                // the consensus set for height H, activating any validators
+                // whose warmup completes at H.  The verifier must do the same
+                // before checking the commit certificate, otherwise a validator
+                // that activated at H is missing from verify_commit's
+                // denominator and the 2/3 check can spuriously fail.
+                if block_slot > 0 {
+                    let pool = stake_pool_for_blocks.read().await;
+                    activate_pending_validators_for_height(
+                        &state_for_blocks,
+                        &validator_set_for_blocks,
+                        &pool,
+                        block_slot,
+                        min_validator_stake,
+                    )
+                    .await;
+                }
                 if block_slot > 0 && sync_mgr.should_full_validate(block_slot).await {
                     let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
@@ -7664,6 +7686,23 @@ async fn run_validator() {
                                     min_validator_stake,
                                 )
                                 .await;
+                                // SYNC-ACTIVATION: Activate pending validators after
+                                // applying block effects so the in-memory validator set
+                                // stays in sync with on-chain state during catch-up.
+                                // Without this, validators discovered from replayed
+                                // RegisterValidator TXs stay "pending" forever and the
+                                // local validators_hash diverges from block headers.
+                                {
+                                    let pool = stake_pool_for_blocks.read().await;
+                                    activate_pending_validators_for_height(
+                                        &state_for_blocks,
+                                        &validator_set_for_blocks,
+                                        &pool,
+                                        pending_slot,
+                                        min_validator_stake,
+                                    )
+                                    .await;
+                                }
                                 apply_oracle_from_block(&state_for_blocks, &pending_block);
                                 maybe_create_checkpoint(
                                     &state_for_blocks,
@@ -7703,8 +7742,6 @@ async fn run_validator() {
                         let gap = end.saturating_sub(post_genesis_slot);
                         if gap > sync::WARP_SYNC_THRESHOLD {
                             sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                        } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
-                            sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
                         } else {
                             sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
                         }
@@ -7883,6 +7920,23 @@ async fn run_validator() {
                             min_validator_stake,
                         )
                         .await;
+                        // SYNC-ACTIVATION: Activate pending validators after each
+                        // synced block so the in-memory validator set tracks the
+                        // on-chain state deterministically.  Without this, joining
+                        // nodes never promote pending validators during catch-up
+                        // and reject blocks once they enter the full-validation
+                        // window due to validators_hash mismatch.
+                        {
+                            let pool = stake_pool_for_blocks.read().await;
+                            activate_pending_validators_for_height(
+                                &state_for_blocks,
+                                &validator_set_for_blocks,
+                                &pool,
+                                block_slot,
+                                min_validator_stake,
+                            )
+                            .await;
+                        }
                         apply_oracle_from_block(&state_for_blocks, &block);
                         // DIAG: Compare local state_root with block's stored state_root
                         // to detect the first sync slot where state diverges.
@@ -8122,8 +8176,6 @@ async fn run_validator() {
                         let gap = end.saturating_sub(current_slot);
                         if gap > sync::WARP_SYNC_THRESHOLD {
                             sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
-                        } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
-                            sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
                         } else {
                             sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
                         }
@@ -9843,7 +9895,7 @@ async fn run_validator() {
                         verified_checkpoint_anchors.remove(&response.requester);
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // Warp sync is impossible without a checkpoint.  Complete the
-                        // current sync batch and switch to HeaderOnly so the next
+                        // current sync batch and switch to Full so the next
                         // should_sync() call can re-trigger with block-range requests.
                         let current_mode = sync_mgr_for_snapshot.get_sync_mode().await;
                         let known_peers = peer_mgr_for_snapshot_apply.get_peer_infos().len();
@@ -9853,7 +9905,7 @@ async fn run_validator() {
                             && known_peers <= 1
                         {
                             sync_mgr_for_snapshot
-                                .set_sync_mode(crate::sync::SyncMode::HeaderOnly)
+                                .set_sync_mode(crate::sync::SyncMode::Full)
                                 .await;
                             sync_mgr_for_snapshot.complete_sync().await;
                             sync_mgr_for_snapshot.record_sync_failure().await;
@@ -10224,6 +10276,10 @@ async fn run_validator() {
                                     // confirmed on-chain stake. This prevents a joining
                                     // node (pre-registration) from contaminating the
                                     // producing node's pool and breaking solo BFT.
+                                    //
+                                    // With full TX replay during sync, on-chain state
+                                    // is always correct — verify on-chain stake in
+                                    // both InitialSync and LiveSync.
                                     let vs = validator_set_for_snapshot_apply.read().await;
                                     let is_known_validator =
                                         vs.get_validator(&entry_validator).is_some();
@@ -10237,29 +10293,29 @@ async fn run_validator() {
                                         continue;
                                     }
 
-                                    // Verify on-chain stake before accepting entry
-                                    let Some(local_account_stake) = load_local_account_stake(
-                                        &state_for_snapshot_apply,
-                                        &entry_validator,
-                                    )
-                                    .filter(|stake| *stake >= min_validator_stake) else {
-                                        debug!(
-                                            "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
-                                            entry.validator.to_base58(),
-                                            response.requester
-                                        );
-                                        continue;
+                                    // Always verify on-chain stake — full TX replay
+                                    // ensures on-chain state is correct at every height.
+                                    let resolved_stake = {
+                                        let Some(local_account_stake) = load_local_account_stake(
+                                            &state_for_snapshot_apply,
+                                            &entry_validator,
+                                        )
+                                        .filter(|stake| *stake >= min_validator_stake) else {
+                                            debug!(
+                                                "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
+                                                entry.validator.to_base58(),
+                                                response.requester
+                                            );
+                                            continue;
+                                        };
+                                        local_account_stake
                                     };
 
                                     let mut sanitized_entry = entry.clone();
-                                    sanitized_entry.amount = local_account_stake;
+                                    sanitized_entry.amount = resolved_stake;
                                     if let Some(local_entry) = pool.get_stake(&entry_validator) {
-                                        if local_entry.amount != local_account_stake {
-                                            pool.upsert_stake(
-                                                entry_validator,
-                                                local_account_stake,
-                                                0,
-                                            );
+                                        if local_entry.amount != resolved_stake {
+                                            pool.upsert_stake(entry_validator, resolved_stake, 0);
                                         }
                                     }
                                     pool.upsert_stake_full(sanitized_entry);

@@ -2559,10 +2559,14 @@ impl ValidatorSet {
 
         let sorted_validators = self.sorted_validators();
 
-        // Filter: only validators with stake >= MIN_VALIDATOR_STAKE can be leaders
+        // Filter: only active (non-pending) validators with stake >= MIN_VALIDATOR_STAKE can be leaders.
+        // Pending validators are in ACTIVATION_WARMUP and must not participate in consensus.
         let eligible: Vec<&ValidatorInfo> = sorted_validators
             .iter()
             .filter(|v| {
+                if v.pending_activation {
+                    return false;
+                }
                 let stake = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())

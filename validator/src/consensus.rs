@@ -1075,8 +1075,16 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> bool {
+        // Only count votes from active (non-pending) validators.
+        // Pending validators are in warmup and must not affect quorum.
         let vote_stake: u128 = voters
             .iter()
+            .filter(|pk| {
+                validator_set
+                    .get_validator(pk)
+                    .map(|v| !v.pending_activation)
+                    .unwrap_or(false)
+            })
             .filter_map(|pk| stake_pool.get_stake(pk))
             .map(|s| s.total_stake() as u128)
             .sum();
@@ -1085,6 +1093,9 @@ impl ConsensusEngine {
             .sorted_validators()
             .iter()
             .filter(|v| {
+                if v.pending_activation {
+                    return false;
+                }
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
@@ -1158,6 +1169,9 @@ impl ConsensusEngine {
             .sorted_validators()
             .iter()
             .filter(|v| {
+                if v.pending_activation {
+                    return false;
+                }
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
@@ -1180,6 +1194,12 @@ impl ConsensusEngine {
             .seen_prevotes
             .keys()
             .filter(|(r, _)| *r == round)
+            .filter(|(_, pk)| {
+                validator_set
+                    .get_validator(pk)
+                    .map(|v| !v.pending_activation)
+                    .unwrap_or(false)
+            })
             .filter_map(|(_, pk)| stake_pool.get_stake(pk))
             .map(|s| s.total_stake() as u128)
             .sum();
@@ -1198,6 +1218,9 @@ impl ConsensusEngine {
             .sorted_validators()
             .iter()
             .filter(|v| {
+                if v.pending_activation {
+                    return false;
+                }
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
@@ -1220,6 +1243,12 @@ impl ConsensusEngine {
             .seen_precommits
             .keys()
             .filter(|(r, _)| *r == round)
+            .filter(|(_, pk)| {
+                validator_set
+                    .get_validator(pk)
+                    .map(|v| !v.pending_activation)
+                    .unwrap_or(false)
+            })
             .filter_map(|(_, pk)| stake_pool.get_stake(pk))
             .map(|s| s.total_stake() as u128)
             .sum();
@@ -1254,6 +1283,9 @@ impl ConsensusEngine {
             .sorted_validators()
             .iter()
             .filter(|v| {
+                if v.pending_activation {
+                    return false;
+                }
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
@@ -1299,6 +1331,12 @@ impl ConsensusEngine {
 
         let future_stake: u128 = future_voters
             .iter()
+            .filter(|pk| {
+                validator_set
+                    .get_validator(pk)
+                    .map(|v| !v.pending_activation)
+                    .unwrap_or(false)
+            })
             .filter_map(|pk| stake_pool.get_stake(pk))
             .map(|s| s.total_stake() as u128)
             .sum();
@@ -1393,6 +1431,9 @@ impl ConsensusEngine {
                     .sorted_validators()
                     .iter()
                     .filter(|v| {
+                        if v.pending_activation {
+                            return false;
+                        }
                         let s = stake_pool
                             .get_stake(&v.pubkey)
                             .map(|s| s.total_stake())

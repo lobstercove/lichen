@@ -428,18 +428,12 @@ impl SyncManager {
         *self.last_progress_slot.lock().await
     }
 
-    /// Determine whether a given block slot should use full or header-only
-    /// validation based on distance from the chain tip.
-    pub async fn should_full_validate(&self, block_slot: u64) -> bool {
-        let mode = *self.sync_mode.lock().await;
-        match mode {
-            SyncMode::Full => true,
-            SyncMode::HeaderOnly | SyncMode::Warp => {
-                let highest = *self.highest_seen_slot.lock().await;
-                // Full-execute the last HEADER_SYNC_FULL_EXECUTION_WINDOW blocks
-                block_slot + HEADER_SYNC_FULL_EXECUTION_WINDOW >= highest
-            }
-        }
+    /// Determine whether a given block slot should use full transaction
+    /// replay.  Always returns `true` — every synced block must replay its
+    /// transactions so the joining node builds byte-identical state.
+    /// This matches Bitcoin / Ethereum / Cosmos full-node behaviour.
+    pub async fn should_full_validate(&self, _block_slot: u64) -> bool {
+        true
     }
 
     /// Get sync progress relative to highest seen slot

@@ -305,6 +305,13 @@ impl Block {
         let mut seen = std::collections::HashSet::new();
 
         for vi in validator_set.validators() {
+            // Only count active (non-pending) validators toward the 2/3
+            // supermajority denominator.  Pending validators have been
+            // discovered on-chain but are not yet participating in BFT
+            // consensus, so their stake must not inflate total_stake.
+            if vi.pending_activation {
+                continue;
+            }
             let pubkey = vi.pubkey;
             let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
             total_stake += stake as u128;
@@ -322,9 +329,10 @@ impl Block {
                 continue;
             }
 
-            // Skip validators not in the set
-            if validator_set.get_validator(&pubkey).is_none() {
-                continue;
+            // Skip validators not in the set or still pending activation
+            match validator_set.get_validator(&pubkey) {
+                Some(vi) if !vi.pending_activation => {}
+                _ => continue,
             }
 
             // Verify signature — each precommit includes its own timestamp
