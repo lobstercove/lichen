@@ -2572,6 +2572,235 @@ pub fn genesis_assign_achievements(
         );
     }
 
+    // 3. Award achievements to contract identities (registered via WASM name flow)
+    //    These already have identities + skills but no achievements yet.
+    info!("  ── Contract identity achievements ──");
+
+    /// Map contract dir_name to role-appropriate achievements.
+    /// All contracts get: Identity Created, Contract Interactor, Name Registrar,
+    ///   Trusted Agent, Veteran Agent, Legendary Agent, Program Builder.
+    fn contract_achievements(dir_name: &str) -> &'static [(u8, &'static str)] {
+        match dir_name {
+            // Core token
+            "lichencoin" => &[(1, "First Transaction"), (123, "Token Contract User")],
+            // Wrapped tokens
+            "lusd_token" => &[
+                (36, "Stablecoin Minter"),
+                (38, "Stable Sender"),
+                (123, "Token Contract User"),
+            ],
+            "wsol_token" | "weth_token" | "wbnb_token" => &[
+                (54, "Wrapper"),
+                (55, "Unwrapper"),
+                (123, "Token Contract User"),
+            ],
+            // DEX contracts
+            "dex_core" => &[(13, "First Trade"), (14, "LP Provider"), (16, "DEX User")],
+            "dex_amm" => &[
+                (13, "First Trade"),
+                (14, "LP Provider"),
+                (15, "LP Withdrawal"),
+            ],
+            "dex_router" => &[
+                (13, "First Trade"),
+                (16, "DEX User"),
+                (17, "Multi-hop Trader"),
+            ],
+            "dex_margin" => &[(18, "Margin Trader"), (19, "Position Closer")],
+            "dex_rewards" => &[(20, "Yield Farmer")],
+            "dex_governance" => &[
+                (2, "Governance Voter"),
+                (71, "Proposal Creator"),
+                (72, "First Vote"),
+            ],
+            "dex_analytics" => &[(21, "Analytics Explorer")],
+            // DeFi protocols
+            "lichenswap" => &[(13, "First Trade"), (14, "LP Provider")],
+            "lichenbridge" => &[
+                (51, "Bridge Pioneer"),
+                (52, "Bridge Out"),
+                (53, "Bridge User"),
+                (56, "Cross-chain Trader"),
+            ],
+            "lichenoracle" => &[(81, "Oracle Reporter"), (82, "Oracle User")],
+            "lichendao" => &[
+                (2, "Governance Voter"),
+                (71, "Proposal Creator"),
+                (72, "First Vote"),
+                (73, "Delegator"),
+            ],
+            "thalllend" => &[
+                (31, "First Lend"),
+                (32, "First Borrow"),
+                (33, "Loan Repaid"),
+                (34, "Liquidator"),
+                (35, "Withdrawal Expert"),
+            ],
+            // Marketplaces
+            "lichenmarket" => &[
+                (63, "Collection Creator"),
+                (64, "First Mint"),
+                (65, "NFT Trader"),
+                (66, "First Listing"),
+                (67, "First Purchase"),
+            ],
+            "lichenauction" => &[
+                (91, "Auctioneer"),
+                (92, "Auction Bidder"),
+                (93, "Auction Winner"),
+            ],
+            "lichenpunks" => &[
+                (63, "Collection Creator"),
+                (64, "First Mint"),
+                (70, "Punk Collector"),
+            ],
+            // Identity
+            "lichenid" => &[(9, "Name Registrar"), (12, "First Name"), (111, "Voucher")],
+            // Infrastructure
+            "sporepay" => &[
+                (115, "Payment Creator"),
+                (116, "First Payment"),
+                (117, "Subscription Creator"),
+            ],
+            "sporepump" => &[
+                (118, "Token Launcher"),
+                (119, "Early Buyer"),
+                (120, "Token Seller"),
+            ],
+            "sporevault" => &[(121, "Vault Depositor"), (122, "Vault Withdrawer")],
+            "bountyboard" => &[
+                (96, "Bounty Poster"),
+                (97, "Bounty Hunter"),
+                (98, "Bounty Judge"),
+            ],
+            "compute_market" => &[
+                (112, "Agent Creator"),
+                (113, "Compute Provider"),
+                (114, "Compute Consumer"),
+            ],
+            "moss_storage" => &[
+                (41, "First Stake"),
+                (43, "Liquid Staking Pioneer"),
+                (86, "File Uploader"),
+                (87, "Data Retriever"),
+                (88, "Storage User"),
+            ],
+            "prediction_market" => &[
+                (101, "Market Maker"),
+                (102, "First Prediction"),
+                (103, "Oracle Resolver"),
+                (104, "Prediction Winner"),
+            ],
+            "shielded_pool" => &[
+                (57, "Privacy Pioneer"),
+                (58, "Unshielded"),
+                (59, "Shadow Sender"),
+                (60, "ZK Privacy User"),
+            ],
+            _ => &[],
+        }
+    }
+
+    // Common achievements every contract identity gets
+    const CONTRACT_COMMON_ACHS: &[(u8, &str)] = &[
+        (3, "Program Builder"),
+        (4, "Trusted Agent"),
+        (5, "Veteran Agent"),
+        (6, "Legendary Agent"),
+        (9, "Name Registrar"),
+        (109, "Identity Created"),
+        (124, "Contract Interactor"),
+    ];
+
+    let contract_dirs: &[&str] = &[
+        "lichencoin",
+        "lusd_token",
+        "wsol_token",
+        "weth_token",
+        "wbnb_token",
+        "dex_core",
+        "dex_amm",
+        "dex_router",
+        "dex_margin",
+        "dex_rewards",
+        "dex_governance",
+        "dex_analytics",
+        "lichenswap",
+        "lichenbridge",
+        "lichenoracle",
+        "lichendao",
+        "thalllend",
+        "lichenmarket",
+        "lichenauction",
+        "lichenpunks",
+        "lichenid",
+        "sporepay",
+        "sporepump",
+        "sporevault",
+        "bountyboard",
+        "compute_market",
+        "moss_storage",
+        "prediction_market",
+        "shielded_pool",
+    ];
+
+    let mut contract_count = 0u64;
+    for dir_name in contract_dirs {
+        let contract_pk = match derive_contract_address(deployer_pubkey, dir_name) {
+            Some(pk) => pk,
+            None => {
+                warn!("  SKIP {}: could not derive address", dir_name);
+                continue;
+            }
+        };
+
+        // Verify this identity actually exists in LichenID storage
+        let id_key = format!("id:{}", pubkey_to_hex(&contract_pk));
+        if state
+            .get_contract_storage(&lichenid_addr, id_key.as_bytes())
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            warn!("  SKIP {}: no identity record found", dir_name);
+            continue;
+        }
+
+        let hex = pubkey_to_hex(&contract_pk);
+        let mut count = 0u64;
+
+        // Award common achievements
+        for &(ach_id, label) in CONTRACT_COMMON_ACHS {
+            if award_genesis_ach(state, &lichenid_addr, &hex, ach_id, genesis_timestamp) {
+                count += 1;
+                info!("    ach #{:>3}: {}", ach_id, label);
+            }
+        }
+
+        // Award role-specific achievements
+        for &(ach_id, label) in contract_achievements(dir_name) {
+            if award_genesis_ach(state, &lichenid_addr, &hex, ach_id, genesis_timestamp) {
+                count += 1;
+                info!("    ach #{:>3}: {}", ach_id, label);
+            }
+        }
+
+        write_ach_count(state, &lichenid_addr, &hex, count);
+        contract_count += 1;
+        info!(
+            "  ✓ {} [contract]: {} achievements → {}",
+            dir_name,
+            count,
+            contract_pk.to_base58()
+        );
+    }
+
+    info!(
+        "  Contract identities awarded: {}/{}",
+        contract_count,
+        contract_dirs.len()
+    );
+
     // Update global identity count
     let count_key = b"mid_identity_count";
     let prev = state
@@ -2706,7 +2935,15 @@ mod tests {
 
     #[test]
     fn test_genesis_pair_prices_are_deterministic() {
+        // Force default prices by setting env overrides to the compiled defaults
+        // (live Binance prices would make this test non-deterministic)
+        std::env::set_var("GENESIS_SOL_USD", "89.70");
+        std::env::set_var("GENESIS_ETH_USD", "2152.29");
+        std::env::set_var("GENESIS_BNB_USD", "642.49");
         let pair_prices = genesis_pair_prices();
+        std::env::remove_var("GENESIS_SOL_USD");
+        std::env::remove_var("GENESIS_ETH_USD");
+        std::env::remove_var("GENESIS_BNB_USD");
         assert_eq!(pair_prices.len(), 7);
         assert_eq!(pair_prices[0].0, 1);
         assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
