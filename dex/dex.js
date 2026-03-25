@@ -118,7 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         else resolve(msg.result);
                         return;
                     }
-                    if (msg.method === 'notification' && msg.params) {
+                    if (msg.method === 'subscription' && msg.params) {
                         const sub = Array.from(this.subs.values()).find((entry) => entry.subId === msg.params.subscription);
                         if (sub?.callback) sub.callback(msg.params.result);
                     }
