@@ -24,6 +24,7 @@ pub mod updater;
 pub mod wal;
 
 use futures_util::{SinkExt, StreamExt};
+use lichen_core::multisig::GovernedWalletConfig;
 use lichen_core::nft::decode_token_state;
 use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
@@ -32,14 +33,16 @@ use lichen_core::{
     Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
     SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
     Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES,
+    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
-    derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
-    genesis_initialize_contracts, genesis_licn_price_8dec, genesis_seed_analytics_prices,
-    genesis_seed_margin_prices, genesis_seed_oracle, genesis_wbnb_price_8dec,
-    genesis_weth_price_8dec, genesis_wsol_price_8dec, GENESIS_LICN_PRICE_8DEC,
+    derive_contract_address, genesis_assign_achievements, genesis_auto_deploy,
+    genesis_create_trading_pairs, genesis_initialize_contracts, genesis_licn_price_8dec,
+    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
+    genesis_wbnb_price_8dec, genesis_weth_price_8dec, genesis_wsol_price_8dec,
+    GENESIS_LICN_PRICE_8DEC,
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -7416,6 +7419,13 @@ async fn run_validator() {
                             .set_fee_config_full(&genesis_fee_config)
                             .ok();
 
+                        // 2b. Slot duration from genesis config
+                        state_for_blocks
+                            .set_slot_duration_ms(
+                                genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                            )
+                            .ok();
+
                         // 3. Extract genesis pubkey from mint tx
                         //    tx[0]: Mint — accounts = [GENESIS_MINT_PUBKEY, genesis_pubkey]
                         //    tx[1..]: Distribution transfers — accounts = [genesis_pubkey, recipient]
@@ -7433,6 +7443,8 @@ async fn run_validator() {
                             let total_spores = Account::licn_to_spores(total_supply_licn);
                             let mut total_distributed_spores = 0u64;
 
+                            let mut dist_role_idx = 0usize;
+                            let mut dist_recipients: Vec<(String, Pubkey, u64, u8)> = Vec::new();
                             for (i, tx) in block.transactions.iter().enumerate().skip(1) {
                                 if let Some(ix) = tx.message.instructions.first() {
                                     if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
@@ -7445,11 +7457,28 @@ async fn run_validator() {
                                             0
                                         };
 
+                                        let (role, _amount_licn, pct) = GENESIS_DISTRIBUTION
+                                            .get(dist_role_idx)
+                                            .copied()
+                                            .unwrap_or(("unknown", 0, 0));
+
                                         let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
                                         acct.spores = amount_spores;
-                                        acct.spendable = amount_spores;
+                                        if role == "founding_symbionts" {
+                                            acct.spendable = 0;
+                                            acct.locked = amount_spores;
+                                        } else {
+                                            acct.spendable = amount_spores;
+                                        }
                                         state_for_blocks.put_account(&recipient, &acct).ok();
                                         total_distributed_spores += amount_spores;
+
+                                        dist_recipients.push((
+                                            role.to_string(),
+                                            recipient,
+                                            amount_spores / 1_000_000_000,
+                                            pct,
+                                        ));
 
                                         // tx[1] = treasury (validator_rewards) — works for both old and new genesis
                                         if i == 1 {
@@ -7461,14 +7490,79 @@ async fn run_validator() {
                                             );
                                         } else {
                                             info!(
-                                                "  ✓ 📡 [sync] Distribution {}: {} ({} LICN)",
+                                                "  ✓ 📡 [sync] Distribution {} ({}): {} ({} LICN){}",
                                                 i,
+                                                role,
                                                 recipient.to_base58(),
-                                                amount_spores / 1_000_000_000
+                                                amount_spores / 1_000_000_000,
+                                                if role == "founding_symbionts" { " [LOCKED]" } else { "" }
                                             );
                                         }
+
+                                        dist_role_idx += 1;
                                     }
                                 }
+                            }
+
+                            // 4b. Store genesis accounts in state DB (role → pubkey mapping)
+                            if !dist_recipients.is_empty() {
+                                state_for_blocks.set_genesis_accounts(&dist_recipients).ok();
+                                info!(
+                                    "  ✓ 📡 [sync] Stored {} genesis accounts in state DB",
+                                    dist_recipients.len()
+                                );
+                            }
+
+                            // 4c. Governed wallet configs (multi-sig spending rules)
+                            {
+                                let mut all_signers: Vec<Pubkey> =
+                                    dist_recipients.iter().map(|(_, pk, _, _)| *pk).collect();
+                                if !all_signers.contains(&gpk) {
+                                    all_signers.push(gpk);
+                                }
+                                for (role, pk, _, _) in &dist_recipients {
+                                    if role == "ecosystem_partnerships" {
+                                        let config = GovernedWalletConfig::new(
+                                            2,
+                                            all_signers.clone(),
+                                            "ecosystem_partnerships",
+                                        );
+                                        state_for_blocks
+                                            .set_governed_wallet_config(pk, &config)
+                                            .ok();
+                                        info!("  ✓ 📡 [sync] ecosystem_partnerships governed wallet: threshold={}, {} signers", config.threshold, config.signers.len());
+                                    } else if role == "reserve_pool" {
+                                        let config = GovernedWalletConfig::new(
+                                            3,
+                                            all_signers.clone(),
+                                            "reserve_pool",
+                                        );
+                                        state_for_blocks
+                                            .set_governed_wallet_config(pk, &config)
+                                            .ok();
+                                        info!("  ✓ 📡 [sync] reserve_pool governed wallet: threshold={}, {} signers [SUPERMAJORITY]", config.threshold, config.signers.len());
+                                    }
+                                }
+                            }
+
+                            // 4d. Founding symbionts vesting schedule
+                            if let Some((_, _, founding_licn, _)) = dist_recipients
+                                .iter()
+                                .find(|(r, _, _, _)| r == "founding_symbionts")
+                            {
+                                let cliff_end = block.header.timestamp
+                                    + lichen_core::consensus::FOUNDING_CLIFF_SECONDS;
+                                let vest_end = block.header.timestamp
+                                    + lichen_core::consensus::FOUNDING_VEST_TOTAL_SECONDS;
+                                let total_spores_vest = Account::licn_to_spores(*founding_licn);
+                                state_for_blocks
+                                    .set_founding_vesting_params(
+                                        cliff_end,
+                                        vest_end,
+                                        total_spores_vest,
+                                    )
+                                    .ok();
+                                info!("  ✓ 📡 [sync] Founding vesting: cliff={}, vest_end={}, total={}M LICN", cliff_end, vest_end, founding_licn / 1_000_000);
                             }
 
                             // 5. Reconstruct genesis account (total supply minus all distributions)
@@ -7634,6 +7728,23 @@ async fn run_validator() {
                                 &gpk,
                                 block.header.timestamp,
                             );
+
+                            // 9. Genesis identities & achievements
+                            {
+                                let dist_pairs: Vec<(String, Pubkey)> = dist_recipients
+                                    .iter()
+                                    .map(|(role, pk, _, _)| (role.clone(), *pk))
+                                    .collect();
+                                genesis_assign_achievements(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    &dist_pairs,
+                                    block.header.timestamp,
+                                );
+                            }
+
+                            // 10. Flush metrics counters
+                            state_for_blocks.flush_metrics().ok();
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {

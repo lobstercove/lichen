@@ -777,7 +777,7 @@ impl PeerManager {
 
     fn non_consensus_targets(&self, target_id: &[u8; 32], fanout: usize) -> Vec<SocketAddr> {
         let closest = {
-            let table = self.kademlia.lock().unwrap();
+            let table = self.kademlia.lock().unwrap_or_else(|e| e.into_inner());
             table.closest(target_id, fanout.max(1))
         };
 
@@ -915,19 +915,19 @@ impl PeerManager {
         if node_id == [0u8; 32] {
             return; // Unknown node_id — skip
         }
-        let mut table = self.kademlia.lock().unwrap();
+        let mut table = self.kademlia.lock().unwrap_or_else(|e| e.into_inner());
         table.insert(node_id, address);
     }
 
     /// P3-2: Get the number of entries in the Kademlia routing table.
     pub fn kademlia_size(&self) -> usize {
-        let table = self.kademlia.lock().unwrap();
+        let table = self.kademlia.lock().unwrap_or_else(|e| e.into_inner());
         table.len()
     }
 
     /// P3-2: Return the closest nodes to `target_id` as (node_id, address) pairs.
     pub fn kademlia_closest(&self, target_id: &[u8; 32], count: usize) -> Vec<([u8; 32], String)> {
-        let table = self.kademlia.lock().unwrap();
+        let table = self.kademlia.lock().unwrap_or_else(|e| e.into_inner());
         table
             .closest(target_id, count)
             .into_iter()
@@ -1199,7 +1199,8 @@ impl PeerManager {
                                         }
                                         // P3-2: Register inbound peer in Kademlia routing table
                                         if fp != [0u8; 32] {
-                                            let mut table = kademlia.lock().unwrap();
+                                            let mut table =
+                                                kademlia.lock().unwrap_or_else(|e| e.into_inner());
                                             table.insert(fp, peer_addr);
                                         }
                                     }
