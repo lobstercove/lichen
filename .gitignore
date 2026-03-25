@@ -65,7 +65,8 @@ yarn-debug.log*
 yarn-error.log*
 
 # ── Test artifacts / output ─────────────────────────────────
-tests/
+tests/artifacts/
+tests/dev_playground/
 *_test_output.txt
 
 # ── Python ─────────────────────────────────────────────────
@@ -165,4 +166,10 @@ test2
 test3
 playground/test-*
 deploy-manifest.json
-.github/
+
+# ── .github private content (agents, instructions, prompts) ─
+.github/agents/
+.github/instructions/
+.github/prompts/
+.github/copilot-instructions.md
+# Keep .github/workflows/ tracked for CI

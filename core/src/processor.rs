@@ -10519,8 +10519,10 @@ mod tests {
     fn test_oracle_quorum_consensus_price() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
-        // Need three validators with different stakes
-        // Alice already has an account, create two more
+        // Three validators with UNEQUAL stakes to test 1/3 threshold boundary.
+        // Alice: 1 MIN, Bob: 1 MIN, Carol: 4 MIN → total = 6 MIN, threshold = 2 MIN.
+        // Alice alone (1 MIN) < threshold (2 MIN) → no quorum.
+        // Alice + Bob (2 MIN) >= threshold → quorum.
         let bob_kp = Keypair::generate();
         let bob = bob_kp.pubkey();
         let carol_kp = Keypair::generate();
@@ -10532,19 +10534,19 @@ mod tests {
             .put_account(&carol, &Account::new(1000, carol))
             .unwrap();
 
-        // Equal stake for all three validators
         let stake = MIN_VALIDATOR_STAKE;
         {
             let mut pool = crate::consensus::StakePool::new();
             pool.stake(alice, stake, 0).unwrap();
             pool.stake(bob, stake, 0).unwrap();
-            pool.stake(carol, stake, 0).unwrap();
+            pool.stake(carol, stake * 4, 0).unwrap();
             state.put_stake_pool(&pool).unwrap();
         }
+        // total = 6*stake, threshold = 6*stake/3 = 2*stake
 
         let block_producer = Pubkey([42u8; 32]);
 
-        // Alice attests: LICN = 150 (1 of 3, not quorum)
+        // Alice attests: LICN = 150 (stake = 1 MIN < threshold 2 MIN → no quorum)
         let ix = make_oracle_attestation_ix(alice, "LICN", 150, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10552,11 +10554,11 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Alice attestation failed: {:?}", r.error);
 
-        // No consensus yet
+        // 1 MIN < 2 MIN threshold → no consensus
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
-        assert!(cp.is_none(), "No consensus with 1/3 attestations");
+        assert!(cp.is_none(), "Should NOT have consensus below 1/3 threshold");
 
-        // Bob attests: LICN = 160 (2 of 3, exactly 2/3 — NOT strictly >2/3, no quorum yet)
+        // Bob attests: LICN = 160 (combined stake = 2 MIN >= threshold 2 MIN → quorum)
         let ix = make_oracle_attestation_ix(bob, "LICN", 160, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10564,14 +10566,19 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Bob attestation failed: {:?}", r.error);
 
-        // 2/3 exactly is NOT >2/3 supermajority (Tendermint convention)
+        // 2 MIN >= 2 MIN threshold → consensus reached
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
-        assert!(
-            cp.is_none(),
-            "2/3 exactly should NOT reach quorum (need >2/3)"
+        assert!(cp.is_some(), "Should have consensus at exactly 1/3 threshold");
+        let cp = cp.unwrap();
+        assert_eq!(cp.attestation_count, 2);
+        // Sorted prices: [150 (s), 160 (s)]. Total=2s, half=s.
+        // Cumulative: 150→s (not >s), 160→2s (>s) → median = 160
+        assert_eq!(
+            cp.price, 160,
+            "Stake-weighted median of [150,160] with equal stakes"
         );
 
-        // Carol attests: LICN = 155 (3 of 3 = 100% > 2/3, quorum reached)
+        // Carol attests: LICN = 155 (all 3 validators, 6/6 stake)
         let ix = make_oracle_attestation_ix(carol, "LICN", 155, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10579,15 +10586,17 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Carol attestation failed: {:?}", r.error);
 
-        // Now 3/3 = 100% > 2/3 — consensus reached
+        // 6 MIN total → consensus with all 3
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
-        assert!(cp.is_some(), "Should have consensus with 3/3 stake");
+        assert!(cp.is_some(), "Should have consensus with all validators");
         let cp = cp.unwrap();
         assert_eq!(cp.attestation_count, 3);
-        // Sorted prices: [150, 155, 160]. With equal stakes, median = 155
+        // Sorted: [150 (1 MIN), 155 (4 MIN), 160 (1 MIN)].
+        // Total stake = 6 MIN, half = 3 MIN.
+        // Cumulative: 150→1 MIN (<3), 155→5 MIN (>=3) → median = 155
         assert_eq!(
             cp.price, 155,
-            "Stake-weighted median of [150,155,160] with equal stakes"
+            "Stake-weighted median of [150,155,160] with unequal stakes"
         );
     }
 
