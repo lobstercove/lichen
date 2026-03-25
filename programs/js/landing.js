@@ -32,10 +32,22 @@ function setProgramsNetwork(network, { reload = false } = {}) {
 function initProgramsNetworkSelector() {
     const selector = document.getElementById('programsNetworkSelect');
     if (!selector) return;
-    selector.value = currentNetwork;
-    selector.addEventListener('change', () => {
-        setProgramsNetwork(selector.value, { reload: true });
-    });
+
+    // Use shared config to rebuild options (hides local networks in production)
+    if (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.initNetworkSelector) {
+        LICHEN_CONFIG.initNetworkSelector(selector, NETWORK_STORAGE_KEY, (key, config) => {
+            currentNetwork = key;
+            RPC_URL = LICHEN_CONFIG.rpc(key);
+            window.location.reload();
+        });
+        currentNetwork = resolveNetwork(selector.value);
+        RPC_URL = LICHEN_CONFIG.rpc(currentNetwork);
+    } else {
+        selector.value = currentNetwork;
+        selector.addEventListener('change', () => {
+            setProgramsNetwork(selector.value, { reload: true });
+        });
+    }
 }
 
 // ===== Initialize =====

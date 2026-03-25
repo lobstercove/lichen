@@ -101,6 +101,22 @@ const Playground = {
             || this.network;
         this.network = normalizeExplorerNetwork(savedNetwork);
 
+        // Filter network select options (hide local networks in production)
+        if (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.isProduction) {
+            const selector = document.getElementById('networkSelect');
+            if (selector) {
+                for (const opt of [...selector.options]) {
+                    if (opt.value.startsWith('local-')) {
+                        opt.remove();
+                    }
+                }
+                // Reset to default if saved network was local
+                if (this.network.startsWith('local-')) {
+                    this.network = LICHEN_CONFIG.defaultNetwork;
+                }
+            }
+        }
+
         // Initialize network clients
         await this.initNetwork(this.network);
 

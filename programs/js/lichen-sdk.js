@@ -34,7 +34,7 @@ const LICHEN_SDK_CONFIG = (() => {
             testnet: {
                 rpc: 'https://testnet-rpc.lichen.network',
                 ws: 'wss://testnet-rpc.lichen.network/ws',
-                explorer: 'https://testnet-explorer.lichen.network',
+                explorer: 'https://explorer.lichen.network',
                 compiler: 'https://testnet-rpc.lichen.network/compile',
                 chainId: 2
             },
