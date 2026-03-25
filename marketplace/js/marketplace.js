@@ -4,7 +4,7 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
 
@@ -208,7 +208,7 @@
         var stats = null;
         try {
             if (dataSource) stats = await dataSource.getStats();
-        } catch (_) {}
+        } catch (_) { }
         if (!stats) stats = { totalNFTs: 0, totalCollections: 0, totalVolume: 0, totalCreators: 0 };
 
         animateNumber('totalNFTs', stats.totalNFTs || 0);

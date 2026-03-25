@@ -666,7 +666,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     if channel.matches(&dex_event) {
                         let notification = Notification {
                             jsonrpc: "2.0".to_string(),
-                            method: "notification".to_string(),
+                            method: "subscription".to_string(),
                             params: NotificationParams {
                                 subscription: *sub_id,
                                 result: serde_json::to_value(&dex_event).unwrap_or_default(),
@@ -704,7 +704,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     if channel.matches(&pred_event) {
                         let notification = Notification {
                             jsonrpc: "2.0".to_string(),
-                            method: "notification".to_string(),
+                            method: "subscription".to_string(),
                             params: NotificationParams {
                                 subscription: *sub_id,
                                 result: serde_json::to_value(&pred_event).unwrap_or_default(),
@@ -1684,7 +1684,7 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "chain": chain,
             "asset": asset,
             "amount": amount,
-            "amount_display": *amount as f64 / 1_000_000.0,
+            "amount_display": *amount as f64 / 1_000_000_000.0,
             "sender": sender,
             "recipient": recipient.to_base58(),
         }),
@@ -1699,7 +1699,7 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "chain": chain,
             "asset": asset,
             "amount": amount,
-            "amount_display": *amount as f64 / 1_000_000.0,
+            "amount_display": *amount as f64 / 1_000_000_000.0,
             "recipient": recipient.to_base58(),
             "tx_hash": tx_hash,
         }),

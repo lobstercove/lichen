@@ -5974,25 +5974,9 @@ async fn create_withdrawal(
     headers: axum::http::HeaderMap,
     Json(req): Json<WithdrawalRequest>,
 ) -> Json<Value> {
-    // M17 fix: require API auth token for withdrawal requests
-    if let Some(expected_token) = &state.config.api_auth_token {
-        let provided = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        match provided {
-            // AUDIT-FIX 0.12: constant-time comparison to prevent timing attacks
-            Some(token)
-                if {
-                    use subtle::ConstantTimeEq;
-                    token.as_bytes().ct_eq(expected_token.as_bytes()).into()
-                } => {} // OK
-            _ => {
-                return Json(json!({
-                    "error": "unauthorized: missing or invalid API auth token"
-                }));
-            }
-        }
+    // Use shared auth helper for consistent auth enforcement
+    if let Err(err_resp) = verify_api_auth(&state.config, &headers) {
+        return Json(json!({ "error": err_resp.0.message }));
     }
 
     // AUDIT-FIX 1.20: Global and per-address withdrawal rate limiting

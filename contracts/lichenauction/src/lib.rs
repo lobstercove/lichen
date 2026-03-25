@@ -218,18 +218,21 @@ pub extern "C" fn place_bid(
         Some(data) => data,
         None => {
             log_info("Auction not found");
+            reentrancy_exit();
             return 0;
         }
     };
 
     if auction_data.len() < AUCTION_SIZE {
         log_info("Invalid auction data");
+        reentrancy_exit();
         return 0;
     }
 
     // Check if active
     if auction_data[168] != 1 {
         log_info("Auction not active");
+        reentrancy_exit();
         return 0;
     }
 
@@ -238,6 +241,7 @@ pub extern "C" fn place_bid(
     let now = get_timestamp();
     if now > end_time {
         log_info("Auction has ended");
+        reentrancy_exit();
         return 0;
     }
 
@@ -254,6 +258,7 @@ pub extern "C" fn place_bid(
     if bid_amount < required_bid {
         log_info("Bid too low");
         log_info(&alloc::format!("   Required: {}", required_bid));
+        reentrancy_exit();
         return 0;
     }
 
@@ -284,6 +289,7 @@ pub extern "C" fn place_bid(
             // bidder's funds were permanently lost.
             _ => {
                 log_info("Refund to previous bidder failed — reverting bid");
+                reentrancy_exit();
                 return 0;
             }
         }
@@ -306,6 +312,7 @@ pub extern "C" fn place_bid(
         Ok(true) => log_info("Bid placed in escrow"),
         _ => {
             log_info("Token transfer failed");
+            reentrancy_exit();
             return 0;
         }
     }
@@ -353,11 +360,13 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         Some(data) => data,
         None => {
             log_info("Auction not found");
+            reentrancy_exit();
             return 0;
         }
     };
 
     if auction_data.len() < AUCTION_SIZE {
+        reentrancy_exit();
         return 0;
     }
 
@@ -366,6 +375,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
     let now = get_timestamp();
     if now <= end_time {
         log_info("Auction still active");
+        reentrancy_exit();
         return 0;
     }
 
@@ -390,12 +400,25 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         updated_auction[168] = 0;
         storage_set(key.as_bytes(), &updated_auction);
         // Refund highest bidder
-        let _r = call_token_transfer(
+        match call_token_transfer(
             Address(pay_addr),
             get_marketplace_addr(),
             Address(bidder_addr),
             highest_bid,
-        );
+        ) {
+            Ok(true) => {
+                log_info("Refunded bidder — reserve not met");
+            }
+            _ => {
+                // Revert auction deactivation — bidder funds still escrowed
+                updated_auction[168] = 1;
+                storage_set(key.as_bytes(), &updated_auction);
+                log_info("Refund failed — auction remains active for retry");
+                reentrancy_exit();
+                return 0;
+            }
+        }
+        reentrancy_exit();
         return 2; // reserve not met
     }
 
@@ -405,8 +428,14 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         let mut updated_auction = auction_data.clone();
         updated_auction[168] = 0;
         storage_set(key.as_bytes(), &updated_auction);
+        reentrancy_exit();
         return 1;
     }
+
+    // CHECKS-EFFECTS-INTERACTIONS: Mark auction inactive BEFORE transfers
+    let mut updated_auction = auction_data.clone();
+    updated_auction[168] = 0;
+    storage_set(key.as_bytes(), &updated_auction);
 
     // CROSS-CONTRACT CALL 1: Transfer payment to seller (minus royalty/fee)
     // T5.7: Check for collection royalty and enforce it
@@ -441,6 +470,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         Ok(true) => log_info("Payment sent to seller"),
         _ => {
             log_info("Payment transfer failed");
+            reentrancy_exit();
             return 0;
         }
     }
@@ -500,14 +530,10 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         Ok(true) => log_info("NFT transferred to winner"),
         _ => {
             log_info("NFT transfer failed");
+            reentrancy_exit();
             return 0;
         }
     }
-
-    // Mark auction complete
-    let mut updated_auction = auction_data;
-    updated_auction[168] = 0;
-    storage_set(key.as_bytes(), &updated_auction);
 
     // Track auction stats
     let mac = storage_get(MA_GLOBAL_AUCTION_COUNT_KEY)

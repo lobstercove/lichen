@@ -4,7 +4,7 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
@@ -17,7 +17,7 @@
     var marketplaceProgram = null;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
 
-    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function(v, isLicn) { var n = Number(isLicn ? v : v/1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
+    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
     function lazyAddresses() {
         return;
@@ -126,7 +126,7 @@
             var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
             if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
-        } catch (_) {}
+        } catch (_) { }
         return marketplaceProgram;
     }
 
@@ -365,7 +365,7 @@
                     if (!nft && fav.id) {
                         nft = await rpcCall('getNFT', [fav.id]);
                     }
-                } catch (_) {}
+                } catch (_) { }
 
                 if (!nft) continue;
                 if (fav.added_at) nft.favorited_at = fav.added_at;
@@ -580,10 +580,10 @@
 
                 return '<tr data-type="' + type.toLowerCase() + '">' +
                     '<td><span style="padding:4px 8px;border-radius:4px;background:' + (type === 'Sale' ? '#22c55e22' : '#3b82f622') + ';color:' + (type === 'Sale' ? '#22c55e' : '#3b82f6') + ';font-size:12px;">' + type + '</span></td>' +
-                        '<td><a href="item.html?id=' + encodeURIComponent(tokenRef) + '">' + escapeHtml(String(tokenRef || '-')) + '</a> ' + escapeHtml(eventItem) + '</td>' +
+                    '<td><a href="item.html?id=' + encodeURIComponent(tokenRef) + '">' + escapeHtml(String(tokenRef || '-')) + '</a> ' + escapeHtml(eventItem) + '</td>' +
                     '<td>' + price + ' LICN</td>' +
-                        '<td><a href="profile.html?id=' + encodeURIComponent(eventFrom) + '" style="color:var(--accent-color);">' + formatHash(eventFrom, 8) + '</a></td>' +
-                        '<td><a href="profile.html?id=' + encodeURIComponent(eventTo) + '" style="color:var(--accent-color);">' + formatHash(eventTo, 8) + '</a></td>' +
+                    '<td><a href="profile.html?id=' + encodeURIComponent(eventFrom) + '" style="color:var(--accent-color);">' + formatHash(eventFrom, 8) + '</a></td>' +
+                    '<td><a href="profile.html?id=' + encodeURIComponent(eventTo) + '" style="color:var(--accent-color);">' + formatHash(eventTo, 8) + '</a></td>' +
                     '<td style="display:none;">' + escapeHtml(type) + '</td>' +
                     '<td>' + ts + '</td>' +
                     '</tr>';

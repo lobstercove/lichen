@@ -2166,11 +2166,7 @@ pub fn build_rpc_router_with_min_validator_stake(
                 "programs.lichen.network".to_string(),
                 "developers.lichen.network".to_string(),
                 "monitoring.lichen.network".to_string(),
-                "lichen.network".to_string(),
-                "app.lichen.network".to_string(),
-                "rpc.lichen.network".to_string(),
-                "api.lichen.network".to_string(),
-                "explorer.lichen.network".to_string(),
+                "testnet-rpc.lichen.network".to_string(),
             ]
         });
 
@@ -2205,7 +2201,7 @@ pub fn build_rpc_router_with_min_validator_stake(
             }
         }))
         .allow_methods([Method::POST, Method::GET, Method::OPTIONS])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::ACCEPT]);
 
     let state = Arc::new(rpc_state);
 
@@ -9386,7 +9382,7 @@ async fn handle_search_licn_names(
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let entries = state
         .state
-        .get_contract_storage_entries(&program, 100_000, None)
+        .get_contract_storage_entries(&program, 10_000, None)
         .unwrap_or_default();
 
     let mut names = Vec::new();
@@ -9411,6 +9407,9 @@ async fn handle_search_licn_names(
             continue;
         }
         names.push(format!("{}.lichen", label));
+        if names.len() >= 100 {
+            break;
+        }
     }
 
     names.sort_unstable();

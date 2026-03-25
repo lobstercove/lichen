@@ -276,8 +276,10 @@ function enforceAddressViewOnlyMode() {
 // ===== LichenID =====
 async function loadLichenIdentityData(address) {
     try {
+        // C3-FIX: Track whether RPC returned null (no identity) vs threw (network error)
+        let profileError = false;
         const [profileResult, nameResult] = await Promise.all([
-            rpcCall('getLichenIdProfile', [address]).catch(() => null),
+            rpcCall('getLichenIdProfile', [address]).catch(() => { profileError = true; return null; }),
             rpcCall('reverseLichenName', [address]).catch(() => null)
         ]);
         await fetchCurrentSlot().catch(() => 0);

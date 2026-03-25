@@ -5,7 +5,7 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
     var CONTRACT_PROGRAM_ID = null; // resolved lazily
     var SYSTEM_PROGRAM_ID = null;   // resolved lazily
     var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily

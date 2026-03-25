@@ -3,7 +3,7 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
     var CONTRACT_PROGRAM_ID = null;
     var SYSTEM_PROGRAM_ID = null;
 
@@ -15,7 +15,7 @@
     var userBalance = 0;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
 
-    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function(v, isLicn) { var n = Number(isLicn ? v : v/1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
+    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
     function lazyAddresses() {
         if (!SYSTEM_PROGRAM_ID) SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
@@ -44,7 +44,7 @@
             var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
             if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
-        } catch (_) {}
+        } catch (_) { }
         return marketplaceProgram;
     }
 
@@ -69,7 +69,7 @@
     function writeFavoriteStore(store) {
         try {
             localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(store || {}));
-        } catch (_) {}
+        } catch (_) { }
     }
 
     function currentFavoriteKey() {
@@ -285,7 +285,7 @@
                     currentListing = null;
                 }
             }
-        } catch (_) {}
+        } catch (_) { }
         updateActionButtons();
         updateAuctionPanel();
     }
@@ -1210,9 +1210,9 @@
             activityList.innerHTML = activity.slice(0, 20).map(function (event) {
                 var icon = event.type === 'sale' ? 'fa-shopping-cart' :
                     event.type === 'listing' ? 'fa-tag' :
-                    event.type === 'transfer' ? 'fa-exchange-alt' :
-                    event.type === 'offer' ? 'fa-hand-holding-usd' :
-                    event.type === 'mint' ? 'fa-plus-circle' : 'fa-clock';
+                        event.type === 'transfer' ? 'fa-exchange-alt' :
+                            event.type === 'offer' ? 'fa-hand-holding-usd' :
+                                event.type === 'mint' ? 'fa-plus-circle' : 'fa-clock';
                 var price = event.price ? fmp(sporesToLicn(event.price), true) + ' LICN' : '';
                 return '<div class="activity-item" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-color);">' +
                     '<i class="fas ' + icon + '" style="width:20px;text-align:center;opacity:0.6;"></i>' +

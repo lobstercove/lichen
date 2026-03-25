@@ -4,7 +4,7 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
@@ -24,7 +24,7 @@
     var statusHasOffers = false;
     var urlFilterMode = '';
 
-    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function(v, isLicn) { return Number(isLicn ? v : v/1e9).toFixed(2); };
+    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { return Number(isLicn ? v : v / 1e9).toFixed(2); };
 
     function lazyAddresses() {
         if (!CONTRACT_PROGRAM_ID) CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
@@ -287,31 +287,31 @@
                 '<div class="nft-list-col nft-list-col-action"></div>' +
                 '</div>' +
                 pageItems.map(function (nft) {
-                var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
-                var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
-                var imgStyle = normalizedImage && normalizedImage.indexOf('http') === 0
-                    ? 'background-image:url(' + encodeURI(normalizedImage) + ');background-size:cover;background-position:center;'
-                    : 'background:' + gradientFromHash(nft.id || nft.name || '') + ';';
+                    var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
+                    var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
+                    var imgStyle = normalizedImage && normalizedImage.indexOf('http') === 0
+                        ? 'background-image:url(' + encodeURI(normalizedImage) + ');background-size:cover;background-position:center;'
+                        : 'background:' + gradientFromHash(nft.id || nft.name || '') + ';';
 
-                var rarityLabel = escapeHtml(nft.rarity || 'Common');
-                var rarityClass = escapeHtml((nft.rarity || 'Common').toLowerCase());
+                    var rarityLabel = escapeHtml(nft.rarity || 'Common');
+                    var rarityClass = escapeHtml((nft.rarity || 'Common').toLowerCase());
 
-                var actionHtml = '';
-                if (currentWallet) {
-                    actionHtml = '<button class="btn btn-primary btn-small" onclick="event.stopPropagation();window._browseBuyNFT(\'' + escapeJsAttr(nft.id) + '\')">Buy</button>';
-                } else {
-                    actionHtml = '<button class="btn btn-secondary btn-small" onclick="event.stopPropagation();window._browseConnect()">Connect</button>';
-                }
+                    var actionHtml = '';
+                    if (currentWallet) {
+                        actionHtml = '<button class="btn btn-primary btn-small" onclick="event.stopPropagation();window._browseBuyNFT(\'' + escapeJsAttr(nft.id) + '\')">Buy</button>';
+                    } else {
+                        actionHtml = '<button class="btn btn-secondary btn-small" onclick="event.stopPropagation();window._browseConnect()">Connect</button>';
+                    }
 
-                return '<div class="nft-list-item" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
-                    '<div class="nft-list-col nft-list-col-image"><div class="nft-list-thumb" style="' + imgStyle + '"></div></div>' +
-                    '<div class="nft-list-col nft-list-col-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
-                    '<div class="nft-list-col nft-list-col-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
-                    '<div class="nft-list-col nft-list-col-rarity"><span class="rarity ' + rarityClass + '">' + rarityLabel + '</span></div>' +
-                    '<div class="nft-list-col nft-list-col-price">' + escapeHtml(priceInLicn) + ' LICN</div>' +
-                    '<div class="nft-list-col nft-list-col-action">' + actionHtml + '</div>' +
-                    '</div>';
-            }).join('');
+                    return '<div class="nft-list-item" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+                        '<div class="nft-list-col nft-list-col-image"><div class="nft-list-thumb" style="' + imgStyle + '"></div></div>' +
+                        '<div class="nft-list-col nft-list-col-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
+                        '<div class="nft-list-col nft-list-col-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
+                        '<div class="nft-list-col nft-list-col-rarity"><span class="rarity ' + rarityClass + '">' + rarityLabel + '</span></div>' +
+                        '<div class="nft-list-col nft-list-col-price">' + escapeHtml(priceInLicn) + ' LICN</div>' +
+                        '<div class="nft-list-col nft-list-col-action">' + actionHtml + '</div>' +
+                        '</div>';
+                }).join('');
         }
 
         renderPagination();

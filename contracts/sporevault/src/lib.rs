@@ -275,6 +275,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         // AUDIT-FIX L6-01: Overflow-safe cap check
         if amount > cap.saturating_sub(total_assets) {
             log_info("Deposit cap exceeded");
+            reentrancy_exit();
             return 0;
         }
     }
@@ -284,6 +285,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     let fee = ((amount as u128) * (fee_bps as u128) / 10_000) as u64;
     let net_amount = amount - fee;
     if net_amount == 0 {
+        reentrancy_exit();
         return 0;
     }
 

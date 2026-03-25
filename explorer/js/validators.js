@@ -120,7 +120,7 @@ function renderValidators() {
                         <div style="flex: 1; background: var(--bg-darker); height: 6px; border-radius: 3px; overflow: hidden;">
                             <div style="background: var(--primary); height: 100%; width: ${Math.min(reputationScale, 100)}%;"></div>
                         </div>
-                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">${reputation.toFixed(4)}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">${Number(reputation).toFixed(4)}</span>
                         <span class="pill pill-info">${tier}</span>
                     </div>
                 </td>
