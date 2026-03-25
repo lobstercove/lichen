@@ -136,7 +136,11 @@ const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
-const MIN_SUPPORTED_VALIDATOR_VERSION: &str = updater::VERSION;
+/// Minimum protocol-compatible validator version.  Only bump this when a
+/// release introduces a breaking consensus / wire-format change — NOT on
+/// every version bump.  Using the compile-time version here would split the
+/// network whenever any node upgrades before its peers.
+const MIN_SUPPORTED_VALIDATOR_VERSION: &str = "0.4.0";
 
 /// Collect a machine fingerprint for anti-Sybil protection.
 ///
@@ -9062,18 +9066,31 @@ async fn run_validator() {
                     }
                 } else {
                     // ── PHANTOM VALIDATOR GUARD ──
-                    // Reject new validators whose announced slot diverges too far
-                    // from our chain tip. A legitimate validator on the same network
-                    // will be within a few hundred slots. A node with stale/altered
-                    // state (e.g. a local dev validator that wasn't flushed) will
-                    // announce slot 0 or a completely different slot range, which
-                    // would contaminate our validator set and break leader election.
+                    // Reject validators whose announced slot diverges too far
+                    // from our chain tip AND who are clearly not fresh starts.
+                    //
+                    // A validator at slot 0 (or very low) is a legitimate
+                    // new node joining the network — it will sync up via
+                    // block-range requests.  Only reject nodes that claim a
+                    // significantly different (but non-zero) slot, which
+                    // indicates stale or altered state.
+                    //
+                    // Real protection against rogue validators is provided by:
+                    //  • pending_activation — excludes them from consensus
+                    //  • RegisterValidator tx — requires on-chain stake
+                    //  • ACTIVATION_WARMUP (100 slots) — delays activation
                     let our_tip = state_for_validators.get_last_slot().unwrap_or(0);
                     let their_slot = announcement.current_slot;
                     let slot_drift = their_slot.abs_diff(our_tip);
-                    // Allow generous 500-slot window for sync lag
                     const MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR: u64 = 500;
-                    if our_tip > 10 && slot_drift > MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR {
+                    // Only apply slot-drift rejection when BOTH sides are well
+                    // past genesis.  A validator at slot ≤ 10 is a fresh start
+                    // and must always be allowed to join, regardless of how far
+                    // ahead the network has progressed.
+                    if our_tip > 10
+                        && their_slot > 10
+                        && slot_drift > MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR
+                    {
                         warn!(
                             "⚠️  Rejecting new validator {} — slot drift too large (ours={}, theirs={}, drift={}). Likely stale or altered state.",
                             announcement.pubkey.to_base58(),

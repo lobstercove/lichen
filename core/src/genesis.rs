@@ -501,10 +501,20 @@ mod tests {
         let testnet_time = GenesisConfig::default_testnet().genesis_time;
         let mainnet_time = GenesisConfig::default_mainnet().genesis_time;
         let after = chrono::Utc::now().timestamp();
-        let t_ts = chrono::DateTime::parse_from_rfc3339(&testnet_time).unwrap().timestamp();
-        let m_ts = chrono::DateTime::parse_from_rfc3339(&mainnet_time).unwrap().timestamp();
-        assert!(t_ts >= before && t_ts <= after, "testnet genesis_time should be current");
-        assert!(m_ts >= before && m_ts <= after, "mainnet genesis_time should be current");
+        let t_ts = chrono::DateTime::parse_from_rfc3339(&testnet_time)
+            .unwrap()
+            .timestamp();
+        let m_ts = chrono::DateTime::parse_from_rfc3339(&mainnet_time)
+            .unwrap()
+            .timestamp();
+        assert!(
+            t_ts >= before && t_ts <= after,
+            "testnet genesis_time should be current"
+        );
+        assert!(
+            m_ts >= before && m_ts <= after,
+            "mainnet genesis_time should be current"
+        );
     }
 
     #[test]
