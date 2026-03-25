@@ -136,7 +136,7 @@ TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
 GENESIS_ARTIFACT_DIR="./artifacts/${NETWORK}"
 GENESIS_WALLET_FILE="${GENESIS_ARTIFACT_DIR}/genesis-wallet.json"
 BIN_PATH="./target/release/lichen-validator"
-CLI_BIN="./target/release/licn"
+CLI_BIN="./target/release/lichen"
 SUPERVISOR_PATH="${REPO_ROOT}/scripts/validator-supervisor.sh"
 VALIDATOR_HOME="${DB_PATH}/home"
 REAL_HOME="$HOME"
@@ -212,7 +212,7 @@ fi
 GENESIS_BIN="./target/release/lichen-genesis"
 if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ] || [ ! -x "$CLI_BIN" ]; then
     echo -e "${CYAN}[1/4]${NC} Building lichen binaries..."
-    cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin licn 2>&1 | tail -5
+    cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen 2>&1 | tail -5
     echo -e "  ${GREEN}✅ Build complete${NC}"
 else
     echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN, $CLI_BIN"
@@ -376,14 +376,14 @@ fi
 echo ""
 
 # ── Faucet service (testnet only) ──
+# The faucet binary is a rate-limiting proxy — it calls requestAirdrop RPC on
+# the validator, which signs with the treasury keypair.  No local keypair needed.
 FAUCET_PID=""
 FAUCET_BIN="${REPO_ROOT}/target/release/lichen-faucet"
-FAUCET_KEYPAIR_PATH="${DB_PATH}/genesis-keys/faucet-${CHAIN_ID}.json"
-if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ] && [ -f "$FAUCET_KEYPAIR_PATH" ]; then
+if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ]; then
     FAUCET_PORT=9100
     if ! lsof -i ":$FAUCET_PORT" >/dev/null 2>&1; then
         echo -e "${CYAN}[faucet]${NC} Starting faucet service on port $FAUCET_PORT..."
-        FAUCET_KEYPAIR="$FAUCET_KEYPAIR_PATH" \
         RPC_URL="http://127.0.0.1:${RPC_PORT}" \
         NETWORK="$NETWORK" \
         PORT="$FAUCET_PORT" \
@@ -398,8 +398,6 @@ if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ] && [ -f "$
 elif [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET; then
     if [ ! -x "$FAUCET_BIN" ]; then
         echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — faucet binary not found (run: cargo build --release --bin lichen-faucet)"
-    elif [ ! -f "$FAUCET_KEYPAIR_PATH" ]; then
-        echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — faucet keypair not found at $FAUCET_KEYPAIR_PATH"
     fi
 fi
 echo ""

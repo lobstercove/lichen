@@ -4299,7 +4299,7 @@ async fn submit_oracle_attestation_tx(
     ) {
         Ok(tx) => tx,
         Err(e) => {
-            debug!("Skipping oracle attestation for {}: {}", asset, e);
+            warn!("Skipping oracle attestation for {}: {}", asset, e);
             return false;
         }
     };
@@ -4309,10 +4309,19 @@ async fn submit_oracle_attestation_tx(
         let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
         let mut pool = tx_context.mempool.lock().await;
         if let Err(e) = pool.add_transaction(tx.clone(), computed_fee, 0) {
-            debug!(
-                "Failed to add oracle attestation tx for {} to mempool: {}",
-                asset, e
-            );
+            // "already in mempool" is expected when the same price+blockhash
+            // produces the same deterministic tx hash between feeder ticks
+            if e.contains("already in mempool") {
+                debug!(
+                    "Oracle attestation tx for {} already in mempool (awaiting block inclusion)",
+                    asset
+                );
+            } else {
+                warn!(
+                    "Failed to add oracle attestation tx for {} to mempool: {}",
+                    asset, e
+                );
+            }
             return false;
         }
     }

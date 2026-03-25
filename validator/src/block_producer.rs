@@ -55,6 +55,9 @@ pub fn build_block(
             tx_fees_paid.push(result.fee_paid);
             transactions.push(tx);
         } else {
+            if let Some(ref err) = result.error {
+                debug!("❌ TX {} failed: {}", tx_hash.to_hex(), err);
+            }
             failed_hashes.push(tx_hash);
         }
         processed_hashes.push(tx_hash);
