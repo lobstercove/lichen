@@ -432,6 +432,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
         _ => {
             log_info("Token not found");
+            reentrancy_exit();
             return 0;
         }
     };
@@ -439,6 +440,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     // Check not graduated
     if data[64] != 0 {
         log_info("Token graduated to DEX, trade there");
+        reentrancy_exit();
         return 0;
     }
 
@@ -470,6 +472,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let tokens_bought = lo;
     if tokens_bought == 0 {
         log_info("Amount too small to buy any tokens");
+        reentrancy_exit();
         return 0;
     }
 
@@ -600,12 +603,14 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
         Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
         _ => {
             log_info("Token not found");
+            reentrancy_exit();
             return 0;
         }
     };
 
     if data[64] != 0 {
         log_info("Token graduated, trade on DEX");
+        reentrancy_exit();
         return 0;
     }
 
@@ -619,6 +624,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
 
     if token_amount > balance {
         log_info("Insufficient token balance");
+        reentrancy_exit();
         return 0;
     }
 

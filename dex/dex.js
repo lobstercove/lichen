@@ -1466,13 +1466,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.price) : d.price;
                 if (state.activePair) state.activePair.hasMarketPrice = true;
                 state.lastPrice = displayPrice; updateTickerDisplay();
+                // C1-FIX: Feed live trades into TradingView chart so header and chart stay in sync
+                streamBarUpdate(displayPrice, (d.quantity || 0) / 1e9);
                 const c = document.querySelector('.trades-list');
                 if (c && state.currentView === 'trade') {
                     const row = document.createElement('div'); row.className = 'trade-row';
                     row.innerHTML = `<span class="trade-price ${d.side === 'buy' ? 'buy' : 'sell'}">${formatPrice(displayPrice)}</span><span>${formatAmount((d.quantity || 0) / 1e9)}</span><span class="trade-time">${new Date().toLocaleTimeString()}</span>`;
                     c.prepend(row); if (c.children.length > 40) c.lastChild.remove();
                 }
-                streamBarUpdate(displayPrice, d.quantity || 0);
                 scheduleMarginRealtimeRefresh();
             }
         }).then(id => state._wsSubs.push(id)).catch(() => { });
@@ -1520,11 +1521,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 p.price = displayPrice;
                 p.hasMarketPrice = true;
                 p.change = d.change24h ?? p.change;
-                // Update active pair's ticker display + chart
+                // C2-FIX: Sync header price from ticker WS for active pair
                 if (p.pairId === state.activePairId) {
                     state.lastPrice = displayPrice;
                     updateTickerDisplay();
-                    streamBarUpdate(displayPrice, 0);
                 }
                 throttledRenderPairList();
             }).then(id => _tickerSubs.push(id)).catch(() => { });
@@ -1894,6 +1894,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentBarHigh = Math.max(currentBarHigh, h);
                 currentBarLow = Math.min(currentBarLow, l);
             }
+            // Also sync header price from candle close so header matches chart
+            state.lastPrice = c; updateTickerDisplay();
             realtimeCallback({ time: lastBarTime || bt, open: currentBarOpen || o, high: currentBarHigh, low: currentBarLow, close: c, volume: d.volume || 0 });
         }).then(id => { _candleWsSub = id; }).catch(() => { });
     }
@@ -6759,7 +6761,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (t?.lastPrice) {
                         // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
                         const dp = isDisplayInvertedPair(state.activePair) ? invertPrice(t.lastPrice) : t.lastPrice;
-                        state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(dp, 0);
+                        state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair);
+                        // H2-FIX: Don't inject zero-volume synthetic bars from REST poll — let WS candle subscription handle chart updates
                     }
                     if (state.connected) {
                         await loadMarginPositions();

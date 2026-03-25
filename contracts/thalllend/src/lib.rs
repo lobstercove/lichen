@@ -236,7 +236,8 @@ fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
         return 30;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(*recipient), amount) {
+    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(*recipient), amount)
+    {
         log_info("Token transfer failed");
         return 31;
     }
@@ -460,7 +461,9 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     let new_deposit = current_deposit - amount;
 
     if current_borrow > 0 {
-        let max_borrow = new_deposit * COLLATERAL_FACTOR_PERCENT / 100;
+        let collateral_price = get_oracle_price();
+        let deposit_value = new_deposit.saturating_mul(collateral_price);
+        let max_borrow = deposit_value * COLLATERAL_FACTOR_PERCENT / 100;
         if current_borrow > max_borrow {
             reentrancy_exit();
             log_info("Withdrawal would make position unhealthy");

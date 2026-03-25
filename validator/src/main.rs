@@ -4491,7 +4491,7 @@ fn spawn_oracle_price_feeder(
             // WS broadcasts — read consensus state and emit to WebSocket clients
             let current_slot = state.get_last_slot().unwrap_or(0);
 
-            let licn_usd: f64 = 0.10;
+            let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
             let pair_prices: [(u64, f64); 7] = [
                 (1, licn_usd),
                 (2, wsol_usd),
@@ -14118,9 +14118,31 @@ mod tests {
                 .expect("validator exists")
         });
 
-        // height 3 > start_slot(1) + 1 = 2, so activated
-        assert!(!reconciled.pending_activation);
+        // height 3 < start_slot(1) + ACTIVATION_WARMUP(100) = 101, so still pending
+        // ACTIVATION_WARMUP requires new_height > start_slot + 100
+        assert!(reconciled.pending_activation);
         assert_eq!(reconciled.stake, MIN_VALIDATOR_STAKE);
+
+        // Now call again at height 102 (> 1 + 100 = 101) → should activate
+        runtime.block_on(activate_pending_validators_for_height(
+            &state,
+            &validator_set,
+            &height_pool,
+            102,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let activated = runtime.block_on(async {
+            validator_set
+                .read()
+                .await
+                .get_validator(&validator_pubkey)
+                .cloned()
+                .expect("validator exists")
+        });
+
+        assert!(!activated.pending_activation);
+        assert_eq!(activated.stake, MIN_VALIDATOR_STAKE);
     }
 
     #[test]
@@ -14174,23 +14196,20 @@ mod tests {
         );
         bft.start_height(2);
 
-        let mut mismatch_found = false;
+        // Since select_leader_weighted filters out pending_activation validators,
+        // both frozen_vs (1 active) and live_vs (1 active + 1 pending) yield
+        // the same eligible set → same proposer. No mismatch expected.
         for seed in 0..4096u64 {
             let parent_hash = Hash::hash(&seed.to_le_bytes());
             assert!(
                 bft.is_proposer(&frozen_vs, &pool, &parent_hash),
                 "single-validator frozen snapshot must always elect the local validator"
             );
-            if !bft.is_proposer(&live_vs, &pool, &parent_hash) {
-                mismatch_found = true;
-                break;
-            }
+            assert!(
+                bft.is_proposer(&live_vs, &pool, &parent_hash),
+                "live set also elects local (pending validator excluded from leader election)"
+            );
         }
-
-        assert!(
-            mismatch_found,
-            "live and frozen validator views should be able to disagree on the round-0 proposer"
-        );
     }
 
     // ── block_fee_at_index ──────────────────────────────────────────

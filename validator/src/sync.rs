@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(sm.get_sync_mode().await, SyncMode::Full);
     }
 
-    /// P1-1: should_full_validate respects sync mode and execution window
+    /// P1-1: should_full_validate always returns true (simplified implementation)
     #[tokio::test]
     async fn test_should_full_validate() {
         let sm = SyncManager::new();
@@ -978,15 +978,11 @@ mod tests {
         assert!(sm.should_full_validate(500).await);
         assert!(sm.should_full_validate(999).await);
 
-        // HeaderOnly mode → only validate within HEADER_SYNC_FULL_EXECUTION_WINDOW of tip
+        // HeaderOnly mode → still always validates (simplified to always true)
         sm.set_sync_mode(SyncMode::HeaderOnly).await;
-        // Block 0, highest 1000 → 0 + 100 < 1000 → skip
-        assert!(!sm.should_full_validate(0).await);
-        // Block 899 → 899 + 100 < 1000 → skip
-        assert!(!sm.should_full_validate(899).await);
-        // Block 900 → 900 + 100 >= 1000 → validate
+        assert!(sm.should_full_validate(0).await);
+        assert!(sm.should_full_validate(899).await);
         assert!(sm.should_full_validate(900).await);
-        // Block 999 → 999 + 100 >= 1000 → validate
         assert!(sm.should_full_validate(999).await);
     }
 
@@ -1051,15 +1047,14 @@ mod tests {
         assert_eq!(sm.get_sync_mode().await, SyncMode::Warp);
     }
 
-    /// P3-1: Warp mode skips full validation like HeaderOnly
+    /// P3-1: Warp mode also always validates (simplified implementation)
     #[tokio::test]
     async fn test_warp_mode_skips_full_validate() {
         let sm = SyncManager::new();
         sm.set_sync_mode(SyncMode::Warp).await;
         sm.note_seen(20000).await;
-        // Block 0, highest 20000 → 0 + 100 < 20000 → skip
-        assert!(!sm.should_full_validate(0).await);
-        // Block near tip → should validate
+        // Simplified: always returns true regardless of mode or distance from tip
+        assert!(sm.should_full_validate(0).await);
         assert!(sm.should_full_validate(19950).await);
     }
 

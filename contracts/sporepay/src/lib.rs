@@ -30,7 +30,7 @@ use lichen_sdk::{
 };
 
 // Reentrancy guard
-const CP_REENTRANCY_KEY: &[u8] = b"cp_reentrancy";
+const CP_REENTRANCY_KEY: &[u8] = b"sp_reentrancy";
 
 fn reentrancy_enter() -> bool {
     if storage_get(CP_REENTRANCY_KEY)
@@ -73,13 +73,13 @@ fn u64_to_decimal(mut n: u64) -> Vec<u8> {
 }
 
 // v2 constants
-const ADMIN_KEY: &[u8] = b"cp_admin";
-const PAUSE_KEY: &[u8] = b"cp_paused";
-const CP_TOTAL_STREAMED_KEY: &[u8] = b"cp_total_streamed";
-const CP_TOTAL_WITHDRAWN_KEY: &[u8] = b"cp_total_withdrawn";
-const CP_CANCEL_COUNT_KEY: &[u8] = b"cp_cancel_count";
-const CP_TOKEN_ADDR_KEY: &[u8] = b"cp_token_address";
-const CP_SELF_ADDR_KEY: &[u8] = b"cp_self_address";
+const ADMIN_KEY: &[u8] = b"sp_admin";
+const PAUSE_KEY: &[u8] = b"sp_paused";
+const CP_TOTAL_STREAMED_KEY: &[u8] = b"sp_total_streamed";
+const CP_TOTAL_WITHDRAWN_KEY: &[u8] = b"sp_total_withdrawn";
+const CP_CANCEL_COUNT_KEY: &[u8] = b"sp_cancel_count";
+const CP_TOKEN_ADDR_KEY: &[u8] = b"sp_token_address";
+const CP_SELF_ADDR_KEY: &[u8] = b"sp_self_address";
 
 /// Load the configured payment token contract address.
 fn get_token_address() -> Option<Address> {

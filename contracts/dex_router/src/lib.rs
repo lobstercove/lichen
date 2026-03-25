@@ -272,7 +272,8 @@ fn encode_swap_record(
 // ============================================================================
 
 /// Initialize the router
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) {
         return 1;
