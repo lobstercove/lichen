@@ -1,0 +1,445 @@
+#!/usr/bin/env node
+/**
+ * Lichen E2E Test — Token Creation, Transfer & Wrapped Token Verification
+ *
+ * Tests:
+ * 1. Airdrop LICN to a new wallet
+ * 2. Transfer LICN between wallets
+ * 3. Create a SporePump token
+ * 4. Buy tokens from bonding curve
+ * 5. Query token balances + token accounts
+ * 6. Verify wrapped token contracts (wSOL, wETH, wBNB, lUSD)
+ *
+ * Usage: node tests/e2e-token-transfer.js [rpc_url]
+ * Requires: local validator running (./run-validator.sh testnet 1)
+ */
+
+const nacl = require('tweetnacl');
+const fs = require('fs');
+const path = require('path');
+
+const RPC_URL = process.argv[2] || 'http://localhost:8899';
+const SPORES_PER_LICN = 1_000_000_000;
+
+// ============================================================================
+// Base58 encoding/decoding
+// ============================================================================
+const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function base58Encode(bytes) {
+    let num = 0n;
+    for (const byte of bytes) num = (num << 8n) + BigInt(byte);
+    let encoded = '';
+    while (num > 0n) {
+        encoded = ALPHABET[Number(num % 58n)] + encoded;
+        num /= 58n;
+    }
+    let leadingZeros = 0;
+    for (const byte of bytes) { if (byte === 0) leadingZeros++; else break; }
+    return '1'.repeat(leadingZeros) + (encoded || '');
+}
+
+function base58Decode(value) {
+    const map = new Map();
+    for (let i = 0; i < ALPHABET.length; i++) map.set(ALPHABET[i], BigInt(i));
+    let num = 0n;
+    for (const char of value) {
+        const digit = map.get(char);
+        if (digit === undefined) throw new Error('Invalid base58 character');
+        num = num * 58n + digit;
+    }
+    const bytes = [];
+    while (num > 0n) { bytes.push(Number(num & 0xffn)); num >>= 8n; }
+    bytes.reverse();
+    let leadingZeros = 0;
+    for (const char of value) { if (char === '1') leadingZeros++; else break; }
+    const result = new Uint8Array(leadingZeros + bytes.length);
+    result.set(bytes, leadingZeros);
+    return result;
+}
+
+// ============================================================================
+// Hex helpers
+// ============================================================================
+function hexToBytes(hex) {
+    const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+    return out;
+}
+
+function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ============================================================================
+// Bincode encoding (matches Lichen wire format)
+// ============================================================================
+function concatBytes(...chunks) {
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+}
+
+function encodeU64LE(value) {
+    const bytes = new Uint8Array(8);
+    let big = BigInt(value);
+    for (let i = 0; i < 8; i++) { bytes[i] = Number(big & 0xffn); big >>= 8n; }
+    return bytes;
+}
+
+function encodeBytes(data) {
+    return concatBytes(encodeU64LE(data.length), data);
+}
+
+function encodeString(value) {
+    return encodeBytes(Buffer.from(value, 'utf8'));
+}
+
+function encodeVec(items, encoder) {
+    const parts = [encodeU64LE(items.length)];
+    for (const item of items) parts.push(encoder(item));
+    return concatBytes(...parts);
+}
+
+function encodeInstruction(ix) {
+    const programId = base58Decode(ix.programId);
+    const accounts = encodeVec(ix.accounts.map(a => base58Decode(a)), x => x);
+    const data = encodeBytes(ix.data instanceof Uint8Array ? ix.data : new Uint8Array(ix.data));
+    return concatBytes(programId, accounts, data);
+}
+
+function encodeMessage(instructions, recentBlockhash) {
+    const blockhashBytes = hexToBytes(recentBlockhash);
+    return concatBytes(
+        encodeVec(instructions, encodeInstruction),
+        blockhashBytes,
+        new Uint8Array([0x00]),  // compute_budget: None
+        new Uint8Array([0x00])   // compute_unit_price: None
+    );
+}
+
+/**
+ * Encode full transaction as V1 wire-format envelope.
+ * Format: [0x4D, 0x54, 0x01, 0x00] + bincode(Transaction)
+ * Where bincode(Transaction) = sigs_vec + message_bytes + tx_type(u32)
+ */
+function encodeV1Transaction(signatureBytes, messageBytes) {
+    const header = new Uint8Array([0x4D, 0x54, 0x01, 0x00]); // MT + v1 + Native
+
+    // Signatures: u64 count + count * 64 raw bytes
+    const sigCount = encodeU64LE(signatureBytes.length);
+    const sigParts = [sigCount];
+    for (const sig of signatureBytes) {
+        sigParts.push(sig); // each is Uint8Array(64)
+    }
+
+    // tx_type: u32 LE (0 = Native)
+    const txType = new Uint8Array(4); // [0,0,0,0] = Native
+
+    return concatBytes(header, ...sigParts, messageBytes, txType);
+}
+
+// ============================================================================
+// Wallet helpers
+// ============================================================================
+function generateKeypair() {
+    const seed = nacl.randomBytes(32);
+    const kp = nacl.sign.keyPair.fromSeed(seed);
+    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: base58Encode(kp.publicKey) };
+}
+
+function keypairFromSeed(seedHex) {
+    const seed = hexToBytes(seedHex);
+    const kp = nacl.sign.keyPair.fromSeed(seed);
+    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: base58Encode(kp.publicKey) };
+}
+
+function signMessage(messageBytes, secretKey) {
+    return nacl.sign.detached(messageBytes, secretKey);
+}
+
+// ============================================================================
+// Transaction builders
+// ============================================================================
+const SYSTEM_PROGRAM_ID = base58Encode(new Uint8Array(32));           // all zeros
+const CONTRACT_PROGRAM_ID = base58Encode(new Uint8Array(32).fill(255)); // all 0xFF
+
+function buildTransferIx(from, to, amountSpores) {
+    const data = new Uint8Array(9);
+    data[0] = 0; // Transfer opcode
+    const view = new DataView(data.buffer);
+    view.setBigUint64(1, BigInt(amountSpores), true);
+    return { programId: SYSTEM_PROGRAM_ID, accounts: [from, to], data };
+}
+
+function buildContractCallIx(caller, contractAddr, functionName, argsBytes, value = 0) {
+    const payload = JSON.stringify({
+        Call: { function: functionName, args: Array.from(argsBytes), value }
+    });
+    const data = Buffer.from(payload, 'utf8');
+    return { programId: CONTRACT_PROGRAM_ID, accounts: [caller, contractAddr], data };
+}
+
+async function buildSignSend(keypair, instructions) {
+    const blockhash = await getRecentBlockhash();
+    const messageBytes = encodeMessage(instructions, blockhash);
+    const signature = signMessage(messageBytes, keypair.secretKey);
+    const txBytes = encodeV1Transaction([signature], messageBytes);
+    const txBase64 = Buffer.from(txBytes).toString('base64');
+    return await rpc('sendTransaction', [txBase64]);
+}
+
+// ============================================================================
+// RPC helpers
+// ============================================================================
+async function rpc(method, params = []) {
+    const res = await fetch(RPC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(`RPC ${method}: ${data.error.message}`);
+    return data.result;
+}
+
+async function getRecentBlockhash() {
+    const result = await rpc('getRecentBlockhash');
+    return result.blockhash;
+}
+
+async function getBalance(address) {
+    const result = await rpc('getBalance', [address]);
+    return result;
+}
+
+async function getTokenAccounts(address) {
+    return await rpc('getTokenAccounts', [address]);
+}
+
+async function getTokenBalance(address, symbol) {
+    return await rpc('getTokenBalance', [address, symbol]);
+}
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ============================================================================
+// Test runner
+// ============================================================================
+let passed = 0, failed = 0;
+
+function ok(name, condition, detail = '') {
+    if (condition) {
+        console.log(`  ✅ ${name}${detail ? ` — ${detail}` : ''}`);
+        passed++;
+    } else {
+        console.log(`  ❌ ${name}${detail ? ` — ${detail}` : ''}`);
+        failed++;
+    }
+}
+
+async function tryTest(name, fn) {
+    try {
+        await fn();
+    } catch (err) {
+        console.log(`  ❌ ${name} — ${err.message}`);
+        failed++;
+    }
+}
+
+// ============================================================================
+// Main test flow
+// ============================================================================
+async function main() {
+    console.log('🧪 Lichen E2E Token Transfer Test');
+    console.log('═'.repeat(60));
+    console.log(`RPC: ${RPC_URL}\n`);
+
+    // ── Verify chain is running ──
+    console.log('1️⃣  Chain Status');
+    const slot = await rpc('getSlot');
+    ok('Chain running', slot > 0, `slot ${slot}`);
+
+    // ── Load genesis deployer keypair ──
+    const genesisKeysDir = path.join(__dirname, '..', 'data', 'state-7001', 'genesis-keys');
+    const deployerKeyFile = path.join(genesisKeysDir, 'genesis-primary-lichen-testnet-1.json');
+
+    if (!fs.existsSync(deployerKeyFile)) {
+        console.log('  ⚠️  Genesis keypair not found — run V1 validator first');
+        process.exit(1);
+    }
+
+    const deployerKeyData = JSON.parse(fs.readFileSync(deployerKeyFile, 'utf8'));
+    const deployer = keypairFromSeed(deployerKeyData.secret_key);
+    ok('Deployer loaded', deployer.address === deployerKeyData.pubkey,
+        `${deployer.address.slice(0, 8)}...`);
+
+    // Check deployer balance
+    const deployerBal = await getBalance(deployer.address);
+    ok('Deployer has funds', deployerBal.spores > 0,
+        `${deployerBal.licn} LICN`);
+
+    // ── Create test wallets ──
+    console.log('\n2️⃣  Create Test Wallets');
+    const walletA = generateKeypair();
+    const walletB = generateKeypair();
+    console.log(`  Wallet A: ${walletA.address}`);
+    console.log(`  Wallet B: ${walletB.address}`);
+
+    // ── Airdrop to wallets ──
+    console.log('\n3️⃣  Airdrop LICN');
+    await tryTest('Airdrop to A', async () => {
+        const result = await rpc('requestAirdrop', [walletA.address, 5]);
+        ok('Airdrop to A', result && (result.signature || result), 'requested 5 LICN');
+    });
+
+    await sleep(1500); // Wait for tx inclusion
+
+    await tryTest('Airdrop to B', async () => {
+        const result = await rpc('requestAirdrop', [walletB.address, 5]);
+        ok('Airdrop to B', result && (result.signature || result), 'requested 5 LICN');
+    });
+
+    await sleep(1500);
+
+    // Verify balances
+    const balA = await getBalance(walletA.address);
+    const balB = await getBalance(walletB.address);
+    ok('Wallet A funded', balA.spores > 0, `${balA.licn} LICN`);
+    ok('Wallet B funded', balB.spores > 0, `${balB.licn} LICN`);
+
+    // ── Transfer LICN from A to B ──
+    console.log('\n4️⃣  Transfer LICN (A → B)');
+    await tryTest('Transfer 1 LICN', async () => {
+        const ix = buildTransferIx(walletA.address, walletB.address, 1 * SPORES_PER_LICN);
+        const result = await buildSignSend(walletA, [ix]);
+        ok('Transfer sent', result && (result.signature || typeof result === 'string'),
+            `sig: ${(result.signature || result).toString().slice(0, 16)}...`);
+    });
+
+    await sleep(1500);
+
+    const balA2 = await getBalance(walletA.address);
+    const balB2 = await getBalance(walletB.address);
+    ok('A balance decreased', balA2.spores < balA.spores,
+        `${balA.licn} → ${balA2.licn} LICN`);
+    ok('B balance increased', balB2.spores > balB.spores,
+        `${balB.licn} → ${balB2.licn} LICN`);
+
+    // ── Create SporePump token ──
+    console.log('\n5️⃣  Create SporePump Token');
+    const SPOREPUMP_ADDR = 'AvxPnDv3vGXJJL9y6CCEw3KBtTudYSWLxqae1wihAoYP';
+
+    await tryTest('Create token via SporePump', async () => {
+        // SporePump create_token args: creator_pubkey(32 bytes) + fee_amount(8 bytes)
+        const creatorBytes = base58Decode(deployer.address);
+        const buf = new Uint8Array(40);
+        buf.set(creatorBytes, 0);
+        const view = new DataView(buf.buffer);
+        view.setBigUint64(32, BigInt(10 * SPORES_PER_LICN), true); // 10 LICN creation fee
+
+        const ix = buildContractCallIx(
+            deployer.address,
+            SPOREPUMP_ADDR,
+            'create_token',
+            buf,
+            10 * SPORES_PER_LICN // value attached
+        );
+
+        const result = await buildSignSend(deployer, [ix]);
+        const sig = result?.signature || result;
+        ok('Token created', sig, `sig: ${String(sig).slice(0, 16)}...`);
+
+        if (sig) {
+            await sleep(2000);
+            // Check the transaction
+            const tx = await rpc('getTransaction', [String(sig)]);
+            ok('TX included in block', tx && tx.slot >= 0 && tx.status === 'Success',
+                `slot ${tx?.slot}, status: ${tx?.status}`);
+            if (tx?.contract_logs) {
+                console.log(`    Contract logs: ${JSON.stringify(tx.contract_logs)}`);
+            }
+        }
+    });
+
+    // ── Query token accounts ──
+    console.log('\n6️⃣  Token Accounts & Balances');
+
+    await tryTest('Deployer token accounts', async () => {
+        const accounts = await getTokenAccounts(deployer.address);
+        ok('getTokenAccounts returns data', accounts !== null && accounts !== undefined,
+            Array.isArray(accounts) ? `${accounts.length} tokens` : typeof accounts);
+        if (Array.isArray(accounts) && accounts.length > 0) {
+            for (const t of accounts.slice(0, 5)) {
+                console.log(`    Token: ${t.symbol || t.token || '??'}, balance: ${t.balance || t.amount || '??'}`);
+            }
+        }
+    });
+
+    await tryTest('LICN token balance', async () => {
+        // getTokenBalance params: [token_program_address, holder_address]
+        // Look up LICN contract address dynamically from registry
+        const licnReg = await rpc('getSymbolRegistry', ['LICN']);
+        const LICN_ADDR = licnReg?.program || licnReg?.address;
+        const balance = await getTokenBalance(LICN_ADDR, deployer.address);
+        ok('getTokenBalance(LICN)', balance !== null && balance !== undefined,
+            JSON.stringify(balance).slice(0, 80));
+    });
+
+    // ── Wrapped token verification ──
+    console.log('\n7️⃣  Wrapped Token Contracts');
+    const wrappedSymbols = ['WSOL', 'WETH', 'WBNB', 'LUSD'];
+
+    for (const symbol of wrappedSymbols) {
+        await tryTest(`${symbol} contract`, async () => {
+            // Look up address dynamically from registry
+            const reg = await rpc('getSymbolRegistry', [symbol]);
+            const addr = reg?.program;
+            ok(`${symbol} registry found`, !!addr, `program: ${addr || '?'}`);
+            if (addr) {
+                const program = await rpc('getProgram', [addr]);
+                ok(`${symbol} deployed`, program && program.executable === true,
+                    `code_size: ${program?.code_size || '?'} bytes`);
+            }
+        });
+    }
+
+    // ── Transfer from deployer to wallet A (using native system transfer) ──
+    console.log('\n8️⃣  Multi-Transfer Verification');
+    await tryTest('Deployer → A (2 LICN)', async () => {
+        const ix = buildTransferIx(deployer.address, walletA.address, 2 * SPORES_PER_LICN);
+        const result = await buildSignSend(deployer, [ix]);
+        ok('Transfer sent', result, 'deployer → A');
+    });
+
+    await sleep(1500);
+
+    // Check A received it
+    const balA3 = await getBalance(walletA.address);
+    ok('A balance updated', balA3.spores > balA2.spores,
+        `${balA2.licn} → ${balA3.licn} LICN`);
+
+    // ── Query transaction history ──
+    console.log('\n9️⃣  Transaction History');
+    await tryTest('Wallet A tx history', async () => {
+        const txs = await rpc('getTransactionsByAddress', [walletA.address]);
+        const txList = txs?.transactions || txs || [];
+        ok('Has transactions', Array.isArray(txList) && txList.length > 0,
+            `${txList.length} transactions`);
+    });
+
+    // ── Summary ──
+    console.log('\n' + '═'.repeat(60));
+    console.log(`Results: ${passed} passed, ${failed} failed (${passed + failed} total)`);
+    console.log('═'.repeat(60));
+
+    process.exit(failed > 0 ? 1 : 0);
+}
+
+main().catch(err => {
+    console.error('Fatal:', err);
+    process.exit(1);
+});

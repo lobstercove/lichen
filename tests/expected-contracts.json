@@ -1,0 +1,33 @@
+{
+  "contracts": [
+    "bountyboard",
+    "compute_market",
+    "dex_amm",
+    "dex_analytics",
+    "dex_core",
+    "dex_governance",
+    "dex_margin",
+    "dex_rewards",
+    "dex_router",
+    "lichenauction",
+    "lichenbridge",
+    "lichencoin",
+    "lichendao",
+    "lichenid",
+    "lichenmarket",
+    "lichenoracle",
+    "lichenpunks",
+    "lichenswap",
+    "lusd_token",
+    "moss_storage",
+    "prediction_market",
+    "shielded_pool",
+    "sporepay",
+    "sporepump",
+    "sporevault",
+    "thalllend",
+    "wbnb_token",
+    "weth_token",
+    "wsol_token"
+  ]
+}
