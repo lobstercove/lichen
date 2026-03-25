@@ -1626,6 +1626,12 @@ pub fn genesis_initialize_contracts(
                 owner_key: "prediction_market",
                 agent_type: 0,
             },
+            // ── Shielded Pool ──
+            GenesisName {
+                label: "shieldedpool",
+                owner_key: "shielded_pool",
+                agent_type: 0,
+            },
         ];
 
         for gn in genesis_names {
