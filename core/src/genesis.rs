@@ -393,7 +393,7 @@ impl GenesisConfig {
     pub fn default_testnet() -> Self {
         GenesisConfig {
             chain_id: "lichen-testnet-1".to_string(),
-            genesis_time: "2026-03-19T00:00:00Z".to_string(),
+            genesis_time: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
@@ -442,7 +442,7 @@ impl GenesisConfig {
     pub fn default_mainnet() -> Self {
         GenesisConfig {
             chain_id: "lichen-mainnet-1".to_string(),
-            genesis_time: "2026-03-19T00:00:00Z".to_string(),
+            genesis_time: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
@@ -496,15 +496,15 @@ mod tests {
     }
 
     #[test]
-    fn test_default_genesis_time_is_deterministic() {
-        assert_eq!(
-            GenesisConfig::default_testnet().genesis_time,
-            "2026-03-19T00:00:00Z"
-        );
-        assert_eq!(
-            GenesisConfig::default_mainnet().genesis_time,
-            "2026-03-19T00:00:00Z"
-        );
+    fn test_default_genesis_time_is_current() {
+        let before = chrono::Utc::now().timestamp();
+        let testnet_time = GenesisConfig::default_testnet().genesis_time;
+        let mainnet_time = GenesisConfig::default_mainnet().genesis_time;
+        let after = chrono::Utc::now().timestamp();
+        let t_ts = chrono::DateTime::parse_from_rfc3339(&testnet_time).unwrap().timestamp();
+        let m_ts = chrono::DateTime::parse_from_rfc3339(&mainnet_time).unwrap().timestamp();
+        assert!(t_ts >= before && t_ts <= after, "testnet genesis_time should be current");
+        assert!(m_ts >= before && m_ts <= after, "mainnet genesis_time should be current");
     }
 
     #[test]
