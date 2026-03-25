@@ -1464,8 +1464,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (d.price) {
                 // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
                 const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.price) : d.price;
-                if (state.activePair) state.activePair.hasMarketPrice = true;
+                if (state.activePair) {
+                    state.activePair.hasMarketPrice = true;
+                    state.activePair.price = displayPrice; // Sync dropdown with header
+                }
                 state.lastPrice = displayPrice; updateTickerDisplay();
+                throttledRenderPairList();
                 // C1-FIX: Feed live trades into TradingView chart so header and chart stay in sync
                 streamBarUpdate(displayPrice, (d.quantity || 0) / 1e9);
                 const c = document.querySelector('.trades-list');

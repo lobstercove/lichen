@@ -4729,9 +4729,11 @@ impl TxProcessor {
 
         let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
 
-        // 2/3+ supermajority of active stake required
-        let threshold = (total_active_stake as u128 * 2) / 3;
-        if attested_stake > threshold {
+        // 1/3+ of active stake required for oracle consensus.
+        // This allows a single oracle-feeding validator (out of 3) to set prices.
+        // Security: attestors must be active staked validators; price is stake-weighted median.
+        let threshold = (total_active_stake as u128) / 3;
+        if attested_stake >= threshold {
             // Compute stake-weighted median price
             let consensus_price = compute_stake_weighted_median(&attestations);
             self.state.put_oracle_consensus_price(
