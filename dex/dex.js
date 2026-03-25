@@ -1898,8 +1898,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentBarHigh = Math.max(currentBarHigh, h);
                 currentBarLow = Math.min(currentBarLow, l);
             }
-            // Also sync header price from candle close so header matches chart
-            state.lastPrice = c; updateTickerDisplay();
+            // Candle feeds TradingView only — ticker WS is the single source of
+            // truth for header + dropdown prices (both use live Binance feed).
+            // Writing state.lastPrice here would overwrite the ticker's live
+            // price with a stale consensus-lagged value, causing jitter.
             realtimeCallback({ time: lastBarTime || bt, open: currentBarOpen || o, high: currentBarHigh, low: currentBarLow, close: c, volume: d.volume || 0 });
         }).then(id => { _candleWsSub = id; }).catch(() => { });
     }
@@ -3517,11 +3519,11 @@ document.addEventListener('DOMContentLoaded', () => {
             p.price = extPrice;
             dropdownChanged = true;
 
-            // Also update active pair's ticker display
+            // Also update active pair's ticker display (header only —
+            // chart candles come from WS candle subscription, not REST overlay)
             if (p.pairId === state.activePairId) {
                 state.lastPrice = extPrice;
                 updateTickerDisplay();
-                streamBarUpdate(extPrice, 0);
             }
         }
         if (dropdownChanged && !skipRender) renderPairList();
