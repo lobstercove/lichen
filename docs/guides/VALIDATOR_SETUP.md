@@ -92,7 +92,7 @@ Chain initialization parameters:
 ```json
 {
   "chain_id": "lichen-testnet-1",
-  "genesis_time": "2026-03-19T00:00:00Z",
+  "genesis_time": "(set to current UTC time at genesis creation)",
   "consensus": {
     "slot_duration_ms": 400,
     "epoch_slots": 432000,

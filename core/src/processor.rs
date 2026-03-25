@@ -10556,7 +10556,10 @@ mod tests {
 
         // 1 MIN < 2 MIN threshold → no consensus
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
-        assert!(cp.is_none(), "Should NOT have consensus below 1/3 threshold");
+        assert!(
+            cp.is_none(),
+            "Should NOT have consensus below 1/3 threshold"
+        );
 
         // Bob attests: LICN = 160 (combined stake = 2 MIN >= threshold 2 MIN → quorum)
         let ix = make_oracle_attestation_ix(bob, "LICN", 160, 8);
@@ -10568,7 +10571,10 @@ mod tests {
 
         // 2 MIN >= 2 MIN threshold → consensus reached
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
-        assert!(cp.is_some(), "Should have consensus at exactly 1/3 threshold");
+        assert!(
+            cp.is_some(),
+            "Should have consensus at exactly 1/3 threshold"
+        );
         let cp = cp.unwrap();
         assert_eq!(cp.attestation_count, 2);
         // Sorted prices: [150 (s), 160 (s)]. Total=2s, half=s.
