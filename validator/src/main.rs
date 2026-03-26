@@ -7493,8 +7493,10 @@ async fn run_validator() {
                                             pct,
                                         ));
 
-                                        // tx[1] = treasury (validator_rewards) — works for both old and new genesis
-                                        if i == 1 {
+                                        // First distribution = treasury (validator_rewards)
+                                        // Use dist_role_idx instead of `i` because the F-01
+                                        // auto-fund TX at index 1 shifts enumerate indices.
+                                        if dist_role_idx == 0 {
                                             state_for_blocks.set_treasury_pubkey(&recipient).ok();
                                             info!(
                                                 "  ✓ 📡 [sync] Treasury: {} ({} LICN)",
