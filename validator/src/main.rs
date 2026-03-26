@@ -7548,35 +7548,10 @@ async fn run_validator() {
                                 info!("  ✓ 📡 [sync] Founding vesting: cliff={}, vest_end={}, total={}M LICN", cliff_end, vest_end, founding_licn / 1_000_000);
                             }
 
-                            // 4e. Replicate genesis auto-fund (10K LICN treasury→deployer).
-                            // This is a direct state write on the genesis node; joiners must
-                            // replicate it identically so genesis account balances match.
-                            let auto_fund_spores = Account::licn_to_spores(10_000u64);
-                            {
-                                if let Ok(Some(treasury_pk)) =
-                                    state_for_blocks.get_treasury_pubkey()
-                                {
-                                    if let Ok(Some(mut treasury_acct)) =
-                                        state_for_blocks.get_account(&treasury_pk)
-                                    {
-                                        if treasury_acct.deduct_spendable(auto_fund_spores).is_ok()
-                                        {
-                                            state_for_blocks
-                                                .put_account(&treasury_pk, &treasury_acct)
-                                                .ok();
-                                            info!(
-                                                "  ✓ 📡 [sync] Auto-funded deployer with 10000 LICN from treasury (state write)"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 5. Reconstruct genesis account (total supply minus distributions plus auto-fund)
+                            // 5. Reconstruct genesis account (total supply minus all distributions)
                             let mut genesis_account = Account::new(total_supply_licn, gpk);
-                            genesis_account.spores = total_spores
-                                .saturating_sub(total_distributed_spores)
-                                .saturating_add(auto_fund_spores);
+                            genesis_account.spores =
+                                total_spores.saturating_sub(total_distributed_spores);
                             genesis_account.spendable = genesis_account
                                 .spores
                                 .saturating_sub(genesis_account.staked)
