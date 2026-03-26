@@ -7195,7 +7195,11 @@ async fn run_validator() {
                 }
 
                 // 1.7: Double-block equivocation detection
-                {
+                // Skip for genesis block (slot 0): genesis uses validator=[0u8;32]
+                // which is not a real producer, and genesis blocks are validated
+                // by other means (no signature required, no commit certificate).
+                // The M3 duplicate-genesis guard below prevents re-processing.
+                if block_slot > 0 {
                     let key = (block_slot, block.header.validator);
                     let block_hash = block.hash();
                     if let Some(prev_hash) = seen_blocks.get(&key) {
