@@ -125,7 +125,7 @@ case $NETWORK in
         RPC_PORT=9899
         WS_PORT=9900
         P2P_PORT=8001
-        SIGNER_PORT=9201
+        SIGNER_PORT=9202
         CHAIN_ID="lichen-mainnet-1"
         ;;
 esac

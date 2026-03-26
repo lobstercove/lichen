@@ -140,7 +140,10 @@ const DEFAULT_MAX_RESTARTS: u32 = 50;
 /// release introduces a breaking consensus / wire-format change — NOT on
 /// every version bump.  Using the compile-time version here would split the
 /// network whenever any node upgrades before its peers.
-const MIN_SUPPORTED_VALIDATOR_VERSION: &str = "0.4.0";
+///
+/// v0.4.21: slot-drift guard + version gate changes — incompatible with
+///          pre-0.4.21 nodes that accepted ghost validators.
+const MIN_SUPPORTED_VALIDATOR_VERSION: &str = "0.4.21";
 
 /// Collect a machine fingerprint for anti-Sybil protection.
 ///
