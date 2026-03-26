@@ -657,45 +657,6 @@ fn main() {
             }
         }
 
-        // Auto-fund genesis/deployer with 10K LICN from treasury.
-        // Direct state write — standard genesis allocation (same as Ethereum/Cosmos).
-        // Joining nodes replicate this in the genesis block processing path.
-        let ops_fund_licn: u64 = 10_000;
-        let ops_fund_spores = Account::licn_to_spores(ops_fund_licn);
-        if let Some(treasury_dw) = dist_wallets
-            .iter()
-            .find(|dw| dw.role == "validator_rewards")
-        {
-            let mut treasury_acct = state
-                .get_account(&treasury_dw.pubkey)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-            if treasury_acct.spendable >= ops_fund_spores {
-                treasury_acct.deduct_spendable(ops_fund_spores).ok();
-                if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
-                    error!("Failed to debit treasury for auto-fund: {e}");
-                }
-
-                let mut genesis_acct = state
-                    .get_account(&genesis_pubkey)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| Account::new(0, genesis_pubkey));
-                genesis_acct.add_spendable(ops_fund_spores).ok();
-                if let Err(e) = state.put_account(&genesis_pubkey, &genesis_acct) {
-                    error!("Failed to credit deployer for auto-fund: {e}");
-                }
-
-                info!(
-                    "  ✓ Auto-funded genesis/deployer with {} LICN from treasury (state write)",
-                    ops_fund_licn
-                );
-            } else {
-                warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
-            }
-        }
-
         // Build distribution transactions for genesis block
         for dw in dist_wallets {
             let mut data = Vec::with_capacity(9);
