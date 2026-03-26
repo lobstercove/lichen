@@ -36,6 +36,26 @@ if [ -z "${CUSTODY_DB_PATH:-}" ]; then
   export CUSTODY_DB_PATH="./data/custody-${NETWORK}"
 fi
 
+if [ -z "${CUSTODY_LISTEN_PORT:-}" ]; then
+  if [ "$NETWORK" = "mainnet" ]; then
+    export CUSTODY_LISTEN_PORT=9106
+  else
+    export CUSTODY_LISTEN_PORT=9105
+  fi
+fi
+
+if [ -z "${CUSTODY_LICHEN_RPC_URL:-}" ]; then
+  if [ "$NETWORK" = "mainnet" ]; then
+    export CUSTODY_LICHEN_RPC_URL="http://127.0.0.1:9899"
+  else
+    export CUSTODY_LICHEN_RPC_URL="http://127.0.0.1:8899"
+  fi
+fi
+
+if [ -z "${CUSTODY_TREASURY_KEYPAIR:-}" ]; then
+  export CUSTODY_TREASURY_KEYPAIR="./data/state-${NETWORK}/genesis-keys/treasury-lichen-${NETWORK}-1.json"
+fi
+
 echo "🦞 Starting Lichen Custody"
 echo "=============================="
 echo "Network: $NETWORK"

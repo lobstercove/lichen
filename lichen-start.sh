@@ -407,6 +407,9 @@ if $START_CUSTODY; then
     echo -e "${CYAN}[4/4]${NC} Starting custody service..."
     export CUSTODY_LICHEN_RPC_URL="http://127.0.0.1:${RPC_PORT}"
     export CUSTODY_TREASURY_KEYPAIR="$TREASURY_KEYPAIR"
+    export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
+    export CUSTODY_SIGNER_AUTH_TOKEN="${CUSTODY_SIGNER_AUTH_TOKEN:-lichen-dev-token}"
+    export CUSTODY_API_AUTH_TOKEN="${CUSTODY_API_AUTH_TOKEN:-lichen-custody-api-token}"
     "${REPO_ROOT}/scripts/run-custody.sh" "$NETWORK" \
         >"${LOG_DIR}/custody.log" 2>&1 &
     CUSTODY_PID=$!
