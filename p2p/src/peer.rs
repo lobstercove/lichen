@@ -646,21 +646,40 @@ impl PeerManager {
         }; // guard dropped here
 
         if let Some(connection) = connection {
+            let msg_type_label = match &message.msg_type {
+                crate::MessageType::BlockRangeResponse { blocks } => {
+                    format!("BlockRangeResponse({} blocks)", blocks.len())
+                }
+                crate::MessageType::BlockResponse(b) => {
+                    format!("BlockResponse(slot={})", b.header.slot)
+                }
+                _ => String::new(),
+            };
+
             let bytes = message.serialize()?;
+
+            if !msg_type_label.is_empty() {
+                tracing::info!(
+                    "📤 P2P SEND: {} ({} bytes) to {}",
+                    msg_type_label,
+                    bytes.len(),
+                    peer_addr
+                );
+            }
 
             let mut send_stream = connection
                 .open_uni()
                 .await
-                .map_err(|e| format!("Failed to open stream: {}", e))?;
+                .map_err(|e| format!("Failed to open stream to {}: {}", peer_addr, e))?;
 
             send_stream
                 .write_all(&bytes)
                 .await
-                .map_err(|e| format!("Failed to send: {}", e))?;
+                .map_err(|e| format!("Failed to write to {}: {}", peer_addr, e))?;
 
             send_stream
                 .finish()
-                .map_err(|e| format!("Failed to finish stream: {}", e))?;
+                .map_err(|e| format!("Failed to finish stream to {}: {}", peer_addr, e))?;
 
             // Bandwidth metering: track outbound bytes
             if let Some(mut peer) = self.peers.get_mut(peer_addr) {
@@ -669,16 +688,18 @@ impl PeerManager {
 
             Ok(())
         } else {
-            Err("No active connection".to_string())
+            Err(format!("No active connection to {}", peer_addr))
         }
     }
 
     /// Broadcast message to all peers except the specified sender (for relay/re-broadcasting).
     /// Uses concurrent sends like broadcast() but skips the sender to avoid echo.
+    /// F-17 audit fix: Also skips low-score peers.
     pub async fn broadcast_except(&self, message: &P2PMessage, except: &SocketAddr) {
         let peers: Vec<SocketAddr> = self
             .peers
             .iter()
+            .filter(|entry| entry.value().score > -5)
             .map(|entry| *entry.key())
             .filter(|addr| addr != except)
             .collect();
@@ -727,8 +748,14 @@ impl PeerManager {
     /// Broadcast message to all peers (parallel — PERF-FIX 1)
     /// Uses concurrent sends instead of sequential awaits.
     /// With 500 validators, sequential = 2.5s; parallel = ~50ms.
+    /// F-17 audit fix: Skip peers with score <= -5 (degraded but not yet evicted).
     pub async fn broadcast(&self, message: P2PMessage) {
-        let peers: Vec<SocketAddr> = self.peers.iter().map(|entry| *entry.key()).collect();
+        let peers: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .filter(|entry| entry.value().score > -5)
+            .map(|entry| *entry.key())
+            .collect();
         if peers.is_empty() {
             return;
         }
@@ -1003,7 +1030,7 @@ impl PeerManager {
     }
 
     /// Get peer info for all connected peers (address + score).
-    /// AUDIT-FIX M3: Gossip needs actual peer scores instead of hardcoded 500.
+    /// F-17 audit fix: Returns actual peer scores used for broadcast filtering.
     pub fn get_peer_infos(&self) -> Vec<(SocketAddr, i64)> {
         self.peers
             .iter()
@@ -1299,17 +1326,37 @@ async fn handle_connection(
     // Disconnect if >50% of messages in a window are failures.
     const DESER_WINDOW: u32 = 20;
 
+    let mut stream_count: u64 = 0;
+
     loop {
         let mut stream = connection
             .accept_uni()
             .await
             .map_err(|e| format!("Failed to accept stream: {}", e))?;
 
+        stream_count += 1;
+
         let bytes = stream
             .read_to_end(16 * 1024 * 1024) // AUDIT-FIX H3: Align with P2PMessage serialize limit (16MB).
             // Previous 2MB limit silently rejected valid state snapshot chunks.
             .await
-            .map_err(|e| format!("Failed to read: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to read stream #{} from {}: {}",
+                    stream_count, peer_addr, e
+                )
+            })?;
+
+        // Log every Nth stream for debugging connection liveness, and always
+        // log large payloads that might be sync responses.
+        if stream_count <= 3 || stream_count.is_multiple_of(100) || bytes.len() > 1024 {
+            tracing::info!(
+                "📥 P2P STREAM #{} from {}: {} bytes",
+                stream_count,
+                peer_addr,
+                bytes.len()
+            );
+        }
 
         // Bandwidth metering: track inbound bytes from this peer
         if let Some(mut peer) = peers.get_mut(&peer_addr) {
@@ -1323,6 +1370,25 @@ async fn handle_connection(
                 // resetting to 0 — prevents [9 bad, 1 good] evasion pattern.
                 deser_failures = deser_failures.saturating_sub(1);
                 deser_total = deser_total.saturating_add(1);
+
+                // Log message type for sync debugging
+                match &message.msg_type {
+                    crate::MessageType::BlockRangeResponse { blocks } => {
+                        tracing::info!(
+                            "📥 P2P WIRE: BlockRangeResponse ({} blocks) from {}",
+                            blocks.len(),
+                            peer_addr
+                        );
+                    }
+                    crate::MessageType::BlockResponse(b) => {
+                        tracing::info!(
+                            "📥 P2P WIRE: BlockResponse slot {} from {}",
+                            b.header.slot,
+                            peer_addr
+                        );
+                    }
+                    _ => {}
+                }
 
                 // C2-01: Dedup — hash the raw message bytes and skip if already seen.
                 // Only dedup gossip message types (Block, Vote, Transaction,

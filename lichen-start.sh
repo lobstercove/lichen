@@ -176,6 +176,9 @@ export LICHEN_ZK_SHIELD_VK_PATH="${LICHEN_ZK_SHIELD_VK_PATH:-${REAL_HOME}/.liche
 export LICHEN_ZK_UNSHIELD_VK_PATH="${LICHEN_ZK_UNSHIELD_VK_PATH:-${REAL_HOME}/.lichen/zk/vk_unshield.bin}"
 export LICHEN_ZK_TRANSFER_VK_PATH="${LICHEN_ZK_TRANSFER_VK_PATH:-${REAL_HOME}/.lichen/zk/vk_transfer.bin}"
 
+# Contract directory for genesis auto-deploy to find WASM artifacts
+export LICHEN_CONTRACTS_DIR="${LICHEN_CONTRACTS_DIR:-${REAL_HOME}/lichen/contracts}"
+
 # ── Banner ──
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║       🦞 Lichen Validator — Production Start         ║${NC}"

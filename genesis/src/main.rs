@@ -657,7 +657,9 @@ fn main() {
             }
         }
 
-        // Auto-fund genesis/deployer with 10K LICN from treasury
+        // Auto-fund genesis/deployer with 10K LICN from treasury.
+        // This is a REAL transaction in the genesis block so joining nodes
+        // replicate it deterministically (F-01 audit fix).
         let ops_fund_licn: u64 = 10_000;
         let ops_fund_spores = Account::licn_to_spores(ops_fund_licn);
         if let Some(treasury_dw) = dist_wallets
@@ -670,6 +672,7 @@ fn main() {
                 .flatten()
                 .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
             if treasury_acct.spendable >= ops_fund_spores {
+                // Apply state on the producer side
                 treasury_acct.deduct_spendable(ops_fund_spores).ok();
                 if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
                     error!("Failed to debit treasury for auto-fund: {e}");
@@ -685,8 +688,24 @@ fn main() {
                     error!("Failed to credit deployer for auto-fund: {e}");
                 }
 
+                // Record as a genesis TX so joining nodes replicate it
+                let mut fund_data = Vec::with_capacity(9);
+                fund_data.push(4); // Genesis transfer (fee-free)
+                fund_data.extend_from_slice(&ops_fund_spores.to_le_bytes());
+                let fund_ix = Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![treasury_dw.pubkey, genesis_pubkey],
+                    data: fund_data,
+                };
+                let fund_msg = Message::new(vec![fund_ix], Hash::default());
+                let mut fund_tx = Transaction::new(fund_msg.clone());
+                fund_tx
+                    .signatures
+                    .push(genesis_signer.sign(&fund_msg.serialize()));
+                genesis_txs.push(fund_tx);
+
                 info!(
-                    "  ✓ Auto-funded genesis/deployer with {} LICN from treasury",
+                    "  ✓ Auto-funded genesis/deployer with {} LICN from treasury (consensus TX)",
                     ops_fund_licn
                 );
             } else {
@@ -973,7 +992,7 @@ fn main() {
     // Flush metrics counters to disk — contract deploy (index_program) and
     // any accounts created after the genesis block was stored need their
     // counters persisted so the validator reads correct values on startup.
-    if let Err(e) = state.flush_metrics() {
+    if let Err(e) = state.save_metrics_counters() {
         error!("Failed to flush metrics after contract deployment: {}", e);
     }
 

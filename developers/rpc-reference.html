@@ -789,9 +789,12 @@
                     </ul>
                     <p><strong>Contract execution fields</strong> (present for contract call transactions):</p>
                     <ul>
-                        <li><code>return_code</code> — <code>u32</code> WASM return value. 0 = success, non-zero = error code. Omitted when null.</li>
-                        <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>. Omitted when empty.</li>
-                        <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted when empty.</li>
+                        <li><code>return_code</code> — <code>u32</code> WASM return value. 0 = success, non-zero = error
+                            code. Omitted when null.</li>
+                        <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>.
+                            Omitted when empty.</li>
+                        <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted
+                            when empty.</li>
                     </ul>
                 </div>
                 <div class="code-block">
@@ -2001,7 +2004,8 @@
                         <code>getLichenIdSkills</code>, <code>getLichenIdVouches</code>,
                         <code>getLichenIdAchievements</code>, <code>getLichenIdProfile</code>
                     </li>
-                    <li><code>resolveLichenName</code>, <code>reverseLichenName</code>, <code>batchReverseLichenNames</code>,
+                    <li><code>resolveLichenName</code>, <code>reverseLichenName</code>,
+                        <code>batchReverseLichenNames</code>,
                         <code>searchLichenNames</code>
                     </li>
                     <li><code>getLichenIdAgentDirectory</code>, <code>getLichenIdStats</code></li>
@@ -2028,7 +2032,8 @@
                         <code>getLichenPunksStats</code>
                     </li>
                     <li><code>getMusdStats</code>, <code>getWethStats</code>, <code>getWsolStats</code>,
-                        <code>getLichenBridgeStats</code>, <code>getLichenDaoStats</code>, <code>getLichenOracleStats</code>
+                        <code>getLichenBridgeStats</code>, <code>getLichenDaoStats</code>,
+                        <code>getLichenOracleStats</code>
                     </li>
                     <li><code>requestAirdrop</code> (testnet utility)</li>
                 </ul>
@@ -2058,7 +2063,9 @@
 
                 <h3>Contract Execution</h3>
                 <ul>
-                    <li><code>callContract</code> — execute a read-only contract call (no state change). Accepts optional <code>from</code>/<code>caller</code> pubkey to set the calling context (defaults to zero address).</li>
+                    <li><code>callContract</code> — execute a read-only contract call (no state change). Accepts
+                        optional <code>from</code>/<code>caller</code> pubkey to set the calling context (defaults to
+                        zero address).</li>
                     <li><code>getNameAuction</code> — query LichenID .lichen name auction by name</li>
                 </ul>
 

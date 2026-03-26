@@ -130,11 +130,11 @@ export class Connection {
     }
 
     const data: any = await response.json();
-    
+
     if (data.error) {
       throw new Error(`RPC Error: ${data.error.message}`);
     }
-    
+
     return data.result;
   }
 
@@ -454,18 +454,18 @@ export class Connection {
     if (!this.wsUrl) {
       throw new Error('WebSocket URL not provided');
     }
-    
+
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
 
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.wsUrl!);
-      
+
       this.ws.on('open', () => {
         resolve();
       });
-      
+
       this.ws.on('message', (data: WebSocket.Data) => {
         // AUDIT-FIX J-1: Guard against malformed WebSocket messages
         let msg: any;
@@ -475,7 +475,7 @@ export class Connection {
           console.warn('Lichen WS: ignoring non-JSON message');
           return;
         }
-        
+
         if (msg.method === 'subscription') {
           const { subscription, result } = msg.params;
           const handler = this.subscriptions.get(subscription);
@@ -497,7 +497,7 @@ export class Connection {
    */
   private async subscribe(method: string, params: any = null): Promise<number> {
     await this.connectWs();
-    
+
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const messageHandler = (data: WebSocket.Data) => {
@@ -518,12 +518,12 @@ export class Connection {
           }
         }
       };
-      
+
       const timeout = setTimeout(() => {
         this.ws?.off('message', messageHandler);
         reject(new Error('Subscription timeout'));
       }, 5000);
-      
+
       this.ws!.on('message', messageHandler);
       this.ws!.send(JSON.stringify({
         jsonrpc: '2.0',
@@ -542,9 +542,9 @@ export class Connection {
       this.subscriptions.delete(subscriptionId);
       return false;
     }
-    
+
     const id = this.nextId++;
-    
+
     return new Promise((resolve, reject) => {
       const messageHandler = (data: WebSocket.Data) => {
         // AUDIT-FIX J-1: Guard against malformed WebSocket messages
@@ -565,12 +565,12 @@ export class Connection {
           }
         }
       };
-      
+
       const timeout = setTimeout(() => {
         this.ws?.off('message', messageHandler);
         reject(new Error('Unsubscribe timeout'));
       }, 5000);
-      
+
       this.ws!.on('message', messageHandler);
       this.ws!.send(JSON.stringify({
         jsonrpc: '2.0',
