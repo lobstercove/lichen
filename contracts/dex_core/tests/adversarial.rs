@@ -30,9 +30,6 @@ fn setup_with_pair() -> ([u8; 32], u64) {
         ),
         0
     );
-    // CON-11 fix: Balance check is now fail-closed. Mock a large balance so
-    // cross-contract balance queries succeed in integration tests.
-    lichen_sdk::test_mock::set_cross_call_response(Some(u64::MAX.to_le_bytes().to_vec()));
     (admin, 1)
 }
 
@@ -457,7 +454,9 @@ fn test_market_order_empty_book() {
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_slot(100);
     lichen_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 1, 0, Q, 0, 0), 0);
+    // Market BUY requires worst-price bound (price > 0) for escrow calculation
+    // On empty book, market order gets 0 fills and returns slippage error (9)
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 1, P, Q, 0, 0), 9);
 }
 
 // ============================================================================

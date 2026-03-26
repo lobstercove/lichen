@@ -43,8 +43,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
-    u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info, storage_get,
+    storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -440,7 +440,8 @@ fn decode_pair_daily_volume(data: &[u8]) -> u64 {
 // Bytes 75..83  : expiry_slot (u64, 0=GTC)
 // Bytes 83..91  : order_id (u64)
 // Bytes 91..99  : trigger_price (u64, for stop-limit orders)
-// Bytes 99..128 : padding (29 bytes)
+// Bytes 99..107 : escrow_locked (u64, remaining escrowed token amount)
+// Bytes 107..128: padding (21 bytes)
 
 const ORDER_SIZE: usize = 128;
 
@@ -457,6 +458,7 @@ fn encode_order(
     expiry_slot: u64,
     order_id: u64,
     trigger_price: u64,
+    escrow_locked: u64,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(ORDER_SIZE);
     data.extend_from_slice(trader);
@@ -471,6 +473,7 @@ fn encode_order(
     data.extend_from_slice(&u64_to_bytes(expiry_slot));
     data.extend_from_slice(&u64_to_bytes(order_id));
     data.extend_from_slice(&u64_to_bytes(trigger_price));
+    data.extend_from_slice(&u64_to_bytes(escrow_locked));
     while data.len() < ORDER_SIZE {
         data.push(0);
     }
@@ -583,6 +586,21 @@ fn update_order_status(data: &mut Vec<u8>, new_status: u8) {
     if data.len() > 66 {
         data[66] = new_status;
     }
+}
+
+fn decode_order_escrow_locked(data: &[u8]) -> u64 {
+    if data.len() >= 107 {
+        bytes_to_u64(&data[99..107])
+    } else {
+        0
+    }
+}
+
+fn update_order_escrow(data: &mut Vec<u8>, escrow: u64) {
+    while data.len() < 107 {
+        data.push(0);
+    }
+    data[99..107].copy_from_slice(&u64_to_bytes(escrow));
 }
 
 // ============================================================================
@@ -865,6 +883,7 @@ fn execute_market_order(
         0,
         new_order_id,
         0,
+        0, // escrow_locked: 0 for internal market orders (swap_exact_in handles its own escrow)
     );
     storage_set(&order_key(new_order_id), &order_data);
     save_u64(ORDER_COUNT_KEY, new_order_id);
@@ -951,6 +970,73 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
     }
     let abs_bps = (-fee_bps) as u64;
     (notional as u128 * abs_bps as u128 / 10_000) as u64
+}
+
+// ============================================================================
+// TOKEN ESCROW & SETTLEMENT
+// ============================================================================
+
+/// Transfer tokens from trader to DEX contract for escrow (requires prior approval)
+/// Returns true if the transfer succeeded.
+fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return true;
+    } // Tests: skip actual cross-contract calls
+    #[cfg(target_arch = "wasm32")]
+    {
+        let dex = get_contract_address();
+        let mut args = Vec::with_capacity(104);
+        args.extend_from_slice(&dex.0);
+        args.extend_from_slice(trader);
+        args.extend_from_slice(&dex.0);
+        args.extend_from_slice(&u64_to_bytes(amount));
+        let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
+        match call_contract(call) {
+            Ok(ret) => ret.first().copied().unwrap_or(0) != 0,
+            Err(_) => false,
+        }
+    }
+}
+
+/// Transfer tokens from DEX contract to a recipient (settlement or refund)
+/// Returns true if the transfer succeeded.
+fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let dex = get_contract_address();
+        let mut args = Vec::with_capacity(72);
+        args.extend_from_slice(&dex.0);
+        args.extend_from_slice(to);
+        args.extend_from_slice(&u64_to_bytes(amount));
+        let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
+        match call_contract(call) {
+            Ok(ret) => ret.first().copied().unwrap_or(0) != 0,
+            Err(_) => false,
+        }
+    }
+}
+
+/// Calculate the escrow amount for a BUY order (notional + max taker fee)
+fn calculate_buy_escrow(price: u64, quantity: u64, taker_fee_bps: u16) -> u64 {
+    let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
+    let max_fee = (notional as u128 * taker_fee_bps as u128 / 10_000) as u64;
+    let max_fee = if max_fee < MIN_FEE_PER_TRADE {
+        MIN_FEE_PER_TRADE
+    } else {
+        max_fee
+    };
+    notional.saturating_add(max_fee)
 }
 
 // ============================================================================
@@ -1384,6 +1470,11 @@ pub fn place_order(
         reentrancy_exit();
         return 4;
     }
+    // Market BUY must have a worst-price bound for escrow calculation
+    if base_order_type == ORDER_MARKET && side == SIDE_BUY && price == 0 {
+        reentrancy_exit();
+        return 4;
+    }
     if base_order_type != ORDER_MARKET && price % tick != 0 {
         reentrancy_exit();
         return 4;
@@ -1433,56 +1524,32 @@ pub fn place_order(
         return 5;
     }
 
-    // F19.11a: Balance validation via cross-contract call to token contract
-    // For BUY orders, verify trader has sufficient quote token balance >= notional + fees
-    // For SELL orders, verify trader has sufficient base token balance >= quantity
-    // Uses best-effort cross-contract call (returns 0 if runtime doesn't support yet)
+    // ── Token escrow: lock trader's tokens into DEX contract ──
+    // For SELL orders: escrow quantity of base tokens
+    // For BUY orders: escrow notional + max taker fee of quote tokens
+    // Requires trader to have approved DEX contract via token.approve() first.
+    // Return code 11 = escrow transfer failed (insufficient balance or allowance)
+    let escrow_amount;
     {
         let pair_data_ref = storage_get(&pk).unwrap();
-        let token_addr = if side == SIDE_BUY {
-            // Quote token is token_b
-            let mut addr = [0u8; 32];
-            addr.copy_from_slice(&pair_data_ref[32..64]);
-            addr
-        } else {
-            // Base token is token_a
-            let mut addr = [0u8; 32];
-            addr.copy_from_slice(&pair_data_ref[0..32]);
-            addr
-        };
-        if !is_zero(&token_addr) {
-            let mut bal_args = Vec::with_capacity(32);
-            bal_args.extend_from_slice(&t);
-            let call = CrossCall::new(Address(token_addr), "balance_of", bal_args).with_value(0);
-            let bal_result = call_contract(call);
-            // AUDIT-FIX CON-11: Fail-closed balance validation.
-            // If cross-contract call fails, reject the trade (fail-closed).
-            match bal_result {
-                Ok(bal_bytes) => {
-                    if bal_bytes.len() >= 8 {
-                        let balance = u64::from_le_bytes([
-                            bal_bytes[0],
-                            bal_bytes[1],
-                            bal_bytes[2],
-                            bal_bytes[3],
-                            bal_bytes[4],
-                            bal_bytes[5],
-                            bal_bytes[6],
-                            bal_bytes[7],
-                        ]);
-                        let required = if side == SIDE_BUY { notional } else { quantity };
-                        if balance < required {
-                            reentrancy_exit();
-                            return 11; // Insufficient token balance
-                        }
-                    } else {
-                        log_info("Balance query returned insufficient data — rejecting trade");
-                        reentrancy_exit();
-                        return 11;
-                    }
+        let base_token = decode_pair_base_token(&pair_data_ref);
+        let quote_token = decode_pair_quote_token(&pair_data_ref);
+        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
+
+        if side == SIDE_SELL {
+            escrow_amount = quantity;
+            if !is_zero(&base_token) {
+                if !escrow_tokens(&base_token, &t, escrow_amount) {
+                    log_info("Sell escrow failed — insufficient balance or allowance");
+                    reentrancy_exit();
+                    return 11;
                 }
-                Err(_) => {
-                    log_info("Balance query cross-contract call failed — rejecting trade");
+            }
+        } else {
+            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
+            if !is_zero(&quote_token) {
+                if !escrow_tokens(&quote_token, &t, escrow_amount) {
+                    log_info("Buy escrow failed — insufficient balance or allowance");
                     reentrancy_exit();
                     return 11;
                 }
@@ -1644,6 +1711,7 @@ pub fn place_order(
         expiry_slot,
         new_order_id,
         trigger_price,
+        escrow_amount,
     );
     storage_set(&order_key(new_order_id), &order_data);
     save_u64(ORDER_COUNT_KEY, new_order_id);
@@ -1666,7 +1734,7 @@ pub fn place_order(
     if remaining > 0 && base_order_type != ORDER_MARKET {
         add_to_book(pair_id, side, price, new_order_id);
     } else if remaining > 0 && base_order_type == ORDER_MARKET {
-        // Market order: cancel unfilled remainder
+        // Market order: cancel unfilled remainder and refund unused escrow
         let mut od = storage_get(&order_key(new_order_id)).unwrap();
         let filled = quantity - remaining;
         update_order_filled(&mut od, filled);
@@ -1678,6 +1746,22 @@ pub fn place_order(
                 STATUS_CANCELLED
             },
         );
+
+        // Refund unused escrow
+        let escrow_remaining = decode_order_escrow_locked(&od);
+        if escrow_remaining > 0 {
+            let pair_data_ref = storage_get(&pk).unwrap();
+            let refund_token = if side == SIDE_SELL {
+                decode_pair_base_token(&pair_data_ref)
+            } else {
+                decode_pair_quote_token(&pair_data_ref)
+            };
+            if !is_zero(&refund_token) {
+                release_tokens(&refund_token, &t, escrow_remaining);
+            }
+            update_order_escrow(&mut od, 0);
+        }
+
         storage_set(&order_key(new_order_id), &od);
 
         // AUDIT-FIX M10: If market order got zero fills and had a worst-price
@@ -1994,34 +2078,88 @@ fn fill_at_price_level(
             current_treasury.saturating_add(protocol_fee),
         );
 
-        // F19.12a: Deduct taker fee from taker's quote token balance via cross-contract call
-        // Uses best-effort pattern — won't fail trade if runtime doesn't support cross-contract yet
+        // ── Settlement: transfer tokens between counterparties ──
+        // Base tokens: from seller's escrow (held by DEX) → buyer
+        // Quote tokens: from buyer's escrow (held by DEX) → seller
+        // Taker fee: from buyer's escrow → treasury (if buyer is taker)
+        //            or deducted from seller's quote proceeds (if seller is taker)
         {
             let pk_ref = pair_key(pair_id);
             if let Some(pd_ref) = storage_get(&pk_ref) {
                 if pd_ref.len() >= 64 {
-                    // Quote token (token_b) is where fees are denominated
-                    let mut quote_addr = [0u8; 32];
-                    quote_addr.copy_from_slice(&pd_ref[32..64]);
-                    if !is_zero(&quote_addr) {
-                        let recipient = fee_recipient_addr();
-                        if is_zero(&recipient) {
-                            continue;
+                    let base_token = decode_pair_base_token(&pd_ref);
+                    let quote_token = decode_pair_quote_token(&pd_ref);
+                    let taker_order_side = decode_order_side(
+                        &storage_get(&order_key(taker_order_id)).unwrap_or_default(),
+                    );
+
+                    // Determine buyer and seller
+                    let (buyer, seller) = if taker_order_side == SIDE_BUY {
+                        (taker, &maker_trader)
+                    } else {
+                        (&maker_trader, taker)
+                    };
+                    let buyer_is_taker = taker_order_side == SIDE_BUY;
+
+                    // 1. Transfer base tokens: DEX → buyer
+                    if !is_zero(&base_token) {
+                        if !release_tokens(&base_token, buyer, fill_qty) {
+                            log_info("WARNING: Base token settlement transfer failed");
                         }
-                        // Transfer fee from taker to DEX treasury via token contract
-                        let mut fee_args = Vec::with_capacity(72);
-                        fee_args.extend_from_slice(taker); // from
-                        fee_args.extend_from_slice(&recipient); // to: configured treasury
-                        fee_args.extend_from_slice(&u64_to_bytes(taker_fee));
-                        let call =
-                            CrossCall::new(Address(quote_addr), "transfer", fee_args).with_value(0);
-                        // AUDIT-FIX CON-12: Log fee transfer failures instead of silently ignoring
-                        match call_contract(call) {
-                            Ok(_) => {}
-                            Err(_) => {
-                                log_info("WARNING: Fee transfer to treasury failed — trade proceeds but fee uncollected");
+                    }
+
+                    // 2. Transfer quote tokens: DEX → seller (minus fee if seller is taker)
+                    if !is_zero(&quote_token) {
+                        let seller_receives = if !buyer_is_taker {
+                            // Seller is taker — deduct taker fee from their proceeds
+                            notional.saturating_sub(taker_fee)
+                        } else {
+                            // Seller is maker — receives full notional
+                            notional
+                        };
+                        if seller_receives > 0 {
+                            if !release_tokens(&quote_token, seller, seller_receives) {
+                                log_info("WARNING: Quote token settlement transfer failed");
                             }
                         }
+
+                        // 3. Transfer taker fee to treasury
+                        let recipient = fee_recipient_addr();
+                        if !is_zero(&recipient) && taker_fee > 0 {
+                            if !release_tokens(&quote_token, &recipient, taker_fee) {
+                                log_info("WARNING: Fee transfer to treasury failed");
+                            }
+                        }
+                    }
+
+                    // 4. Update escrow tracking on both orders
+                    // Seller's escrow (base tokens): deduct fill_qty
+                    let seller_order_id = if buyer_is_taker {
+                        maker_order_id
+                    } else {
+                        taker_order_id
+                    };
+                    if let Some(mut sod) = storage_get(&order_key(seller_order_id)) {
+                        let old_escrow = decode_order_escrow_locked(&sod);
+                        update_order_escrow(&mut sod, old_escrow.saturating_sub(fill_qty));
+                        storage_set(&order_key(seller_order_id), &sod);
+                    }
+
+                    // Buyer's escrow (quote tokens): deduct notional + fee (if buyer is taker)
+                    let buyer_order_id = if buyer_is_taker {
+                        taker_order_id
+                    } else {
+                        maker_order_id
+                    };
+                    let buyer_escrow_used = if buyer_is_taker {
+                        notional.saturating_add(taker_fee)
+                    } else {
+                        notional
+                    };
+                    if let Some(mut bod) = storage_get(&order_key(buyer_order_id)) {
+                        let old_escrow = decode_order_escrow_locked(&bod);
+                        update_order_escrow(&mut bod, old_escrow.saturating_sub(buyer_escrow_used));
+                        storage_set(&order_key(buyer_order_id), &bod);
                     }
                 }
             }
@@ -2181,6 +2319,27 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     }
 
     update_order_status(&mut data, STATUS_CANCELLED);
+
+    // Refund remaining escrow to trader
+    let escrow_remaining = decode_order_escrow_locked(&data);
+    if escrow_remaining > 0 {
+        let order_pair = decode_order_pair_id(&data);
+        let order_side = decode_order_side(&data);
+        if let Some(pd) = storage_get(&pair_key(order_pair)) {
+            let refund_token = if order_side == SIDE_SELL {
+                decode_pair_base_token(&pd)
+            } else {
+                decode_pair_quote_token(&pd)
+            };
+            if !is_zero(&refund_token) {
+                if !release_tokens(&refund_token, &c, escrow_remaining) {
+                    log_info("WARNING: Escrow refund failed on cancel");
+                }
+            }
+        }
+        update_order_escrow(&mut data, 0);
+    }
+
     storage_set(&ok, &data);
 
     // Note: order stays in book level but will be skipped during matching (status check)
@@ -2218,6 +2377,22 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                 let op = decode_order_pair_id(&data);
                 let status = decode_order_status(&data);
                 if op == pair_id && (status == STATUS_OPEN || status == STATUS_PARTIAL) {
+                    // Refund remaining escrow
+                    let escrow_remaining = decode_order_escrow_locked(&data);
+                    if escrow_remaining > 0 {
+                        let order_side = decode_order_side(&data);
+                        if let Some(pd) = storage_get(&pair_key(op)) {
+                            let refund_token = if order_side == SIDE_SELL {
+                                decode_pair_base_token(&pd)
+                            } else {
+                                decode_pair_quote_token(&pd)
+                            };
+                            if !is_zero(&refund_token) {
+                                release_tokens(&refund_token, &c, escrow_remaining);
+                            }
+                        }
+                        update_order_escrow(&mut data, 0);
+                    }
                     update_order_status(&mut data, STATUS_CANCELLED);
                     storage_set(&ok, &data);
                 }
@@ -2266,13 +2441,28 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
         return 3;
     }
 
-    // Cancel old order
+    // Cancel old order and refund its escrow
     let mut data_mut = data.clone();
+    let escrow_remaining = decode_order_escrow_locked(&data_mut);
+    let pair_id = decode_order_pair_id(&data);
+    if escrow_remaining > 0 {
+        let order_side = decode_order_side(&data_mut);
+        if let Some(pd) = storage_get(&pair_key(pair_id)) {
+            let refund_token = if order_side == SIDE_SELL {
+                decode_pair_base_token(&pd)
+            } else {
+                decode_pair_quote_token(&pd)
+            };
+            if !is_zero(&refund_token) {
+                release_tokens(&refund_token, &c, escrow_remaining);
+            }
+        }
+        update_order_escrow(&mut data_mut, 0);
+    }
     update_order_status(&mut data_mut, STATUS_CANCELLED);
     storage_set(&ok, &data_mut);
 
     // Place new order with same parameters but new price/quantity
-    let pair_id = decode_order_pair_id(&data);
     let side = decode_order_side(&data);
     let otype = decode_order_type(&data);
     let expiry = decode_order_expiry_slot(&data);
@@ -2704,25 +2894,19 @@ pub extern "C" fn call() {
         10 => {
             // get_best_bid
             if args.len() >= 9 {
-                lichen_sdk::set_return_data(&u64_to_bytes(get_best_bid(bytes_to_u64(
-                    &args[1..9],
-                ))));
+                lichen_sdk::set_return_data(&u64_to_bytes(get_best_bid(bytes_to_u64(&args[1..9]))));
             }
         }
         11 => {
             // get_best_ask
             if args.len() >= 9 {
-                lichen_sdk::set_return_data(&u64_to_bytes(get_best_ask(bytes_to_u64(
-                    &args[1..9],
-                ))));
+                lichen_sdk::set_return_data(&u64_to_bytes(get_best_ask(bytes_to_u64(&args[1..9]))));
             }
         }
         12 => {
             // get_spread
             if args.len() >= 9 {
-                lichen_sdk::set_return_data(&u64_to_bytes(get_spread(bytes_to_u64(
-                    &args[1..9],
-                ))));
+                lichen_sdk::set_return_data(&u64_to_bytes(get_spread(bytes_to_u64(&args[1..9]))));
             }
         }
         13 => {
@@ -2909,9 +3093,6 @@ mod tests {
             ),
             0
         );
-        // CON-11 fix: Balance check is now fail-closed. Mock a large balance so
-        // cross-contract balance queries succeed in unit tests.
-        test_mock::set_cross_call_response(Some(u64::MAX.to_le_bytes().to_vec()));
         (admin, 1)
     }
 
@@ -3110,7 +3291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_place_limit_sell_balance_check_passes_named_export_account_bytes() {
+    fn test_place_limit_sell_escrow_field_is_set() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [3u8; 32];
         test_mock::set_slot(100);
@@ -3130,13 +3311,10 @@ mod tests {
             0
         );
 
-        let (target, function, args, value) =
-            test_mock::get_last_cross_call().expect("balance check cross-call recorded");
-        assert_eq!(target, [10u8; 32]);
-        assert_eq!(function, "balance_of");
-        assert_eq!(args.len(), 32);
-        assert_eq!(args, trader.to_vec());
-        assert_eq!(value, 0);
+        // Verify escrow_locked field is set to quantity for sell orders
+        let order_data = storage_get(&order_key(1)).unwrap();
+        let escrow = decode_order_escrow_locked(&order_data);
+        assert_eq!(escrow, 1000, "sell order escrow should equal quantity");
     }
 
     #[test]

@@ -69,6 +69,9 @@ tests/artifacts/
 tests/dev_playground/
 *_test_output.txt
 
+# ── DEX liquidity script logs (contain tx sigs, not secrets) ─
+scripts/dex-liquidity/orders_*.json
+
 # ── Python ─────────────────────────────────────────────────
 venv/
 __pycache__/

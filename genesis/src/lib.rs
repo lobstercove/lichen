@@ -533,6 +533,29 @@ pub fn genesis_exec_contract(
                         if let Err(e) = state.put_contract_storage(program_pubkey, key, val) {
                             warn!("  WARN {}: put_contract_storage: {}", label, e);
                         }
+                        // Index token balances: scan for _bal_ keys and populate
+                        // CF_TOKEN_BALANCES so getTokenBalance/getTokenHolders work
+                        // for genesis-initialized tokens.
+                        if let Ok(key_str) = std::str::from_utf8(key) {
+                            if let Some(pos) = key_str.find("_bal_") {
+                                let hex_part = &key_str[pos + 5..];
+                                if hex_part.len() == 64 && val.len() == 8 {
+                                    let mut holder_bytes = [0u8; 32];
+                                    if hex::decode_to_slice(hex_part, &mut holder_bytes).is_ok() {
+                                        let balance =
+                                            u64::from_le_bytes(val.as_slice().try_into().unwrap());
+                                        let holder = Pubkey(holder_bytes);
+                                        if let Err(e) = state.update_token_balance(
+                                            program_pubkey,
+                                            &holder,
+                                            balance,
+                                        ) {
+                                            warn!("  WARN {}: update_token_balance: {}", label, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     None => {
                         contract.remove_storage(key);
