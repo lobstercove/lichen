@@ -6111,7 +6111,7 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
             "amount_licn": 1_000_000_000u64,
             "percentage": 100,
             "balance": bal,
-            "label": "Genesis Signer (original allocation)",
+            "label": "Genesis Signer",
         }));
     }
 
