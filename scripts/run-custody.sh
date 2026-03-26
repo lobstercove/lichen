@@ -44,4 +44,13 @@ echo "Signers: $CUSTODY_SIGNER_ENDPOINTS"
 echo "Threshold: $CUSTODY_SIGNER_THRESHOLD"
 echo ""
 
-cargo run --release --bin lichen-custody
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CUSTODY_BIN="${SCRIPT_DIR}/../target/release/lichen-custody"
+
+if [ -x "$CUSTODY_BIN" ]; then
+    exec "$CUSTODY_BIN"
+else
+    # Fallback: try cargo (requires ~/.cargo/env sourced)
+    source "${LICHEN_REAL_HOME:-$HOME}/.cargo/env" 2>/dev/null || true
+    cargo run --release --bin lichen-custody
+fi
