@@ -293,8 +293,23 @@ async def main():
             sig = await send_dex_order(conn, reserve_kp, dex_addr, order_bytes)
             short_sig = sig[:12] + "..." if len(sig) > 12 else sig
             result = await wait_for_tx(conn, sig)
-            status = "✅" if result else "⏳"
-            print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            if result and isinstance(result, dict):
+                rc = result.get("return_code")
+                logs = result.get("contract_logs", [])
+                err = result.get("error")
+                if err or (rc is not None and rc != 0):
+                    status = "❌"
+                    err_msg = err or (logs[0] if logs else f"rc={rc}")
+                    print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig} — {err_msg}")
+                else:
+                    status = "✅"
+                    print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            elif result:
+                status = "✅"
+                print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            else:
+                status = "⏳"
+                print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
             orders_log.append({
                 "level": i + 1, "price": price, "quantity": qty,
                 "side": "buy", "pair": "LICN/lUSD", "tx_sig": sig,

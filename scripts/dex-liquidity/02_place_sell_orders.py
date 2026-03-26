@@ -239,6 +239,46 @@ async def approve_token(
     return await conn.send_transaction(tx)
 
 
+async def send_token_transfer(
+    conn: Connection,
+    signer: Keypair,
+    token_addr: PublicKey,
+    to_pubkey: PublicKey,
+    amount: int,
+) -> str:
+    """Transfer tokens from signer to another account.
+
+    Args layout: [from 32B][to 32B][amount 8B] = 72 bytes.
+    """
+    from_bytes = signer.public_key().to_bytes()
+    to_bytes = to_pubkey.to_bytes()
+
+    args_bytes = list(from_bytes) + list(to_bytes) + list(struct.pack("<Q", amount))
+
+    envelope = json.dumps({
+        "Call": {
+            "function": "transfer",
+            "args": args_bytes,
+            "value": 0,
+        }
+    })
+    data = envelope.encode("utf-8")
+
+    ix = Instruction(
+        CONTRACT_PROGRAM,
+        [signer.public_key(), token_addr],
+        data,
+    )
+
+    tb = TransactionBuilder()
+    tb.add(ix)
+    latest = await conn.get_latest_block()
+    blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
+    tb.set_recent_blockhash(blockhash)
+    tx = tb.build_and_sign(signer)
+    return await conn.send_transaction(tx)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -249,6 +289,8 @@ async def main():
     parser.add_argument("--network", default="testnet", choices=["testnet", "mainnet"])
     parser.add_argument("--reserve-key", type=str, default=None,
                         help="Path to reserve_pool keypair")
+    parser.add_argument("--deployer-key", type=str, default=None,
+                        help="Path to deployer/genesis-primary keypair (for token transfer)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print orders without sending")
     parser.add_argument("--delay", type=float, default=1.0,
@@ -310,9 +352,54 @@ async def main():
         print(f"\n  [DRY RUN] Would approve DEX to spend {total_licn:,.0f} LICN from reserve_pool")
         return
 
+    # ── Step 0: Ensure reserve_pool has lichencoin tokens ──
+    # The DEX escrows lichencoin tokens (not native LICN).  If reserve_pool
+    # has none, transfer from genesis-primary which holds the genesis mint.
+    total_spores = int(total_licn * SPORES_PER_LICN)
+    try:
+        licn_storage = await conn._rpc("getProgramStorage", [str(licn_addr)])
+        reserve_hex = reserve_kp.public_key().to_bytes().hex()
+        bal_key = f"licn_bal_{reserve_hex}"
+        token_bal = 0
+        for e in licn_storage.get("entries", []):
+            if e.get("key_decoded", "") == bal_key:
+                vh = e.get("value_hex", "0000000000000000")
+                token_bal = int.from_bytes(bytes.fromhex(vh), "little")
+                break
+        token_licn = token_bal / SPORES_PER_LICN
+        print(f"  LICN token balance: {token_licn:,.4f}")
+    except Exception:
+        token_bal = 0
+        token_licn = 0.0
+        print(f"  LICN token balance: unknown (will attempt transfer)")
+
+    if token_bal < total_spores:
+        needed = total_spores - token_bal
+        needed_licn = needed / SPORES_PER_LICN
+        print(f"  ⚠️  Need {needed_licn:,.0f} more lichencoin tokens — transferring from genesis-primary...")
+
+        deployer_path = Path(args.deployer_key) if args.deployer_key else find_keypair(args.network, "genesis-primary")
+        deployer_kp = load_keypair(deployer_path)
+        print(f"  Genesis-primary: {deployer_kp.public_key()}")
+
+        try:
+            xfer_sig = await send_token_transfer(
+                conn, deployer_kp, licn_addr,
+                reserve_kp.public_key(), needed,
+            )
+            result = await wait_for_tx(conn, xfer_sig)
+            if result:
+                print(f"  ✅ Token transfer confirmed: {xfer_sig[:16]}...")
+            else:
+                print(f"  ⏳ Token transfer sent: {xfer_sig[:16]}...")
+            await asyncio.sleep(1.0)
+        except Exception as e:
+            print(f"  ❌ Token transfer failed: {e}")
+            print(f"  Cannot proceed without lichencoin tokens.")
+            return
+
     # ── Step 1: Approve DEX to spend LICN from reserve_pool ──
     # The DEX uses escrow (transfer_from) — needs allowance.
-    total_spores = int(total_licn * SPORES_PER_LICN)
     print(f"  Approving DEX to spend {total_licn:,.0f} LICN...")
     try:
         approve_sig = await approve_token(conn, reserve_kp, licn_addr, dex_addr, total_spores)
@@ -352,11 +439,25 @@ async def main():
             sig = await send_dex_order(conn, reserve_kp, dex_addr, order_bytes)
             short_sig = sig[:12] + "..." if len(sig) > 12 else sig
 
-            # Wait for confirmation
+            # Wait for confirmation and check return_code
             result = await wait_for_tx(conn, sig)
-            status = "✅" if result else "⏳"
-
-            print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            if result and isinstance(result, dict):
+                rc = result.get("return_code")
+                logs = result.get("contract_logs", [])
+                err = result.get("error")
+                if err or (rc is not None and rc != 0):
+                    status = "❌"
+                    err_msg = err or (logs[0] if logs else f"rc={rc}")
+                    print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig} — {err_msg}")
+                else:
+                    status = "✅"
+                    print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            elif result:
+                status = "✅"
+                print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
+            else:
+                status = "⏳"
+                print(f"  {i+1:>3} ${price:>9.3f} {qty:>13,.0f} {status:>10} {short_sig}")
 
             orders_log.append({
                 "level": i + 1,

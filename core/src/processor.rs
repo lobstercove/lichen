@@ -5067,23 +5067,28 @@ impl TxProcessor {
         }
 
         // Fail the transaction when a contract returns a non-zero error code
-        // AND made no state changes (neither direct storage writes nor
-        // cross-contract call changes).
+        // AND made no *meaningful* state changes.
+        //
+        // Reentrancy guards (`*_reentrancy` keys) are always flipped even on
+        // early-exit error paths, so we exclude them from the "has changes"
+        // check.  Without this filter, every failed call that touches a
+        // reentrancy flag would slip through as "Success".
         //
         // This catches real errors (validation failures, caller mismatches,
-        // paused contracts) while allowing:
+        // paused contracts, rate limits) while allowing:
         // - Named exports that return non-zero success values (balance_of → u64)
         // - CCC callers whose `call` returns bytes_written (>0 = success)
         //   but have cross_call_changes populated
         // - Opcode-dispatch `call()` that returns 0 on success — a non-zero
         //   return from these means the contract hit an error before writing
-        //   any state, so the empty-changes heuristic is correct.
+        //   any meaningful state, so the heuristic is correct.
         if result.success {
             if let Some(rc) = result.return_code {
-                if rc != 0
-                    && result.storage_changes.is_empty()
-                    && result.cross_call_changes.is_empty()
-                {
+                let meaningful_changes = result
+                    .storage_changes
+                    .keys()
+                    .any(|k| !k.ends_with(b"_reentrancy"));
+                if rc != 0 && !meaningful_changes && result.cross_call_changes.is_empty() {
                     return Err(format!(
                         "Contract '{}' returned error code {} with no state changes. Logs: {:?}",
                         function, rc, result.logs

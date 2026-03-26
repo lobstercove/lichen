@@ -212,10 +212,22 @@ async def main():
     print("  Waiting for confirmation...")
     try:
         result = await wait_for_confirmation(conn, sig)
-        print(f"  ✅ Confirmed!")
         if isinstance(result, dict):
-            status = result.get("status", result.get("meta", {}).get("status", "unknown"))
+            rc = result.get("return_code")
+            logs = result.get("contract_logs", [])
+            err = result.get("error")
+            if err or (rc is not None and rc != 0):
+                err_msg = err or (logs[0] if logs else f"rc={rc}")
+                print(f"  ❌ Contract call FAILED: {err_msg}")
+                if logs:
+                    for log in logs:
+                        print(f"     Log: {log}")
+                return
+            print(f"  ✅ Confirmed!")
+            status = result.get("status", "unknown")
             print(f"     Status: {status}")
+        else:
+            print(f"  ✅ Confirmed!")
     except TimeoutError:
         print(f"  ⚠️  Confirmation timeout — check tx: {sig}")
 
