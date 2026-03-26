@@ -34,7 +34,7 @@ use lichen_core::{
     SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
     Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
     CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES,
-    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
+    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
     SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
@@ -7137,11 +7137,6 @@ async fn run_validator() {
                 // which is not in the active set — allow it through.
                 //
                 // With full TX replay during sync, the in-memory validator set
-                // is kept in sync with on-chain state at every block height.
-                // Verification is safe to perform during both InitialSync and
-                // LiveSync.  should_full_validate() always returns true, so
-                // the guard below simply skips slot 0 (genesis).
-                //
                 // PRE-VERIFICATION ACTIVATION: The producing network freezes
                 // the consensus set for height H, activating any validators
                 // whose warmup completes at H.  The verifier must do the same
@@ -7159,6 +7154,12 @@ async fn run_validator() {
                     )
                     .await;
                 }
+
+                // Active-set membership check: reject blocks from validators
+                // not in our set.  During sync (catching up), skip this check
+                // because RegisterValidator TXs may not have been replayed yet
+                // and the in-memory set only has genesis validators.  The
+                // parent-hash chain provides integrity during catch-up.
                 if block_slot > 0 && sync_mgr.should_full_validate(block_slot).await {
                     let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
@@ -7169,23 +7170,29 @@ async fn run_validator() {
                         );
                         continue;
                     }
+                }
 
-                    // G-3 fix: Verify commit certificate for blocks received
-                    // during sync or P2P. Non-genesis blocks must have valid
-                    // commit signatures from 2/3+ of stake. This prevents
-                    // accepting forged blocks that were never actually committed
-                    // by the BFT quorum. Skip for blocks in header-only sync
-                    // window since those are verified by parent-hash chain.
+                // G-3: Commit certificate verification (2/3+ stake).
+                // Only verify for blocks near our tip (real-time consensus).
+                // During initial sync / catch-up, the local stake pool may
+                // differ from the producing node's pool at that height
+                // (e.g. the producer had fewer validators online).  The
+                // parent-hash chain + block signatures provide integrity
+                // during catch-up.  This matches Tendermint's fast-sync
+                // vs consensus-mode split: fast-sync trusts the hash chain,
+                // consensus mode verifies commit certificates.
+                if block_slot > 0
+                    && sync_mgr
+                        .is_caught_up(state_for_blocks.get_last_slot().unwrap_or(0))
+                        .await
+                {
+                    let vs = validator_set_for_blocks.read().await;
                     let pool = stake_pool_for_blocks.read().await;
                     if let Err(err) = verify_committed_block_authenticity(&block, &vs, &pool) {
                         warn!("⚠️  Rejecting block {} — {}", block_slot, err);
                         continue;
                     }
 
-                    // Cross-reference validators_hash: committed blocks that
-                    // advertise a validator-set commitment must match our local
-                    // active-set view or they are rejected as unauthenticated
-                    // state-divergence candidates.
                     if let Err(err) =
                         verify_block_validators_hash(&block, &vs, &pool, min_validator_stake)
                     {
@@ -10897,75 +10904,20 @@ async fn run_validator() {
         }
     });
 
-    // ── Stale validator cleanup ──
-    // Two-tier cleanup:
-    //   1. Never-active ghosts (0 blocks, 0 activity): removed after 500 slots
-    //   2. Previously-active validators: removed after 50 epochs of inactivity
-    {
-        let vs_for_cleanup = validator_set.clone();
-        let state_for_vs_cleanup = state.clone();
-        let own_pubkey = validator_pubkey;
-        tokio::spawn(async move {
-            // Tier 2: Long-term stale threshold (50 epochs)
-            const STALE_EPOCH_THRESHOLD: u64 = 50;
-            let stale_slot_threshold = STALE_EPOCH_THRESHOLD * SLOTS_PER_EPOCH;
-            // Tier 1: Never-active ghost threshold (500 slots ≈ 200 seconds)
-            const GHOST_SLOT_THRESHOLD: u64 = 500;
-
-            let mut interval = time::interval(Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                let current_slot = state_for_vs_cleanup.get_last_slot().unwrap_or(0);
-
-                // Don't prune during early bootstrap (first 500 slots)
-                if current_slot < 500 {
-                    continue;
-                }
-
-                let mut vs = vs_for_cleanup.write().await;
-                let stale_cutoff = current_slot.saturating_sub(stale_slot_threshold);
-                let ghost_cutoff = current_slot.saturating_sub(GHOST_SLOT_THRESHOLD);
-
-                // Find stale validators (never remove ourselves)
-                let stale: Vec<Pubkey> = vs
-                    .validators()
-                    .iter()
-                    .filter(|v| {
-                        if v.pubkey == own_pubkey {
-                            return false;
-                        }
-                        // Tier 1: Never-active ghost — fast cleanup
-                        if v.blocks_proposed == 0
-                            && v.last_active_slot == 0
-                            && v.joined_slot < ghost_cutoff
-                        {
-                            return true;
-                        }
-                        // Tier 2: Previously active but long-stale
-                        v.last_active_slot < stale_cutoff
-                            && v.blocks_proposed == 0
-                            && v.joined_slot < stale_cutoff
-                    })
-                    .map(|v| v.pubkey)
-                    .collect();
-
-                for pubkey in &stale {
-                    vs.remove_validator(pubkey);
-                    info!(
-                        "🧹 Removed stale validator {} (inactive since slot < {})",
-                        pubkey.to_base58(),
-                        stale_cutoff
-                    );
-                }
-
-                if !stale.is_empty() {
-                    if let Err(e) = state_for_vs_cleanup.save_validator_set(&vs) {
-                        warn!("⚠️  Failed to save validator set after cleanup: {}", e);
-                    }
-                }
-            }
-        });
-    }
+    // ── Stale validator cleanup: REMOVED ──
+    // Non-deterministic state writes (removing validators outside block
+    // processing) cause permanent state divergence between nodes.  The genesis
+    // producer would purge joiners that are still syncing, then produce blocks
+    // with commit certificates that joiners reject because their stake pool
+    // still contains the purged validators.
+    //
+    // In proper blockchains (Ethereum, Cosmos, Solana), validators are ONLY
+    // removed through consensus transactions (DeregisterValidator) or epoch-
+    // boundary processing — never by background heartbeat tasks.
+    // Inactive validators simply miss rewards; they are not evicted unilaterally.
+    //
+    // Deterministic removal is handled at epoch boundaries via pending
+    // validator changes (DeregisterValidator opcode 31).
 
     // ── P2-3: Periodic cold storage migration ──
     // Every 5 minutes, migrate blocks older than COLD_RETENTION_SLOTS to cold DB.
@@ -11128,8 +11080,8 @@ async fn run_validator() {
             // Eviction threshold: 5000 slots (~33 min) of total inactivity
             let eviction_threshold: u64 = 5000;
 
-            // Collect validators to evict (can't mutate + remove in same loop)
-            let mut to_evict: Vec<(Pubkey, u64)> = Vec::new();
+            // Collect validators that are severely behind (for logging only)
+            let mut severely_behind: Vec<(Pubkey, u64)> = Vec::new();
 
             for validator_info in vs.validators_mut() {
                 if validator_info.pubkey == validator_pubkey_for_downtime {
@@ -11144,10 +11096,10 @@ async fn run_validator() {
                     continue;
                 }
 
-                // Evict validators that have been offline for 5000+ slots
+                // Log severely behind validators (do NOT evict — that's non-deterministic)
                 if missed_slots >= eviction_threshold {
-                    to_evict.push((validator_info.pubkey, missed_slots));
-                    continue;
+                    severely_behind.push((validator_info.pubkey, missed_slots));
+                    // Still apply reputation penalty
                 }
 
                 if missed_slots >= downtime_threshold {
@@ -11170,14 +11122,13 @@ async fn run_validator() {
                 }
             }
 
-            // Evict offline validators
-            for (pubkey, missed) in &to_evict {
+            // Log severely behind validators (removal only through consensus TX)
+            for (pubkey, missed) in &severely_behind {
                 warn!(
-                    "🗑️  Evicting offline validator {} — inactive for {} slots",
+                    "⏸️  Validator {} severely behind ({} slots) — use DeregisterValidator to remove",
                     pubkey.to_base58(),
                     missed
                 );
-                vs.remove_validator(pubkey);
             }
 
             let vs_snapshot = vs.clone();
