@@ -7195,11 +7195,7 @@ async fn run_validator() {
                 }
 
                 // 1.7: Double-block equivocation detection
-                // Skip for genesis block (slot 0): genesis uses validator=[0u8;32]
-                // which is not a real producer, and genesis blocks are validated
-                // by other means (no signature required, no commit certificate).
-                // The M3 duplicate-genesis guard below prevents re-processing.
-                if block_slot > 0 {
+                {
                     let key = (block_slot, block.header.validator);
                     let block_hash = block.hash();
                     if let Some(prev_hash) = seen_blocks.get(&key) {
@@ -7288,20 +7284,25 @@ async fn run_validator() {
                             // Reject the conflicting block
                             continue;
                         } else {
-                            // F-02 audit fix: Same block, same hash — already processed.
-                            // The old FIX-FORK-2 gate let duplicates through when
-                            // pending > 0, causing every block to be processed twice
-                            // during sync (inflating stats, wasting resources).
-                            // Fork resolution is handled by fork choice when a NEW
-                            // block arrives for a slot we already have (different
-                            // hash = equivocation above).
+                            // FIX-FORK-2: Allow re-delivery for fork resolution.
+                            // When a duplicate block arrives at or below our tip AND
+                            // there are pending blocks from a longer fork that can't
+                            // chain, let it through to fork choice. The previous
+                            // attempt may have rejected it because we_are_behind was
+                            // false at that time, but now with pending blocks queued
+                            // the fork choice has better information.
                             let current = state_for_blocks.get_last_slot().unwrap_or(0);
-                            if block_slot <= current {
-                                // Already applied to chain — skip entirely.
+                            let has_pending = sync_mgr.pending_count().await > 0;
+                            if block_slot <= current && has_pending {
+                                // Let through to fork choice for re-evaluation
+                                info!(
+                                    "🔄 Re-evaluating fork block {} (pending blocks exist)",
+                                    block_slot
+                                );
+                            } else {
+                                // Truly duplicate, skip
                                 continue;
                             }
-                            // Block is ahead of our tip with same (slot, validator)
-                            // but we haven't applied it yet. Let it through.
                         }
                     }
                     seen_blocks.insert(key, block_hash);
@@ -7428,15 +7429,10 @@ async fn run_validator() {
                             let total_spores = Account::licn_to_spores(total_supply_licn);
                             let mut total_distributed_spores = 0u64;
 
-                            let mut dist_role_idx = 0usize;
                             let mut dist_recipients: Vec<(String, Pubkey, u64, u8)> = Vec::new();
-                            // F-01 audit fix: track auto-fund TXs (treasury→genesis transfers)
-                            // These are opcode 4 TXs where accounts[0] != gpk (sender is treasury).
-                            let mut auto_fund_applied = false;
                             for (i, tx) in block.transactions.iter().enumerate().skip(1) {
                                 if let Some(ix) = tx.message.instructions.first() {
                                     if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
-                                        let sender = ix.accounts[0];
                                         let recipient = ix.accounts[1];
                                         let amount_spores = if ix.data.len() >= 9 {
                                             u64::from_le_bytes(
@@ -7446,36 +7442,8 @@ async fn run_validator() {
                                             0
                                         };
 
-                                        // F-01: Detect auto-fund TX (treasury→genesis).
-                                        // Distribution TXs have sender=gpk; auto-fund has sender=treasury.
-                                        if sender != gpk && recipient == gpk {
-                                            // This is the auto-fund: debit sender (treasury), credit genesis
-                                            if let Ok(Some(mut treasury_acct)) =
-                                                state_for_blocks.get_account(&sender)
-                                            {
-                                                treasury_acct.deduct_spendable(amount_spores).ok();
-                                                state_for_blocks
-                                                    .put_account(&sender, &treasury_acct)
-                                                    .ok();
-                                            }
-                                            if let Ok(Some(mut genesis_acct)) =
-                                                state_for_blocks.get_account(&gpk)
-                                            {
-                                                genesis_acct.add_spendable(amount_spores).ok();
-                                                state_for_blocks
-                                                    .put_account(&gpk, &genesis_acct)
-                                                    .ok();
-                                            }
-                                            auto_fund_applied = true;
-                                            info!(
-                                                "  ✓ 📡 [sync] Auto-funded genesis wallet with {} LICN from treasury (consensus TX)",
-                                                amount_spores / 1_000_000_000
-                                            );
-                                            continue;
-                                        }
-
                                         let (role, _amount_licn, pct) = GENESIS_DISTRIBUTION
-                                            .get(dist_role_idx)
+                                            .get(i - 1)
                                             .copied()
                                             .unwrap_or(("unknown", 0, 0));
 
@@ -7497,10 +7465,8 @@ async fn run_validator() {
                                             pct,
                                         ));
 
-                                        // First distribution = treasury (validator_rewards)
-                                        // Use dist_role_idx instead of `i` because the F-01
-                                        // auto-fund TX at index 1 shifts enumerate indices.
-                                        if dist_role_idx == 0 {
+                                        // tx[1] = treasury (validator_rewards)
+                                        if i == 1 {
                                             state_for_blocks.set_treasury_pubkey(&recipient).ok();
                                             info!(
                                                 "  ✓ 📡 [sync] Treasury: {} ({} LICN)",
@@ -7517,13 +7483,8 @@ async fn run_validator() {
                                                 if role == "founding_symbionts" { " [LOCKED]" } else { "" }
                                             );
                                         }
-
-                                        dist_role_idx += 1;
                                     }
                                 }
-                            }
-                            if auto_fund_applied {
-                                info!("  ✓ 📡 [sync] Genesis auto-fund TX replicated from block");
                             }
 
                             // 4b. Store genesis accounts in state DB (role → pubkey mapping)
@@ -7587,10 +7548,35 @@ async fn run_validator() {
                                 info!("  ✓ 📡 [sync] Founding vesting: cliff={}, vest_end={}, total={}M LICN", cliff_end, vest_end, founding_licn / 1_000_000);
                             }
 
-                            // 5. Reconstruct genesis account (total supply minus all distributions)
+                            // 4e. Replicate genesis auto-fund (10K LICN treasury→deployer).
+                            // This is a direct state write on the genesis node; joiners must
+                            // replicate it identically so genesis account balances match.
+                            let auto_fund_spores = Account::licn_to_spores(10_000u64);
+                            {
+                                if let Ok(Some(treasury_pk)) =
+                                    state_for_blocks.get_treasury_pubkey()
+                                {
+                                    if let Ok(Some(mut treasury_acct)) =
+                                        state_for_blocks.get_account(&treasury_pk)
+                                    {
+                                        if treasury_acct.deduct_spendable(auto_fund_spores).is_ok()
+                                        {
+                                            state_for_blocks
+                                                .put_account(&treasury_pk, &treasury_acct)
+                                                .ok();
+                                            info!(
+                                                "  ✓ 📡 [sync] Auto-funded deployer with 10000 LICN from treasury (state write)"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5. Reconstruct genesis account (total supply minus distributions plus auto-fund)
                             let mut genesis_account = Account::new(total_supply_licn, gpk);
-                            genesis_account.spores =
-                                total_spores.saturating_sub(total_distributed_spores);
+                            genesis_account.spores = total_spores
+                                .saturating_sub(total_distributed_spores)
+                                .saturating_add(auto_fund_spores);
                             genesis_account.spendable = genesis_account
                                 .spores
                                 .saturating_sub(genesis_account.staked)
