@@ -70,11 +70,12 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     // Persist admin to storage (unified key: licn_admin)
     storage_set(ADMIN_KEY, &owner.0);
 
-    // AUDIT-FIX GX-03: Initial supply must match genesis allocation (500M LICN)
-    // 500M LICN = 500_000_000 * 1_000_000_000 spores (9 decimal places)
-    let initial_supply: u64 = 500_000_000_000_000_000; // 500M LICN in spores
+    // LICN is the native token tracked in Account.spores — no phantom
+    // supply should exist in the contract layer.  Initialize with zero
+    // supply so the contract can be used for future mint/transfer ops
+    // without creating a parallel ledger that diverges from native balances.
     let mut token = make_token();
-    if token.initialize(initial_supply, owner).is_err() {
+    if token.initialize(0, owner).is_err() {
         log_info("LichenCoin initialization failed");
         return 0;
     }
