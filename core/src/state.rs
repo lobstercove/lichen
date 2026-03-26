@@ -1560,7 +1560,25 @@ impl StateStore {
             .map_err(|e| format!("Failed to store tx meta: {}", e))
     }
 
+    /// Store full transaction execution metadata (CU, return_code, return_data, logs).
+    pub fn put_tx_meta_full(
+        &self,
+        sig: &Hash,
+        meta: &crate::processor::TxMeta,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        let data = bincode::serialize(meta)
+            .map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        self.db
+            .put_cf(&cf, sig.0, data)
+            .map_err(|e| format!("Failed to store tx meta: {}", e))
+    }
+
     /// Get stored compute_units_used for a transaction.
+    /// Handles both old 8-byte format and new bincode TxMeta format.
     pub fn get_tx_meta_cu(&self, sig: &Hash) -> Result<Option<u64>, String> {
         let cf = self
             .db
@@ -1570,7 +1588,45 @@ impl StateStore {
             Ok(Some(data)) if data.len() == 8 => {
                 Ok(Some(u64::from_le_bytes(data.try_into().unwrap())))
             }
-            Ok(_) => Ok(None),
+            Ok(Some(data)) => {
+                // New format: bincode-encoded TxMeta
+                if let Ok(meta) = bincode::deserialize::<crate::processor::TxMeta>(&data) {
+                    Ok(Some(meta.compute_units_used))
+                } else {
+                    Ok(None)
+                }
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Get full transaction execution metadata.
+    /// Returns None for transactions stored in the old 8-byte CU-only format
+    /// (those are handled transparently with default return_code/return_data/logs).
+    pub fn get_tx_meta_full(
+        &self,
+        sig: &Hash,
+    ) -> Result<Option<crate::processor::TxMeta>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        match self.db.get_cf(&cf, sig.0) {
+            Ok(Some(data)) if data.len() == 8 => {
+                // Old format: just compute_units_used
+                Ok(Some(crate::processor::TxMeta {
+                    compute_units_used: u64::from_le_bytes(data.try_into().unwrap()),
+                    ..Default::default()
+                }))
+            }
+            Ok(Some(data)) => {
+                // New format: full bincode TxMeta
+                bincode::deserialize(&data)
+                    .map(Some)
+                    .map_err(|e| format!("Failed to deserialize tx meta: {}", e))
+            }
+            Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -4450,6 +4506,22 @@ impl StateBatch {
             .ok_or_else(|| "TX meta CF not found".to_string())?;
         self.batch
             .put_cf(&cf, sig.0, compute_units_used.to_le_bytes());
+        Ok(())
+    }
+
+    /// Store full transaction execution metadata in the batch.
+    pub fn put_tx_meta_full(
+        &mut self,
+        sig: &Hash,
+        meta: &crate::processor::TxMeta,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        let data = bincode::serialize(meta)
+            .map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        self.batch.put_cf(&cf, sig.0, data);
         Ok(())
     }
 

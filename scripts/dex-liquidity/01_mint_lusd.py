@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -85,37 +86,26 @@ async def resolve_contract(conn: Connection, symbol: str) -> PublicKey:
     raise ValueError(f"Contract '{symbol}' not found in registry")
 
 
-def build_named_call(fn_name: str, args: dict) -> bytes:
-    """Build instruction data for a named-export contract call.
-
-    Named-export contracts (like lusd_token) expose each function as a
-    separate WASM export.  The Call envelope uses the function name directly.
-    The args are JSON-encoded as the raw bytes payload.
-    """
-    # Build the inner args as JSON
-    inner = json.dumps({"function": fn_name, "args": args})
-    inner_bytes = inner.encode("utf-8")
-
-    # Wrap in the ContractInstruction::Call envelope
-    envelope = json.dumps({
-        "Call": {
-            "function": fn_name,
-            "args": list(inner_bytes),
-            "value": 0,
-        }
-    })
-    return envelope.encode("utf-8")
-
-
-async def send_contract_call(
+async def send_named_call(
     conn: Connection,
     signer: Keypair,
     contract_addr: PublicKey,
     fn_name: str,
-    args: dict,
+    args_bytes: list,
 ) -> str:
-    """Build, sign, and send a named-export contract call transaction."""
-    data = build_named_call(fn_name, args)
+    """Build, sign, and send a named-export contract call.
+
+    args_bytes is a flat list of raw byte values matching the WASM function
+    signature — e.g. for mint(caller, to, amount): [caller 32B][to 32B][amount 8B].
+    """
+    envelope = json.dumps({
+        "Call": {
+            "function": fn_name,
+            "args": args_bytes,
+            "value": 0,
+        }
+    })
+    data = envelope.encode("utf-8")
 
     ix = Instruction(
         CONTRACT_PROGRAM,
@@ -206,14 +196,15 @@ async def main():
     # Mint lUSD: deployer calls lusd_token.mint(caller, to, amount)
     # The deployer is the admin set during genesis initialization.
     # The 'to' is the reserve_pool wallet where lUSD will be received.
+    # Args layout: [caller 32B][to 32B][amount 8B] = 72 bytes
+    caller_bytes = list(deployer.public_key().to_bytes())
+    to_bytes = list(reserve_pool.public_key().to_bytes())
+    amount_bytes = list(struct.pack("<Q", amount_spores))
+    args_raw = caller_bytes + to_bytes + amount_bytes
+
     print(f"  Minting {args.amount:,.0f} lUSD to reserve_pool...")
-    sig = await send_contract_call(
-        conn, deployer, lusd_addr, "mint",
-        {
-            "caller": str(deployer.public_key()),
-            "to": str(reserve_pool.public_key()),
-            "amount": amount_spores,
-        },
+    sig = await send_named_call(
+        conn, deployer, lusd_addr, "mint", args_raw,
     )
     print(f"  TX signature: {sig}")
 

@@ -804,17 +804,20 @@ pub fn get_route_info(route_id: u64) -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
+    let mut _rc = 0u32;
     match args[0] {
         // 0: initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 1: set_addresses(caller[32], core[32], amm[32])
@@ -826,6 +829,8 @@ pub extern "C" fn call() {
                     args[65..97].as_ptr(),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 2: register_route(caller[32], token_in[32], token_out[32], type[1], pool_id[8], sec_id[8], split_pct[1])
@@ -846,6 +851,8 @@ pub extern "C" fn call() {
                     split_pct,
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 3: swap(trader[32], token_in[32], token_out[32], amount_in, min_out, deadline)
@@ -863,6 +870,8 @@ pub extern "C" fn call() {
                     deadline,
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 4: set_route_enabled(caller[32], route_id, enabled)
@@ -872,6 +881,8 @@ pub extern "C" fn call() {
                 let enabled = args[41] == 1;
                 let r = set_route_enabled(args[1..33].as_ptr(), route_id, enabled);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 5: get_best_route(token_in[32], token_out[32], amount)
@@ -895,6 +906,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 8: emergency_unpause(caller[32])
@@ -902,6 +915,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 9: multi_hop_swap(trader[32], path_ptr, path_count, amount_in, min_out, deadline)
@@ -927,6 +942,8 @@ pub extern "C" fn call() {
                         deadline,
                     );
                     lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                    _rc = r as u32;
+                    _rc = r as u32;
                 }
             }
         }
@@ -952,8 +969,10 @@ pub extern "C" fn call() {
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================

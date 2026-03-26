@@ -187,7 +187,8 @@ export class Connection {
   }
 
   /**
-   * Get transaction by signature
+   * Get transaction by signature.
+   * For contract calls, response includes: return_code (u32), return_data (base64), contract_logs (string[]).
    */
   async getTransaction(signature: string): Promise<any> {
     return this.rpc('getTransaction', [signature]);

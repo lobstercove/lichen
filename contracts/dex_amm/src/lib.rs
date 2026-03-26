@@ -1364,17 +1364,20 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
+    let mut _rc = 0u32;
     match args[0] {
         // 0: initialize(admin)
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 1: create_pool(caller, token_a, token_b, fee_tier, initial_sqrt_price)
@@ -1389,6 +1392,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[98..106]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 2: set_pool_protocol_fee(caller, pool_id, fee_percent)
@@ -1401,6 +1406,8 @@ pub extern "C" fn call() {
                     args[41],
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
@@ -1416,6 +1423,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[57..65]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 4: remove_liquidity(provider, position_id, liquidity_amount)
@@ -1428,6 +1437,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 5: collect_fees(provider, position_id)
@@ -1436,6 +1447,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 {
                 let r = collect_fees(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 6: swap_exact_in(trader, pool_id, is_token_a_in, amount_in, min_out, deadline)
@@ -1451,6 +1464,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[58..66]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 7: swap_exact_out(trader, pool_id, is_token_a_out, amount_out, max_in, deadline)
@@ -1466,6 +1481,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[58..66]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 8: emergency_pause(caller)
@@ -1473,6 +1490,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 9: emergency_unpause(caller)
@@ -1480,6 +1499,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 10: get_pool_info(pool_id)
@@ -1549,8 +1570,10 @@ pub extern "C" fn call() {
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================

@@ -824,17 +824,20 @@ pub fn set_authorized_caller(caller: *const u8, authorized: *const u8) -> u32 {
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
+    let mut _rc = 0u32;
     match args[0] {
         // 0 = initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 1 = record_trade(pair_id[8], price[8], volume[8], trader[32])
@@ -845,6 +848,8 @@ pub extern "C" fn call() {
                 let volume = bytes_to_u64(&args[17..25]);
                 let r = record_trade(pair_id, price, volume, args[25..57].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 2 = get_ohlcv(pair_id[8], interval[8], count[8])
@@ -894,6 +899,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 8 = emergency_unpause(caller[32])
@@ -901,6 +908,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         9 => {
@@ -920,6 +929,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 12 = F18.10: record_pnl(trader[32], pnl_biased[8])
@@ -928,12 +939,16 @@ pub extern "C" fn call() {
                 let pnl_biased = bytes_to_u64(&args[33..41]);
                 let r = record_pnl(args[1..33].as_ptr(), pnl_biased);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================
