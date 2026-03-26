@@ -31,6 +31,18 @@ pub struct TxResult {
     pub return_code: Option<i64>,
     /// Log messages emitted by the contract during execution.
     pub contract_logs: Vec<String>,
+    /// Return data set by the contract via `set_return_data()`.
+    pub return_data: Vec<u8>,
+}
+
+/// Persistent transaction execution metadata stored in CF_TX_META.
+/// Extends the old 8-byte CU-only format with full contract result data.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
+pub struct TxMeta {
+    pub compute_units_used: u64,
+    pub return_code: Option<i64>,
+    pub return_data: Vec<u8>,
+    pub logs: Vec<String>,
 }
 
 /// Simulation result (dry-run)
@@ -352,8 +364,9 @@ pub struct TxProcessor {
     batch: Mutex<Option<StateBatch>>,
     /// Metadata from the most recent contract call execution, accumulated
     /// during process_transaction and drained into TxResult.
-    /// Fields: (return_code, logs, compute_used)
-    contract_meta: Mutex<(Option<i64>, Vec<String>, u64)>,
+    /// Fields: (return_code, logs, compute_used, return_data)
+    #[allow(clippy::type_complexity)]
+    contract_meta: Mutex<(Option<i64>, Vec<String>, u64, Vec<u8>)>,
     /// Per-transaction compute budget, set at the start of process_transaction_inner.
     /// Read by contract_call() to pass the remaining budget to the WASM runtime
     /// so that fuel metering respects the user-declared CU budget.
@@ -368,21 +381,22 @@ impl TxProcessor {
         TxProcessor {
             state,
             batch: Mutex::new(None),
-            contract_meta: Mutex::new((None, Vec::new(), 0)),
+            contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
     }
 
-    /// Drain accumulated contract execution metadata (return_code, logs).
+    /// Drain accumulated contract execution metadata (return_code, logs, return_data).
     /// Called when building a TxResult to capture the contract's diagnostics.
-    fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>, u64) {
+    fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>, u64, Vec<u8>) {
         let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
         (
             meta.0.take(),
             std::mem::take(&mut meta.1),
             std::mem::replace(&mut meta.2, 0),
+            std::mem::take(&mut meta.3),
         )
     }
 
@@ -394,7 +408,7 @@ impl TxProcessor {
         error: Option<String>,
         compute_units_used: u64,
     ) -> TxResult {
-        let (return_code, contract_logs, _meta_cu) = self.drain_contract_meta();
+        let (return_code, contract_logs, _meta_cu, return_data) = self.drain_contract_meta();
         TxResult {
             success,
             fee_paid,
@@ -402,6 +416,7 @@ impl TxProcessor {
             compute_units_used,
             return_code,
             contract_logs,
+            return_data,
         }
     }
 
@@ -732,12 +747,37 @@ impl TxProcessor {
         }
     }
 
+    /// Store full transaction metadata, peeking at contract_meta for return_code/data/logs.
+    /// Used for both success and failure paths (outside of batches).
+    fn store_tx_meta(&self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
+        let tx_meta = {
+            let meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+            TxMeta {
+                compute_units_used,
+                return_code: meta.0,
+                return_data: meta.3.clone(),
+                logs: meta.1.clone(),
+            }
+        };
+        self.state.put_tx_meta_full(sig, &tx_meta)
+    }
+
     fn b_put_tx_meta(&self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
+        // Build full TxMeta by peeking at contract_meta (before make_result drains it)
+        let tx_meta = {
+            let meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+            TxMeta {
+                compute_units_used,
+                return_code: meta.0,
+                return_data: meta.3.clone(),
+                logs: meta.1.clone(),
+            }
+        };
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
-            batch.put_tx_meta(sig, compute_units_used)
+            batch.put_tx_meta_full(sig, &tx_meta)
         } else {
-            self.state.put_tx_meta(sig, compute_units_used)
+            self.state.put_tx_meta_full(sig, &tx_meta)
         }
     }
 
@@ -1289,7 +1329,7 @@ impl TxProcessor {
             self.rollback_batch();
             // Store the failed TX so getTransaction can find it (fee was charged).
             let _ = self.state.put_transaction(tx);
-            let _ = self.state.put_tx_meta(&tx.signature(), 0);
+            let _ = self.store_tx_meta(&tx.signature(), 0);
             return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)), 0);
         }
 
@@ -1303,7 +1343,7 @@ impl TxProcessor {
             self.rollback_batch();
             // Store the failed TX so getTransaction can find it (fee was charged).
             let _ = self.state.put_transaction(tx);
-            let _ = self.state.put_tx_meta(&tx.signature(), native_cu);
+            let _ = self.store_tx_meta(&tx.signature(), native_cu);
             return self.make_result(
                 false,
                 total_fee, // Fee is NOT refunded — anti-DoS (Solana model)
@@ -1335,7 +1375,7 @@ impl TxProcessor {
 
                 // Store the failed TX so getTransaction can find it (fee was charged).
                 let _ = self.state.put_transaction(tx);
-                let _ = self.state.put_tx_meta(&tx.signature(), total_cu);
+                let _ = self.store_tx_meta(&tx.signature(), total_cu);
 
                 let actual_fee = total_fee.saturating_sub(premium);
                 return self.make_result(
@@ -1360,7 +1400,7 @@ impl TxProcessor {
                     self.rollback_batch();
                     // Store the failed TX so getTransaction can find it (fee was charged).
                     let _ = self.state.put_transaction(tx);
-                    let _ = self.state.put_tx_meta(&tx.signature(), total_cu);
+                    let _ = self.store_tx_meta(&tx.signature(), total_cu);
                     return self.make_result(
                         false,
                         total_fee, // Fee NOT refunded — CU exceeded
@@ -1547,6 +1587,7 @@ impl TxProcessor {
                     compute_units_used: 0,
                     return_code: None,
                     contract_logs: Vec::new(),
+                    return_data: Vec::new(),
                 })
                 .collect(),
         );
@@ -5012,7 +5053,7 @@ impl TxProcessor {
         // Return runtime to thread-local pool for reuse
         runtime.return_to_pool();
 
-        // Accumulate contract execution metadata (return_code, logs, compute_used) for TxResult
+        // Accumulate contract execution metadata (return_code, logs, compute_used, return_data) for TxResult
         {
             let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
             meta.0 = result.return_code;
@@ -5021,11 +5062,22 @@ impl TxProcessor {
             meta.1.extend(result.cross_call_logs.iter().cloned());
             // Store actual compute_used — replaces broken log-parsing path
             meta.2 = meta.2.saturating_add(result.compute_used);
+            // Store return_data from set_return_data()
+            meta.3 = result.return_data.clone();
         }
 
-        // Fail the transaction when a contract returns a non-zero error code.
-        // Previously this only logged a warning, allowing failed mints (e.g. "not admin"
-        // → return 2) to be recorded as "Success" with 0 storage changes.
+        // Fail the transaction when a contract returns a non-zero error code
+        // AND made no state changes (neither direct storage writes nor
+        // cross-contract call changes).
+        //
+        // This catches real errors (validation failures, caller mismatches,
+        // paused contracts) while allowing:
+        // - Named exports that return non-zero success values (balance_of → u64)
+        // - CCC callers whose `call` returns bytes_written (>0 = success)
+        //   but have cross_call_changes populated
+        // - Opcode-dispatch `call()` that returns 0 on success — a non-zero
+        //   return from these means the contract hit an error before writing
+        //   any state, so the empty-changes heuristic is correct.
         if result.success {
             if let Some(rc) = result.return_code {
                 if rc != 0

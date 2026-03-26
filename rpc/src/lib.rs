@@ -3852,13 +3852,30 @@ async fn handle_get_transaction(
 
     match tx {
         Some(tx) => {
-            let stored_cu = state.state.get_tx_meta_cu(&tx.signature()).ok().flatten();
+            let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
+            let stored_cu = tx_meta.as_ref().map(|m| m.compute_units_used);
             let mut json = tx_to_rpc_json(&tx, slot, timestamp, &fee_config, stored_cu);
             // Add commitment status to transaction response
             let (status, confirmations) = tx_commitment_status(state, slot);
             if let Some(obj) = json.as_object_mut() {
                 obj.insert("confirmation_status".to_string(), serde_json::json!(status));
                 obj.insert("confirmations".to_string(), confirmations);
+                // Include full contract execution metadata
+                if let Some(ref meta) = tx_meta {
+                    if let Some(rc) = meta.return_code {
+                        obj.insert("return_code".to_string(), serde_json::json!(rc));
+                    }
+                    if !meta.return_data.is_empty() {
+                        use base64::{engine::general_purpose, Engine as _};
+                        obj.insert(
+                            "return_data".to_string(),
+                            serde_json::json!(general_purpose::STANDARD.encode(&meta.return_data)),
+                        );
+                    }
+                    if !meta.logs.is_empty() {
+                        obj.insert("contract_logs".to_string(), serde_json::json!(meta.logs));
+                    }
+                }
                 // Enrich contract-call transactions with token metadata
                 if obj.get("type").and_then(|v| v.as_str()) == Some("Contract") {
                     if let Some(ix) = tx.message.instructions.first() {
@@ -5016,7 +5033,7 @@ async fn handle_call_contract(
     })?;
 
     // Parse params: either object form or array form
-    let (contract_str, function, args_b64) = if let Some(obj) = params.as_object() {
+    let (contract_str, function, args_b64, from_str) = if let Some(obj) = params.as_object() {
         let contract = obj
             .get("contract")
             .and_then(|v| v.as_str())
@@ -5032,7 +5049,17 @@ async fn handle_call_contract(
                 message: "Missing 'function' name".to_string(),
             })?;
         let args = obj.get("args").and_then(|v| v.as_str()).unwrap_or("");
-        (contract.to_string(), function.to_string(), args.to_string())
+        let from = obj
+            .get("from")
+            .or_else(|| obj.get("caller"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (
+            contract.to_string(),
+            function.to_string(),
+            args.to_string(),
+            from,
+        )
     } else if let Some(arr) = params.as_array() {
         let contract = arr
             .first()
@@ -5049,7 +5076,13 @@ async fn handle_call_contract(
                 message: "Missing function name (second param)".to_string(),
             })?;
         let args = arr.get(2).and_then(|v| v.as_str()).unwrap_or("");
-        (contract.to_string(), function.to_string(), args.to_string())
+        let from = arr.get(3).and_then(|v| v.as_str()).map(|s| s.to_string());
+        (
+            contract.to_string(),
+            function.to_string(),
+            args.to_string(),
+            from,
+        )
     } else {
         return Err(RpcError {
             code: -32602,
@@ -5102,16 +5135,32 @@ async fn handle_call_contract(
             message: "Failed to deserialize contract account".to_string(),
         })?;
 
-    // Use a zero caller for read-only calls
-    let caller = Pubkey::new([0u8; 32]);
+    // Use provided caller address or zero address for read-only calls
+    let caller = if let Some(ref from) = from_str {
+        Pubkey::from_base58(from).map_err(|_| RpcError {
+            code: -32602,
+            message: format!("Invalid 'from' address: {}", from),
+        })?
+    } else {
+        Pubkey::new([0u8; 32])
+    };
     let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    // Load live storage from the canonical DB (CF_CONTRACT_STORAGE), not the
+    // potentially stale in-memory ContractAccount.storage snapshot.
+    let live_storage = state
+        .state
+        .load_contract_storage_map(&contract_pubkey)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     let context = ContractContext::with_args(
         caller,
         contract_pubkey,
         0, // no value for read-only calls
         current_slot,
-        contract.storage.clone(),
+        live_storage,
         args.clone(),
     );
 

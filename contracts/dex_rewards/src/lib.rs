@@ -762,17 +762,20 @@ pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enable
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
+    let mut _rc = 0u32;
     match args[0] {
         // 0: initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 1: record_trade(trader[32], fee_paid[8], volume[8])
@@ -782,6 +785,8 @@ pub extern "C" fn call() {
                 let vol = bytes_to_u64(&args[41..49]);
                 let r = record_trade(args[1..33].as_ptr(), fee, vol);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 2: claim_trading_rewards(trader[32])
@@ -789,6 +794,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = claim_trading_rewards(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 3: claim_lp_rewards(provider[32], position_id[8])
@@ -797,6 +804,8 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = claim_lp_rewards(args[1..33].as_ptr(), pos_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 4: register_referral(trader[32], referrer[32])
@@ -804,6 +813,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = register_referral(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 5: set_reward_rate(caller[32], pair_id[8], rate[8])
@@ -813,6 +824,8 @@ pub extern "C" fn call() {
                 let rate = bytes_to_u64(&args[41..49]);
                 let r = set_reward_rate(args[1..33].as_ptr(), pair_id, rate);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 6: accrue_lp_rewards(position_id[8], liquidity[8], pair_id[8])
@@ -823,6 +836,8 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[17..25]);
                 let r = accrue_lp_rewards(pos_id, liq, pair_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 7: get_pending_rewards(addr[32])
@@ -837,6 +852,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = get_trading_tier(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 9: emergency_pause(caller[32])
@@ -844,6 +861,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 10: emergency_unpause(caller[32])
@@ -851,6 +870,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 11: set_referral_rate(caller[32], rate_bps[8])
@@ -859,6 +880,8 @@ pub extern "C" fn call() {
                 let rate = bytes_to_u64(&args[33..41]);
                 let r = set_referral_rate(args[1..33].as_ptr(), rate);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 12: set_lichencoin_address(caller[32], addr[32])
@@ -866,6 +889,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = set_lichencoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 13: set_rewards_pool(caller[32], addr[32])
@@ -873,6 +898,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = set_rewards_pool(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 14: get_referral_rate
@@ -906,12 +933,16 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = claim_referral_rewards(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================

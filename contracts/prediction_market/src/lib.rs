@@ -3624,18 +3624,21 @@ pub fn get_fee_treasury() -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
 
+    let mut _rc = 0u32;
     match args[0] {
         // 0: initialize
         0 => {
             if args.len() >= 33 {
                 let result = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 1: create_market
@@ -3660,6 +3663,8 @@ pub extern "C" fn call() {
                         q_len,
                     );
                     // G21-02: function sets return_data with full u64 on success
+                    _rc = result as u32;
+                    _rc = result as u32;
                     if result == 0 {
                         lichen_sdk::set_return_data(&u64_to_bytes(0));
                     }
@@ -3685,6 +3690,8 @@ pub extern "C" fn call() {
                 };
                 let result = add_initial_liquidity(provider_ptr, mid, amount, odds_ptr, odds_len);
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 3: add_liquidity
@@ -3696,6 +3703,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                 );
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3711,6 +3720,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[42..50]),
                 );
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3726,6 +3737,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[42..50]),
                 );
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3740,6 +3753,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 7: redeem_complete_set
@@ -3751,6 +3766,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 8: submit_resolution
@@ -3764,6 +3781,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[74..82]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 9: challenge_resolution
@@ -3776,6 +3795,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[73..81]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 10: finalize_resolution
@@ -3783,6 +3804,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 {
                 let result = finalize_resolution(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 11: dao_resolve
@@ -3791,6 +3814,8 @@ pub extern "C" fn call() {
                 let result =
                     dao_resolve(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 12: dao_void
@@ -3798,6 +3823,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 {
                 let result = dao_void(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 13: redeem_shares
@@ -3806,6 +3833,8 @@ pub extern "C" fn call() {
                 let result =
                     redeem_shares(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3816,6 +3845,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 {
                 let result = reclaim_collateral(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3830,6 +3861,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                 );
                 // G21-02: function sets return_data with full u64 on success
+                _rc = result as u32;
+                _rc = result as u32;
                 if result == 0 {
                     lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
@@ -3840,6 +3873,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let result = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 17: emergency_unpause
@@ -3847,6 +3882,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let result = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 18: set_lichenid_address
@@ -3854,6 +3891,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let result = set_lichenid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 19: set_oracle_address
@@ -3861,6 +3900,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let result = set_oracle_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 20: set_musd_address
@@ -3868,6 +3909,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let result = set_musd_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 21: set_dex_gov_address
@@ -3875,6 +3918,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let result = set_dex_gov_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
         // 22: close_market
@@ -3882,6 +3927,8 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 {
                 let result = close_market(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
+                _rc = result as u32;
+                _rc = result as u32;
             }
         }
 
@@ -4060,8 +4107,10 @@ pub extern "C" fn call() {
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================

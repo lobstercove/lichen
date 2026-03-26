@@ -161,6 +161,35 @@ async def wait_for_tx(conn, sig, timeout=TX_CONFIRM_TIMEOUT):
     return None
 
 
+async def approve_token(
+    conn: Connection,
+    signer: Keypair,
+    token_addr: PublicKey,
+    spender: PublicKey,
+    amount: int,
+) -> str:
+    """Approve a spender (DEX) to transfer tokens on behalf of the signer."""
+    owner_bytes = signer.public_key().to_bytes()
+    spender_bytes = spender.to_bytes()
+    args_bytes = list(owner_bytes) + list(spender_bytes) + list(struct.pack("<Q", amount))
+    envelope = json.dumps({
+        "Call": {
+            "function": "approve",
+            "args": args_bytes,
+            "value": 0,
+        }
+    })
+    data = envelope.encode("utf-8")
+    ix = Instruction(CONTRACT_PROGRAM, [signer.public_key(), token_addr], data)
+    tb = TransactionBuilder()
+    tb.add(ix)
+    latest = await conn.get_latest_block()
+    blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
+    tb.set_recent_blockhash(blockhash)
+    tx = tb.build_and_sign(signer)
+    return await conn.send_transaction(tx)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -203,6 +232,10 @@ async def main():
 
     dex_addr = await resolve_contract(conn, "DEX")
     print(f"  DEX contract: {dex_addr}")
+
+    # Resolve lUSD contract (for approval — buy orders escrow lUSD)
+    lusd_addr = await resolve_contract(conn, "LUSD")
+    print(f"  lUSD token:   {lusd_addr}")
     print()
 
     if args.dry_run:
@@ -213,8 +246,29 @@ async def main():
             cost = price * qty
             print(f"  {i+1:>5} ${price:>9.3f} {qty:>13,.0f} ${cost:>13,.0f}")
         print(f"\n  Total: {total_licn:,.0f} LICN, ${total_lusd:,.0f} lUSD")
+        print(f"\n  [DRY RUN] Would approve DEX to spend {total_lusd:,.0f} lUSD from reserve_pool")
         return
 
+    # ── Step 1: Approve DEX to spend lUSD from reserve_pool ──
+    # Buy orders escrow lUSD (notional + max taker fee)
+    total_lusd_spores = int(total_lusd * SPORES_PER_LICN)  # lUSD uses same 9-decimal precision
+    # Add 5% buffer for taker fees
+    approve_amount = int(total_lusd_spores * 1.05)
+    print(f"  Approving DEX to spend ~{total_lusd * 1.05:,.0f} lUSD (incl. fee buffer)...")
+    try:
+        approve_sig = await approve_token(conn, reserve_kp, lusd_addr, dex_addr, approve_amount)
+        result = await wait_for_tx(conn, approve_sig)
+        if result:
+            print(f"  ✅ Approval confirmed: {approve_sig[:16]}...")
+        else:
+            print(f"  ⏳ Approval sent (unconfirmed): {approve_sig[:16]}...")
+        await asyncio.sleep(1.0)
+    except Exception as e:
+        print(f"  ❌ Approval failed: {e}")
+        print(f"  Cannot proceed without DEX allowance.")
+        return
+
+    # ── Step 2: Place orders ──
     orders_log = []
     limit = args.max_orders or len(BUY_LEVELS)
 

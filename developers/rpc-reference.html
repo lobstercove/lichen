@@ -787,6 +787,12 @@
                             Signature-independent — useful for multi-sig coordination and client-side txid prediction
                             before all parties have signed.</li>
                     </ul>
+                    <p><strong>Contract execution fields</strong> (present for contract call transactions):</p>
+                    <ul>
+                        <li><code>return_code</code> — <code>u32</code> WASM return value. 0 = success, non-zero = error code. Omitted when null.</li>
+                        <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>. Omitted when empty.</li>
+                        <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted when empty.</li>
+                    </ul>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -2052,7 +2058,7 @@
 
                 <h3>Contract Execution</h3>
                 <ul>
-                    <li><code>callContract</code> — execute a read-only contract call (no state change)</li>
+                    <li><code>callContract</code> — execute a read-only contract call (no state change). Accepts optional <code>from</code>/<code>caller</code> pubkey to set the calling context (defaults to zero address).</li>
                     <li><code>getNameAuction</code> — query LichenID .lichen name auction by name</li>
                 </ul>
 

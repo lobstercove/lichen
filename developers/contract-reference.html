@@ -303,49 +303,49 @@
                 </tr>
                 <tr>
                     <td>DEX Core</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX AMM</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX Router</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX Governance</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX Rewards</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX Margin</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>DEX Analytics</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
                 <tr>
                     <td>Prediction Market</td>
-                    <td><code>call()</code></td>
+                    <td><code>call() → u32</code></td>
                     <td><code>args[0]</code> from <code>get_args()</code></td>
                     <td><code>match opcode { ... }</code> in contract dispatcher</td>
                 </tr>
@@ -354,9 +354,10 @@
                 and argument layout correctly for each operation.</p>
 
             <div class="sub-heading">Return Code Conventions</div>
-            <p><strong>Not all contracts agree on return codes.</strong> The runtime records the WASM return value in
-                <code>return_code</code> for informational purposes but does NOT use it to determine success/failure —
-                only a WASM trap constitutes failure.
+            <p>The runtime records the WASM return value in <code>return_code</code> (visible in
+                <code>getTransaction</code> and <code>callContract</code> responses). For opcode-dispatch contracts
+                (<code>call() → u32</code>), the processor treats a non-zero return with no state changes as a failed
+                transaction. For named-export contracts, the same heuristic applies: non-zero + no storage writes = error.
             </p>
             <table class="const-table">
                 <tr>
@@ -379,6 +380,10 @@
                 <tr>
                     <td>void (no return)</td>
                     <td>LichenSwap/LichenPunks (initialize), LichenDAO init variants</td>
+                </tr>
+                <tr>
+                    <td>u32 opcode dispatch (0 = success)</td>
+                    <td>DEX Core, DEX AMM, DEX Router, DEX Governance, DEX Rewards, DEX Margin, DEX Analytics, Prediction Market</td>
                 </tr>
             </table>
         </div>

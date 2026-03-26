@@ -199,7 +199,8 @@ Get current slot number.
 Get transaction by signature.
 
 **Params**: `[signature: string]`  
-**Returns**: Transaction data
+**Returns**: Transaction data including `status`, `slot`, `from`, `to`, `amount`, `fee`, `compute_units`, `confirmation_status`, `confirmations`.  
+For contract calls, also includes: `return_code` (u32, omitted when null), `return_data` (base64, omitted when empty), `contract_logs` (string array, omitted when empty).
 
 #### `getTransactionsByAddress`
 Get all transactions for an address.
@@ -244,10 +245,12 @@ Simulate a transaction without submitting.
 **Returns**: `{ "success": true, "logs": [...] }`
 
 #### `callContract`
-Read-only contract call (no state mutation).
+Read-only contract call (no state mutation). Loads storage from canonical DB.
 
-**Params**: `[contract_id: string, method: string, args?: object]`  
-**Returns**: Contract-specific return value
+**Params**: `[contract_id: string, method: string, args?: object]` or `{contract, function, args?, from?}`  
+- `from` / `caller` (optional): Base58 pubkey to use as the caller context. Defaults to zero address if omitted.
+
+**Returns**: `{success, returnData, returnCode, logs, error, computeUsed}`
 
 #### `getTotalBurned`
 Get total LICN burned.

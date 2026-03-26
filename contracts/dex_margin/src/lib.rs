@@ -1998,17 +1998,20 @@ pub fn set_position_sl_tp(
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn call() {
+pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
-        return;
+        return 255;
     }
+    let mut _rc = 0u32;
     match args[0] {
         // 0 = initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 1 = set_mark_price(caller[32], pair_id[8], price[8])
@@ -2018,6 +2021,8 @@ pub extern "C" fn call() {
                 let price = bytes_to_u64(&args[41..49]);
                 let r = set_mark_price(args[1..33].as_ptr(), pair_id, price);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 2 = open_position(trader[32], pair_id[8], side[1], size[8], leverage[8], margin[8], margin_mode[1]?)
@@ -2043,6 +2048,8 @@ pub extern "C" fn call() {
                     margin_mode,
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 3 = close_position(caller[32], pos_id[8])
@@ -2051,6 +2058,8 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = close_position(args[1..33].as_ptr(), pos_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 4 = add_margin(caller[32], pos_id[8], amount[8])
@@ -2060,6 +2069,8 @@ pub extern "C" fn call() {
                 let amount = bytes_to_u64(&args[41..49]);
                 let r = add_margin(args[1..33].as_ptr(), pos_id, amount);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 5 = remove_margin(caller[32], pos_id[8], amount[8])
@@ -2069,6 +2080,8 @@ pub extern "C" fn call() {
                 let amount = bytes_to_u64(&args[41..49]);
                 let r = remove_margin(args[1..33].as_ptr(), pos_id, amount);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 6 = liquidate(liquidator[32], pos_id[8])
@@ -2077,6 +2090,8 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = liquidate(args[1..33].as_ptr(), pos_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 7 = set_max_leverage(caller[32], pair_id[8], max_lev[8])
@@ -2086,6 +2101,8 @@ pub extern "C" fn call() {
                 let max_lev = bytes_to_u64(&args[41..49]);
                 let r = set_max_leverage(args[1..33].as_ptr(), pair_id, max_lev);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 8 = set_maintenance_margin(caller[32], margin_bps[8])
@@ -2094,6 +2111,8 @@ pub extern "C" fn call() {
                 let bps = bytes_to_u64(&args[33..41]);
                 let r = set_maintenance_margin(args[1..33].as_ptr(), bps);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 9 = withdraw_insurance(caller[32], amount[8], recipient[32])
@@ -2102,6 +2121,8 @@ pub extern "C" fn call() {
                 let amount = bytes_to_u64(&args[33..41]);
                 let r = withdraw_insurance(args[1..33].as_ptr(), amount, args[41..73].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 10 = get_position_info(pos_id[8])
@@ -2131,6 +2152,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 14 = emergency_unpause(caller[32])
@@ -2138,6 +2161,8 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 15 = set_lichencoin_address(caller[32], addr[32])
@@ -2145,6 +2170,8 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = set_lichencoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         16 => {
@@ -2193,6 +2220,8 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let r = enable_margin_pair(args[1..33].as_ptr(), pair_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 22 = disable_margin_pair(caller[32], pair_id[8])
@@ -2201,6 +2230,8 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let r = disable_margin_pair(args[1..33].as_ptr(), pair_id);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 23 = is_margin_enabled(pair_id[8])
@@ -2220,6 +2251,8 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[49..57]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 25 = partial_close(caller[32], position_id[8], close_amount[8])
@@ -2229,6 +2262,8 @@ pub extern "C" fn call() {
                 let close_amount = bytes_to_u64(&args[41..49]);
                 let r = partial_close(args[1..33].as_ptr(), pos_id, close_amount);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 26 = query_user_open_position(trader[32], pair_id[8])
@@ -2246,6 +2281,8 @@ pub extern "C" fn call() {
                 let limit_price = bytes_to_u64(&args[41..49]);
                 let r = close_position_limit(args[1..33].as_ptr(), pos_id, limit_price);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         // 28 = partial_close_limit(caller[32], pos_id[8], close_amount[8], limit_price[8])
@@ -2257,12 +2294,16 @@ pub extern "C" fn call() {
                 let r =
                     partial_close_limit(args[1..33].as_ptr(), pos_id, close_amount, limit_price);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
             }
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            _rc = 255;
         }
     }
+    _rc
 }
 
 // ============================================================================

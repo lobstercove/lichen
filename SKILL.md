@@ -981,7 +981,7 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 | `getBlock` | `[slot]` | `{slot, hash, parent_hash, transactions}` |
 | `getLatestBlock` | none | Latest block JSON |
 | `getSlot` | `[{commitment?}]` | Current slot (u64) |
-| `getTransaction` | `[hash_hex]` | `{hash, status, slot, from, to, amount}` |
+| `getTransaction` | `[hash_hex]` | `{hash, status, slot, from, to, amount, return_code?, return_data?, contract_logs?}` |
 | `getTransactionsByAddress` | `[pubkey, {limit?, before_slot?}]` | Array of tx summaries |
 | `getAccountTxCount` | `[pubkey]` | `{count}` |
 | `getRecentTransactions` | `[{limit?}]` | Array of recent txs |
@@ -1033,7 +1033,7 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `callContract` | `{contract, function, args?}` or `[contract_base58, function_name, args_base64?]` | `{success, returnData, returnCode, logs, error, computeUsed}` |
+| `callContract` | `{contract, function, args?, from?}` or `[contract_base58, function_name, args_base64?, from?]` | `{success, returnData, returnCode, logs, error, computeUsed}` |
 | `deployContract` | `[deployer_base58, code_base64, init_data_json, signature_hex]` (admin-gated) | `{program_id, deployer, code_size, deploy_fee, deploy_fee_licn}` |
 | `upgradeContract` | `[owner_base58, contract_base58, code_base64, signature_hex]` (admin-gated) | `{program_id, owner, version, previous_version, code_size, upgrade_fee}` |
 | `getContractInfo` | `[program_id]` | `{symbol, owner, version, abi}` |

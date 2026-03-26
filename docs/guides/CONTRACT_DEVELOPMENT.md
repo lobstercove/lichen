@@ -703,7 +703,7 @@ curl -X POST https://rpc.lichen.network -H 'Content-Type: application/json' -d '
     "params": ["<base64_encoded_transaction>"]
 }'
 
-# Read contract state
+# Read contract state (with optional caller context)
 curl -X POST https://rpc.lichen.network -H 'Content-Type: application/json' -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -711,7 +711,8 @@ curl -X POST https://rpc.lichen.network -H 'Content-Type: application/json' -d '
     "params": {
         "contract": "<contract_address>",
         "function": "get_count",
-        "args": []
+        "args": [],
+        "from": "<caller_pubkey_optional>"
     }
 }'
 ```

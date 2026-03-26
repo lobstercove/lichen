@@ -198,6 +198,47 @@ async def wait_for_tx(conn: Connection, sig: str, timeout: int = TX_CONFIRM_TIME
     return None
 
 
+async def approve_token(
+    conn: Connection,
+    signer: Keypair,
+    token_addr: PublicKey,
+    spender: PublicKey,
+    amount: int,
+) -> str:
+    """Approve a spender (DEX) to transfer tokens on behalf of the signer.
+
+    Token contracts use named exports, so function="approve".
+    Args layout: [owner 32B][spender 32B][amount 8B] = 72 bytes.
+    """
+    owner_bytes = signer.public_key().to_bytes()
+    spender_bytes = spender.to_bytes()
+
+    args_bytes = list(owner_bytes) + list(spender_bytes) + list(struct.pack("<Q", amount))
+
+    envelope = json.dumps({
+        "Call": {
+            "function": "approve",
+            "args": args_bytes,
+            "value": 0,
+        }
+    })
+    data = envelope.encode("utf-8")
+
+    ix = Instruction(
+        CONTRACT_PROGRAM,
+        [signer.public_key(), token_addr],
+        data,
+    )
+
+    tb = TransactionBuilder()
+    tb.add(ix)
+    latest = await conn.get_latest_block()
+    blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
+    tb.set_recent_blockhash(blockhash)
+    tx = tb.build_and_sign(signer)
+    return await conn.send_transaction(tx)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -252,6 +293,10 @@ async def main():
     # Resolve dex_core contract
     dex_addr = await resolve_contract(conn, "DEX")
     print(f"  DEX contract: {dex_addr}")
+
+    # Resolve lichencoin contract (for approval)
+    licn_addr = await resolve_contract(conn, "LICN")
+    print(f"  LICN token:   {licn_addr}")
     print()
 
     if args.dry_run:
@@ -262,9 +307,27 @@ async def main():
             value = price * qty
             print(f"  {i+1:>5} ${price:>9.3f} {qty:>14,.0f} ${value:>14,.0f}")
         print(f"\n  Total: {total_licn:,.0f} LICN, ${total_value:,.0f} lUSD")
+        print(f"\n  [DRY RUN] Would approve DEX to spend {total_licn:,.0f} LICN from reserve_pool")
         return
 
-    # Place orders
+    # ── Step 1: Approve DEX to spend LICN from reserve_pool ──
+    # The DEX uses escrow (transfer_from) — needs allowance.
+    total_spores = int(total_licn * SPORES_PER_LICN)
+    print(f"  Approving DEX to spend {total_licn:,.0f} LICN...")
+    try:
+        approve_sig = await approve_token(conn, reserve_kp, licn_addr, dex_addr, total_spores)
+        result = await wait_for_tx(conn, approve_sig)
+        if result:
+            print(f"  ✅ Approval confirmed: {approve_sig[:16]}...")
+        else:
+            print(f"  ⏳ Approval sent (unconfirmed): {approve_sig[:16]}...")
+        await asyncio.sleep(1.0)  # Let approval propagate
+    except Exception as e:
+        print(f"  ❌ Approval failed: {e}")
+        print(f"  Cannot proceed without DEX allowance.")
+        return
+
+    # ── Step 2: Place orders ──
     orders_log = []
     limit = args.max_orders or len(SELL_LEVELS)
 

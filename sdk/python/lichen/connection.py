@@ -113,7 +113,9 @@ class Connection:
         return int(result) if result is not None else 0
     
     async def get_transaction(self, signature: str) -> Dict[str, Any]:
-        """Get transaction by signature"""
+        """Get transaction by signature.
+        For contract calls, response includes: return_code (u32), return_data (base64), contract_logs (list[str]).
+        """
         return await self._rpc("getTransaction", [signature])
     
     async def send_transaction(self, transaction: Transaction) -> str:
