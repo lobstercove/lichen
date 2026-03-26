@@ -3152,6 +3152,16 @@ async fn apply_block_effects(
         return;
     }
 
+    // F-03 audit fix: Master idempotency guard. If effects were already applied
+    // for this slot, skip everything. This makes apply_block_effects safe to
+    // call twice (e.g. crash recovery: block on disk but effects not yet applied
+    // will re-apply cleanly; already-applied slots are skipped entirely).
+    if !skip_rewards {
+        if let Ok(Some(_)) = state.get_reward_distribution_hash(block.header.slot) {
+            return;
+        }
+    }
+
     // Reload in-memory stake pool from on-chain state to pick up effects
     // from consensus-processed transactions (e.g., RegisterValidator opcode 26,
     // Stake, Unstake). Without this, the in-memory pool would miss changes
@@ -3200,9 +3210,11 @@ async fn apply_block_effects(
             if !reward_already {
                 val_info.blocks_proposed += 1;
                 val_info.transactions_processed += block.transactions.len() as u64;
+                // F-05 audit fix: reputation update moved inside the guard
+                // to prevent double-counting on duplicate apply_block_effects calls
+                val_info.update_reputation(true);
             }
             val_info.last_active_slot = slot;
-            val_info.update_reputation(true);
         } else {
             // Header-first sync can observe legitimate historical producers
             // before their RegisterValidator transaction is replayed locally.
@@ -5159,10 +5171,18 @@ async fn run_validator() {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(7001);
 
-    // Parse --db-path / --db / --data-dir flag or use default based on port
+    // Parse --db-path / --db / --data-dir flag or use default based on network
+    // F-12 audit fix: Use network name (testnet/mainnet) for default path
+    // instead of port number, matching lichen-start.sh convention.
     let data_dir = get_flag_value(&args, &["--db-path", "--db", "--data-dir"])
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("./data/state-{}", p2p_port));
+        .unwrap_or_else(|| {
+            if let Some(ref net) = network_arg {
+                format!("./data/state-{}", net)
+            } else {
+                format!("./data/state-{}", p2p_port)
+            }
+        });
     // Canonicalize to absolute path to prevent CWD-dependent state location
     let data_dir_path = std::fs::canonicalize(&data_dir).unwrap_or_else(|_| {
         // Directory doesn't exist yet — resolve parent + leaf
@@ -6248,65 +6268,17 @@ async fn run_validator() {
         }
     }
 
-    // ── Ghost validator purge ──
-    // Remove validators that have NEVER produced a block and were never active.
-    // These are artifacts from keypair changes, duplicate identities, or stale
-    // bootstrap entries. Return their bootstrap grants to the treasury.
-    {
-        let current_slot = state.get_last_slot().unwrap_or(0);
-        // Only purge after the initial bootstrap window (first 100 slots)
-        if current_slot > 100 {
-            let mut vs = validator_set.write().await;
-            let ghost_pubkeys: Vec<Pubkey> = vs
-                .validators()
-                .iter()
-                .filter(|v| {
-                    v.pubkey != validator_pubkey
-                        && v.blocks_proposed == 0
-                        && v.last_active_slot == 0
-                })
-                .map(|v| v.pubkey)
-                .collect();
-
-            for ghost_pk in &ghost_pubkeys {
-                vs.remove_validator(ghost_pk);
-                info!(
-                    "🧹 Purged ghost validator {} (never active, 0 blocks)",
-                    ghost_pk.to_base58()
-                );
-
-                // Return bootstrap grant to treasury if the ghost received one
-                if let Ok(Some(ghost_account)) = state.get_account(ghost_pk) {
-                    if ghost_account.staked > 0 {
-                        if let Ok(Some(tpk)) = state.get_treasury_pubkey() {
-                            if let Ok(Some(mut treasury)) = state.get_account(&tpk) {
-                                treasury.add_spendable(ghost_account.staked).ok();
-                                if let Err(e) = state.put_account(&tpk, &treasury) {
-                                    warn!("⚠️  Failed to return bootstrap grant to treasury: {e}");
-                                } else {
-                                    info!(
-                                        "💰 Returned {} LICN bootstrap grant to treasury from ghost {}",
-                                        ghost_account.staked / 1_000_000_000,
-                                        ghost_pk.to_base58()
-                                    );
-                                }
-                            }
-                        }
-                        // Zero out the ghost's account
-                        let zeroed = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                        state.put_account(ghost_pk, &zeroed).ok();
-                    }
-                }
-            }
-
-            if !ghost_pubkeys.is_empty() {
-                info!(
-                    "🧹 Purged {} ghost validator(s) on startup",
-                    ghost_pubkeys.len()
-                );
-            }
-        }
-    }
+    // F-04 audit fix: Ghost validator purge REMOVED.
+    // The old code removed validators that never produced blocks and returned
+    // their bootstrap grants to treasury via DIRECT STATE WRITES. This is a
+    // non-consensus operation: different nodes restart at different times, so
+    // they could disagree on who is a "ghost", causing permanent treasury
+    // balance divergence across the network.
+    //
+    // Cleanup of inactive validators should be done through a consensus
+    // transaction (e.g. DeregisterValidator opcode 31) so all nodes apply
+    // the same state change deterministically. Inactive validators are already
+    // naturally skipped by leader election due to low reputation.
 
     // Save validator set to RocksDB on EVERY boot.
     // clear_all_validators() inside save_validator_set removes ghost entries from old
@@ -6742,9 +6714,7 @@ async fn run_validator() {
             // Get peer manager reference before network moves into spawn
             let peer_manager = network.peer_manager.clone();
 
-            // Start accepting incoming connections
-            peer_manager.start_accepting().await;
-            info!("🔌 P2P: Started accepting incoming connections");
+            // Note: start_accepting is already called inside P2PNetwork::new()
 
             // Start network message processing (consumes network)
             let handle = tokio::spawn(async move {
@@ -7314,25 +7284,20 @@ async fn run_validator() {
                             // Reject the conflicting block
                             continue;
                         } else {
-                            // FIX-FORK-2: Allow re-delivery for fork resolution.
-                            // When a duplicate block arrives at or below our tip AND
-                            // there are pending blocks from a longer fork that can't
-                            // chain, let it through to fork choice. The previous
-                            // attempt may have rejected it because we_are_behind was
-                            // false at that time, but now with pending blocks queued
-                            // the fork choice has better information.
+                            // F-02 audit fix: Same block, same hash — already processed.
+                            // The old FIX-FORK-2 gate let duplicates through when
+                            // pending > 0, causing every block to be processed twice
+                            // during sync (inflating stats, wasting resources).
+                            // Fork resolution is handled by fork choice when a NEW
+                            // block arrives for a slot we already have (different
+                            // hash = equivocation above).
                             let current = state_for_blocks.get_last_slot().unwrap_or(0);
-                            let has_pending = sync_mgr.pending_count().await > 0;
-                            if block_slot <= current && has_pending {
-                                // Let through to fork choice for re-evaluation
-                                info!(
-                                    "🔄 Re-evaluating fork block {} (pending blocks exist)",
-                                    block_slot
-                                );
-                            } else {
-                                // Truly duplicate, skip
+                            if block_slot <= current {
+                                // Already applied to chain — skip entirely.
                                 continue;
                             }
+                            // Block is ahead of our tip with same (slot, validator)
+                            // but we haven't applied it yet. Let it through.
                         }
                     }
                     seen_blocks.insert(key, block_hash);
@@ -7461,9 +7426,13 @@ async fn run_validator() {
 
                             let mut dist_role_idx = 0usize;
                             let mut dist_recipients: Vec<(String, Pubkey, u64, u8)> = Vec::new();
+                            // F-01 audit fix: track auto-fund TXs (treasury→genesis transfers)
+                            // These are opcode 4 TXs where accounts[0] != gpk (sender is treasury).
+                            let mut auto_fund_applied = false;
                             for (i, tx) in block.transactions.iter().enumerate().skip(1) {
                                 if let Some(ix) = tx.message.instructions.first() {
                                     if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
+                                        let sender = ix.accounts[0];
                                         let recipient = ix.accounts[1];
                                         let amount_spores = if ix.data.len() >= 9 {
                                             u64::from_le_bytes(
@@ -7472,6 +7441,34 @@ async fn run_validator() {
                                         } else {
                                             0
                                         };
+
+                                        // F-01: Detect auto-fund TX (treasury→genesis).
+                                        // Distribution TXs have sender=gpk; auto-fund has sender=treasury.
+                                        if sender != gpk && recipient == gpk {
+                                            // This is the auto-fund: debit sender (treasury), credit genesis
+                                            if let Ok(Some(mut treasury_acct)) =
+                                                state_for_blocks.get_account(&sender)
+                                            {
+                                                treasury_acct.deduct_spendable(amount_spores).ok();
+                                                state_for_blocks
+                                                    .put_account(&sender, &treasury_acct)
+                                                    .ok();
+                                            }
+                                            if let Ok(Some(mut genesis_acct)) =
+                                                state_for_blocks.get_account(&gpk)
+                                            {
+                                                genesis_acct.add_spendable(amount_spores).ok();
+                                                state_for_blocks
+                                                    .put_account(&gpk, &genesis_acct)
+                                                    .ok();
+                                            }
+                                            auto_fund_applied = true;
+                                            info!(
+                                                "  ✓ 📡 [sync] Auto-funded genesis wallet with {} LICN from treasury (consensus TX)",
+                                                amount_spores / 1_000_000_000
+                                            );
+                                            continue;
+                                        }
 
                                         let (role, _amount_licn, pct) = GENESIS_DISTRIBUTION
                                             .get(dist_role_idx)
@@ -7518,6 +7515,9 @@ async fn run_validator() {
                                         dist_role_idx += 1;
                                     }
                                 }
+                            }
+                            if auto_fund_applied {
+                                info!("  ✓ 📡 [sync] Genesis auto-fund TX replicated from block");
                             }
 
                             // 4b. Store genesis accounts in state DB (role → pubkey mapping)
@@ -7663,6 +7663,50 @@ async fn run_validator() {
                                         }
                                     }
 
+                                    // F-09 audit fix: Also bootstrap the genesis block's PRODUCER.
+                                    // On the genesis node, this validator is bootstrapped via direct
+                                    // state write at startup (lines 6500+). Replicate it here
+                                    // deterministically so every joiner gets the same result.
+                                    let genesis_producer = Pubkey(block.header.validator);
+                                    if pool.get_stake(&genesis_producer).is_none()
+                                        && treasury_account
+                                            .deduct_spendable(BOOTSTRAP_GRANT_AMOUNT)
+                                            .is_ok()
+                                    {
+                                        let mut producer_acct = state_for_blocks
+                                            .get_account(&genesis_producer)
+                                            .ok()
+                                            .flatten()
+                                            .unwrap_or_else(|| Account::new(0, Pubkey([0x01; 32])));
+                                        producer_acct.spores = producer_acct
+                                            .spores
+                                            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                        producer_acct.staked = producer_acct
+                                            .staked
+                                            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                        producer_acct.spendable = 0;
+                                        state_for_blocks
+                                            .put_account(&genesis_producer, &producer_acct)
+                                            .ok();
+                                        if let Err(e) = pool.try_bootstrap_with_fingerprint(
+                                            genesis_producer,
+                                            BOOTSTRAP_GRANT_AMOUNT,
+                                            0,
+                                            [0u8; 32],
+                                        ) {
+                                            warn!(
+                                                "⚠️  [sync] Genesis producer bootstrap failed: {}",
+                                                e
+                                            );
+                                        } else {
+                                            info!(
+                                                "🌱 [sync] Bootstrapped genesis producer {} with {} LICN",
+                                                genesis_producer.to_base58(),
+                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                                            );
+                                        }
+                                    }
+
                                     state_for_blocks
                                         .put_account(&treasury_pubkey, &treasury_account)
                                         .ok();
@@ -7760,7 +7804,7 @@ async fn run_validator() {
                             }
 
                             // 10. Flush metrics counters
-                            state_for_blocks.flush_metrics().ok();
+                            state_for_blocks.save_metrics_counters().ok();
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
@@ -7953,16 +7997,10 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if can_chain {
-                        // SYNC-FIX: Replicate genesis bootstrap for joining nodes.
-                        // The genesis validator's account + pool entry are created
-                        // by direct state write on the genesis node (not through a
-                        // transaction). Without replication, joining nodes have
-                        // divergent state_roots from block 1 onward. When we see
-                        // the first non-genesis block, identify the genesis validator
-                        // (block producer) and apply the same bootstrap: debit
-                        // treasury → create validator account with staked funds →
-                        // add to stake pool. This must happen BEFORE replay so that
-                        // state matches the genesis node exactly.
+                        // F-09 audit fix: Genesis bootstrap is now applied deterministically
+                        // during genesis block processing (section 6b). This safety check
+                        // warns if, for any reason, the producer's pool entry is still
+                        // missing on early blocks — but does NOT apply direct state writes.
                         if block_slot > 0 && block_slot <= 5 {
                             let producer = Pubkey(block.header.validator);
                             let pool_missing = state_for_blocks
@@ -7970,59 +8008,10 @@ async fn run_validator() {
                                 .map(|p| p.get_stake(&producer).is_none())
                                 .unwrap_or(true);
                             if pool_missing {
-                                // Replicate genesis bootstrap
-                                let treasury_pk =
-                                    state_for_blocks.get_treasury_pubkey().ok().flatten();
-                                if let Some(tpk) = treasury_pk {
-                                    if let Ok(Some(mut treasury)) =
-                                        state_for_blocks.get_account(&tpk)
-                                    {
-                                        if treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).is_ok()
-                                        {
-                                            state_for_blocks.put_account(&tpk, &treasury).ok();
-                                            let mut acct = state_for_blocks
-                                                .get_account(&producer)
-                                                .unwrap_or(None)
-                                                .unwrap_or_else(|| {
-                                                    Account::new(0, SYSTEM_ACCOUNT_OWNER)
-                                                });
-                                            acct.spores =
-                                                acct.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                            acct.staked =
-                                                acct.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                            state_for_blocks.put_account(&producer, &acct).ok();
-                                            let mut pool = state_for_blocks
-                                                .get_stake_pool()
-                                                .unwrap_or_else(|_| StakePool::new());
-                                            // Must use try_bootstrap_with_fingerprint (not upsert_stake)
-                                            // to create byte-identical StakeInfo as the genesis node:
-                                            // bootstrap_index=0, bootstrap_debt=amount, status=Bootstrapping.
-                                            // upsert_stake creates bootstrap_index=u64::MAX, debt=0, FullyVested.
-                                            if let Err(e) = pool.try_bootstrap_with_fingerprint(
-                                                producer,
-                                                BOOTSTRAP_GRANT_AMOUNT,
-                                                0,
-                                                [0u8; 32],
-                                            ) {
-                                                warn!(
-                                                    "⚠️  Genesis bootstrap pool entry failed: {}",
-                                                    e
-                                                );
-                                            }
-                                            state_for_blocks.put_stake_pool(&pool).ok();
-                                            {
-                                                let mut mem_pool =
-                                                    stake_pool_for_blocks.write().await;
-                                                *mem_pool = pool;
-                                            }
-                                            info!(
-                                                "🩹 Genesis bootstrap replicated: {} staked {} LICN",
-                                                producer.to_base58(),
-                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                                            );
-                                        }
-                                    }
-                                }
+                                warn!(
+                                    "⚠️  Block {} producer {} not in stake pool after genesis — state may diverge",
+                                    block_slot, producer.to_base58()
+                                );
                             }
                         }
 
@@ -8291,6 +8280,27 @@ async fn run_validator() {
                                 );
                             }
                         }
+
+                        // F-07 audit fix: Immediately request the missing parent
+                        // block(s) instead of waiting for the next 5-second sync probe.
+                        // This closes gaps faster during normal operation.
+                        if block_slot > current_slot + 1 {
+                            let gap_start = current_slot + 1;
+                            let gap_end = block_slot.saturating_sub(1);
+                            info!(
+                                "🔗 Requesting missing blocks {} to {} (parent gap for slot {})",
+                                gap_start, gap_end, block_slot
+                            );
+                            let request_msg = P2PMessage::new(
+                                MessageType::BlockRangeRequest {
+                                    start_slot: gap_start,
+                                    end_slot: gap_end,
+                                },
+                                local_addr,
+                            );
+                            peer_mgr_for_sync.broadcast(request_msg).await;
+                        }
+
                         sync_mgr.add_pending_block(block).await;
                     }
 
@@ -8588,24 +8598,30 @@ async fn run_validator() {
                                     &existing,
                                     &data_dir_for_blocks,
                                 );
-                                // Replace slot index with the higher-weight block
-                                if sync_mgr.should_full_validate(block.header.slot).await {
-                                    replay_block_transactions(&processor_for_blocks, &block);
-                                }
-                                run_analytics_bridge_from_state(
-                                    &state_for_blocks,
-                                    block.header.slot,
-                                    genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
-                                );
-                                run_sltp_triggers_from_state(&state_for_blocks);
-                                reset_24h_stats_if_expired(
-                                    &state_for_blocks,
-                                    block.header.timestamp,
-                                );
+
+                                // F-10 audit fix: Write new block IMMEDIATELY after revert.
+                                // This minimizes the crash window between "old effects reverted"
+                                // and "new block committed". On crash recovery, F-03's
+                                // idempotency guard (reward_distribution_hash check) ensures
+                                // apply_block_effects runs for the block on disk.
                                 if state_for_blocks
                                     .put_block_atomic(&block, None, None)
                                     .is_ok()
                                 {
+                                    // Replay TXs + analytics AFTER commit — crash here is recoverable
+                                    if sync_mgr.should_full_validate(block.header.slot).await {
+                                        replay_block_transactions(&processor_for_blocks, &block);
+                                    }
+                                    run_analytics_bridge_from_state(
+                                        &state_for_blocks,
+                                        block.header.slot,
+                                        genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                    );
+                                    run_sltp_triggers_from_state(&state_for_blocks);
+                                    reset_24h_stats_if_expired(
+                                        &state_for_blocks,
+                                        block.header.timestamp,
+                                    );
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     // FIX-FORK-1: Record after fork adoption

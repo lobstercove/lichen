@@ -114,7 +114,8 @@
                 </div>
                 <div class="arch-box"><i class="fas fa-server arch-icon-infra"></i>
                     <div class="arch-label">Infrastructure</div>
-                    <div class="arch-desc">LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage, Shielded
+                    <div class="arch-desc">LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage,
+                        Shielded
                         Pool</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-landmark arch-icon-gov"></i>
@@ -209,7 +210,8 @@
                 </tr>
             </table>
             <p><strong>Example —
-                </strong><code>lichen call &lt;addr&gt; register_identity '["8nRM2Fk...", 1, "agent-demo", 10]'</code></p>
+                </strong><code>lichen call &lt;addr&gt; register_identity '["8nRM2Fk...", 1, "agent-demo", 10]'</code>
+            </p>
             <p>The runtime detects the JSON array, encodes: <code>0xAB 20 01 20 01</code> + [32B pubkey][1B: 1][32B:
                 "agent-demo\0…"][1B: 10]</p>
 
@@ -259,8 +261,10 @@
                 </tr>
                 <tr>
                     <td>Named exports (standard)</td>
-                    <td>LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault, LichenID, LichenDAO, LichenPunks,
-                        LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage,
+                    <td>LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault, LichenID, LichenDAO,
+                        LichenPunks,
+                        LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss
+                        Storage,
                         lUSD, wETH, wSOL</td>
                     <td>Each function is a <code>#[no_mangle] pub extern "C" fn</code> — callable by name with JSON args
                     </td>
@@ -357,7 +361,8 @@
             <p>The runtime records the WASM return value in <code>return_code</code> (visible in
                 <code>getTransaction</code> and <code>callContract</code> responses). For opcode-dispatch contracts
                 (<code>call() → u32</code>), the processor treats a non-zero return with no state changes as a failed
-                transaction. For named-export contracts, the same heuristic applies: non-zero + no storage writes = error.
+                transaction. For named-export contracts, the same heuristic applies: non-zero + no storage writes =
+                error.
             </p>
             <table class="const-table">
                 <tr>
@@ -383,7 +388,8 @@
                 </tr>
                 <tr>
                     <td>u32 opcode dispatch (0 = success)</td>
-                    <td>DEX Core, DEX AMM, DEX Router, DEX Governance, DEX Rewards, DEX Margin, DEX Analytics, Prediction Market</td>
+                    <td>DEX Core, DEX AMM, DEX Router, DEX Governance, DEX Rewards, DEX Margin, DEX Analytics,
+                        Prediction Market</td>
                 </tr>
             </table>
         </div>
@@ -491,7 +497,8 @@
                 <div class="contract-body">
                     <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model.
                         Supports <strong>liquidity pool creation</strong>, token swaps, flash loans (0.09% fee), and
-                        <strong>LichenID reputation-based fee discounts</strong>. SporePump tokens graduate to LichenSwap
+                        <strong>LichenID reputation-based fee discounts</strong>. SporePump tokens graduate to
+                        LichenSwap
                         pools once they hit the market cap threshold.
                     </p>
                     <div class="sub-heading">Key Features</div>
@@ -1773,8 +1780,8 @@
                             class="fn-chip">query_user_open_position</span><span
                             class="fn-chip">set_position_sl_tp</span><span
                             class="fn-chip">withdraw_insurance</span><span
-                            class="fn-chip">set_lichencoin_address</span><span class="fn-chip">emergency_pause</span><span
-                            class="fn-chip">emergency_unpause</span></div>
+                            class="fn-chip">set_lichencoin_address</span><span
+                            class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
                 </div>
             </div>

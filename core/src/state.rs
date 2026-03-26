@@ -1570,8 +1570,8 @@ impl StateStore {
             .db
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
-        let data = bincode::serialize(meta)
-            .map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        let data =
+            bincode::serialize(meta).map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
         self.db
             .put_cf(&cf, sig.0, data)
             .map_err(|e| format!("Failed to store tx meta: {}", e))
@@ -1604,10 +1604,7 @@ impl StateStore {
     /// Get full transaction execution metadata.
     /// Returns None for transactions stored in the old 8-byte CU-only format
     /// (those are handled transparently with default return_code/return_data/logs).
-    pub fn get_tx_meta_full(
-        &self,
-        sig: &Hash,
-    ) -> Result<Option<crate::processor::TxMeta>, String> {
+    pub fn get_tx_meta_full(&self, sig: &Hash) -> Result<Option<crate::processor::TxMeta>, String> {
         let cf = self
             .db
             .cf_handle(CF_TX_META)
@@ -1771,7 +1768,7 @@ impl StateStore {
 
         // PERF-OPT 2: Update in-memory counters only — do NOT persist metrics
         // here. The caller (block processor / commit_batch) is responsible for
-        // calling flush_metrics() once after the full block is processed.
+        // calling save_metrics_counters() once after the full block is processed.
         if is_new {
             self.metrics.increment_accounts();
         }
@@ -4210,13 +4207,22 @@ impl StateStore {
         Ok(())
     }
 
-    /// PERF-OPT 2: Flush in-memory metrics counters to RocksDB.
+    /// PERF-OPT 2: Save in-memory metrics counters to RocksDB.
     ///
     /// Call this once after processing a full block instead of on every
     /// `put_account`. Reduces per-block metrics I/O from O(num_accounts)
     /// to O(1) — saving ~6 RocksDB puts per account touched.
-    pub fn flush_metrics(&self) -> Result<(), String> {
+    ///
+    /// Note: This saves aggregate counters (total_accounts, total_supply, etc.),
+    /// NOT individual account state. Account state is saved via put_account().
+    pub fn save_metrics_counters(&self) -> Result<(), String> {
         self.metrics.save(&self.db)
+    }
+
+    /// Backward-compatible alias for save_metrics_counters.
+    #[deprecated(note = "Use save_metrics_counters() instead")]
+    pub fn flush_metrics(&self) -> Result<(), String> {
+        self.save_metrics_counters()
     }
 }
 
@@ -4519,8 +4525,8 @@ impl StateBatch {
             .db
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
-        let data = bincode::serialize(meta)
-            .map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
+        let data =
+            bincode::serialize(meta).map_err(|e| format!("Failed to serialize tx meta: {}", e))?;
         self.batch.put_cf(&cf, sig.0, data);
         Ok(())
     }

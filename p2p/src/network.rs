@@ -740,16 +740,19 @@ impl P2PNetwork {
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
-                debug!(
-                    "P2P: Received {} blocks in range response from {}",
+                info!(
+                    "📥 SYNC: Received {} blocks in range response from {} (slots: {}..{})",
                     blocks.len(),
-                    peer_addr
+                    peer_addr,
+                    blocks.first().map(|b| b.header.slot).unwrap_or(0),
+                    blocks.last().map(|b| b.header.slot).unwrap_or(0),
                 );
                 for block in blocks {
+                    let slot = block.header.slot;
                     if let Err(e) = self.sync_block_tx.try_send(block) {
                         warn!(
-                            "P2P: Sync block channel full during range response from {} ({})",
-                            peer_addr, e
+                            "P2P: Sync block channel full during range response from {} slot {} ({})",
+                            peer_addr, slot, e
                         );
                         break; // Stop sending remaining blocks — will be re-requested
                     }

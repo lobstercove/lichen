@@ -436,7 +436,7 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
 
     if !require_not_paused() {
         reentrancy_exit();
-        return 1;
+        return 9;
     }
     if is_zero(&to_addr) {
         reentrancy_exit();
@@ -470,7 +470,7 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
     );
 
     reentrancy_exit();
-    0
+    1
 }
 
 /// Approve a spender to transfer on owner's behalf (for DEX integration).
@@ -507,7 +507,7 @@ pub extern "C" fn approve(owner: *const u8, spender: *const u8, amount: u64) -> 
     let ak = allowance_key(&owner_addr, &spender_addr);
     save_u64(&ak, amount);
     reentrancy_exit();
-    0
+    1
 }
 
 /// Transfer from another account using allowance (for DEX contracts to move lUSD).
@@ -540,7 +540,7 @@ pub extern "C" fn transfer_from(
 
     if !require_not_paused() {
         reentrancy_exit();
-        return 1;
+        return 9;
     }
     if is_zero(&to_addr) {
         reentrancy_exit();
@@ -581,7 +581,7 @@ pub extern "C" fn transfer_from(
     );
 
     reentrancy_exit();
-    0
+    1
 }
 
 // ============================================================================

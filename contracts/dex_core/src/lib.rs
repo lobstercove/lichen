@@ -1524,44 +1524,12 @@ pub fn place_order(
         return 5;
     }
 
-    // ── Token escrow: lock trader's tokens into DEX contract ──
-    // For SELL orders: escrow quantity of base tokens
-    // For BUY orders: escrow notional + max taker fee of quote tokens
-    // Requires trader to have approved DEX contract via token.approve() first.
-    // Return code 11 = escrow transfer failed (insufficient balance or allowance)
-    let escrow_amount;
-    {
-        let pair_data_ref = storage_get(&pk).unwrap();
-        let base_token = decode_pair_base_token(&pair_data_ref);
-        let quote_token = decode_pair_quote_token(&pair_data_ref);
-        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
-
-        if side == SIDE_SELL {
-            escrow_amount = quantity;
-            if !is_zero(&base_token) {
-                if !escrow_tokens(&base_token, &t, escrow_amount) {
-                    log_info("Sell escrow failed — insufficient balance or allowance");
-                    reentrancy_exit();
-                    return 11;
-                }
-            }
-        } else {
-            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
-            if !is_zero(&quote_token) {
-                if !escrow_tokens(&quote_token, &t, escrow_amount) {
-                    log_info("Buy escrow failed — insufficient balance or allowance");
-                    reentrancy_exit();
-                    return 11;
-                }
-            }
-        }
-    }
-
     // ── Oracle Price Band Protection ──
+    // MUST run BEFORE escrow to avoid locking tokens on out-of-band orders.
     // The validator writes dex_band_{pair_id} (16 bytes: ref_price + slot)
     // for oracle-priced pairs. If present and fresh (<300 slots), enforce:
-    //   Market orders: reject if worst-price bound is >5% from oracle
-    //   Limit orders:  reject if limit price is >10% from oracle
+    //   Market orders: reject if worst-price bound is >10% from oracle
+    //   Limit orders:  reject if limit price is >50% from oracle
     // Native-only pairs (no band record) → unrestricted.
     // Return code 10 = price outside oracle band.
     {
@@ -1603,11 +1571,11 @@ pub fn place_order(
                     };
 
                     if check_price > 0 {
-                        // Percentage thresholds (basis points): market=500 (5%), limit=1000 (10%)
+                        // Percentage thresholds (basis points): market=1000 (10%), limit=5000 (50%)
                         let band_bps: u64 = if base_order_type == ORDER_MARKET {
-                            500
-                        } else {
                             1000
+                        } else {
+                            5000
                         };
 
                         // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
@@ -1620,6 +1588,39 @@ pub fn place_order(
                             return 10; // price outside oracle band
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ── Token escrow: lock trader's tokens into DEX contract ──
+    // For SELL orders: escrow quantity of base tokens
+    // For BUY orders: escrow notional + max taker fee of quote tokens
+    // Requires trader to have approved DEX contract via token.approve() first.
+    // Return code 11 = escrow transfer failed (insufficient balance or allowance)
+    let escrow_amount;
+    {
+        let pair_data_ref = storage_get(&pk).unwrap();
+        let base_token = decode_pair_base_token(&pair_data_ref);
+        let quote_token = decode_pair_quote_token(&pair_data_ref);
+        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
+
+        if side == SIDE_SELL {
+            escrow_amount = quantity;
+            if !is_zero(&base_token) {
+                if !escrow_tokens(&base_token, &t, escrow_amount) {
+                    log_info("Sell escrow failed — insufficient balance or allowance");
+                    reentrancy_exit();
+                    return 11;
+                }
+            }
+        } else {
+            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
+            if !is_zero(&quote_token) {
+                if !escrow_tokens(&quote_token, &t, escrow_amount) {
+                    log_info("Buy escrow failed — insufficient balance or allowance");
+                    reentrancy_exit();
+                    return 11;
                 }
             }
         }
