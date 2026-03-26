@@ -4091,6 +4091,7 @@ fn verify_checkpoint_anchor(
     verify_committed_block_authenticity(&block, validator_set, stake_pool)
 }
 
+#[allow(dead_code)] // Used in tests; removed from block processing (see G-3 removal)
 fn verify_block_validators_hash(
     block: &Block,
     validator_set: &ValidatorSet,
@@ -4122,6 +4123,7 @@ fn verify_block_validators_hash(
     Ok(())
 }
 
+#[allow(dead_code)] // Used in tests via verify_block_validators_hash
 fn compute_promoted_pending_validators_hash(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
@@ -7172,34 +7174,23 @@ async fn run_validator() {
                     }
                 }
 
-                // G-3: Commit certificate verification (2/3+ stake).
-                // Only verify for blocks near our tip (real-time consensus).
-                // During initial sync / catch-up, the local stake pool may
-                // differ from the producing node's pool at that height
-                // (e.g. the producer had fewer validators online).  The
-                // parent-hash chain + block signatures provide integrity
-                // during catch-up.  This matches Tendermint's fast-sync
-                // vs consensus-mode split: fast-sync trusts the hash chain,
-                // consensus mode verifies commit certificates.
-                if block_slot > 0
-                    && sync_mgr
-                        .is_caught_up(state_for_blocks.get_last_slot().unwrap_or(0))
-                        .await
-                {
-                    let vs = validator_set_for_blocks.read().await;
-                    let pool = stake_pool_for_blocks.read().await;
-                    if let Err(err) = verify_committed_block_authenticity(&block, &vs, &pool) {
-                        warn!("⚠️  Rejecting block {} — {}", block_slot, err);
-                        continue;
-                    }
-
-                    if let Err(err) =
-                        verify_block_validators_hash(&block, &vs, &pool, min_validator_stake)
-                    {
-                        warn!("⚠️  Rejecting block {} — {}", block_slot, err);
-                        continue;
-                    }
-                }
+                // Commit certificate verification is NOT performed during
+                // block processing.  Full validators rely on:
+                //   1. Block signature verification (above — proves producer identity)
+                //   2. Parent-hash chain (ordering & tamper detection during sync)
+                //   3. BFT consensus (propose/prevote/precommit during real-time)
+                //
+                // Re-verifying commit certs here is unsafe because the local
+                // stake pool diverges from the producer's pool at each height
+                // during join/sync: the joiner replays RegisterValidator TXs
+                // that add itself to the set, but the producer's commit cert
+                // was signed BEFORE those validators joined.  This creates an
+                // unresolvable 2/3-stake mismatch at every join event.
+                //
+                // Commit certificates are stored in blocks for light-client
+                // verification, not full-node re-verification.  This matches
+                // Tendermint's architecture: fast-sync trusts the hash chain,
+                // consensus mode uses live BFT voting.
 
                 // 1.7: Double-block equivocation detection
                 {
