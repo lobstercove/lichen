@@ -7628,50 +7628,6 @@ async fn run_validator() {
                                         }
                                     }
 
-                                    // F-09 audit fix: Also bootstrap the genesis block's PRODUCER.
-                                    // On the genesis node, this validator is bootstrapped via direct
-                                    // state write at startup (lines 6500+). Replicate it here
-                                    // deterministically so every joiner gets the same result.
-                                    let genesis_producer = Pubkey(block.header.validator);
-                                    if pool.get_stake(&genesis_producer).is_none()
-                                        && treasury_account
-                                            .deduct_spendable(BOOTSTRAP_GRANT_AMOUNT)
-                                            .is_ok()
-                                    {
-                                        let mut producer_acct = state_for_blocks
-                                            .get_account(&genesis_producer)
-                                            .ok()
-                                            .flatten()
-                                            .unwrap_or_else(|| Account::new(0, Pubkey([0x01; 32])));
-                                        producer_acct.spores = producer_acct
-                                            .spores
-                                            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                        producer_acct.staked = producer_acct
-                                            .staked
-                                            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                        producer_acct.spendable = 0;
-                                        state_for_blocks
-                                            .put_account(&genesis_producer, &producer_acct)
-                                            .ok();
-                                        if let Err(e) = pool.try_bootstrap_with_fingerprint(
-                                            genesis_producer,
-                                            BOOTSTRAP_GRANT_AMOUNT,
-                                            0,
-                                            [0u8; 32],
-                                        ) {
-                                            warn!(
-                                                "⚠️  [sync] Genesis producer bootstrap failed: {}",
-                                                e
-                                            );
-                                        } else {
-                                            info!(
-                                                "🌱 [sync] Bootstrapped genesis producer {} with {} LICN",
-                                                genesis_producer.to_base58(),
-                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                                            );
-                                        }
-                                    }
-
                                     state_for_blocks
                                         .put_account(&treasury_pubkey, &treasury_account)
                                         .ok();
@@ -7962,10 +7918,10 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if can_chain {
-                        // F-09 audit fix: Genesis bootstrap is now applied deterministically
-                        // during genesis block processing (section 6b). This safety check
-                        // warns if, for any reason, the producer's pool entry is still
-                        // missing on early blocks — but does NOT apply direct state writes.
+                        // Replicate genesis producer bootstrap on early blocks.
+                        // The genesis node bootstraps its own validator via direct
+                        // state write at startup; joiners must replicate this when
+                        // they see the REAL producer in block 1-5 headers.
                         if block_slot > 0 && block_slot <= 5 {
                             let producer = Pubkey(block.header.validator);
                             let pool_missing = state_for_blocks
@@ -7973,10 +7929,59 @@ async fn run_validator() {
                                 .map(|p| p.get_stake(&producer).is_none())
                                 .unwrap_or(true);
                             if pool_missing {
-                                warn!(
-                                    "⚠️  Block {} producer {} not in stake pool after genesis — state may diverge",
-                                    block_slot, producer.to_base58()
-                                );
+                                // Replicate genesis bootstrap
+                                let treasury_pk =
+                                    state_for_blocks.get_treasury_pubkey().ok().flatten();
+                                if let Some(tpk) = treasury_pk {
+                                    if let Ok(Some(mut treasury)) =
+                                        state_for_blocks.get_account(&tpk)
+                                    {
+                                        if treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).is_ok()
+                                        {
+                                            state_for_blocks.put_account(&tpk, &treasury).ok();
+                                            let mut acct = state_for_blocks
+                                                .get_account(&producer)
+                                                .unwrap_or(None)
+                                                .unwrap_or_else(|| {
+                                                    Account::new(0, SYSTEM_ACCOUNT_OWNER)
+                                                });
+                                            acct.spores =
+                                                acct.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            acct.staked =
+                                                acct.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            state_for_blocks.put_account(&producer, &acct).ok();
+                                            let mut pool = state_for_blocks
+                                                .get_stake_pool()
+                                                .unwrap_or_else(|_| StakePool::new());
+                                            // Must use try_bootstrap_with_fingerprint (not upsert_stake)
+                                            // to create byte-identical StakeInfo as the genesis node:
+                                            // bootstrap_index=0, bootstrap_debt=amount, status=Bootstrapping.
+                                            // upsert_stake creates bootstrap_index=u64::MAX, debt=0, FullyVested.
+                                            if let Err(e) = pool.try_bootstrap_with_fingerprint(
+                                                producer,
+                                                BOOTSTRAP_GRANT_AMOUNT,
+                                                0,
+                                                [0u8; 32],
+                                            ) {
+                                                warn!(
+                                                    "⚠️  Genesis bootstrap pool entry failed: {}",
+                                                    e
+                                                );
+                                            }
+                                            state_for_blocks.put_stake_pool(&pool).ok();
+                                            {
+                                                let mut mem_pool =
+                                                    stake_pool_for_blocks.write().await;
+                                                *mem_pool = pool;
+                                            }
+                                            info!(
+                                                "🩹 Genesis bootstrap replicated: {} staked {} LICN",
+                                                producer.to_base58(),
+                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
 
