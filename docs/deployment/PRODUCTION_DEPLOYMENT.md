@@ -2026,9 +2026,12 @@ pgrep -af lichen || true'
 
 Remove repo-local chain state, custody state, and transient logs on all three VPSes.
 
+> **⚠️ IMPORTANT:** When wiping state for a re-genesis, you must ALSO delete `artifacts/{network}/` (wallet + keypair files). If you only wipe the chain state (`data/state-*`) but leave stale artifacts, the next genesis will create on-chain accounts from the old wallet pubkeys but the keypair files will be stale. **Always wipe both together.**
+
 ```bash
 ssh -p 2222 ubuntu@<VPS_IP> '
   rm -rf ~/lichen/data/state-testnet ~/lichen/data/state-mainnet
+  rm -rf ~/lichen/artifacts/testnet ~/lichen/artifacts/mainnet
   rm -rf ~/lichen/data/custody-testnet ~/lichen/data/custody-mainnet
   rm -rf /tmp/lichen-testnet /tmp/lichen-mainnet
   rm -f ~/.lichen/peer_fingerprints.json
@@ -2055,6 +2058,20 @@ for VPS_IP in 15.204.229.189 37.59.97.61 15.235.142.253; do
 done
 ```
 
+### Step 2.5: Rebuild Contract WASMs Locally (Before Rsync)
+
+> **⚠️ CRITICAL — WASM Staleness:** Each contract in `contracts/` has a pre-built `.wasm` file at `contracts/{name}/{name}.wasm`. These are the WASMs that `lichen-genesis` deploys at chain creation. **They are NOT automatically rebuilt by `cargo build --release`**. If any contract source (`contracts/*/src/lib.rs`) has been modified since the last WASM build, the pre-built WASM is stale and the old behavior will be deployed.
+
+**Always rebuild WASMs before a re-genesis:**
+
+```bash
+# From local repo root (requires wasm32-unknown-unknown target)
+rustup target add wasm32-unknown-unknown
+./scripts/build-all-contracts.sh
+```
+
+This rebuilds all 29 contracts from source and copies the output to `contracts/{name}/{name}.wasm`. The updated WASMs are then rsynced to the VPSes in Step 2.
+
 ### Step 3: Build on Each VPS
 
 Build the validator and genesis binaries first. Build faucet and custody if you plan to restart ancillary services in the same maintenance window.
@@ -2073,17 +2090,31 @@ ssh -p 2222 ubuntu@<VPS_IP> "ls -la ~/lichen/target/release/lichen-{validator,ge
 
 ### Step 4: Initialize Genesis Databases on US VPS
 
-Run `lichen-genesis` directly for both networks before starting any validator process.
+Genesis uses a two-phase process to ensure keypair consistency:
+
+1. **`--prepare-wallet`** generates `genesis-wallet.json` + all keypair files in `artifacts/{network}/`
+2. **`--wallet-file`** reads the wallet, creates chain state in `--db-path`, and **copies + validates all keypairs** into `{db-path}/genesis-keys/`
+
+> **⚠️ CRITICAL — Keypair Consistency:** The wallet JSON and keypair files are tightly coupled. Running `--prepare-wallet` overwrites the keypair files with NEW keys. If you run `--prepare-wallet` twice without also re-running genesis, the keypair files will have different pubkeys than the wallet JSON. The genesis tool validates this at creation time and **aborts with `KEYPAIR MISMATCH`** if detected. To fix: delete the old wallet + keys from `artifacts/` and re-run both steps.
 
 ```bash
 ssh -p 2222 ubuntu@15.204.229.189 "
   cd ~/lichen
-  ./target/release/lichen-genesis --network testnet --db-path ./data/state-testnet
-  ./target/release/lichen-genesis --network mainnet --db-path ./data/state-mainnet
+
+  # Phase 1: Generate matching wallet + keypairs (ONLY if no wallet exists yet)
+  ./target/release/lichen-genesis --prepare-wallet --network testnet --output-dir ./artifacts/testnet
+
+  # Phase 2: Create chain from wallet (copies + validates all keypairs into db-path)
+  ./target/release/lichen-genesis --network testnet \
+    --wallet-file ./artifacts/testnet/genesis-wallet.json \
+    --initial-validator \$(grep -m1 publicKeyBase58 ./data/state-testnet/validator-keypair.json 2>/dev/null | sed -E 's/.*\"([A-Za-z1-9]+)\".*/\1/' || echo '<VALIDATOR_PUBKEY>') \
+    --db-path ./data/state-testnet
 "
 ```
 
-This creates the fresh slot-0 database for both networks, writes the genesis wallet and keys under `~/lichen/data/state-*`, and avoids the empty-state join trap.
+This creates the fresh slot-0 database, writes the genesis wallet and all distribution keypairs under `~/lichen/data/state-testnet/genesis-keys/`, and avoids the empty-state join trap.
+
+> **Faucet treasury identity:** The distribution wallet `validator_rewards` doubles as the faucet treasury (`treasury-{chain_id}.json`). Both files contain the same keypair. The on-chain treasury account receives 50M LICN at genesis and is used by `requestAirdrop` RPC to sign airdrop transfers.
 
 ### Step 5: Start US Validators Against the Genesis DBs
 

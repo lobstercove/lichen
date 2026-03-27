@@ -9,9 +9,9 @@ use lichen_core::consensus::{
 };
 use lichen_core::multisig::GovernedWalletConfig;
 use lichen_core::{
-    Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair, Message,
-    Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
+    Account, Block, FeeConfig, GenesisConfig, GenesisValidator, GenesisWallet, Hash, Instruction,
+    Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -192,10 +192,10 @@ fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> 
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default_signers);
 
-    let (wallet, keypairs, distribution_keypairs) =
+    let (mut wallet, keypairs, distribution_keypairs) =
         GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count)?;
-    let wallet_path = output_dir.join("genesis-wallet.json");
-    wallet.save(&wallet_path)?;
+
+    // Save keypair files first
     let keypair_paths =
         GenesisWallet::save_keypairs(&keypairs, &keys_dir, &genesis_config.chain_id)?;
     let distribution_paths = GenesisWallet::save_distribution_keypairs(
@@ -211,6 +211,20 @@ fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> 
             &genesis_config.chain_id,
         )?;
     }
+
+    // Fill keypair_path on each distribution wallet so the wallet JSON records them
+    if let Some(ref mut dist) = wallet.distribution_wallets {
+        for dw in dist.iter_mut() {
+            dw.keypair_path = Some(format!(
+                "genesis-keys/{}-{}.json",
+                dw.role, genesis_config.chain_id
+            ));
+        }
+    }
+
+    // Save wallet AFTER filling keypair paths
+    let wallet_path = output_dir.join("genesis-wallet.json");
+    wallet.save(&wallet_path)?;
 
     info!("═══════════════════════════════════════════════════════");
     info!("  Prepared deterministic genesis artifacts");
@@ -256,7 +270,7 @@ fn main() {
         }
     };
 
-    let genesis_config = if let Some(ref path) = config_path {
+    let mut genesis_config = if let Some(ref path) = config_path {
         match GenesisConfig::from_file(path) {
             Ok(config) => config,
             Err(err) => {
@@ -427,6 +441,71 @@ fn main() {
         error!("{}", err);
         std::process::exit(1);
     }
+
+    // Copy ALL distribution keypairs to data dir and validate pubkey consistency
+    if let Some(ref dist) = wallet.distribution_wallets {
+        for dw in dist {
+            if let Some(ref kp_path) = dw.keypair_path {
+                if let Err(err) = copy_optional_artifact(&wallet_file, &db_dir_path, Some(kp_path))
+                {
+                    error!("{}", err);
+                    std::process::exit(1);
+                }
+                // Validate keypair pubkey matches wallet pubkey
+                let resolved = db_dir_path.join(kp_path);
+                if resolved.exists() {
+                    match std::fs::read_to_string(&resolved) {
+                        Ok(contents) => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&contents)
+                            {
+                                if let Some(file_pk) = parsed.get("pubkey").and_then(|v| v.as_str())
+                                {
+                                    let wallet_pk = dw.pubkey.to_base58();
+                                    if file_pk != wallet_pk {
+                                        error!(
+                                            "KEYPAIR MISMATCH for {}: wallet has {} but keypair file has {}. \
+                                             Re-run --prepare-wallet to regenerate matching artifacts.",
+                                            dw.role, wallet_pk, file_pk
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                    info!(
+                                        "  ✓ {} keypair copied and validated: {}",
+                                        dw.role, wallet_pk
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => warn!(
+                            "  ⚠️  Could not read {} keypair for validation: {}",
+                            dw.role, e
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    // Sync CLI-provided validators into genesis_config so genesis.json is accurate
+    let bootstrap_grant_licn = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000;
+    for v in &initial_validators {
+        let pubkey_str = v.to_base58();
+        if !genesis_config
+            .initial_validators
+            .iter()
+            .any(|gv| gv.pubkey == pubkey_str)
+        {
+            genesis_config
+                .initial_validators
+                .push(GenesisValidator {
+                    pubkey: pubkey_str,
+                    stake_licn: bootstrap_grant_licn,
+                    reputation: 100,
+                    comment: Some("CLI --initial-validator".to_string()),
+                });
+        }
+    }
+
     let effective_genesis_config_path = db_dir_path.join("genesis.json");
     if let Some(ref config_path) = config_path {
         if let Err(err) = std::fs::copy(config_path, &effective_genesis_config_path) {
