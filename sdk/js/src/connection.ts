@@ -322,6 +322,98 @@ export class Connection {
   }
 
   // ============================================================================
+  // TRANSFER & CONTRACT ENDPOINTS
+  // ============================================================================
+
+  /**
+   * Transfer native LICN (spores) from one account to another.
+   *
+   * @param from - Sender keypair (signer)
+   * @param to - Recipient public key
+   * @param amount - Amount in spores (1 LICN = 1,000,000,000 spores)
+   * @returns Transaction signature
+   */
+  async transfer(from: Keypair, to: PublicKey, amount: number | bigint): Promise<string> {
+    const blockhash = await this.getRecentBlockhash();
+    const instruction = TransactionBuilder.transfer(from.pubkey(), to, amount);
+    const transaction = new TransactionBuilder()
+      .add(instruction)
+      .setRecentBlockhash(blockhash)
+      .buildAndSign(from);
+    return this.sendTransaction(transaction);
+  }
+
+  /**
+   * Deploy a WASM smart contract.
+   *
+   * @param deployer - Deployer keypair (signer, pays deploy fee)
+   * @param code - WASM bytecode (must start with \\0asm magic, max 512 KB)
+   * @param initData - Optional initialization data passed to contract init
+   * @returns Transaction signature
+   */
+  async deployContract(
+    deployer: Keypair,
+    code: Uint8Array,
+    initData: Uint8Array = new Uint8Array(0),
+  ): Promise<string> {
+    const blockhash = await this.getRecentBlockhash();
+    const instruction = TransactionBuilder.deployContract(deployer.pubkey(), code, initData);
+    const transaction = new TransactionBuilder()
+      .add(instruction)
+      .setRecentBlockhash(blockhash)
+      .buildAndSign(deployer);
+    return this.sendTransaction(transaction);
+  }
+
+  /**
+   * Call a function on a deployed WASM smart contract.
+   *
+   * @param caller - Caller keypair (signer)
+   * @param contract - Contract account public key
+   * @param functionName - Name of the contract function to invoke
+   * @param args - Serialized function arguments (default: empty)
+   * @param value - Native LICN to send with the call in spores (default: 0)
+   * @returns Transaction signature
+   */
+  async callContract(
+    caller: Keypair,
+    contract: PublicKey,
+    functionName: string,
+    args: Uint8Array = new Uint8Array(0),
+    value: number | bigint = 0,
+  ): Promise<string> {
+    const blockhash = await this.getRecentBlockhash();
+    const instruction = TransactionBuilder.callContract(caller.pubkey(), contract, functionName, args, value);
+    const transaction = new TransactionBuilder()
+      .add(instruction)
+      .setRecentBlockhash(blockhash)
+      .buildAndSign(caller);
+    return this.sendTransaction(transaction);
+  }
+
+  /**
+   * Upgrade a deployed WASM smart contract (owner only).
+   *
+   * @param owner - Contract owner keypair (signer)
+   * @param contract - Contract account public key
+   * @param code - New WASM bytecode
+   * @returns Transaction signature
+   */
+  async upgradeContract(
+    owner: Keypair,
+    contract: PublicKey,
+    code: Uint8Array,
+  ): Promise<string> {
+    const blockhash = await this.getRecentBlockhash();
+    const instruction = TransactionBuilder.upgradeContract(owner.pubkey(), contract, code);
+    const transaction = new TransactionBuilder()
+      .add(instruction)
+      .setRecentBlockhash(blockhash)
+      .buildAndSign(owner);
+    return this.sendTransaction(transaction);
+  }
+
+  // ============================================================================
   // ACCOUNT ENDPOINTS
   // ============================================================================
 

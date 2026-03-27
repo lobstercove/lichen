@@ -2608,8 +2608,33 @@ async fn handle_solana_rpc(
         "getSlot" => handle_solana_get_slot(&state).await,
         "getTransaction" => handle_solana_get_transaction(&state, req.params).await,
         "sendTransaction" => handle_solana_send_transaction(&state, req.params).await,
-        "getHealth" => Ok(serde_json::json!("ok")),
-        "getVersion" => Ok(serde_json::json!({"solana-core": "lichen", "feature-set": 0})),
+        "getTokenAccountsByOwner" => {
+            handle_solana_get_token_accounts_by_owner(&state, req.params).await
+        }
+        "getTokenAccountBalance" => {
+            handle_solana_get_token_account_balance(&state, req.params).await
+        }
+        "getHealth" => {
+            let slot = state.state.get_last_slot().unwrap_or(0);
+            let stale = if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let age = now.saturating_sub(block.header.timestamp);
+                age > 120
+            } else {
+                slot == 0
+            };
+            if stale {
+                Ok(serde_json::json!({"status": "behind", "slot": slot}))
+            } else {
+                Ok(serde_json::json!({"status": "ok", "slot": slot}))
+            }
+        }
+        "getVersion" => Ok(
+            serde_json::json!({"solana-core": format!("lichen-{}", state.version), "feature-set": 0}),
+        ),
         _ => Err(RpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -5793,6 +5818,183 @@ async fn handle_solana_send_transaction(
     );
 
     Ok(serde_json::json!(signature_base58))
+}
+
+/// Solana-compat: getTokenAccountsByOwner
+/// Returns all MT-20 token accounts for a given owner in Solana SPL format.
+async fn handle_solana_get_token_accounts_by_owner(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Expected array params [owner, filter?, config?]".to_string(),
+    })?;
+    let owner_str = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing owner address".to_string(),
+        })?;
+    let holder = Pubkey::from_base58(owner_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid owner: {}", e),
+    })?;
+
+    let token_balances = state
+        .state
+        .get_holder_token_balances(&holder, 100)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let ctx = solana_context(state)?;
+    let mut accounts: Vec<serde_json::Value> = Vec::new();
+
+    for (token_program, balance) in &token_balances {
+        if *balance == 0 {
+            continue;
+        }
+
+        let registry = state
+            .state
+            .get_symbol_registry_by_program(token_program)
+            .ok()
+            .flatten();
+
+        let decimals = registry
+            .as_ref()
+            .and_then(|r| r.metadata.as_ref())
+            .and_then(|m| m.get("decimals"))
+            .and_then(|d| d.as_u64())
+            .unwrap_or(9) as u8;
+
+        let ui_amount = *balance as f64 / 10_f64.powi(decimals as i32);
+
+        // Build SPL Token Account data in Solana format:
+        // The "data" field contains a JSON representation since we don't use
+        // Solana's binary account layout. Wallets that parse the JSON encoding
+        // will get correct values; wallets expecting raw SPL binary will use
+        // the parsed field instead.
+        let parsed = serde_json::json!({
+            "program": "spl-token",
+            "parsed": {
+                "type": "account",
+                "info": {
+                    "mint": token_program.to_base58(),
+                    "owner": owner_str,
+                    "tokenAmount": {
+                        "amount": balance.to_string(),
+                        "decimals": decimals,
+                        "uiAmount": ui_amount,
+                        "uiAmountString": format!("{:.width$}", ui_amount, width = decimals as usize),
+                    },
+                    "state": "initialized",
+                },
+            },
+            "space": 165,
+        });
+
+        accounts.push(serde_json::json!({
+            "pubkey": token_program.to_base58(),
+            "account": {
+                "data": parsed,
+                "executable": false,
+                "lamports": 2039280_u64,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "rentEpoch": 0_u64,
+            },
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "context": ctx,
+        "value": accounts,
+    }))
+}
+
+/// Solana-compat: getTokenAccountBalance
+/// Returns the balance of an SPL-like token account in Solana format.
+async fn handle_solana_get_token_account_balance(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Expected array params [token_account]".to_string(),
+    })?;
+
+    // In Solana, getTokenAccountBalance takes an account pubkey.
+    // We accept either:
+    //   [token_account] — looks up balance for caller via token program address
+    //   [token_program, holder] — explicit lookup (Lichen extension)
+    let token_program_str = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing token account address".to_string(),
+        })?;
+    let holder_str = arr.get(1).and_then(|v| v.as_str());
+
+    let token_program = Pubkey::from_base58(token_program_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid token account: {}", e),
+    })?;
+
+    // If holder provided, use it; otherwise return aggregate supply info
+    let balance = if let Some(h) = holder_str {
+        let holder = Pubkey::from_base58(h).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid holder: {}", e),
+        })?;
+        state
+            .state
+            .get_token_balance(&token_program, &holder)
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })?
+    } else {
+        // Without holder, return 0 — Solana convention for unknown accounts
+        0
+    };
+
+    let registry = state
+        .state
+        .get_symbol_registry_by_program(&token_program)
+        .ok()
+        .flatten();
+
+    let decimals = registry
+        .as_ref()
+        .and_then(|r| r.metadata.as_ref())
+        .and_then(|m| m.get("decimals"))
+        .and_then(|d| d.as_u64())
+        .unwrap_or(9) as u8;
+
+    let ui_amount = balance as f64 / 10_f64.powi(decimals as i32);
+    let ctx = solana_context(state)?;
+
+    Ok(serde_json::json!({
+        "context": ctx,
+        "value": {
+            "amount": balance.to_string(),
+            "decimals": decimals,
+            "uiAmount": ui_amount,
+            "uiAmountString": format!("{:.width$}", ui_amount, width = decimals as usize),
+        },
+    }))
 }
 
 /// Get latest block

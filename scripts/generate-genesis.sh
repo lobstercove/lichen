@@ -268,8 +268,13 @@ cat > "$OUTPUT" <<EOF
   },
   "features": {
     "fee_burn_percentage": 40,
+    "fee_producer_percentage": 30,
+    "fee_voters_percentage": 10,
+    "fee_treasury_percentage": 10,
     "fee_community_percentage": 10,
-    "base_fee_spores": 100000,
+    "base_fee_spores": 1000000,
+    "rent_rate_spores_per_kb_month": 10000,
+    "rent_free_kb": 1,
     "enable_smart_contracts": true,
     "enable_staking": true,
     "enable_slashing": true

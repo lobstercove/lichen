@@ -155,7 +155,7 @@ start-validator:
 
 start-rpc:
 	@echo "🦞 Starting RPC server..."
-	cargo run --release -p rpc -- --bind 0.0.0.0:8000 2>&1 &
+	cargo run --release -p rpc -- --bind 0.0.0.0:8899 2>&1 &
 
 start-custody:
 	@echo "🦞 Starting custody service..."
@@ -173,8 +173,8 @@ start-all: start-validator
 	@$(MAKE) start-custody
 	@$(MAKE) start-dex
 	@echo "✅ Full stack running"
-	@echo "  Validator: http://localhost:8899"
-	@echo "  RPC:       http://localhost:8000"
+	@echo "  Validator (P2P): localhost:7001"
+	@echo "  RPC:             http://localhost:8899"
 	@echo "  DEX:       http://localhost:3000"
 	@echo "  Custody:   running in background"
 

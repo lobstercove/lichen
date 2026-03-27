@@ -7389,11 +7389,7 @@ async fn run_validator() {
                             fee_producer_percent: gc.features.fee_producer_percentage,
                             fee_voters_percent: gc.features.fee_voters_percentage,
                             fee_community_percent: gc.features.fee_community_percentage,
-                            fee_treasury_percent: 100u64
-                                .saturating_sub(gc.features.fee_burn_percentage)
-                                .saturating_sub(gc.features.fee_producer_percentage)
-                                .saturating_sub(gc.features.fee_voters_percentage)
-                                .saturating_sub(gc.features.fee_community_percentage),
+                            fee_treasury_percent: gc.features.fee_treasury_percentage,
                             fee_exempt_contracts: Vec::new(),
                         };
                         state_for_blocks

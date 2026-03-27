@@ -45,7 +45,10 @@ pub use transaction::TransactionBuilder;
 pub use types::{Balance, Block, NetworkInfo, Transaction};
 
 // Re-export core types
-pub use lichen_core::{Account, Hash, Instruction, Message, BASE_FEE, SYSTEM_PROGRAM_ID};
+pub use lichen_core::{
+    Account, ContractInstruction, Hash, Instruction, Message, BASE_FEE, CONTRACT_PROGRAM_ID,
+    SYSTEM_PROGRAM_ID,
+};
 
 /// SDK version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

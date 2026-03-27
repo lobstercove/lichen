@@ -316,7 +316,12 @@ fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
 async fn test_health_endpoint() {
     let app = create_test_app();
     let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
-    assert_eq!(response["result"], "ok");
+    let result = &response["result"];
+    assert!(result.is_object(), "getHealth should return an object");
+    assert!(
+        result["status"] == "ok" || result["status"] == "behind",
+        "getHealth status should be 'ok' or 'behind'"
+    );
 }
 
 // ============================================================================
