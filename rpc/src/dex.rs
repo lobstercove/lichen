@@ -2525,7 +2525,11 @@ async fn get_trader_trades(
 
     let mut trades = Vec::new();
     // Iterate recent trades and filter by taker address
-    let start = if trade_count > 1000 { trade_count - 999 } else { 1 };
+    let start = if trade_count > 1000 {
+        trade_count - 999
+    } else {
+        1
+    };
     for i in (start..=trade_count).rev() {
         let key = format!("dex_trade_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {

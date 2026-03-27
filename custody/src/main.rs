@@ -3276,6 +3276,8 @@ async fn credit_worker_loop(state: CustodyState) {
 
 async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
     if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
+        // AUDIT-FIX CUST-05: Warn instead of silently skipping (jobs accumulate in queued state)
+        tracing::warn!("credit worker skipping: licn_rpc_url or treasury_keypair_path not configured");
         return Ok(());
     }
 
@@ -3379,6 +3381,8 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     };
 
     if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
+        // AUDIT-FIX CUST-05: Warn instead of silently returning None
+        tracing::warn!("build_credit_job skipping: licn_rpc_url or treasury_keypair_path not configured");
         return Ok(None);
     }
 
@@ -3409,12 +3413,16 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset);
     let amount_spores: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
-        (raw_amount / divisor) as u64
+        // AUDIT-FIX CUST-06: Use try_from instead of silent truncation via `as u64`
+        u64::try_from(raw_amount / divisor)
+            .map_err(|_| format!("credit amount overflow after decimal conversion (raw={raw_amount}, div={divisor})"))?
     } else if source_decimals < 9 {
         let multiplier = 10u128.pow(9 - source_decimals);
-        (raw_amount.saturating_mul(multiplier)) as u64
+        u64::try_from(raw_amount.saturating_mul(multiplier))
+            .map_err(|_| format!("credit amount overflow after decimal conversion (raw={raw_amount}, mul={multiplier})"))?
     } else {
-        raw_amount as u64
+        u64::try_from(raw_amount)
+            .map_err(|_| format!("credit amount overflow (raw={raw_amount})"))?
     };
     if amount_spores == 0 {
         tracing::warn!(
@@ -5627,8 +5635,9 @@ fn derive_evm_address(path: &str, master_seed: &str) -> Result<String, String> {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
-    let seed = mac.finalize().into_bytes();
+    let mut seed = mac.finalize().into_bytes();
     let key = SigningKey::from_bytes(&seed).map_err(|_| "invalid seed")?;
+    seed.as_mut_slice().zeroize(); // AUDIT-FIX CUST-04: zeroize intermediate HMAC seed
     let verifying_key = key.verifying_key();
     let encoded = verifying_key.to_encoded_point(false);
     let pubkey = encoded.as_bytes();
@@ -6100,24 +6109,32 @@ async fn create_withdrawal(
             }));
         }
 
+        // AUDIT-FIX CUST-01: Convert spores to source-chain units BEFORE comparing.
+        // Reserves are tracked in source-chain decimals (e.g. 6 for ETH USDT).
+        // Withdrawal amounts are in spores (9 decimals). Without conversion,
+        // a 1 USDT withdrawal (1e9 spores) would be compared against 1e6 reserve
+        // and incorrectly fail.
+        let chain_amount = spores_to_chain_amount(req.amount, &req.dest_chain, &pref);
+        let chain_amount_u64 = u64::try_from(chain_amount).unwrap_or(u64::MAX);
+
         // Check reserve balance for the preferred stablecoin on the destination chain
         let reserve = get_reserve_balance(&state.db, &req.dest_chain, &pref).unwrap_or(0);
         let other = if pref == "usdt" { "usdc" } else { "usdt" };
         let other_reserve = get_reserve_balance(&state.db, &req.dest_chain, other).unwrap_or(0);
         let total_on_chain = reserve.saturating_add(other_reserve);
 
-        if req.amount > total_on_chain {
+        if chain_amount_u64 > total_on_chain {
             return Json(json!({
                 "error": format!(
-                    "insufficient total stablecoin reserves on {}: requested {}, available {} ({} {} + {} {})",
-                    req.dest_chain, req.amount, total_on_chain, reserve, pref, other_reserve, other
+                    "insufficient total stablecoin reserves on {}: requested {} (chain units), available {} ({} {} + {} {})",
+                    req.dest_chain, chain_amount_u64, total_on_chain, reserve, pref, other_reserve, other
                 )
             }));
         }
 
-        if reserve < req.amount {
+        if reserve < chain_amount_u64 {
             // Not enough of the preferred stablecoin — queue a rebalance swap first
-            let deficit = req.amount - reserve;
+            let deficit = chain_amount_u64 - reserve;
             let rebalance_job = RebalanceJob {
                 job_id: Uuid::new_v4().to_string(),
                 chain: req.dest_chain.clone(),
@@ -6855,7 +6872,8 @@ fn check_rebalance_thresholds(state: &CustodyState) -> Result<(), String> {
     let threshold = state.config.rebalance_threshold_bps;
     let target = state.config.rebalance_target_bps;
 
-    for chain in &["solana", "ethereum"] {
+    // AUDIT-FIX CUST-03: Include BSC in rebalance monitoring (was missing)
+    for chain in &["solana", "ethereum", "bsc"] {
         let usdt = get_reserve_balance(&state.db, chain, "usdt").unwrap_or(0);
         let usdc = get_reserve_balance(&state.db, chain, "usdc").unwrap_or(0);
         let total = usdt.saturating_add(usdc);
@@ -8063,15 +8081,23 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 })),
             );
 
-            // Decrement reserve ledger for stablecoin withdrawals
+            // AUDIT-FIX CUST-01: Decrement reserve in source-chain units, not spores.
+            // The reserve ledger tracks amounts in source-chain decimals (e.g. 6 for
+            // ETH USDT), so we must convert the spore amount before debiting.
             let asset_lower = job.asset.to_lowercase();
             if asset_lower == "musd" {
                 let stablecoin = &job.preferred_stablecoin;
+                let chain_debit = spores_to_chain_amount(
+                    job.amount,
+                    &job.dest_chain,
+                    stablecoin,
+                );
+                let chain_debit_u64 = u64::try_from(chain_debit).unwrap_or(u64::MAX);
                 if let Err(e) = adjust_reserve_balance(
                     &state.db,
                     &job.dest_chain,
                     stablecoin,
-                    job.amount,
+                    chain_debit_u64,
                     false,
                 )
                 .await
