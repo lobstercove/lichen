@@ -324,7 +324,7 @@ pub fn compute_graduated_rent(data_len: u64, rate_per_kb_per_epoch: u64) -> u64 
         .saturating_add(tier3_kb.saturating_mul(rate_per_kb_per_epoch.saturating_mul(4)))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FeeConfig {
     pub base_fee: u64,
     pub contract_deploy_fee: u64,
@@ -341,6 +341,9 @@ pub struct FeeConfig {
     pub fee_treasury_percent: u64,
     /// Percentage of fees to community treasury (0-100)
     pub fee_community_percent: u64,
+    /// Protocol-level fee-exempt contracts (DEX, AMM, router, swap).
+    /// Stored at genesis; governance-only modification.
+    pub fee_exempt_contracts: Vec<Pubkey>,
 }
 
 impl FeeConfig {
@@ -356,6 +359,7 @@ impl FeeConfig {
             fee_voters_percent: 10,
             fee_treasury_percent: 10,
             fee_community_percent: 10,
+            fee_exempt_contracts: Vec::new(),
         }
     }
 }
@@ -475,6 +479,25 @@ impl TxProcessor {
                 }
                 return fee_config.base_fee;
             }
+        }
+
+        // Fee-exempt protocol contracts: the transaction is fee-free ONLY
+        // when every instruction is a Call to an exempt contract. Mixing in
+        // system transfers or non-exempt calls disqualifies the exemption,
+        // preventing users from attaching dummy DEX calls to dodge fees.
+        if !fee_config.fee_exempt_contracts.is_empty()
+            && !tx.message.instructions.is_empty()
+            && tx.message.instructions.iter().all(|ix| {
+                ix.program_id == CONTRACT_PROGRAM_ID
+                    && matches!(
+                        ContractInstruction::deserialize(&ix.data),
+                        Ok(ContractInstruction::Call { .. })
+                    )
+                    && ix.accounts.len() >= 2
+                    && fee_config.fee_exempt_contracts.contains(&ix.accounts[1])
+            })
+        {
+            return 0;
         }
 
         let mut total = fee_config.base_fee;

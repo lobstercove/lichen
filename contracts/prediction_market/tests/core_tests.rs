@@ -21,7 +21,7 @@ fn setup() -> [u8; 32] {
     assert_eq!(initialize(admin.as_ptr()), 0, "initialize failed");
     // Configure lUSD + self addresses so transfer_musd_out succeeds (fail-closed audit fix)
     lichen_sdk::test_mock::set_caller(admin);
-    set_musd_address(admin.as_ptr(), &[0xAAu8; 32] as *const u8);
+    set_lusd_address(admin.as_ptr(), &[0xAAu8; 32] as *const u8);
     lichen_sdk::test_mock::set_caller(admin);
     set_self_address(admin.as_ptr(), &[0xBBu8; 32] as *const u8);
     admin
@@ -908,7 +908,7 @@ fn test_set_addresses_admin_only() {
     lichen_sdk::test_mock::set_caller(non_admin);
     assert_eq!(set_lichenid_address(non_admin.as_ptr(), addr.as_ptr()), 0);
     assert_eq!(set_oracle_address(non_admin.as_ptr(), addr.as_ptr()), 0);
-    assert_eq!(set_musd_address(non_admin.as_ptr(), addr.as_ptr()), 0);
+    assert_eq!(set_lusd_address(non_admin.as_ptr(), addr.as_ptr()), 0);
     assert_eq!(set_dex_gov_address(non_admin.as_ptr(), addr.as_ptr()), 0);
 }
 

@@ -16,7 +16,7 @@ use lichen_core::{
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
     genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices,
-    genesis_seed_oracle,
+    genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -566,6 +566,7 @@ fn main() {
             .saturating_sub(genesis_config.features.fee_producer_percentage)
             .saturating_sub(genesis_config.features.fee_voters_percentage)
             .saturating_sub(genesis_config.features.fee_community_percentage),
+        fee_exempt_contracts: Vec::new(),
     };
     if let Err(e) = state.set_fee_config_full(&genesis_fee_config) {
         warn!("⚠️  Failed to store fee config: {}", e);
@@ -992,6 +993,7 @@ fn main() {
     genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:");
     genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
     genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:");
+    genesis_set_fee_exempt_contracts(&state, &genesis_pubkey, "GENESIS:");
     genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
     genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp);
     genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp);

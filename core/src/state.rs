@@ -5938,6 +5938,49 @@ impl StateStore {
             .map_err(|e| format!("Failed to store fee config: {}", e))
     }
 
+    // ── Fee-exempt contract set ────────────────────────────────────────
+    // Protocol-level contracts (DEX, AMM, router, etc.) whose Call
+    // transactions are exempt from the base transaction fee.
+    // Written at genesis; modifiable only via governance.
+    // Storage format: concatenated 32-byte pubkeys under CF_STATS key
+    // "fee_exempt_contracts".
+
+    /// Store the set of fee-exempt contract addresses.
+    pub fn set_fee_exempt_contracts(&self, contracts: &[Pubkey]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut data = Vec::with_capacity(contracts.len() * 32);
+        for pk in contracts {
+            data.extend_from_slice(&pk.0);
+        }
+        self.db
+            .put_cf(&cf, b"fee_exempt_contracts", &data)
+            .map_err(|e| format!("Failed to store fee exempt contracts: {}", e))
+    }
+
+    /// Load the set of fee-exempt contract addresses (empty if unset).
+    pub fn get_fee_exempt_contracts(&self) -> Vec<Pubkey> {
+        let cf = match self.db.cf_handle(CF_STATS) {
+            Some(cf) => cf,
+            None => return Vec::new(),
+        };
+        match self.db.get_cf(&cf, b"fee_exempt_contracts") {
+            Ok(Some(data)) => {
+                let mut result = Vec::with_capacity(data.len() / 32);
+                for chunk in data.chunks_exact(32) {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(chunk);
+                    result.push(Pubkey(bytes));
+                }
+                result
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Load fee configuration (defaults if missing)
     pub fn get_fee_config(&self) -> Result<crate::FeeConfig, String> {
         let cf = self
@@ -5979,6 +6022,7 @@ impl StateStore {
                 .unwrap_or(defaults.fee_treasury_percent),
             fee_community_percent: read_u64(b"fee_community_percent")?
                 .unwrap_or(defaults.fee_community_percent),
+            fee_exempt_contracts: self.get_fee_exempt_contracts(),
         })
     }
 
@@ -8533,6 +8577,7 @@ mod tests {
             fee_voters_percent: 10,
             fee_treasury_percent: 10,
             fee_community_percent: 10,
+            fee_exempt_contracts: Vec::new(),
         };
 
         state.set_fee_config_full(&config).unwrap();

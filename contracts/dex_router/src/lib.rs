@@ -694,16 +694,20 @@ fn build_amm_swap_exact_in_args(
     min_out: u64,
     deadline: u64,
 ) -> Option<Vec<u8>> {
-    let mut data = Vec::with_capacity(1 + 32 + 8 + 1 + 8 + 8 + 8);
-    // DEX-02: AMM uses opcode dispatch — action byte 6 = swap_exact_in
-    data.push(6u8);
-    data.extend_from_slice(trader);
-    data.extend_from_slice(&u64_to_bytes(pool_id));
-    data.push(u8::from(is_token_a_in));
-    data.extend_from_slice(&u64_to_bytes(amount_in));
-    data.extend_from_slice(&u64_to_bytes(min_out));
-    data.extend_from_slice(&u64_to_bytes(deadline));
-    Some(data)
+    let pool_bytes = u64_to_bytes(pool_id);
+    let flag = [u8::from(is_token_a_in)];
+    let amount_bytes = u64_to_bytes(amount_in);
+    let min_bytes = u64_to_bytes(min_out);
+    let deadline_bytes = u64_to_bytes(deadline);
+    lichen_sdk::crosscall::encode_layout_args(&[
+        trader.as_slice(),
+        &pool_bytes,
+        &flag,
+        &amount_bytes,
+        &min_bytes,
+        &deadline_bytes,
+    ])
+    .ok()
 }
 
 fn execute_amm_swap(

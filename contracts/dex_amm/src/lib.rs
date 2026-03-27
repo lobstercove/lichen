@@ -53,6 +53,9 @@ const REENTRANCY_KEY: &[u8] = b"amm_reentrancy";
 const POOL_COUNT_KEY: &[u8] = b"amm_pool_count";
 const POSITION_COUNT_KEY: &[u8] = b"amm_pos_count";
 const PROTOCOL_FEE_KEY: &[u8] = b"amm_protocol_fee";
+const PROTOCOL_FEE_ACCRUED_A_KEY: &[u8] = b"amm_proto_fee_a";
+const PROTOCOL_FEE_ACCRUED_B_KEY: &[u8] = b"amm_proto_fee_b";
+const FEE_TREASURY_ADDR_KEY: &[u8] = b"amm_fee_treasury_addr";
 const SWAP_COUNT_KEY: &[u8] = b"amm_swap_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"amm_total_volume";
 const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
@@ -1235,7 +1238,9 @@ pub fn swap_exact_out(
     )
 }
 
-/// Accrue fees to in-range positions
+/// Accrue fees to in-range positions, splitting out protocol fee first.
+/// Protocol fee is a percentage (0-100) of the total swap fee, stored per pool.
+/// Matches Uniswap V3 protocol fee switch design.
 fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
     if fee == 0 {
         return;
@@ -1245,13 +1250,39 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
         Some(d) => d,
         None => return,
     };
+
+    // Split: protocol_fee_pct% → protocol treasury, rest → LPs
+    let proto_pct = decode_pool_protocol_fee(&pool_data) as u64;
+    let protocol_share = if proto_pct > 0 {
+        (fee as u128 * proto_pct as u128 / 100) as u64
+    } else {
+        0
+    };
+    let lp_fee = fee.saturating_sub(protocol_share);
+
+    // Accumulate protocol share
+    if protocol_share > 0 {
+        let key = if is_token_a {
+            PROTOCOL_FEE_ACCRUED_A_KEY
+        } else {
+            PROTOCOL_FEE_ACCRUED_B_KEY
+        };
+        let mut pk_key = Vec::from(key);
+        pk_key.extend_from_slice(&u64_to_bytes(pool_id));
+        save_u64(&pk_key, load_u64(&pk_key).saturating_add(protocol_share));
+    }
+
+    if lp_fee == 0 {
+        return;
+    }
+
     let current_tick = decode_pool_tick(&pool_data);
     let pool_liq = decode_pool_liquidity(&pool_data);
     if pool_liq == 0 {
         return;
     }
 
-    // Distribute fee proportionally to all positions (simplified)
+    // Distribute LP fee proportionally to all in-range positions
     let pos_count = load_u64(POSITION_COUNT_KEY);
     for i in 1..=pos_count {
         let pk = position_key(i);
@@ -1265,7 +1296,7 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
                 let upper = decode_pos_upper_tick(&pos_data);
                 if current_tick >= lower && current_tick < upper {
                     let pos_liq = decode_pos_liquidity(&pos_data);
-                    let share = (fee as u128 * pos_liq as u128 / pool_liq as u128) as u64;
+                    let share = (lp_fee as u128 * pos_liq as u128 / pool_liq as u128) as u64;
                     if is_token_a {
                         let current = decode_pos_fee_a(&pos_data);
                         update_pos_fee_a(&mut pos_data, current.saturating_add(share));
@@ -1278,6 +1309,93 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
             }
         }
     }
+}
+
+/// Set the fee treasury address (admin only).
+/// Returns: 0=success, 1=not admin, 200=caller mismatch
+pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut t = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(treasury, t.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    storage_set(FEE_TREASURY_ADDR_KEY, &t);
+    0
+}
+
+/// Collect accrued protocol fees for a pool (admin only).
+/// Transfers accumulated protocol fees to the treasury address.
+/// Returns: 0=success, 1=not admin, 2=no treasury set, 3=nothing to collect
+pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    let treasury = load_addr(FEE_TREASURY_ADDR_KEY);
+    if is_zero(&treasury) {
+        return 2;
+    }
+    let pk = pool_key(pool_id);
+    let pool_data = match storage_get(&pk) {
+        Some(d) if d.len() >= POOL_SIZE => d,
+        _ => return 4,
+    };
+    let token_a = decode_pool_token_a(&pool_data);
+    let token_b = decode_pool_token_b(&pool_data);
+    let contract_addr = get_contract_address();
+
+    let mut key_a = Vec::from(PROTOCOL_FEE_ACCRUED_A_KEY);
+    key_a.extend_from_slice(&u64_to_bytes(pool_id));
+    let mut key_b = Vec::from(PROTOCOL_FEE_ACCRUED_B_KEY);
+    key_b.extend_from_slice(&u64_to_bytes(pool_id));
+
+    let fee_a = load_u64(&key_a);
+    let fee_b = load_u64(&key_b);
+    if fee_a == 0 && fee_b == 0 {
+        return 3;
+    }
+    if fee_a > 0 {
+        if is_native_token(&Address(token_a)) {
+            let _ = transfer_native(Address(treasury), fee_a);
+        } else {
+            let _ = call_token_transfer(
+                Address(token_a),
+                contract_addr,
+                Address(treasury),
+                fee_a,
+            );
+        }
+        save_u64(&key_a, 0);
+    }
+    if fee_b > 0 {
+        if is_native_token(&Address(token_b)) {
+            let _ = transfer_native(Address(treasury), fee_b);
+        } else {
+            let _ = call_token_transfer(
+                Address(token_b),
+                contract_addr,
+                Address(treasury),
+                fee_b,
+            );
+        }
+        save_u64(&key_b, 0);
+    }
+    0
 }
 
 /// Emergency pause (admin only)
@@ -1581,6 +1699,22 @@ pub extern "C" fn call() -> u32 {
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
             lichen_sdk::set_return_data(&buf);
+        }
+        20 => {
+            // set_fee_treasury_address(caller[32], treasury[32])
+            if args.len() >= 65 {
+                let r = set_fee_treasury_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        21 => {
+            // collect_protocol_fees(caller[32], pool_id[8])
+            if args.len() >= 41 {
+                let r = collect_protocol_fees(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
         }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
@@ -1954,6 +2088,43 @@ mod tests {
     fn test_set_protocol_fee_too_high() {
         let (admin, pool_id) = setup_with_pool();
         assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 101), 2);
+    }
+
+    #[test]
+    fn test_set_fee_treasury_address() {
+        let (admin, _pool_id) = setup_with_pool();
+        let treasury = [42u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), treasury.as_ptr()), 0);
+        assert_eq!(load_addr(FEE_TREASURY_ADDR_KEY), treasury);
+    }
+
+    #[test]
+    fn test_set_fee_treasury_address_not_admin() {
+        let (_admin, _pool_id) = setup_with_pool();
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_fee_treasury_address(rando.as_ptr(), rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_protocol_fee_split_in_accrue() {
+        let (admin, pool_id) = setup_with_pool();
+        // Set 10% protocol fee
+        assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 10), 0);
+        // Accrue 1000 fee for token A
+        accrue_fees_to_positions(pool_id, 1000, true);
+        // Check protocol fee accrued (10% of 1000 = 100)
+        let mut key_a = Vec::from(PROTOCOL_FEE_ACCRUED_A_KEY);
+        key_a.extend_from_slice(&u64_to_bytes(pool_id));
+        assert_eq!(load_u64(&key_a), 100);
+    }
+
+    #[test]
+    fn test_collect_protocol_fees_no_treasury() {
+        let (admin, pool_id) = setup_with_pool();
+        test_mock::set_caller(admin);
+        assert_eq!(collect_protocol_fees(admin.as_ptr(), pool_id), 2);
     }
 
     // --- Tick Math (AUDIT-FIX G3-01: exponential accuracy tests) ---

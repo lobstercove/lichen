@@ -972,6 +972,57 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
     (notional as u128 * abs_bps as u128 / 10_000) as u64
 }
 
+/// Set the fee treasury address (admin only).
+/// Returns: 0=success, 1=not admin, 200=caller mismatch
+pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut t = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(treasury, t.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    storage_set(FEE_TREASURY_ADDR_KEY, &t);
+    0
+}
+
+/// Claim accrued maker rebates for the caller.
+/// Returns: 0=success, 1=nothing to claim, 2=transfer failed, 200=caller mismatch
+pub fn claim_rebate(caller: *const u8, pair_id: u64) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    let mut rk = Vec::from(&b"dex_rebate_"[..]);
+    rk.extend_from_slice(&c);
+    let accrued = load_u64(&rk);
+    if accrued == 0 {
+        return 1;
+    }
+    // Rebate is denominated in the quote token of the pair
+    let pk = pair_key(pair_id);
+    let pd = match storage_get(&pk) {
+        Some(d) if d.len() >= 64 => d,
+        _ => return 3,
+    };
+    let quote_token = decode_pair_quote_token(&pd);
+    if !release_tokens(&quote_token, &c, accrued) {
+        return 2;
+    }
+    save_u64(&rk, 0);
+    0
+}
+
 // ============================================================================
 // TOKEN ESCROW & SETTLEMENT
 // ============================================================================
@@ -3103,6 +3154,22 @@ pub extern "C" fn call() -> u32 {
                 _rc = result as u32;
             }
         }
+        32 => {
+            // set_fee_treasury_address(caller[32], treasury[32])
+            if args.len() >= 65 {
+                let r = set_fee_treasury_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        33 => {
+            // claim_rebate(caller[32], pair_id[8])
+            if args.len() >= 41 {
+                let r = claim_rebate(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -3166,6 +3233,47 @@ mod tests {
         let treasury = [9u8; 32];
         storage_set(FEE_TREASURY_ADDR_KEY, &treasury);
         assert_eq!(fee_recipient_addr(), treasury);
+    }
+
+    #[test]
+    fn test_set_fee_treasury_address() {
+        let admin = setup();
+        let treasury = [42u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_fee_treasury_address(admin.as_ptr(), treasury.as_ptr()),
+            0
+        );
+        assert_eq!(fee_recipient_addr(), treasury);
+    }
+
+    #[test]
+    fn test_set_fee_treasury_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_fee_treasury_address(rando.as_ptr(), rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_claim_rebate_nothing() {
+        let (admin, _pair_id) = setup_with_pair();
+        let trader = [7u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(claim_rebate(trader.as_ptr(), 1), 1); // nothing to claim
+    }
+
+    #[test]
+    fn test_claim_rebate_accrued() {
+        let (_admin, _pair_id) = setup_with_pair();
+        let trader = [7u8; 32];
+        // Simulate accrued rebate
+        let mut rk = Vec::from(&b"dex_rebate_"[..]);
+        rk.extend_from_slice(&trader);
+        save_u64(&rk, 500);
+        test_mock::set_caller(trader);
+        assert_eq!(claim_rebate(trader.as_ptr(), 1), 0);
+        assert_eq!(load_u64(&rk), 0); // cleared after claim
     }
 
     #[test]

@@ -916,8 +916,8 @@ pub fn genesis_initialize_contracts(
     }
 
     // ── Prediction Market: wire up cross-contract addresses ──
-    // Set oracle, musd, lichenid, and dex_gov addresses via opcode dispatch.
-    // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_musd, 21=set_dex_gov
+    // Set oracle, lusd, lichenid, and dex_gov addresses via opcode dispatch.
+    // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_lusd, 21=set_dex_gov
     // Format: [opcode][admin 32B][address 32B] = 65 bytes
     if let Some(predict_pk) = address_map.get("prediction_market") {
         let oracle_addr = address_map
@@ -1227,6 +1227,75 @@ pub fn genesis_initialize_contracts(
             info!("  SET dex_margin(set_lichencoin_address)");
         } else {
             warn!("  WARN: Failed to set dex_margin lichencoin address");
+        }
+    }
+
+    // ── DEX Core + AMM: set fee treasury to community_treasury ──
+    // Resolved from the same wallet used by DAO treasury — single canonical address.
+    // Without this, taker fees go to the genesis deployer key instead of protocol treasury.
+    let fee_treasury = state
+        .get_community_treasury_pubkey()
+        .ok()
+        .flatten()
+        .map(|pk| pk.0)
+        .unwrap_or(admin);
+
+    if let Some(dex_core_pk) = address_map.get("dex_core") {
+        let mut args = Vec::with_capacity(65);
+        args.push(32u8); // opcode 32 = set_fee_treasury_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&fee_treasury);
+        if genesis_exec_contract(
+            state,
+            dex_core_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_core(set_fee_treasury_address)",
+        ) {
+            info!("  SET dex_core(set_fee_treasury_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_core fee treasury");
+        }
+    }
+
+    if let Some(dex_amm_pk) = address_map.get("dex_amm") {
+        // Set AMM fee treasury address
+        let mut args = Vec::with_capacity(65);
+        args.push(20u8); // opcode 20 = set_fee_treasury_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&fee_treasury);
+        if genesis_exec_contract(
+            state,
+            dex_amm_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_amm(set_fee_treasury_address)",
+        ) {
+            info!("  SET dex_amm(set_fee_treasury_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_amm fee treasury");
+        }
+
+        // Set protocol fee to 10% on all AMM pools (Uniswap V3 standard)
+        let pool_count = state.get_contract_storage_u64(&Pubkey(dex_amm_pk.0), b"amm_pool_count");
+        for pid in 1..=pool_count {
+            let mut pf_args = Vec::with_capacity(42);
+            pf_args.push(2u8); // opcode 2 = set_pool_protocol_fee
+            pf_args.extend_from_slice(&admin);
+            pf_args.extend_from_slice(&pid.to_le_bytes());
+            pf_args.push(10u8); // 10% protocol fee
+            if genesis_exec_contract(
+                state,
+                dex_amm_pk,
+                deployer_pubkey,
+                "call",
+                &pf_args,
+                &format!("dex_amm(set_pool_protocol_fee pool={})", pid),
+            ) {
+                info!("  SET dex_amm pool {} protocol_fee=10%", pid);
+            }
         }
     }
 
@@ -2093,6 +2162,58 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
         "  Genesis DEX: {} pairs, {} pools, {} allowed quotes",
         created_pairs, created_pools, allowed_quotes_set
     );
+    info!("──────────────────────────────────────────────────────");
+}
+
+// ========================================================================
+//  GENESIS — Register fee-exempt protocol contracts
+//  DEX contracts (and lichenswap) are exempt from the base transaction fee
+//  so that users who bridge in external assets (wSOL, wETH, wBNB, lUSD)
+//  with zero LICN can trade on the DEX to acquire LICN before paying fees.
+//  The exempt set is stored in state and modifiable only via governance.
+// ========================================================================
+
+/// Fee-exempt contract dir_names. Must match entries in GENESIS_CONTRACT_CATALOG.
+const FEE_EXEMPT_CONTRACT_DIRS: &[&str] = &[
+    "dex_core",
+    "dex_amm",
+    "dex_router",
+    "dex_margin",
+    "dex_rewards",
+    "dex_governance",
+    "dex_analytics",
+    "lichenswap",
+];
+
+pub fn genesis_set_fee_exempt_contracts(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+    info!("──────────────────────────────────────────────────────");
+    info!("  {} Setting fee-exempt protocol contracts", label);
+    info!("──────────────────────────────────────────────────────");
+
+    let mut exempt_addrs = Vec::new();
+    for dir_name in FEE_EXEMPT_CONTRACT_DIRS {
+        match derive_contract_address(deployer_pubkey, dir_name) {
+            Some(addr) => {
+                info!("  EXEMPT {} -> {}", dir_name, addr.to_base58());
+                exempt_addrs.push(addr);
+            }
+            None => {
+                warn!("  SKIP {}: cannot derive address (WASM missing?)", dir_name);
+            }
+        }
+    }
+
+    match state.set_fee_exempt_contracts(&exempt_addrs) {
+        Ok(()) => {
+            info!(
+                "  OK   {} fee-exempt contracts registered",
+                exempt_addrs.len()
+            );
+        }
+        Err(e) => {
+            error!("  FAIL set_fee_exempt_contracts: {}", e);
+        }
+    }
     info!("──────────────────────────────────────────────────────");
 }
 

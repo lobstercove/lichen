@@ -41,8 +41,8 @@ use lichen_genesis::{
     derive_contract_address, genesis_assign_achievements, genesis_auto_deploy,
     genesis_create_trading_pairs, genesis_initialize_contracts, genesis_licn_price_8dec,
     genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
-    genesis_wbnb_price_8dec, genesis_weth_price_8dec, genesis_wsol_price_8dec,
-    GENESIS_LICN_PRICE_8DEC,
+    genesis_set_fee_exempt_contracts, genesis_wbnb_price_8dec, genesis_weth_price_8dec,
+    genesis_wsol_price_8dec, GENESIS_LICN_PRICE_8DEC,
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -7394,6 +7394,7 @@ async fn run_validator() {
                                 .saturating_sub(gc.features.fee_producer_percentage)
                                 .saturating_sub(gc.features.fee_voters_percentage)
                                 .saturating_sub(gc.features.fee_community_percentage),
+                            fee_exempt_contracts: Vec::new(),
                         };
                         state_for_blocks
                             .set_fee_config_full(&genesis_fee_config)
@@ -7689,6 +7690,7 @@ async fn run_validator() {
                                 block.header.timestamp,
                             );
                             genesis_create_trading_pairs(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_set_fee_exempt_contracts(&state_for_blocks, &gpk, "📡 [sync]");
                             genesis_seed_oracle(
                                 &state_for_blocks,
                                 &gpk,

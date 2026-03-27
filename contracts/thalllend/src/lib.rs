@@ -232,6 +232,10 @@ fn quote_accrued_interest(principal: u64, elapsed_slots: u64) -> u64 {
 /// Returns 0 on success, non-zero on failure.
 fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     let licn_addr = load_licn_addr();
+    if is_zero_addr(&licn_addr) {
+        log_info("Lichencoin address not configured");
+        return 30;
+    }
     let self_addr = get_contract_address();
     if let Err(_) =
         transfer_token_or_native(Address(licn_addr), self_addr, Address(*recipient), amount)

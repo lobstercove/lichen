@@ -626,6 +626,7 @@ fn test_fee_config_roundtrip_full() {
         fee_voters_percent: 15,
         fee_treasury_percent: 10,
         fee_community_percent: 10,
+        fee_exempt_contracts: Vec::new(),
     };
     state.set_fee_config_full(&config).unwrap();
     let loaded = state.get_fee_config().unwrap();

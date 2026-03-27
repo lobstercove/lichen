@@ -1573,6 +1573,9 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    if is_zero(&a) {
+        return 2;
+    }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
 }
@@ -1607,6 +1610,9 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
     }
 
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if is_zero(&licn_addr) {
+        return 4;
+    }
 
     // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
     let contract_addr = get_contract_address();
