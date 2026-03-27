@@ -376,33 +376,65 @@ async def main():
     if token_bal < total_spores:
         needed = total_spores - token_bal
         needed_licn = needed / SPORES_PER_LICN
-        print(f"  ⚠️  Need {needed_licn:,.0f} more lichencoin tokens — transferring from genesis-primary...")
+        print(f"  ⚠️  Need {needed_licn:,.0f} more lichencoin tokens — minting via deployer (admin)...")
 
         deployer_path = Path(args.deployer_key) if args.deployer_key else find_keypair(args.network, "genesis-primary")
         deployer_kp = load_keypair(deployer_path)
         print(f"  Genesis-primary: {deployer_kp.public_key()}")
 
         try:
-            xfer_sig = await send_token_transfer(
-                conn, deployer_kp, licn_addr,
-                reserve_kp.public_key(), needed,
+            # Mint lichencoin tokens to reserve_pool (deployer is admin/owner)
+            # mint(caller, to, amount) — args: [caller 32B][to 32B][amount 8B]
+            caller_mint = list(deployer_kp.public_key().to_bytes())
+            to_mint = list(reserve_kp.public_key().to_bytes())
+            amount_mint = list(struct.pack("<Q", needed))
+            mint_args = caller_mint + to_mint + amount_mint
+
+            envelope = json.dumps({
+                "Call": {
+                    "function": "mint",
+                    "args": mint_args,
+                    "value": 0,
+                }
+            })
+            ix = Instruction(
+                CONTRACT_PROGRAM,
+                [deployer_kp.public_key(), licn_addr],
+                envelope.encode("utf-8"),
             )
-            result = await wait_for_tx(conn, xfer_sig)
+            tb = TransactionBuilder()
+            tb.add(ix)
+            latest = await conn.get_latest_block()
+            blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
+            tb.set_recent_blockhash(blockhash)
+            tx = tb.build_and_sign(deployer_kp)
+            mint_sig = await conn.send_transaction(tx)
+
+            result = await wait_for_tx(conn, mint_sig)
             if result:
-                print(f"  ✅ Token transfer confirmed: {xfer_sig[:16]}...")
+                rc = result.get("return_code") if isinstance(result, dict) else None
+                err = result.get("error") if isinstance(result, dict) else None
+                # lichencoin.mint returns 1=success, 0=failure (ERC20 convention)
+                if err or (rc is not None and rc == 0):
+                    print(f"  ❌ Mint failed: {err or f'rc={rc}'}")
+                    print(f"  Cannot proceed without lichencoin tokens.")
+                    return
+                print(f"  ✅ Minted {needed_licn:,.0f} LICN tokens: {mint_sig[:16]}...")
             else:
-                print(f"  ⏳ Token transfer sent: {xfer_sig[:16]}...")
+                print(f"  ⏳ Mint sent (unconfirmed): {mint_sig[:16]}...")
             await asyncio.sleep(1.0)
         except Exception as e:
-            print(f"  ❌ Token transfer failed: {e}")
+            print(f"  ❌ Mint failed: {e}")
             print(f"  Cannot proceed without lichencoin tokens.")
             return
 
     # ── Step 1: Approve DEX to spend LICN from reserve_pool ──
     # The DEX uses escrow (transfer_from) — needs allowance.
-    print(f"  Approving DEX to spend {total_licn:,.0f} LICN...")
+    # Use generous 100M allowance to avoid depletion from multiple runs.
+    approve_amount = 100_000_000 * SPORES_PER_LICN
+    print(f"  Approving DEX to spend 100,000,000 LICN...")
     try:
-        approve_sig = await approve_token(conn, reserve_kp, licn_addr, dex_addr, total_spores)
+        approve_sig = await approve_token(conn, reserve_kp, licn_addr, dex_addr, approve_amount)
         result = await wait_for_tx(conn, approve_sig)
         if result:
             print(f"  ✅ Approval confirmed: {approve_sig[:16]}...")
