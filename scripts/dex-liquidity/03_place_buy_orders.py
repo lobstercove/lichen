@@ -251,10 +251,9 @@ async def main():
 
     # ── Step 1: Approve DEX to spend lUSD from reserve_pool ──
     # Buy orders escrow lUSD (notional + max taker fee)
-    total_lusd_spores = int(total_lusd * SPORES_PER_LICN)  # lUSD uses same 9-decimal precision
-    # Add 5% buffer for taker fees
-    approve_amount = int(total_lusd_spores * 1.05)
-    print(f"  Approving DEX to spend ~{total_lusd * 1.05:,.0f} lUSD (incl. fee buffer)...")
+    # Use generous 100M approval to avoid depletion from multiple runs
+    approve_amount = 100_000_000 * SPORES_PER_LICN
+    print(f"  Approving DEX to spend 100,000,000 lUSD...")
     try:
         approve_sig = await approve_token(conn, reserve_kp, lusd_addr, dex_addr, approve_amount)
         result = await wait_for_tx(conn, approve_sig)
