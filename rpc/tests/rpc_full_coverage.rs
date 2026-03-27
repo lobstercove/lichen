@@ -3079,7 +3079,13 @@ async fn test_solana_get_health_is_ok() {
     let app = fresh_app();
     let resp = rpc(&app, "/solana-compat", "getHealth").await.unwrap();
     assert_valid_rpc(&resp);
-    assert_eq!(resp["result"], "ok", "solana getHealth should return 'ok'");
+    // Fresh state with no blocks reports as behind with slot 0
+    let result = &resp["result"];
+    assert!(
+        result.get("status").is_some(),
+        "getHealth should return status object"
+    );
+    assert_eq!(result["slot"], 0);
 }
 
 // ── Solana getVersion returns version info ───────────────────────────────────

@@ -56,7 +56,9 @@ async fn test_solana_health_route() {
     );
 
     let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
-    assert_eq!(response["result"], "ok");
+    // Fresh state with no blocks reports as behind
+    assert_eq!(response["result"]["status"], "behind");
+    assert_eq!(response["result"]["slot"], 0);
 }
 
 #[tokio::test]
@@ -78,7 +80,8 @@ async fn test_solana_legacy_alias_route() {
     );
 
     let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
-    assert_eq!(response["result"], "ok");
+    assert_eq!(response["result"]["status"], "behind");
+    assert_eq!(response["result"]["slot"], 0);
 }
 
 #[tokio::test]

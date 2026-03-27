@@ -1,5 +1,6 @@
 """Transaction types and builder for Lichen"""
 
+import json
 from typing import List, Optional
 from dataclasses import dataclass
 import binascii
@@ -138,4 +139,106 @@ class TransactionBuilder:
             program_id=system_program,
             accounts=[from_pubkey, validator],
             data=data
+        )
+
+    # Contract program ID: [0xFF; 32]
+    _CONTRACT_PROGRAM_ID = PublicKey(b'\xff' * 32)
+
+    @staticmethod
+    def deploy_contract(
+        deployer: PublicKey,
+        code: bytes,
+        init_data: bytes = b"",
+    ) -> Instruction:
+        """
+        Create a deploy contract instruction.
+
+        Args:
+            deployer: Deployer public key (signer, pays deploy fee)
+            code: WASM bytecode (must start with \\0asm magic, max 512 KB)
+            init_data: Optional initialization data passed to contract init
+        """
+        if len(code) < 4 or code[:4] != b'\x00asm':
+            raise ValueError("Invalid WASM bytecode: missing magic header (\\0asm)")
+        if len(code) > 512 * 1024:
+            raise ValueError("Contract code exceeds 512 KB limit")
+
+        # ContractInstruction::Deploy serialized as JSON (matches core serde_json format)
+        payload = json.dumps({
+            "Deploy": {
+                "code": list(code),
+                "init_data": list(init_data),
+            }
+        }).encode("utf-8")
+
+        return Instruction(
+            program_id=TransactionBuilder._CONTRACT_PROGRAM_ID,
+            accounts=[deployer],
+            data=payload,
+        )
+
+    @staticmethod
+    def call_contract(
+        caller: PublicKey,
+        contract: PublicKey,
+        function_name: str,
+        args: bytes = b"",
+        value: int = 0,
+    ) -> Instruction:
+        """
+        Create a call contract instruction.
+
+        Args:
+            caller: Caller public key (signer)
+            contract: Contract account public key
+            function_name: Name of the contract function to invoke
+            args: Serialized function arguments (default: empty)
+            value: Native LICN to send with the call in spores (default: 0)
+        """
+        if value < 0:
+            raise ValueError("Call value must be non-negative")
+        if value > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("Call value exceeds u64 max")
+
+        payload = json.dumps({
+            "Call": {
+                "function": function_name,
+                "args": list(args),
+                "value": value,
+            }
+        }).encode("utf-8")
+
+        return Instruction(
+            program_id=TransactionBuilder._CONTRACT_PROGRAM_ID,
+            accounts=[caller, contract],
+            data=payload,
+        )
+
+    @staticmethod
+    def upgrade_contract(
+        owner: PublicKey,
+        contract: PublicKey,
+        code: bytes,
+    ) -> Instruction:
+        """
+        Create an upgrade contract instruction (owner only).
+
+        Args:
+            owner: Contract owner public key (signer)
+            contract: Contract account public key
+            code: New WASM bytecode
+        """
+        if len(code) < 4 or code[:4] != b'\x00asm':
+            raise ValueError("Invalid WASM bytecode: missing magic header (\\0asm)")
+        if len(code) > 512 * 1024:
+            raise ValueError("Contract code exceeds 512 KB limit")
+
+        payload = json.dumps({
+            "Upgrade": {"code": list(code)}
+        }).encode("utf-8")
+
+        return Instruction(
+            program_id=TransactionBuilder._CONTRACT_PROGRAM_ID,
+            accounts=[owner, contract],
+            data=payload,
         )

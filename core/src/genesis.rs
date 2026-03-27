@@ -154,15 +154,15 @@ pub struct FeatureFlags {
     pub fee_burn_percentage: u64,
 
     /// Percentage of fees to block producer (0-100)
-    #[serde(default = "default_fee_producer_percentage")]
     pub fee_producer_percentage: u64,
 
     /// Percentage of fees to voters (0-100)
-    #[serde(default = "default_fee_voters_percentage")]
     pub fee_voters_percentage: u64,
 
+    /// Percentage of fees to protocol treasury (0-100)
+    pub fee_treasury_percentage: u64,
+
     /// Percentage of fees to community treasury (0-100)
-    #[serde(default = "default_fee_community_percentage")]
     pub fee_community_percentage: u64,
 
     /// Base transaction fee in spores
@@ -182,16 +182,6 @@ pub struct FeatureFlags {
 
     /// Enable slashing
     pub enable_slashing: bool,
-}
-
-fn default_fee_producer_percentage() -> u64 {
-    30
-}
-fn default_fee_voters_percentage() -> u64 {
-    10
-}
-fn default_fee_community_percentage() -> u64 {
-    10
 }
 
 impl GenesisConfig {
@@ -270,22 +260,26 @@ impl GenesisConfig {
         if self.features.fee_voters_percentage > 100 {
             return Err("Fee voters percentage cannot exceed 100%".to_string());
         }
+        if self.features.fee_treasury_percentage > 100 {
+            return Err("Fee treasury percentage cannot exceed 100%".to_string());
+        }
         if self.features.fee_community_percentage > 100 {
             return Err("Fee community percentage cannot exceed 100%".to_string());
         }
-        // AUDIT-FIX 0.8 + M14: Validate that fee percentages sum to exactly 100.
-        // Previously allowed < 100, leaving unallocated fees unaccounted for.
+        // Validate that all 5 fee percentages sum to exactly 100%.
         let total_pct = self.features.fee_burn_percentage
             + self.features.fee_producer_percentage
             + self.features.fee_voters_percentage
+            + self.features.fee_treasury_percentage
             + self.features.fee_community_percentage;
         if total_pct != 100 {
             return Err(format!(
-                "Fee percentages must sum to exactly 100% (got {}%: burn {}% + producer {}% + voters {}% + community {}%)",
+                "Fee percentages must sum to exactly 100% (got {}%: burn {}% + producer {}% + voters {}% + treasury {}% + community {}%)",
                 total_pct,
                 self.features.fee_burn_percentage,
                 self.features.fee_producer_percentage,
                 self.features.fee_voters_percentage,
+                self.features.fee_treasury_percentage,
                 self.features.fee_community_percentage,
             ));
         }
@@ -427,7 +421,8 @@ impl GenesisConfig {
                 fee_burn_percentage: 40,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
-                fee_community_percentage: 20,
+                fee_treasury_percentage: 10,
+                fee_community_percentage: 10,
                 base_fee_spores: 1_000_000, // 0.001 LICN — $0.0001 at $0.10/LICN
                 rent_rate_spores_per_kb_month: 10_000, // $0.000001 at $0.10/LICN
                 rent_free_kb: 1,
@@ -473,7 +468,8 @@ impl GenesisConfig {
                 fee_burn_percentage: 40,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
-                fee_community_percentage: 20,
+                fee_treasury_percentage: 10,
+                fee_community_percentage: 10,
                 base_fee_spores: 1_000_000, // 0.001 LICN — $0.0001 at $0.10/LICN
                 rent_rate_spores_per_kb_month: 10_000, // $0.000001 at $0.10/LICN
                 rent_free_kb: 1,

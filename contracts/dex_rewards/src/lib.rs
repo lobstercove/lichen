@@ -53,6 +53,7 @@ const TOTAL_DISTRIBUTED_KEY: &[u8] = b"rew_total_dist";
 const REWARD_EPOCH_KEY: &[u8] = b"rew_epoch";
 const REFERRAL_RATE_KEY: &[u8] = b"rew_ref_rate";
 const LICHENCOIN_ADDRESS_KEY: &[u8] = b"rew_licn_addr";
+const LICHENCOIN_CONFIGURED_KEY: &[u8] = b"rew_licn_set";
 const REWARDS_POOL_KEY: &[u8] = b"rew_pool_addr";
 const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
 const TOTAL_VOLUME_KEY: &[u8] = b"rew_total_volume";
@@ -86,6 +87,12 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
 }
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
+}
+
+fn is_licn_configured() -> bool {
+    storage_get(LICHENCOIN_CONFIGURED_KEY)
+        .map(|d| !d.is_empty() && d[0] != 0)
+        .unwrap_or(false)
 }
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
@@ -378,7 +385,7 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     // tokens at its own address. get_contract_address() == caller in CCC context,
     // satisfying lichencoin's caller==from check.
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
+    if !is_licn_configured() {
         reentrancy_exit();
         return 5;
     }
@@ -434,7 +441,7 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     // Transfer LICN from contract's own balance to provider.
     // AUDIT-FIX G7-02: self-custody pattern (see claim_trading_rewards).
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
+    if !is_licn_configured() {
         reentrancy_exit();
         return 5;
     }
@@ -529,7 +536,7 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
 
     // Transfer LICN from contract's own balance to referrer (self-custody pattern)
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
+    if !is_licn_configured() {
         reentrancy_exit();
         return 5;
     }
@@ -666,6 +673,7 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
         return 1;
     }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
+    storage_set(LICHENCOIN_CONFIGURED_KEY, &[1u8]);
     0
 }
 
@@ -1415,6 +1423,43 @@ mod tests {
         // separate pool address. In the real runtime, CCC sets caller to the
         // calling contract, so caller == from == 0xAA... is guaranteed.
         assert_eq!(get_contract_address().0, contract_self);
+    }
+
+    #[test]
+    fn test_claim_with_native_licn_zero_address() {
+        // Verify that claims work when LICN address is [0u8;32] (native LICN
+        // sentinel). Genesis sets this via set_lichencoin_address([0u8;32]).
+        // The configured flag must distinguish "not set" from "set to zero".
+        test_mock::reset();
+        let admin = [1u8; 32];
+        let contract_self = [0xAAu8; 32];
+        test_mock::set_caller(admin);
+        test_mock::set_contract_address(contract_self);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        // Set LICN to zero address (native LICN)
+        let native_licn = [0u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+        // Authorize dex caller
+        let dex_caller = [0xFFu8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1),
+            0
+        );
+        // Record a trade
+        let trader = [2u8; 32];
+        test_mock::set_caller(dex_caller);
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+        // Claim should succeed (not error 5) even though LICN addr is zero
+        test_mock::set_caller(trader);
+        let result = claim_trading_rewards(trader.as_ptr());
+        assert_eq!(result, 0); // success, not 5
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 0);
+        assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
     }
 
     // ============================================================================

@@ -214,6 +214,111 @@ class Connection:
         return await self._rpc("getStakingRewards", [str(pubkey)])
     
     # ============================================================================
+    # TRANSFER & CONTRACT TRANSACTION ENDPOINTS
+    # ============================================================================
+
+    async def transfer(self, from_keypair: Keypair, to: PublicKey, amount: int) -> str:
+        """
+        Transfer native LICN (spores) from one account to another.
+
+        Args:
+            from_keypair: Sender keypair (signer)
+            to: Recipient public key
+            amount: Amount in spores (1 LICN = 1_000_000_000 spores)
+
+        Returns:
+            Transaction signature
+        """
+        blockhash = await self.get_recent_blockhash()
+        instruction = TransactionBuilder.transfer(from_keypair.public_key(), to, amount)
+        transaction = (TransactionBuilder()
+            .add(instruction)
+            .set_recent_blockhash(blockhash)
+            .build_and_sign(from_keypair))
+        return await self.send_transaction(transaction)
+
+    async def deploy_contract(
+        self,
+        deployer: Keypair,
+        code: bytes,
+        init_data: bytes = b"",
+    ) -> str:
+        """
+        Deploy a WASM smart contract.
+
+        Args:
+            deployer: Deployer keypair (signer, pays deploy fee)
+            code: WASM bytecode (must start with \\0asm magic, max 512 KB)
+            init_data: Optional initialization data passed to contract init
+
+        Returns:
+            Transaction signature
+        """
+        blockhash = await self.get_recent_blockhash()
+        instruction = TransactionBuilder.deploy_contract(deployer.public_key(), code, init_data)
+        transaction = (TransactionBuilder()
+            .add(instruction)
+            .set_recent_blockhash(blockhash)
+            .build_and_sign(deployer))
+        return await self.send_transaction(transaction)
+
+    async def call_contract(
+        self,
+        caller: Keypair,
+        contract: PublicKey,
+        function_name: str,
+        args: bytes = b"",
+        value: int = 0,
+    ) -> str:
+        """
+        Call a function on a deployed WASM smart contract.
+
+        Args:
+            caller: Caller keypair (signer)
+            contract: Contract account public key
+            function_name: Name of the contract function to invoke
+            args: Serialized function arguments (default: empty)
+            value: Native LICN to send with the call in spores (default: 0)
+
+        Returns:
+            Transaction signature
+        """
+        blockhash = await self.get_recent_blockhash()
+        instruction = TransactionBuilder.call_contract(
+            caller.public_key(), contract, function_name, args, value
+        )
+        transaction = (TransactionBuilder()
+            .add(instruction)
+            .set_recent_blockhash(blockhash)
+            .build_and_sign(caller))
+        return await self.send_transaction(transaction)
+
+    async def upgrade_contract(
+        self,
+        owner: Keypair,
+        contract: PublicKey,
+        code: bytes,
+    ) -> str:
+        """
+        Upgrade a deployed WASM smart contract (owner only).
+
+        Args:
+            owner: Contract owner keypair (signer)
+            contract: Contract account public key
+            code: New WASM bytecode
+
+        Returns:
+            Transaction signature
+        """
+        blockhash = await self.get_recent_blockhash()
+        instruction = TransactionBuilder.upgrade_contract(owner.public_key(), contract, code)
+        transaction = (TransactionBuilder()
+            .add(instruction)
+            .set_recent_blockhash(blockhash)
+            .build_and_sign(owner))
+        return await self.send_transaction(transaction)
+
+    # ============================================================================
     # ACCOUNT ENDPOINTS
     # ============================================================================
     

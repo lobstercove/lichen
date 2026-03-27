@@ -561,11 +561,7 @@ fn main() {
         fee_producer_percent: genesis_config.features.fee_producer_percentage,
         fee_voters_percent: genesis_config.features.fee_voters_percentage,
         fee_community_percent: genesis_config.features.fee_community_percentage,
-        fee_treasury_percent: 100u64
-            .saturating_sub(genesis_config.features.fee_burn_percentage)
-            .saturating_sub(genesis_config.features.fee_producer_percentage)
-            .saturating_sub(genesis_config.features.fee_voters_percentage)
-            .saturating_sub(genesis_config.features.fee_community_percentage),
+        fee_treasury_percent: genesis_config.features.fee_treasury_percentage,
         fee_exempt_contracts: Vec::new(),
     };
     if let Err(e) = state.set_fee_config_full(&genesis_fee_config) {

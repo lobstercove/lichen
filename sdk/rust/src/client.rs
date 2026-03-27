@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::types::{Balance, Block, NetworkInfo};
-use crate::{Hash, Instruction, Keypair, Pubkey, SYSTEM_PROGRAM_ID, TransactionBuilder};
+use crate::{Hash, Instruction, Keypair, Pubkey, SYSTEM_PROGRAM_ID, CONTRACT_PROGRAM_ID, ContractInstruction, TransactionBuilder};
 use reqwest;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -238,6 +238,152 @@ impl Client {
     /// Get staking rewards for an account
     pub async fn get_staking_rewards(&self, pubkey: &Pubkey) -> Result<Value> {
         self.rpc_call("getStakingRewards", json!([pubkey.to_base58()])).await
+    }
+    
+    // ============================================================================
+    // TRANSFER & CONTRACT OPERATIONS
+    // ============================================================================
+
+    /// Transfer native LICN (spores) from one account to another.
+    pub async fn transfer(&self, from: &Keypair, to: &Pubkey, amount: u64) -> Result<String> {
+        let blockhash_str = self.get_recent_blockhash().await?;
+        let blockhash = Hash::from_hex(&blockhash_str)
+            .map_err(|e| Error::ParseError(e))?;
+
+        let mut data = vec![0u8]; // Transfer instruction type
+        data.extend_from_slice(&amount.to_le_bytes());
+
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![from.pubkey(), *to],
+            data,
+        };
+
+        let tx = TransactionBuilder::new()
+            .add_instruction(instruction)
+            .recent_blockhash(blockhash)
+            .build_and_sign(from)?;
+
+        self.send_transaction(&tx).await
+    }
+
+    /// Deploy a WASM smart contract.
+    ///
+    /// # Arguments
+    /// * `deployer` - Deployer keypair (signer, pays deploy fee)
+    /// * `code` - WASM bytecode (must start with \0asm magic, max 512 KB)
+    /// * `init_data` - Optional initialization data passed to contract init
+    pub async fn deploy_contract(
+        &self,
+        deployer: &Keypair,
+        code: Vec<u8>,
+        init_data: Vec<u8>,
+    ) -> Result<String> {
+        if code.len() < 4 || &code[..4] != b"\0asm" {
+            return Err(Error::BuildError("Invalid WASM bytecode: missing magic header (\\0asm)".into()));
+        }
+        if code.len() > 512 * 1024 {
+            return Err(Error::BuildError("Contract code exceeds 512 KB limit".into()));
+        }
+
+        let blockhash_str = self.get_recent_blockhash().await?;
+        let blockhash = Hash::from_hex(&blockhash_str)
+            .map_err(|e| Error::ParseError(e))?;
+
+        let contract_ix = ContractInstruction::Deploy { code, init_data };
+        let data = serde_json::to_vec(&contract_ix)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        let instruction = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![deployer.pubkey()],
+            data,
+        };
+
+        let tx = TransactionBuilder::new()
+            .add_instruction(instruction)
+            .recent_blockhash(blockhash)
+            .build_and_sign(deployer)?;
+
+        self.send_transaction(&tx).await
+    }
+
+    /// Call a function on a deployed WASM smart contract.
+    ///
+    /// # Arguments
+    /// * `caller` - Caller keypair (signer)
+    /// * `contract` - Contract account public key
+    /// * `function` - Name of the contract function to invoke
+    /// * `args` - Serialized function arguments
+    /// * `value` - Native LICN to send with the call in spores
+    pub async fn call_contract(
+        &self,
+        caller: &Keypair,
+        contract: &Pubkey,
+        function: &str,
+        args: Vec<u8>,
+        value: u64,
+    ) -> Result<String> {
+        let blockhash_str = self.get_recent_blockhash().await?;
+        let blockhash = Hash::from_hex(&blockhash_str)
+            .map_err(|e| Error::ParseError(e))?;
+
+        let contract_ix = ContractInstruction::Call {
+            function: function.to_string(),
+            args,
+            value,
+        };
+        let data = serde_json::to_vec(&contract_ix)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        let instruction = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![caller.pubkey(), *contract],
+            data,
+        };
+
+        let tx = TransactionBuilder::new()
+            .add_instruction(instruction)
+            .recent_blockhash(blockhash)
+            .build_and_sign(caller)?;
+
+        self.send_transaction(&tx).await
+    }
+
+    /// Upgrade a deployed WASM smart contract (owner only).
+    pub async fn upgrade_contract(
+        &self,
+        owner: &Keypair,
+        contract: &Pubkey,
+        code: Vec<u8>,
+    ) -> Result<String> {
+        if code.len() < 4 || &code[..4] != b"\0asm" {
+            return Err(Error::BuildError("Invalid WASM bytecode: missing magic header (\\0asm)".into()));
+        }
+        if code.len() > 512 * 1024 {
+            return Err(Error::BuildError("Contract code exceeds 512 KB limit".into()));
+        }
+
+        let blockhash_str = self.get_recent_blockhash().await?;
+        let blockhash = Hash::from_hex(&blockhash_str)
+            .map_err(|e| Error::ParseError(e))?;
+
+        let contract_ix = ContractInstruction::Upgrade { code };
+        let data = serde_json::to_vec(&contract_ix)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        let instruction = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![owner.pubkey(), *contract],
+            data,
+        };
+
+        let tx = TransactionBuilder::new()
+            .add_instruction(instruction)
+            .recent_blockhash(blockhash)
+            .build_and_sign(owner)?;
+
+        self.send_transaction(&tx).await
     }
     
     // ============================================================================
