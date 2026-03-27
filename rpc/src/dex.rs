@@ -1491,10 +1491,12 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
     }
 
     let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    // AUDIT-FIX RPC-1: Cap pair iteration to prevent DoS on unbounded loops
+    let effective_count = count.min(500);
     let slot = current_slot(&state);
     let mut tickers = Vec::new();
 
-    for pair_id in 1..=count {
+    for pair_id in 1..=effective_count {
         let last_price_raw = read_u64(
             &state,
             DEX_ANALYTICS_PROGRAM,
@@ -1655,7 +1657,7 @@ async fn get_pools(State(state): State<Arc<RpcState>>) -> Response {
     let mut pools = Vec::new();
     let symbol_map = build_token_symbol_map(&state);
 
-    for i in 1..=count {
+    for i in 1..=count.min(500) {
         let key = format!("amm_pool_{}", i);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
             if let Some(mut pool) = decode_pool(&data) {
@@ -2162,7 +2164,7 @@ async fn get_routes(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let mut routes = Vec::new();
 
-    for i in 1..=count {
+    for i in 1..=count.min(500) {
         let key = format!("rtr_route_{}", i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
@@ -2437,7 +2439,7 @@ async fn get_proposals(
     let slot = current_slot(&state);
     let mut proposals = Vec::new();
 
-    for i in 1..=count {
+    for i in 1..=count.min(500) {
         let key = format!("gov_prop_{}", i);
         if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
             if let Some(p) = decode_proposal(&data) {
@@ -2503,6 +2505,50 @@ async fn get_trader_stats(
         slot,
     )
     .into_response()
+}
+
+/// AUDIT-FIX RPC-2: GET /api/v1/traders/:addr/trades — User trade history across all pairs
+async fn get_trader_trades(
+    State(state): State<Arc<RpcState>>,
+    Path(addr): Path<String>,
+    Query(q): Query<LimitQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let slot = current_slot(&state);
+    let addr_hex = addr.to_lowercase();
+    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut trades = Vec::new();
+    // Iterate recent trades and filter by taker address
+    let start = if trade_count > 1000 { trade_count - 999 } else { 1 };
+    for i in (start..=trade_count).rev() {
+        let key = format!("dex_trade_{}", i);
+        if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
+            if let Some(mut trade) = decode_trade(&data) {
+                if trade.taker == addr_hex {
+                    let maker_key = format!("dex_order_{}", trade.maker_order_id);
+                    if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
+                        if maker_data.len() > 40 {
+                            trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
+                        }
+                    }
+                    let slot_age_ms = slot.saturating_sub(trade.slot) * SLOT_DURATION_MS;
+                    trade.timestamp = now_ms.saturating_sub(slot_age_ms);
+                    trades.push(trade);
+                    if trades.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    ApiResponse::ok(trades, slot).into_response()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2643,6 +2689,7 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         // Analytics
         .route("/leaderboard", get(get_leaderboard))
         .route("/traders/:addr/stats", get(get_trader_stats))
+        .route("/traders/:addr/trades", get(get_trader_trades))
         // Rewards
         .route("/rewards/:addr", get(get_rewards))
         // Governance
@@ -2758,7 +2805,7 @@ async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
     // F14.4: Count active proposals
     let count = read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count");
     let mut active = 0u64;
-    for i in 1..=count {
+    for i in 1..=count.min(500) {
         let key = format!("gov_prop_{}", i);
         if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
             if data.len() > 41 && data[41] == 0 {

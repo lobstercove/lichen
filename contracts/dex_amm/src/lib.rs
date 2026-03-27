@@ -17,8 +17,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, is_native_token,
-    log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    get_value, is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // ============================================================================
@@ -45,6 +46,11 @@ const TICK_SPACINGS: [i32; 4] = [1, 10, 60, 200];
 
 // Q64.64 fixed-point scale
 const Q64: u128 = 1u128 << 64;
+
+// AUDIT-FIX AMM-5: Maximum tick boundaries a single swap can cross
+const MAX_TICK_CROSSES: u32 = 100;
+// AUDIT-FIX AMM-7: Maximum protocol fee percentage (protects LP incentives)
+const MAX_PROTOCOL_FEE_PCT: u8 = 50;
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"amm_admin";
@@ -150,6 +156,154 @@ fn pool_pair_index_key(token_a: &[u8; 32], token_b: &[u8; 32]) -> Vec<u8> {
     k.extend_from_slice(left);
     k.extend_from_slice(right);
     k
+}
+
+// AUDIT-FIX AMM-5: Initialized ticks list per pool for cross-tick swaps
+fn init_ticks_key(pool_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"amm_iticks_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pool_id));
+    k
+}
+
+fn load_initialized_ticks(pool_id: u64) -> Vec<i32> {
+    match storage_get(&init_ticks_key(pool_id)) {
+        Some(d) => {
+            let mut ticks = Vec::new();
+            for chunk in d.chunks_exact(4) {
+                ticks.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+            ticks
+        }
+        None => Vec::new(),
+    }
+}
+
+fn save_initialized_ticks(pool_id: u64, ticks: &[i32]) {
+    let mut data = Vec::with_capacity(ticks.len() * 4);
+    for &t in ticks {
+        data.extend_from_slice(&t.to_le_bytes());
+    }
+    storage_set(&init_ticks_key(pool_id), &data);
+}
+
+fn ensure_tick_initialized(pool_id: u64, tick: i32) {
+    let mut ticks = load_initialized_ticks(pool_id);
+    match ticks.binary_search(&tick) {
+        Ok(_) => {} // already present
+        Err(pos) => {
+            ticks.insert(pos, tick);
+            save_initialized_ticks(pool_id, &ticks);
+        }
+    }
+}
+
+// AUDIT-FIX AMM-5: Signed liquidityNet for cross-tick mechanics
+fn load_tick_net(key: &[u8]) -> i64 {
+    storage_get(key)
+        .map(|d| {
+            if d.len() >= 8 {
+                i64::from_le_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]])
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn save_tick_net(key: &[u8], val: i64) {
+    storage_set(key, &val.to_le_bytes());
+}
+
+// AUDIT-FIX AMM-1/2: Compute actual token amounts from liquidity and price range
+fn compute_amounts_from_liquidity(
+    liquidity: u64,
+    sqrt_lower: u64,
+    sqrt_upper: u64,
+    sqrt_current: u64,
+) -> (u64, u64) {
+    if liquidity == 0 || sqrt_lower >= sqrt_upper {
+        return (0, 0);
+    }
+    let amount_a = if sqrt_current >= sqrt_upper {
+        0
+    } else {
+        let eff = if sqrt_current > sqrt_lower {
+            sqrt_current
+        } else {
+            sqrt_lower
+        };
+        let delta = sqrt_upper as u128 - eff as u128;
+        let denom = eff as u128 * sqrt_upper as u128 / (1u128 << 32);
+        if denom == 0 {
+            0
+        } else {
+            (liquidity as u128 * delta / denom) as u64
+        }
+    };
+    let amount_b = if sqrt_current <= sqrt_lower {
+        0
+    } else {
+        let eff = if sqrt_current < sqrt_upper {
+            sqrt_current
+        } else {
+            sqrt_upper
+        };
+        let delta = eff as u128 - sqrt_lower as u128;
+        (liquidity as u128 * delta / (1u128 << 32)) as u64
+    };
+    (amount_a, amount_b)
+}
+
+// AUDIT-FIX AMM-1/3: Pull tokens from user into the AMM contract.
+// For native LICN: checks get_value() >= amount.
+// For tokens: cross-contract call to transfer_from (requires prior approval).
+fn pull_tokens(token: &[u8; 32], from: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (token, from, amount);
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if is_native_token(&Address(*token)) {
+            let received = get_value();
+            return received >= amount;
+        }
+        let contract = get_contract_address();
+        let mut args = Vec::with_capacity(104);
+        args.extend_from_slice(&contract.0);
+        args.extend_from_slice(from);
+        args.extend_from_slice(&contract.0);
+        args.extend_from_slice(&u64_to_bytes(amount));
+        let call = CrossCall::new(Address(*token), "transfer_from", args).with_value(0);
+        match call_contract(call) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+// AUDIT-FIX AMM-2/3: Send tokens from the AMM contract to a user.
+fn send_tokens(token: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (token, to, amount);
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if is_native_token(&Address(*token)) {
+            return transfer_native(Address(*to), amount).unwrap_or(false);
+        }
+        let contract = get_contract_address();
+        call_token_transfer(Address(*token), contract, Address(*to), amount).unwrap_or(false)
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
@@ -639,44 +793,34 @@ fn compute_liquidity(
     liq as u64
 }
 
-/// Calculate swap output amount given input
-fn compute_swap_output(
+/// AUDIT-FIX AMM-5/6: Raw swap math without fee deduction (for cross-tick loop).
+/// Fee is deducted once at the swap entry point.
+fn compute_swap_output_raw(
     amount_in: u64,
     liquidity: u64,
     sqrt_price: u64,
-    fee_bps: u64,
     is_token_a: bool,
 ) -> (u64, u64) {
-    // amount_out = amount to receive
-    // new_sqrt_price = updated sqrt price
     if liquidity == 0 || amount_in == 0 {
         return (0, sqrt_price);
     }
 
-    // Apply fee
-    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
-    let amount_after_fee = amount_in - fee;
-
     if is_token_a {
         // Swapping A for B: price decreases
-        // new_sqrt = L * sqrt_p / (L + amount * sqrt_p)
         let numerator = liquidity as u128 * sqrt_price as u128;
         let denominator =
-            liquidity as u128 + (amount_after_fee as u128 * sqrt_price as u128 / (1u128 << 32));
+            liquidity as u128 + (amount_in as u128 * sqrt_price as u128 / (1u128 << 32));
         if denominator == 0 {
             return (0, sqrt_price);
         }
         let new_sqrt = (numerator / denominator) as u64;
-        // amount_b_out = L * (sqrt_p - new_sqrt) / 2^32
         let delta_sqrt = sqrt_price as u128 - new_sqrt as u128;
         let amount_out = (liquidity as u128 * delta_sqrt / (1u128 << 32)) as u64;
         (amount_out, new_sqrt)
     } else {
         // Swapping B for A: price increases
-        // new_sqrt = sqrt_p + amount * 2^32 / L
-        let delta = amount_after_fee as u128 * (1u128 << 32) / liquidity as u128;
+        let delta = amount_in as u128 * (1u128 << 32) / liquidity as u128;
         let new_sqrt = (sqrt_price as u128 + delta) as u64;
-        // amount_a_out = L * (1/sqrt_p - 1/new_sqrt) = L * (new_sqrt - sqrt_p) / (sqrt_p * new_sqrt / 2^32)
         let delta_sqrt = new_sqrt as u128 - sqrt_price as u128;
         let denom = sqrt_price as u128 * new_sqrt as u128 / (1u128 << 32);
         let amount_out = if denom == 0 {
@@ -686,6 +830,132 @@ fn compute_swap_output(
         };
         (amount_out, new_sqrt)
     }
+}
+
+/// Backward-compatible wrapper: deducts fee then calls raw computation.
+fn compute_swap_output(
+    amount_in: u64,
+    liquidity: u64,
+    sqrt_price: u64,
+    fee_bps: u64,
+    is_token_a: bool,
+) -> (u64, u64) {
+    if liquidity == 0 || amount_in == 0 {
+        return (0, sqrt_price);
+    }
+    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
+    let amount_after_fee = amount_in - fee;
+    compute_swap_output_raw(amount_after_fee, liquidity, sqrt_price, is_token_a)
+}
+
+/// AUDIT-FIX AMM-5: Compute input amount needed to move price to target.
+fn compute_input_to_target(
+    liquidity: u64,
+    sqrt_price: u64,
+    target_sqrt: u64,
+    is_token_a_in: bool,
+) -> u64 {
+    if liquidity == 0 {
+        return u64::MAX;
+    }
+    if is_token_a_in {
+        // Price going down
+        if sqrt_price <= target_sqrt {
+            return 0;
+        }
+        let delta = sqrt_price as u128 - target_sqrt as u128;
+        let denom = (sqrt_price as u128)
+            .checked_mul(target_sqrt as u128)
+            .map(|v| v / (1u128 << 32))
+            .unwrap_or(0);
+        if denom == 0 {
+            return u64::MAX;
+        }
+        (liquidity as u128 * delta / denom).saturating_add(1) as u64
+    } else {
+        // Price going up
+        if target_sqrt <= sqrt_price {
+            return 0;
+        }
+        let delta = target_sqrt as u128 - sqrt_price as u128;
+        (liquidity as u128 * delta / (1u128 << 32)).saturating_add(1) as u64
+    }
+}
+
+/// AUDIT-FIX AMM-5: Execute swap with cross-tick liquidity transitions.
+/// Returns (total_amount_out, new_sqrt_price, new_tick).
+fn compute_swap_with_ticks(
+    pool_id: u64,
+    amount_in_after_fee: u64,
+    liquidity: u64,
+    sqrt_price: u64,
+    current_tick: i32,
+    is_token_a_in: bool,
+) -> (u64, u64, i32) {
+    let mut remaining = amount_in_after_fee;
+    let mut total_out: u64 = 0;
+    let mut liq = liquidity;
+    let mut sqp = sqrt_price;
+    let mut ct = current_tick;
+
+    let init_ticks = load_initialized_ticks(pool_id);
+
+    for _ in 0..MAX_TICK_CROSSES {
+        if remaining == 0 || liq == 0 {
+            break;
+        }
+
+        let going_up = !is_token_a_in;
+        let next_tick = if going_up {
+            init_ticks.iter().find(|&&t| t > ct).copied()
+        } else {
+            init_ticks.iter().rev().find(|&&t| t <= ct).copied()
+        };
+
+        match next_tick {
+            None => {
+                // No more initialized ticks — use remaining with current liquidity
+                let (out, new_sqp) = compute_swap_output_raw(remaining, liq, sqp, is_token_a_in);
+                total_out = total_out.saturating_add(out);
+                sqp = new_sqp;
+                ct = sqrt_price_to_tick(new_sqp);
+                remaining = 0;
+            }
+            Some(tick_bound) => {
+                let target_sqp = tick_to_sqrt_price(tick_bound);
+                let input_needed = compute_input_to_target(liq, sqp, target_sqp, is_token_a_in);
+
+                if remaining < input_needed {
+                    // Won't reach the next tick boundary
+                    let (out, new_sqp) =
+                        compute_swap_output_raw(remaining, liq, sqp, is_token_a_in);
+                    total_out = total_out.saturating_add(out);
+                    sqp = new_sqp;
+                    ct = sqrt_price_to_tick(new_sqp);
+                    remaining = 0;
+                } else {
+                    // Reach the tick boundary
+                    let (out, _) =
+                        compute_swap_output_raw(input_needed, liq, sqp, is_token_a_in);
+                    total_out = total_out.saturating_add(out);
+                    remaining = remaining.saturating_sub(input_needed);
+                    sqp = target_sqp;
+
+                    // Cross the tick: apply liquidityNet
+                    let net = load_tick_net(&tick_data_key(pool_id, tick_bound));
+                    if going_up {
+                        liq = ((liq as i64).saturating_add(net)) as u64;
+                        ct = tick_bound;
+                    } else {
+                        liq = ((liq as i64).saturating_sub(net)) as u64;
+                        ct = tick_bound - 1;
+                    }
+                }
+            }
+        }
+    }
+
+    (total_out, sqp, ct)
 }
 
 // ============================================================================
@@ -800,7 +1070,8 @@ pub fn set_pool_protocol_fee(caller: *const u8, pool_id: u64, fee_percent: u8) -
     if !require_admin(&c) {
         return 1;
     }
-    if fee_percent > 100 {
+    // AUDIT-FIX AMM-7: Cap protocol fee at 50% to protect LP incentives
+    if fee_percent > MAX_PROTOCOL_FEE_PCT {
         return 2;
     }
     let pk = pool_key(pool_id);
@@ -884,6 +1155,22 @@ pub fn add_liquidity(
         return 4;
     }
 
+    // AUDIT-FIX AMM-1: Compute actual token amounts from the liquidity
+    let (actual_a, actual_b) =
+        compute_amounts_from_liquidity(liquidity, sqrt_lower, sqrt_upper, sqrt_current);
+
+    // AUDIT-FIX AMM-1: Pull tokens from provider to the AMM contract
+    let token_a = decode_pool_token_a(&pool_data);
+    let token_b = decode_pool_token_b(&pool_data);
+    if actual_a > 0 && !pull_tokens(&token_a, &p, actual_a) {
+        reentrancy_exit();
+        return 6; // token transfer failed
+    }
+    if actual_b > 0 && !pull_tokens(&token_b, &p, actual_b) {
+        reentrancy_exit();
+        return 6;
+    }
+
     // Create position
     let pos_count = load_u64(POSITION_COUNT_KEY);
     let pos_id = pos_count + 1;
@@ -906,17 +1193,17 @@ pub fn add_liquidity(
         storage_set(&pk, &pool_data);
     }
 
-    // Update tick data
-    let lower_net = load_u64(&tick_data_key(pool_id, lower_tick));
-    save_u64(
-        &tick_data_key(pool_id, lower_tick),
-        lower_net.saturating_add(liquidity),
-    );
-    let upper_net = load_u64(&tick_data_key(pool_id, upper_tick));
-    save_u64(
-        &tick_data_key(pool_id, upper_tick),
-        upper_net.saturating_add(liquidity),
-    );
+    // AUDIT-FIX AMM-5: Use signed liquidityNet for cross-tick mechanics
+    // lower tick: +L (entering range going up), upper tick: -L (exiting range going up)
+    let tk_lower = tick_data_key(pool_id, lower_tick);
+    let net_lower = load_tick_net(&tk_lower);
+    save_tick_net(&tk_lower, net_lower.saturating_add(liquidity as i64));
+    ensure_tick_initialized(pool_id, lower_tick);
+
+    let tk_upper = tick_data_key(pool_id, upper_tick);
+    let net_upper = load_tick_net(&tk_upper);
+    save_tick_net(&tk_upper, net_upper.saturating_sub(liquidity as i64));
+    ensure_tick_initialized(pool_id, upper_tick);
 
     log_info("Liquidity added");
     reentrancy_exit();
@@ -968,18 +1255,41 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
     // Update pool liquidity
     let pool_id = decode_pos_pool_id(&pos_data);
     let pool_pk = pool_key(pool_id);
+    let lower = decode_pos_lower_tick(&pos_data);
+    let upper = decode_pos_upper_tick(&pos_data);
+
     if let Some(mut pool_data) = storage_get(&pool_pk) {
         if pool_data.len() >= POOL_SIZE {
-            let lower = decode_pos_lower_tick(&pos_data);
-            let upper = decode_pos_upper_tick(&pos_data);
             let current_tick = decode_pool_tick(&pool_data);
             if current_tick >= lower && current_tick < upper {
                 let pool_liq = decode_pool_liquidity(&pool_data);
                 update_pool_liquidity(&mut pool_data, pool_liq.saturating_sub(liquidity_amount));
                 storage_set(&pool_pk, &pool_data);
             }
+
+            // AUDIT-FIX AMM-2: Compute and return withdrawn token amounts
+            let sqrt_current = decode_pool_sqrt_price(&pool_data);
+            let sqrt_lower = tick_to_sqrt_price(lower);
+            let sqrt_upper = tick_to_sqrt_price(upper);
+            let (return_a, return_b) =
+                compute_amounts_from_liquidity(liquidity_amount, sqrt_lower, sqrt_upper, sqrt_current);
+
+            let token_a = decode_pool_token_a(&pool_data);
+            let token_b = decode_pool_token_b(&pool_data);
+            if return_a > 0 {
+                send_tokens(&token_a, &p, return_a);
+            }
+            if return_b > 0 {
+                send_tokens(&token_b, &p, return_b);
+            }
         }
     }
+
+    // AUDIT-FIX AMM-5: Update signed tick liquidityNet
+    let tk_lower = tick_data_key(pool_id, lower);
+    save_tick_net(&tk_lower, load_tick_net(&tk_lower).saturating_sub(liquidity_amount as i64));
+    let tk_upper = tick_data_key(pool_id, upper);
+    save_tick_net(&tk_upper, load_tick_net(&tk_upper).saturating_add(liquidity_amount as i64));
 
     log_info("Liquidity removed");
     reentrancy_exit();
@@ -1117,23 +1427,69 @@ pub fn swap_exact_in(
     let liquidity = decode_pool_liquidity(&pool_data);
     let fee_tier = decode_pool_fee_tier(&pool_data);
     let fee_bps = FEE_VALUES[fee_tier as usize];
+    let current_tick = decode_pool_tick(&pool_data);
+    let token_a = decode_pool_token_a(&pool_data);
+    let token_b = decode_pool_token_b(&pool_data);
 
-    let (amount_out, new_sqrt) =
-        compute_swap_output(amount_in, liquidity, sqrt_price, fee_bps, is_token_a_in);
+    // AUDIT-FIX AMM-6: Fee deduction once at entry, then cross-tick computation
+    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
+    let amount_after_fee = amount_in - fee;
+
+    // AUDIT-FIX AMM-5: Cross-tick swap with proper liquidity transitions
+    let (amount_out, new_sqrt, new_tick) = compute_swap_with_ticks(
+        pool_id,
+        amount_after_fee,
+        liquidity,
+        sqrt_price,
+        current_tick,
+        is_token_a_in,
+    );
 
     if amount_out < min_out {
         reentrancy_exit();
         return 4;
     }
 
+    // AUDIT-FIX AMM-3: Pull input tokens from trader
+    let input_token = if is_token_a_in { &token_a } else { &token_b };
+    if !pull_tokens(input_token, &tr, amount_in) {
+        reentrancy_exit();
+        return 7; // input token transfer failed
+    }
+
+    // AUDIT-FIX AMM-3: Send output tokens to trader
+    let output_token = if is_token_a_in { &token_b } else { &token_a };
+    if !send_tokens(output_token, &tr, amount_out) {
+        reentrancy_exit();
+        return 8; // output token transfer failed
+    }
+
     // Update pool state
     update_pool_sqrt_price(&mut pool_data, new_sqrt);
-    let new_tick = sqrt_price_to_tick(new_sqrt);
     update_pool_tick(&mut pool_data, new_tick);
+    // Update pool active liquidity to reflect post-cross state
+    let final_liq = {
+        let mut liq = 0u64;
+        // Sum liquidity of all positions whose range contains new_tick
+        // (This equals the pool's active liquidity at the new tick)
+        let pos_count = load_u64(POSITION_COUNT_KEY);
+        for i in 1..=pos_count {
+            if let Some(pd) = storage_get(&position_key(i)) {
+                if pd.len() >= POSITION_SIZE && decode_pos_pool_id(&pd) == pool_id {
+                    let lower = decode_pos_lower_tick(&pd);
+                    let upper = decode_pos_upper_tick(&pd);
+                    if new_tick >= lower && new_tick < upper {
+                        liq = liq.saturating_add(decode_pos_liquidity(&pd));
+                    }
+                }
+            }
+        }
+        liq
+    };
+    update_pool_liquidity(&mut pool_data, final_liq);
     storage_set(&pk, &pool_data);
 
     // Accrue fees to in-range positions
-    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
     accrue_fees_to_positions(pool_id, fee, is_token_a_in);
 
     // Track global swap count, volume, and fees
@@ -1327,6 +1683,10 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    // AUDIT-FIX: Reject zero address
+    if is_zero(&t) {
+        return 3;
+    }
     storage_set(FEE_TREASURY_ADDR_KEY, &t);
     0
 }
@@ -1373,12 +1733,7 @@ pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
         if is_native_token(&Address(token_a)) {
             let _ = transfer_native(Address(treasury), fee_a);
         } else {
-            let _ = call_token_transfer(
-                Address(token_a),
-                contract_addr,
-                Address(treasury),
-                fee_a,
-            );
+            let _ = call_token_transfer(Address(token_a), contract_addr, Address(treasury), fee_a);
         }
         save_u64(&key_a, 0);
     }
@@ -1386,12 +1741,7 @@ pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
         if is_native_token(&Address(token_b)) {
             let _ = transfer_native(Address(treasury), fee_b);
         } else {
-            let _ = call_token_transfer(
-                Address(token_b),
-                contract_addr,
-                Address(treasury),
-                fee_b,
-            );
+            let _ = call_token_transfer(Address(token_b), contract_addr, Address(treasury), fee_b);
         }
         save_u64(&key_b, 0);
     }
@@ -1475,7 +1825,7 @@ pub fn get_tvl(pool_id: u64) -> u64 {
     }
 }
 
-/// Quote a swap without executing
+/// Quote a swap without executing (uses cross-tick logic for accuracy)
 pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
     let pk = pool_key(pool_id);
     let pool_data = match storage_get(&pk) {
@@ -1486,7 +1836,17 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
     let liquidity = decode_pool_liquidity(&pool_data);
     let fee_tier = decode_pool_fee_tier(&pool_data);
     let fee_bps = FEE_VALUES[fee_tier as usize];
-    let (out, _) = compute_swap_output(amount_in, liquidity, sqrt_price, fee_bps, is_token_a_in);
+    let current_tick = decode_pool_tick(&pool_data);
+    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
+    let amount_after_fee = amount_in - fee;
+    let (out, _, _) = compute_swap_with_ticks(
+        pool_id,
+        amount_after_fee,
+        liquidity,
+        sqrt_price,
+        current_tick,
+        is_token_a_in,
+    );
     out
 }
 
@@ -2087,7 +2447,10 @@ mod tests {
     #[test]
     fn test_set_protocol_fee_too_high() {
         let (admin, pool_id) = setup_with_pool();
-        assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 101), 2);
+        // AUDIT-FIX AMM-7: Cap at 50%, not 100%
+        assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 51), 2);
+        // 50% should succeed
+        assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 50), 0);
     }
 
     #[test]
@@ -2095,7 +2458,10 @@ mod tests {
         let (admin, _pool_id) = setup_with_pool();
         let treasury = [42u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_fee_treasury_address(admin.as_ptr(), treasury.as_ptr()), 0);
+        assert_eq!(
+            set_fee_treasury_address(admin.as_ptr(), treasury.as_ptr()),
+            0
+        );
         assert_eq!(load_addr(FEE_TREASURY_ADDR_KEY), treasury);
     }
 

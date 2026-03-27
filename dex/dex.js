@@ -1050,6 +1050,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // If symbol registry is unavailable, use hardcoded fallback addresses as safety net.
         // Registry is always preferred; fallbacks are a resilience measure for cold-start scenarios.
+        // AUDIT-FIX FE-1: Fallback addresses are for testnet v0.4.x genesis only.
+        // If the chain restarts with a new genesis, update these or remove them.
         let needsFallback = false;
         if (!contracts.dex_core) {
             needsFallback = true;
@@ -1057,7 +1059,7 @@ document.addEventListener('DOMContentLoaded', () => {
             contracts.dex_amm = '72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay';
             contracts.dex_router = 'FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf';
             contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
-            console.warn('[DEX] Using fallback contract addresses — registry unavailable');
+            console.warn('[DEX] Using fallback contract addresses (testnet v0.4.x) — registry unavailable');
             const banner = document.getElementById('dexWarningBanner');
             if (banner) {
                 banner.textContent = '⚠ Using fallback contract addresses — symbol registry unavailable.';

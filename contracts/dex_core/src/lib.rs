@@ -58,10 +58,10 @@ const MAX_OPEN_ORDERS_PER_USER: u64 = 100;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate
 const DEFAULT_TAKER_FEE_BPS: u64 = 5; // 0.05%
 const MAX_FEE_BPS: u64 = 100; // 1% max
-const FEE_PROTOCOL_SHARE: u64 = 60; // 60% to protocol
-const FEE_LP_SHARE: u64 = 20; // 20% to LPs
-const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
+                              // AUDIT-FIX CLOB-1: 100% of taker fee goes to protocol treasury on settlement.
+                              // LP/staker incentives are handled by the separate dex_rewards contract via token emissions.
 const MIN_FEE_PER_TRADE: u64 = 1; // 1 spore minimum
+const MAX_TICK_SCAN: u64 = 50_000; // AUDIT-FIX CLOB-3: max ticks to scan for next price level
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
                                          // F18.2: Analytics cross-contract call — record trades after settlement
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
@@ -743,7 +743,7 @@ fn quote_exact_input(
 
             let mut next = best_bid.saturating_sub(1);
             let mut found = false;
-            for _ in 0..1000 {
+            for _ in 0..MAX_TICK_SCAN {
                 if next == 0 {
                     break;
                 }
@@ -839,7 +839,7 @@ fn quote_exact_input(
 
         let mut next = best_ask.saturating_add(1);
         let mut found = false;
-        for _ in 0..1000 {
+        for _ in 0..MAX_TICK_SCAN {
             if load_u64(&ask_count_key(pair_id, next)) > 0 {
                 best_ask = next;
                 found = true;
@@ -988,12 +988,16 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    // AUDIT-FIX CLOB-2: reject zero address to prevent fee burn
+    if is_zero(&t) {
+        return 3;
+    }
     storage_set(FEE_TREASURY_ADDR_KEY, &t);
     0
 }
 
-/// Claim accrued maker rebates for the caller.
-/// Returns: 0=success, 1=nothing to claim, 2=transfer failed, 200=caller mismatch
+/// Claim accrued maker rebates for the caller on a specific pair.
+/// Returns: 0=success, 1=nothing to claim, 2=transfer failed, 3=pair not found, 200=caller mismatch
 pub fn claim_rebate(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
@@ -1003,7 +1007,10 @@ pub fn claim_rebate(caller: *const u8, pair_id: u64) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
+    // AUDIT-FIX CLOB-5: Rebate storage is per-pair-per-trader to avoid mixing quote tokens
     let mut rk = Vec::from(&b"dex_rebate_"[..]);
+    rk.extend_from_slice(&pair_id.to_le_bytes());
+    rk.push(b'_');
     rk.extend_from_slice(&c);
     let accrued = load_u64(&rk);
     if accrued == 0 {
@@ -1989,8 +1996,8 @@ fn match_order(
                 // Move to next ask price — scan upward
                 let mut next = best_ask + 1;
                 let mut found = false;
-                // Scan up to 1000 ticks to find next level
-                for _ in 0..1000 {
+                // AUDIT-FIX CLOB-3: Scan up to MAX_TICK_SCAN ticks for sparse books
+                for _ in 0..MAX_TICK_SCAN {
                     if load_u64(&ask_count_key(pair_id, next)) > 0 {
                         best_ask = next;
                         found = true;
@@ -2022,7 +2029,7 @@ fn match_order(
             if level_count == 0 {
                 let mut next = best_bid.saturating_sub(1);
                 let mut found = false;
-                for _ in 0..1000 {
+                for _ in 0..MAX_TICK_SCAN {
                     if next == 0 {
                         break;
                     }
@@ -2119,12 +2126,28 @@ fn fill_at_price_level(
         }
 
         // Self-trade prevention: cancel maker (cancel-oldest)
+        // AUDIT-FIX CLOB-4: Log self-trade cancellation for transparency
         let maker_trader = decode_order_trader(&maker_data);
         if maker_trader == *taker {
             update_order_status(&mut maker_data, STATUS_CANCELLED);
+            // Refund maker's escrowed tokens before cancellation
+            let maker_escrow = decode_order_escrow_locked(&maker_data);
+            if maker_escrow > 0 {
+                let maker_side = decode_order_side(&maker_data);
+                if let Some(pd) = storage_get(&pair_key(pair_id)) {
+                    let refund_token = if maker_side == SIDE_SELL {
+                        decode_pair_base_token(&pd)
+                    } else {
+                        decode_pair_quote_token(&pd)
+                    };
+                    release_tokens(&refund_token, &maker_trader, maker_escrow);
+                }
+                update_order_escrow(&mut maker_data, 0);
+            }
             storage_set(&ok, &maker_data);
             save_u64(&lk, 0);
             new_level_count = new_level_count.saturating_sub(1);
+            log_info("Self-trade prevented: maker order cancelled and escrowed tokens refunded");
             continue;
         }
 
@@ -2142,14 +2165,11 @@ fn fill_at_price_level(
         let taker_fee = calculate_taker_fee(notional, taker_fee_bps);
         let maker_rebate = calculate_maker_rebate(notional, maker_fee_bps);
 
-        // Record protocol fees
-        // AUDIT-FIX L6-01: u128 intermediate to prevent overflow on large trades
-        let protocol_fee = (taker_fee as u128 * FEE_PROTOCOL_SHARE as u128 / 100) as u64;
+        // AUDIT-FIX CLOB-1: Track full taker fee as protocol revenue.
+        // 100% of taker fee is transferred to treasury wallet during settlement.
+        // LP/staker incentives are handled by the separate dex_rewards contract.
         let current_treasury = load_u64(FEE_TREASURY_KEY);
-        save_u64(
-            FEE_TREASURY_KEY,
-            current_treasury.saturating_add(protocol_fee),
-        );
+        save_u64(FEE_TREASURY_KEY, current_treasury.saturating_add(taker_fee));
 
         // ── Settlement: transfer tokens between counterparties ──
         // Base tokens: from seller's escrow (held by DEX) → buyer
@@ -2305,9 +2325,11 @@ fn fill_at_price_level(
 
         remaining -= fill_qty;
 
-        // F19.12b: Accumulate maker rebate for the maker address
+        // AUDIT-FIX CLOB-5: Accumulate maker rebate per-pair-per-trader
         if maker_rebate > 0 {
             let mut rk = Vec::from(&b"dex_rebate_"[..]);
+            rk.extend_from_slice(&pair_id.to_le_bytes());
+            rk.push(b'_');
             rk.extend_from_slice(&maker_trader);
             let accrued = load_u64(&rk);
             save_u64(&rk, accrued.saturating_add(maker_rebate));
@@ -3256,6 +3278,15 @@ mod tests {
     }
 
     #[test]
+    fn test_set_fee_treasury_address_zero_rejected() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        test_mock::set_caller(admin);
+        // AUDIT-FIX CLOB-2: Zero address must be rejected
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), zero.as_ptr()), 3);
+    }
+
+    #[test]
     fn test_claim_rebate_nothing() {
         let (admin, _pair_id) = setup_with_pair();
         let trader = [7u8; 32];
@@ -3267,12 +3298,15 @@ mod tests {
     fn test_claim_rebate_accrued() {
         let (_admin, _pair_id) = setup_with_pair();
         let trader = [7u8; 32];
-        // Simulate accrued rebate
+        let pair_id: u64 = 1;
+        // Simulate accrued rebate (per-pair-per-trader key)
         let mut rk = Vec::from(&b"dex_rebate_"[..]);
+        rk.extend_from_slice(&pair_id.to_le_bytes());
+        rk.push(b'_');
         rk.extend_from_slice(&trader);
         save_u64(&rk, 500);
         test_mock::set_caller(trader);
-        assert_eq!(claim_rebate(trader.as_ptr(), 1), 0);
+        assert_eq!(claim_rebate(trader.as_ptr(), pair_id), 0);
         assert_eq!(load_u64(&rk), 0); // cleared after claim
     }
 
@@ -3777,6 +3811,8 @@ mod tests {
         // Maker order should be cancelled (cancel-oldest)
         let sell_data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&sell_data), STATUS_CANCELLED);
+        // AUDIT-FIX CLOB-4: Escrow must be refunded (zeroed) on self-trade cancel
+        assert_eq!(decode_order_escrow_locked(&sell_data), 0);
     }
 
     #[test]
