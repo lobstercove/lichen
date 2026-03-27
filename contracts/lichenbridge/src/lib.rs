@@ -32,7 +32,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot,
     get_value, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
     CrossCall,
 };
@@ -899,6 +899,10 @@ pub extern "C" fn submit_unlock(
         log_info("Bridge is paused");
         return 20;
     }
+    // AUDIT-FIX CUST-02: Reentrancy guard (was missing on submit_unlock)
+    if !reentrancy_enter() {
+        return 21;
+    }
     log_info("Submitting unlock request...");
 
     let mut caller_arr = [0u8; 32];
@@ -917,28 +921,33 @@ pub extern "C" fn submit_unlock(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller_arr {
+        reentrancy_exit();
         return 200;
     }
 
     if amount == 0 {
         log_info("Amount must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     // Verify caller is validator
     if !is_validator(&caller_arr) {
         log_info("Caller is not an authorized bridge validator");
+        reentrancy_exit();
         return 2;
     }
 
     // Burn proof deduplication — prevent double-unlocking
     if is_zero(&proof_arr) {
         log_info("Burn proof cannot be zero");
+        reentrancy_exit();
         return 5;
     }
     let bpk = burn_proof_used_key(&proof_arr);
     if storage_get(&bpk).is_some() {
         log_info("Burn proof already used (duplicate)");
+        reentrancy_exit();
         return 4;
     }
 
@@ -948,6 +957,7 @@ pub extern "C" fn submit_unlock(
         .unwrap_or(0);
     if amount > locked {
         log_info("Insufficient locked balance");
+        reentrancy_exit();
         return 3;
     }
     // Reserve the amount immediately to prevent race conditions
@@ -958,6 +968,7 @@ pub extern "C" fn submit_unlock(
         log_info("Recipient address cannot be zero");
         // Unreserve on validation failure
         storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
+        reentrancy_exit();
         return 6;
     }
 
@@ -993,6 +1004,7 @@ pub extern "C" fn submit_unlock(
             // Revert reserved amount on transfer failure
             storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
             update_bridge_tx_status(nonce, STATUS_CANCELLED, 1);
+            reentrancy_exit();
             return rc;
         }
         update_bridge_tx_status(nonce, STATUS_COMPLETED, 1);
@@ -1002,6 +1014,7 @@ pub extern "C" fn submit_unlock(
     }
 
     lichen_sdk::set_return_data(&u64_to_bytes(nonce));
+    reentrancy_exit();
     0
 }
 
@@ -1025,6 +1038,10 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         log_info("Bridge is paused");
         return 20;
     }
+    // AUDIT-FIX CUST-02: Reentrancy guard (was missing on confirm_unlock)
+    if !reentrancy_enter() {
+        return 21;
+    }
     log_info("Confirming unlock request...");
 
     let mut caller_arr = [0u8; 32];
@@ -1035,12 +1052,14 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller_arr {
+        reentrancy_exit();
         return 200;
     }
 
     // Verify caller is validator
     if !is_validator(&caller_arr) {
         log_info("Caller is not an authorized bridge validator");
+        reentrancy_exit();
         return 2;
     }
 
@@ -1050,6 +1069,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         Some(data) if data.len() == BRIDGE_TX_SIZE => data,
         _ => {
             log_info("Bridge transaction not found");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -1057,10 +1077,12 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     // Verify it's a pending unlock
     if tx_data[40] != 2 {
         log_info("Transaction is not an unlock request");
+        reentrancy_exit();
         return 5;
     }
     if tx_data[41] != STATUS_PENDING {
         log_info("Unlock request is not pending");
+        reentrancy_exit();
         return 6;
     }
 
@@ -1080,6 +1102,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         );
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Unlock request has expired, funds returned to reserve");
+        reentrancy_exit();
         return 7;
     }
 
@@ -1087,6 +1110,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     let ck = unlock_confirm_key(nonce, &caller_arr);
     if storage_get(&ck).is_some() {
         log_info("Validator already confirmed this unlock");
+        reentrancy_exit();
         return 8;
     }
 
@@ -1106,6 +1130,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
             // Don't update status — let validators retry
             log_info("Unlock transfer failed, confirmations recorded but not completed");
             update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
+            reentrancy_exit();
             return rc;
         }
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
@@ -1115,6 +1140,7 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         log_info("Unlock confirmation recorded, awaiting more");
     }
 
+    reentrancy_exit();
     0
 }
 

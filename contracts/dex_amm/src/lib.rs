@@ -935,8 +935,7 @@ fn compute_swap_with_ticks(
                     remaining = 0;
                 } else {
                     // Reach the tick boundary
-                    let (out, _) =
-                        compute_swap_output_raw(input_needed, liq, sqp, is_token_a_in);
+                    let (out, _) = compute_swap_output_raw(input_needed, liq, sqp, is_token_a_in);
                     total_out = total_out.saturating_add(out);
                     remaining = remaining.saturating_sub(input_needed);
                     sqp = target_sqp;
@@ -1271,8 +1270,12 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
             let sqrt_current = decode_pool_sqrt_price(&pool_data);
             let sqrt_lower = tick_to_sqrt_price(lower);
             let sqrt_upper = tick_to_sqrt_price(upper);
-            let (return_a, return_b) =
-                compute_amounts_from_liquidity(liquidity_amount, sqrt_lower, sqrt_upper, sqrt_current);
+            let (return_a, return_b) = compute_amounts_from_liquidity(
+                liquidity_amount,
+                sqrt_lower,
+                sqrt_upper,
+                sqrt_current,
+            );
 
             let token_a = decode_pool_token_a(&pool_data);
             let token_b = decode_pool_token_b(&pool_data);
@@ -1287,9 +1290,15 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
 
     // AUDIT-FIX AMM-5: Update signed tick liquidityNet
     let tk_lower = tick_data_key(pool_id, lower);
-    save_tick_net(&tk_lower, load_tick_net(&tk_lower).saturating_sub(liquidity_amount as i64));
+    save_tick_net(
+        &tk_lower,
+        load_tick_net(&tk_lower).saturating_sub(liquidity_amount as i64),
+    );
     let tk_upper = tick_data_key(pool_id, upper);
-    save_tick_net(&tk_upper, load_tick_net(&tk_upper).saturating_add(liquidity_amount as i64));
+    save_tick_net(
+        &tk_upper,
+        load_tick_net(&tk_upper).saturating_add(liquidity_amount as i64),
+    );
 
     log_info("Liquidity removed");
     reentrancy_exit();
