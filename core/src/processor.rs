@@ -2,7 +2,9 @@
 
 use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
-use crate::contract::{ContractAbi, ContractAccount, ContractContext, ContractRuntime};
+use crate::contract::{
+    ContractAbi, ContractAccount, ContractContext, ContractRuntime, NativeAccountOp,
+};
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
     decode_evm_transaction, execute_evm_transaction, u256_is_multiple_of_spore, u256_to_spores,
@@ -5130,6 +5132,18 @@ impl TxProcessor {
                 .ok_or_else(|| format!("Native account op target {} not found", address))?;
             op.apply(&mut account)?;
             self.b_put_account(&address, &account)?;
+
+            // For Transfer ops, also credit the recipient
+            if let Some(to_key) = op.transfer_to() {
+                if let NativeAccountOp::Transfer { amount, .. } = op {
+                    let mut to_account = self
+                        .b_get_account(&to_key)?
+                        .unwrap_or_else(|| Account::new(0, to_key));
+                    to_account.spores = to_account.spores.saturating_add(*amount);
+                    to_account.spendable = to_account.spendable.saturating_add(*amount);
+                    self.b_put_account(&to_key, &to_account)?;
+                }
+            }
         }
 
         // Store contract events (top-level)

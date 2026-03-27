@@ -9,8 +9,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer, get_caller,
-    get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address,
+    bytes_to_u64, call_nft_owner, call_nft_transfer, get_caller, get_timestamp, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address,
 };
 
 // Reentrancy guard
@@ -269,7 +270,7 @@ pub extern "C" fn place_bid(
 
         let marketplace_addr = get_marketplace_addr();
 
-        match call_token_transfer(
+        match transfer_token_or_native(
             Address(
                 payment_token
                     .try_into()
@@ -303,7 +304,7 @@ pub extern "C" fn place_bid(
     );
     let marketplace_addr = get_marketplace_addr();
 
-    match call_token_transfer(
+    match receive_token_or_native(
         payment_token_addr,
         Address(bidder),
         marketplace_addr,
@@ -400,7 +401,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         updated_auction[168] = 0;
         storage_set(key.as_bytes(), &updated_auction);
         // Refund highest bidder
-        match call_token_transfer(
+        match transfer_token_or_native(
             Address(pay_addr),
             get_marketplace_addr(),
             Address(bidder_addr),
@@ -457,7 +458,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
     let total_deduction_bps = marketplace_fee_bps + royalty_bps.min(1000);
     let seller_amount = highest_bid * (10000 - total_deduction_bps) / 10000;
 
-    match call_token_transfer(
+    match transfer_token_or_native(
         Address(
             payment_token
                 .try_into()
@@ -480,7 +481,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
         if let Some(creator_addr) = royalty_recipient {
             let royalty_amount = highest_bid * royalty_bps.min(1000) / 10000;
             if royalty_amount > 0 {
-                match call_token_transfer(
+                match transfer_token_or_native(
                     Address(
                         payment_token
                             .try_into()
@@ -504,7 +505,7 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
                             Address(payment_token.try_into().expect("fallback payment_token"));
                         let marketplace_addr = get_marketplace_addr();
                         let seller = Address(seller.try_into().expect("fallback seller"));
-                        let _ = call_token_transfer(
+                        let _ = transfer_token_or_native(
                             payment_token,
                             marketplace_addr,
                             seller,
@@ -717,7 +718,7 @@ pub extern "C" fn accept_offer(
     let marketplace_fee = offer_amount * marketplace_fee_bps / 10000;
 
     // CROSS-CONTRACT CALL 1: Transfer seller's share (offerer → seller)
-    match call_token_transfer(
+    match transfer_token_or_native(
         payment_token_addr,
         Address(offerer),
         Address(seller),
@@ -733,7 +734,7 @@ pub extern "C" fn accept_offer(
     // CROSS-CONTRACT CALL 2: Transfer marketplace fee (offerer → marketplace escrow)
     if marketplace_fee > 0 {
         let marketplace_addr = get_marketplace_addr();
-        match call_token_transfer(
+        match transfer_token_or_native(
             payment_token_addr,
             Address(offerer),
             marketplace_addr,
@@ -749,7 +750,7 @@ pub extern "C" fn accept_offer(
         if let Some(creator_addr) = royalty_recipient {
             let royalty_amount = offer_amount * royalty_bps.min(1000) / 10000;
             if royalty_amount > 0 {
-                match call_token_transfer(
+                match transfer_token_or_native(
                     payment_token_addr,
                     Address(offerer),
                     Address(creator_addr),

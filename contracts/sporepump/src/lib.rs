@@ -17,7 +17,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, set_return_data, storage_get, storage_set, u64_to_bytes, Address,
+    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address,
 };
 
 // T5.12: Reentrancy guard
@@ -197,7 +198,7 @@ fn get_creator_royalty() -> u64 {
 /// Returns true on success, false if token address not configured or call errors.
 fn transfer_licn_out(recipient: &[u8; 32], amount: u64) -> bool {
     let token_data = match storage_get(LICN_TOKEN_KEY) {
-        Some(data) if data.len() == 32 && data.iter().any(|&x| x != 0) => data,
+        Some(data) if data.len() == 32 => data,
         _ => {
             // AUDIT-FIX CON-05: MUST fail when LICN token address is not configured.
             // Returning true here would silently succeed without transferring funds,
@@ -209,7 +210,7 @@ fn transfer_licn_out(recipient: &[u8; 32], amount: u64) -> bool {
     let mut token = [0u8; 32];
     token.copy_from_slice(&token_data);
     let self_addr = get_contract_address();
-    match call_token_transfer(Address(token), self_addr, Address(*recipient), amount) {
+    match transfer_token_or_native(Address(token), self_addr, Address(*recipient), amount) {
         Err(_) => {
             log_info("LICN transfer failed");
             false

@@ -43,8 +43,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info, storage_get,
-    storage_set, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
+    storage_get, storage_set, transfer_native, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -976,11 +976,25 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
 // TOKEN ESCROW & SETTLEMENT
 // ============================================================================
 
-/// Transfer tokens from trader to DEX contract for escrow (requires prior approval)
+/// Transfer tokens from trader to DEX contract for escrow (requires prior approval).
+/// For native LICN (token_addr == zero): verifies that sufficient value was sent with the call.
+/// For MT-20 tokens: performs a cross-contract transfer_from.
 /// Returns true if the transfer succeeded.
 fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
+    }
+    // Native LICN: value was sent with the transaction, already credited to DEX account
+    if is_zero(token_addr) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let received = get_value();
+            return received >= amount;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return true;
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1002,11 +1016,24 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
     }
 }
 
-/// Transfer tokens from DEX contract to a recipient (settlement or refund)
+/// Transfer tokens from DEX contract to a recipient (settlement or refund).
+/// For native LICN (token_addr == zero): uses system program transfer.
+/// For MT-20 tokens: performs a cross-contract transfer.
 /// Returns true if the transfer succeeded.
 fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
+    }
+    // Native LICN: transfer from DEX contract balance via system program
+    if is_zero(token_addr) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return transfer_native(Address(*to), amount).unwrap_or(false);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return true;
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1607,21 +1634,17 @@ pub fn place_order(
 
         if side == SIDE_SELL {
             escrow_amount = quantity;
-            if !is_zero(&base_token) {
-                if !escrow_tokens(&base_token, &t, escrow_amount) {
-                    log_info("Sell escrow failed — insufficient balance or allowance");
-                    reentrancy_exit();
-                    return 11;
-                }
+            if !escrow_tokens(&base_token, &t, escrow_amount) {
+                log_info("Sell escrow failed — insufficient balance or allowance");
+                reentrancy_exit();
+                return 11;
             }
         } else {
             escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
-            if !is_zero(&quote_token) {
-                if !escrow_tokens(&quote_token, &t, escrow_amount) {
-                    log_info("Buy escrow failed — insufficient balance or allowance");
-                    reentrancy_exit();
-                    return 11;
-                }
+            if !escrow_tokens(&quote_token, &t, escrow_amount) {
+                log_info("Buy escrow failed — insufficient balance or allowance");
+                reentrancy_exit();
+                return 11;
             }
         }
     }
@@ -1757,9 +1780,7 @@ pub fn place_order(
             } else {
                 decode_pair_quote_token(&pair_data_ref)
             };
-            if !is_zero(&refund_token) {
-                release_tokens(&refund_token, &t, escrow_remaining);
-            }
+            release_tokens(&refund_token, &t, escrow_remaining);
             update_order_escrow(&mut od, 0);
         }
 
@@ -2103,33 +2124,29 @@ fn fill_at_price_level(
                     let buyer_is_taker = taker_order_side == SIDE_BUY;
 
                     // 1. Transfer base tokens: DEX → buyer
-                    if !is_zero(&base_token) {
-                        if !release_tokens(&base_token, buyer, fill_qty) {
-                            log_info("WARNING: Base token settlement transfer failed");
-                        }
+                    if !release_tokens(&base_token, buyer, fill_qty) {
+                        log_info("WARNING: Base token settlement transfer failed");
                     }
 
                     // 2. Transfer quote tokens: DEX → seller (minus fee if seller is taker)
-                    if !is_zero(&quote_token) {
-                        let seller_receives = if !buyer_is_taker {
-                            // Seller is taker — deduct taker fee from their proceeds
-                            notional.saturating_sub(taker_fee)
-                        } else {
-                            // Seller is maker — receives full notional
-                            notional
-                        };
-                        if seller_receives > 0 {
-                            if !release_tokens(&quote_token, seller, seller_receives) {
-                                log_info("WARNING: Quote token settlement transfer failed");
-                            }
+                    let seller_receives = if !buyer_is_taker {
+                        // Seller is taker — deduct taker fee from their proceeds
+                        notional.saturating_sub(taker_fee)
+                    } else {
+                        // Seller is maker — receives full notional
+                        notional
+                    };
+                    if seller_receives > 0 {
+                        if !release_tokens(&quote_token, seller, seller_receives) {
+                            log_info("WARNING: Quote token settlement transfer failed");
                         }
+                    }
 
-                        // 3. Transfer taker fee to treasury
-                        let recipient = fee_recipient_addr();
-                        if !is_zero(&recipient) && taker_fee > 0 {
-                            if !release_tokens(&quote_token, &recipient, taker_fee) {
-                                log_info("WARNING: Fee transfer to treasury failed");
-                            }
+                    // 3. Transfer taker fee to treasury
+                    let recipient = fee_recipient_addr();
+                    if !is_zero(&recipient) && taker_fee > 0 {
+                        if !release_tokens(&quote_token, &recipient, taker_fee) {
+                            log_info("WARNING: Fee transfer to treasury failed");
                         }
                     }
 
@@ -2332,10 +2349,8 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
             } else {
                 decode_pair_quote_token(&pd)
             };
-            if !is_zero(&refund_token) {
-                if !release_tokens(&refund_token, &c, escrow_remaining) {
-                    log_info("WARNING: Escrow refund failed on cancel");
-                }
+            if !release_tokens(&refund_token, &c, escrow_remaining) {
+                log_info("WARNING: Escrow refund failed on cancel");
             }
         }
         update_order_escrow(&mut data, 0);
@@ -2388,9 +2403,7 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                             } else {
                                 decode_pair_quote_token(&pd)
                             };
-                            if !is_zero(&refund_token) {
-                                release_tokens(&refund_token, &c, escrow_remaining);
-                            }
+                            release_tokens(&refund_token, &c, escrow_remaining);
                         }
                         update_order_escrow(&mut data, 0);
                     }
@@ -2454,9 +2467,7 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
             } else {
                 decode_pair_quote_token(&pd)
             };
-            if !is_zero(&refund_token) {
-                release_tokens(&refund_token, &c, escrow_remaining);
-            }
+            release_tokens(&refund_token, &c, escrow_remaining);
         }
         update_order_escrow(&mut data_mut, 0);
     }

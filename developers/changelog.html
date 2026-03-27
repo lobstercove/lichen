@@ -99,7 +99,7 @@
                             BFT timestamps, contract upgrade timelocks, EVM precompiles + eth_getLogs, archive mode,
                             wire envelope format, TOFU rotation, eclipse defense, IBC exploration, and more.</li>
                         <li><strong>3-Validator BFT Testnet Deployed</strong> &mdash; US, EU, and SEA validators running
-                            Tendermint BFT consensus with round 0 commits, 29 contracts at genesis.</li>
+                            Tendermint BFT consensus with round 0 commits, 28 contracts at genesis.</li>
                         <li><strong>1,551 Tests Passing</strong> &mdash; Zero warnings, clean clippy across workspace.
                         </li>
                         <li><strong>New System Instructions 26&ndash;30</strong> &mdash; RegisterValidator (26),
@@ -203,7 +203,8 @@
                             <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing Lichen
                             building blocks (commit certificates, anchored account inclusion proofs, BFT finality), gap
                             analysis, and phased
-                            implementation roadmap. Full IBC deferred; LichenBridge adequate for current phase (Task 4.4,
+                            implementation roadmap. Full IBC deferred; LichenBridge adequate for current phase (Task
+                            4.4,
                             H-14)
                         </li>
                     </ul>
@@ -337,7 +338,8 @@
                             reduce-only validation</li>
                         <li>New dex-margin opcode 26: <code>query_user_open_position</code> — queries open position for
                             a trader on a specific pair</li>
-                        <li>LichenID integration in DEX wallet — <code>.lichen</code> name resolution and reputation badge
+                        <li>LichenID integration in DEX wallet — <code>.lichen</code> name resolution and reputation
+                            badge
                             display on connect</li>
                         <li>Batch <code>.lichen</code> name resolution for saved wallets via
                             <code>batchReverseLichenNames</code> RPC
@@ -455,7 +457,8 @@
                         <li>Agent Discovery Registry with endpoints, metadata, availability signalling, and rate-limit
                             config</li>
                         <li>Trust tiers (0–5) integrated with fee discounts</li>
-                        <li>Identity-gated access on LichenBridge, Compute Market, BountyBoard, SporePay, and LichenSwap</li>
+                        <li>Identity-gated access on LichenBridge, Compute Market, BountyBoard, SporePay, and LichenSwap
+                        </li>
                         <li>Fee-only mempool ordering — fair priority for all participants</li>
                         <li>113 tests added across 7 previously-untested contracts</li>
                     </ul>
@@ -546,8 +549,8 @@
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
                         <li>Initial blockchain with Proof of Contribution consensus mechanism</li>
-                        <li>11 smart contracts: lichencoin, lichendao, lichenswap, lichenid, lichenoracle, lichenauction,
-                            lichenmarket, lichenpunks, sporepump, sporevault, thalllend</li>
+                        <li>11 smart contracts: lichendao, lichenswap, lichenid, lichenoracle, lichenauction,
+                            lichenmarket, lichenpunks, sporepump, sporevault, thalllend, lusd_token</li>
                         <li>CLI with wallet, validator, and query commands</li>
                         <li>P2P networking with gossip protocol for block and transaction propagation</li>
                         <li>RPC server with JSON-RPC 2.0 compliant API</li>

@@ -69,27 +69,27 @@ const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed
 const RESERVE_WARNING_BPS: u64 = 10_200; // 102% — warn if close to floor
 
 // Storage keys
-const ADMIN_KEY: &[u8] = b"musd_admin";
-const PAUSED_KEY: &[u8] = b"musd_paused";
-const REENTRANCY_KEY: &[u8] = b"musd_reentrancy";
-const TOTAL_SUPPLY_KEY: &[u8] = b"musd_supply";
-const TOTAL_MINTED_KEY: &[u8] = b"musd_minted";
-const TOTAL_BURNED_KEY: &[u8] = b"musd_burned";
+const ADMIN_KEY: &[u8] = b"lusd_admin";
+const PAUSED_KEY: &[u8] = b"lusd_paused";
+const REENTRANCY_KEY: &[u8] = b"lusd_reentrancy";
+const TOTAL_SUPPLY_KEY: &[u8] = b"lusd_supply";
+const TOTAL_MINTED_KEY: &[u8] = b"lusd_minted";
+const TOTAL_BURNED_KEY: &[u8] = b"lusd_burned";
 
 // Reserve attestation keys
-const RESERVE_ATTESTED_KEY: &[u8] = b"musd_reserve_att"; // Last attested reserve amount
-const RESERVE_SLOT_KEY: &[u8] = b"musd_reserve_slot"; // Slot of last attestation
-const RESERVE_HASH_KEY: &[u8] = b"musd_reserve_hash"; // Hash of external proof
-const ATTESTATION_COUNT_KEY: &[u8] = b"musd_att_count";
+const RESERVE_ATTESTED_KEY: &[u8] = b"lusd_reserve_att"; // Last attested reserve amount
+const RESERVE_SLOT_KEY: &[u8] = b"lusd_reserve_slot"; // Slot of last attestation
+const RESERVE_HASH_KEY: &[u8] = b"lusd_reserve_hash"; // Hash of external proof
+const ATTESTATION_COUNT_KEY: &[u8] = b"lusd_att_count";
 
 // Epoch tracking
-const EPOCH_START_KEY: &[u8] = b"musd_epoch_start";
-const EPOCH_MINTED_KEY: &[u8] = b"musd_epoch_mint";
+const EPOCH_START_KEY: &[u8] = b"lusd_epoch_start";
+const EPOCH_MINTED_KEY: &[u8] = b"lusd_epoch_mint";
 
 // Event counters
-const MINT_EVENT_COUNT_KEY: &[u8] = b"musd_mint_evt";
-const BURN_EVENT_COUNT_KEY: &[u8] = b"musd_burn_evt";
-const TRANSFER_COUNT_KEY: &[u8] = b"musd_xfer_cnt";
+const MINT_EVENT_COUNT_KEY: &[u8] = b"lusd_mint_evt";
+const BURN_EVENT_COUNT_KEY: &[u8] = b"lusd_burn_evt";
+const TRANSFER_COUNT_KEY: &[u8] = b"lusd_xfer_cnt";
 
 // ============================================================================
 // HELPERS
@@ -143,14 +143,14 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
 
 // Per-account balance key
 fn balance_key(addr: &[u8; 32]) -> Vec<u8> {
-    let mut k = Vec::from(&b"musd_bal_"[..]);
+    let mut k = Vec::from(&b"lusd_bal_"[..]);
     k.extend_from_slice(&hex_encode(addr));
     k
 }
 
 // Per-account allowance key (owner → spender)
 fn allowance_key(owner: &[u8; 32], spender: &[u8; 32]) -> Vec<u8> {
-    let mut k = Vec::from(&b"musd_alw_"[..]);
+    let mut k = Vec::from(&b"lusd_alw_"[..]);
     k.extend_from_slice(&hex_encode(owner));
     k.push(b'_');
     k.extend_from_slice(&hex_encode(spender));
@@ -159,7 +159,7 @@ fn allowance_key(owner: &[u8; 32], spender: &[u8; 32]) -> Vec<u8> {
 
 // Attestation history key
 fn attestation_key(index: u64) -> Vec<u8> {
-    let mut k = Vec::from(&b"musd_att_"[..]);
+    let mut k = Vec::from(&b"lusd_att_"[..]);
     k.extend_from_slice(&u64_to_decimal(index));
     k
 }

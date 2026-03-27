@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
-    storage_get, storage_set, u64_to_bytes, Address,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -378,13 +378,8 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     // tokens at its own address. get_contract_address() == caller in CCC context,
     // satisfying lichencoin's caller==from check.
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
-        log_info("claim_trading_rewards: lichencoin address not configured");
-        reentrancy_exit();
-        return 5;
-    }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(t), pending) {
+    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(t), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -435,13 +430,8 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     // Transfer LICN from contract's own balance to provider.
     // AUDIT-FIX G7-02: self-custody pattern (see claim_trading_rewards).
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
-        log_info("claim_lp_rewards: lichencoin address not configured");
-        reentrancy_exit();
-        return 5;
-    }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(p), pending) {
+    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(p), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -531,13 +521,8 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
 
     // Transfer LICN from contract's own balance to referrer (self-custody pattern)
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
-        log_info("claim_referral_rewards: lichencoin address not configured");
-        reentrancy_exit();
-        return 5;
-    }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(r), earnings) {
+    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(r), earnings) {
         reentrancy_exit();
         return 4;
     }
@@ -652,7 +637,7 @@ pub fn get_referral_rate() -> u64 {
     }
 }
 
-/// Set the LICN coin contract address (admin only)
+/// Set the LICN token address (admin only). Zero address = native LICN.
 pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
@@ -667,9 +652,6 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     }
     if !require_admin(&c) {
         return 1;
-    }
-    if is_zero(&a) {
-        return 2;
     }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
@@ -1294,7 +1276,8 @@ mod tests {
         let admin = setup();
         let zero = [0u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+        // Zero address = native LICN, should succeed
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 0);
     }
 
     #[test]

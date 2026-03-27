@@ -36,7 +36,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
+    log_info, receive_token_or_native, storage_get, storage_set, transfer_token_or_native,
+    u64_to_bytes, Address, CrossCall,
 };
 
 // SECURITY: Reentrancy guard
@@ -420,7 +421,7 @@ pub extern "C" fn submit_job(
         }
     };
     let contract_addr = get_contract_address();
-    if call_token_transfer(
+    if receive_token_or_native(
         Address(token_addr),
         Address(req_arr),
         contract_addr,
@@ -993,7 +994,7 @@ pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     if escrowed > 0 {
         if let Some(token_addr) = load_token_address() {
             let contract_addr = get_contract_address();
-            if call_token_transfer(
+            if transfer_token_or_native(
                 Address(token_addr),
                 contract_addr,
                 Address(requester),
@@ -1082,7 +1083,7 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
         provider_arr.copy_from_slice(&job_data[81..113]);
         if let Some(token_addr) = load_token_address() {
             let contract_addr = get_contract_address();
-            if call_token_transfer(
+            if transfer_token_or_native(
                 Address(token_addr),
                 contract_addr,
                 Address(provider_arr),
@@ -1206,7 +1207,7 @@ pub extern "C" fn resolve_dispute(
     if let Some(token_addr) = load_token_address() {
         let contract_addr = get_contract_address();
         if _to_requester > 0 {
-            if call_token_transfer(
+            if transfer_token_or_native(
                 Address(token_addr),
                 contract_addr,
                 Address(requester_arr),
@@ -1220,7 +1221,7 @@ pub extern "C" fn resolve_dispute(
             }
         }
         if _to_provider > 0 {
-            if call_token_transfer(
+            if transfer_token_or_native(
                 Address(token_addr),
                 contract_addr,
                 Address(provider_arr),

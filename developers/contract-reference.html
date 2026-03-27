@@ -92,12 +92,12 @@
         <!-- Architecture -->
         <div class="cr-section">
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-            <p>Lichen's 29 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
-                Governance — all compiled to WASM and deployable on-chain.</p>
+            <p>Lichen's 28 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
+                Governance — all compiled to WASM and deployable on-chain. LICN is the native coin (no contract).</p>
             <div class="arch-grid">
                 <div class="arch-box"><i class="fas fa-coins arch-icon-defi"></i>
                     <div class="arch-label">DeFi</div>
-                    <div class="arch-desc">LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault</div>
+                    <div class="arch-desc">LichenSwap, ThallLend, SporePump, SporePay, SporeVault</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-chart-line arch-icon-dex"></i>
                     <div class="arch-label">DEX</div>
@@ -261,7 +261,7 @@
                 </tr>
                 <tr>
                     <td>Named exports (standard)</td>
-                    <td>LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault, LichenID, LichenDAO,
+                    <td>LichenSwap, ThallLend, SporePump, SporePay, SporeVault, LichenID, LichenDAO,
                         LichenPunks,
                         LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss
                         Storage,
@@ -398,7 +398,7 @@
         <div class="toc">
             <h2><i class="fas fa-list"></i> Contracts</h2>
             <div class="toc-grid">
-                <a href="#lichencoin"><span class="toc-num">01</span> LichenCoin — MT-20 Token</a>
+                <a href="#licn-native"><span class="toc-num">01</span> LICN — Native Coin</a>
                 <a href="#lichenswap"><span class="toc-num">02</span> LichenSwap — AMM DEX</a>
                 <a href="#thalllend"><span class="toc-num">03</span> ThallLend — Lending</a>
                 <a href="#sporepump"><span class="toc-num">04</span> SporePump — Launchpad</a>
@@ -431,32 +431,29 @@
             </div>
         </div>
 
-        <!-- 01 LICHENCOIN -->
-        <div class="contract-section" id="lichencoin">
+        <!-- 01 LICN NATIVE COIN -->
+        <div class="contract-section" id="licn-native">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-token"><i class="fas fa-coins"></i></div>
                     <div class="contract-header-text">
-                        <h3>LichenCoin</h3>
-                        <div class="subtitle">MT-20 Fungible Token Standard</div>
+                        <h3>LICN</h3>
+                        <div class="subtitle">Native Coin (like ETH on Ethereum)</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">498 lines</span><span class="meta-chip">8
-                            fns</span><span class="meta-chip">5.2 KB</span></div>
+                    <div class="contract-meta"><span class="meta-chip">Native</span><span class="meta-chip">No
+                            WASM</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>The native fungible token contract for Lichen. Implements the <strong>MT-20</strong> standard
-                        with minting, burning, transfers, and approvals. Serves as the reference token used across the
-                        entire DeFi stack — LichenSwap liquidity pools quote in LICN, ThallLend accepts LICN deposits,
-                        and DAO governance is weighted by LICN holdings.</p>
-                    <div class="sub-heading">Configuration</div>
+                    <p>LICN is the <strong>native coin</strong> of the Lichen blockchain — analogous to ETH on Ethereum
+                        or SOL on Solana. It is <em>not</em> a smart contract. LICN lives in each account's native
+                        <code>spores</code> balance and is transferred via the system program's native transfer
+                        instruction. 1 LICN = 1,000,000,000 spores.
+                    </p>
+                    <div class="sub-heading">Properties</div>
                     <table class="const-table">
                         <tr>
-                            <th>Constant</th>
+                            <th>Property</th>
                             <th>Value</th>
-                        </tr>
-                        <tr>
-                            <td>NAME</td>
-                            <td>"LichenCoin"</td>
                         </tr>
                         <tr>
                             <td>SYMBOL</td>
@@ -468,16 +465,20 @@
                         </tr>
                         <tr>
                             <td>INITIAL_SUPPLY</td>
-                            <td>500,000,000 LICN (500,000,000,000,000,000 spores)</td>
+                            <td>500,000,000 LICN (genesis)</td>
+                        </tr>
+                        <tr>
+                            <td>Address</td>
+                            <td><code>[0x00; 32]</code> (zero address = native)</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions</div>
-                    <div class="fn-list"><span class="fn-chip">initialize</span><span
-                            class="fn-chip">balance_of</span><span class="fn-chip">transfer</span><span
-                            class="fn-chip">mint</span><span class="fn-chip">burn</span><span
-                            class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
-                            class="fn-chip">total_supply</span></div>
-                    <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
+                    <div class="sub-heading">How It Works</div>
+                    <p>Smart contracts that need to handle LICN use the zero address <code>[0u8; 32]</code> as the token
+                        address sentinel. The VM provides native account operations (transfer, balance_of) so contracts
+                        can move LICN without an intermediate token contract. This is the same pattern as ETH on
+                        Ethereum,
+                        where the native coin has no ERC-20 contract.</p>
+                    <div class="badge-row"><span class="badge badge-defi">Native</span></div>
                 </div>
             </div>
         </div>
@@ -2237,7 +2238,7 @@
                 </tr>
                 <tr>
                     <td>lichencoin</td>
-                    <td>initialize, balance_of, transfer, mint, burn, approve, total_supply, transfer_from</td>
+                    <td><em>Removed — LICN is now the native coin (no contract)</em></td>
                 </tr>
                 <tr>
                     <td>lichenswap</td>
@@ -2494,13 +2495,13 @@
                 </tr>
                 <tr>
                     <td>DEX Governance</td>
-                    <td>LichenID, LichenCoin</td>
-                    <td>Rep-gated pair proposals, LICN voting</td>
+                    <td>LichenID</td>
+                    <td>Rep-gated pair proposals, native LICN voting</td>
                 </tr>
                 <tr>
                     <td>DEX Rewards</td>
-                    <td>LichenID, LichenCoin</td>
-                    <td>LichenID-boosted referrals, LICN distribution</td>
+                    <td>LichenID</td>
+                    <td>LichenID-boosted referrals, native LICN distribution</td>
                 </tr>
             </table>
             <h3>Security Patterns</h3>

@@ -495,14 +495,12 @@ fn main() {
             .iter()
             .any(|gv| gv.pubkey == pubkey_str)
         {
-            genesis_config
-                .initial_validators
-                .push(GenesisValidator {
-                    pubkey: pubkey_str,
-                    stake_licn: bootstrap_grant_licn,
-                    reputation: 100,
-                    comment: Some("CLI --initial-validator".to_string()),
-                });
+            genesis_config.initial_validators.push(GenesisValidator {
+                pubkey: pubkey_str,
+                stake_licn: bootstrap_grant_licn,
+                reputation: 100,
+                comment: Some("CLI --initial-validator".to_string()),
+            });
         }
     }
 

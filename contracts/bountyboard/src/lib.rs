@@ -19,7 +19,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
+    get_value, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    CrossCall,
 };
 
 // ============================================================================
@@ -440,14 +441,14 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
     // AUDIT-FIX G22-01: Use contract's own address as source (self-custody pattern)
     let reward_amount = bytes_to_u64(&bounty_data[64..72]);
     if let Some(token_bytes) = storage_get(TOKEN_ADDRESS_KEY) {
-        if token_bytes.len() == 32 && token_bytes.iter().any(|&b| b != 0) {
+        if token_bytes.len() == 32 {
             let mut token_addr = [0u8; 32];
             token_addr.copy_from_slice(&token_bytes);
             let self_addr = get_contract_address();
             let mut worker_addr = [0u8; 32];
             worker_addr.copy_from_slice(&sub_data[0..32]);
 
-            match call_token_transfer(
+            match transfer_token_or_native(
                 Address(token_addr),
                 self_addr,
                 Address(worker_addr),
@@ -574,7 +575,7 @@ pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
                 let mut token_addr = [0u8; 32];
                 token_addr.copy_from_slice(&token_bytes);
                 let self_addr = get_contract_address();
-                match call_token_transfer(
+                match transfer_token_or_native(
                     Address(token_addr),
                     self_addr,
                     Address(creator_addr),

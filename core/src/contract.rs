@@ -271,9 +271,25 @@ fn find_abi_function<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeAccountOp {
-    Lock { account: Pubkey, amount: u64 },
-    Unlock { account: Pubkey, amount: u64 },
-    DeductLocked { account: Pubkey, amount: u64 },
+    Lock {
+        account: Pubkey,
+        amount: u64,
+    },
+    Unlock {
+        account: Pubkey,
+        amount: u64,
+    },
+    DeductLocked {
+        account: Pubkey,
+        amount: u64,
+    },
+    /// Transfer native LICN from one account to another.
+    /// Used by contracts (e.g. DEX) to release native LICN to users.
+    Transfer {
+        from: Pubkey,
+        to: Pubkey,
+        amount: u64,
+    },
 }
 
 impl NativeAccountOp {
@@ -282,6 +298,15 @@ impl NativeAccountOp {
             Self::Lock { account, .. }
             | Self::Unlock { account, .. }
             | Self::DeductLocked { account, .. } => *account,
+            Self::Transfer { from, .. } => *from,
+        }
+    }
+
+    /// For Transfer ops, returns the recipient account key.
+    pub(crate) fn transfer_to(&self) -> Option<Pubkey> {
+        match self {
+            Self::Transfer { to, .. } => Some(*to),
+            _ => None,
         }
     }
 
@@ -290,6 +315,18 @@ impl NativeAccountOp {
             Self::Lock { amount, .. } => account.lock(*amount),
             Self::Unlock { amount, .. } => account.unlock(*amount),
             Self::DeductLocked { amount, .. } => account.deduct_locked(*amount),
+            Self::Transfer { amount, .. } => {
+                // Debit the sender — apply() is called on the `from` account
+                if account.spendable < *amount {
+                    return Err(format!(
+                        "Insufficient spendable balance for native transfer: have {}, need {}",
+                        account.spendable, amount
+                    ));
+                }
+                account.spores = account.spores.saturating_sub(*amount);
+                account.spendable = account.spendable.saturating_sub(*amount);
+                Ok(())
+            }
         }
     }
 }
@@ -879,7 +916,7 @@ impl ContractRuntime {
         let compute_limit = ctx.compute_limit;
 
         // PERF-FIX 2 + P9-CORE-04: Compiled-module cache with LRU eviction.
-        // Cranelift compilation takes 5-50ms per module. With 29 contracts and
+        // Cranelift compilation takes 5-50ms per module. With 28 contracts and
         // thousands of calls, this eliminates >99% of redundant compilations.
         // LRU cap at MODULE_CACHE_MAX_ENTRIES prevents unbounded memory growth.
         let code_hash = Hash::hash(&contract.code);
@@ -2236,6 +2273,23 @@ fn queue_native_account_op(
     op.apply(&mut account)?;
     ctx.pending_native_account_state
         .insert(account_key, account);
+
+    // For Transfer ops, also credit the recipient account
+    if let Some(to_key) = op.transfer_to() {
+        if let NativeAccountOp::Transfer { amount, .. } = &op {
+            let mut to_account = if let Some(acc) = ctx.pending_native_account_state.get(&to_key) {
+                acc.clone()
+            } else {
+                state_store
+                    .get_account(&to_key)?
+                    .unwrap_or_else(|| Account::new(0, to_key))
+            };
+            to_account.spores = to_account.spores.saturating_add(*amount);
+            to_account.spendable = to_account.spendable.saturating_add(*amount);
+            ctx.pending_native_account_state.insert(to_key, to_account);
+        }
+    }
+
     ctx.pending_native_account_ops.push(op);
     Ok(())
 }
@@ -2247,14 +2301,47 @@ fn handle_native_account_call(
     result_ptr: u32,
     result_len: u32,
 ) -> u32 {
-    if args.len() < 40 {
-        return 0;
-    }
-
     let state_store = match env.data().state_store.clone() {
         Some(store) => store,
         None => return 0,
     };
+
+    // balance_of only needs 32 bytes (address), not 40
+    if function_name == "balance_of" {
+        if args.len() < 32 {
+            return 0;
+        }
+        let mut account_bytes = [0u8; 32];
+        account_bytes.copy_from_slice(&args[..32]);
+        let pubkey = Pubkey(account_bytes);
+        let balance = state_store
+            .get_account(&pubkey)
+            .ok()
+            .flatten()
+            .map(|a| a.spores)
+            .unwrap_or(0);
+        // Write balance as u64 LE bytes to result buffer
+        let balance_bytes = balance.to_le_bytes();
+        let write_len = (8usize).min(result_len as usize);
+        if write_len > 0 {
+            let memory = match env.data().memory.clone() {
+                Some(memory) => memory,
+                None => return 0,
+            };
+            let view = memory.view(&env);
+            if view
+                .write(result_ptr as u64, &balance_bytes[..write_len])
+                .is_err()
+            {
+                return 0;
+            }
+        }
+        return 8; // return 8 bytes written
+    }
+
+    if args.len() < 40 {
+        return 0;
+    }
 
     let mut account_bytes = [0u8; 32];
     account_bytes.copy_from_slice(&args[..32]);
@@ -2276,6 +2363,17 @@ fn handle_native_account_call(
             account: Pubkey(account_bytes),
             amount,
         },
+        "transfer" => {
+            // Transfer native LICN from the calling contract to a user account.
+            // args layout: [to_address(32)][amount(8)]
+            // The `from` is always the calling contract (env.data().contract).
+            let from_contract = env.data().contract;
+            NativeAccountOp::Transfer {
+                from: from_contract,
+                to: Pubkey(account_bytes),
+                amount,
+            }
+        }
         _ => return 0,
     };
 

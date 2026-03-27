@@ -2484,7 +2484,7 @@ async fn handle_rpc(
         "getLichenAuctionStats" => handle_get_lichenauction_stats(&state).await,
         "getLichenPunksStats" => handle_get_lichenpunks_stats(&state).await,
         // Token contract stats
-        "getMusdStats" => handle_get_musd_stats(&state).await,
+        "getLusdStats" | "getMusdStats" => handle_get_musd_stats(&state).await,
         "getWethStats" => handle_get_weth_stats(&state).await,
         "getWsolStats" => handle_get_wsol_stats(&state).await,
         "getWbnbStats" => handle_get_wbnb_stats(&state).await,
@@ -13175,19 +13175,19 @@ async fn handle_get_lichenpunks_stats(state: &RpcState) -> Result<serde_json::Va
     }))
 }
 
-/// getMusdStats — lUSD stablecoin stats
+/// getLusdStats — lUSD stablecoin stats
 async fn handle_get_musd_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "LUSD")?;
     Ok(serde_json::json!({
-        "supply": cf_stats_u64(state, "LUSD", b"musd_supply"),
-        "total_minted": cf_stats_u64(state, "LUSD", b"musd_minted"),
-        "total_burned": cf_stats_u64(state, "LUSD", b"musd_burned"),
-        "mint_events": cf_stats_u64(state, "LUSD", b"musd_mint_evt"),
-        "burn_events": cf_stats_u64(state, "LUSD", b"musd_burn_evt"),
-        "transfer_count": cf_stats_u64(state, "LUSD", b"musd_xfer_cnt"),
-        "attestation_count": cf_stats_u64(state, "LUSD", b"musd_att_count"),
-        "reserve_attested": cf_stats_u64(state, "LUSD", b"musd_reserve_att"),
-        "paused": cf_stats_bool(state, "LUSD", b"musd_paused"),
+        "supply": cf_stats_u64(state, "LUSD", b"lusd_supply"),
+        "total_minted": cf_stats_u64(state, "LUSD", b"lusd_minted"),
+        "total_burned": cf_stats_u64(state, "LUSD", b"lusd_burned"),
+        "mint_events": cf_stats_u64(state, "LUSD", b"lusd_mint_evt"),
+        "burn_events": cf_stats_u64(state, "LUSD", b"lusd_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "LUSD", b"lusd_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "LUSD", b"lusd_att_count"),
+        "reserve_attested": cf_stats_u64(state, "LUSD", b"lusd_reserve_att"),
+        "paused": cf_stats_bool(state, "LUSD", b"lusd_paused"),
     }))
 }
 

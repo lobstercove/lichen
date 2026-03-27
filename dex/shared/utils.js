@@ -150,7 +150,7 @@ const ACHIEVEMENT_DEFS = [
     { id: 120, name: 'Token Seller', icon: 'fa-cash-register', desc: 'Sold tokens on SporePump' },
     { id: 121, name: 'Vault Depositor', icon: 'fa-piggy-bank', desc: 'Deposited into SporeVault' },
     { id: 122, name: 'Vault Withdrawer', icon: 'fa-wallet', desc: 'Withdrew from SporeVault' },
-    { id: 123, name: 'Token Contract User', icon: 'fa-coins', desc: 'Interacted with a LichenCoin token' },
+    { id: 123, name: 'Token Contract User', icon: 'fa-coins', desc: 'Interacted with a token contract' },
     { id: 124, name: 'Contract Interactor', icon: 'fa-cog', desc: 'Interacted with a smart contract' },
 ];
 

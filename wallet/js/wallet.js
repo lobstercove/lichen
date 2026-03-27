@@ -475,7 +475,7 @@ async function refreshDynamicFeeConfig() {
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
 const TOKEN_REGISTRY = {
-    lUSD: { symbol: 'lUSD', name: 'Licn USD', decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://lichen.network/assets/img/coins/128x128/musd.png' },
+    lUSD: { symbol: 'lUSD', name: 'Licn USD', decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://lichen.network/assets/img/coins/128x128/lusd.png' },
     wSOL: { symbol: 'wSOL', name: 'Wrapped SOL', decimals: 9, icon: 'fab fa-solana', address: null, color: '#9945FF', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png' },
     wETH: { symbol: 'wETH', name: 'Wrapped ETH', decimals: 9, icon: 'fab fa-ethereum', address: null, color: '#627EEA', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png' },
     wBNB: { symbol: 'wBNB', name: 'Wrapped BNB', decimals: 9, icon: 'fas fa-coins', address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },

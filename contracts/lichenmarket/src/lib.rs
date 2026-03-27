@@ -16,8 +16,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer, get_caller, log_info,
-    storage_get, storage_set, u64_to_bytes, Address,
+    bytes_to_u64, call_nft_owner, call_nft_transfer, get_caller, log_info, receive_token_or_native,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
@@ -306,7 +306,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
         }));
 
         // STEP 1: Transfer full payment from buyer to marketplace (escrow)
-        match call_token_transfer(payment_token, buyer, marketplace_addr, price) {
+        match receive_token_or_native(payment_token, buyer, marketplace_addr, price) {
             Ok(true) => log_info("Payment escrowed in marketplace"),
             _ => {
                 log_info("Payment escrow failed — aborting purchase");
@@ -323,7 +323,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
             _ => {
                 // NFT transfer failed — refund buyer from escrow
                 log_info("NFT transfer failed — refunding buyer from escrow");
-                match call_token_transfer(payment_token, marketplace_addr, buyer, price) {
+                match transfer_token_or_native(payment_token, marketplace_addr, buyer, price) {
                     Ok(true) => log_info("Buyer refunded from escrow"),
                     _ => log_info("CRITICAL: Escrow refund failed — funds in marketplace"),
                 }
@@ -333,7 +333,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
         }
 
         // STEP 3: Release escrowed funds — seller gets their share
-        match call_token_transfer(payment_token, marketplace_addr, seller, seller_amount) {
+        match transfer_token_or_native(payment_token, marketplace_addr, seller, seller_amount) {
             Ok(true) => log_info("Seller payment released from escrow"),
             _ => log_info(" Seller payment release failed"),
         }
@@ -346,7 +346,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
 
         // STEP 5 (v3): Pay royalty to creator if applicable
         if royalty_amount > 0 {
-            match call_token_transfer(
+            match transfer_token_or_native(
                 payment_token,
                 marketplace_addr,
                 royalty_recipient,
@@ -705,7 +705,7 @@ pub extern "C" fn accept_offer(
         let seller_amount = price - fee_amount;
 
         // Transfer payment
-        match call_token_transfer(payment_token, buyer, seller, seller_amount) {
+        match transfer_token_or_native(payment_token, buyer, seller, seller_amount) {
             Ok(true) => {}
             _ => {
                 reentrancy_exit();
@@ -719,8 +719,12 @@ pub extern "C" fn accept_offer(
                 if fee_addr_data.len() >= 32 {
                     let mut fee_addr = [0u8; 32];
                     fee_addr.copy_from_slice(&fee_addr_data[..32]);
-                    let _ =
-                        call_token_transfer(payment_token, buyer, Address(fee_addr), fee_amount);
+                    let _ = transfer_token_or_native(
+                        payment_token,
+                        buyer,
+                        Address(fee_addr),
+                        fee_amount,
+                    );
                 }
             }
         }
@@ -1167,7 +1171,7 @@ pub extern "C" fn place_bid(
         };
         let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
-        match call_token_transfer(payment_token, bidder, marketplace_addr, bid_amount) {
+        match receive_token_or_native(payment_token, bidder, marketplace_addr, bid_amount) {
             Ok(true) => {}
             _ => {
                 log_info("Bid escrow failed");
@@ -1182,7 +1186,7 @@ pub extern "C" fn place_bid(
             prev_bidder_bytes.copy_from_slice(&data[96..128]);
             let prev_bidder = Address(prev_bidder_bytes);
             if prev_bidder_bytes != [0u8; 32] {
-                let _ = call_token_transfer(
+                let _ = transfer_token_or_native(
                     payment_token,
                     marketplace_addr,
                     prev_bidder,
@@ -1287,7 +1291,7 @@ pub extern "C" fn settle_auction(
         if highest_bid == 0 || (reserve_price > 0 && highest_bid < reserve_price) {
             // No winner — refund highest bidder if any
             if highest_bid > 0 && bidder_bytes != [0u8; 32] {
-                let _ = call_token_transfer(
+                let _ = transfer_token_or_native(
                     payment_token,
                     marketplace_addr,
                     Address(bidder_bytes),
@@ -1333,7 +1337,7 @@ pub extern "C" fn settle_auction(
             _ => {
                 log_info("NFT transfer failed in auction settlement");
                 // Refund winner
-                let _ = call_token_transfer(payment_token, marketplace_addr, winner, price);
+                let _ = transfer_token_or_native(payment_token, marketplace_addr, winner, price);
                 let mut updated = data;
                 updated[144] = 0;
                 storage_set(&key, &updated);
@@ -1343,10 +1347,10 @@ pub extern "C" fn settle_auction(
         }
 
         // Pay seller from escrow
-        let _ = call_token_transfer(payment_token, marketplace_addr, seller, seller_amount);
+        let _ = transfer_token_or_native(payment_token, marketplace_addr, seller, seller_amount);
         // Pay royalty; if royalty transfer fails, credit seller fallback so seller is not underpaid.
         if royalty_amount > 0 {
-            match call_token_transfer(
+            match transfer_token_or_native(
                 payment_token,
                 marketplace_addr,
                 Address(royalty_recip_bytes),
@@ -1357,7 +1361,7 @@ pub extern "C" fn settle_auction(
                 }
                 _ => {
                     log_info("Auction royalty transfer failed; paying fallback to seller");
-                    let _ = call_token_transfer(
+                    let _ = transfer_token_or_native(
                         payment_token,
                         marketplace_addr,
                         seller,
@@ -1594,7 +1598,7 @@ pub extern "C" fn accept_collection_offer(
         let seller_amount = price - fee_amount;
 
         // Escrow payment in marketplace first to prevent double-pull from offerer.
-        match call_token_transfer(payment_token, offerer, marketplace_addr, price) {
+        match receive_token_or_native(payment_token, offerer, marketplace_addr, price) {
             Ok(true) => {}
             _ => {
                 reentrancy_exit();
@@ -1606,7 +1610,12 @@ pub extern "C" fn accept_collection_offer(
         match call_nft_transfer(nft_contract, seller, offerer, token_id) {
             Ok(true) => {
                 // Release seller proceeds from escrow.
-                let _ = call_token_transfer(payment_token, marketplace_addr, seller, seller_amount);
+                let _ = transfer_token_or_native(
+                    payment_token,
+                    marketplace_addr,
+                    seller,
+                    seller_amount,
+                );
                 if fee_amount > 0 {
                     log_info("Collection-offer fee retained in marketplace escrow");
                 }
@@ -1629,7 +1638,7 @@ pub extern "C" fn accept_collection_offer(
                 1
             }
             _ => {
-                let _ = call_token_transfer(payment_token, marketplace_addr, offerer, price);
+                let _ = transfer_token_or_native(payment_token, marketplace_addr, offerer, price);
                 reentrancy_exit();
                 0
             }

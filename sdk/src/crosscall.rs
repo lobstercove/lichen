@@ -215,6 +215,99 @@ pub fn call_nft_owner(nft: Address, token_id: u64) -> CallResult<Address> {
     }
 }
 
+/// System program address (all zeros) — used as the target for native LICN operations.
+pub const SYSTEM_PROGRAM: Address = Address([0u8; 32]);
+
+/// Transfer native LICN from the calling contract to a user account.
+/// Calls the system program (address zero) with the "transfer" function.
+/// The contract must hold sufficient native LICN in its account balance.
+pub fn transfer_native(to: Address, amount: u64) -> CallResult<bool> {
+    let mut args = Vec::with_capacity(40);
+    args.extend_from_slice(&to.0);
+    args.extend_from_slice(&amount.to_le_bytes());
+
+    let call = CrossCall::new(SYSTEM_PROGRAM, "transfer", args);
+
+    match call_contract(call) {
+        Ok(result) => decode_success_status(&result),
+        Err(e) => Err(e),
+    }
+}
+
+/// Check whether an address is the system program / native LICN sentinel.
+pub fn is_native_token(addr: &Address) -> bool {
+    addr.0 == [0u8; 32]
+}
+
+/// Query the native LICN balance of any account via the system program.
+/// Returns the balance in spores (1 LICN = 1e9 spores).
+pub fn native_balance_of(account: Address) -> CallResult<u64> {
+    let args = account.0.to_vec();
+    let call = CrossCall::new(SYSTEM_PROGRAM, "balance_of", args);
+
+    match call_contract(call) {
+        Ok(result) if result.len() >= 8 => {
+            let bytes: [u8; 8] = result[..8].try_into().unwrap_or([0u8; 8]);
+            Ok(u64::from_le_bytes(bytes))
+        }
+        Ok(_) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+/// Universal token transfer: sends tokens from the calling contract to a recipient.
+/// If the token is native LICN (zero address), uses system program transfer.
+/// Otherwise, uses cross-contract MT-20 `transfer` call.
+/// The `from` parameter is used only for MT-20 tokens (must be the calling contract).
+pub fn transfer_token_or_native(
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: u64,
+) -> CallResult<bool> {
+    if is_native_token(&token) {
+        transfer_native(to, amount)
+    } else {
+        call_token_transfer(token, from, to, amount)
+    }
+}
+
+/// Universal token balance query.
+/// If the token is native LICN (zero address), queries native account balance.
+/// Otherwise, uses cross-contract MT-20 `balance_of` call.
+pub fn balance_of_token_or_native(token: Address, account: Address) -> CallResult<u64> {
+    if is_native_token(&token) {
+        native_balance_of(account)
+    } else {
+        call_token_balance(token, account)
+    }
+}
+
+/// Receive/escrow tokens from a user into the calling contract.
+/// For native LICN (zero address): verifies that sufficient value was sent with
+/// the transaction (value is already credited to the contract's account).
+/// For MT-20 tokens: cross-contract transfer (requires prior approval from sender).
+/// The `from` and `to` parameters are used only for MT-20 tokens.
+pub fn receive_token_or_native(
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: u64,
+) -> CallResult<bool> {
+    if is_native_token(&token) {
+        let received = crate::get_value();
+        if received >= amount {
+            Ok(true)
+        } else {
+            Err(ContractError::Custom(
+                "Insufficient native LICN value sent with transaction",
+            ))
+        }
+    } else {
+        call_token_transfer(token, from, to, amount)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

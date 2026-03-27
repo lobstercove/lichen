@@ -1222,7 +1222,7 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Token Name</label>
-                        <input type="text" class="form-input" id="tokenNameInput" placeholder="LichenCoin">
+                        <input type="text" class="form-input" id="tokenNameInput" placeholder="MyToken">
                     </div>
                     <div class="form-group">
                         <label>Symbol</label>
@@ -1242,11 +1242,11 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Website URL</label>
-                        <input type="text" class="form-input" id="tokenWebsiteInput" placeholder="https://lichencoin.io">
+                        <input type="text" class="form-input" id="tokenWebsiteInput" placeholder="https://mytoken.example.com">
                     </div>
                     <div class="form-group">
                         <label>Logo URL</label>
-                        <input type="text" class="form-input" id="tokenLogoUrlInput" placeholder="https://lichencoin.io/logo.png">
+                        <input type="text" class="form-input" id="tokenLogoUrlInput" placeholder="https://mytoken.example.com/logo.png">
                     </div>
                     <div class="form-group" style="grid-column: 1 / -1;">
                         <label>Description</label>
@@ -1254,15 +1254,15 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Twitter/X URL</label>
-                        <input type="text" class="form-input" id="tokenTwitterInput" placeholder="https://x.com/lichencoin">
+                        <input type="text" class="form-input" id="tokenTwitterInput" placeholder="https://x.com/mytoken">
                     </div>
                     <div class="form-group">
                         <label>Telegram URL</label>
-                        <input type="text" class="form-input" id="tokenTelegramInput" placeholder="https://t.me/lichencoin">
+                        <input type="text" class="form-input" id="tokenTelegramInput" placeholder="https://t.me/mytoken">
                     </div>
                     <div class="form-group">
                         <label>Discord URL</label>
-                        <input type="text" class="form-input" id="tokenDiscordInput" placeholder="https://discord.gg/lichencoin">
+                        <input type="text" class="form-input" id="tokenDiscordInput" placeholder="https://discord.gg/mytoken">
                     </div>
                     <div class="form-group">
                         <label>Owner (deployer)</label>
@@ -1726,8 +1726,8 @@ const Playground = {
     getTemplateDefaults(exampleId) {
         if (exampleId === 'token') {
             return {
-                name: 'LichenCoin',
-                symbol: 'LICN',
+                name: 'MyToken',
+                symbol: 'MTK',
                 decimals: 9,
                 supply: '1000000',
                 website: '',
@@ -4942,11 +4942,11 @@ pub extern "C" fn initialize() -> Result<()> {
         }
     },
     token: {
-        name: 'LichenCoin MT-20',
-        description: 'Native fungible token contract',
+        name: 'MT-20 Token Template',
+        description: 'Fungible token contract',
         templateType: 'token',
         files: {
-            'lib.rs': `// LichenCoin Token Contract
+            'lib.rs': `// MyToken Contract
 // Example MT-20 fungible token
 
 #![no_std]
@@ -4983,14 +4983,14 @@ pub extern "C" fn initialize(owner_ptr: *const u8) {
 
     unsafe {
         OWNER = Some(owner);
-        TOKEN = Some(Token::new("LichenCoin", "LICN", 9));
+        TOKEN = Some(Token::new("MyToken", "MTK", 9));
     }
 
     // Initialize with 1 million tokens
     let initial_supply = 1_000_000 * 1_000_000_000; // 1M with 9 decimals
     get_token().initialize(initial_supply, owner).expect("Initialization failed");
 
-    log_info("LichenCoin initialized");
+    log_info("MyToken initialized");
 }
 
 /// Get balance of an account
@@ -5109,7 +5109,7 @@ pub extern "C" fn total_supply() -> u64 {
 }
 `,
             'Cargo.toml': `[package]
-name = "lichencoin-token"
+name = "mytoken"
 version = "0.1.0"
 edition = "2021"
 

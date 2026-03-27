@@ -367,7 +367,7 @@ if $IS_GENESIS && ! $NO_DEPLOY; then
     DEPLOY_PID=$!
     echo -e "  ${GREEN}✅ First-boot deployer started (PID: $DEPLOY_PID)${NC}"
     echo -e "     Log: ${LOG_DIR}/first-boot-deploy.log"
-    echo -e "     Deploys: 29 contracts, DEX pairs, AMM pools, insurance fund"
+    echo -e "     Deploys: 28 contracts, DEX pairs, AMM pools, insurance fund"
 else
     DEPLOY_PID=""
     if $NO_DEPLOY; then

@@ -1721,17 +1721,13 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
             margin.saturating_sub(loss)
         };
 
-        // P9-VAL-03 FIX: Use saturating_add to prevent overflow
-        let balance_key = format!("balance_{}", hex::encode(trader));
-        let current_bal = state.get_program_storage_u64("LICHENCOIN", balance_key.as_bytes());
-        let _ = state.put_contract_storage(
-            &match state.get_symbol_registry("LICHENCOIN") {
-                Ok(Some(e)) => e.program,
-                _ => continue,
-            },
-            balance_key.as_bytes(),
-            &current_bal.saturating_add(return_amount).to_le_bytes(),
-        );
+        // P9-VAL-03 FIX: Credit trader's native LICN balance (not contract token)
+        let trader_pk = lichen_core::Pubkey(trader);
+        if let Ok(Some(mut acc)) = state.get_account(&trader_pk) {
+            acc.spores = acc.spores.saturating_add(return_amount);
+            acc.spendable = acc.spendable.saturating_add(return_amount);
+            let _ = state.put_account(&trader_pk, &acc);
+        }
 
         let trigger_type = if sl_price > 0
             && ((side == 0 && last_price <= sl_price) || (side == 1 && last_price >= sl_price))
@@ -14478,23 +14474,6 @@ mod tests {
             )
             .unwrap();
 
-        // Register LICHENCOIN program
-        let lichencoin_pk = Pubkey([51u8; 32]);
-        state
-            .register_symbol(
-                "LICHENCOIN",
-                lichen_core::state::SymbolRegistryEntry {
-                    symbol: "LICHENCOIN".to_string(),
-                    program: lichencoin_pk,
-                    owner: Pubkey([0u8; 32]),
-                    name: None,
-                    template: None,
-                    metadata: None,
-                    decimals: None,
-                },
-            )
-            .unwrap();
-
         // Register DEX program (needed for trigger engine)
         let dex_pk = Pubkey([42u8; 32]);
         state
@@ -14522,6 +14501,22 @@ mod tests {
         //   + size[8] + margin[8] + entry_price[8] + ...
         //   + sl@106[8] + tp@114[8]
         let trader = [1u8; 32];
+        // Create trader account so native LICN credit works
+        let _ = state.put_account(
+            &Pubkey(trader),
+            &Account {
+                spores: 0,
+                spendable: 0,
+                staked: 0,
+                locked: 0,
+                data: vec![],
+                owner: Pubkey([0u8; 32]),
+                executable: false,
+                rent_epoch: 0,
+                dormant: false,
+                missed_rent_epochs: 0,
+            },
+        );
         let mut pos_data = vec![0u8; 122];
         pos_data[0..32].copy_from_slice(&trader);
         // pair_id = 1 at [40..48]
@@ -14583,9 +14578,11 @@ mod tests {
         let pnl_profit = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_profit");
         assert_eq!(pnl_profit, 100, "cumulative profit should be tracked");
 
-        // Verify user balance credited (with saturating_add, P9-VAL-03)
-        let balance_key = format!("balance_{}", hex::encode(trader));
-        let user_bal = state.get_program_storage_u64("LICHENCOIN", balance_key.as_bytes());
-        assert_eq!(user_bal, 600, "user should receive margin + capped profit");
+        // Verify user native LICN balance credited (with saturating_add, P9-VAL-03)
+        let trader_acc = state.get_account(&Pubkey(trader)).unwrap().unwrap();
+        assert_eq!(
+            trader_acc.spores, 600,
+            "user should receive margin + capped profit as native LICN"
+        );
     }
 }

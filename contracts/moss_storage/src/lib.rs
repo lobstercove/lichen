@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, get_value,
-    log_info, storage_get, storage_set, u64_to_bytes, Address,
+    log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -85,7 +85,7 @@ fn transfer_licn_out(to: &[u8; 32], amount: u64) -> bool {
     let mut token = [0u8; 32];
     token.copy_from_slice(&token_data.unwrap()[..32]);
     let contract_addr = get_contract_address();
-    match call_token_transfer(
+    match transfer_token_or_native(
         Address(token),
         Address(contract_addr.0),
         Address(*to),

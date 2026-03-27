@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
-    get_timestamp, get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
-    Pool,
+    get_timestamp, get_value, log_info, storage_get, storage_set, transfer_token_or_native,
+    u64_to_bytes, Address, CrossCall, Pool,
 };
 
 // ============================================================================
@@ -92,7 +92,7 @@ fn reentrancy_exit() {
 /// Returns 0 on success, 31 on failure.
 fn transfer_out(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> u32 {
     let self_addr = get_contract_address();
-    match call_token_transfer(Address(*token_addr), self_addr, Address(*to), amount) {
+    match transfer_token_or_native(Address(*token_addr), self_addr, Address(*to), amount) {
         Ok(_) => 0,
         Err(_) => 31,
     }

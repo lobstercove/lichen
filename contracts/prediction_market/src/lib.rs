@@ -19,7 +19,7 @@
 //   pm_fees_collected                    → u64       Platform fees accumulated
 //   pm_lichenid_addr                      → [u8; 32]  LichenID contract address
 //   pm_oracle_addr                       → [u8; 32]  LichenOracle contract address
-//   pm_musd_addr                         → [u8; 32]  lUSD token contract address
+//   pm_lusd_addr                         → [u8; 32]  lUSD token contract address
 //   pm_dex_gov_addr                      → [u8; 32]  DEX governance address (disputes)
 //   pm_m_{id}                            → [u8; 192] Market record
 //   pm_q_{id}                            → Vec<u8>   Question text (UTF-8, up to 512)
@@ -143,7 +143,7 @@ const TOTAL_COLLATERAL_KEY: &[u8] = b"pm_total_collateral";
 const FEES_COLLECTED_KEY: &[u8] = b"pm_fees_collected";
 const LICHENID_ADDR_KEY: &[u8] = b"pm_lichenid_addr";
 const ORACLE_ADDR_KEY: &[u8] = b"pm_oracle_addr";
-const LUSD_ADDR_KEY: &[u8] = b"pm_musd_addr";
+const LUSD_ADDR_KEY: &[u8] = b"pm_lusd_addr";
 const DEX_GOV_ADDR_KEY: &[u8] = b"pm_dex_gov_addr";
 const SELF_ADDR_KEY: &[u8] = b"pm_self_addr";
 
@@ -222,9 +222,9 @@ fn load_self_addr() -> [u8; 32] {
 /// Transfer lUSD tokens from the contract to a recipient.
 /// Returns true on success, false if addresses not configured or transfer fails.
 /// Rejects transfer when token addresses are not set (fail-closed).
-fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
-    let musd_addr = load_addr(LUSD_ADDR_KEY);
-    if is_zero(&musd_addr) {
+fn transfer_lusd_out(recipient: &[u8], amount: u64) -> bool {
+    let lusd_addr = load_addr(LUSD_ADDR_KEY);
+    if is_zero(&lusd_addr) {
         log_info("lUSD address not configured — transfer rejected");
         return false;
     }
@@ -236,7 +236,7 @@ fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
     let mut recip = [0u8; 32];
     recip.copy_from_slice(recipient);
     match call_token_transfer(
-        Address(musd_addr),
+        Address(lusd_addr),
         Address(self_addr),
         Address(recip),
         amount,
@@ -962,19 +962,19 @@ fn calculate_price(reserves: &[u64], outcome: u8) -> u64 {
     }
 }
 
-/// Calculate shares received when buying outcome `outcome` with `amount_musd`.
+/// Calculate shares received when buying outcome `outcome` with `amount_lusd`.
 /// Uses the complete-set-mint + swap model from the plan.
 ///
 /// Returns (shares_received_after_fee, fee_shares)
-fn calculate_buy(reserves: &[u64], outcome: u8, amount_musd: u64) -> (u64, u64) {
+fn calculate_buy(reserves: &[u64], outcome: u8, amount_lusd: u64) -> (u64, u64) {
     let n = reserves.len();
-    if n < 2 || outcome as usize >= n || amount_musd == 0 {
+    if n < 2 || outcome as usize >= n || amount_lusd == 0 {
         return (0, 0);
     }
 
     // Step 1: Mint complete sets — each lUSD mints 1 share of each outcome
     // We work in "shares" (1 share = 1 LUSD_UNIT of collateral backing)
-    let shares_per_set = amount_musd; // 1:1 ratio (shares denominated in lUSD micro-units)
+    let shares_per_set = amount_lusd; // 1:1 ratio (shares denominated in lUSD micro-units)
 
     if n == 2 {
         // Binary CPMM: x·y=k
@@ -1033,7 +1033,7 @@ fn calculate_buy(reserves: &[u64], outcome: u8, amount_musd: u64) -> (u64, u64) 
 /// Calculate lUSD returned when selling `shares_amount` of outcome `outcome`.
 /// Uses the swap + burn-complete-set model from the plan.
 ///
-/// Returns (musd_returned_after_fee, fee_musd)
+/// Returns (lusd_returned_after_fee, fee_lusd)
 fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u64) {
     let n = reserves.len();
     if n < 2 || outcome as usize >= n || shares_amount == 0 {
@@ -1081,7 +1081,7 @@ fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u6
         //
         // Cleaner: just reverse the buy math.
         // If buying A costs X lUSD, selling A returns roughly X lUSD (minus fees, plus slippage).
-        // sell_musd = b_received * LUSD_UNIT / LUSD_UNIT = b_received (since shares = lUSD micro-units)
+        // sell_lusd = b_received * LUSD_UNIT / LUSD_UNIT = b_received (since shares = lUSD micro-units)
         //
         // Actually the simplest correct model: selling A shares is equivalent to "un-buying".
         // The user swaps A shares into the pool and gets back lUSD equal to the number of
@@ -1143,9 +1143,9 @@ fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u6
         };
 
         // lUSD returned = sets (since 1 share of each outcome = 1 lUSD_unit backing)
-        let musd_raw = sets;
-        let fee = (musd_raw * TRADING_FEE_BPS as u128) / 10_000;
-        let net = musd_raw - fee;
+        let lusd_raw = sets;
+        let fee = (lusd_raw * TRADING_FEE_BPS as u128) / 10_000;
+        let net = lusd_raw - fee;
 
         (net as u64, fee as u64)
     } else {
@@ -1246,12 +1246,12 @@ fn isqrt_u128(n: u128) -> u128 {
 fn apply_buy_reserves(
     reserves: &[u64],
     outcome: u8,
-    amount_musd: u64,
+    amount_lusd: u64,
     fee_shares: u64,
 ) -> Vec<u64> {
     let n = reserves.len();
     let a = outcome as usize;
-    let sps = amount_musd;
+    let sps = amount_lusd;
 
     if n == 2 {
         let b = 1 - a;
@@ -1609,7 +1609,7 @@ pub fn create_market(
 pub fn add_initial_liquidity(
     provider_ptr: *const u8,
     market_id: u64,
-    amount_musd: u64,
+    amount_lusd: u64,
     odds_bps_ptr: *const u8,
     odds_bps_len: u32,
 ) -> u32 {
@@ -1635,7 +1635,7 @@ pub fn add_initial_liquidity(
     }
 
     // G21-01: Verify attached value covers liquidity deposit
-    if get_value() < amount_musd {
+    if get_value() < amount_lusd {
         log_info("Insufficient value for initial liquidity");
         reentrancy_exit();
         return 0;
@@ -1665,11 +1665,11 @@ pub fn add_initial_liquidity(
     }
 
     // Validate amount
-    if amount_musd < MIN_COLLATERAL {
+    if amount_lusd < MIN_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
-    if amount_musd > MAX_COLLATERAL {
+    if amount_lusd > MAX_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
@@ -1678,7 +1678,7 @@ pub fn add_initial_liquidity(
 
     // Parse odds or use equal distribution
     let mut reserves = Vec::with_capacity(outcome_count as usize);
-    let total_shares = amount_musd; // 1 lUSD = 1 share unit in each outcome
+    let total_shares = amount_lusd; // 1 lUSD = 1 share unit in each outcome
 
     if odds_bps_len >= (outcome_count as u32) * 2 {
         let mut odds_data = vec![0u8; odds_bps_len as usize];
@@ -1786,17 +1786,17 @@ pub fn add_initial_liquidity(
     }
 
     // Creator gets LP tokens proportional to their deposit
-    save_u64(&lp_key(market_id, provider), amount_musd);
-    set_market_lp_total_shares(&mut record, amount_musd);
+    save_u64(&lp_key(market_id, provider), amount_lusd);
+    set_market_lp_total_shares(&mut record, amount_lusd);
 
     // Update market: status → ACTIVE, collateral
     set_market_status(&mut record, STATUS_ACTIVE);
-    set_market_total_collateral(&mut record, amount_musd);
+    set_market_total_collateral(&mut record, amount_lusd);
     save_market(market_id, &record);
 
     // Update global state
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_musd);
+    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
     add_active_market(market_id);
 
     // Track user
@@ -1809,7 +1809,7 @@ pub fn add_initial_liquidity(
 
 /// Add liquidity to an ACTIVE market.
 /// Returns LP shares minted, or 0 on failure.
-pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) -> u32 {
+pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_lusd: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
     }
@@ -1831,7 +1831,7 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
     }
 
     // G21-01: Verify attached value covers liquidity deposit
-    if get_value() < amount_musd {
+    if get_value() < amount_lusd {
         log_info("Insufficient value for liquidity");
         reentrancy_exit();
         return 0;
@@ -1851,7 +1851,7 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
         return 0;
     }
 
-    if amount_musd < MIN_COLLATERAL {
+    if amount_lusd < MIN_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
@@ -1861,24 +1861,24 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
     let existing_lp_total = market_lp_total_shares(&record);
 
     // Circuit breaker: per-market collateral cap
-    if existing_collateral + amount_musd > CIRCUIT_BREAKER_COLLATERAL {
+    if existing_collateral + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
 
     // Platform-wide circuit breaker
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    if platform_coll + amount_musd > CIRCUIT_BREAKER_PLATFORM {
+    if platform_coll + amount_lusd > CIRCUIT_BREAKER_PLATFORM {
         reentrancy_exit();
         return 0;
     }
 
     // LP shares proportional to existing pool
-    // new_lp = existing_lp_total * amount_musd / existing_collateral
+    // new_lp = existing_lp_total * amount_lusd / existing_collateral
     let new_lp = if existing_collateral == 0 || existing_lp_total == 0 {
-        amount_musd
+        amount_lusd
     } else {
-        (existing_lp_total as u128 * amount_musd as u128 / existing_collateral as u128) as u64
+        (existing_lp_total as u128 * amount_lusd as u128 / existing_collateral as u128) as u64
     };
 
     // Add to each outcome pool's reserve proportionally
@@ -1893,15 +1893,15 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
         let old_reserve = pool_reserve(&pool);
         // Add proportional to current reserve
         let add = if existing_collateral > 0 {
-            (old_reserve as u128 * amount_musd as u128 / existing_collateral as u128) as u64
+            (old_reserve as u128 * amount_lusd as u128 / existing_collateral as u128) as u64
         } else {
-            amount_musd / (outcome_count as u64)
+            amount_lusd / (outcome_count as u64)
         };
         set_pool_reserve(&mut pool, old_reserve + add);
         let ts = pool_total_shares(&pool);
-        set_pool_total_shares(&mut pool, ts + amount_musd);
+        set_pool_total_shares(&mut pool, ts + amount_lusd);
         let oi = pool_open_interest(&pool);
-        set_pool_open_interest(&mut pool, oi + amount_musd);
+        set_pool_open_interest(&mut pool, oi + amount_lusd);
         save_outcome_pool(market_id, i, &pool);
     }
 
@@ -1910,12 +1910,12 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
     save_u64(&lp_key(market_id, provider), existing_lp + new_lp);
 
     // Update market totals
-    set_market_total_collateral(&mut record, existing_collateral + amount_musd);
+    set_market_total_collateral(&mut record, existing_collateral + amount_lusd);
     set_market_lp_total_shares(&mut record, existing_lp_total + new_lp);
     save_market(market_id, &record);
 
     // Update global
-    save_u64(TOTAL_COLLATERAL_KEY, platform_coll + amount_musd);
+    save_u64(TOTAL_COLLATERAL_KEY, platform_coll + amount_lusd);
     track_user_market(provider, market_id);
 
     log_info("Liquidity added!");
@@ -1929,7 +1929,7 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
 
 /// Buy shares of a specific outcome.
 /// Returns shares_received as u32 (full u64 also in return_data), 0 on failure.
-pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
+pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lusd: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
     }
@@ -1951,7 +1951,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
     }
 
     // G21-01: Verify attached value covers share purchase
-    if get_value() < amount_musd {
+    if get_value() < amount_lusd {
         log_info("Insufficient value for share purchase");
         reentrancy_exit();
         return 0;
@@ -1984,14 +1984,14 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
         return 0;
     }
 
-    if amount_musd == 0 {
+    if amount_lusd == 0 {
         reentrancy_exit();
         return 0;
     }
 
     // Check per-market circuit breaker on collateral
     let existing_coll = market_total_collateral(&record);
-    if existing_coll + amount_musd > CIRCUIT_BREAKER_COLLATERAL {
+    if existing_coll + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
@@ -2023,14 +2023,14 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
     }
 
     // Calculate buy
-    let (shares_received, fee_shares) = calculate_buy(&reserves, outcome, amount_musd);
+    let (shares_received, fee_shares) = calculate_buy(&reserves, outcome, amount_lusd);
     if shares_received == 0 {
         reentrancy_exit();
         return 0;
     }
 
     // Apply new reserves
-    let new_reserves = apply_buy_reserves(&reserves, outcome, amount_musd, fee_shares);
+    let new_reserves = apply_buy_reserves(&reserves, outcome, amount_lusd, fee_shares);
 
     // Calculate new price for circuit breaker check
     let new_price = calculate_price(&new_reserves, outcome);
@@ -2052,7 +2052,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
 
         if i == outcome {
             let vol = pool_volume(&pool);
-            set_pool_volume(&mut pool, vol + amount_musd);
+            set_pool_volume(&mut pool, vol + amount_lusd);
             set_pool_price_last(&mut pool, new_price);
             // total_shares increases (new shares minted)
             let ts = pool_total_shares(&pool);
@@ -2069,11 +2069,11 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
     }
 
     // Record price history snapshot
-    record_price_snapshot(market_id, new_price, amount_musd);
+    record_price_snapshot(market_id, new_price, amount_lusd);
 
     // Update per-trader and per-market analytics
-    update_trader_stats(trader, amount_musd);
-    update_market_trader_stats(market_id, trader, amount_musd);
+    update_trader_stats(trader, amount_lusd);
+    update_market_trader_stats(market_id, trader, amount_lusd);
 
     // Update user position
     let (existing_shares, existing_cost) = load_position(market_id, trader, outcome);
@@ -2082,25 +2082,25 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
         trader,
         outcome,
         existing_shares + shares_received,
-        existing_cost + amount_musd,
+        existing_cost + amount_lusd,
     );
 
     // Update market totals
-    set_market_total_collateral(&mut record, existing_coll + amount_musd);
+    set_market_total_collateral(&mut record, existing_coll + amount_lusd);
     let vol = market_total_volume(&record);
-    set_market_total_volume(&mut record, vol + amount_musd);
+    set_market_total_volume(&mut record, vol + amount_lusd);
     // Distribute fee: LP portion stays in pool (already via fee_shares), protocol portion:
-    let fee_musd = (amount_musd as u128 * TRADING_FEE_BPS as u128 / 10_000) as u64;
-    let protocol_fee = (fee_musd * FEE_PROTOCOL_SHARE) / 100;
+    let fee_lusd = (amount_lusd as u128 * TRADING_FEE_BPS as u128 / 10_000) as u64;
+    let protocol_fee = (fee_lusd * FEE_PROTOCOL_SHARE) / 100;
     let fees = market_fees_collected(&record);
     set_market_fees_collected(&mut record, fees + protocol_fee);
     save_market(market_id, &record);
 
     // Update global counters
     let total_vol = load_u64(TOTAL_VOLUME_KEY);
-    save_u64(TOTAL_VOLUME_KEY, total_vol + amount_musd);
+    save_u64(TOTAL_VOLUME_KEY, total_vol + amount_lusd);
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_musd);
+    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
     let total_fees = load_u64(FEES_COLLECTED_KEY);
     save_u64(FEES_COLLECTED_KEY, total_fees + protocol_fee);
 
@@ -2116,7 +2116,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
 }
 
 /// Sell shares of a specific outcome.
-/// Returns musd_returned as u32 (full u64 also in return_data), 0 on failure.
+/// Returns lusd_returned as u32 (full u64 also in return_data), 0 on failure.
 pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_amount: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
@@ -2191,8 +2191,8 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     }
 
     // Calculate sell
-    let (musd_returned, fee_musd) = calculate_sell(&reserves, outcome, shares_amount);
-    if musd_returned == 0 {
+    let (lusd_returned, fee_lusd) = calculate_sell(&reserves, outcome, shares_amount);
+    if lusd_returned == 0 {
         reentrancy_exit();
         return 0;
     }
@@ -2202,7 +2202,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
     // CEI: Transfer lUSD to trader FIRST, before any state mutation.
     // If this fails we return cleanly with no state corruption.
-    if !transfer_musd_out(trader, musd_returned) {
+    if !transfer_lusd_out(trader, lusd_returned) {
         log_info("sell_shares: lUSD transfer to trader failed");
         reentrancy_exit();
         return 0;
@@ -2220,7 +2220,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
         if i == outcome {
             let vol = pool_volume(&pool);
-            set_pool_volume(&mut pool, vol + musd_returned + fee_musd);
+            set_pool_volume(&mut pool, vol + lusd_returned + fee_lusd);
             let ts = pool_total_shares(&pool);
             // Decrease total shares (shares burned as part of complete set redemption)
             if ts >= shares_amount {
@@ -2238,12 +2238,12 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     // Record price history snapshot
     {
         let sell_price = calculate_price(&new_reserves, outcome);
-        record_price_snapshot(market_id, sell_price, musd_returned + fee_musd);
+        record_price_snapshot(market_id, sell_price, lusd_returned + fee_lusd);
     }
 
     // Update per-trader and per-market analytics
-    update_trader_stats(trader, musd_returned + fee_musd);
-    update_market_trader_stats(market_id, trader, musd_returned + fee_musd);
+    update_trader_stats(trader, lusd_returned + fee_lusd);
+    update_market_trader_stats(market_id, trader, lusd_returned + fee_lusd);
 
     // Update user position
     let cost_basis_reduction = if user_shares > 0 {
@@ -2261,11 +2261,11 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
     // Update market totals
     let existing_coll = market_total_collateral(&record);
-    let total_out = musd_returned + fee_musd;
+    let total_out = lusd_returned + fee_lusd;
     set_market_total_collateral(&mut record, existing_coll.saturating_sub(total_out));
     let vol = market_total_volume(&record);
     set_market_total_volume(&mut record, vol + total_out);
-    let protocol_fee = (fee_musd * FEE_PROTOCOL_SHARE) / 100;
+    let protocol_fee = (fee_lusd * FEE_PROTOCOL_SHARE) / 100;
     let fees = market_fees_collected(&record);
     set_market_fees_collected(&mut record, fees + protocol_fee);
     save_market(market_id, &record);
@@ -2281,15 +2281,15 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     log_info("Shares sold!");
 
     // G21-02: Store full u64 lUSD in return_data (no u32 truncation)
-    lichen_sdk::set_return_data(&u64_to_bytes(musd_returned));
+    lichen_sdk::set_return_data(&u64_to_bytes(lusd_returned));
 
     reentrancy_exit();
-    musd_returned as u32 // also in return_data as full u64
+    lusd_returned as u32 // also in return_data as full u64
 }
 
-/// Mint a complete set (1 share of every outcome for amount_musd collateral).
+/// Mint a complete set (1 share of every outcome for amount_lusd collateral).
 /// Returns 1 on success, 0 on failure.
-pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) -> u32 {
+pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
     }
@@ -2310,7 +2310,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
     }
 
     // G21-01: Verify attached value covers complete set mint
-    if get_value() < amount_musd {
+    if get_value() < amount_lusd {
         log_info("Insufficient value for complete set mint");
         reentrancy_exit();
         return 0;
@@ -2338,7 +2338,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
         return 0;
     }
 
-    if amount_musd == 0 {
+    if amount_lusd == 0 {
         reentrancy_exit();
         return 0;
     }
@@ -2347,20 +2347,20 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
 
     // Collateral checks
     let existing_coll = market_total_collateral(&record);
-    if existing_coll + amount_musd > CIRCUIT_BREAKER_COLLATERAL {
+    if existing_coll + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
         reentrancy_exit();
         return 0;
     }
 
-    // Mint: for each outcome, give user `amount_musd` shares
+    // Mint: for each outcome, give user `amount_lusd` shares
     for i in 0..outcome_count {
         let (existing_shares, existing_cost) = load_position(market_id, user, i);
         save_position(
             market_id,
             user,
             i,
-            existing_shares + amount_musd,
-            existing_cost + amount_musd,
+            existing_shares + amount_lusd,
+            existing_cost + amount_lusd,
         );
 
         // Update pool: increase total shares and open interest
@@ -2372,18 +2372,18 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
             }
         };
         let ts = pool_total_shares(&pool);
-        set_pool_total_shares(&mut pool, ts + amount_musd);
+        set_pool_total_shares(&mut pool, ts + amount_lusd);
         let oi = pool_open_interest(&pool);
-        set_pool_open_interest(&mut pool, oi + amount_musd);
+        set_pool_open_interest(&mut pool, oi + amount_lusd);
         save_outcome_pool(market_id, i, &pool);
     }
 
     // Lock collateral
-    set_market_total_collateral(&mut record, existing_coll + amount_musd);
+    set_market_total_collateral(&mut record, existing_coll + amount_lusd);
     save_market(market_id, &record);
 
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_musd);
+    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
 
     track_user_market(user, market_id);
 
@@ -2475,26 +2475,26 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
     }
 
     // Return collateral (no fee on redemption per plan)
-    let musd_returned = amount;
+    let lusd_returned = amount;
     let existing_coll = market_total_collateral(&record);
-    set_market_total_collateral(&mut record, existing_coll.saturating_sub(musd_returned));
+    set_market_total_collateral(&mut record, existing_coll.saturating_sub(lusd_returned));
     save_market(market_id, &record);
 
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(
         TOTAL_COLLATERAL_KEY,
-        total_coll.saturating_sub(musd_returned),
+        total_coll.saturating_sub(lusd_returned),
     );
 
     // G21-01: Transfer lUSD to user
-    if !transfer_musd_out(user, musd_returned) {
+    if !transfer_lusd_out(user, lusd_returned) {
         log_info("redeem_complete_set: lUSD transfer to user failed");
         reentrancy_exit();
         return 0;
     }
 
     reentrancy_exit();
-    musd_returned as u32
+    lusd_returned as u32
 }
 
 /// Close a market after its close_slot has passed.
@@ -2832,7 +2832,7 @@ pub fn finalize_resolution(caller_ptr: *const u8, market_id: u64) -> u32 {
 
     // G21-01: Transfer reward to resolver
     if reward > 0 {
-        if !transfer_musd_out(&resolver, reward) {
+        if !transfer_lusd_out(&resolver, reward) {
             log_info("finalize_resolution: resolver reward transfer failed");
         }
     }
@@ -3014,7 +3014,7 @@ pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
 
     // Transfer lUSD to the user BEFORE updating state (checks-effects-interactions
     // is reversed here, but reentrancy guard protects us)
-    if !transfer_musd_out(user, payout) {
+    if !transfer_lusd_out(user, payout) {
         log_info("redeem_shares: lUSD transfer to user failed");
         reentrancy_exit();
         return 0;
@@ -3125,7 +3125,7 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
     }
 
     // Transfer lUSD to the user
-    if !transfer_musd_out(user, refund) {
+    if !transfer_lusd_out(user, refund) {
         log_info("reclaim_collateral: lUSD transfer to user failed");
         // Revert position clears — re-save positions so user can try again
         // (This is a simplification; a full revert would also restore LP)
@@ -3205,16 +3205,16 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
     }
 
     // lUSD returned = proportional share of collateral
-    let musd_returned = (total_coll as u128 * lp_shares_amount as u128 / total_lp as u128) as u64;
+    let lusd_returned = (total_coll as u128 * lp_shares_amount as u128 / total_lp as u128) as u64;
 
-    if musd_returned == 0 {
+    if lusd_returned == 0 {
         reentrancy_exit();
         return 0;
     }
 
     // CEI: Transfer lUSD to LP provider FIRST, before any state mutation.
     // If this fails we return cleanly with no state corruption.
-    if !transfer_musd_out(provider, musd_returned) {
+    if !transfer_lusd_out(provider, lusd_returned) {
         log_info("withdraw_liquidity: lUSD transfer to provider failed");
         reentrancy_exit();
         return 0;
@@ -3243,20 +3243,20 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
     set_market_lp_total_shares(&mut record, total_lp - lp_shares_amount);
 
     // Update collateral
-    set_market_total_collateral(&mut record, total_coll - musd_returned);
+    set_market_total_collateral(&mut record, total_coll - lusd_returned);
     save_market(market_id, &record);
 
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(
         TOTAL_COLLATERAL_KEY,
-        platform_coll.saturating_sub(musd_returned),
+        platform_coll.saturating_sub(lusd_returned),
     );
 
     // G21-02: Store full u64 lUSD in return_data (no u32 truncation)
-    lichen_sdk::set_return_data(&u64_to_bytes(musd_returned));
+    lichen_sdk::set_return_data(&u64_to_bytes(lusd_returned));
 
     reentrancy_exit();
-    musd_returned as u32 // also in return_data as full u64
+    lusd_returned as u32 // also in return_data as full u64
 }
 
 // ============================================================================
@@ -3362,7 +3362,7 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
 }
 
 /// Set lUSD token contract address.
-pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
+pub fn set_lusd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
@@ -3522,7 +3522,7 @@ pub fn get_user_markets(user_ptr: *const u8) -> u64 {
 }
 
 /// Quote a buy — returns estimated shares for a given lUSD input.
-pub fn quote_buy(market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
+pub fn quote_buy(market_id: u64, outcome: u8, amount_lusd: u64) -> u32 {
     let record = match load_market(market_id) {
         Some(r) => r,
         None => return 0,
@@ -3540,7 +3540,7 @@ pub fn quote_buy(market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
         }
     }
 
-    let (shares, _) = calculate_buy(&reserves, outcome, amount_musd);
+    let (shares, _) = calculate_buy(&reserves, outcome, amount_lusd);
     lichen_sdk::set_return_data(&u64_to_bytes(shares));
     1
 }
@@ -3673,7 +3673,7 @@ pub extern "C" fn call() -> u32 {
         }
         // 2: add_initial_liquidity
         2 => {
-            // [provider 32B][market_id 8B][amount_musd 8B][odds_bps array (2B × outcomes)]
+            // [provider 32B][market_id 8B][amount_lusd 8B][odds_bps array (2B × outcomes)]
             if args.len() >= 1 + 32 + 8 + 8 {
                 let provider_ptr = args[1..33].as_ptr();
                 let mid = bytes_to_u64(&args[33..41]);
@@ -3904,10 +3904,10 @@ pub extern "C" fn call() -> u32 {
                 _rc = result as u32;
             }
         }
-        // 20: set_musd_address
+        // 20: set_lusd_address
         20 => {
             if args.len() >= 65 {
-                let result = set_musd_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                let result = set_lusd_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
                 _rc = result as u32;
                 _rc = result as u32;
@@ -4940,11 +4940,11 @@ mod tests {
     }
 
     #[test]
-    fn test_set_musd_address() {
+    fn test_set_lusd_address() {
         setup();
         let admin = init_contract();
         let musd = [0xAA; 32];
-        assert_eq!(set_musd_address(admin.as_ptr(), musd.as_ptr()), 1);
+        assert_eq!(set_lusd_address(admin.as_ptr(), musd.as_ptr()), 1);
         assert_eq!(load_addr(LUSD_ADDR_KEY), musd);
     }
 
@@ -5228,7 +5228,7 @@ mod tests {
         let shares = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
         assert!(shares > 0);
 
-        // Sell shares — should trigger transfer_musd_out
+        // Sell shares — should trigger transfer_lusd_out
         test_mock::set_caller(trader);
         let sold = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
         assert!(
@@ -5252,7 +5252,7 @@ mod tests {
         let r = add_liquidity(creator.as_ptr(), mid, 5_000_000);
         assert!(r > 0, "add_liquidity should return LP shares");
 
-        // Withdraw — should trigger transfer_musd_out
+        // Withdraw — should trigger transfer_lusd_out
         test_mock::set_caller(creator);
         let w = withdraw_liquidity(creator.as_ptr(), mid, 2_000_000);
         assert!(

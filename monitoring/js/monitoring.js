@@ -1536,9 +1536,9 @@ async function updateEcosystemMonitor() {
     const el = id => document.getElementById(id);
 
     // Fetch all platform contract stats in parallel
-    const [musd, weth, wsol, lend, sporepay, vault, bridge, dao, oracle,
+    const [lusd, weth, wsol, lend, sporepay, vault, bridge, dao, oracle,
         mossStorage, market, auction, punks, bounty, compute] = await Promise.all([
-            rpc('getMusdStats').catch(() => null),
+            rpc('getLusdStats').catch(() => null),
             rpc('getWethStats').catch(() => null),
             rpc('getWsolStats').catch(() => null),
             rpc('getThallLendStats').catch(() => null),
@@ -1558,11 +1558,11 @@ async function updateEcosystemMonitor() {
     let activeFeeds = 0;
 
     // Tokens
-    if (musd) {
+    if (lusd) {
         activeFeeds++;
-        if (el('ecoMusdSupply')) el('ecoMusdSupply').textContent = formatLicn(musd.supply || 0);
-        if (el('ecoMusdMinted')) el('ecoMusdMinted').textContent = formatNum(musd.mint_events || 0);
-        if (el('ecoMusdTransfers')) el('ecoMusdTransfers').textContent = formatNum(musd.transfer_count || 0);
+        if (el('ecoLusdSupply')) el('ecoLusdSupply').textContent = formatLicn(lusd.supply || 0);
+        if (el('ecoLusdMinted')) el('ecoLusdMinted').textContent = formatNum(lusd.mint_events || 0);
+        if (el('ecoLusdTransfers')) el('ecoLusdTransfers').textContent = formatNum(lusd.transfer_count || 0);
     }
     if (weth) {
         activeFeeds++;

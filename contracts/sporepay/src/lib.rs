@@ -25,8 +25,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_slot, log_info, storage_get,
-    storage_set, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_slot, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -333,7 +334,7 @@ pub extern "C" fn create_stream(
         }
     };
 
-    if call_token_transfer(token_addr, Address(sender), self_addr, total_amount).is_err() {
+    if receive_token_or_native(token_addr, Address(sender), self_addr, total_amount).is_err() {
         log_info("Escrow transfer failed — sender lacks balance or approval");
         reentrancy_exit();
         return 32;
@@ -515,7 +516,7 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     let mut recipient_addr = [0u8; 32];
     recipient_addr.copy_from_slice(&stream_data[32..64]);
 
-    if call_token_transfer(token_addr, self_addr, Address(recipient_addr), amount).is_err() {
+    if transfer_token_or_native(token_addr, self_addr, Address(recipient_addr), amount).is_err() {
         // Revert withdrawn counter on transfer failure
         stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
         storage_set(&sk, &stream_data);
@@ -675,7 +676,7 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     if refund > 0 {
         let mut sender_addr = [0u8; 32];
         sender_addr.copy_from_slice(&stream_data[0..32]);
-        if call_token_transfer(token_addr, self_addr, Address(sender_addr), refund).is_err() {
+        if transfer_token_or_native(token_addr, self_addr, Address(sender_addr), refund).is_err() {
             log_info("Refund to sender failed");
             reentrancy_exit();
             return 32;
@@ -687,7 +688,7 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     if recipient_due > 0 {
         let mut recipient_addr = [0u8; 32];
         recipient_addr.copy_from_slice(&stream_data[32..64]);
-        if call_token_transfer(
+        if transfer_token_or_native(
             token_addr,
             self_addr,
             Address(recipient_addr),
@@ -881,7 +882,7 @@ pub extern "C" fn create_stream_with_cliff(
         }
     };
 
-    if call_token_transfer(token_addr, Address(sender), self_addr, total_amount).is_err() {
+    if receive_token_or_native(token_addr, Address(sender), self_addr, total_amount).is_err() {
         log_info("Escrow transfer failed — sender lacks balance or approval");
         reentrancy_exit();
         return 32;

@@ -21,7 +21,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
+    get_timestamp, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // ============================================================================
@@ -1424,14 +1425,8 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let liquidator_reward = (penalty as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
     let insurance_add = penalty.saturating_sub(liquidator_reward);
 
-    // DEX-L03: Do not silently skip liquidator rewards when reward token is not configured.
-    // If a reward is owed, the LICN token address must be set.
+    // DEX-L03: LICN address must be set (or zero for native LICN).
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if liquidator_reward > 0 && is_zero(&licn_addr) {
-        log_info("liquidate: lichencoin address not configured");
-        reentrancy_exit();
-        return 12;
-    }
 
     // Add to insurance fund (saturating to prevent overflow)
     let insurance = load_u64(INSURANCE_FUND_KEY);
@@ -1475,7 +1470,7 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     // AUDIT-FIX G-4: Actually transfer liquidator reward via token transfer
     if liquidator_reward > 0 {
         let contract_addr = get_contract_address();
-        if call_token_transfer(
+        if transfer_token_or_native(
             Address(licn_addr),
             contract_addr,
             Address(liq),
@@ -1560,7 +1555,7 @@ pub fn set_maintenance_margin(caller: *const u8, margin_bps: u64) -> u32 {
     0
 }
 
-/// Set the LichenCoin contract address (admin only, for insurance withdrawal)
+/// Set the LICN token address (admin only). Zero address = native LICN.
 pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
@@ -1578,16 +1573,13 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&a) {
-        return 2;
-    }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
 }
 
 /// Withdraw from the insurance fund (admin/governance only)
 /// Returns: 0=success, 1=not admin, 2=zero amount, 3=insufficient funds,
-///          4=no lichencoin address, 5=transfer failed
+///          4=reserved, 5=transfer failed
 pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut r = [0u8; 32];
@@ -1615,13 +1607,10 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
     }
 
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
-        return 4;
-    }
 
     // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
     let contract_addr = get_contract_address();
-    match call_token_transfer(Address(licn_addr), contract_addr, Address(r), amount) {
+    match transfer_token_or_native(Address(licn_addr), contract_addr, Address(r), amount) {
         Ok(_) => {
             save_u64(INSURANCE_FUND_KEY, insurance - amount);
             log_info("Insurance fund withdrawal");

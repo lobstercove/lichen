@@ -20,7 +20,8 @@ use alloc::vec::Vec;
 use lichen_sdk::crosscall::{call_contract, CrossCall};
 use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, set_return_data, storage_get, storage_set, u64_to_bytes, Address,
+    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address,
 };
 
 // Oracle configuration key (stores lichenoracle contract address)
@@ -231,12 +232,9 @@ fn quote_accrued_interest(principal: u64, elapsed_slots: u64) -> u64 {
 /// Returns 0 on success, non-zero on failure.
 fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     let licn_addr = load_licn_addr();
-    if is_zero_addr(&licn_addr) {
-        log_info("lichencoin address not configured");
-        return 30;
-    }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(*recipient), amount)
+    if let Err(_) =
+        transfer_token_or_native(Address(licn_addr), self_addr, Address(*recipient), amount)
     {
         log_info("Token transfer failed");
         return 31;

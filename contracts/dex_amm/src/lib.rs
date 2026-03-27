@@ -17,8 +17,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
-    storage_get, storage_set, u64_to_bytes, Address,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, is_native_token,
+    log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -1022,13 +1022,27 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
     let contract_addr = get_contract_address();
 
     if fee_a > 0 {
-        if call_token_transfer(Address(token_a_addr), contract_addr, Address(p), fee_a).is_err() {
+        if is_native_token(&Address(token_a_addr)) {
+            if transfer_native(Address(p), fee_a).is_err() {
+                log_info("Fee A native transfer failed");
+                return 4;
+            }
+        } else if call_token_transfer(Address(token_a_addr), contract_addr, Address(p), fee_a)
+            .is_err()
+        {
             log_info("Fee A transfer failed");
             return 4;
         }
     }
     if fee_b > 0 {
-        if call_token_transfer(Address(token_b_addr), contract_addr, Address(p), fee_b).is_err() {
+        if is_native_token(&Address(token_b_addr)) {
+            if transfer_native(Address(p), fee_b).is_err() {
+                log_info("Fee B native transfer failed");
+                return 4;
+            }
+        } else if call_token_transfer(Address(token_b_addr), contract_addr, Address(p), fee_b)
+            .is_err()
+        {
             log_info("Fee B transfer failed");
             return 4;
         }

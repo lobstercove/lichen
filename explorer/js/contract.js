@@ -229,8 +229,8 @@ async function loadContract() {
         if ((!supply || supply === 0) && !isNative) {
             try {
                 const viewResult = await rpc.call('callContract', [contractAddress, 'total_supply']);
+                // Try return_data first (base64-encoded u64 LE bytes)
                 if (viewResult?.return_data) {
-                    // return_data is base64-encoded u64 LE bytes
                     const decoded = atob(viewResult.return_data);
                     if (decoded.length >= 8) {
                         const bytes = new Uint8Array(decoded.length);
@@ -239,6 +239,10 @@ async function loadContract() {
                         const val = Number(dv.getBigUint64(0, true));
                         if (val > 0) supply = val;
                     }
+                }
+                // Fallback: some contracts return supply via returnCode (u32/u64 function return)
+                if ((!supply || supply === 0) && viewResult?.returnCode > 0) {
+                    supply = viewResult.returnCode;
                 }
             } catch (e) { /* contract may not have total_supply function */ }
         }

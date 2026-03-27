@@ -787,16 +787,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
-    // F12.8 FIX: Opcode 2: add_initial_liquidity(provider, market_id, amount_musd)
-    // Layout: op[0]=2, provider[1:33], market_id[33:41], amount_musd[41:49] = 49 bytes min
-    function buildAddInitialLiquidityArgs(provider, marketId, amountMusd) {
+    // F12.8 FIX: Opcode 2: add_initial_liquidity(provider, market_id, amount_lusd)
+    // Layout: op[0]=2, provider[1:33], market_id[33:41], amount_lusd[41:49] = 49 bytes min
+    function buildAddInitialLiquidityArgs(provider, marketId, amountLusd) {
         const buf = new ArrayBuffer(49);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 2); // opcode
         writePubkey(arr, 1, provider);
         writeU64LE(view, 33, marketId);
-        writeU64LE(view, 41, amountMusd);
+        writeU64LE(view, 41, amountLusd);
         return arr;
     }
 
@@ -3166,7 +3166,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function refreshPredictWalletBalance() {
-        const el = document.getElementById('predictMusdBalance');
+        const el = document.getElementById('predictLusdBalance');
         if (!el) return;
         if (!state.connected) {
             el.textContent = 'Connect wallet';

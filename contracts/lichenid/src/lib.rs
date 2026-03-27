@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_timestamp, log_info, storage_get,
-    storage_set, u64_to_bytes, Address,
+    storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -3254,7 +3254,8 @@ pub extern "C" fn bid_name_auction(
                 return 31;
             }
         };
-        match call_token_transfer(token_addr, self_addr, Address(prev_bidder), prev_bid_amount) {
+        match transfer_token_or_native(token_addr, self_addr, Address(prev_bidder), prev_bid_amount)
+        {
             Err(_) => {
                 log_info("bid_name_auction: refund transfer failed");
                 reentrancy_exit();

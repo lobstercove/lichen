@@ -33,7 +33,8 @@ use alloc::vec::Vec;
 
 use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
+    get_value, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    CrossCall,
 };
 
 // Reentrancy guard
@@ -267,12 +268,10 @@ fn load_licn_addr() -> [u8; 32] {
 /// AUDIT-FIX G11-01: Transfer tokens OUT from the bridge's own balance.
 fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     let licn_addr = load_licn_addr();
-    if is_zero(&licn_addr) {
-        log_info("lichencoin address not configured");
-        return 30;
-    }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(*recipient), amount) {
+    if let Err(_) =
+        transfer_token_or_native(Address(licn_addr), self_addr, Address(*recipient), amount)
+    {
         log_info("Token transfer failed");
         return 31;
     }

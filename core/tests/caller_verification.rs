@@ -274,16 +274,15 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
 /// (b) handled as a special case (e.g. lichenauction's two-step init).
 ///
 /// This is a source-level regression test: it reads validator/src/main.rs and
-/// checks that all 29 contracts are initialized at genesis, preventing the
+/// checks that all 28 contracts are initialized at genesis, preventing the
 /// first-caller-wins admin vulnerability (G22-02).
 #[test]
 fn b1_02_all_contracts_initialized_at_genesis() {
     let source =
         std::fs::read_to_string("../genesis/src/lib.rs").expect("Cannot read genesis/src/lib.rs");
 
-    // All 29 contracts from GENESIS_CONTRACT_CATALOG
+    // All 28 contracts from GENESIS_CONTRACT_CATALOG
     let all_contracts = [
-        "lichencoin",
         "lusd_token",
         "wsol_token",
         "weth_token",

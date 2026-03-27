@@ -223,8 +223,6 @@ fn genesis_pair_prices() -> [(u64, f64); 7] {
 }
 
 pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
-    // Core token
-    ("lichencoin", "LICN", "LichenCoin", "token"),
     // Wrapped tokens
     ("lusd_token", "LUSD", "Wrapped USD", "wrapped"),
     ("wsol_token", "WSOL", "Wrapped SOL", "wrapped"),
@@ -443,7 +441,7 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
 }
 
 // ========================================================================
-//  GENESIS PHASE 2 — Initialize all 29 contracts by executing their
+//  GENESIS PHASE 2 — Initialize all 28 contracts by executing their
 //  initialize() function via the WASM runtime.
 // ========================================================================
 
@@ -664,11 +662,10 @@ pub fn genesis_initialize_contracts(
     }
 
     // Resolve token contract addresses for lichenswap and lichendao
-    let licn_addr = address_map
-        .get("lichencoin")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let musd_addr = address_map
+    // Native LICN is the system token — no contract needed.
+    // Zero address ([0u8; 32]) is the sentinel for native LICN.
+    let licn_addr: [u8; 32] = [0u8; 32];
+    let lusd_addr = address_map
         .get("lusd_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
@@ -690,7 +687,7 @@ pub fn genesis_initialize_contracts(
     // LichenSwap: token_a = LICN, token_b = LUSD
     let mut lichenswap_args = Vec::with_capacity(64);
     lichenswap_args.extend_from_slice(&licn_addr);
-    lichenswap_args.extend_from_slice(&musd_addr);
+    lichenswap_args.extend_from_slice(&lusd_addr);
 
     // LichenMarket: owner(32B) + fee_addr(32B) = deployer for both initially
     let mut lichenmarket_args = Vec::with_capacity(64);
@@ -706,11 +703,6 @@ pub fn genesis_initialize_contracts(
 
     let specs: Vec<InitSpec> = vec![
         // ── Layer 0: Tokens ──
-        InitSpec {
-            dir_name: "lichencoin",
-            function: "initialize",
-            args: named_init_args(&admin),
-        },
         InitSpec {
             dir_name: "lusd_token",
             function: "initialize",
@@ -946,7 +938,7 @@ pub fn genesis_initialize_contracts(
         let configs: &[(u8, &[u8; 32], &str)] = &[
             (18, &lichenid_addr, "prediction_market(lichenid)"),
             (19, &oracle_addr, "prediction_market(oracle)"),
-            (20, &musd_addr, "prediction_market(musd)"),
+            (20, &lusd_addr, "prediction_market(lusd)"),
             (21, &dex_gov_addr, "prediction_market(dex_gov)"),
         ];
 
@@ -1084,12 +1076,12 @@ pub fn genesis_initialize_contracts(
         // (token_in, token_out, pair_id, pool_id, label)
         type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
         let route_pairs: [RoutePair; 7] = [
-            (licn_addr, musd_addr, 1, 1, "LICN/lUSD"),
-            (wsol_addr, musd_addr, 2, 2, "wSOL/lUSD"),
-            (weth_addr, musd_addr, 3, 3, "wETH/lUSD"),
+            (licn_addr, lusd_addr, 1, 1, "LICN/lUSD"),
+            (wsol_addr, lusd_addr, 2, 2, "wSOL/lUSD"),
+            (weth_addr, lusd_addr, 3, 3, "wETH/lUSD"),
             (wsol_addr, licn_addr, 4, 4, "wSOL/LICN"),
             (weth_addr, licn_addr, 5, 5, "wETH/LICN"),
-            (wbnb_addr, musd_addr, 6, 6, "wBNB/lUSD"),
+            (wbnb_addr, lusd_addr, 6, 6, "wBNB/lUSD"),
             (wbnb_addr, licn_addr, 7, 7, "wBNB/LICN"),
         ];
 
@@ -1214,6 +1206,27 @@ pub fn genesis_initialize_contracts(
             info!("  SET dex_rewards(set_lichencoin_address)");
         } else {
             warn!("  WARN: Failed to set dex_rewards lichencoin address");
+        }
+    }
+
+    // ── DEX Margin: wire LICN address (zero = native) for liquidator rewards + insurance ──
+    // Opcode 15 = set_lichencoin_address. Format: [15][admin 32B][licn_addr 32B]
+    if let Some(dex_margin_pk) = address_map.get("dex_margin") {
+        let mut args = Vec::with_capacity(65);
+        args.push(15u8); // opcode 15 = set_lichencoin_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&licn_addr);
+        if genesis_exec_contract(
+            state,
+            dex_margin_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_margin(set_lichencoin_address)",
+        ) {
+            info!("  SET dex_margin(set_lichencoin_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_margin lichencoin address");
         }
     }
 
@@ -1501,15 +1514,9 @@ pub fn genesis_initialize_contracts(
                 owner_key: "admin",
                 agent_type: 0,
             },
-            // ── Core token ──
-            GenesisName {
-                label: "lichencoin",
-                owner_key: "lichencoin",
-                agent_type: 0,
-            },
             // ── Wrapped tokens ──
             GenesisName {
-                label: "musd",
+                label: "lusd",
                 owner_key: "lusd_token",
                 agent_type: 0,
             },
@@ -1903,11 +1910,9 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
         }
     };
 
-    // Resolve token addresses
-    let licn_addr = derive_contract_address(deployer_pubkey, "lichencoin")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let musd_addr = derive_contract_address(deployer_pubkey, "lusd_token")
+    // Resolve token addresses — LICN is native (zero sentinel), not a contract
+    let licn_addr: [u8; 32] = [0u8; 32];
+    let lusd_addr = derive_contract_address(deployer_pubkey, "lusd_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
     let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
@@ -1933,12 +1938,12 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
 
     // All genesis CLOB pairs: 4 lUSD-quoted + 3 LICN-quoted = 7 pairs
     let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
-        ("LICN/lUSD", licn_addr, musd_addr),
-        ("wSOL/lUSD", wsol_addr, musd_addr),
-        ("wETH/lUSD", weth_addr, musd_addr),
+        ("LICN/lUSD", licn_addr, lusd_addr),
+        ("wSOL/lUSD", wsol_addr, lusd_addr),
+        ("wETH/lUSD", weth_addr, lusd_addr),
         ("wSOL/LICN", wsol_addr, licn_addr),
         ("wETH/LICN", weth_addr, licn_addr),
-        ("wBNB/lUSD", wbnb_addr, musd_addr),
+        ("wBNB/lUSD", wbnb_addr, lusd_addr),
         ("wBNB/LICN", wbnb_addr, licn_addr),
     ];
 
@@ -1948,7 +1953,7 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
 
     // ── Step 1: Set allowed quote tokens (lUSD + LICN) on dex_core ──
     // opcode 21 = add_allowed_quote: [0x15][caller 32B][quote_addr 32B]
-    for (sym, addr) in &[("lUSD", musd_addr), ("LICN", licn_addr)] {
+    for (sym, addr) in &[("lUSD", lusd_addr), ("LICN", licn_addr)] {
         let mut args = Vec::with_capacity(65);
         args.push(0x15); // opcode 21  = add_allowed_quote
         args.extend_from_slice(&admin);
@@ -1970,7 +1975,7 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // ── Step 1b: Set allowed quote tokens on dex_governance too ──
     // opcode 15 = add_allowed_quote: [0x0F][caller 32B][quote_addr 32B]
     if let Some(ref gov_pk) = dex_gov_pk {
-        for (sym, addr) in &[("lUSD", musd_addr), ("LICN", licn_addr)] {
+        for (sym, addr) in &[("lUSD", lusd_addr), ("LICN", licn_addr)] {
             let mut args = Vec::with_capacity(65);
             args.push(0x0F); // opcode 15 = add_allowed_quote
             args.extend_from_slice(&admin);
@@ -2037,9 +2042,9 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
     let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
-        ("LICN/lUSD", licn_addr, musd_addr, sqrt_price(licn_usd)),
-        ("wSOL/lUSD", wsol_addr, musd_addr, sqrt_price(sol_usd)),
-        ("wETH/lUSD", weth_addr, musd_addr, sqrt_price(eth_usd)),
+        ("LICN/lUSD", licn_addr, lusd_addr, sqrt_price(licn_usd)),
+        ("wSOL/lUSD", wsol_addr, lusd_addr, sqrt_price(sol_usd)),
+        ("wETH/lUSD", weth_addr, lusd_addr, sqrt_price(eth_usd)),
         (
             "wSOL/LICN",
             wsol_addr,
@@ -2052,7 +2057,7 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
             licn_addr,
             sqrt_price(eth_usd / licn_usd),
         ),
-        ("wBNB/lUSD", wbnb_addr, musd_addr, sqrt_price(bnb_usd)),
+        ("wBNB/lUSD", wbnb_addr, lusd_addr, sqrt_price(bnb_usd)),
         (
             "wBNB/LICN",
             wbnb_addr,
@@ -2610,8 +2615,6 @@ pub fn genesis_assign_achievements(
     ///   Trusted Agent, Veteran Agent, Legendary Agent, Program Builder.
     fn contract_achievements(dir_name: &str) -> &'static [(u8, &'static str)] {
         match dir_name {
-            // Core token
-            "lichencoin" => &[(1, "First Transaction"), (123, "Token Contract User")],
             // Wrapped tokens
             "lusd_token" => &[
                 (36, "Stablecoin Minter"),
@@ -2742,7 +2745,6 @@ pub fn genesis_assign_achievements(
     ];
 
     let contract_dirs: &[&str] = &[
-        "lichencoin",
         "lusd_token",
         "wsol_token",
         "weth_token",

@@ -8,9 +8,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_balance, call_token_transfer, get_caller,
-    get_contract_address, get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address,
-    CrossCall,
+    balance_of_token_or_native, bytes_to_u64, call_contract, call_token_balance,
+    call_token_transfer, get_caller, get_contract_address, get_timestamp, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -469,7 +470,7 @@ pub extern "C" fn create_proposal_typed(
         token_addr.copy_from_slice(&governance_token_data[..32]);
         let dao_self = get_contract_address();
         // Transfer stake from proposer to DAO contract (escrow)
-        match call_token_transfer(
+        match receive_token_or_native(
             Address(token_addr),
             Address(proposer),
             dao_self,
@@ -612,7 +613,7 @@ pub extern "C" fn vote_with_reputation(
         addr_bytes.copy_from_slice(&token_addr_data[..32]);
         let token_address = Address(addr_bytes);
         let voter_address = Address(voter);
-        match call_token_balance(token_address, voter_address) {
+        match balance_of_token_or_native(token_address, voter_address) {
             Ok(balance) => balance,
             Err(_) => {
                 log_info(" Token balance lookup failed — using 0");
@@ -933,7 +934,7 @@ pub extern "C" fn execute_proposal(
         let dao_self = get_contract_address();
         let mut proposer_addr = [0u8; 32];
         proposer_addr.copy_from_slice(&proposal[0..32]);
-        match call_token_transfer(
+        match transfer_token_or_native(
             Address(token_addr),
             dao_self,
             Address(proposer_addr),
@@ -986,7 +987,7 @@ pub extern "C" fn veto_proposal(
         addr_bytes.copy_from_slice(&token_addr_data[..32]);
         let token_address = Address(addr_bytes);
         let voter_address = Address(voter);
-        match call_token_balance(token_address, voter_address) {
+        match balance_of_token_or_native(token_address, voter_address) {
             Ok(balance) => balance,
             Err(_) => {
                 log_info(" Token balance lookup failed — using 0");
@@ -1111,7 +1112,7 @@ pub extern "C" fn cancel_proposal(canceller_ptr: *const u8, proposal_id: u64) ->
         let dao_self = get_contract_address();
         let mut proposer_addr = [0u8; 32];
         proposer_addr.copy_from_slice(&proposal[0..32]);
-        match call_token_transfer(
+        match transfer_token_or_native(
             Address(token_addr),
             dao_self,
             Address(proposer_addr),
@@ -1181,7 +1182,7 @@ pub extern "C" fn treasury_transfer(
     }
 
     // Execute transfer
-    match call_token_transfer(
+    match transfer_token_or_native(
         Address(token),
         Address(treasury.as_slice().try_into().unwrap()),
         Address(recipient),
@@ -1525,7 +1526,10 @@ pub extern "C" fn dao_unpause(caller_ptr: *const u8) -> u32 {
 
 /// AUDIT-FIX P10-SC-02: Set the LichenID contract address for on-chain reputation verification.
 #[no_mangle]
-pub extern "C" fn set_lichenid_address(_caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {
+pub extern "C" fn set_lichenid_address(
+    _caller_ptr: *const u8,
+    lichenid_addr_ptr: *const u8,
+) -> u32 {
     let real_caller = get_caller();
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if owner.len() != 32 || real_caller.0 != owner.as_slice() {
