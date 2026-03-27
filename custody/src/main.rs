@@ -3277,7 +3277,9 @@ async fn credit_worker_loop(state: CustodyState) {
 async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
     if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
         // AUDIT-FIX CUST-05: Warn instead of silently skipping (jobs accumulate in queued state)
-        tracing::warn!("credit worker skipping: licn_rpc_url or treasury_keypair_path not configured");
+        tracing::warn!(
+            "credit worker skipping: licn_rpc_url or treasury_keypair_path not configured"
+        );
         return Ok(());
     }
 
@@ -3382,7 +3384,9 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
 
     if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
         // AUDIT-FIX CUST-05: Warn instead of silently returning None
-        tracing::warn!("build_credit_job skipping: licn_rpc_url or treasury_keypair_path not configured");
+        tracing::warn!(
+            "build_credit_job skipping: licn_rpc_url or treasury_keypair_path not configured"
+        );
         return Ok(None);
     }
 
@@ -3414,8 +3418,11 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     let amount_spores: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
         // AUDIT-FIX CUST-06: Use try_from instead of silent truncation via `as u64`
-        u64::try_from(raw_amount / divisor)
-            .map_err(|_| format!("credit amount overflow after decimal conversion (raw={raw_amount}, div={divisor})"))?
+        u64::try_from(raw_amount / divisor).map_err(|_| {
+            format!(
+                "credit amount overflow after decimal conversion (raw={raw_amount}, div={divisor})"
+            )
+        })?
     } else if source_decimals < 9 {
         let multiplier = 10u128.pow(9 - source_decimals);
         u64::try_from(raw_amount.saturating_mul(multiplier))
@@ -8087,11 +8094,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             let asset_lower = job.asset.to_lowercase();
             if asset_lower == "musd" {
                 let stablecoin = &job.preferred_stablecoin;
-                let chain_debit = spores_to_chain_amount(
-                    job.amount,
-                    &job.dest_chain,
-                    stablecoin,
-                );
+                let chain_debit = spores_to_chain_amount(job.amount, &job.dest_chain, stablecoin);
                 let chain_debit_u64 = u64::try_from(chain_debit).unwrap_or(u64::MAX);
                 if let Err(e) = adjust_reserve_balance(
                     &state.db,

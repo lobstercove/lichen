@@ -32,9 +32,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot,
-    get_value, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
-    CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard

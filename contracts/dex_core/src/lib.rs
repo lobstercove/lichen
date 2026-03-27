@@ -38,6 +38,10 @@
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::manual_is_multiple_of)]
 #![allow(unused_variables)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(unused_imports)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -2067,6 +2071,52 @@ fn match_order(
     remaining
 }
 
+/// AUDIT-FIX CLOB-6: Compact a price level by shifting non-zero entries down to fill gaps.
+/// This prevents O(n_total) iteration when many orders have been cancelled/filled.
+fn compact_price_level(pair_id: u64, side: u8, price: u64) {
+    let count_key = if side == SIDE_BUY {
+        bid_count_key(pair_id, price)
+    } else {
+        ask_count_key(pair_id, price)
+    };
+    let level_count = load_u64(&count_key);
+    if level_count == 0 {
+        return;
+    }
+
+    let mut write_idx: u64 = 0;
+    for read_idx in 1..=level_count {
+        let rk = if side == SIDE_BUY {
+            bid_level_key(pair_id, price, read_idx)
+        } else {
+            ask_level_key(pair_id, price, read_idx)
+        };
+        let oid = load_u64(&rk);
+        if oid != 0 {
+            write_idx += 1;
+            if write_idx != read_idx {
+                let wk = if side == SIDE_BUY {
+                    bid_level_key(pair_id, price, write_idx)
+                } else {
+                    ask_level_key(pair_id, price, write_idx)
+                };
+                save_u64(&wk, oid);
+            }
+        }
+    }
+
+    // Zero out trailing slots and update count
+    for i in (write_idx + 1)..=level_count {
+        let k = if side == SIDE_BUY {
+            bid_level_key(pair_id, price, i)
+        } else {
+            ask_level_key(pair_id, price, i)
+        };
+        save_u64(&k, 0);
+    }
+    save_u64(&count_key, write_idx);
+}
+
 /// Fill at a single price level (time priority)
 fn fill_at_price_level(
     taker_order_id: u64,
@@ -2343,6 +2393,11 @@ fn fill_at_price_level(
         save_u64(&ask_count_key(pair_id, price), new_level_count);
     }
 
+    // AUDIT-FIX CLOB-6: Compact the level to remove zeroed-out gaps
+    if new_level_count < level_count {
+        compact_price_level(pair_id, maker_side, price);
+    }
+
     remaining
 }
 
@@ -2431,7 +2486,29 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
 
     storage_set(&ok, &data);
 
-    // Note: order stays in book level but will be skipped during matching (status check)
+    // AUDIT-FIX CLOB-6: Remove cancelled order from book level and compact
+    let order_pair = decode_order_pair_id(&data);
+    let order_side = decode_order_side(&data);
+    let order_price = decode_order_price(&data);
+    let count_key = if order_side == SIDE_BUY {
+        bid_count_key(order_pair, order_price)
+    } else {
+        ask_count_key(order_pair, order_price)
+    };
+    let level_count = load_u64(&count_key);
+    for idx in 1..=level_count {
+        let lk = if order_side == SIDE_BUY {
+            bid_level_key(order_pair, order_price, idx)
+        } else {
+            ask_level_key(order_pair, order_price, idx)
+        };
+        if load_u64(&lk) == order_id {
+            save_u64(&lk, 0);
+            compact_price_level(order_pair, order_side, order_price);
+            break;
+        }
+    }
+
     log_info("Order cancelled");
     reentrancy_exit();
     0
@@ -4896,5 +4973,92 @@ mod tests {
 
         let total_vol = load_u64(TOTAL_VOLUME_KEY);
         assert!(total_vol > 0, "cumulative volume must be positive");
+    }
+
+    // ========================================================================
+    // AUDIT-FIX CLOB-6: Order book compaction tests
+    // ========================================================================
+
+    #[test]
+    fn test_compact_price_level_removes_gaps() {
+        let _admin = setup();
+        let pair_id = 1u64;
+        let price = 1_000_000_000u64;
+
+        // Manually place 3 orders at a bid level
+        save_u64(&bid_level_key(pair_id, price, 1), 101);
+        save_u64(&bid_level_key(pair_id, price, 2), 102);
+        save_u64(&bid_level_key(pair_id, price, 3), 103);
+        save_u64(&bid_count_key(pair_id, price), 3);
+
+        // Zero out the middle one (simulating cancel/fill)
+        save_u64(&bid_level_key(pair_id, price, 2), 0);
+
+        // Compact
+        compact_price_level(pair_id, SIDE_BUY, price);
+
+        // Should have 2 entries: 101, 103
+        assert_eq!(load_u64(&bid_count_key(pair_id, price)), 2);
+        assert_eq!(load_u64(&bid_level_key(pair_id, price, 1)), 101);
+        assert_eq!(load_u64(&bid_level_key(pair_id, price, 2)), 103);
+        assert_eq!(load_u64(&bid_level_key(pair_id, price, 3)), 0);
+    }
+
+    #[test]
+    fn test_compact_preserves_order_when_no_gaps() {
+        let _admin = setup();
+        let pair_id = 1u64;
+        let price = 2_000_000_000u64;
+
+        save_u64(&ask_level_key(pair_id, price, 1), 201);
+        save_u64(&ask_level_key(pair_id, price, 2), 202);
+        save_u64(&ask_count_key(pair_id, price), 2);
+
+        compact_price_level(pair_id, SIDE_SELL, price);
+
+        // No change expected
+        assert_eq!(load_u64(&ask_count_key(pair_id, price)), 2);
+        assert_eq!(load_u64(&ask_level_key(pair_id, price, 1)), 201);
+        assert_eq!(load_u64(&ask_level_key(pair_id, price, 2)), 202);
+    }
+
+    #[test]
+    fn test_cancel_order_removes_from_book() {
+        let (_admin, pair_id) = setup_with_pair();
+
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+
+        // Place a limit buy order
+        let result = place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+            0,
+        );
+        assert_eq!(result, 0);
+
+        // Verify it's in the book
+        let price = 1_000_000_000u64;
+        let level_count = load_u64(&bid_count_key(pair_id, price));
+        assert!(level_count > 0, "Order should be in bid book");
+
+        // Cancel it
+        let order_id = load_u64(ORDER_COUNT_KEY);
+        let cancel_result = cancel_order(trader.as_ptr(), order_id);
+        assert_eq!(cancel_result, 0);
+
+        // Verify book is compacted — level count should decrease
+        let new_count = load_u64(&bid_count_key(pair_id, price));
+        assert_eq!(
+            new_count,
+            level_count - 1,
+            "Level count should decrease after cancel"
+        );
     }
 }

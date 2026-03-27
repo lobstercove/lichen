@@ -15,6 +15,11 @@
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 #![allow(dead_code)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::manual_range_contains)]
+#![allow(unused_imports)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -69,6 +74,8 @@ const TOTAL_PNL_PROFIT_KEY: &[u8] = b"mrg_pnl_profit";
 const TOTAL_PNL_LOSS_KEY: &[u8] = b"mrg_pnl_loss";
 // AUDIT-FIX H-11: Track total open interest (notional) across all open positions
 const TOTAL_OPEN_INTEREST_KEY: &[u8] = b"mrg_total_oi";
+// AUDIT-FIX MARGIN-1: Oracle contract address for cross-contract price feeds
+const ORACLE_ADDRESS_KEY: &[u8] = b"mrg_oracle_addr";
 
 // ============================================================================
 // LEVERAGE TIER TABLE
@@ -558,6 +565,86 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     data.extend_from_slice(&u64_to_bytes(get_timestamp()));
     storage_set(&mark_price_key(pair_id), &data);
     0
+}
+
+/// AUDIT-FIX MARGIN-1: Set oracle contract address for cross-contract price feeds.
+/// Admin-only. The oracle must implement `get_price_value(asset_bytes) -> price`.
+pub fn set_oracle_contract(caller: *const u8, oracle_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(oracle_addr, addr.as_mut_ptr(), 32);
+    }
+    storage_set(ORACLE_ADDRESS_KEY, &addr);
+    log_info("Oracle contract address set");
+    0
+}
+
+/// AUDIT-FIX MARGIN-1: Update mark price by cross-calling the oracle contract.
+/// Anyone can call this as a crank — the oracle validates price freshness internally.
+/// Returns: 0=success, 1=no oracle set, 2=oracle call failed, 3=stale/missing price, 4=zero price
+pub fn update_mark_price_from_oracle(
+    caller: *const u8,
+    pair_id: u64,
+    asset_ptr: *const u8,
+    asset_len: u32,
+) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+
+    let oracle_addr = load_addr(ORACLE_ADDRESS_KEY);
+    if is_zero(&oracle_addr) {
+        return 1; // no oracle contract configured
+    }
+
+    // Build args: asset name bytes
+    let mut asset_bytes = alloc::vec![0u8; asset_len as usize];
+    unsafe {
+        core::ptr::copy_nonoverlapping(asset_ptr, asset_bytes.as_mut_ptr(), asset_len as usize);
+    }
+
+    // Cross-call oracle's get_price_value(asset_bytes)
+    let oracle_call = CrossCall::new(Address(oracle_addr), "get_price_value", asset_bytes);
+
+    match call_contract(oracle_call) {
+        Ok(result) => {
+            if result.len() >= 8 {
+                let price = bytes_to_u64(&result[..8]);
+                if price == 0 {
+                    return 4; // zero price from oracle
+                }
+                // Store mark price with current timestamp
+                let mut data = Vec::with_capacity(16);
+                data.extend_from_slice(&u64_to_bytes(price));
+                data.extend_from_slice(&u64_to_bytes(get_timestamp()));
+                storage_set(&mark_price_key(pair_id), &data);
+                log_info("Mark price updated from oracle");
+                0
+            } else {
+                3 // oracle returned insufficient data
+            }
+        }
+        Err(_) => {
+            log_info("Oracle cross-call failed");
+            2
+        }
+    }
 }
 
 /// Set index (spot) price for a pair (called by oracle/analytics)
@@ -2293,6 +2380,34 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // AUDIT-FIX MARGIN-1: 29 = set_oracle_contract(caller[32], oracle_addr[32])
+        29 => {
+            if args.len() >= 65 {
+                let r = set_oracle_contract(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        // AUDIT-FIX MARGIN-1: 30 = update_mark_price_from_oracle(caller[32], pair_id[8], asset_name[N])
+        30 => {
+            if args.len() >= 41 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let asset_len = (args.len() - 41) as u32;
+                let asset_ptr = if asset_len > 0 {
+                    args[41..].as_ptr()
+                } else {
+                    core::ptr::null()
+                };
+                let r = update_mark_price_from_oracle(
+                    args[1..33].as_ptr(),
+                    pair_id,
+                    asset_ptr,
+                    asset_len,
+                );
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -3893,5 +4008,89 @@ mod tests {
         // Trader has no positions at all
         let pos_id = query_user_open_position(trader.as_ptr(), 1);
         assert_eq!(pos_id, 0);
+    }
+
+    // ========================================================================
+    // AUDIT-FIX MARGIN-1: Oracle integration tests
+    // ========================================================================
+
+    #[test]
+    fn test_set_oracle_contract_admin_only() {
+        let admin = setup();
+        let oracle_addr = [0xAA; 32];
+        let non_admin = [2u8; 32];
+
+        // Non-admin should fail
+        test_mock::set_caller(non_admin);
+        assert_eq!(
+            set_oracle_contract(non_admin.as_ptr(), oracle_addr.as_ptr()),
+            1
+        );
+
+        // Admin should succeed
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), oracle_addr.as_ptr()), 0);
+
+        // Verify stored
+        let stored = load_addr(ORACLE_ADDRESS_KEY);
+        assert_eq!(stored, oracle_addr);
+    }
+
+    #[test]
+    fn test_update_mark_price_no_oracle_configured() {
+        let admin = setup();
+        let caller = [2u8; 32];
+        let asset = b"LICN/USD";
+
+        // No oracle set — should return 1
+        test_mock::set_caller(caller);
+        let r =
+            update_mark_price_from_oracle(caller.as_ptr(), 1, asset.as_ptr(), asset.len() as u32);
+        assert_eq!(r, 1, "Should fail when oracle not configured");
+    }
+
+    #[test]
+    fn test_update_mark_price_oracle_call_success() {
+        let admin = setup();
+        let oracle_addr = [0xBB; 32];
+
+        // Set oracle address
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), oracle_addr.as_ptr()), 0);
+
+        // Mock oracle return: 2_000_000_000 (2.0 LICN price)
+        let price: u64 = 2_000_000_000;
+        test_mock::set_cross_call_response(Some(price.to_le_bytes().to_vec()));
+
+        // Call update
+        let caller = [3u8; 32];
+        test_mock::set_caller(caller);
+        let asset = b"LICN/USD";
+        let r =
+            update_mark_price_from_oracle(caller.as_ptr(), 1, asset.as_ptr(), asset.len() as u32);
+        assert_eq!(r, 0, "Should succeed with valid oracle response");
+
+        // Verify mark price was updated
+        let (stored_price, _ts) = load_mark_price(1);
+        assert_eq!(stored_price, 2_000_000_000);
+    }
+
+    #[test]
+    fn test_update_mark_price_oracle_returns_zero() {
+        let admin = setup();
+        let oracle_addr = [0xCC; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), oracle_addr.as_ptr()), 0);
+
+        // Mock oracle return: 0 price
+        test_mock::set_cross_call_response(Some(0u64.to_le_bytes().to_vec()));
+
+        let caller = [4u8; 32];
+        test_mock::set_caller(caller);
+        let asset = b"LICN/USD";
+        let r =
+            update_mark_price_from_oracle(caller.as_ptr(), 1, asset.as_ptr(), asset.len() as u32);
+        assert_eq!(r, 4, "Should reject zero price from oracle");
     }
 }

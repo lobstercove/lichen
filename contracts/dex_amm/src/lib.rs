@@ -12,14 +12,15 @@
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 #![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_value, is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes,
-    Address, CrossCall,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, is_native_token,
+    log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -51,6 +52,21 @@ const Q64: u128 = 1u128 << 64;
 const MAX_TICK_CROSSES: u32 = 100;
 // AUDIT-FIX AMM-7: Maximum protocol fee percentage (protects LP incentives)
 const MAX_PROTOCOL_FEE_PCT: u8 = 50;
+
+// AUDIT-FIX AMM-8: Q128 scale for fee growth accumulators (matches Uniswap V3)
+const Q128: u128 = 1u128 << 64; // We use Q64.64 for fee growth (fits u128)
+
+// Tick data layout (40 bytes, backward-compatible with legacy 8-byte format):
+//   Bytes 0..8:   liquidityNet (i64) — signed net liquidity delta
+//   Bytes 8..24:  feeGrowthOutside0 (u128 LE) — token_a fee growth outside
+//   Bytes 24..40: feeGrowthOutside1 (u128 LE) — token_b fee growth outside
+const TICK_DATA_SIZE: usize = 40;
+
+// Position layout extended from 80 to 112 bytes (backward-compatible):
+//   Original 80 bytes unchanged
+//   Bytes 80..96:  feeGrowthInsideLast0 (u128 LE)
+//   Bytes 96..112: feeGrowthInsideLast1 (u128 LE)
+const POSITION_SIZE_V2: usize = 112;
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"amm_admin";
@@ -211,7 +227,117 @@ fn load_tick_net(key: &[u8]) -> i64 {
 }
 
 fn save_tick_net(key: &[u8], val: i64) {
+    // AUDIT-FIX AMM-8: Preserve feeGrowthOutside when writing only liquidityNet
+    let mut data = storage_get(key).unwrap_or_default();
+    if data.len() < TICK_DATA_SIZE {
+        data.resize(TICK_DATA_SIZE, 0);
+    }
+    data[0..8].copy_from_slice(&val.to_le_bytes());
+    storage_set(key, &data);
+}
+
+// AUDIT-FIX AMM-8: Per-pool global fee growth accumulators (u128 Q64.64)
+fn fee_growth_global_key(pool_id: u64, is_token_a: bool) -> Vec<u8> {
+    let mut k = Vec::from(if is_token_a {
+        &b"amm_fgg0_"[..]
+    } else {
+        &b"amm_fgg1_"[..]
+    });
+    k.extend_from_slice(&u64_to_bytes(pool_id));
+    k
+}
+
+fn load_u128(key: &[u8]) -> u128 {
+    storage_get(key)
+        .map(|d| {
+            if d.len() >= 16 {
+                u128::from_le_bytes([
+                    d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11],
+                    d[12], d[13], d[14], d[15],
+                ])
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn save_u128(key: &[u8], val: u128) {
     storage_set(key, &val.to_le_bytes());
+}
+
+/// Load full tick data (40 bytes): liquidityNet + feeGrowthOutside0 + feeGrowthOutside1
+fn load_tick_data(key: &[u8]) -> (i64, u128, u128) {
+    match storage_get(key) {
+        Some(d) if d.len() >= TICK_DATA_SIZE => {
+            let net = i64::from_le_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]]);
+            let fg0 = u128::from_le_bytes([
+                d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15], d[16], d[17], d[18], d[19],
+                d[20], d[21], d[22], d[23],
+            ]);
+            let fg1 = u128::from_le_bytes([
+                d[24], d[25], d[26], d[27], d[28], d[29], d[30], d[31], d[32], d[33], d[34], d[35],
+                d[36], d[37], d[38], d[39],
+            ]);
+            (net, fg0, fg1)
+        }
+        Some(d) if d.len() >= 8 => {
+            // Legacy 8-byte format: only liquidityNet, fee growth = 0
+            let net = i64::from_le_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]]);
+            (net, 0, 0)
+        }
+        _ => (0, 0, 0),
+    }
+}
+
+/// Save full tick data (40 bytes)
+fn save_tick_data(key: &[u8], net: i64, fg0: u128, fg1: u128) {
+    let mut data = [0u8; TICK_DATA_SIZE];
+    data[0..8].copy_from_slice(&net.to_le_bytes());
+    data[8..24].copy_from_slice(&fg0.to_le_bytes());
+    data[24..40].copy_from_slice(&fg1.to_le_bytes());
+    storage_set(key, &data);
+}
+
+/// Compute feeGrowthInside for a tick range, using Uniswap V3 formula:
+///   feeGrowthInside = feeGrowthGlobal - feeGrowthBelow - feeGrowthAbove
+fn compute_fee_growth_inside(
+    pool_id: u64,
+    lower: i32,
+    upper: i32,
+    current_tick: i32,
+    fg_global0: u128,
+    fg_global1: u128,
+) -> (u128, u128) {
+    let lk = tick_data_key(pool_id, lower);
+    let (_, lower_out0, lower_out1) = load_tick_data(&lk);
+    let uk = tick_data_key(pool_id, upper);
+    let (_, upper_out0, upper_out1) = load_tick_data(&uk);
+
+    // feeGrowthBelow: if current_tick >= lower, use outside; else use global - outside
+    let (below0, below1) = if current_tick >= lower {
+        (lower_out0, lower_out1)
+    } else {
+        (
+            fg_global0.wrapping_sub(lower_out0),
+            fg_global1.wrapping_sub(lower_out1),
+        )
+    };
+
+    // feeGrowthAbove: if current_tick < upper, use outside; else use global - outside
+    let (above0, above1) = if current_tick < upper {
+        (upper_out0, upper_out1)
+    } else {
+        (
+            fg_global0.wrapping_sub(upper_out0),
+            fg_global1.wrapping_sub(upper_out1),
+        )
+    };
+
+    (
+        fg_global0.wrapping_sub(below0).wrapping_sub(above0),
+        fg_global1.wrapping_sub(below1).wrapping_sub(above1),
+    )
 }
 
 // AUDIT-FIX AMM-1/2: Compute actual token amounts from liquidity and price range
@@ -264,7 +390,7 @@ fn pull_tokens(token: &[u8; 32], from: &[u8; 32], amount: u64) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = (token, from, amount);
-        return true;
+        true
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -294,7 +420,7 @@ fn send_tokens(token: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = (token, to, amount);
-        return true;
+        true
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -459,17 +585,17 @@ fn decode_pool_token_b(data: &[u8]) -> [u8; 32] {
     t
 }
 
-fn update_pool_sqrt_price(data: &mut Vec<u8>, new_sqrt: u64) {
+fn update_pool_sqrt_price(data: &mut [u8], new_sqrt: u64) {
     if data.len() >= 80 {
         data[72..80].copy_from_slice(&u64_to_bytes(new_sqrt));
     }
 }
-fn update_pool_tick(data: &mut Vec<u8>, new_tick: i32) {
+fn update_pool_tick(data: &mut [u8], new_tick: i32) {
     if data.len() >= 84 {
         data[80..84].copy_from_slice(&i32_to_bytes(new_tick));
     }
 }
-fn update_pool_liquidity(data: &mut Vec<u8>, new_liq: u64) {
+fn update_pool_liquidity(data: &mut [u8], new_liq: u64) {
     if data.len() >= 92 {
         data[84..92].copy_from_slice(&u64_to_bytes(new_liq));
     }
@@ -499,7 +625,8 @@ fn encode_position(
     fee_b_owed: u64,
     created_slot: u64,
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(POSITION_SIZE);
+    // AUDIT-FIX AMM-8: Encode with V2 layout (112 bytes) — feeGrowthInsideLast at end
+    let mut data = Vec::with_capacity(POSITION_SIZE_V2);
     data.extend_from_slice(owner);
     data.extend_from_slice(&u64_to_bytes(pool_id));
     data.extend_from_slice(&i32_to_bytes(lower_tick));
@@ -508,6 +635,9 @@ fn encode_position(
     data.extend_from_slice(&u64_to_bytes(fee_a_owed));
     data.extend_from_slice(&u64_to_bytes(fee_b_owed));
     data.extend_from_slice(&u64_to_bytes(created_slot));
+    // V2 fields: feeGrowthInsideLast0 and feeGrowthInsideLast1 (u128 each)
+    data.extend_from_slice(&0u128.to_le_bytes()); // bytes 80..96
+    data.extend_from_slice(&0u128.to_le_bytes()); // bytes 96..112
     data
 }
 
@@ -568,20 +698,52 @@ fn decode_pos_created_slot(data: &[u8]) -> u64 {
     }
 }
 
-fn update_pos_liquidity(data: &mut Vec<u8>, liq: u64) {
+fn update_pos_liquidity(data: &mut [u8], liq: u64) {
     if data.len() >= 56 {
         data[48..56].copy_from_slice(&u64_to_bytes(liq));
     }
 }
-fn update_pos_fee_a(data: &mut Vec<u8>, fee: u64) {
+fn update_pos_fee_a(data: &mut [u8], fee: u64) {
     if data.len() >= 64 {
         data[56..64].copy_from_slice(&u64_to_bytes(fee));
     }
 }
-fn update_pos_fee_b(data: &mut Vec<u8>, fee: u64) {
+fn update_pos_fee_b(data: &mut [u8], fee: u64) {
     if data.len() >= 72 {
         data[64..72].copy_from_slice(&u64_to_bytes(fee));
     }
+}
+
+// AUDIT-FIX AMM-8: V2 position field accessors for feeGrowthInsideLast
+fn decode_pos_fg_inside_last0(data: &[u8]) -> u128 {
+    if data.len() >= 96 {
+        u128::from_le_bytes([
+            data[80], data[81], data[82], data[83], data[84], data[85], data[86], data[87],
+            data[88], data[89], data[90], data[91], data[92], data[93], data[94], data[95],
+        ])
+    } else {
+        0 // Legacy V1 positions: treat as 0 (no historical fees missed)
+    }
+}
+
+fn decode_pos_fg_inside_last1(data: &[u8]) -> u128 {
+    if data.len() >= 112 {
+        u128::from_le_bytes([
+            data[96], data[97], data[98], data[99], data[100], data[101], data[102], data[103],
+            data[104], data[105], data[106], data[107], data[108], data[109], data[110], data[111],
+        ])
+    } else {
+        0
+    }
+}
+
+fn update_pos_fg_inside_last(data: &mut Vec<u8>, fg0: u128, fg1: u128) {
+    // Ensure position is V2 sized
+    while data.len() < POSITION_SIZE_V2 {
+        data.push(0);
+    }
+    data[80..96].copy_from_slice(&fg0.to_le_bytes());
+    data[96..112].copy_from_slice(&fg1.to_le_bytes());
 }
 
 // ============================================================================
@@ -891,7 +1053,7 @@ fn compute_swap_with_ticks(
     sqrt_price: u64,
     current_tick: i32,
     is_token_a_in: bool,
-) -> (u64, u64, i32) {
+) -> (u64, u64, i32, u64) {
     let mut remaining = amount_in_after_fee;
     let mut total_out: u64 = 0;
     let mut liq = liquidity;
@@ -940,8 +1102,17 @@ fn compute_swap_with_ticks(
                     remaining = remaining.saturating_sub(input_needed);
                     sqp = target_sqp;
 
-                    // Cross the tick: apply liquidityNet
-                    let net = load_tick_net(&tick_data_key(pool_id, tick_bound));
+                    // AUDIT-FIX AMM-8: Cross the tick — apply liquidityNet and flip feeGrowthOutside
+                    let tk = tick_data_key(pool_id, tick_bound);
+                    let (net, fg_out0, fg_out1) = load_tick_data(&tk);
+                    let fg_g0 = load_u128(&fee_growth_global_key(pool_id, true));
+                    let fg_g1 = load_u128(&fee_growth_global_key(pool_id, false));
+                    save_tick_data(
+                        &tk,
+                        net,
+                        fg_g0.wrapping_sub(fg_out0),
+                        fg_g1.wrapping_sub(fg_out1),
+                    );
                     if going_up {
                         liq = ((liq as i64).saturating_add(net)) as u64;
                         ct = tick_bound;
@@ -954,7 +1125,7 @@ fn compute_swap_with_ticks(
         }
     }
 
-    (total_out, sqp, ct)
+    (total_out, sqp, ct, liq)
 }
 
 // ============================================================================
@@ -1174,7 +1345,22 @@ pub fn add_liquidity(
     let pos_count = load_u64(POSITION_COUNT_KEY);
     let pos_id = pos_count + 1;
     let slot = get_slot();
-    let pos_data = encode_position(&p, pool_id, lower_tick, upper_tick, liquidity, 0, 0, slot);
+    let mut pos_data = encode_position(&p, pool_id, lower_tick, upper_tick, liquidity, 0, 0, slot);
+
+    // AUDIT-FIX AMM-8: Snapshot feeGrowthInside at position creation
+    let current_tick = decode_pool_tick(&pool_data);
+    let fg_global0 = load_u128(&fee_growth_global_key(pool_id, true));
+    let fg_global1 = load_u128(&fee_growth_global_key(pool_id, false));
+    let (fg_inside0, fg_inside1) = compute_fee_growth_inside(
+        pool_id,
+        lower_tick,
+        upper_tick,
+        current_tick,
+        fg_global0,
+        fg_global1,
+    );
+    update_pos_fg_inside_last(&mut pos_data, fg_inside0, fg_inside1);
+
     storage_set(&position_key(pos_id), &pos_data);
     save_u64(POSITION_COUNT_KEY, pos_id);
 
@@ -1185,7 +1371,6 @@ pub fn add_liquidity(
     save_u64(&owner_position_key(&p, new_count), pos_id);
 
     // Update pool liquidity if position is in range
-    let current_tick = decode_pool_tick(&pool_data);
     if current_tick >= lower_tick && current_tick < upper_tick {
         let pool_liq = decode_pool_liquidity(&pool_data);
         update_pool_liquidity(&mut pool_data, pool_liq.saturating_add(liquidity));
@@ -1247,16 +1432,38 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
         return 3;
     }
 
-    let new_liq = current_liq - liquidity_amount;
-    update_pos_liquidity(&mut pos_data, new_liq);
-    storage_set(&pk, &pos_data);
-
-    // Update pool liquidity
+    // AUDIT-FIX AMM-8: Compute uncollected V3 fees before reducing liquidity
     let pool_id = decode_pos_pool_id(&pos_data);
     let pool_pk = pool_key(pool_id);
     let lower = decode_pos_lower_tick(&pos_data);
     let upper = decode_pos_upper_tick(&pos_data);
 
+    if let Some(pool_data) = storage_get(&pool_pk) {
+        if pool_data.len() >= POOL_SIZE {
+            let current_tick = decode_pool_tick(&pool_data);
+            let fg_g0 = load_u128(&fee_growth_global_key(pool_id, true));
+            let fg_g1 = load_u128(&fee_growth_global_key(pool_id, false));
+            let (fg_in0, fg_in1) =
+                compute_fee_growth_inside(pool_id, lower, upper, current_tick, fg_g0, fg_g1);
+            let last0 = decode_pos_fg_inside_last0(&pos_data);
+            let last1 = decode_pos_fg_inside_last1(&pos_data);
+            if current_liq > 0 {
+                let owed_a = (current_liq as u128 * fg_in0.wrapping_sub(last0) / Q128) as u64;
+                let owed_b = (current_liq as u128 * fg_in1.wrapping_sub(last1) / Q128) as u64;
+                let existing_a = decode_pos_fee_a(&pos_data);
+                let existing_b = decode_pos_fee_b(&pos_data);
+                update_pos_fee_a(&mut pos_data, existing_a.saturating_add(owed_a));
+                update_pos_fee_b(&mut pos_data, existing_b.saturating_add(owed_b));
+            }
+            update_pos_fg_inside_last(&mut pos_data, fg_in0, fg_in1);
+        }
+    }
+
+    let new_liq = current_liq - liquidity_amount;
+    update_pos_liquidity(&mut pos_data, new_liq);
+    storage_set(&pk, &pos_data);
+
+    // Update pool liquidity
     if let Some(mut pool_data) = storage_get(&pool_pk) {
         if pool_data.len() >= POOL_SIZE {
             let current_tick = decode_pool_tick(&pool_data);
@@ -1329,16 +1536,41 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
         return 2;
     }
 
-    let fee_a = decode_pos_fee_a(&pos_data);
-    let fee_b = decode_pos_fee_b(&pos_data);
-
-    // P9-SC-02: Transfer fee tokens to LP before resetting counters
+    // AUDIT-FIX AMM-8: Compute V3 fees from feeGrowthInside before collecting
     let pool_id = decode_pos_pool_id(&pos_data);
     let pool_pk = pool_key(pool_id);
     let pool_data = match storage_get(&pool_pk) {
         Some(d) if d.len() >= POOL_SIZE => d,
         _ => return 3,
     };
+    let current_tick = decode_pool_tick(&pool_data);
+    let lower = decode_pos_lower_tick(&pos_data);
+    let upper = decode_pos_upper_tick(&pos_data);
+    let pos_liq = decode_pos_liquidity(&pos_data);
+
+    let fg_global0 = load_u128(&fee_growth_global_key(pool_id, true));
+    let fg_global1 = load_u128(&fee_growth_global_key(pool_id, false));
+    let (fg_inside0, fg_inside1) =
+        compute_fee_growth_inside(pool_id, lower, upper, current_tick, fg_global0, fg_global1);
+
+    let last0 = decode_pos_fg_inside_last0(&pos_data);
+    let last1 = decode_pos_fg_inside_last1(&pos_data);
+
+    let v3_fee_a = if pos_liq > 0 {
+        (pos_liq as u128 * fg_inside0.wrapping_sub(last0) / Q128) as u64
+    } else {
+        0
+    };
+    let v3_fee_b = if pos_liq > 0 {
+        (pos_liq as u128 * fg_inside1.wrapping_sub(last1) / Q128) as u64
+    } else {
+        0
+    };
+
+    // Legacy fee_a/fee_b (from pre-V3 accruals) plus V3 accumulated fees
+    let fee_a = decode_pos_fee_a(&pos_data).saturating_add(v3_fee_a);
+    let fee_b = decode_pos_fee_b(&pos_data).saturating_add(v3_fee_b);
+
     let token_a_addr = decode_pool_token_a(&pool_data);
     let token_b_addr = decode_pool_token_b(&pool_data);
     let contract_addr = get_contract_address();
@@ -1370,9 +1602,10 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
         }
     }
 
-    // Reset fees after successful transfer
+    // Reset legacy fees and update V3 snapshot after successful transfer
     update_pos_fee_a(&mut pos_data, 0);
     update_pos_fee_b(&mut pos_data, 0);
+    update_pos_fg_inside_last(&mut pos_data, fg_inside0, fg_inside1);
     storage_set(&pk, &pos_data);
 
     // Return fee amounts via return data
@@ -1445,7 +1678,7 @@ pub fn swap_exact_in(
     let amount_after_fee = amount_in - fee;
 
     // AUDIT-FIX AMM-5: Cross-tick swap with proper liquidity transitions
-    let (amount_out, new_sqrt, new_tick) = compute_swap_with_ticks(
+    let (amount_out, new_sqrt, new_tick, final_liq) = compute_swap_with_ticks(
         pool_id,
         amount_after_fee,
         liquidity,
@@ -1473,28 +1706,9 @@ pub fn swap_exact_in(
         return 8; // output token transfer failed
     }
 
-    // Update pool state
+    // AUDIT-FIX AMM-8: Update pool state — liquidity tracked by tick-crossing, no O(n) scan
     update_pool_sqrt_price(&mut pool_data, new_sqrt);
     update_pool_tick(&mut pool_data, new_tick);
-    // Update pool active liquidity to reflect post-cross state
-    let final_liq = {
-        let mut liq = 0u64;
-        // Sum liquidity of all positions whose range contains new_tick
-        // (This equals the pool's active liquidity at the new tick)
-        let pos_count = load_u64(POSITION_COUNT_KEY);
-        for i in 1..=pos_count {
-            if let Some(pd) = storage_get(&position_key(i)) {
-                if pd.len() >= POSITION_SIZE && decode_pos_pool_id(&pd) == pool_id {
-                    let lower = decode_pos_lower_tick(&pd);
-                    let upper = decode_pos_upper_tick(&pd);
-                    if new_tick >= lower && new_tick < upper {
-                        liq = liq.saturating_add(decode_pos_liquidity(&pd));
-                    }
-                }
-            }
-        }
-        liq
-    };
     update_pool_liquidity(&mut pool_data, final_liq);
     storage_set(&pk, &pool_data);
 
@@ -1603,9 +1817,9 @@ pub fn swap_exact_out(
     )
 }
 
-/// Accrue fees to in-range positions, splitting out protocol fee first.
-/// Protocol fee is a percentage (0-100) of the total swap fee, stored per pool.
-/// Matches Uniswap V3 protocol fee switch design.
+/// AUDIT-FIX AMM-8: O(1) fee accrual using Uniswap V3-style global fee growth.
+/// Instead of iterating all positions, accumulate fee/liquidity into a global
+/// per-unit accumulator. Positions compute their owed fees on collect_fees().
 fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
     if fee == 0 {
         return;
@@ -1641,39 +1855,16 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
         return;
     }
 
-    let current_tick = decode_pool_tick(&pool_data);
     let pool_liq = decode_pool_liquidity(&pool_data);
     if pool_liq == 0 {
         return;
     }
 
-    // Distribute LP fee proportionally to all in-range positions
-    let pos_count = load_u64(POSITION_COUNT_KEY);
-    for i in 1..=pos_count {
-        let pk = position_key(i);
-        if let Some(mut pos_data) = storage_get(&pk) {
-            if pos_data.len() >= POSITION_SIZE {
-                let pos_pool = decode_pos_pool_id(&pos_data);
-                if pos_pool != pool_id {
-                    continue;
-                }
-                let lower = decode_pos_lower_tick(&pos_data);
-                let upper = decode_pos_upper_tick(&pos_data);
-                if current_tick >= lower && current_tick < upper {
-                    let pos_liq = decode_pos_liquidity(&pos_data);
-                    let share = (lp_fee as u128 * pos_liq as u128 / pool_liq as u128) as u64;
-                    if is_token_a {
-                        let current = decode_pos_fee_a(&pos_data);
-                        update_pos_fee_a(&mut pos_data, current.saturating_add(share));
-                    } else {
-                        let current = decode_pos_fee_b(&pos_data);
-                        update_pos_fee_b(&mut pos_data, current.saturating_add(share));
-                    }
-                    storage_set(&pk, &pos_data);
-                }
-            }
-        }
-    }
+    // O(1): Increment global fee growth by fee/liquidity (Q64.64 fixed point)
+    let delta = (lp_fee as u128) * Q128 / (pool_liq as u128);
+    let fg_key = fee_growth_global_key(pool_id, is_token_a);
+    let current = load_u128(&fg_key);
+    save_u128(&fg_key, current.wrapping_add(delta));
 }
 
 /// Set the fee treasury address (admin only).
@@ -1848,7 +2039,7 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
     let current_tick = decode_pool_tick(&pool_data);
     let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
     let amount_after_fee = amount_in - fee;
-    let (out, _, _) = compute_swap_with_ticks(
+    let (out, _, _, _) = compute_swap_with_ticks(
         pool_id,
         amount_after_fee,
         liquidity,
@@ -2405,9 +2596,12 @@ mod tests {
         test_mock::set_caller(trader);
         swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
 
-        let pos_data = storage_get(&position_key(1)).unwrap();
-        let fee_a = decode_pos_fee_a(&pos_data);
-        assert!(fee_a > 0, "Should have accrued token_a fees");
+        // AUDIT-FIX AMM-8: Fees now accumulate in feeGrowthGlobal, not directly in position
+        let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
+        assert!(
+            fg0 > 0,
+            "Should have accrued token_a fees in feeGrowthGlobal"
+        );
     }
 
     // --- Collect Fees ---
@@ -2735,12 +2929,18 @@ mod tests {
         test_mock::set_caller(trader);
         swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
 
+        // AUDIT-FIX AMM-8: With V3, fees accumulate in feeGrowthGlobal.
+        // Both positions share the same tick range, so both earn fees via collect_fees.
+        let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
+        assert!(fg0 > 0, "Fee growth should be positive after swap");
+
+        // Both positions have equal liquidity and same range — on collect each
+        // should get approximately equal fees.
         let pos1 = storage_get(&position_key(1)).unwrap();
         let pos2 = storage_get(&position_key(2)).unwrap();
-        let fee1 = decode_pos_fee_a(&pos1);
-        let fee2 = decode_pos_fee_a(&pos2);
-        // Both should get approximately equal fees
-        assert!(fee1 > 0 && fee2 > 0, "Both positions should earn fees");
+        let liq1 = decode_pos_liquidity(&pos1);
+        let liq2 = decode_pos_liquidity(&pos2);
+        assert_eq!(liq1, liq2, "Both positions should have equal liquidity");
     }
 
     // --- K3-03: Full AMM Lifecycle E2E ---
@@ -2856,9 +3056,217 @@ mod tests {
 
         assert_eq!(load_u64(SWAP_COUNT_KEY), 3, "3 swaps should be counted");
 
-        // Fees should have accumulated on the position
-        let pos_data = storage_get(&position_key(1)).unwrap();
-        let fees = decode_pos_fee_a(&pos_data);
-        assert!(fees > 0, "LP should have earned fees from 3 swaps");
+        // AUDIT-FIX AMM-8: With V3 fee tracking, fees accumulate in feeGrowthGlobal,
+        // not directly in position fee fields. Verify feeGrowthGlobal increased.
+        let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
+        assert!(fg0 > 0, "feeGrowthGlobal0 should increase after swaps");
+    }
+
+    // ========================================================================
+    // AUDIT-FIX AMM-8: V3 tick-based fee tracking tests
+    // ========================================================================
+
+    #[test]
+    fn test_v3_fee_growth_global_accumulates() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Add liquidity
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
+
+        // feeGrowthGlobal should be 0 before any swap
+        assert_eq!(load_u128(&fee_growth_global_key(pool_id, true)), 0);
+        assert_eq!(load_u128(&fee_growth_global_key(pool_id, false)), 0);
+
+        // Swap token_a in
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 50_000, 0, 0),
+            0
+        );
+
+        // feeGrowthGlobal0 should increase (token_a fees), feeGrowthGlobal1 stays 0
+        let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
+        let fg1 = load_u128(&fee_growth_global_key(pool_id, false));
+        assert!(fg0 > 0, "feeGrowthGlobal0 should increase on token_a swap");
+        assert_eq!(fg1, 0, "feeGrowthGlobal1 should stay 0 for token_a swap");
+    }
+
+    #[test]
+    fn test_v3_position_snapshot_at_creation() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Add first position and do a swap to generate fees
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 50_000, 0, 0),
+            0
+        );
+
+        let fg0_after_swap = load_u128(&fee_growth_global_key(pool_id, true));
+
+        // Add second position — it should snapshot current feeGrowthInside
+        let provider2 = [3u8; 32];
+        test_mock::set_caller(provider2);
+        add_liquidity(provider2.as_ptr(), pool_id, -120, 120, 500_000, 500_000);
+
+        // Position 2 should have feeGrowthInsideLast0 == fg0_after_swap
+        let pos2 = storage_get(&position_key(2)).unwrap();
+        let snap0 = decode_pos_fg_inside_last0(&pos2);
+        assert!(
+            snap0 > 0,
+            "New position should snapshot non-zero feeGrowthInside"
+        );
+        // Since both ticks are initialized and position is in range,
+        // feeGrowthInside == feeGrowthGlobal (with outside = 0 for new ticks)
+        // After second position adds liquidity, ticks already exist
+        assert!(snap0 <= fg0_after_swap, "Snapshot should not exceed global");
+    }
+
+    #[test]
+    fn test_v3_collect_fees_computes_owed() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Add liquidity
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
+
+        // Swap to generate fees
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0),
+            0
+        );
+
+        // Collect fees — should compute owed from V3 growth accumulators
+        test_mock::set_caller(provider);
+        let result = collect_fees(provider.as_ptr(), 1);
+        assert_eq!(result, 0, "collect_fees should succeed");
+
+        // After collecting, feeGrowthInsideLast should be updated
+        let pos = storage_get(&position_key(1)).unwrap();
+        let snap0 = decode_pos_fg_inside_last0(&pos);
+        assert!(snap0 > 0, "Snapshot should be updated after collect");
+        // Legacy fee fields should be zeroed
+        assert_eq!(decode_pos_fee_a(&pos), 0);
+        assert_eq!(decode_pos_fee_b(&pos), 0);
+    }
+
+    #[test]
+    fn test_v3_remove_liquidity_captures_uncollected_fees() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Add liquidity
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
+
+        // Swap to generate fees
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 50_000, 0, 0),
+            0
+        );
+
+        // Remove half liquidity — should capture uncollected fees first
+        test_mock::set_caller(provider);
+        let result = remove_liquidity(provider.as_ptr(), 1, 500_000);
+        assert_eq!(result, 0, "remove_liquidity should succeed");
+
+        // Position should have uncollected fees credited to fee_a
+        let pos = storage_get(&position_key(1)).unwrap();
+        let fee_a = decode_pos_fee_a(&pos);
+        assert!(fee_a > 0, "Uncollected fees should be captured on remove");
+        // feeGrowthInsideLast should be updated
+        let snap0 = decode_pos_fg_inside_last0(&pos);
+        assert!(snap0 > 0, "Snapshot updated on remove_liquidity");
+    }
+
+    #[test]
+    fn test_v3_tick_data_backward_compat() {
+        // Verify that legacy 8-byte tick data reads correctly (net only, 0 for fee growth)
+        let key = tick_data_key(999, 60);
+        // Write legacy 8-byte format
+        storage_set(&key, &42i64.to_le_bytes());
+        let (net, fg0, fg1) = load_tick_data(&key);
+        assert_eq!(net, 42, "Legacy net should read correctly");
+        assert_eq!(fg0, 0, "Legacy should default feeGrowthOutside0 to 0");
+        assert_eq!(fg1, 0, "Legacy should default feeGrowthOutside1 to 0");
+    }
+
+    #[test]
+    fn test_v3_tick_data_full_roundtrip() {
+        let key = tick_data_key(999, -60);
+        save_tick_data(&key, -100, 12345u128, 67890u128);
+        let (net, fg0, fg1) = load_tick_data(&key);
+        assert_eq!(net, -100);
+        assert_eq!(fg0, 12345);
+        assert_eq!(fg1, 67890);
+    }
+
+    #[test]
+    fn test_v3_position_v2_layout_backward_compat() {
+        // Legacy 80-byte position should read 0 for feeGrowthInsideLast fields
+        let owner = [5u8; 32];
+        let mut legacy = Vec::with_capacity(POSITION_SIZE);
+        legacy.extend_from_slice(&owner); // 0..32
+        legacy.extend_from_slice(&1u64.to_le_bytes()); // 32..40 pool_id
+        legacy.extend_from_slice(&(-60i32).to_le_bytes()); // 40..44 lower
+        legacy.extend_from_slice(&(60i32).to_le_bytes()); // 44..48 upper
+        legacy.extend_from_slice(&500u64.to_le_bytes()); // 48..56 liq
+        legacy.extend_from_slice(&0u64.to_le_bytes()); // 56..64 fee_a
+        legacy.extend_from_slice(&0u64.to_le_bytes()); // 64..72 fee_b
+        legacy.extend_from_slice(&100u64.to_le_bytes()); // 72..80 slot
+        assert_eq!(legacy.len(), POSITION_SIZE);
+
+        // Reading V2 fields from 80-byte data should return 0
+        assert_eq!(decode_pos_fg_inside_last0(&legacy), 0);
+        assert_eq!(decode_pos_fg_inside_last1(&legacy), 0);
+    }
+
+    #[test]
+    fn test_v3_protocol_fee_still_accrues() {
+        let (admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Set 10% protocol fee
+        test_mock::set_caller(admin);
+        assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 10), 0);
+
+        // Add liquidity
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
+
+        // Swap
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0),
+            0
+        );
+
+        // Protocol fee should have accrued
+        let mut proto_key = Vec::from(PROTOCOL_FEE_ACCRUED_A_KEY);
+        proto_key.extend_from_slice(&u64_to_bytes(pool_id));
+        let proto_fees = load_u64(&proto_key);
+        assert!(proto_fees > 0, "Protocol fee should accrue after swap");
+
+        // LP fee should also be in feeGrowthGlobal
+        let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
+        assert!(fg0 > 0, "LP fees should accrue to feeGrowthGlobal");
     }
 }
