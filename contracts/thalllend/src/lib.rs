@@ -1186,11 +1186,7 @@ pub extern "C" fn set_lichencoin_address(caller_ptr: *const u8, addr_ptr: *const
         core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
     }
 
-    if is_zero_addr(&addr) {
-        log_info("Cannot set zero lichencoin address");
-        return 2;
-    }
-
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(LICHENCOIN_ADDRESS_KEY, &addr);
     log_info("LichenCoin address configured");
     0

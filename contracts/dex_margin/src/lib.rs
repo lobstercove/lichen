@@ -1660,9 +1660,7 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&a) {
-        return 2;
-    }
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
 }

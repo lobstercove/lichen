@@ -1054,10 +1054,7 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
         return 1;
     }
 
-    if token_addr == [0u8; 32] {
-        return 2;
-    }
-
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(CP_TOKEN_ADDR_KEY, &token_addr);
     log_info("Token address configured");
     0
@@ -1923,7 +1920,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_token_address_rejects_zero() {
+    fn test_set_token_address_accepts_zero() {
         setup();
         let admin = [10u8; 32];
         test_mock::set_caller(admin);
@@ -1931,7 +1928,7 @@ mod tests {
 
         let zero = [0u8; 32];
         let result = set_token_address(admin.as_ptr(), zero.as_ptr());
-        assert_eq!(result, 2); // zero address rejected
+        assert_eq!(result, 0); // zero address = native LICN sentinel
     }
 
     #[test]

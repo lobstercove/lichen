@@ -999,11 +999,7 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
         core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
     }
 
-    if token.iter().all(|&b| b == 0) {
-        log_info("LICN token address cannot be zero");
-        return 2;
-    }
-
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(LICN_TOKEN_KEY, &token);
     log_info("LICN token address configured");
     0
@@ -1954,9 +1950,9 @@ mod tests {
         let stored = test_mock::get_storage(LICN_TOKEN_KEY);
         assert_eq!(stored, Some(token.to_vec()));
 
-        // Zero address rejected
+        // Zero address accepted (native LICN sentinel)
         let zero = [0u8; 32];
-        assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 0);
 
         // Non-admin rejected
         let other = [9u8; 32];

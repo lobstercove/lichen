@@ -363,9 +363,7 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&q) {
-        return 2;
-    }
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     let old_count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..old_count {
         storage_set(&allowed_quote_key(i), &[0u8; 32]);
@@ -394,9 +392,7 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&q) {
-        return 2;
-    }
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
         if load_addr(&allowed_quote_key(i)) == q {
