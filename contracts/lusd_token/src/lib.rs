@@ -61,7 +61,7 @@ const TOKEN_SYMBOL: &[u8] = b"lUSD";
 const DECIMALS: u8 = 9; // F19.3a: Match system-wide 9-decimal convention (1e9 spores)
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000_000; // 100K lUSD per epoch (in spores, 1e9)
+const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000_000_000; // 100M lUSD per epoch — circuit breaker, not growth limiter
 const EPOCH_SLOTS: u64 = 86_400; // ~24 hours at 1 slot/sec
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed

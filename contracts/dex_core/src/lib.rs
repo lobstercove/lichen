@@ -1187,7 +1187,7 @@ fn is_allowed_quote(addr: &[u8; 32]) -> bool {
 /// Set the preferred quote token address (admin only).
 /// Legacy API — clears allowed quotes list and sets a single allowed quote.
 /// Use add_allowed_quote() for multi-quote support (e.g. lUSD + LICN).
-/// Returns: 0=success, 1=not admin, 2=zero address
+/// Returns: 0=success, 1=not admin
 pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut q = [0u8; 32];
@@ -1203,9 +1203,7 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&q) {
-        return 2;
-    }
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel.
     // Clear existing allowed quotes
     let old_count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..old_count {
@@ -1223,7 +1221,7 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
 /// Add an allowed quote token (admin only).
 /// Pairs can be created with any quote token in the allowed list.
 /// If the list is empty, any quote token is accepted.
-/// Returns: 0=success, 1=not admin, 2=zero address, 3=already in list, 4=max reached
+/// Returns: 0=success, 1=not admin, 3=already in list, 4=max reached
 pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut q = [0u8; 32];
@@ -1239,9 +1237,7 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&q) {
-        return 2;
-    }
+    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel.
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
         if load_addr(&allowed_quote_key(i)) == q {

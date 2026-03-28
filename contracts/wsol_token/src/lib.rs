@@ -40,7 +40,7 @@ const TOKEN_SYMBOL: &[u8] = b"wSOL";
 const DECIMALS: u8 = 9; // Same as native SOL (9 decimals / lamports)
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 50_000_000_000_000; // 50K SOL per epoch (in spores)
+const MINT_CAP_PER_EPOCH: u64 = 500_000_000_000_000; // 500K wSOL per epoch — circuit breaker, not growth limiter
 const EPOCH_SLOTS: u64 = 86_400;
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000;

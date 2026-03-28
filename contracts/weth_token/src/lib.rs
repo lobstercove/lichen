@@ -40,7 +40,7 @@ const TOKEN_SYMBOL: &[u8] = b"wETH";
 const DECIMALS: u8 = 9; // Gwei precision (u64 can't hold >18.4 ETH at 18 decimals)
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 500_000_000_000; // 500 ETH per epoch (in gwei)
+const MINT_CAP_PER_EPOCH: u64 = 50_000_000_000_000; // 50,000 wETH per epoch — circuit breaker, not growth limiter
 const EPOCH_SLOTS: u64 = 86_400;
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000;

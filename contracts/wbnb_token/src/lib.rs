@@ -40,7 +40,7 @@ const TOKEN_SYMBOL: &[u8] = b"wBNB";
 const DECIMALS: u8 = 9; // 9-decimal precision for wrapped BNB
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 5_000_000_000_000; // 5,000 BNB per epoch (9 decimals)
+const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000_000; // 100K wBNB per epoch — circuit breaker, not growth limiter
 const EPOCH_SLOTS: u64 = 86_400;
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000;

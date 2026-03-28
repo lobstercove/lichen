@@ -504,10 +504,12 @@ pub fn genesis_exec_contract(
     let mut runtime = ContractRuntime::new();
     match runtime.execute(&contract, function_name, args, ctx) {
         Ok(result) => {
+            // Check return code regardless of success flag — WASM functions
+            // that return non-zero error codes (e.g. "not admin", "zero address
+            // rejected") do NOT trap, so success may be true while the operation
+            // actually failed without modifying storage.
+            let rc = result.return_code.unwrap_or(0);
             if !result.success {
-                // Check for non-zero return code — indicates a real WASM error,
-                // not just "already initialized". Return false so callers know.
-                let rc = result.return_code.unwrap_or(1);
                 if rc != 0 {
                     warn!(
                         "  FAIL {}: contract returned error code {} — {:?}",
@@ -521,6 +523,15 @@ pub fn genesis_exec_contract(
                     "  WARN {}: contract returned !success with rc=0: {:?}",
                     label, result.error
                 );
+            } else if rc != 0 {
+                // success == true but non-zero return code: the WASM function
+                // returned an error without trapping. Storage changes (if any)
+                // are typically empty since the function exited early.
+                warn!(
+                    "  FAIL {}: success=true but return_code={} (operation rejected by contract)",
+                    label, rc
+                );
+                return false;
             }
             // Apply storage changes
             for (key, val_opt) in &result.storage_changes {

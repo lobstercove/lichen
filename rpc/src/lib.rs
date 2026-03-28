@@ -6052,6 +6052,21 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
 
     let validator_list: Vec<_> = validators
         .iter()
+        .filter(|v| {
+            // Exclude validators that were only discovered via P2P announcement
+            // and never had any on-chain stake or block production. These are
+            // "phantom" validators from external nodes that connected briefly.
+            v.blocks_proposed > 0
+                || v.votes_cast > 0
+                || v.stake > 0
+                || state
+                    .state
+                    .get_account(&v.pubkey)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.staked > 0)
+                    .unwrap_or(false)
+        })
         .map(|v| {
             // Get stake + bootstrap info from StakePool (authoritative source)
             let (pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) =
@@ -6115,8 +6130,8 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
 
     Ok(serde_json::json!({
         "validators": validator_list,
-        "count": validators.len(),
-        "_count": validators.len(),
+        "count": validator_list.len(),
+        "_count": validator_list.len(),
     }))
 }
 
@@ -13793,6 +13808,10 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
     ];
     let mut symbol_for_addr: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Native LICN is the zero address sentinel [0;32] — map it explicitly
+    // since there is no lichencoin contract in the symbol registry.
+    let zero_pubkey = lichen_core::Pubkey([0u8; 32]);
+    symbol_for_addr.insert(zero_pubkey.to_string(), "LICN".to_string());
     for &(sym, display) in known_tokens {
         if let Ok(Some(entry)) = state.state.get_symbol_registry(sym) {
             symbol_for_addr.insert(entry.program.to_string(), display.to_string());
