@@ -131,24 +131,44 @@ SYMBOL_TO_CONTRACT = {
     "DEXGOV": "dex_governance",
     "ANALYTICS": "dex_analytics",
     "PREDICT": "prediction_market",
+    "LICN": "lichencoin",
 }
+
+# DEX contracts that use opcode dispatch (match args[0]) instead of named exports.
+# dex_margin has NO named 'initialize' export — must use opcode 0 via the 'call' export.
+# All other DEX contracts have named 'initialize' BUT use opcode dispatch for operational calls.
+OPCODE_ONLY_INIT = {"dex_margin"}
 
 
 async def discover_existing_contracts(conn: Connection) -> Dict[str, PublicKey]:
-    """Query the symbol registry for contracts already deployed (e.g. at genesis).
-    Returns {contract_name: PublicKey} for any contracts we manage."""
+    """Query the symbol registry AND getAllContracts for contracts already
+    deployed (e.g. at genesis).  Returns {contract_name: PublicKey}."""
+    found = {}
+
+    # 1. Symbol registry (fast, precise)
     try:
         result = await conn._rpc("getAllSymbolRegistry")
         entries = result.get("entries", [])
+        for entry in entries:
+            sym = entry.get("symbol", "")
+            prog = entry.get("program", "")
+            if sym in SYMBOL_TO_CONTRACT and prog:
+                found[SYMBOL_TO_CONTRACT[sym]] = PublicKey.from_base58(prog)
     except Exception:
-        return {}
-    found = {}
-    for entry in entries:
-        sym = entry.get("symbol", "")
-        prog = entry.get("program", "")
-        if sym in SYMBOL_TO_CONTRACT and prog:
-            contract_name = SYMBOL_TO_CONTRACT[sym]
-            found[contract_name] = PublicKey.from_base58(prog)
+        pass
+
+    # 2. getAllContracts fallback — picks up genesis contracts not in symbol registry
+    try:
+        result = await conn._rpc("getAllContracts")
+        contracts_list = result if isinstance(result, list) else result.get("contracts", [])
+        for c in contracts_list:
+            name = c.get("name", "")
+            addr = c.get("address", c.get("program_id", ""))
+            if name and addr and name not in found:
+                found[name] = PublicKey.from_base58(addr)
+    except Exception:
+        pass
+
     if found:
         print(f"\n🔍 Discovered {len(found)} existing contract(s) on-chain (genesis-deployed):")
         for name, pk in sorted(found.items()):
@@ -296,162 +316,120 @@ async def phase_initialize_dex(
     conn: Connection, deployer: Keypair, addrs: Dict[str, PublicKey],
     admin_pubkey: PublicKey
 ) -> None:
-    """Initialize DEX contracts and wire cross-references."""
+    """Initialize DEX contracts and wire cross-references.
+
+    DEX contracts use **opcode dispatch** via a single ``call()`` WASM export:
+      - args[0] = opcode byte
+      - args[1..] = serialised arguments (pubkeys as raw 32-byte, integers as LE)
+
+    Some contracts (dex_router, dex_rewards, dex_governance, dex_analytics) also
+    expose a named ``initialize`` export for convenience.  dex_margin does NOT
+    have a named ``initialize``; it must be initialised via opcode 0.
+    """
     print(f"\n{'═' * 60}")
     print(f"  INITIALIZING DEX CONTRACTS")
     print(f"{'═' * 60}")
 
-    # Initialize each DEX contract with admin key
+    deployer_bytes = list(deployer.public_key().to_bytes())
+    admin_bytes = list(admin_pubkey.to_bytes())
+
+    # ── Initialize each DEX contract ──────────────────────────
     for name in ["dex_core", "dex_amm", "dex_router",
                   "dex_margin", "dex_rewards", "dex_governance", "dex_analytics"]:
         if name not in addrs:
             print(f"  ⚠️  {name} not deployed, skipping init")
             continue
         try:
-            sig = await call_contract(
-                conn, deployer, addrs[name], "initialize"
-            )
+            if name in OPCODE_ONLY_INIT:
+                # Opcode 0 = initialize(admin[32]) via the "call" export
+                data = [0] + admin_bytes
+                sig = await call_contract_raw(conn, deployer, addrs[name], "call", data)
+            else:
+                # Named "initialize" export (takes no args or reads caller as admin)
+                sig = await call_contract(conn, deployer, addrs[name], "initialize")
             print(f"  ✅ {name}.initialize() — sig={sig}")
         except Exception as e:
             print(f"  ⚠️  {name}.initialize() failed: {e}")
 
-    # Register token contracts with dex_core
+    # ── Create trading pairs on dex_core (opcode 1) ──────────
+    # Opcode 1: create_pair(caller[32], base[32], quote[32],
+    #                        tick_size(u64), lot_size(u64), min_order(u64))
     if "dex_core" in addrs:
-        print(f"\n  --- Registering tokens with dex_core ---")
-        token_map = {
-            "lusd_token": "lUSD",
-            "wsol_token": "wSOL",
-            "weth_token": "wETH",
-            "wbnb_token": "wBNB",
+        print(f"\n  --- Creating trading pairs on dex_core ---")
+
+        # Resolve token symbols to their on-chain addresses
+        symbol_addrs = {
+            "lUSD":  addrs.get("lusd_token"),
+            "wSOL":  addrs.get("wsol_token"),
+            "wETH":  addrs.get("weth_token"),
+            "wBNB":  addrs.get("wbnb_token"),
+            "LICN":  addrs.get("lichencoin"),
         }
-        for contract_name, symbol in token_map.items():
-            if contract_name not in addrs:
-                continue
-            try:
-                sig = await call_contract(
-                    conn, deployer, addrs["dex_core"], "register_token",
-                    {"symbol": symbol, "contract": str(addrs[contract_name])}
-                )
-                print(f"  ✅ dex_core.register_token({symbol}) — sig={sig}")
-            except Exception as e:
-                print(f"  ⚠️  register_token({symbol}) failed: {e}")
 
-    # Register trading pairs
-    if "dex_core" in addrs:
-        print(f"\n  --- Registering trading pairs ---")
+        # Default CLOB parameters (spores-denominated)
+        DEFAULT_TICK   = 1_000_000       # 0.001 LICN price increment
+        DEFAULT_LOT    = 1_000_000_000   # 1 LICN lot size
+        DEFAULT_MIN    = 1_000_000_000   # 1 LICN minimum order
+
         pairs = [
-            ("LICN", "lUSD"),   # Native LICN priced in lUSD
-            ("wSOL", "lUSD"),   # Wrapped SOL priced in lUSD
-            ("wETH", "lUSD"),   # Wrapped ETH priced in lUSD
-            ("wBNB", "lUSD"),   # Wrapped BNB priced in lUSD
-            ("MOSS", "lUSD"),   # MOSS priced in lUSD
-            ("wSOL", "LICN"),   # Direct SOL/LICN pair
-            ("wETH", "LICN"),   # Direct ETH/LICN pair
-            ("wBNB", "LICN"),   # Direct BNB/LICN pair
-            ("MOSS", "LICN"),   # MOSS/LICN pair
+            ("LICN", "lUSD"),
+            ("wSOL", "lUSD"),
+            ("wETH", "lUSD"),
+            ("wBNB", "lUSD"),
+            ("wSOL", "LICN"),
+            ("wETH", "LICN"),
+            ("wBNB", "LICN"),
         ]
-        for base, quote in pairs:
-            try:
-                sig = await call_contract(
-                    conn, deployer, addrs["dex_core"], "create_pair",
-                    {"base": base, "quote": quote}
-                )
-                print(f"  ✅ create_pair({base}/{quote}) — sig={sig}")
-            except Exception as e:
-                print(f"  ⚠️  create_pair({base}/{quote}) failed: {e}")
-        # Set allowed quote tokens: lUSD + LICN (for dual-quote trading)
-        print(f"\n  --- Setting allowed quote tokens (lUSD + LICN) ---")
-        for symbol in ["lUSD", "LICN"]:
-            try:
-                sig = await call_contract(
-                    conn, deployer, addrs["dex_core"], "add_allowed_quote",
-                    {"symbol": symbol}
-                )
-                print(f"  \u2705 add_allowed_quote({symbol}) \u2014 sig={sig}")
-            except Exception as e:
-                print(f"  \u26a0\ufe0f  add_allowed_quote({symbol}) failed: {e}")
 
-    # Set allowed quotes on dex_governance too
-    if "dex_governance" in addrs:
-        print(f"\n  --- Setting governance allowed quote tokens ---")
-        for symbol in ["lUSD", "LICN"]:
-            try:
-                sig = await call_contract(
-                    conn, deployer, addrs["dex_governance"], "add_allowed_quote",
-                    {"symbol": symbol}
-                )
-                print(f"  \u2705 dex_governance.add_allowed_quote({symbol}) \u2014 sig={sig}")
-            except Exception as e:
-                print(f"  \u26a0\ufe0f  dex_governance.add_allowed_quote({symbol}) failed: {e}")
-    # Wire dex_amm to dex_core
-    if "dex_amm" in addrs and "dex_core" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs["dex_amm"], "set_core_contract",
-                {"address": str(addrs["dex_core"])}
-            )
-            print(f"  ✅ dex_amm.set_core_contract() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  dex_amm.set_core_contract() failed: {e}")
-
-    # Wire dex_router to core + amm
-    if "dex_router" in addrs:
-        for dep_name in ["dex_core", "dex_amm"]:
-            if dep_name not in addrs:
+        for base_sym, quote_sym in pairs:
+            base_pk = symbol_addrs.get(base_sym)
+            quote_pk = symbol_addrs.get(quote_sym)
+            if not base_pk or not quote_pk:
+                print(f"  ⚠️  create_pair({base_sym}/{quote_sym}): token address unknown, skipping")
                 continue
-            func = f"set_{dep_name.replace('dex_', '')}_contract"
+            data = (bytes([1])
+                    + bytes(deployer.public_key().to_bytes())
+                    + bytes(base_pk.to_bytes())
+                    + bytes(quote_pk.to_bytes())
+                    + struct.pack('<Q', DEFAULT_TICK)
+                    + struct.pack('<Q', DEFAULT_LOT)
+                    + struct.pack('<Q', DEFAULT_MIN))
             try:
-                sig = await call_contract(
-                    conn, deployer, addrs["dex_router"], func,
-                    {"address": str(addrs[dep_name])}
-                )
-                print(f"  ✅ dex_router.{func}() — sig={sig}")
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_core"], "call", list(data))
+                print(f"  ✅ create_pair({base_sym}/{quote_sym}) — sig={sig}")
             except Exception as e:
-                print(f"  ⚠️  dex_router.{func}() failed: {e}")
+                print(f"  ⚠️  create_pair({base_sym}/{quote_sym}) failed: {e}")
 
-    # Wire margin to core
-    if "dex_margin" in addrs and "dex_core" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs["dex_margin"], "set_core_contract",
-                {"address": str(addrs["dex_core"])}
-            )
-            print(f"  ✅ dex_margin.set_core_contract() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  dex_margin.set_core_contract() failed: {e}")
+        # ── Set preferred quote token (opcode 4) ──────────────
+        # Opcode 4: set_preferred_quote(caller[32], quote_addr[32])
+        print(f"\n  --- Setting preferred quote token (lUSD) ---")
+        lusd_pk = symbol_addrs.get("lUSD")
+        if lusd_pk:
+            data = (bytes([4])
+                    + bytes(deployer.public_key().to_bytes())
+                    + bytes(lusd_pk.to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_core"], "call", list(data))
+                print(f"  ✅ set_preferred_quote(lUSD) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  set_preferred_quote(lUSD) failed: {e}")
 
-    # Wire rewards to core
-    if "dex_rewards" in addrs and "dex_core" in addrs:
+    # ── Wire dex_router to dex_core + dex_amm (opcode 1) ─────
+    # Opcode 1: set_addresses(caller[32], core_addr[32], amm_addr[32])
+    if "dex_router" in addrs and "dex_core" in addrs and "dex_amm" in addrs:
+        print(f"\n  --- Wiring dex_router → dex_core + dex_amm ---")
+        data = (bytes([1])
+                + bytes(deployer.public_key().to_bytes())
+                + bytes(addrs["dex_core"].to_bytes())
+                + bytes(addrs["dex_amm"].to_bytes()))
         try:
-            sig = await call_contract(
-                conn, deployer, addrs["dex_rewards"], "set_core_contract",
-                {"address": str(addrs["dex_core"])}
-            )
-            print(f"  ✅ dex_rewards.set_core_contract() — sig={sig}")
+            sig = await call_contract_raw(
+                conn, deployer, addrs["dex_router"], "call", list(data))
+            print(f"  ✅ dex_router.set_addresses(core, amm) — sig={sig}")
         except Exception as e:
-            print(f"  ⚠️  dex_rewards.set_core_contract() failed: {e}")
-
-    # Wire governance to core
-    if "dex_governance" in addrs and "dex_core" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs["dex_governance"], "set_core_contract",
-                {"address": str(addrs["dex_core"])}
-            )
-            print(f"  ✅ dex_governance.set_core_contract() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  dex_governance.set_core_contract() failed: {e}")
-
-    # Wire analytics to core
-    if "dex_analytics" in addrs and "dex_core" in addrs:
-        try:
-            sig = await call_contract(
-                conn, deployer, addrs["dex_analytics"], "set_core_contract",
-                {"address": str(addrs["dex_core"])}
-            )
-            print(f"  ✅ dex_analytics.set_core_contract() — sig={sig}")
-        except Exception as e:
-            print(f"  ⚠️  dex_analytics.set_core_contract() failed: {e}")
+            print(f"  ⚠️  dex_router.set_addresses() failed: {e}")
 
 
 async def phase_initialize_prediction_market(
@@ -558,8 +536,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             if name in addrs
         },
         "trading_pairs": [
-            "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD", "wBNB/lUSD", "MOSS/lUSD",
-            "wSOL/LICN", "wETH/LICN", "wBNB/LICN", "MOSS/LICN",
+            "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD", "wBNB/lUSD",
+            "wSOL/LICN", "wETH/LICN", "wBNB/LICN",
         ],
     }
     OUTPUT_PATH.write_text(json.dumps(manifest, indent=2))
@@ -612,10 +590,47 @@ async def main():
         print(f"❌ Cannot reach validator at {args.rpc}: {e}")
         sys.exit(1)
 
+    # ── Ensure deployer is funded (self-fund via requestAirdrop if needed) ──
+    deployer_pk_str = str(deployer.public_key())
+    try:
+        bal = await conn.get_balance(deployer.public_key())
+        # bal may be dict with 'spores' key or an int
+        if isinstance(bal, dict):
+            spores = int(bal.get("spores", bal.get("balance", 0)))
+        else:
+            spores = int(bal or 0)
+    except Exception:
+        spores = 0
+
+    MIN_SPORES = 10_000_000_000  # 10 LICN minimum for deployment fees
+    if spores < MIN_SPORES:
+        print(f"💰 Deployer balance: {spores / 1e9:.4f} LICN — requesting airdrop...")
+        for attempt in range(3):
+            try:
+                result = await conn._rpc("requestAirdrop", [deployer_pk_str, 10])
+                sig = result.get("signature", "")
+                print(f"  ✅ Airdrop received — sig={sig}")
+                break
+            except Exception as e:
+                err_str = str(e)
+                if "rate limit" in err_str.lower():
+                    import time
+                    print(f"  ⏳ Rate limited, waiting 60s...")
+                    time.sleep(60)
+                else:
+                    print(f"  ⚠️  Airdrop attempt {attempt+1} failed: {e}")
+                    break
+    else:
+        print(f"💰 Deployer balance: {spores / 1e9:.4f} LICN — sufficient")
+
     all_addrs: Dict[str, PublicKey] = {}
 
     # ── Pre-check: discover contracts deployed at genesis ──
     existing = await discover_existing_contracts(conn)
+
+    # Merge ALL discovered genesis contracts into all_addrs so the manifest
+    # includes genesis-deployed contracts like lichencoin, lichenid, etc.
+    all_addrs.update(existing)
 
     # ── Phase 1: Wrapped Tokens ──
     # Resolve treasury pubkey for deploy instruction accounts

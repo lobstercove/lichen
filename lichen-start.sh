@@ -301,6 +301,48 @@ except: pass
     fi
     echo -e "  👤 Primary validator: ${VALIDATOR_PUBKEY}"
 
+    # Verify wallet+keypair consistency: if genesis-wallet.json exists but its
+    # treasury_pubkey does NOT match the treasury keypair file, the artifacts
+    # are stale (e.g. keypairs were regenerated but wallet file was reused).
+    # Delete and regenerate everything to avoid funding inaccessible accounts.
+    if [ -f "$GENESIS_WALLET_FILE" ]; then
+        STALE=false
+        TREASURY_KP_FILE="${GENESIS_ARTIFACT_DIR}/genesis-keys/treasury-${CHAIN_ID}.json"
+        if [ -f "$TREASURY_KP_FILE" ] && command -v python3 &>/dev/null; then
+            STALE=$(python3 -c "
+import json, sys
+ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+def b58encode(data):
+    n = int.from_bytes(data, 'big')
+    r = bytearray()
+    while n > 0:
+        n, rem = divmod(n, 58)
+        r.append(ALPHABET[rem])
+    for b in data:
+        if b == 0: r.append(ALPHABET[0])
+        else: break
+    return bytes(r[::-1]).decode()
+try:
+    gw = json.load(open('$GENESIS_WALLET_FILE'))
+    tp = gw.get('treasury_pubkey')
+    if tp is None:
+        print('false'); sys.exit()
+    genesis_pk = b58encode(bytes(tp))
+    kp = json.load(open('$TREASURY_KP_FILE'))
+    file_pk = kp.get('pubkey', '')
+    print('true' if genesis_pk != file_pk else 'false')
+except:
+    print('false')
+" 2>/dev/null)
+        fi
+        if [ "$STALE" = "true" ]; then
+            echo -e "  ${YELLOW}⚠  Stale artifacts detected: treasury keypair does not match genesis-wallet.json${NC}"
+            echo -e "  ${YELLOW}   Deleting stale artifacts and regenerating...${NC}"
+            rm -rf "$GENESIS_ARTIFACT_DIR"
+            mkdir -p "$GENESIS_ARTIFACT_DIR"
+        fi
+    fi
+
     if [ ! -f "$GENESIS_WALLET_FILE" ]; then
         echo -e "  👜 Preparing genesis wallet artifacts..."
         "$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$GENESIS_ARTIFACT_DIR"
