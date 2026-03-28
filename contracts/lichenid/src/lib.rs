@@ -147,7 +147,7 @@ fn is_valid_agent_type(agent_type: u8) -> bool {
 }
 
 // ============================================================================
-// .LICN NAMING SYSTEM
+// .lichen NAMING SYSTEM
 // ============================================================================
 
 /// Minimum name length for .lichen domains
@@ -2782,7 +2782,7 @@ pub extern "C" fn revoke_attestation(
 }
 
 // ============================================================================
-// REGISTER .LICN NAME
+// REGISTER .lichen NAME
 // ============================================================================
 
 /// Register a .lichen domain name for the caller's identity.
@@ -2951,7 +2951,7 @@ pub extern "C" fn register_name(
 }
 
 // ============================================================================
-// RESOLVE .LICN NAME
+// RESOLVE .lichen NAME
 // ============================================================================
 
 /// Resolve a .lichen name to its owner address and expiry.
@@ -3410,7 +3410,7 @@ pub extern "C" fn get_name_auction(name_ptr: *const u8, name_len: u32) -> u32 {
 }
 
 // ============================================================================
-// TRANSFER .LICN NAME
+// TRANSFER .lichen NAME
 // ============================================================================
 
 /// Transfer a .lichen name to another address.
@@ -3519,7 +3519,7 @@ pub extern "C" fn transfer_name(
 }
 
 // ============================================================================
-// RENEW .LICN NAME
+// RENEW .lichen NAME
 // ============================================================================
 
 /// Extend registration of a .lichen name. Requires payment.
@@ -3609,7 +3609,7 @@ pub extern "C" fn renew_name(
 }
 
 // ============================================================================
-// RELEASE .LICN NAME
+// RELEASE .lichen NAME
 // ============================================================================
 
 /// Voluntarily release a .lichen name.
@@ -5031,7 +5031,7 @@ pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *co
 
 /// Admin-only: register a reserved .lichen name for a system address.
 /// This bypasses the reserved-name check, payment check, and identity requirement.
-/// Used at genesis to assign names like lichen.licn, treasury.licn, etc.
+/// Used at genesis to assign names like lichen.lichen, treasury.lichen, etc.
 ///
 /// Parameters:
 ///   - admin_ptr: 32-byte admin address (must be current admin)
@@ -6195,7 +6195,7 @@ mod tests {
     }
 
     // ====================================================================
-    // .LICN NAMING SYSTEM TESTS
+    // .lichen NAMING SYSTEM TESTS
     // ====================================================================
 
     fn setup_identity_with_slot(owner: &[u8; 32], slot: u64, value: u64) {
@@ -6489,7 +6489,7 @@ mod tests {
         let owner = [2u8; 32];
         setup_identity_with_slot(&owner, 1000, 0);
 
-        let url = b"https://api.myagent.licn/v1";
+        let url = b"https://api.myagent.lichen/v1";
         let result = set_endpoint(owner.as_ptr(), url.as_ptr(), url.len() as u32);
         assert_eq!(result, 0);
 
@@ -6554,7 +6554,7 @@ mod tests {
         );
 
         // Set endpoint
-        let url = b"https://profiled.licn/api";
+        let url = b"https://profiled.lichen/api";
         set_endpoint(owner.as_ptr(), url.as_ptr(), url.len() as u32);
 
         // Set availability

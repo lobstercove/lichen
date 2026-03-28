@@ -131,6 +131,7 @@ contracts/*/target/debug/
 contracts/*/target/rls/
 
 # ── Internal-only dev docs ─────────────────────────────────
+docs/
 internal-docs/
 FIX_PLAN.md
 FIX_PLAN_V2.md

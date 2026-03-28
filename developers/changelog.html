@@ -79,6 +79,47 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.4.32 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.4.32</span>
+                    <span class="changelog-date">March 28, 2026</span>
+                </div>
+                <h3 class="changelog-title">Production Audit Fixes &amp; SDK Production Completion</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> SDK Production Completion</h4>
+                    <ul>
+                        <li><strong>transfer()</strong> &mdash; High-level native LICN transfer on all 3 SDKs (JS,
+                            Python, Rust)</li>
+                        <li><strong>deployContract()</strong> &mdash; Deploy WASM smart contracts with magic header
+                            validation and 512 KB limit</li>
+                        <li><strong>callContract()</strong> &mdash; Invoke contract functions with optional LICN value
+                            transfer</li>
+                        <li><strong>upgradeContract()</strong> &mdash; Upgrade deployed contracts (owner only)</li>
+                        <li><strong>TransactionBuilder instruction builders</strong> for all contract operations
+                            (deploy, call, upgrade)</li>
+                        <li>Re-exported <code>ContractInstruction</code> and <code>CONTRACT_PROGRAM_ID</code> from Rust
+                            SDK</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-wrench" style="color: var(--warning)"></i> Production Audit Fixes</h4>
+                    <ul>
+                        <li><strong>Fee structure</strong> &mdash; Treasury was 0% (4 fields); now correct 5-field split
+                            (40% burn, 30% producer, 10% voters, 10% treasury, 10% community)</li>
+                        <li><strong>RPC getHealth/getVersion</strong> &mdash; Fixed on <code>/solana-compat</code> route
+                        </li>
+                        <li><strong>Solana-compat token methods</strong> &mdash; Added
+                            <code>getTokenAccountsByOwner</code> and <code>getTokenAccountBalance</code></li>
+                        <li><strong>dex_rewards LICN blocking</strong> &mdash; <code>is_zero</code> was rejecting native
+                            LICN sentinel</li>
+                        <li><strong>Makefile port</strong> &mdash; Health-check port corrected (8000 &rarr; 8899)</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.4.0 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

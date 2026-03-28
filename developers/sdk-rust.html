@@ -73,7 +73,7 @@
                 <a href="#client-account" class="sidebar-link">Account Methods</a>
                 <a href="#client-tx" class="sidebar-link">Transaction Methods</a>
                 <a href="#client-validator" class="sidebar-link">Validator &amp; Staking</a>
-                <a href="#client-contract" class="sidebar-link">Contract Methods</a>
+                <a href="#client-contract" class="sidebar-link">Contract Deploy &amp; Call</a>
                 <a href="#client-program" class="sidebar-link">Program Methods</a>
                 <a href="#client-nft" class="sidebar-link">NFT Methods</a>
                 <a href="#client-ws" class="sidebar-link">WebSocket Subscriptions</a>
@@ -111,7 +111,8 @@
 
             <h1>Rust Client SDK</h1>
             <p>The official Rust <strong>client</strong> SDK for Lichen. Built on <code>reqwest</code> and
-                <code>tokio</code> with strong typing and <code>Result&lt;T&gt;</code> error handling.</p>
+                <code>tokio</code> with strong typing and <code>Result&lt;T&gt;</code> error handling.
+            </p>
 
             <div class="callout callout-warning">
                 <p><strong>Two Rust SDKs</strong> — Lichen provides two separate Rust crates:</p>
@@ -363,6 +364,19 @@ let sig = client.send_transaction(&tx).await?;</code></pre>
                 <p class="method-desc">Look up a transaction by its signature hash.</p>
             </div>
 
+            <div class="method-card">
+                <h3 class="method-name">async transfer(&amp;self, from: &amp;Keypair, to: &amp;Pubkey, amount: u64)
+                    -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Build, sign, and send a native LICN transfer. Amount in spores (1 LICN =
+                    1,000,000,000 spores).</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>let recipient = Pubkey::from_base58("RecipientAddr...")?;
+let sig = client.transfer(&kp, &recipient, 5_000_000_000).await?; // 5 LICN</code></pre>
+                </div>
+            </div>
+
             <!-- Validator & Staking -->
             <h3 id="client-validator">Validator &amp; Staking</h3>
 
@@ -418,6 +432,39 @@ let sig = client.send_transaction(&tx).await?;</code></pre>
 
             <!-- Contract Methods -->
             <h3 id="client-contract">Contract Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async deploy_contract(&amp;self, deployer: &amp;Keypair, code: Vec&lt;u8&gt;,
+                    init_data: Vec&lt;u8&gt;) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Deploy a WASM smart contract. Code must start with <code>\0asm</code> magic
+                    header and be under 512 KB.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>let wasm = std::fs::read("my_contract.wasm")?;
+let sig = client.deploy_contract(&kp, wasm, vec![]).await?;</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async call_contract(&amp;self, caller: &amp;Keypair, contract: &amp;Pubkey,
+                    function: &amp;str, args: Vec&lt;u8&gt;, value: u64) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Call a function on a deployed WASM contract. Optionally send LICN (spores) with
+                    the call.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>let contract = Pubkey::from_base58("ContractAddr...")?;
+let args = serde_json::to_vec(&serde_json::json!({"recipient": "Addr...", "amount": 100}))?;
+let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async upgrade_contract(&amp;self, owner: &amp;Keypair, contract: &amp;Pubkey,
+                    code: Vec&lt;u8&gt;) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Upgrade a deployed contract with new WASM bytecode (owner only).</p>
+            </div>
 
             <div class="method-card">
                 <h3 class="method-name">async get_contract_info(&amp;self, contract_id: &amp;str) -&gt;
@@ -554,7 +601,8 @@ let kp = Keypair::from_seed(&seed);</code></pre>
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2 id="transaction-builder">TransactionBuilder</h2>
             <p>Builder pattern for constructing and signing transactions. All methods consume and return
-                <code>self</code> for chaining.</p>
+                <code>self</code> for chaining.
+            </p>
 
             <div class="method-card">
                 <h3 class="method-name">TransactionBuilder::new() -&gt; TransactionBuilder</h3>

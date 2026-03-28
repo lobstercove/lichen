@@ -960,7 +960,7 @@ async function showRegisterNameModal() {
         icon: 'fas fa-at',
         confirmText: 'Register Name',
         fields: [
-            { id: 'name', label: 'Name (without .licn)', type: 'text', placeholder: 'myname (5+ characters)' },
+            { id: 'name', label: 'Name (without .lichen)', type: 'text', placeholder: 'myname (5+ characters)' },
             { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ],
@@ -1043,7 +1043,7 @@ async function showRenewNameModal() {
 
     const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Renew ${name}.licn`,
+        title: `Renew ${name}.lichen`,
         message: `Cost: ${costPerYear} LICN per additional year.`,
         icon: 'fas fa-redo',
         confirmText: 'Renew Name',
@@ -1086,7 +1086,7 @@ async function showTransferNameModal() {
 
     const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Transfer ${name}.licn`,
+        title: `Transfer ${name}.lichen`,
         message: 'Transfer ownership to another address. This is irreversible.',
         icon: 'fas fa-exchange-alt',
         confirmText: 'Transfer Name',
@@ -1131,7 +1131,7 @@ async function showReleaseNameModal() {
     const name = currentName.replace(/\.lichen$/, '');
 
     const confirmed = await showConfirmModal({
-        title: `Release ${name}.licn?`,
+        title: `Release ${name}.lichen?`,
         message: 'This will permanently release your .lichen name. It can be re-registered by anyone. This action cannot be undone.',
         icon: 'fas fa-exclamation-triangle',
         confirmText: 'Release Name',
@@ -1421,7 +1421,7 @@ async function loadAuctionList() {
 async function showBidAuctionModal(name) {
     const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Bid on ${name}.licn`,
+        title: `Bid on ${name}.lichen`,
         message: 'Enter your bid amount in LICN. Must exceed the current highest bid.',
         icon: 'fas fa-gavel',
         confirmText: 'Place Bid',
@@ -1440,7 +1440,7 @@ async function showBidAuctionModal(name) {
     }
 
     try {
-        showToast(`Placing bid of ${bidAmount} LICN on ${name}.licn...`);
+        showToast(`Placing bid of ${bidAmount} LICN on ${name}.lichen...`);
         const tx = await buildContractCall('bid_name_auction', {
             name: name,
             bid_amount: bidAmount
@@ -1450,7 +1450,7 @@ async function showBidAuctionModal(name) {
             showToast('Bid failed: ' + (result.error || 'unknown'));
             return;
         }
-        showToast(`Bid placed on ${name}.licn!`);
+        showToast(`Bid placed on ${name}.lichen!`);
         await loadAuctionList();
     } catch (e) {
         showToast('Bid failed: ' + e.message);
@@ -1495,7 +1495,7 @@ async function showCreateAuctionModal() {
     const endSlots = parseInt(values.endSlots || '432000');
 
     try {
-        showToast(`Creating auction for ${name}.licn...`);
+        showToast(`Creating auction for ${name}.lichen...`);
         const tx = await buildContractCall('create_name_auction', {
             name: name,
             reserve_bid: reserveSpores,
@@ -1506,7 +1506,7 @@ async function showCreateAuctionModal() {
             showToast('Failed: ' + (result.error || 'unknown'));
             return;
         }
-        showToast(`Auction created for ${name}.licn!`);
+        showToast(`Auction created for ${name}.lichen!`);
         await loadAuctionList();
     } catch (e) {
         showToast('Failed: ' + e.message);

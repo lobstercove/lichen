@@ -73,7 +73,7 @@
                 <a href="#connection-account" class="sidebar-link">Account Methods</a>
                 <a href="#connection-tx" class="sidebar-link">Transaction Methods</a>
                 <a href="#connection-validator" class="sidebar-link">Validator &amp; Staking</a>
-                <a href="#connection-contract" class="sidebar-link">Contract Methods</a>
+                <a href="#connection-contract" class="sidebar-link">Contract Deploy &amp; Call</a>
                 <a href="#connection-program" class="sidebar-link">Program Methods</a>
                 <a href="#connection-nft" class="sidebar-link">NFT Methods</a>
                 <a href="#connection-ws" class="sidebar-link">WebSocket Subscriptions</a>
@@ -124,7 +124,8 @@
                 </div>
                 <div class="callout callout-info">
                     <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>,
-                        <code>PyNaCl</code>, <code>base58</code>.</p>
+                        <code>PyNaCl</code>, <code>base58</code>.
+                    </p>
                 </div>
             </section>
 
@@ -323,6 +324,19 @@ print(f"Signature: {sig}")</code></pre>
                 <p class="method-desc">Look up a transaction by its signature hash.</p>
             </div>
 
+            <div class="method-card">
+                <h3 class="method-name">await transfer(from_keypair: Keypair, to: PublicKey, amount: int) -&gt; str</h3>
+                <p class="method-desc">Build, sign, and send a native LICN transfer. Amount in spores (1 LICN =
+                    1,000,000,000 spores).</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>recipient = PublicKey("RecipientAddr...")
+sig = await conn.transfer(kp, recipient, 5_000_000_000)  # 5 LICN
+print(f"Transfer: {sig}")</code></pre>
+                </div>
+            </div>
+
             <!-- Validator & Staking -->
             <h3 id="connection-validator">Validator &amp; Staking</h3>
 
@@ -371,6 +385,42 @@ sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 LICN</code></pre>
 
             <!-- Contract Methods -->
             <h3 id="connection-contract">Contract Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await deploy_contract(deployer: Keypair, code: bytes, init_data: bytes = b"")
+                    -&gt; str</h3>
+                <p class="method-desc">Deploy a WASM smart contract. Code must start with <code>\0asm</code> magic
+                    header and be under 512 KB.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>with open("my_contract.wasm", "rb") as f:
+    wasm = f.read()
+sig = await conn.deploy_contract(kp, wasm)
+print(f"Deploy tx: {sig}")</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await call_contract(caller: Keypair, contract: PublicKey, function_name: str,
+                    args: bytes = b"", value: int = 0) -&gt; str</h3>
+                <p class="method-desc">Call a function on a deployed WASM contract. Optionally send LICN (spores) with
+                    the call.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>import json
+contract = PublicKey("ContractAddr...")
+args = json.dumps({"recipient": "Addr...", "amount": 100}).encode()
+sig = await conn.call_contract(kp, contract, "transfer", args)</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await upgrade_contract(owner: Keypair, contract: PublicKey, code: bytes) -&gt;
+                    str</h3>
+                <p class="method-desc">Upgrade a deployed contract with new WASM bytecode (owner only).</p>
+            </div>
 
             <div class="method-card">
                 <h3 class="method-name">await get_contract_info(contract_id: PublicKey) -&gt; Dict[str, Any]</h3>
@@ -477,33 +527,38 @@ await conn.off_slot(sub_id)</code></pre>
             <div class="method-card">
                 <h3 class="method-name">await on_account_change(pubkey: PublicKey, callback) -&gt; int</h3>
                 <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with
-                    <code>off_account_change(sub_id)</code>.</p>
+                    <code>off_account_change(sub_id)</code>.
+                </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_logs(callback, contract_id: Optional[PublicKey] = None) -&gt; int</h3>
                 <p class="method-desc">Stream contract logs. Optional contract filter. Unsubscribe with
-                    <code>off_logs(sub_id)</code>.</p>
+                    <code>off_logs(sub_id)</code>.
+                </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_program_updates(callback) / on_program_calls(callback, program_id?)
                 </h3>
                 <p class="method-desc">Program deploy/upgrade events and invocations. Unsubscribe with
-                    <code>off_program_updates</code> / <code>off_program_calls</code>.</p>
+                    <code>off_program_updates</code> / <code>off_program_calls</code>.
+                </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_nft_mints(callback, collection_id?) / on_nft_transfers(callback,
                     collection_id?)</h3>
                 <p class="method-desc">NFT mint and transfer events. Optional collection filter. Unsubscribe with
-                    <code>off_nft_mints</code> / <code>off_nft_transfers</code>.</p>
+                    <code>off_nft_mints</code> / <code>off_nft_transfers</code>.
+                </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_market_listings(callback) / on_market_sales(callback)</h3>
                 <p class="method-desc">Marketplace listing and sale events. Unsubscribe with
-                    <code>off_market_listings</code> / <code>off_market_sales</code>.</p>
+                    <code>off_market_listings</code> / <code>off_market_sales</code>.
+                </p>
             </div>
 
             <div class="method-card">
@@ -543,7 +598,8 @@ kp = Keypair.from_seed(seed)</code></pre>
             <div class="method-card" id="keypair-load-save">
                 <h3 class="method-name">Keypair.load(path: Path) -&gt; Keypair / keypair.save(path: Path)</h3>
                 <p class="method-desc">Load a keypair from a JSON file or save it to one. The JSON contains
-                    <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.</p>
+                    <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.
+                </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
@@ -582,7 +638,8 @@ assert kp.public_key() == kp2.public_key()</code></pre>
             <div class="method-card" id="publickey-constructor">
                 <h3 class="method-name">PublicKey(value: Union[str, bytes, list])</h3>
                 <p class="method-desc">Create from a base58 string, bytes, or list of ints. Raises
-                    <code>ValueError</code> if not 32 bytes.</p>
+                    <code>ValueError</code> if not 32 bytes.
+                </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
@@ -740,6 +797,18 @@ class Transaction:
                         <tr>
                             <td>TransactionBuilder.unstake(from_pubkey, validator, amount)</td>
                             <td>Create an unstake instruction (type 10)</td>
+                        </tr>
+                        <tr>
+                            <td>TransactionBuilder.deploy_contract(deployer, code, init_data)</td>
+                            <td>Create a contract deploy instruction (CONTRACT_PROGRAM_ID)</td>
+                        </tr>
+                        <tr>
+                            <td>TransactionBuilder.call_contract(caller, contract, func, args, value)</td>
+                            <td>Create a contract call instruction</td>
+                        </tr>
+                        <tr>
+                            <td>TransactionBuilder.upgrade_contract(owner, contract, code)</td>
+                            <td>Create a contract upgrade instruction (owner only)</td>
                         </tr>
                     </tbody>
                 </table>
