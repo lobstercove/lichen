@@ -605,6 +605,10 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
         }
     }
 
+    // Native LICN coin uses zero address sentinel [0u8; 32] — always map it
+    let zero_hex = "00".repeat(32);
+    map.entry(zero_hex).or_insert_with(|| "LICN".to_string());
+
     *cache = Some((Instant::now(), map.clone()));
     map
 }
