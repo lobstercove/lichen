@@ -972,7 +972,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Once the oracle or first trade provides a real price, this value is never used.
     const LICHEN_GENESIS_PRICE = 0.10;
     let _genesisOverridden = false;
-    const MAX_OPEN_ORDERS_PER_USER = 100;
+    const MAX_OPEN_ORDERS_PER_USER = 500;
     const GOVERNANCE_SLOT_SECONDS = 0.4;
     const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
     const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';

@@ -58,7 +58,7 @@ use lichen_sdk::{
 const MAX_PAIRS: u64 = 50;
 const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M LICN max order ($1M at $0.10)
 const MIN_ORDER_VALUE: u64 = 1_000; // minimum 1000 spores
-const MAX_OPEN_ORDERS_PER_USER: u64 = 100;
+const MAX_OPEN_ORDERS_PER_USER: u64 = 500;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate
 const DEFAULT_TAKER_FEE_BPS: u64 = 5; // 0.05%
 const MAX_FEE_BPS: u64 = 100; // 1% max
@@ -1072,7 +1072,7 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
         args.extend_from_slice(&u64_to_bytes(amount));
         let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
         match call_contract(call) {
-            Ok(ret) => ret.first().copied().unwrap_or(0) != 0,
+            Ok(ret) => ret.first().copied().unwrap_or(1) == 0,
             Err(_) => false,
         }
     }
@@ -1110,7 +1110,7 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
         args.extend_from_slice(&u64_to_bytes(amount));
         let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
         match call_contract(call) {
-            Ok(ret) => ret.first().copied().unwrap_or(0) != 0,
+            Ok(ret) => ret.first().copied().unwrap_or(1) == 0,
             Err(_) => false,
         }
     }

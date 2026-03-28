@@ -2,7 +2,7 @@
   "name": "LichenWallet",
   "short_name": "LichenWallet",
   "description": "Secure wallet for Lichen - the agent-first blockchain",
-  "start_url": "/wallet/index.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0A0E27",
   "theme_color": "#00C9DB",
@@ -21,9 +21,12 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["finance", "utilities"],
+  "categories": [
+    "finance",
+    "utilities"
+  ],
   "dir": "ltr",
   "lang": "en-US",
-  "scope": "/wallet/",
+  "scope": "./",
   "screenshots": []
 }

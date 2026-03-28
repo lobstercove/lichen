@@ -143,6 +143,12 @@ const Playground = {
         // Subscribe to live updates
         this.setupLiveUpdates();
 
+        // Load example from URL param (e.g. ?example=token)
+        const urlExample = new URLSearchParams(window.location.search).get('example');
+        if (urlExample) {
+            await this.loadExample(urlExample);
+        }
+
         console.log('✅ Playground initialized');
     },
 

@@ -230,10 +230,10 @@ async def call_contract(
 
 async def call_contract_raw(
     conn: Connection, caller: Keypair, program_pubkey: PublicKey,
-    func: str, raw_args: list
+    func: str, raw_args: list, value: int = 0
 ) -> str:
     """Send a Call instruction with raw byte list args. Returns signature."""
-    payload = json.dumps({"Call": {"function": func, "args": raw_args, "value": 0}})
+    payload = json.dumps({"Call": {"function": func, "args": raw_args, "value": value}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
         accounts=[caller.public_key(), program_pubkey],

@@ -1,7 +1,7 @@
 // LichenWallet Service Worker — Cache-first with auto-update
 'use strict';
 
-const CACHE_VERSION = 'lichen-wallet-v1';
+const CACHE_VERSION = 'lichen-wallet-v2';
 const ASSETS = [
     './',
     './index.html',
@@ -9,7 +9,13 @@ const ASSETS = [
     './shared-theme.css',
     './shared-config.js',
     './wallet.css',
-    './wallet.js',
+    './shared/env.js',
+    './shared/utils.js',
+    './shared/wallet-connect.js',
+    './js/wallet.js',
+    './js/identity.js',
+    './js/crypto.js',
+    './js/shielded.js',
     './manifest.json',
     './LichenWallet_Logo_256.png',
     './icon-192.png',
@@ -51,13 +57,29 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
-    // Skip non-GET and cross-origin requests
-    if (event.request.method !== 'GET' || url.origin !== self.location.origin) {
+    // Skip non-GET requests
+    if (event.request.method !== 'GET') {
         return;
     }
 
     // Network-first for API / RPC calls
     if (url.pathname.includes('/api/') || url.pathname.includes('/solana-compat') || url.pathname.includes('/evm')) {
+        return;
+    }
+
+    // CDN resources (fonts, icons): cache on first use for offline support
+    if (url.origin !== self.location.origin) {
+        event.respondWith(
+            caches.match(event.request).then((cached) => {
+                return cached || fetch(event.request).then((response) => {
+                    if (response && response.status === 200) {
+                        const clone = response.clone();
+                        caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
+                    }
+                    return response;
+                }).catch(() => cached);
+            })
+        );
         return;
     }
 

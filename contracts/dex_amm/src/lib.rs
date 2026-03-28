@@ -407,7 +407,9 @@ fn pull_tokens(token: &[u8; 32], from: &[u8; 32], amount: u64) -> bool {
         args.extend_from_slice(&u64_to_bytes(amount));
         let call = CrossCall::new(Address(*token), "transfer_from", args).with_value(0);
         match call_contract(call) {
-            Ok(_) => true,
+            // Return code 0 = success (wrapped tokens), 1 = success (lichencoin).
+            // Any value >= 2 is a definitive error code.
+            Ok(data) => data.first().map_or(false, |&rc| rc <= 1),
             Err(_) => false,
         }
     }
@@ -1327,8 +1329,18 @@ pub fn add_liquidity(
     }
 
     // AUDIT-FIX AMM-1: Compute actual token amounts from the liquidity
-    let (actual_a, actual_b) =
+    let (mut actual_a, mut actual_b) =
         compute_amounts_from_liquidity(liquidity, sqrt_lower, sqrt_upper, sqrt_current);
+
+    // Cap actual amounts to user-provided maximums.
+    // Due to integer rounding in compute_liquidity → compute_amounts_from_liquidity,
+    // the reverse computation can exceed the original inputs by a few units.
+    if actual_a > amount_a {
+        actual_a = amount_a;
+    }
+    if actual_b > amount_b {
+        actual_b = amount_b;
+    }
 
     // AUDIT-FIX AMM-1: Pull tokens from provider to the AMM contract
     let token_a = decode_pool_token_a(&pool_data);
@@ -3269,5 +3281,32 @@ mod tests {
         // LP fee should also be in feeGrowthGlobal
         let fg0 = load_u128(&fee_growth_global_key(pool_id, true));
         assert!(fg0 > 0, "LP fees should accrue to feeGrowthGlobal");
+    }
+
+    #[test]
+    fn test_pool1_compute_amounts() {
+        // Pool 1: LICN/lUSD, genesis tick=-23027
+        // Seed: ticks=[-30000, -13860], amount_a=5_000_000e9, amount_b=500_000e9
+        let sqrt_current = tick_to_sqrt_price(-23027);
+        let sqrt_lower = tick_to_sqrt_price(-30000);
+        let sqrt_upper = tick_to_sqrt_price(-13860);
+        let amount_a: u64 = 5_000_000_000_000_000; // 5M LICN in spores
+        let amount_b: u64 = 500_000_000_000_000; // 500K lUSD in spores
+
+        let liquidity = compute_liquidity(amount_a, amount_b, sqrt_lower, sqrt_upper, sqrt_current);
+        let (raw_a, raw_b) =
+            compute_amounts_from_liquidity(liquidity, sqrt_lower, sqrt_upper, sqrt_current);
+
+        // Raw recomputation can exceed inputs due to integer rounding
+        assert!(
+            raw_a > amount_a,
+            "raw_a should exceed amount_a due to rounding"
+        );
+
+        // After capping (as the contract now does):
+        let actual_a = if raw_a > amount_a { amount_a } else { raw_a };
+        let actual_b = if raw_b > amount_b { amount_b } else { raw_b };
+        assert!(actual_a <= amount_a);
+        assert!(actual_b <= amount_b);
     }
 }

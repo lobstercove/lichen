@@ -40,6 +40,18 @@ ORDER_LIMIT = 0
 EXPIRY_SLOTS = 2_592_000  # ~30 days at 400ms/slot
 
 
+async def with_retry(coro_fn, retries=3, delay=0.5):
+    """Retry an async call with delay between attempts."""
+    for attempt in range(retries):
+        try:
+            return await coro_fn()
+        except Exception as e:
+            if attempt < retries - 1:
+                await asyncio.sleep(delay * (attempt + 1))
+            else:
+                raise e
+
+
 def fetch_prices():
     """Fetch live prices from Binance."""
     urls = [
@@ -65,17 +77,30 @@ def fetch_prices():
     return prices
 
 
-def price_to_tick(p):
-    """Convert price to concentrated liquidity tick index."""
+def price_to_tick(p, tick_spacing=60):
+    """Convert price to concentrated liquidity tick index, snapped to tick_spacing."""
     if p <= 0:
         return -443636
-    return int(math.log(p) / math.log(1.0001))
+    raw = int(math.log(p) / math.log(1.0001))
+    # Snap down to nearest multiple of tick_spacing
+    return (raw // tick_spacing) * tick_spacing
 
 
 # ── Contract call helpers ────────────────────────────────────────────────
 
-async def place_order(conn, caller, dex_core, pair_id, side, price_spores, qty_spores):
-    """Place a limit order on CLOB. dex_core opcode 2."""
+async def approve_token(conn, caller, token_contract, spender_pubkey, amount):
+    """Approve spender to transfer tokens on behalf of caller.
+    Named export: approve(owner[32B], spender[32B], amount[u64])"""
+    owner_bytes = bytes(caller.public_key().to_bytes())
+    spender_bytes = bytes(spender_pubkey.to_bytes())
+    args = list(owner_bytes + spender_bytes + struct.pack('<Q', amount))
+    return await call_contract_raw(conn, caller, token_contract, 'approve', args)
+
+
+async def place_order(conn, caller, dex_core, pair_id, side, price_spores, qty_spores,
+                      is_base_native=False, is_quote_native=False, taker_fee_bps=5):
+    """Place a limit order on CLOB. dex_core opcode 2.
+    For native LICN escrow: sends value with the transaction."""
     caller_bytes = bytes(caller.public_key().to_bytes())
     args = (
         bytes([2])                                +  # opcode 2
@@ -87,11 +112,24 @@ async def place_order(conn, caller, dex_core, pair_id, side, price_spores, qty_s
         struct.pack('<Q', qty_spores)             +  # quantity
         struct.pack('<Q', EXPIRY_SLOTS)              # expiry
     )
-    return await call_contract_raw(conn, caller, dex_core, 'call', list(args))
+
+    # Calculate value to send for native LICN escrow
+    value = 0
+    if side == SIDE_SELL and is_base_native:
+        # Selling native LICN: escrow = quantity
+        value = qty_spores
+    elif side == SIDE_BUY and is_quote_native:
+        # Buying with native LICN: escrow = notional + taker_fee
+        notional = price_spores * qty_spores // SPORES
+        fee = max(notional * taker_fee_bps // 10_000, 1)
+        value = notional + fee
+
+    return await call_contract_raw(conn, caller, dex_core, 'call', list(args), value=value)
 
 
-async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_tick, amount_a, amount_b):
-    """Add concentrated liquidity. dex_amm opcode 3."""
+async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_tick, amount_a, amount_b, value=0):
+    """Add concentrated liquidity. dex_amm opcode 3.
+    value: native LICN (spores) to send with the tx when one side is LICN."""
     caller_bytes = bytes(caller.public_key().to_bytes())
     args = (
         bytes([3])                                +  # opcode 3
@@ -102,7 +140,7 @@ async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_ti
         struct.pack('<Q', amount_a)               +  # amount_a
         struct.pack('<Q', amount_b)                  # amount_b
     )
-    return await call_contract_raw(conn, caller, dex_amm, 'call', list(args))
+    return await call_contract_raw(conn, caller, dex_amm, 'call', list(args), value=value)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
@@ -119,17 +157,27 @@ async def main():
     reserve = Keypair.load(rp_path)
     print(f"  Market maker:  {reserve.public_key()}")
 
-    # Discover dex_core and dex_amm from symbol registry
+    # Discover contracts from symbol registry
     result = await conn._rpc("getAllSymbolRegistry")
     entries = result.get("entries", [])
     contracts = {}
     for e in entries:
         sym = e.get("symbol", "")
         prog = e.get("program", "")
-        if sym == "DEX" and prog:
+        if not prog:
+            continue
+        if sym == "DEX":
             contracts["dex_core"] = PublicKey.from_base58(prog)
-        elif sym == "DEXAMM" and prog:
+        elif sym == "DEXAMM":
             contracts["dex_amm"] = PublicKey.from_base58(prog)
+        elif sym == "LUSD":
+            contracts["lusd"] = PublicKey.from_base58(prog)
+        elif sym == "WSOL":
+            contracts["wsol"] = PublicKey.from_base58(prog)
+        elif sym == "WETH":
+            contracts["weth"] = PublicKey.from_base58(prog)
+        elif sym == "WBNB":
+            contracts["wbnb"] = PublicKey.from_base58(prog)
 
     dex_core = contracts.get("dex_core")
     dex_amm = contracts.get("dex_amm")
@@ -138,6 +186,34 @@ async def main():
         sys.exit(1)
     print(f"  dex_core:      {dex_core}")
     print(f"  dex_amm:       {dex_amm}")
+
+    lusd = contracts.get("lusd")
+    wsol = contracts.get("wsol")
+    weth = contracts.get("weth")
+    wbnb = contracts.get("wbnb")
+    print(f"  lusd:          {lusd}")
+    print(f"  wsol:          {wsol}")
+    print(f"  weth:          {weth}")
+    print(f"  wbnb:          {wbnb}")
+
+    # ── Pre-approve DEX contracts to escrow tokens from reserve_pool ──
+    MAX_APPROVE = 2**63 - 1  # max u64-safe approval amount
+    print(f"\n  Approving DEX contracts to spend reserve_pool tokens...")
+    for label, token in [("lUSD", lusd), ("wSOL", wsol), ("wETH", weth), ("wBNB", wbnb)]:
+        if not token:
+            print(f"    {label}: contract not found, skipping")
+            continue
+        try:
+            sig = await approve_token(conn, reserve, token, dex_core, MAX_APPROVE)
+            print(f"    {label} → dex_core ✓  (sig: {sig[:16]}...)")
+        except Exception as e:
+            print(f"    {label} → dex_core FAILED: {e}")
+        if dex_amm:
+            try:
+                sig = await approve_token(conn, reserve, token, dex_amm, MAX_APPROVE)
+                print(f"    {label} → dex_amm  ✓  (sig: {sig[:16]}...)")
+            except Exception as e:
+                print(f"    {label} → dex_amm  FAILED: {e}")
 
     # Fetch live prices
     prices = fetch_prices()
@@ -196,21 +272,25 @@ async def main():
 
     for p, q in sell_levels:
         try:
-            sig = await place_order(conn, reserve, dex_core, pair_id, SIDE_SELL,
-                                    int(p * SPORES), q * SPORES)
+            sig = await with_retry(lambda p=p, q=q: place_order(
+                conn, reserve, dex_core, pair_id, SIDE_SELL,
+                int(p * SPORES), q * SPORES, is_base_native=True))
             print(f"    SELL {q:>10,} LICN @ ${p:.3f}  ✓")
             total_orders += 1
         except Exception as e:
             print(f"    SELL @ ${p:.3f}: {e}")
+        await asyncio.sleep(0.2)
 
     for p, q in buy_levels:
         try:
-            sig = await place_order(conn, reserve, dex_core, pair_id, SIDE_BUY,
-                                    int(p * SPORES), q * SPORES)
+            sig = await with_retry(lambda p=p, q=q: place_order(
+                conn, reserve, dex_core, pair_id, SIDE_BUY,
+                int(p * SPORES), q * SPORES))
             print(f"    BUY  {q:>10,} LICN @ ${p:.3f}  ✓")
             total_orders += 1
         except Exception as e:
             print(f"    BUY  @ ${p:.3f}: {e}")
+        await asyncio.sleep(0.2)
 
     # ═════════════════════════════════════════════════════════════════════
     #  Phase 1b: CLOB Orders on Wrapped Token Pairs
@@ -219,17 +299,17 @@ async def main():
     print(f"  Phase 1b: Wrapped Token Pair CLOB Seeding")
     print(f"{'═' * 60}")
 
-    # (pair_name, pair_id, base_price_in_quote, lot_size_tokens, num_levels)
+    # (pair_name, pair_id, base_price_in_quote, lot_size_tokens, num_levels, is_base_native, is_quote_native)
     wrapped_pairs = [
-        ("wSOL/lUSD", 2, sol,       50,  10),
-        ("wETH/lUSD", 3, eth,       5,   10),
-        ("wBNB/lUSD", 6, bnb,       20,  10),
-        ("wSOL/LICN", 4, sol / licn, 50,  10),
-        ("wETH/LICN", 5, eth / licn, 5,   10),
-        ("wBNB/LICN", 7, bnb / licn, 20,  10),
+        ("wSOL/lUSD", 2, sol,       50,  10, False, False),
+        ("wETH/lUSD", 3, eth,       5,   10, False, False),
+        ("wBNB/lUSD", 6, bnb,       20,  10, False, False),
+        ("wSOL/LICN", 4, sol / licn, 50,  10, False, True),
+        ("wETH/LICN", 5, eth / licn, 5,   10, False, True),
+        ("wBNB/LICN", 7, bnb / licn, 20,  10, False, True),
     ]
 
-    for name, pid, base_price, lot, nlevels in wrapped_pairs:
+    for name, pid, base_price, lot, nlevels, base_native, quote_native in wrapped_pairs:
         pair_orders = 0
         spread_step = base_price * 0.01  # 1% per level
         for i in range(nlevels):
@@ -239,17 +319,23 @@ async def main():
                 continue
             qty = lot * SPORES
             try:
-                await place_order(conn, reserve, dex_core, pid, SIDE_SELL,
-                                  int(sell_p * SPORES), qty)
+                await with_retry(lambda sp=sell_p, q=qty, pid=pid, bn=base_native, qn=quote_native: place_order(
+                    conn, reserve, dex_core, pid, SIDE_SELL,
+                    int(sp * SPORES), q,
+                    is_base_native=bn, is_quote_native=qn))
                 pair_orders += 1
             except Exception:
                 pass
+            await asyncio.sleep(0.15)
             try:
-                await place_order(conn, reserve, dex_core, pid, SIDE_BUY,
-                                  int(buy_p * SPORES), qty)
+                await with_retry(lambda bp=buy_p, q=qty, pid=pid, bn=base_native, qn=quote_native: place_order(
+                    conn, reserve, dex_core, pid, SIDE_BUY,
+                    int(bp * SPORES), q,
+                    is_base_native=bn, is_quote_native=qn))
                 pair_orders += 1
             except Exception:
                 pass
+            await asyncio.sleep(0.15)
         total_orders += pair_orders
         print(f"    {name}: {pair_orders} orders placed")
 
@@ -262,30 +348,38 @@ async def main():
     print(f"  Phase 2: AMM Concentrated Liquidity Seeding")
     print(f"{'═' * 60}")
 
-    # (name, pool_id, current_price, range_low, range_high, amount_a_tokens, amount_b_tokens)
+    # (name, pool_id, current_price, range_low, range_high, amount_a_tokens, amount_b_tokens, licn_side)
+    # licn_side: "a" if token_a is native LICN, "b" if token_b is, None if neither
     amm_pools = [
-        ("LICN/lUSD", 1, licn,      licn * 0.5,      licn * 2.5,      5_000_000, 500_000),
-        ("wSOL/lUSD", 2, sol,        sol * 0.7,        sol * 1.4,       500,       50_000),
-        ("wETH/lUSD", 3, eth,        eth * 0.7,        eth * 1.4,       25,        50_000),
-        ("wSOL/LICN", 4, sol / licn, sol / licn * 0.6, sol / licn * 1.5, 500,      500_000),
-        ("wETH/LICN", 5, eth / licn, eth / licn * 0.6, eth / licn * 1.5, 25,       500_000),
-        ("wBNB/lUSD", 6, bnb,        bnb * 0.7,        bnb * 1.4,       100,       50_000),
-        ("wBNB/LICN", 7, bnb / licn, bnb / licn * 0.6, bnb / licn * 1.5, 100,      500_000),
+        ("LICN/lUSD", 1, licn,      licn * 0.5,      licn * 2.5,      5_000_000, 500_000,  "a"),
+        ("wSOL/lUSD", 2, sol,        sol * 0.7,        sol * 1.4,       500,       50_000,   None),
+        ("wETH/lUSD", 3, eth,        eth * 0.7,        eth * 1.4,       25,        50_000,   None),
+        ("wSOL/LICN", 4, sol / licn, sol / licn * 0.6, sol / licn * 1.5, 500,      500_000,  "b"),
+        ("wETH/LICN", 5, eth / licn, eth / licn * 0.6, eth / licn * 1.5, 25,       500_000,  "b"),
+        ("wBNB/lUSD", 6, bnb,        bnb * 0.7,        bnb * 1.4,       100,       50_000,   None),
+        ("wBNB/LICN", 7, bnb / licn, bnb / licn * 0.6, bnb / licn * 1.5, 100,      500_000,  "b"),
     ]
 
     pools_seeded = 0
-    for name, pid, price, low, high, amt_a, amt_b in amm_pools:
-        lt = price_to_tick(low)
+    for name, pid, price, low, high, amt_a, amt_b, licn_side in amm_pools:
+        lt = price_to_tick(low)  # snaps down
         ut = price_to_tick(high)
+        # Snap upper tick UP to ensure range covers the high price
+        raw_ut = int(math.log(high) / math.log(1.0001))
+        if raw_ut % 60 != 0:
+            ut = ((raw_ut // 60) + 1) * 60
         a_spores = amt_a * SPORES
         b_spores = amt_b * SPORES
+        # Native LICN must be sent as tx value, not via cross-contract transfer
+        value = a_spores if licn_side == "a" else b_spores if licn_side == "b" else 0
         try:
-            sig = await add_amm_liquidity(conn, reserve, dex_amm, pid,
-                                          lt, ut, a_spores, b_spores)
+            sig = await with_retry(lambda p=pid, l=lt, u=ut, a=a_spores, b=b_spores, v=value:
+                add_amm_liquidity(conn, reserve, dex_amm, p, l, u, a, b, value=v))
             print(f"    ✅ {name}: {amt_a:>12,} / {amt_b:>12,}  ticks=[{lt}, {ut}]")
             pools_seeded += 1
         except Exception as e:
             print(f"    ❌ {name}: {e}")
+        await asyncio.sleep(0.5)
 
     print(f"\n  {pools_seeded}/7 AMM pools seeded")
 

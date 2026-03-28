@@ -54,16 +54,18 @@ async def main():
     repo = Path(__file__).resolve().parent.parent
 
     # ── Load genesis keypair (admin of all token contracts) ──
-    # The genesis/validator identity keypair is the admin set during genesis
-    # initialization of all contracts. NOT the deployer keypair.
-    genesis_kp_path = repo / f"data/state-{NETWORK}/validator-keypair.json"
+    # The genesis-primary keypair is the admin set during genesis
+    # initialization of all contracts (deployer_pubkey).
+    # NOT the validator-keypair (that's the node identity).
+    genesis_kp_path = repo / f"data/state-{NETWORK}/genesis-keys/genesis-primary-lichen-{NETWORK}-1.json"
     if not genesis_kp_path.exists():
-        # Fallback: try shared keypairs directory
+        # Fallback: try validator-keypair (older setups)
+        genesis_kp_path = repo / f"data/state-{NETWORK}/validator-keypair.json"
+    if not genesis_kp_path.exists():
         genesis_kp_path = repo / "keypairs" / "validator-identity.json"
     if not genesis_kp_path.exists():
-        print(f"ERROR: genesis/validator keypair not found")
-        print(f"  Tried: {repo / f'data/state-{NETWORK}/validator-keypair.json'}")
-        print(f"  Tried: {repo / 'keypairs/validator-identity.json'}")
+        print(f"ERROR: genesis keypair not found")
+        print(f"  Tried: {repo / f'data/state-{NETWORK}/genesis-keys/genesis-primary-lichen-{NETWORK}-1.json'}")
         sys.exit(1)
     admin = Keypair.load(genesis_kp_path)
     admin_bytes = bytes(admin.public_key().to_bytes())
@@ -126,7 +128,7 @@ async def main():
                 break
 
     print(f"\n  {minted} mint transaction(s) completed.")
-        print(f"  Next: run  python tools/seed_dex_liquidity.py  to place CLOB orders + AMM liquidity.")
+    print(f"  Next: run  python tools/seed_dex_liquidity.py  to place CLOB orders + AMM liquidity.")
 
 
 asyncio.run(main())
