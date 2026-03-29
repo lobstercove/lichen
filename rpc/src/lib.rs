@@ -2319,7 +2319,9 @@ async fn handle_rpc(
         "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
         "getTransactionProof" => handle_get_transaction_proof(&state, req.params).await,
-        "getTransactionsByAddress" | "getTransactionHistory" => handle_get_transactions_by_address(&state, req.params).await,
+        "getTransactionsByAddress" | "getTransactionHistory" => {
+            handle_get_transactions_by_address(&state, req.params).await
+        }
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
         "getTokenAccounts" => handle_get_token_accounts(&state, req.params).await,
@@ -2433,7 +2435,9 @@ async fn handle_rpc(
         "getSymbolRegistryByProgram" => {
             handle_get_symbol_registry_by_program(&state, req.params).await
         }
-        "getAllSymbolRegistry" | "getAllSymbols" => handle_get_all_symbol_registry(&state, req.params).await,
+        "getAllSymbolRegistry" | "getAllSymbols" => {
+            handle_get_all_symbol_registry(&state, req.params).await
+        }
 
         // NFT endpoints (draft)
         "getCollection" => handle_get_collection(&state, req.params).await,
@@ -4031,12 +4035,11 @@ async fn handle_get_transaction_proof(
         })?;
 
     // Generate the Merkle proof
-    let proof = lichen_core::merkle_tx_proof(&block.transactions, tx_index).ok_or_else(|| {
-        RpcError {
+    let proof =
+        lichen_core::merkle_tx_proof(&block.transactions, tx_index).ok_or_else(|| RpcError {
             code: -32000,
             message: "Failed to generate Merkle proof".to_string(),
-        }
-    })?;
+        })?;
 
     let proof_json: Vec<serde_json::Value> = proof
         .iter()
