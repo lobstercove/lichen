@@ -17,6 +17,7 @@
 
 use lichen_core::Hash;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -76,7 +77,15 @@ impl ConsensusWal {
         Self { path, entries }
     }
 
-    /// Decode a sequence of length-prefixed bincode entries.
+    /// AUDIT-FIX MED-02: Compute 4-byte checksum (first 4 bytes of SHA-256).
+    fn checksum(data: &[u8]) -> [u8; 4] {
+        let hash = Sha256::digest(data);
+        [hash[0], hash[1], hash[2], hash[3]]
+    }
+
+    /// Decode a sequence of length-prefixed bincode entries with checksum verification.
+    /// Format per entry: [len:4 LE][payload:len][checksum:4]
+    /// AUDIT-FIX MED-02: Entries without a valid checksum are rejected.
     fn decode_entries(data: &[u8]) -> Vec<WalEntry> {
         let mut entries = Vec::new();
         let mut cursor = 0;
@@ -88,21 +97,45 @@ impl ConsensusWal {
                 data[cursor + 3],
             ]) as usize;
             cursor += 4;
-            if cursor + len > data.len() {
+            if cursor + len + 4 > data.len() {
+                // Try legacy format (no checksum) for backward compatibility
+                if cursor + len <= data.len() {
+                    if let Ok(entry) = bincode::deserialize::<WalEntry>(&data[cursor..cursor + len]) {
+                        warn!("⚠️ WAL: Legacy entry without checksum at offset {} — accepting on this replay", cursor - 4);
+                        entries.push(entry);
+                        cursor += len;
+                        continue;
+                    }
+                }
                 warn!(
                     "⚠️ WAL: Truncated entry at offset {}, stopping replay",
                     cursor - 4
                 );
                 break;
             }
-            match bincode::deserialize::<WalEntry>(&data[cursor..cursor + len]) {
+            let payload = &data[cursor..cursor + len];
+            let stored_checksum = [
+                data[cursor + len],
+                data[cursor + len + 1],
+                data[cursor + len + 2],
+                data[cursor + len + 3],
+            ];
+            let computed = Self::checksum(payload);
+            if stored_checksum != computed {
+                error!(
+                    "🛑 WAL: Checksum mismatch at offset {} (stored {:02x?} != computed {:02x?}) — WAL may be corrupted, stopping replay",
+                    cursor - 4, stored_checksum, computed
+                );
+                break;
+            }
+            match bincode::deserialize::<WalEntry>(payload) {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     warn!("⚠️ WAL: Failed to decode entry at offset {}: {}", cursor, e);
                     break;
                 }
             }
-            cursor += len;
+            cursor += len + 4;
         }
         entries
     }
@@ -132,9 +165,11 @@ impl ConsensusWal {
         };
 
         let len_bytes = (encoded.len() as u32).to_le_bytes();
+        let checksum = Self::checksum(&encoded);
         if let Err(e) = file
             .write_all(&len_bytes)
             .and_then(|_| file.write_all(&encoded))
+            .and_then(|_| file.write_all(&checksum))
             .and_then(|_| file.sync_all())
         {
             error!("WAL: Failed to write entry: {}", e);
@@ -178,9 +213,11 @@ impl ConsensusWal {
                 let entry = WalEntry::Checkpoint { height };
                 if let Ok(encoded) = bincode::serialize(&entry) {
                     let len_bytes = (encoded.len() as u32).to_le_bytes();
+                    let checksum = Self::checksum(&encoded);
                     let _ = f
                         .write_all(&len_bytes)
                         .and_then(|_| f.write_all(&encoded))
+                        .and_then(|_| f.write_all(&checksum))
                         .and_then(|_| f.sync_all());
                 }
                 self.entries.push(entry);

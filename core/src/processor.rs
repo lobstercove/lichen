@@ -592,20 +592,8 @@ impl TxProcessor {
         })
     }
 
-    /// Task 4.2 (M-7): Reputation-based fee discounts REMOVED.
-    ///
-    /// Previously discounted fees by 5–10% based on LichenID reputation score.
-    /// Removed because: (1) no real blockchain uses identity-based fee discounts,
-    /// (2) creates MEV vector — high-rep searchers get a fee advantage,
-    /// (3) express lane already removed in Task 3.7. All users now pay flat fees.
-    ///
-    /// Kept as identity function for backward compatibility with any external callers.
-    #[deprecated(
-        note = "Fee discounts removed (Task 4.2 M-7 MEV audit). Returns base_fee unchanged."
-    )]
-    pub fn apply_reputation_fee_discount(base_fee: u64, _reputation: u64) -> u64 {
-        base_fee
-    }
+    // AUDIT-FIX INFO-01: apply_reputation_fee_discount removed (was deprecated identity fn).
+    // Previously: Task 4.2 (M-7) reputation-based fee discounts, always returned base_fee.
 
     /// Check if a transaction is a valid durable nonce transaction.
     ///
@@ -8826,18 +8814,7 @@ mod tests {
     // UTILITY FUNCTIONS
     // ====================================================================
 
-    #[test]
-    #[allow(deprecated)]
-    fn test_reputation_fee_discount_removed() {
-        // Task 4.2 (M-7): reputation fee discount removed — always returns base_fee
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 0), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 499), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 1000), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 5000), 1000);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(0, 9999), 0);
-    }
+    // AUDIT-FIX INFO-01: test_reputation_fee_discount_removed removed along with the function.
 
     #[test]
     fn test_get_trust_tier() {

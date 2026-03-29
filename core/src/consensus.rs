@@ -311,6 +311,9 @@ impl RewardConfig {
 
     /// Calculate price-adjusted block reward for a given slot and total supply.
     /// Formula: base_reward(inflation_curve) × (reference_price / current_price)
+    ///
+    /// AUDIT-FIX MED-03: Uses scaled integer arithmetic (u128 with 1e6 scaling)
+    /// instead of f64 multiplication to guarantee cross-platform determinism.
     pub fn get_adjusted_reward(
         &self,
         current_slot: u64,
@@ -326,7 +329,12 @@ impl RewardConfig {
             .max(self.min_adjustment_multiplier)
             .min(self.max_adjustment_multiplier);
 
-        (base_reward as f64 * multiplier) as u64
+        // Convert multiplier to fixed-point: scale by 1_000_000 then do integer math
+        let multiplier_fp = (multiplier * 1_000_000.0) as u128;
+        let adjusted = (base_reward as u128)
+            .saturating_mul(multiplier_fp)
+            / 1_000_000;
+        adjusted as u64
     }
 
     /// Get base reward without price adjustment (for display/logging)
@@ -350,13 +358,15 @@ impl RewardConfig {
         };
 
         let base = compute_block_reward(current_slot, total_supply);
-        let adjusted = (base as f64 * multiplier) as u64;
+        // AUDIT-FIX MED-03: Integer arithmetic for the adjusted reward
+        let multiplier_fp = (multiplier * 1_000_000.0) as u128;
+        let adjusted = (base as u128).saturating_mul(multiplier_fp) / 1_000_000;
 
         RewardAdjustmentInfo {
             current_price_usd,
             reference_price_usd: self.reference_price_usd,
             multiplier,
-            adjusted_block_reward: adjusted,
+            adjusted_block_reward: adjusted as u64,
             inflation_rate_bps: inflation_rate_bps(current_slot),
         }
     }

@@ -17,9 +17,10 @@ exclude = [
 
 resolver = "2"
 
-# Workspace-wide dependencies for tests
+# Workspace-wide dependencies
 [workspace.dependencies]
 tempfile = "3.8"
+ed25519-dalek = "2.1"
 
 [profile.release]
 opt-level = 3

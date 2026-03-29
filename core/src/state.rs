@@ -1835,11 +1835,20 @@ impl StateStore {
         let root = *tree.last()?.first()?;
         let proof = generate_proof(&tree, leaf_index)?;
 
+        // The block header stores a composite state_root = H(0x02 || accounts_root || contract_root).
+        // Embed the composite root so RPC can compare directly against the anchor block.
+        let contract_root = self.compute_contract_storage_root();
+        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        composite.push(0x02);
+        composite.extend_from_slice(&root.0);
+        composite.extend_from_slice(&contract_root.0);
+        let composite_root = Hash::hash(&composite);
+
         Some(AccountProof {
             pubkey: *pubkey,
             account_data,
             proof,
-            state_root: root,
+            state_root: composite_root,
         })
     }
 
@@ -9695,9 +9704,9 @@ mod tests {
         state.put_account(&pk3, &a3).unwrap();
 
         // Compute state root to populate leaf cache
-        let _composite_root = state.compute_state_root();
-        let root = state.compute_accounts_root();
-        assert_ne!(root, Hash::default());
+        let composite_root = state.compute_state_root();
+        let accounts_root = state.compute_accounts_root();
+        assert_ne!(accounts_root, Hash::default());
 
         // Get proof for pk2
         let proof = state.get_account_proof(&pk2);
@@ -9705,15 +9714,16 @@ mod tests {
 
         let ap = proof.unwrap();
         assert_eq!(ap.pubkey, pk2);
-        assert_eq!(ap.state_root, root);
+        // state_root in the proof is now the composite root (accounts + contract storage)
+        assert_eq!(ap.state_root, composite_root);
 
-        // Verify the proof
-        assert!(ap.proof.verify(&root));
-        assert!(ap.proof.verify_account(&root, &pk2, &ap.account_data));
+        // The merkle proof itself verifies against the accounts sub-root
+        assert!(ap.proof.verify(&accounts_root));
+        assert!(ap.proof.verify_account(&accounts_root, &pk2, &ap.account_data));
 
-        // Standalone verification
+        // Standalone verification against accounts sub-root
         assert!(StateStore::verify_account_proof(
-            &root,
+            &accounts_root,
             &pk2,
             &ap.account_data,
             &ap.proof

@@ -233,7 +233,9 @@ fn collect_machine_fingerprint() -> [u8; 32] {
     }
 
     if !got_uuid && !got_mac {
-        // Unable to fingerprint this machine — return zeros (dev/test fallback)
+        // AUDIT-FIX LOW-02: warn operators when fingerprint is all zeros
+        warn!("Machine fingerprint is all zeros — could not read platform UUID or MAC address. \
+               This is expected in containers/CI but should not happen on bare-metal validators.");
         return [0u8; 32];
     }
 
@@ -11152,7 +11154,7 @@ async fn run_validator() {
                 for short_id in &cb.short_ids {
                     let mut found = false;
                     for (hash, tx) in &all_mempool_txs {
-                        if hash.0[..8] == *short_id {
+                        if hash.0[..12] == *short_id {
                             reconstructed_txs.push(Some(tx.clone()));
                             found = true;
                             break;
@@ -11164,7 +11166,7 @@ async fn run_validator() {
                         // need to request the full block for missing TXs.
                         // Use a sentinel hash with the short_id prefix for matching.
                         let mut sentinel = [0u8; 32];
-                        sentinel[..8].copy_from_slice(short_id);
+                        sentinel[..12].copy_from_slice(short_id);
                         missing_hashes.push(Hash(sentinel));
                     }
                 }

@@ -103,12 +103,16 @@ impl Message {
 ///
 /// - `Native`: Standard Lichen transaction (Ed25519 signed, blockhash replay protection)
 /// - `Evm`: EVM-wrapped transaction (ECDSA signed, EVM nonce replay protection)
-/// - `SolanaCompat`: Submitted via Solana-format RPC (same as Native but tagged for metrics)
+/// - `SolanaCompat`: DEPRECATED — wire discriminant 2 is preserved for backward
+///   compatibility but carries no distinct validation. Transactions submitted via
+///   the `/solana-compat` RPC endpoint use `Native` processing. Do not create new
+///   transactions with this type. (AUDIT-FIX MED-05)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TransactionType {
     #[default]
     Native,
     Evm,
+    /// Deprecated — same processing as `Native`. Kept for wire-format backward compat only.
     SolanaCompat,
 }
 
@@ -294,6 +298,8 @@ impl Transaction {
     }
 
     /// Check if this is a Solana-compat transaction.
+    /// AUDIT-FIX MED-05: Deprecated — SolanaCompat has no distinct validation path.
+    #[deprecated(note = "SolanaCompat has no distinct validation; use is_evm() to distinguish EVM vs native")]
     pub fn is_solana_compat(&self) -> bool {
         self.tx_type == TransactionType::SolanaCompat
     }

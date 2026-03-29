@@ -520,6 +520,9 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     store_u64(&lbk, now);
 
     // Check graduation (use u128 to prevent overflow with large supplies)
+    // AUDIT-FIX LOW-04: Graduation is NOT YET IMPLEMENTED.
+    // The threshold check runs but produces no state change — tokens remain on
+    // the bonding curve until a real DEX migration path is built in a future release.
     let market_cap =
         (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
     if market_cap >= GRADUATION_MARKET_CAP {

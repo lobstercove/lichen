@@ -16,6 +16,13 @@
 **/.fingerprint/
 **/deps/
 
+# ── Editor swap/backup files (AUDIT-FIX LOW-01, LOW-06) ────
+*.swp
+*.swo
+*~
+*.bak
+.*.swp
+
 # ── RocksDB / validator state (machine-local) ──────────────
 /data/
 data/

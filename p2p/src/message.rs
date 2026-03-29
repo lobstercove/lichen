@@ -7,10 +7,9 @@ use lichen_core::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-/// P3-3: Short TX ID — first 8 bytes of the full transaction hash.
-/// Probability of collision within a single block is negligible
-/// (birthday bound: ~2^32 for 8-byte IDs, blocks have at most 10K TXs).
-pub type ShortTxId = [u8; 8];
+/// P3-3: Short TX ID — first 12 bytes of the full transaction hash.
+/// AUDIT-FIX MED-04: Extended from 8 to 12 bytes (96-bit birthday bound ~2^48).
+pub type ShortTxId = [u8; 12];
 
 /// Build the signed payload for validator announcements.
 ///
@@ -54,8 +53,8 @@ pub fn validator_announcement_signing_message(
 
 /// P3-3: Compute the short TX ID from a full transaction hash.
 pub fn short_tx_id(hash: &Hash) -> ShortTxId {
-    let mut id = [0u8; 8];
-    id.copy_from_slice(&hash.0[..8]);
+    let mut id = [0u8; 12];
+    id.copy_from_slice(&hash.0[..12]);
     id
 }
 
@@ -684,7 +683,10 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ]);
         let sid = short_tx_id(&h);
-        assert_eq!(sid, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
+        assert_eq!(
+            sid,
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x00, 0x00, 0x00, 0x00]
+        );
     }
 
     #[test]

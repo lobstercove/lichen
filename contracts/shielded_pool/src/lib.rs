@@ -36,6 +36,10 @@ use sha2::{Digest, Sha256};
 // vk_transfer      -> Vec<u8>        Transfer verification key
 // pool_balance     -> u64            Total shielded LICN (spores)
 
+/// AUDIT-FIX MED-01: Hard cap on commitment count to prevent unbounded state growth.
+/// A proper incremental Merkle tree will replace this flat Vec in a future release.
+const MAX_COMMITMENTS: u64 = 100_000;
+
 /// Shielded pool state (persisted in contract storage)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShieldedPoolState {
@@ -148,6 +152,8 @@ pub enum ShieldedPoolError {
     VKNotInitialized,
     InvalidRequest(String),
     PoolOverflow,
+    /// AUDIT-FIX MED-01: Commitment vector reached its cap
+    CommitmentsFull,
 }
 
 impl core::fmt::Display for ShieldedPoolError {
@@ -161,6 +167,7 @@ impl core::fmt::Display for ShieldedPoolError {
             Self::VKNotInitialized => write!(f, "verification keys not initialized"),
             Self::InvalidRequest(msg) => write!(f, "invalid request: {}", msg),
             Self::PoolOverflow => write!(f, "pool balance overflow"),
+            Self::CommitmentsFull => write!(f, "commitment pool is full ({} max) — upgrade to incremental Merkle tree required", MAX_COMMITMENTS),
         }
     }
 }
@@ -194,6 +201,11 @@ impl ShieldedPoolState {
             return Err(ShieldedPoolError::VKNotInitialized);
         }
         self.verify_shield_proof(&request.proof, request.amount, &request.commitment)?;
+
+        // AUDIT-FIX MED-01: Enforce commitment cap
+        if self.commitment_count >= MAX_COMMITMENTS {
+            return Err(ShieldedPoolError::CommitmentsFull);
+        }
 
         // Update state
         let index = self.commitment_count;
@@ -303,6 +315,10 @@ impl ShieldedPoolState {
         // Insert new commitments
         let mut indices = Vec::new();
         for output in &request.output_commitments {
+            // AUDIT-FIX MED-01: Enforce commitment cap
+            if self.commitment_count >= MAX_COMMITMENTS {
+                return Err(ShieldedPoolError::CommitmentsFull);
+            }
             let index = self.commitment_count;
             self.commitments.push(CommitmentEntry {
                 commitment: output.commitment,
