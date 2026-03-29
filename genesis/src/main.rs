@@ -9,9 +9,9 @@ use lichen_core::consensus::{
 };
 use lichen_core::multisig::GovernedWalletConfig;
 use lichen_core::{
-    Account, Block, FeeConfig, GenesisConfig, GenesisValidator, GenesisWallet, Hash, Instruction,
-    Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
+    Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisValidator, GenesisWallet, Hash,
+    Instruction, Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -235,6 +235,69 @@ fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> 
     info!("  Output dir: {}", output_dir.display());
     info!("═══════════════════════════════════════════════════════");
     Ok(())
+}
+
+/// Fetch live market prices from Binance REST API for genesis seeding.
+/// Falls back to compiled defaults if the fetch fails (e.g. no internet).
+/// This runs ONCE during genesis creation — the returned prices are embedded
+/// in the genesis block and reused by all joining validators.
+fn fetch_genesis_prices() -> GenesisPrices {
+    let defaults = GenesisPrices::default();
+
+    #[derive(serde::Deserialize)]
+    struct Ticker {
+        symbol: String,
+        price: String,
+    }
+
+    let url = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
+    let resp = match ureq::get(url).call() {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Binance price fetch failed ({}), using compiled defaults", e);
+            return defaults;
+        }
+    };
+
+    let body = match resp.into_string() {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("Failed to read Binance response ({}), using compiled defaults", e);
+            return defaults;
+        }
+    };
+
+    let tickers: Vec<Ticker> = match serde_json::from_str(&body) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("Failed to parse Binance JSON ({}), using compiled defaults", e);
+            return defaults;
+        }
+    };
+
+    let mut prices = defaults.clone();
+    for t in &tickers {
+        let usd: f64 = t.price.parse().unwrap_or(0.0);
+        if usd <= 0.0 {
+            continue;
+        }
+        let price_8dec = (usd * 100_000_000.0) as u64;
+        match t.symbol.as_str() {
+            "SOLUSDT" => prices.wsol_usd_8dec = price_8dec,
+            "ETHUSDT" => prices.weth_usd_8dec = price_8dec,
+            "BNBUSDT" => prices.wbnb_usd_8dec = price_8dec,
+            _ => {}
+        }
+    }
+
+    info!(
+        "  💰 Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        prices.wsol_usd_8dec as f64 / 100_000_000.0,
+        prices.weth_usd_8dec as f64 / 100_000_000.0,
+        prices.wbnb_usd_8dec as f64 / 100_000_000.0,
+    );
+
+    prices
 }
 
 fn main() {
@@ -504,18 +567,21 @@ fn main() {
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // FETCH LIVE MARKET PRICES — frozen into genesis config forever
+    // ════════════════════════════════════════════════════════════════════
+    genesis_config.genesis_prices = fetch_genesis_prices();
+    info!(
+        "  ✓ Genesis prices frozen: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        genesis_config.genesis_prices.licn_usd_8dec as f64 / 100_000_000.0,
+        genesis_config.genesis_prices.wsol_usd_8dec as f64 / 100_000_000.0,
+        genesis_config.genesis_prices.weth_usd_8dec as f64 / 100_000_000.0,
+        genesis_config.genesis_prices.wbnb_usd_8dec as f64 / 100_000_000.0,
+    );
+
     let effective_genesis_config_path = db_dir_path.join("genesis.json");
-    if let Some(ref config_path) = config_path {
-        if let Err(err) = std::fs::copy(config_path, &effective_genesis_config_path) {
-            error!(
-                "Failed to copy genesis config {} -> {}: {}",
-                config_path.display(),
-                effective_genesis_config_path.display(),
-                err
-            );
-            std::process::exit(1);
-        }
-    } else {
+    // Always serialize the effective config (includes live prices + CLI validators)
+    {
         let json = match serde_json::to_string_pretty(&genesis_config) {
             Ok(json) => json,
             Err(err) => {
@@ -946,23 +1012,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    // CREATE GENESIS BLOCK
-    // ════════════════════════════════════════════════════════════════════
-    let state_root = state.compute_state_root();
-    let genesis_block = Block::genesis(state_root, genesis_timestamp, genesis_txs);
-    if let Err(e) = state.put_block(&genesis_block) {
-        error!("Failed to store genesis block: {e}");
-        std::process::exit(1);
-    }
-    if let Err(e) = state.set_last_slot(0) {
-        error!("Failed to set initial slot: {e}");
-        std::process::exit(1);
-    }
-    info!("✓ Genesis block created and stored (slot 0)");
-    info!("  Genesis hash: {}", genesis_block.hash());
-
-    // Store founding symbionts vesting schedule
+    // Store founding symbionts vesting schedule (CF_STATS, not in state root)
     if let Some(fm_dw) = wallet
         .distribution_wallets
         .as_ref()
@@ -984,15 +1034,16 @@ fn main() {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // AUTO-DEPLOY CONTRACTS
+    // AUTO-DEPLOY CONTRACTS (before genesis block so state_root is complete)
     // ════════════════════════════════════════════════════════════════════
+    let gp = &genesis_config.genesis_prices;
     genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:");
     genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
-    genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:");
+    genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:", gp);
     genesis_set_fee_exempt_contracts(&state, &genesis_pubkey, "GENESIS:");
-    genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
-    genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp);
-    genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp);
+    genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp, gp);
+    genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
+    genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
 
     // ════════════════════════════════════════════════════════════════════
     // GENESIS IDENTITIES & ACHIEVEMENTS
@@ -1008,9 +1059,49 @@ fn main() {
         genesis_assign_achievements(&state, &genesis_pubkey, &dist_pairs, genesis_timestamp);
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // EMBED GENESIS CONFIG (opcode 40) — self-contained genesis block
+    // Joining validators extract this to get the frozen GenesisPrices.
+    // ════════════════════════════════════════════════════════════════════
+    {
+        let config_json = serde_json::to_vec(&genesis_config).expect("serialize GenesisConfig");
+        let mut ix_data = Vec::with_capacity(1 + config_json.len());
+        ix_data.push(40u8); // opcode 40 = GENESIS_CONFIG
+        ix_data.extend_from_slice(&config_json);
+
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![genesis_pubkey],
+            data: ix_data,
+        };
+        let message = Message::new(vec![instruction], Hash::default());
+        let mut config_tx = Transaction::new(message);
+        config_tx.signatures.push([0u8; 64]); // synthetic signature
+        genesis_txs.push(config_tx);
+        info!("  ✓ GenesisConfig embedded in genesis block (opcode 40, {} bytes)", config_json.len());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // CREATE GENESIS BLOCK — state_root captures FULL state (accounts +
+    // contracts + oracle + analytics + margin) per Cosmos/Substrate standard.
+    // ════════════════════════════════════════════════════════════════════
+    let state_root = state.compute_state_root();
+    let genesis_block = Block::genesis(state_root, genesis_timestamp, genesis_txs);
+    if let Err(e) = state.put_block(&genesis_block) {
+        error!("Failed to store genesis block: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = state.set_last_slot(0) {
+        error!("Failed to set initial slot: {e}");
+        std::process::exit(1);
+    }
+    info!("✓ Genesis block created and stored (slot 0)");
+    info!("  Genesis hash: {}", genesis_block.hash());
+    info!("  State root: {}", hex::encode(state_root.0));
+
     // Flush metrics counters to disk — contract deploy (index_program) and
-    // any accounts created after the genesis block was stored need their
-    // counters persisted so the validator reads correct values on startup.
+    // any accounts created need their counters persisted so the validator
+    // reads correct values on startup.
     if let Err(e) = state.save_metrics_counters() {
         error!("Failed to flush metrics after contract deployment: {}", e);
     }

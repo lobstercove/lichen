@@ -28,21 +28,19 @@ use lichen_core::multisig::GovernedWalletConfig;
 use lichen_core::nft::decode_token_state;
 use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
-    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet,
-    Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
-    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
-    SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
-    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES,
-    MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
+    GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity,
+    NftActivityKind, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
+    SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
+    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
+    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
+    GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     derive_contract_address, genesis_assign_achievements, genesis_auto_deploy,
-    genesis_create_trading_pairs, genesis_initialize_contracts, genesis_licn_price_8dec,
-    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
-    genesis_set_fee_exempt_contracts, genesis_wbnb_price_8dec, genesis_weth_price_8dec,
-    genesis_wsol_price_8dec, GENESIS_LICN_PRICE_8DEC,
+    genesis_create_trading_pairs, genesis_initialize_contracts, genesis_seed_analytics_prices,
+    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -234,8 +232,10 @@ fn collect_machine_fingerprint() -> [u8; 32] {
 
     if !got_uuid && !got_mac {
         // AUDIT-FIX LOW-02: warn operators when fingerprint is all zeros
-        warn!("Machine fingerprint is all zeros — could not read platform UUID or MAC address. \
-               This is expected in containers/CI but should not happen on bare-metal validators.");
+        warn!(
+            "Machine fingerprint is all zeros — could not read platform UUID or MAC address. \
+               This is expected in containers/CI but should not happen on bare-metal validators."
+        );
         return [0u8; 32];
     }
 
@@ -831,6 +831,21 @@ fn load_treasury_keypair(
     seed.iter_mut().for_each(|b| *b = 0);
     info!("🔐 Loaded treasury keypair from {}", path.display());
     Some(keypair)
+}
+
+/// Extract the embedded GenesisConfig from the genesis block.
+/// The genesis creator embeds a TX with opcode 40 (GENESIS_CONFIG) containing
+/// the full serialized GenesisConfig (including frozen GenesisPrices).
+/// Returns None if the block predates this feature (backward compat).
+fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
+    for tx in &block.transactions {
+        for ix in &tx.message.instructions {
+            if ix.program_id == CORE_SYSTEM_PROGRAM_ID && ix.data.len() > 1 && ix.data[0] == 40 {
+                return serde_json::from_slice(&ix.data[1..]).ok();
+            }
+        }
+    }
+    None
 }
 
 fn is_reward_or_debt_tx(tx: &Transaction) -> bool {
@@ -2497,7 +2512,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
                 .map(|(price_raw, decimals, _)| (price_raw, decimals))
                 .or_else(|| {
                     if asset == "LICN" {
-                        Some((genesis_licn_price_8dec(), ORACLE_DECIMALS))
+                        Some((GenesisPrices::default().licn_usd_8dec, ORACLE_DECIMALS))
                     } else {
                         None
                     }
@@ -4215,11 +4230,12 @@ struct BinanceTicker {
 }
 
 fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64) {
+    let defaults = GenesisPrices::default();
     for (asset, price_raw) in [
-        ("LICN", genesis_licn_price_8dec()),
-        ("wSOL", genesis_wsol_price_8dec()),
-        ("wETH", genesis_weth_price_8dec()),
-        ("wBNB", genesis_wbnb_price_8dec()),
+        ("LICN", defaults.licn_usd_8dec),
+        ("wSOL", defaults.wsol_usd_8dec),
+        ("wETH", defaults.weth_usd_8dec),
+        ("wBNB", defaults.wbnb_usd_8dec),
     ] {
         let has_price = state
             .get_oracle_consensus_price(asset)
@@ -4479,7 +4495,7 @@ fn spawn_oracle_price_feeder(
             // reads consensus-written state to broadcast WS events.
 
             for (asset, price_raw) in [
-                ("LICN", GENESIS_LICN_PRICE_8DEC),
+                ("LICN", GenesisPrices::default().licn_usd_8dec),
                 ("wSOL", cur_wsol.saturating_mul(100)),
                 ("wETH", cur_weth.saturating_mul(100)),
                 ("wBNB", cur_wbnb.saturating_mul(100)),
@@ -5931,6 +5947,15 @@ async fn run_validator() {
                 .map(|block| block.header.timestamp)
                 .unwrap_or(0);
 
+            // For reconciliation, extract prices from genesis block or use defaults
+            let reconcile_prices = state
+                .get_block_by_slot(0)
+                .ok()
+                .flatten()
+                .and_then(|b| extract_genesis_config(&b))
+                .map(|c| c.genesis_prices)
+                .unwrap_or_default();
+
             // Check if analytics seed data is present (ana_lp_1 = LICN/lUSD)
             let ana_lp_1_exists = state
                 .get_program_storage("ANALYTICS", b"ana_lp_1")
@@ -5938,7 +5963,12 @@ async fn run_validator() {
 
             if !ana_lp_1_exists {
                 info!("🔄 RECONCILE: Analytics price seeds missing — writing initial prices");
-                genesis_seed_analytics_prices(&state, &genesis_pk, genesis_timestamp);
+                genesis_seed_analytics_prices(
+                    &state,
+                    &genesis_pk,
+                    genesis_timestamp,
+                    &reconcile_prices,
+                );
                 info!("  ✓ Analytics prices seeded for pairs 1-5");
             }
 
@@ -5952,21 +5982,24 @@ async fn run_validator() {
 
             if !mrg_mark_1_exists {
                 info!("🔄 RECONCILE: Margin prices missing — seeding mark/index prices");
-                genesis_seed_margin_prices(&state, &genesis_pk, genesis_timestamp);
+                genesis_seed_margin_prices(
+                    &state,
+                    &genesis_pk,
+                    genesis_timestamp,
+                    &reconcile_prices,
+                );
                 info!("  ✓ Margin prices seeded for pairs 1-5");
             }
 
             if !licn_price_exists {
                 info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
-                // Write oracle prices directly to contract storage
-                // (WASM calls may not work on existing DB, so use direct writes)
                 if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "lichenoracle") {
                     const ORACLE_DECIMALS: u8 = 8;
                     let oracle_feeds: &[(&str, u64)] = &[
-                        ("LICN", genesis_licn_price_8dec()),
-                        ("wSOL", genesis_wsol_price_8dec()),
-                        ("wETH", genesis_weth_price_8dec()),
-                        ("wBNB", genesis_wbnb_price_8dec()),
+                        ("LICN", reconcile_prices.licn_usd_8dec),
+                        ("wSOL", reconcile_prices.wsol_usd_8dec),
+                        ("wETH", reconcile_prices.weth_usd_8dec),
+                        ("wBNB", reconcile_prices.wbnb_usd_8dec),
                     ];
 
                     for (asset, price) in oracle_feeds {
@@ -7669,7 +7702,13 @@ async fn run_validator() {
                             //    by put_block() above (CF_TRANSACTIONS + CF_TX_TO_SLOT
                             //    + CF_TX_BY_SLOT in one atomic WriteBatch).
 
-                            // 8. Auto-deploy contracts
+                            // 7b. Extract embedded GenesisPrices from block (opcode 40).
+                            // Falls back to compiled defaults for pre-standard genesis blocks.
+                            let genesis_prices = extract_genesis_config(&block)
+                                .map(|c| c.genesis_prices)
+                                .unwrap_or_default();
+
+                            // 8. Auto-deploy contracts (using frozen genesis prices)
                             genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
                             genesis_initialize_contracts(
                                 &state_for_blocks,
@@ -7677,23 +7716,31 @@ async fn run_validator() {
                                 "📡 [sync]",
                                 block.header.timestamp,
                             );
-                            genesis_create_trading_pairs(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_create_trading_pairs(
+                                &state_for_blocks,
+                                &gpk,
+                                "📡 [sync]",
+                                &genesis_prices,
+                            );
                             genesis_set_fee_exempt_contracts(&state_for_blocks, &gpk, "📡 [sync]");
                             genesis_seed_oracle(
                                 &state_for_blocks,
                                 &gpk,
                                 "📡 [sync]",
                                 block.header.timestamp,
+                                &genesis_prices,
                             );
                             genesis_seed_margin_prices(
                                 &state_for_blocks,
                                 &gpk,
                                 block.header.timestamp,
+                                &genesis_prices,
                             );
                             genesis_seed_analytics_prices(
                                 &state_for_blocks,
                                 &gpk,
                                 block.header.timestamp,
+                                &genesis_prices,
                             );
 
                             // 9. Genesis identities & achievements
@@ -7712,6 +7759,28 @@ async fn run_validator() {
 
                             // 10. Flush metrics counters
                             state_for_blocks.save_metrics_counters().ok();
+
+                            // 11. STATE ROOT VERIFICATION — Cosmos/Substrate standard.
+                            // The genesis block's state_root captures the FULL post-deployment
+                            // state. After replaying everything, our local state must match.
+                            let local_root = state_for_blocks.compute_state_root();
+                            if local_root != block.header.state_root {
+                                error!("═══════════════════════════════════════════════════════");
+                                error!("  FATAL: Genesis state root mismatch!");
+                                error!("  Expected: {}", hex::encode(block.header.state_root.0));
+                                error!("  Got:      {}", hex::encode(local_root.0));
+                                error!("  This means genesis reconstruction produced different");
+                                error!("  state than the genesis creator. Possible causes:");
+                                error!("    - Different WASM contract binaries");
+                                error!("    - Missing contracts/ directory");
+                                error!("    - Corrupted genesis block");
+                                error!("═══════════════════════════════════════════════════════");
+                                std::process::exit(1);
+                            }
+                            info!(
+                                "  ✓ Genesis state root verified: {}",
+                                hex::encode(local_root.0)
+                            );
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
@@ -13787,7 +13856,7 @@ mod tests {
             .expect("put genesis pubkey");
 
         state
-            .put_oracle_consensus_price("LICN", GENESIS_LICN_PRICE_8DEC, 8, 7, 3)
+            .put_oracle_consensus_price("LICN", GenesisPrices::default().licn_usd_8dec, 8, 7, 3)
             .expect("seed LICN consensus price");
         state
             .put_oracle_consensus_price("wSOL", 8_250_000_000, 8, 7, 3)

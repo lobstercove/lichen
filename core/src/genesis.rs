@@ -6,6 +6,39 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// Oracle prices frozen at genesis time — embedded in the genesis block for
+/// deterministic replay on every joining validator.
+///
+/// The genesis creator fetches live market prices once and stores them here.
+/// All other validators extract these from the genesis block and use them
+/// verbatim, producing byte-identical contract storage (AMM pools, analytics
+/// candles, margin prices, oracle feeds).
+///
+/// The oracle attestation system updates prices to live within seconds after
+/// genesis — these defaults only affect the first few heartbeat blocks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenesisPrices {
+    /// LICN/USD price with 8 decimals (e.g. 10_000_000 = $0.10)
+    pub licn_usd_8dec: u64,
+    /// wSOL/USD price with 8 decimals
+    pub wsol_usd_8dec: u64,
+    /// wETH/USD price with 8 decimals
+    pub weth_usd_8dec: u64,
+    /// wBNB/USD price with 8 decimals
+    pub wbnb_usd_8dec: u64,
+}
+
+impl Default for GenesisPrices {
+    fn default() -> Self {
+        Self {
+            licn_usd_8dec: 10_000_000,      // $0.10
+            wsol_usd_8dec: 8_970_000_000,   // $89.70
+            weth_usd_8dec: 215_229_000_000, // $2,152.29
+            wbnb_usd_8dec: 64_249_000_000,  // $642.49
+        }
+    }
+}
+
 /// Complete genesis configuration for Lichen
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisConfig {
@@ -29,6 +62,11 @@ pub struct GenesisConfig {
 
     /// Feature flags
     pub features: FeatureFlags,
+
+    /// Oracle prices at genesis — fetched once by the genesis creator,
+    /// frozen forever, embedded in the genesis block for deterministic replay.
+    #[serde(default)]
+    pub genesis_prices: GenesisPrices,
 }
 
 /// Consensus parameters
@@ -430,6 +468,7 @@ impl GenesisConfig {
                 enable_staking: true,
                 enable_slashing: true,
             },
+            genesis_prices: GenesisPrices::default(),
         }
     }
 
@@ -477,6 +516,7 @@ impl GenesisConfig {
                 enable_staking: true,
                 enable_slashing: true,
             },
+            genesis_prices: GenesisPrices::default(),
         }
     }
 }

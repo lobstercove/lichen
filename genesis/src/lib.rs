@@ -6,8 +6,8 @@
 //!   - `lichen-validator` (replays genesis contract deployment on sync)
 
 use lichen_core::{
-    Account, ContractAccount, ContractContext, ContractRuntime, Hash, ProgramCallActivity, Pubkey,
-    StateStore, SymbolRegistryEntry,
+    Account, ContractAccount, ContractContext, ContractRuntime, GenesisPrices, Hash,
+    ProgramCallActivity, Pubkey, StateStore, SymbolRegistryEntry,
 };
 
 use sha2::{Digest, Sha256};
@@ -16,154 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
-/// Fallback genesis prices (used only if env vars AND live Binance fetch both fail).
-const DEFAULT_LICN_PRICE_8DEC: u64 = 10_000_000;
-const DEFAULT_WSOL_PRICE_8DEC: u64 = 8_970_000_000;
-const DEFAULT_WETH_PRICE_8DEC: u64 = 215_229_000_000;
-const DEFAULT_WBNB_PRICE_8DEC: u64 = 64_249_000_000;
 
-/// Convert a USD price string (e.g. "145.23") to 8-decimal fixed-point.
-fn usd_to_8dec(usd: f64) -> u64 {
-    if usd <= 0.0 {
-        return 0;
-    }
-    (usd * 100_000_000.0) as u64
-}
-
-/// Read a genesis price from environment variable (set by lichen-start.sh
-/// which fetches real-time Binance prices), falling back to the compiled default.
-fn env_price_8dec(var_name: &str, default: u64) -> u64 {
-    std::env::var(var_name)
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .map(usd_to_8dec)
-        .filter(|&v| v > 0)
-        .unwrap_or(default)
-}
-
-/// Fetch live prices from Binance REST API.
-/// Returns (SOL_USD, ETH_USD, BNB_USD) as f64, or None on failure.
-fn fetch_binance_prices() -> Option<(f64, f64, f64)> {
-    let urls = [
-        "https://api.binance.us/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
-        "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
-    ];
-    for url in &urls {
-        let resp = ureq::get(url)
-            .timeout(std::time::Duration::from_secs(10))
-            .call();
-        if let Ok(resp) = resp {
-            if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
-                let mut sol = 0.0_f64;
-                let mut eth = 0.0_f64;
-                let mut bnb = 0.0_f64;
-                for t in &tickers {
-                    if let Ok(p) = t.price.parse::<f64>() {
-                        match t.symbol.as_str() {
-                            "SOLUSDT" => sol = p,
-                            "ETHUSDT" => eth = p,
-                            "BNBUSDT" => bnb = p,
-                            _ => {}
-                        }
-                    }
-                }
-                if sol > 0.0 && eth > 0.0 && bnb > 0.0 {
-                    return Some((sol, eth, bnb));
-                }
-            }
-        }
-    }
-    None
-}
-
-#[derive(serde::Deserialize)]
-struct BinanceTicker {
-    symbol: String,
-    price: String,
-}
-
-/// Live genesis price for LICN (env: GENESIS_LICN_USD, default $0.10).
-pub fn genesis_licn_price_8dec() -> u64 {
-    env_price_8dec("GENESIS_LICN_USD", DEFAULT_LICN_PRICE_8DEC)
-}
-
-/// Cached live prices (fetched once at genesis).
-static LIVE_PRICES: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new();
-
-fn get_live_prices() -> &'static Option<(f64, f64, f64)> {
-    LIVE_PRICES.get_or_init(|| {
-        // Only fetch if env vars are not already set
-        if std::env::var("GENESIS_SOL_USD").is_ok()
-            && std::env::var("GENESIS_ETH_USD").is_ok()
-            && std::env::var("GENESIS_BNB_USD").is_ok()
-        {
-            return None; // env vars are set, use those
-        }
-        info!("🌐 Fetching live prices from Binance for DEX genesis pools...");
-        match fetch_binance_prices() {
-            Some((sol, eth, bnb)) => {
-                info!(
-                    "✅ Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-                    sol, eth, bnb
-                );
-                Some((sol, eth, bnb))
-            }
-            None => {
-                warn!("⚠️  Failed to fetch live Binance prices — using compiled defaults");
-                None
-            }
-        }
-    })
-}
-
-/// Live genesis price for wSOL (env: GENESIS_SOL_USD → Binance live → default $89.70).
-pub fn genesis_wsol_price_8dec() -> u64 {
-    let from_env = env_price_8dec("GENESIS_SOL_USD", 0);
-    if from_env > 0 {
-        return from_env;
-    }
-    if let Some((sol, _, _)) = get_live_prices() {
-        let v = usd_to_8dec(*sol);
-        if v > 0 {
-            return v;
-        }
-    }
-    DEFAULT_WSOL_PRICE_8DEC
-}
-/// Live genesis price for wETH (env: GENESIS_ETH_USD → Binance live → default $2152.29).
-pub fn genesis_weth_price_8dec() -> u64 {
-    let from_env = env_price_8dec("GENESIS_ETH_USD", 0);
-    if from_env > 0 {
-        return from_env;
-    }
-    if let Some((_, eth, _)) = get_live_prices() {
-        let v = usd_to_8dec(*eth);
-        if v > 0 {
-            return v;
-        }
-    }
-    DEFAULT_WETH_PRICE_8DEC
-}
-/// Live genesis price for wBNB (env: GENESIS_BNB_USD → Binance live → default $642.49).
-pub fn genesis_wbnb_price_8dec() -> u64 {
-    let from_env = env_price_8dec("GENESIS_BNB_USD", 0);
-    if from_env > 0 {
-        return from_env;
-    }
-    if let Some((_, _, bnb)) = get_live_prices() {
-        let v = usd_to_8dec(*bnb);
-        if v > 0 {
-            return v;
-        }
-    }
-    DEFAULT_WBNB_PRICE_8DEC
-}
-
-/// Backward-compat aliases — prefer the function forms above.
-pub const GENESIS_LICN_PRICE_8DEC: u64 = DEFAULT_LICN_PRICE_8DEC;
-pub const GENESIS_WSOL_PRICE_8DEC: u64 = DEFAULT_WSOL_PRICE_8DEC;
-pub const GENESIS_WETH_PRICE_8DEC: u64 = DEFAULT_WETH_PRICE_8DEC;
-pub const GENESIS_WBNB_PRICE_8DEC: u64 = DEFAULT_WBNB_PRICE_8DEC;
 
 fn resolve_contracts_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("LICHEN_CONTRACTS_DIR") {
@@ -205,11 +58,11 @@ fn price_8dec_to_f64(price: u64) -> f64 {
     price as f64 / 100_000_000.0
 }
 
-fn genesis_pair_prices() -> [(u64, f64); 7] {
-    let licn_usd = price_8dec_to_f64(genesis_licn_price_8dec());
-    let wsol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
-    let weth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
-    let wbnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
+fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 7] {
+    let licn_usd = price_8dec_to_f64(prices.licn_usd_8dec);
+    let wsol_usd = price_8dec_to_f64(prices.wsol_usd_8dec);
+    let weth_usd = price_8dec_to_f64(prices.weth_usd_8dec);
+    let wbnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
 
     [
         (1, licn_usd),
@@ -1968,7 +1821,12 @@ pub fn genesis_initialize_contracts(
 //  bridge & custody systems are live and tokens have real supply.
 // ========================================================================
 
-pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+pub fn genesis_create_trading_pairs(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+    prices: &GenesisPrices,
+) {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Creating trading pairs & AMM pools", label);
     info!("──────────────────────────────────────────────────────");
@@ -2106,10 +1964,10 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
     //
-    let licn_usd = price_8dec_to_f64(genesis_licn_price_8dec());
-    let sol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
-    let eth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
-    let bnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
+    let licn_usd = price_8dec_to_f64(prices.licn_usd_8dec);
+    let sol_usd = price_8dec_to_f64(prices.wsol_usd_8dec);
+    let eth_usd = price_8dec_to_f64(prices.weth_usd_8dec);
+    let bnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
 
     info!(
         "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
@@ -2241,6 +2099,7 @@ pub fn genesis_seed_oracle(
     deployer_pubkey: &Pubkey,
     label: &str,
     genesis_timestamp: u64,
+    prices: &GenesisPrices,
 ) {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Seeding oracle price feeds", label);
@@ -2281,7 +2140,7 @@ pub fn genesis_seed_oracle(
 
     // Step 2: Submit initial LICN price ($0.10 with 8 decimals = 10_000_000)
     // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
-    let launch_price: u64 = 10_000_000; // $0.10 with 8 decimals
+    let launch_price: u64 = prices.licn_usd_8dec;
     let decimals: u8 = 8;
     let mut price_args = Vec::with_capacity(32 + asset.len() + 4 + 8 + 1);
     price_args.extend_from_slice(&admin); // feeder pubkey
@@ -2306,18 +2165,18 @@ pub fn genesis_seed_oracle(
     let external_feeds: [(&[u8], u64, String); 3] = [
         (
             b"wSOL",
-            genesis_wsol_price_8dec(),
-            format!("${:.2}", price_8dec_to_f64(genesis_wsol_price_8dec())),
+            prices.wsol_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.wsol_usd_8dec)),
         ),
         (
             b"wETH",
-            genesis_weth_price_8dec(),
-            format!("${:.2}", price_8dec_to_f64(genesis_weth_price_8dec())),
+            prices.weth_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.weth_usd_8dec)),
         ),
         (
             b"wBNB",
-            genesis_wbnb_price_8dec(),
-            format!("${:.2}", price_8dec_to_f64(genesis_wbnb_price_8dec())),
+            prices.wbnb_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.wbnb_usd_8dec)),
         ),
     ];
 
@@ -2374,7 +2233,7 @@ pub fn genesis_seed_oracle(
     // ── Step 4: Seed initial analytics prices for oracle-priced pairs ──
     // Write ana_lp_{pair_id} so the RPC /pairs endpoint shows prices from
     // the very first request, before the background price feeder starts.
-    genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp);
+    genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp, prices);
 
     info!("──────────────────────────────────────────────────────");
     info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB)");
@@ -2392,6 +2251,7 @@ pub fn genesis_seed_analytics_prices(
     state: &StateStore,
     deployer_pubkey: &Pubkey,
     genesis_timestamp: u64,
+    prices: &GenesisPrices,
 ) {
     let analytics_pk = match derive_contract_address(deployer_pubkey, "dex_analytics") {
         Some(pk) => pk,
@@ -2402,7 +2262,7 @@ pub fn genesis_seed_analytics_prices(
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000;
-    let pair_prices = genesis_pair_prices();
+    let pair_prices = genesis_pair_prices(prices);
 
     for (pair_id, price_f64) in &pair_prices {
         let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
@@ -2482,6 +2342,7 @@ pub fn genesis_seed_margin_prices(
     state: &StateStore,
     deployer_pubkey: &Pubkey,
     genesis_timestamp: u64,
+    prices: &GenesisPrices,
 ) {
     let margin_pk = match derive_contract_address(deployer_pubkey, "dex_margin") {
         Some(pk) => pk,
@@ -2492,7 +2353,7 @@ pub fn genesis_seed_margin_prices(
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000;
-    let pair_prices = genesis_pair_prices();
+    let pair_prices = genesis_pair_prices(prices);
 
     // Collect all storage writes to also update embedded ContractAccount
     let mut margin_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -3099,15 +2960,8 @@ mod tests {
 
     #[test]
     fn test_genesis_pair_prices_are_deterministic() {
-        // Force default prices by setting env overrides to the compiled defaults
-        // (live Binance prices would make this test non-deterministic)
-        std::env::set_var("GENESIS_SOL_USD", "89.70");
-        std::env::set_var("GENESIS_ETH_USD", "2152.29");
-        std::env::set_var("GENESIS_BNB_USD", "642.49");
-        let pair_prices = genesis_pair_prices();
-        std::env::remove_var("GENESIS_SOL_USD");
-        std::env::remove_var("GENESIS_ETH_USD");
-        std::env::remove_var("GENESIS_BNB_USD");
+        let prices = GenesisPrices::default();
+        let pair_prices = genesis_pair_prices(&prices);
         assert_eq!(pair_prices.len(), 7);
         assert_eq!(pair_prices[0].0, 1);
         assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);

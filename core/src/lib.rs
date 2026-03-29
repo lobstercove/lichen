@@ -68,7 +68,8 @@ pub use evm::{
     PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_RIPEMD160, PRECOMPILE_SHA256,
 };
 pub use genesis::{
-    ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisValidator, NetworkConfig,
+    ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisPrices, GenesisValidator,
+    NetworkConfig,
 };
 pub use hash::Hash;
 pub use marketplace::{

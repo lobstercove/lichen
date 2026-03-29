@@ -14,7 +14,11 @@ hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ureq = { version = "2", features = ["json"] }
+
+# ureq is used ONLY by the lichen-genesis binary for a one-time live price
+# fetch during genesis creation.  The library (lib.rs) never fetches prices.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "2"
 
 [lib]
 name = "lichen_genesis"
