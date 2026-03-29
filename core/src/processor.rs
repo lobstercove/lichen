@@ -648,52 +648,6 @@ impl TxProcessor {
         }
     }
 
-    // ========================================================================
-    // RATE LIMITING (per whitepaper: reputation-based tx throughput)
-    // ========================================================================
-
-    /// Default tx-per-epoch limit for accounts with no reputation
-    const BASE_TX_LIMIT_PER_EPOCH: u64 = 100;
-
-    /// Check if an account has exceeded its per-epoch rate limit.
-    /// Reputation increases the limit:
-    ///   0-499 rep   → 100 tx/epoch
-    ///   500-999 rep → 200 tx/epoch
-    ///   1000+ rep   → 500 tx/epoch
-    /// Returns Ok(()) if under limit, Err with message if exceeded.
-    pub fn check_rate_limit_static(
-        reputation: u64,
-        tx_count_this_epoch: u64,
-    ) -> Result<(), String> {
-        let limit = if reputation >= 1000 {
-            Self::BASE_TX_LIMIT_PER_EPOCH * 5
-        } else if reputation >= 500 {
-            Self::BASE_TX_LIMIT_PER_EPOCH * 2
-        } else {
-            Self::BASE_TX_LIMIT_PER_EPOCH
-        };
-
-        if tx_count_this_epoch >= limit {
-            return Err(format!(
-                "Rate limit exceeded: {} tx this epoch (limit {})",
-                tx_count_this_epoch, limit
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Get the rate limit for a given reputation level
-    pub fn rate_limit_for_reputation(reputation: u64) -> u64 {
-        if reputation >= 1000 {
-            Self::BASE_TX_LIMIT_PER_EPOCH * 5
-        } else if reputation >= 500 {
-            Self::BASE_TX_LIMIT_PER_EPOCH * 2
-        } else {
-            Self::BASE_TX_LIMIT_PER_EPOCH
-        }
-    }
-
     // ─── ZK verifier management ─────────────────────────────────────
 
     /// Load verification keys for the shielded pool circuits.
@@ -1032,7 +986,51 @@ impl TxProcessor {
         }
     }
 
-    fn b_register_symbol(&self, symbol: &str, entry: SymbolRegistryEntry) -> Result<(), String> {
+    /// AUDIT-FIX HIGH-04: Validate symbol metadata before storage.
+    /// - Must be a JSON object (not array/string/number/null)
+    /// - Only string values allowed (no nested objects or arrays)
+    /// - Serialized size capped at 1024 bytes
+    /// - Control characters (U+0000–U+001F) stripped from values
+    fn validate_and_sanitize_metadata(
+        metadata: &Option<serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let meta = match metadata {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let obj = meta.as_object().ok_or_else(|| {
+            "RegisterSymbol: metadata must be a JSON object".to_string()
+        })?;
+
+        // Rebuild with only string values, stripping control characters
+        let mut clean = serde_json::Map::new();
+        for (key, val) in obj {
+            let s = val.as_str().ok_or_else(|| {
+                format!(
+                    "RegisterSymbol: metadata value for '{}' must be a string",
+                    key
+                )
+            })?;
+            let sanitized: String = s.chars().filter(|c| !c.is_control()).collect();
+            clean.insert(key.clone(), serde_json::Value::String(sanitized));
+        }
+
+        let serialized = serde_json::to_vec(&clean)
+            .map_err(|e| format!("RegisterSymbol: metadata serialization failed: {}", e))?;
+        if serialized.len() > 1024 {
+            return Err(format!(
+                "RegisterSymbol: metadata exceeds 1024 bytes ({})",
+                serialized.len()
+            ));
+        }
+
+        Ok(Some(serde_json::Value::Object(clean)))
+    }
+
+    fn b_register_symbol(&self, symbol: &str, mut entry: SymbolRegistryEntry) -> Result<(), String> {
+        // AUDIT-FIX HIGH-04: Validate and sanitize metadata on every path
+        entry.metadata = Self::validate_and_sanitize_metadata(&entry.metadata)?;
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
             batch.register_symbol(symbol, &entry)
@@ -4795,11 +4793,11 @@ impl TxProcessor {
 
         let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
 
-        // 1/3+ of active stake required for oracle consensus.
-        // This allows a single oracle-feeding validator (out of 3) to set prices.
-        // Security: attestors must be active staked validators; price is stake-weighted median.
-        let threshold = (total_active_stake as u128) / 3;
-        if attested_stake >= threshold {
+        // 2/3+ of active stake required for oracle consensus (matches BFT supermajority).
+        // Additionally, require at least 2 distinct attestors so a single validator
+        // can never unilaterally set prices regardless of stake weight.
+        let threshold = (total_active_stake as u128) * 2 / 3;
+        if attested_stake >= threshold && attestations.len() >= 2 {
             // Compute stake-weighted median price
             let consensus_price = compute_stake_weighted_median(&attestations);
             self.state.put_oracle_consensus_price(
@@ -7071,7 +7069,7 @@ mod tests {
             "metadata": {
                 "description": "A test token for unit testing",
                 "website": "https://example.com",
-                "mintable": true
+                "mintable": "true"
             }
         });
         let init_data_bytes = serde_json::to_vec(&init_data).unwrap();
@@ -8838,34 +8836,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_static_tiers() {
-        // Under limit: OK
-        assert!(TxProcessor::check_rate_limit_static(0, 0).is_ok());
-        assert!(TxProcessor::check_rate_limit_static(0, 99).is_ok());
-
-        // At limit for 0 rep → rejected
-        assert!(TxProcessor::check_rate_limit_static(0, 100).is_err());
-
-        // 500 rep → 200 limit
-        assert!(TxProcessor::check_rate_limit_static(500, 199).is_ok());
-        assert!(TxProcessor::check_rate_limit_static(500, 200).is_err());
-
-        // 1000 rep → 500 limit
-        assert!(TxProcessor::check_rate_limit_static(1000, 499).is_ok());
-        assert!(TxProcessor::check_rate_limit_static(1000, 500).is_err());
-    }
-
-    #[test]
-    fn test_rate_limit_for_reputation() {
-        assert_eq!(TxProcessor::rate_limit_for_reputation(0), 100);
-        assert_eq!(TxProcessor::rate_limit_for_reputation(499), 100);
-        assert_eq!(TxProcessor::rate_limit_for_reputation(500), 200);
-        assert_eq!(TxProcessor::rate_limit_for_reputation(999), 200);
-        assert_eq!(TxProcessor::rate_limit_for_reputation(1000), 500);
-        assert_eq!(TxProcessor::rate_limit_for_reputation(9999), 500);
-    }
-
-    #[test]
     fn test_get_trust_tier() {
         assert_eq!(get_trust_tier(0), 0);
         assert_eq!(get_trust_tier(99), 0);
@@ -10613,10 +10583,11 @@ mod tests {
     fn test_oracle_quorum_consensus_price() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
-        // Three validators with UNEQUAL stakes to test 1/3 threshold boundary.
-        // Alice: 1 MIN, Bob: 1 MIN, Carol: 4 MIN → total = 6 MIN, threshold = 2 MIN.
-        // Alice alone (1 MIN) < threshold (2 MIN) → no quorum.
-        // Alice + Bob (2 MIN) >= threshold → quorum.
+        // Three validators with UNEQUAL stakes to test 2/3 threshold boundary.
+        // Alice: 1 MIN, Bob: 1 MIN, Carol: 4 MIN → total = 6 MIN, threshold = 4 MIN.
+        // Alice alone (1 MIN) < threshold (4 MIN) → no quorum.
+        // Alice + Bob (2 MIN) < threshold (4 MIN) → still no quorum.
+        // Alice + Bob + Carol (6 MIN) >= threshold → quorum (and >= 2 attestors).
         let bob_kp = Keypair::generate();
         let bob = bob_kp.pubkey();
         let carol_kp = Keypair::generate();
@@ -10636,11 +10607,11 @@ mod tests {
             pool.stake(carol, stake * 4, 0).unwrap();
             state.put_stake_pool(&pool).unwrap();
         }
-        // total = 6*stake, threshold = 6*stake/3 = 2*stake
+        // total = 6*stake, threshold = 6*stake*2/3 = 4*stake
 
         let block_producer = Pubkey([42u8; 32]);
 
-        // Alice attests: LICN = 150 (stake = 1 MIN < threshold 2 MIN → no quorum)
+        // Alice attests: LICN = 150 (stake = 1 MIN < threshold 4 MIN → no quorum)
         let ix = make_oracle_attestation_ix(alice, "LICN", 150, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10648,14 +10619,14 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Alice attestation failed: {:?}", r.error);
 
-        // 1 MIN < 2 MIN threshold → no consensus
+        // 1 MIN < 4 MIN threshold → no consensus
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(
             cp.is_none(),
-            "Should NOT have consensus below 1/3 threshold"
+            "Should NOT have consensus below 2/3 threshold"
         );
 
-        // Bob attests: LICN = 160 (combined stake = 2 MIN >= threshold 2 MIN → quorum)
+        // Bob attests: LICN = 160 (combined stake = 2 MIN < threshold 4 MIN → still no quorum)
         let ix = make_oracle_attestation_ix(bob, "LICN", 160, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10663,22 +10634,14 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Bob attestation failed: {:?}", r.error);
 
-        // 2 MIN >= 2 MIN threshold → consensus reached
+        // 2 MIN < 4 MIN threshold → still no consensus with only 2 small validators
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(
-            cp.is_some(),
-            "Should have consensus at exactly 1/3 threshold"
-        );
-        let cp = cp.unwrap();
-        assert_eq!(cp.attestation_count, 2);
-        // Sorted prices: [150 (s), 160 (s)]. Total=2s, half=s.
-        // Cumulative: 150→s (not >s), 160→2s (>s) → median = 160
-        assert_eq!(
-            cp.price, 160,
-            "Stake-weighted median of [150,160] with equal stakes"
+            cp.is_none(),
+            "Should NOT have consensus below 2/3 threshold (2 of 6 stake)"
         );
 
-        // Carol attests: LICN = 155 (all 3 validators, 6/6 stake)
+        // Carol attests: LICN = 155 (combined stake = 6 MIN >= threshold 4 MIN → quorum)
         let ix = make_oracle_attestation_ix(carol, "LICN", 155, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10686,7 +10649,7 @@ mod tests {
         let r = processor.process_transaction(&tx, &block_producer);
         assert!(r.success, "Carol attestation failed: {:?}", r.error);
 
-        // 6 MIN total → consensus with all 3
+        // 6 MIN >= 4 MIN threshold, 3 attestors >= 2 → consensus reached
         let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(cp.is_some(), "Should have consensus with all validators");
         let cp = cp.unwrap();

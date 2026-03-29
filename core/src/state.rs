@@ -1984,9 +1984,7 @@ impl StateStore {
             return Hash::default();
         }
 
-        let root = Self::merkle_root_from_leaves(&leaves);
-
-        root
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     /// Compute the contract storage sub-root using incremental dirty tracking.
@@ -2208,9 +2206,7 @@ impl StateStore {
         }
         let _ = self.db.write(batch);
 
-        let root = Self::merkle_root_from_leaves(&leaves);
-
-        root
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     /// Legacy O(N) full scan — fallback only when CF_MERKLE_LEAVES is unavailable

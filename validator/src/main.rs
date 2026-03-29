@@ -2419,24 +2419,14 @@ fn block_fee_at_index(
 }
 
 fn block_total_fees_paid(state: &StateStore, block: &Block, fee_config: &FeeConfig) -> u64 {
+    // AUDIT-FIX HIGH-01: Never trust producer-supplied tx_fees_paid.
+    // Always derive fees locally from state receipts or re-computation.
     block
         .transactions
         .iter()
-        .enumerate()
-        .map(|(tx_index, tx)| {
-            TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config).unwrap_or_else(
-                || {
-                    if block.tx_fees_paid.len() == block.transactions.len() {
-                        block
-                            .tx_fees_paid
-                            .get(tx_index)
-                            .copied()
-                            .unwrap_or_else(|| TxProcessor::compute_transaction_fee(tx, fee_config))
-                    } else {
-                        TxProcessor::compute_transaction_fee(tx, fee_config)
-                    }
-                },
-            )
+        .map(|tx| {
+            TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config)
+                .unwrap_or_else(|| TxProcessor::compute_transaction_fee(tx, fee_config))
         })
         .sum()
 }

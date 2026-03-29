@@ -345,18 +345,18 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
 
         // Register in symbol registry with rich token metadata
         let mut meta = serde_json::json!({
-            "genesis_deploy": true,
-            "wasm_size": account.data.len(),
+            "genesis_deploy": "true",
+            "wasm_size": account.data.len().to_string(),
         });
         // Enrich token/wrapped contracts with MT-20 metadata
         match template {
             "token" => {
                 // LICN native token: 500M initial supply, 9 decimals, mintable (inflationary via block rewards)
-                meta["total_supply"] = serde_json::json!(500_000_000_u64 * 1_000_000_000_u64);
-                meta["decimals"] = serde_json::json!(9);
-                meta["mintable"] = serde_json::json!(true);
-                meta["burnable"] = serde_json::json!(true);
-                meta["is_native"] = serde_json::json!(true);
+                meta["total_supply"] = serde_json::json!((500_000_000_u64 * 1_000_000_000_u64).to_string());
+                meta["decimals"] = serde_json::json!("9");
+                meta["mintable"] = serde_json::json!("true");
+                meta["burnable"] = serde_json::json!("true");
+                meta["is_native"] = serde_json::json!("true");
                 // Cosmetic profile metadata — shown in explorer contract page
                 meta["description"] = serde_json::json!(
                     "The Native Home of Agents. Portable identity + rep tiers \u{2022} Agents run validators & earn \u{2022} DeFi \u{2022} DAO \u{2022} DApps \u{2022} DEX \u{2022} Oracles \u{2022} Storage \u{2022} Vault \u{2022} Pools \u{2022} Bounty"
@@ -371,10 +371,10 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
             }
             "wrapped" => {
                 // Wrapped tokens start at 0 supply, 9 decimals
-                meta["total_supply"] = serde_json::json!(0);
-                meta["decimals"] = serde_json::json!(9);
-                meta["mintable"] = serde_json::json!(true);
-                meta["burnable"] = serde_json::json!(true);
+                meta["total_supply"] = serde_json::json!("0");
+                meta["decimals"] = serde_json::json!("9");
+                meta["mintable"] = serde_json::json!("true");
+                meta["burnable"] = serde_json::json!("true");
                 // Logo and description per wrapped asset
                 let (desc, logo, logo_url) = match symbol {
                     "LUSD" | "lUSD" => (

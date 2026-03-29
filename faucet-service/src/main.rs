@@ -71,6 +71,9 @@ struct AirdropRecord {
     recipient: String,
     amount_licn: u64,
     timestamp_ms: u64,
+    /// AUDIT-FIX HIGH-05: Store IP for rate-limiter restore on restart
+    #[serde(default)]
+    ip: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -137,6 +140,33 @@ impl RateLimiter {
             .push((now_ms, amount_licn));
         self.prune(now_ms);
     }
+
+    /// AUDIT-FIX HIGH-05: Restore rate-limiter state from persisted airdrop history.
+    fn restore_from_airdrops(&mut self, records: &[AirdropRecord]) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let cutoff = now_ms.saturating_sub(24 * 60 * 60 * 1000);
+
+        for record in records {
+            if record.timestamp_ms < cutoff {
+                continue;
+            }
+            // Restore per-address limit (always available)
+            self.by_address
+                .entry(record.recipient.clone())
+                .or_default()
+                .push((record.timestamp_ms, record.amount_licn));
+            // Restore per-IP limit (only if stored)
+            if let Some(ref ip) = record.ip {
+                self.by_ip
+                    .entry(ip.clone())
+                    .or_default()
+                    .push((record.timestamp_ms, record.amount_licn));
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -196,12 +226,25 @@ async fn main() {
         panic!("❌ Faucet cannot run on mainnet!");
     }
 
+    let airdrops = load_airdrops(&config.airdrops_file);
+
+    // AUDIT-FIX HIGH-05: Restore rate-limiter from persisted airdrop history
+    let mut rate_limiter = RateLimiter::default();
+    rate_limiter.restore_from_airdrops(&airdrops);
+    let restored_addrs = rate_limiter.by_address.len();
+    let restored_ips = rate_limiter.by_ip.len();
+
     let state = FaucetState {
         config: config.clone(),
         http: Client::builder().build().expect("reqwest client"),
-        rate_limiter: Arc::new(RwLock::new(RateLimiter::default())),
-        airdrops: Arc::new(RwLock::new(load_airdrops(&config.airdrops_file))),
+        rate_limiter: Arc::new(RwLock::new(rate_limiter)),
+        airdrops: Arc::new(RwLock::new(airdrops)),
     };
+
+    info!(
+        "Restored rate-limiter: {} addresses, {} IPs from airdrop history",
+        restored_addrs, restored_ips
+    );
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
@@ -368,6 +411,7 @@ async fn request_airdrop(
         recipient: request.address.trim().to_string(),
         amount_licn,
         timestamp_ms: now_ms,
+        ip: Some(client_ip),
     });
     if let Err(err) = save_airdrops(&state.config.airdrops_file, &airdrops) {
         error!("failed to persist faucet history: {}", err);

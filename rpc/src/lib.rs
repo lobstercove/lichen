@@ -542,15 +542,26 @@ async fn put_cached_program_list_response(
     guard.insert(key, (Instant::now(), response));
 }
 
+/// AUDIT-FIX HIGH-03: Exact allowlist instead of substring matching.
+/// Only the following network/chain IDs enable legacy admin RPCs:
+const LEGACY_ADMIN_ALLOWED_IDS: &[&str] = &[
+    "local",
+    "dev",
+    "localnet",
+    "devnet",
+    "lichen-test",
+    "lichen-testnet-local",
+    "lichen-testnet-1",
+    "lichen-devnet-1",
+    "lichen-local",
+];
+
 fn allow_legacy_admin_rpc(chain_id: &str, network_id: &str) -> bool {
     let chain = chain_id.to_ascii_lowercase();
     let network = network_id.to_ascii_lowercase();
 
-    network.contains("local")
-        || network.contains("dev")
-        || network == "lichen-test"
-        || chain.contains("local")
-        || chain.contains("dev")
+    LEGACY_ADMIN_ALLOWED_IDS.iter().any(|id| network == *id)
+        || LEGACY_ADMIN_ALLOWED_IDS.iter().any(|id| chain == *id)
 }
 
 fn require_legacy_admin_rpc_enabled(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
@@ -595,63 +606,29 @@ fn require_legacy_admin_rpc_local_origin(
     })
 }
 
-fn inject_admin_token_from_header(
-    params: Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Option<serde_json::Value> {
-    let token = auth_header
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    let Some(token) = token else {
-        return params;
-    };
-
+/// AUDIT-FIX HIGH-02: Strip any admin_token from JSON body params to prevent
+/// clients from embedding secrets in loggable request payloads.
+fn strip_admin_token_from_params(params: Option<serde_json::Value>) -> Option<serde_json::Value> {
     match params {
         Some(serde_json::Value::Object(mut obj)) => {
-            obj.entry("admin_token".to_string())
-                .or_insert_with(|| serde_json::Value::String(token.to_string()));
+            obj.remove("admin_token");
             Some(serde_json::Value::Object(obj))
         }
         Some(serde_json::Value::Array(mut arr)) => {
-            let mut injected = false;
             for value in &mut arr {
                 if let Some(obj) = value.as_object_mut() {
-                    if !obj.contains_key("admin_token") {
-                        obj.insert(
-                            "admin_token".to_string(),
-                            serde_json::Value::String(token.to_string()),
-                        );
-                    }
-                    injected = true;
-                    break;
+                    obj.remove("admin_token");
                 }
-            }
-            if !injected {
-                arr.push(serde_json::json!({ "admin_token": token }));
             }
             Some(serde_json::Value::Array(arr))
         }
-        Some(other) => Some(serde_json::Value::Array(vec![
-            other,
-            serde_json::json!({ "admin_token": token }),
-        ])),
-        None => Some(serde_json::json!({ "admin_token": token })),
+        other => other,
     }
 }
 
-/// Verify admin authorization from params or Authorization header for legacy dev-only admin RPCs.
-/// RPC-01: Supports both JSON body `admin_token` (legacy) and `Authorization: Bearer <token>` header
-fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Result<(), RpcError> {
-    verify_admin_auth_with_header(state, params, None)
-}
-
-fn verify_admin_auth_with_header(
-    state: &RpcState,
-    params: &Option<serde_json::Value>,
-    auth_header: Option<&str>,
-) -> Result<(), RpcError> {
+/// AUDIT-FIX HIGH-02: Admin auth uses Authorization header only.
+/// The admin_token is never injected into or read from JSON body params.
+fn verify_admin_auth(state: &RpcState, auth_header: Option<&str>) -> Result<(), RpcError> {
     let guard = state.admin_token.read().map_err(|_| RpcError {
         code: -32000,
         message: "Internal error: admin token lock poisoned".to_string(),
@@ -661,28 +638,9 @@ fn verify_admin_auth_with_header(
         message: "Admin endpoints disabled: no admin_token configured".to_string(),
     })?;
 
-    // RPC-01: Try Authorization header first (preferred, avoids log leakage)
-    let header_token = auth_header
+    let token = auth_header
         .and_then(|h| h.strip_prefix("Bearer "))
         .map(|t| t.trim());
-
-    // Legacy: extract from JSON body params
-    let body_token = params
-        .as_ref()
-        .and_then(|p| p.as_object())
-        .and_then(|o| o.get("admin_token"))
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            params
-                .as_ref()
-                .and_then(|p| p.as_array())
-                .and_then(|arr| arr.last())
-                .and_then(|v| v.as_object())
-                .and_then(|o| o.get("admin_token"))
-                .and_then(|v| v.as_str())
-        });
-
-    let token = header_token.or(body_token);
 
     match token {
         Some(t) if constant_time_eq(t.as_bytes(), required_token.as_bytes()) => Ok(()),
@@ -692,7 +650,7 @@ fn verify_admin_auth_with_header(
         }),
         None => Err(RpcError {
             code: -32003,
-            message: "Missing admin_token in params or Authorization header".to_string(),
+            message: "Missing Authorization: Bearer <token> header".to_string(),
         }),
     }
 }
@@ -2303,8 +2261,11 @@ async fn handle_rpc(
                 error.message,
             );
         }
-        req.params = inject_admin_token_from_header(req.params, auth_header);
+        req.params = strip_admin_token_from_params(req.params);
     }
+
+    // Capture auth header as owned String for admin handlers
+    let auth_header_owned: Option<String> = auth_header.map(String::from);
 
     // Route to appropriate handler
     let result = match req.method.as_str() {
@@ -2358,10 +2319,14 @@ async fn handle_rpc(
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
-        "setFeeConfig" => handle_set_fee_config(&state, req.params).await,
+        "setFeeConfig" => {
+            handle_set_fee_config(&state, req.params, auth_header_owned.as_deref()).await
+        }
         "estimateTransactionFee" => handle_estimate_transaction_fee(&state, req.params).await,
         "getRentParams" => handle_get_rent_params(&state).await,
-        "setRentParams" => handle_set_rent_params(&state, req.params).await,
+        "setRentParams" => {
+            handle_set_rent_params(&state, req.params, auth_header_owned.as_deref()).await
+        }
 
         // Network endpoints
         "getPeers" => handle_get_peers(&state).await,
@@ -2397,10 +2362,16 @@ async fn handle_rpc(
         "getContractInfo" => handle_get_contract_info(&state, req.params).await,
         "getContractLogs" => handle_get_contract_logs(&state, req.params).await,
         "getContractAbi" => handle_get_contract_abi(&state, req.params).await,
-        "setContractAbi" => handle_set_contract_abi(&state, req.params).await,
+        "setContractAbi" => {
+            handle_set_contract_abi(&state, req.params, auth_header_owned.as_deref()).await
+        }
         "getAllContracts" => handle_get_all_contracts(&state, req.params).await,
-        "deployContract" => handle_deploy_contract(&state, req.params).await,
-        "upgradeContract" => handle_upgrade_contract(&state, req.params).await,
+        "deployContract" => {
+            handle_deploy_contract(&state, req.params, auth_header_owned.as_deref()).await
+        }
+        "upgradeContract" => {
+            handle_upgrade_contract(&state, req.params, auth_header_owned.as_deref()).await
+        }
 
         // Program endpoints (draft)
         "getProgram" => handle_get_program(&state, req.params).await,
@@ -3591,11 +3562,12 @@ async fn handle_get_fee_config(state: &RpcState) -> Result<serde_json::Value, Rp
 async fn handle_set_fee_config(
     state: &RpcState,
     params: Option<serde_json::Value>,
+    auth_header: Option<&str>,
 ) -> Result<serde_json::Value, RpcError> {
     require_legacy_admin_rpc_enabled(state, "setFeeConfig")?;
     // L3-01: Block in multi-validator mode — direct state write bypasses consensus
     require_single_validator(state, "setFeeConfig").await?;
-    verify_admin_auth(state, &params)?;
+    verify_admin_auth(state, auth_header)?;
 
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
@@ -3706,11 +3678,12 @@ async fn handle_get_rent_params(state: &RpcState) -> Result<serde_json::Value, R
 async fn handle_set_rent_params(
     state: &RpcState,
     params: Option<serde_json::Value>,
+    auth_header: Option<&str>,
 ) -> Result<serde_json::Value, RpcError> {
     require_legacy_admin_rpc_enabled(state, "setRentParams")?;
     // L3-01: Block in multi-validator mode — direct state write bypasses consensus
     require_single_validator(state, "setRentParams").await?;
-    verify_admin_auth(state, &params)?;
+    verify_admin_auth(state, auth_header)?;
 
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
@@ -7547,11 +7520,12 @@ async fn handle_get_contract_abi(
 async fn handle_set_contract_abi(
     state: &RpcState,
     params: Option<serde_json::Value>,
+    auth_header: Option<&str>,
 ) -> Result<serde_json::Value, RpcError> {
     require_legacy_admin_rpc_enabled(state, "setContractAbi")?;
     // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
     require_single_validator(state, "setContractAbi").await?;
-    verify_admin_auth(state, &params)?;
+    verify_admin_auth(state, auth_header)?;
 
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
@@ -7811,6 +7785,7 @@ async fn handle_get_all_contracts(
 async fn handle_deploy_contract(
     state: &RpcState,
     params: Option<serde_json::Value>,
+    auth_header: Option<&str>,
 ) -> Result<serde_json::Value, RpcError> {
     use base64::{engine::general_purpose, Engine as _};
     use lichen_core::account::Keypair as LichenKeypair;
@@ -7821,7 +7796,7 @@ async fn handle_deploy_contract(
     require_single_validator(state, "deployContract").await?;
 
     // Admin-gate: contract deployment requires admin authentication
-    verify_admin_auth(state, &params)?;
+    verify_admin_auth(state, auth_header)?;
 
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
@@ -8105,6 +8080,7 @@ async fn handle_deploy_contract(
 async fn handle_upgrade_contract(
     state: &RpcState,
     params: Option<serde_json::Value>,
+    auth_header: Option<&str>,
 ) -> Result<serde_json::Value, RpcError> {
     use base64::{engine::general_purpose, Engine as _};
     use lichen_core::account::Keypair as LichenKeypair;
@@ -8112,7 +8088,7 @@ async fn handle_upgrade_contract(
 
     require_legacy_admin_rpc_enabled(state, "upgradeContract")?;
     require_single_validator(state, "upgradeContract").await?;
-    verify_admin_auth(state, &params)?;
+    verify_admin_auth(state, auth_header)?;
 
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
