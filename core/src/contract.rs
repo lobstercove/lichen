@@ -409,18 +409,28 @@ fn default_version() -> u32 {
 
 /// Serialize HashMap<Vec<u8>, Vec<u8>> as a JSON object with string keys.
 /// Keys that are valid UTF-8 are stored as-is; binary keys get hex-encoded with "0x" prefix.
+/// Keys are sorted to ensure **deterministic** serialization across processes.
 fn serialize_byte_map<S>(map: &HashMap<Vec<u8>, Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::SerializeMap;
-    let mut ser_map = serializer.serialize_map(Some(map.len()))?;
-    for (key, value) in map {
-        let key_str = match std::str::from_utf8(key) {
-            Ok(s) if !s.starts_with("0x") => s.to_string(),
-            _ => format!("0x{}", hex::encode(key)),
-        };
-        ser_map.serialize_entry(&key_str, value)?;
+    // Build sorted key-string pairs for deterministic output
+    let mut entries: Vec<(String, &Vec<u8>)> = map
+        .iter()
+        .map(|(key, value)| {
+            let key_str = match std::str::from_utf8(key) {
+                Ok(s) if !s.starts_with("0x") => s.to_string(),
+                _ => format!("0x{}", hex::encode(key)),
+            };
+            (key_str, value)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut ser_map = serializer.serialize_map(Some(entries.len()))?;
+    for (key_str, value) in &entries {
+        ser_map.serialize_entry(key_str, value)?;
     }
     ser_map.end()
 }

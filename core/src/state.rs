@@ -9719,7 +9719,9 @@ mod tests {
 
         // The merkle proof itself verifies against the accounts sub-root
         assert!(ap.proof.verify(&accounts_root));
-        assert!(ap.proof.verify_account(&accounts_root, &pk2, &ap.account_data));
+        assert!(ap
+            .proof
+            .verify_account(&accounts_root, &pk2, &ap.account_data));
 
         // Standalone verification against accounts sub-root
         assert!(StateStore::verify_account_proof(
