@@ -2490,7 +2490,6 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
-    const ORACLE_DECIMALS: u8 = 8;
 
     let wsol_usd =
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wSOL").unwrap_or(0.0);
@@ -2509,14 +2508,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     for asset in ["LICN", "wSOL", "wETH", "wBNB"] {
         let consensus_feed =
             lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
-                .map(|(price_raw, decimals, _)| (price_raw, decimals))
-                .or_else(|| {
-                    if asset == "LICN" {
-                        Some((GenesisPrices::default().licn_usd_8dec, ORACLE_DECIMALS))
-                    } else {
-                        None
-                    }
-                });
+                .map(|(price_raw, decimals, _)| (price_raw, decimals));
         let Some((price_raw, decimals)) = consensus_feed else {
             continue;
         };
@@ -4229,13 +4221,12 @@ struct BinanceTicker {
     price: String,
 }
 
-fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64) {
-    let defaults = GenesisPrices::default();
+fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64, prices: &GenesisPrices) {
     for (asset, price_raw) in [
-        ("LICN", defaults.licn_usd_8dec),
-        ("wSOL", defaults.wsol_usd_8dec),
-        ("wETH", defaults.weth_usd_8dec),
-        ("wBNB", defaults.wbnb_usd_8dec),
+        ("LICN", prices.licn_usd_8dec),
+        ("wSOL", prices.wsol_usd_8dec),
+        ("wETH", prices.weth_usd_8dec),
+        ("wBNB", prices.wbnb_usd_8dec),
     ] {
         let has_price = state
             .get_oracle_consensus_price(asset)
@@ -5972,7 +5963,11 @@ async fn run_validator() {
                 info!("  ✓ Analytics prices seeded for pairs 1-5");
             }
 
-            seed_bootstrap_consensus_oracle_prices(&state, state.get_last_slot().unwrap_or(0));
+            seed_bootstrap_consensus_oracle_prices(
+                &state,
+                state.get_last_slot().unwrap_or(0),
+                &reconcile_prices,
+            );
 
             // Check if oracle price feeds are present (price_LICN)
             let licn_price_exists = state.get_program_storage("ORACLE", b"price_LICN").is_some();
@@ -10993,6 +10988,12 @@ async fn run_validator() {
                         Err(e) => {
                             warn!("🗄️  Cold migration error: {}", e);
                         }
+                    }
+                    // Prune archive snapshots alongside cold migration
+                    state_for_cold.prune_archive_snapshots(current_slot, retain);
+                    // Migrate per-slot index CFs to cold storage
+                    if let Err(e) = state_for_cold.migrate_indexes_to_cold(cutoff) {
+                        warn!("🗄️  Index cold migration error: {}", e);
                     }
                 }
             }

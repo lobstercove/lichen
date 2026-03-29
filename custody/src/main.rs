@@ -1129,7 +1129,40 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
     opts.set_keep_log_file_num(5);
     opts.set_max_total_wal_size(128 * 1024 * 1024);
 
-    let shared_cache = Cache::new_lru_cache(256 * 1024 * 1024);
+    let cache_size_mb: usize = {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|meminfo| {
+                    meminfo
+                        .lines()
+                        .find(|l| l.starts_with("MemTotal:"))
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .and_then(|kb| kb.parse::<usize>().ok())
+                        .map(|total_kb| (total_kb / 1024 / 4).clamp(128, 2048))
+                })
+                .unwrap_or(256)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("sysctl")
+                .arg("-n")
+                .arg("hw.memsize")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .map(|bytes| (bytes / (1024 * 1024) / 4).clamp(128, 2048))
+                .unwrap_or(256)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            256
+        }
+    };
+    info!("Custody DB cache: {} MB", cache_size_mb);
+    let shared_cache = Cache::new_lru_cache(cache_size_mb * 1024 * 1024);
 
     let point_lookup_opts = || -> Options {
         let mut cf_opts = Options::default();

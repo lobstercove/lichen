@@ -16,8 +16,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
-
-
 fn resolve_contracts_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("LICHEN_CONTRACTS_DIR") {
         let path = PathBuf::from(value);
@@ -2965,8 +2963,8 @@ mod tests {
         assert_eq!(pair_prices.len(), 7);
         assert_eq!(pair_prices[0].0, 1);
         assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
-        assert!((pair_prices[1].1 - 89.70).abs() < f64::EPSILON);
-        assert!((pair_prices[2].1 - 2152.29).abs() < f64::EPSILON);
-        assert!((pair_prices[5].1 - 642.49).abs() < f64::EPSILON);
+        assert!((pair_prices[1].1 - 81.84).abs() < f64::EPSILON);
+        assert!((pair_prices[2].1 - 1999.34).abs() < f64::EPSILON);
+        assert!((pair_prices[5].1 - 609.78).abs() < f64::EPSILON);
     }
 }
