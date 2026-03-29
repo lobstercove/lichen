@@ -75,7 +75,8 @@ const CF_SYMBOL_BY_PROGRAM: &str = "symbol_by_program"; // Program pubkey -> sym
 const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> event_key (secondary index)
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (LichenID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
-                                                // Shielded pool (ZK privacy layer)
+const CF_CONTRACT_MERKLE_LEAVES: &str = "contract_merkle_leaves"; // full_key(32+N) hash -> leaf_hash(32) (contract storage Merkle cache)
+                                                                  // Shielded pool (ZK privacy layer)
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
@@ -693,6 +694,8 @@ pub struct StateBatch {
     new_programs: i64,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
+    /// Track dirty contract storage keys for incremental Merkle recomputation
+    dirty_contract_keys: Vec<Vec<u8>>,
     /// Task 3.9: Slot number for archive snapshots (0 = archive disabled for this batch)
     archive_slot: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -1070,6 +1073,7 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_CONTRACT_STORAGE, prefix_scan_opts(32)),
             // Incremental Merkle leaf cache
             ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES, point_lookup_opts(32)), // key=pubkey(32)->leaf_hash(32)
+            ColumnFamilyDescriptor::new(CF_CONTRACT_MERKLE_LEAVES, prefix_scan_opts(32)), // key=program(32)+storage_key->leaf_hash(32)
             // Shielded pool (ZK privacy layer)
             ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,LE)->commitment(32)
             ColumnFamilyDescriptor::new(CF_SHIELDED_NULLIFIERS, point_lookup_opts(32)), // key=nullifier(32)->0x01
@@ -1859,18 +1863,38 @@ impl StateStore {
     ///
     /// At 1M accounts, this turns a full O(N) scan into O(dirty_count + N_leaves_read)
     /// where dirty_count is typically tiny (transactions per block ~10-100).
+    ///
+    /// The final state_root is a composite:
+    ///   H(0x02 || accounts_root || contract_storage_root)
+    /// This domain-separates the two sub-trees and enables independent proofs.
     pub fn compute_state_root(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root();
+        let contract_root = self.compute_contract_storage_root();
+        // Composite root with 0x02 domain separator
+        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        composite.push(0x02);
+        composite.extend_from_slice(&accounts_root.0);
+        composite.extend_from_slice(&contract_root.0);
+        let root = Hash::hash(&composite);
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
+        }
+        root
+    }
+
+    /// Compute the accounts sub-root using incremental dirty tracking.
+    pub fn compute_accounts_root(&self) -> Hash {
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(handle) => handle,
             None => return Hash::default(),
         };
         let cf_leaves = match self.db.cf_handle(CF_MERKLE_LEAVES) {
             Some(handle) => handle,
-            None => return self.compute_state_root_full_scan(), // fallback first time
+            None => return self.compute_accounts_root_full_scan(),
         };
         let cf_stats = match self.db.cf_handle(CF_STATS) {
             Some(handle) => handle,
-            None => return self.compute_state_root_full_scan(),
+            None => return self.compute_accounts_root_full_scan(),
         };
 
         // Check if we have a populated leaf cache (merkle_leaf_count > 0)
@@ -1883,7 +1907,7 @@ impl StateStore {
 
         if leaf_count == 0 {
             // Cold start: populate entire leaf cache
-            return self.compute_state_root_cold_start();
+            return self.compute_accounts_root_cold_start();
         }
 
         // Read dirty account keys from CF_STATS: "dirty_acct:{pubkey}" -> []
@@ -1939,7 +1963,7 @@ impl StateStore {
 
         if let Err(e) = self.db.write(batch) {
             eprintln!("Warning: failed to write Merkle leaf updates: {}", e);
-            return self.compute_state_root_full_scan();
+            return self.compute_accounts_root_full_scan();
         }
 
         // Rebuild Merkle tree from all cached leaves (already sorted by pubkey in RocksDB)
@@ -1962,22 +1986,196 @@ impl StateStore {
 
         let root = Self::merkle_root_from_leaves(&leaves);
 
-        // Cache the root
-        let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
-
         root
+    }
+
+    /// Compute the contract storage sub-root using incremental dirty tracking.
+    /// Mirrors the accounts root approach but over CF_CONTRACT_STORAGE.
+    fn compute_contract_storage_root(&self) -> Hash {
+        let cf_storage = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
+            Some(h) => h,
+            None => return Hash::default(),
+        };
+        let cf_cs_leaves = match self.db.cf_handle(CF_CONTRACT_MERKLE_LEAVES) {
+            Some(h) => h,
+            None => {
+                // Cold start: full scan of contract storage
+                return self.compute_contract_storage_root_full_scan();
+            }
+        };
+        let cf_stats = match self.db.cf_handle(CF_STATS) {
+            Some(h) => h,
+            None => return self.compute_contract_storage_root_full_scan(),
+        };
+
+        // Check if leaf cache is populated
+        let leaf_count = match self.db.get_cf(&cf_stats, b"contract_merkle_leaf_count") {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
+            }
+            _ => 0,
+        };
+
+        if leaf_count == 0 {
+            return self.compute_contract_storage_root_cold_start();
+        }
+
+        // Read dirty contract storage keys from CF_STATS: "dirty_cstor:{full_key}" -> []
+        let dirty_prefix = b"dirty_cstor:";
+        let iter = self.db.iterator_cf(
+            &cf_stats,
+            rocksdb::IteratorMode::From(dirty_prefix, Direction::Forward),
+        );
+
+        let mut dirty_keys: Vec<Vec<u8>> = Vec::new();
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if !key.starts_with(dirty_prefix) {
+                break;
+            }
+            dirty_keys.push(key[dirty_prefix.len()..].to_vec());
+        }
+
+        // Recompute leaf hashes for dirty contract storage entries
+        let mut batch = WriteBatch::default();
+        for full_key in &dirty_keys {
+            match self.db.get_cf(&cf_storage, full_key) {
+                Ok(Some(value)) => {
+                    // H(full_key || value)
+                    let leaf = Hash::hash_two_parts(full_key, &value);
+                    batch.put_cf(&cf_cs_leaves, full_key, leaf.0);
+                }
+                Ok(None) => {
+                    // Deleted: remove from leaf cache
+                    batch.delete_cf(&cf_cs_leaves, full_key);
+                }
+                Err(_) => continue,
+            }
+            // Remove dirty marker
+            let mut marker_key = Vec::with_capacity(dirty_prefix.len() + full_key.len());
+            marker_key.extend_from_slice(dirty_prefix);
+            marker_key.extend_from_slice(full_key);
+            batch.delete_cf(&cf_stats, &marker_key);
+        }
+        batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
+
+        if let Err(e) = self.db.write(batch) {
+            eprintln!(
+                "Warning: failed to write contract Merkle leaf updates: {}",
+                e
+            );
+            return self.compute_contract_storage_root_full_scan();
+        }
+
+        // Rebuild tree from all cached contract leaves
+        let mut leaves: Vec<Hash> = Vec::new();
+        let iter = self
+            .db
+            .iterator_cf(&cf_cs_leaves, rocksdb::IteratorMode::Start);
+        for item in iter.flatten() {
+            let (_, value) = item;
+            if value.len() == 32 {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&value);
+                leaves.push(Hash(bytes));
+            }
+        }
+
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+
+        Self::merkle_root_from_leaves(&leaves)
+    }
+
+    /// Cold start: populate contract storage leaf cache from full scan.
+    fn compute_contract_storage_root_cold_start(&self) -> Hash {
+        let cf_storage = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
+            Some(h) => h,
+            None => return Hash::default(),
+        };
+        let cf_cs_leaves = match self.db.cf_handle(CF_CONTRACT_MERKLE_LEAVES) {
+            Some(h) => h,
+            None => return self.compute_contract_storage_root_full_scan(),
+        };
+
+        let mut leaves: Vec<Hash> = Vec::new();
+        let mut batch = WriteBatch::default();
+        let mut count = 0u64;
+
+        let iter = self
+            .db
+            .iterator_cf(&cf_storage, rocksdb::IteratorMode::Start);
+        for item in iter.flatten() {
+            let (key, value) = item;
+            let leaf = Hash::hash_two_parts(&key, &value);
+            leaves.push(leaf);
+            batch.put_cf(&cf_cs_leaves, &*key, leaf.0);
+            count += 1;
+        }
+
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            batch.put_cf(
+                &cf_stats,
+                b"contract_merkle_leaf_count",
+                count.to_le_bytes(),
+            );
+            batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
+        }
+        let _ = self.db.write(batch);
+
+        Self::merkle_root_from_leaves(&leaves)
+    }
+
+    /// Fallback: full scan contract storage root without caching.
+    fn compute_contract_storage_root_full_scan(&self) -> Hash {
+        let cf = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
+            Some(h) => h,
+            None => return Hash::default(),
+        };
+
+        let mut leaves: Vec<Hash> = Vec::new();
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for (key, value) in iter.flatten() {
+            leaves.push(Hash::hash_two_parts(&key, &value));
+        }
+
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+
+        Self::merkle_root_from_leaves(&leaves)
     }
 
     /// Full scan state root computation — used for cold start and fallback.
     /// Populates CF_MERKLE_LEAVES so subsequent calls are incremental.
     pub fn compute_state_root_cold_start(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root_cold_start();
+        let contract_root = self.compute_contract_storage_root_cold_start();
+        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        composite.push(0x02);
+        composite.extend_from_slice(&accounts_root.0);
+        composite.extend_from_slice(&contract_root.0);
+        let root = Hash::hash(&composite);
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
+        }
+        root
+    }
+
+    /// Accounts-only cold start: populate CF_MERKLE_LEAVES cache.
+    fn compute_accounts_root_cold_start(&self) -> Hash {
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(h) => h,
             None => return Hash::default(),
         };
         let cf_leaves = match self.db.cf_handle(CF_MERKLE_LEAVES) {
             Some(h) => h,
-            None => return self.compute_state_root_full_scan(),
+            None => return self.compute_accounts_root_full_scan(),
         };
 
         let mut leaves: Vec<Hash> = Vec::new();
@@ -2012,15 +2210,11 @@ impl StateStore {
 
         let root = Self::merkle_root_from_leaves(&leaves);
 
-        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
-        }
-
         root
     }
 
     /// Legacy O(N) full scan — fallback only when CF_MERKLE_LEAVES is unavailable
-    fn compute_state_root_full_scan(&self) -> Hash {
+    fn compute_accounts_root_full_scan(&self) -> Hash {
         let cf = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(handle) => handle,
             None => return Hash::default(),
@@ -2042,9 +2236,8 @@ impl StateStore {
 
         let root = Self::merkle_root_from_leaves(&leaves);
 
-        // Cache the computed root and reset dirty counter
+        // Reset dirty counter
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
             let _ = self
                 .db
                 .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
@@ -2125,20 +2318,26 @@ impl StateStore {
         }
     }
 
-    /// Fast state root check: returns cached root if no accounts modified since last computation
+    /// Fast state root check: returns cached root if no state modified since last computation
     #[allow(dead_code)]
     pub fn compute_state_root_cached(&self) -> Hash {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
-            // Check dirty counter
-            let dirty = match self.db.get_cf(&cf, b"dirty_account_count") {
+            // Check both dirty counters
+            let accounts_dirty = match self.db.get_cf(&cf, b"dirty_account_count") {
                 Ok(Some(data)) if data.len() == 8 => {
                     u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
                 }
                 _ => 1, // Assume dirty if unknown
             };
+            let contract_dirty = match self.db.get_cf(&cf, b"dirty_contract_count") {
+                Ok(Some(data)) if data.len() == 8 => {
+                    u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
+                }
+                _ => 1,
+            };
 
-            if dirty == 0 {
-                // Return cached root
+            if accounts_dirty == 0 && contract_dirty == 0 {
+                // Return cached composite root
                 if let Ok(Some(data)) = self.db.get_cf(&cf, b"cached_state_root") {
                     if data.len() == 32 {
                         let mut bytes = [0u8; 32];
@@ -2184,6 +2383,21 @@ impl StateStore {
             let _ = self
                 .db
                 .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
+        }
+    }
+
+    /// Mark a contract storage key as dirty for incremental Merkle recomputation.
+    /// Writes "dirty_cstor:{full_key}" -> [] in CF_STATS.
+    pub fn mark_contract_storage_dirty(&self, full_key: &[u8]) {
+        if let Some(cf) = self.db.cf_handle(CF_STATS) {
+            let prefix = b"dirty_cstor:";
+            let mut dirty_key = Vec::with_capacity(prefix.len() + full_key.len());
+            dirty_key.extend_from_slice(prefix);
+            dirty_key.extend_from_slice(full_key);
+            let _ = self.db.put_cf(&cf, &dirty_key, []);
+            let _ = self
+                .db
+                .put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes());
         }
     }
 
@@ -4122,6 +4336,7 @@ impl StateStore {
             governed_proposal_counter: None,
             new_programs: 0,
             event_seq: 0,
+            dirty_contract_keys: Vec::new(),
             archive_slot,
             db: Arc::clone(&self.db),
         }
@@ -4133,6 +4348,8 @@ impl StateStore {
     pub fn commit_batch(&self, batch: StateBatch) -> Result<(), String> {
         // Collect dirty pubkeys BEFORE consuming the batch
         let dirty_pubkeys: Vec<Pubkey> = batch.account_overlay.keys().cloned().collect();
+        // Collect dirty contract storage keys BEFORE consuming the batch
+        let dirty_contract_keys: Vec<Vec<u8>> = batch.dirty_contract_keys.clone();
 
         // If burns accumulated, fold them into the WriteBatch so they
         // commit atomically with the rest of the transaction state.
@@ -4202,6 +4419,11 @@ impl StateStore {
         // Mark each modified account dirty for incremental Merkle recomputation
         for pubkey in &dirty_pubkeys {
             self.mark_account_dirty_with_key(pubkey);
+        }
+
+        // Mark each modified contract storage key dirty for incremental Merkle
+        for key in &dirty_contract_keys {
+            self.mark_contract_storage_dirty(key);
         }
 
         Ok(())
@@ -4796,6 +5018,7 @@ impl StateBatch {
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
         self.batch.put_cf(&cf, &key, value);
+        self.dirty_contract_keys.push(key);
         Ok(())
     }
 
@@ -4813,6 +5036,7 @@ impl StateBatch {
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
         self.batch.delete_cf(&cf, &key);
+        self.dirty_contract_keys.push(key);
         Ok(())
     }
 
@@ -7194,7 +7418,9 @@ impl StateStore {
         key.extend_from_slice(storage_key);
         self.db
             .put_cf(&cf, &key, value)
-            .map_err(|e| format!("Failed to store contract storage: {}", e))
+            .map_err(|e| format!("Failed to store contract storage: {}", e))?;
+        self.mark_contract_storage_dirty(&key);
+        Ok(())
     }
 
     /// Delete contract storage from CF_CONTRACT_STORAGE (non-batch).
@@ -7212,7 +7438,9 @@ impl StateStore {
         key.extend_from_slice(storage_key);
         self.db
             .delete_cf(&cf, &key)
-            .map_err(|e| format!("Failed to delete contract storage: {}", e))
+            .map_err(|e| format!("Failed to delete contract storage: {}", e))?;
+        self.mark_contract_storage_dirty(&key);
+        Ok(())
     }
 
     /// O(1) point-read of a single contract storage key from CF_CONTRACT_STORAGE.
@@ -9471,7 +9699,8 @@ mod tests {
         state.put_account(&pk3, &a3).unwrap();
 
         // Compute state root to populate leaf cache
-        let root = state.compute_state_root();
+        let _composite_root = state.compute_state_root();
+        let root = state.compute_accounts_root();
         assert_ne!(root, Hash::default());
 
         // Get proof for pk2
@@ -9514,7 +9743,8 @@ mod tests {
         state.put_account(&pk1, &Account::new(100, pk1)).unwrap();
         state.put_account(&pk2, &Account::new(200, pk2)).unwrap();
 
-        let root1 = state.compute_state_root();
+        let _composite1 = state.compute_state_root();
+        let root1 = state.compute_accounts_root();
         let proof1 = state.get_account_proof(&pk1).unwrap();
         assert!(proof1.proof.verify(&root1));
 
@@ -9522,7 +9752,8 @@ mod tests {
         let mut a2 = Account::new(300, pk2);
         a2.spores = 300;
         state.put_account(&pk2, &a2).unwrap();
-        let root2 = state.compute_state_root();
+        let _composite2 = state.compute_state_root();
+        let root2 = state.compute_accounts_root();
         assert_ne!(root1, root2);
 
         // Old proof should NOT verify against new root

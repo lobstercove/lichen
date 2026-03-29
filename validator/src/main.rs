@@ -11200,8 +11200,7 @@ async fn run_validator() {
                     // Recompute Merkle tx_root from reconstructed transactions and compare
                     // against the header's tx_root to detect any collision-based mismatch.
                     let tx_hashes: Vec<Hash> = transactions.iter().map(|tx| tx.hash()).collect();
-                    let reconstructed_tx_root =
-                        lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
+                    let reconstructed_tx_root = lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
                     if reconstructed_tx_root != cb.header.tx_root {
                         warn!(
                             "📦 Compact block slot {} tx_root mismatch after reconstruction — \
@@ -12203,6 +12202,7 @@ async fn run_validator() {
             );
             drop(mp);
             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+            block.header.state_root = state.compute_state_root();
             block.sign(&validator_keypair);
             let action = bft.create_proposal(block, &height_vs, &height_pool);
             execute_consensus_actions(
@@ -12351,6 +12351,7 @@ async fn run_validator() {
                 );
                 drop(mp);
                 block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                block.header.state_root = state.compute_state_root();
                 block.sign(&validator_keypair);
                 let action = bft.create_proposal(block, &height_vs, &height_pool);
                 execute_consensus_actions(
@@ -12557,6 +12558,7 @@ async fn run_validator() {
                         );
                         drop(mp);
                         block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                        block.header.state_root = state.compute_state_root();
                         block.sign(&validator_keypair);
                         let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
@@ -12661,6 +12663,7 @@ async fn run_validator() {
                             );
                             drop(mp);
                             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                            block.header.state_root = state.compute_state_root();
                             block.sign(&validator_keypair);
                             let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                             execute_consensus_actions(
@@ -13023,6 +13026,31 @@ async fn execute_consensus_actions(
             )
             .await;
             apply_oracle_from_block(state, &block);
+
+            // Verify state_root: non-proposer nodes compute their local
+            // state root after replaying TXs and compare against the
+            // proposer's committed root. The block is stored AS-PROPOSED
+            // (identical bytes on all nodes) so parent_hash stays consistent.
+            // The verification is a soft check — log mismatch but don't reject
+            // (the BFT quorum already accepted this block).
+            {
+                let local_root = state.compute_state_root();
+                let block_root = block.header.state_root;
+                if local_root == block_root {
+                    debug!(
+                        "✅ State root verified at height {}: {}",
+                        height,
+                        hex::encode(&local_root.0[..8])
+                    );
+                } else if block_root != Hash::default() {
+                    warn!(
+                        "⚠️  STATE ROOT MISMATCH at height {}: local={} block={}",
+                        height,
+                        hex::encode(&local_root.0[..8]),
+                        hex::encode(&block_root.0[..8]),
+                    );
+                }
+            }
 
             // Store block AS-PROPOSED — do NOT recompute state_root or re-sign.
             // All validators must store identical blocks so that parent_hash
