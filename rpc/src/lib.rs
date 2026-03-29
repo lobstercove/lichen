@@ -2318,6 +2318,7 @@ async fn handle_rpc(
         "getLatestBlock" => handle_get_latest_block(&state).await,
         "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
+        "getTransactionProof" => handle_get_transaction_proof(&state, req.params).await,
         "getTransactionsByAddress" | "getTransactionHistory" => handle_get_transactions_by_address(&state, req.params).await,
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
@@ -3960,6 +3961,100 @@ async fn handle_get_transaction(
             })
         }
     }
+}
+
+/// Get a Merkle inclusion proof for a transaction by its signature.
+///
+/// params: [signature_hex]
+/// Returns: { slot, tx_index, tx_hash, root, proof: [{ hash, direction }] }
+async fn handle_get_transaction_proof(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let sig_str = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [signature]".to_string(),
+        })?;
+
+    let sig_hash = lichen_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid signature: {}", e),
+    })?;
+
+    // Find the slot containing this transaction
+    let slot = match state.state.get_tx_slot(&sig_hash) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err(RpcError {
+                code: -32001,
+                message: "Transaction not found".to_string(),
+            });
+        }
+        Err(e) => {
+            return Err(RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            });
+        }
+    };
+
+    // Get the full block to find the transaction index and build the proof
+    let block = state
+        .state
+        .get_block_by_slot(slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!("Block at slot {} not found", slot),
+        })?;
+
+    // Find the transaction index in the block
+    let tx_index = block
+        .transactions
+        .iter()
+        .position(|tx| tx.signature() == sig_hash)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Transaction not found in block".to_string(),
+        })?;
+
+    // Generate the Merkle proof
+    let proof = lichen_core::merkle_tx_proof(&block.transactions, tx_index).ok_or_else(|| {
+        RpcError {
+            code: -32000,
+            message: "Failed to generate Merkle proof".to_string(),
+        }
+    })?;
+
+    let proof_json: Vec<serde_json::Value> = proof
+        .iter()
+        .map(|(hash, is_left)| {
+            serde_json::json!({
+                "hash": hash.to_hex(),
+                "direction": if *is_left { "left" } else { "right" }
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "slot": slot,
+        "tx_index": tx_index,
+        "tx_hash": block.transactions[tx_index].hash().to_hex(),
+        "root": block.header.tx_root.to_hex(),
+        "proof": proof_json
+    }))
 }
 
 /// Get transactions involving a specific address

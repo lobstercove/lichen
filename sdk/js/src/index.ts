@@ -19,6 +19,8 @@ export type {
   NetworkInfo,
   ChainStatus,
   Metrics,
+  ProofStep,
+  TransactionProof,
 } from './connection';
 
 /**
