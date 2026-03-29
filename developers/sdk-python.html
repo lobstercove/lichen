@@ -325,6 +325,18 @@ print(f"Signature: {sig}")</code></pre>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">await get_transaction_proof(signature: str) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get a binary Merkle inclusion proof for a confirmed transaction. Returns <code>slot</code>, <code>tx_index</code>, <code>tx_hash</code>, <code>root</code>, and <code>proof</code> (list of dicts with <code>hash</code> and <code>direction</code>).</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>proof = await conn.get_transaction_proof(signature)
+print(f"Merkle root: {proof['root']}")
+print(f"Proof depth: {len(proof['proof'])}")</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">await transfer(from_keypair: Keypair, to: PublicKey, amount: int) -&gt; str</h3>
                 <p class="method-desc">Build, sign, and send a native LICN transfer. Amount in spores (1 LICN =
                     1,000,000,000 spores).</p>

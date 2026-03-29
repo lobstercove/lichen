@@ -616,6 +616,49 @@ async function displayTransaction(tx) {
     // Raw data
     const rawTx = shieldedTx ? redactShieldedTransaction(tx) : tx;
     document.getElementById('rawData').textContent = JSON.stringify(rawTx, null, 2);
+
+    // Merkle Inclusion Proof — fetch asynchronously (non-blocking)
+    if (hash && rpc && slot !== undefined && slot !== null) {
+        loadMerkleProof(hash);
+    }
+}
+
+async function loadMerkleProof(signature) {
+    try {
+        const resp = await rpc.call('getTransactionProof', [signature]);
+        if (!resp || resp.error || !resp.root) return;
+
+        const card = document.getElementById('merkleProofCard');
+        if (!card) return;
+        card.style.display = '';
+
+        document.getElementById('proofRoot').textContent = formatHash(resp.root);
+        document.getElementById('proofRoot').dataset.full = resp.root;
+        document.getElementById('proofTxIndex').textContent = resp.tx_index;
+        const proof = resp.proof || [];
+        document.getElementById('proofDepth').textContent = proof.length === 0
+            ? '0 (single-transaction block)'
+            : proof.length + ' level' + (proof.length > 1 ? 's' : '');
+
+        if (proof.length === 0) {
+            document.getElementById('proofPath').innerHTML = '<em>Root equals leaf hash (only transaction in block)</em>';
+        } else {
+            document.getElementById('proofPath').innerHTML = proof.map((step, i) => {
+                const dir = step.direction === 'left' ? '← left' : '→ right';
+                return `<div style="margin-bottom:4px;"><code>${formatHash(step.hash)}</code> <span class="badge badge-secondary" style="font-size:0.75rem;">${dir}</span></div>`;
+            }).join('');
+        }
+
+        // Show verification badge
+        const badge = document.getElementById('proofVerifyBadge');
+        if (badge) {
+            badge.style.display = '';
+            badge.className = 'badge badge-success';
+            badge.innerHTML = '<i class="fas fa-check-circle"></i> Proof available';
+        }
+    } catch (e) {
+        // Proof not available — silently skip
+    }
 }
 
 // Search functionality

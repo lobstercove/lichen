@@ -396,6 +396,39 @@ console.log('Signature:', sig);</code></pre>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">getTransactionProof(signature: string): Promise&lt;TransactionProof&gt;</h3>
+                <p class="method-desc">Get a binary Merkle inclusion proof for a confirmed transaction. The proof verifies that the transaction is included in the block's <code>tx_root</code>.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>TransactionProof</code> — Object with <code>slot</code>, <code>tx_index</code>, <code>tx_hash</code>, <code>root</code>, and <code>proof</code> (array of <code>ProofStep</code>).</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button
+                            class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const proof = await conn.getTransactionProof(signature);
+console.log('Merkle root:', proof.root);
+console.log('Proof depth:', proof.proof.length);
+
+// Verify the proof locally
+const valid = Connection.verifyTransactionProof(proof.root, proof.tx_hash, proof.proof);
+console.log('Valid:', valid); // true</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">static verifyTransactionProof(root: string, txHash: string, proof: ProofStep[]): boolean</h3>
+                <p class="method-desc">Verify a Merkle inclusion proof locally using SHA-256 with domain separation. Returns <code>true</code> if the proof is valid. This is a static method — no RPC connection needed.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Types</h4>
+                    <pre><code>interface ProofStep { hash: string; direction: 'left' | 'right'; }
+interface TransactionProof {
+  slot: number; tx_index: number; tx_hash: string;
+  root: string; proof: ProofStep[];
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">simulateTransaction(transaction: Transaction): Promise&lt;any&gt;</h3>
                 <p class="method-desc">Dry-run a transaction without committing it. Useful for fee estimation and
                     validation.</p>

@@ -136,6 +136,16 @@
                             </div>
                         </div>
                         <div class="detail-row">
+                            <div class="detail-label">Transaction Root (Merkle)</div>
+                            <div class="detail-value">
+                                <code id="txRoot">-</code>
+                                <button class="copy-icon"
+                                    onclick="copyToClipboard((document.getElementById('txRoot')?.dataset?.full) || '')">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="detail-row">
                             <div class="detail-label">Timestamp</div>
                             <div class="detail-value" id="detailTimestamp">-</div>
                         </div>

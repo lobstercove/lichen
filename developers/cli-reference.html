@@ -105,6 +105,7 @@
                 <a href="#contract-logs" class="sidebar-link">contract logs</a>
                 <a href="#contract-list" class="sidebar-link">contract list</a>
                 <a href="#contract-register" class="sidebar-link">contract register</a>
+                <a href="#contract-generate-client" class="sidebar-link">contract generate-client</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -1342,6 +1343,77 @@ Total: 2 contracts</code></pre>
     --symbol VYRN --name "VYRN Token" --template token --decimals 9
 
 <i class="fa-solid fa-check"></i> Symbol registered: VYRN → 5A19vK...9RxBWL</code></pre>
+                </div>
+            </div>
+
+            <!-- contract generate-client -->
+            <div class="cmd-section" id="contract-generate-client">
+                <h3><code>lichen contract generate-client</code></h3>
+                <p>Generate a typed client library from a contract's ABI. Produces ready-to-use TypeScript or Python code with method stubs, type definitions, and connection helpers for every function in the ABI.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>lichen contract generate-client --abi &lt;path-or-address&gt; --lang &lt;typescript|python&gt; --output &lt;path&gt; [--address &lt;contract-address&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr>
+                            <th>Flag / Arg</th>
+                            <th>Type</th>
+                            <th>Default</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--abi</code></td>
+                            <td>path or Base58</td>
+                            <td>—</td>
+                            <td>Path to a local <code>abi.json</code> file, or a contract address (fetches ABI via RPC)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--lang, -l</code></td>
+                            <td>string</td>
+                            <td>—</td>
+                            <td><code>typescript</code> or <code>python</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>--output, -o</code></td>
+                            <td>path</td>
+                            <td>—</td>
+                            <td>Output file path (e.g. <code>./client.ts</code>)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--address</code></td>
+                            <td>Base58</td>
+                            <td>—</td>
+                            <td>Override contract address embedded in the generated code</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ lichen contract generate-client \
+    --abi contracts/lichencoin/abi.json \
+    --lang typescript \
+    --output ./lichencoin-client.ts
+
+<i class="fa-solid fa-check"></i> Generated TypeScript client → ./lichencoin-client.ts (8 methods)
+
+$ lichen contract generate-client \
+    --abi 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
+    --lang python \
+    --output ./my_token_client.py
+
+<i class="fa-solid fa-check"></i> Generated Python client → ./my_token_client.py (fetched ABI from RPC)</code></pre>
                 </div>
             </div>
 
