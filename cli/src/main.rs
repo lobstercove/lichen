@@ -1511,7 +1511,9 @@ async fn main() -> Result<()> {
                     serde_json::from_str(&content)
                         .map_err(|e| anyhow::anyhow!("Invalid ABI JSON: {}", e))?
                 } else if let Some(ref addr) = address {
-                    let abi_json = client.get_contract_abi(addr).await
+                    let abi_json = client
+                        .get_contract_abi(addr)
+                        .await
                         .map_err(|e| anyhow::anyhow!("Cannot fetch ABI: {}", e))?;
                     serde_json::from_value(abi_json)
                         .map_err(|e| anyhow::anyhow!("Invalid ABI: {}", e))?
@@ -3256,8 +3258,13 @@ fn py_type(t: &lichen_core::AbiType) -> &'static str {
     use lichen_core::AbiType;
     match t {
         AbiType::Pubkey => "str",
-        AbiType::U64 | AbiType::I64 | AbiType::U32 | AbiType::I32 | AbiType::U16
-        | AbiType::I16 | AbiType::U8 => "int",
+        AbiType::U64
+        | AbiType::I64
+        | AbiType::U32
+        | AbiType::I32
+        | AbiType::U16
+        | AbiType::I16
+        | AbiType::U8 => "int",
         AbiType::F32 | AbiType::F64 => "float",
         AbiType::Bool => "bool",
         AbiType::String => "str",
@@ -3293,9 +3300,7 @@ fn generate_typescript(abi: &lichen_core::ContractAbi) -> String {
          // Contract: {} | ABI version: {}\n\
          // DO NOT EDIT — regenerate with: lichen contract generate-client --abi {}/abi.json\n\n\
          import {{ Connection, Keypair, PublicKey }} from '@lichen/sdk';\n\n",
-        abi.name,
-        abi.version,
-        abi.name,
+        abi.name, abi.version, abi.name,
     ));
 
     out.push_str(&format!("export class {} {{\n", class_name));
@@ -3558,7 +3563,7 @@ mod tests {
         assert!(code.contains("async transfer(signer: Keypair"));
         assert!(code.contains("async totalSupply("));
         assert!(code.contains("queryContract")); // read-only methods
-        assert!(code.contains("callContract"));  // write methods
+        assert!(code.contains("callContract")); // write methods
         assert!(code.contains("@lichen/sdk"));
     }
 
@@ -3572,7 +3577,7 @@ mod tests {
         assert!(code.contains("def transfer(self, signer: Keypair"));
         assert!(code.contains("def total_supply(self"));
         assert!(code.contains("query_contract")); // read-only
-        assert!(code.contains("call_contract"));  // write
+        assert!(code.contains("call_contract")); // write
         assert!(code.contains("lichen_sdk"));
     }
 }

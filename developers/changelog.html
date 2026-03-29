@@ -88,28 +88,39 @@
                 <h3 class="changelog-title">Binary Merkle Transaction Root, Proof RPC &amp; Contract Codegen CLI</h3>
 
                 <div class="changelog-section" data-type="breaking">
-                    <h4><i class="fas fa-exclamation-triangle" style="color: var(--error)"></i> Breaking — Consensus</h4>
+                    <h4><i class="fas fa-exclamation-triangle" style="color: var(--error)"></i> Breaking — Consensus
+                    </h4>
                     <ul>
-                        <li><strong>Binary Merkle tx_root</strong> &mdash; Block headers now contain a domain-separated SHA-256 Merkle root over transactions (0x00 leaf prefix, 0x01 internal prefix, Bitcoin-style odd-duplicate padding). All validators must upgrade.</li>
+                        <li><strong>Binary Merkle tx_root</strong> &mdash; Block headers now contain a domain-separated
+                            SHA-256 Merkle root over transactions (0x00 leaf prefix, 0x01 internal prefix, Bitcoin-style
+                            odd-duplicate padding). All validators must upgrade.</li>
                     </ul>
                 </div>
 
                 <div class="changelog-section" data-type="new">
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
-                        <li><strong>getTransactionProof</strong> RPC &mdash; Returns a Merkle inclusion proof (root, tx_index, proof path) for any confirmed transaction</li>
-                        <li><strong>lichen contract generate-client</strong> CLI &mdash; Generate typed TypeScript or Python client libraries from a contract ABI (local file or on-chain address)</li>
-                        <li><strong>lichencoin allowance()</strong> &mdash; ERC-20-style approve/transferFrom/allowance on the native LICN wrapper contract</li>
-                        <li><strong>Explorer: Merkle proof viewer</strong> &mdash; Block detail shows tx_root; transaction detail shows full inclusion proof with path visualization</li>
-                        <li><strong>SDK proof methods</strong> &mdash; <code>getTransactionProof()</code> and <code>verifyTransactionProof()</code> on JS SDK; <code>get_transaction_proof()</code> on Python SDK</li>
+                        <li><strong>getTransactionProof</strong> RPC &mdash; Returns a Merkle inclusion proof (root,
+                            tx_index, proof path) for any confirmed transaction</li>
+                        <li><strong>lichen contract generate-client</strong> CLI &mdash; Generate typed TypeScript or
+                            Python client libraries from a contract ABI (local file or on-chain address)</li>
+                        <li><strong>lichencoin allowance()</strong> &mdash; ERC-20-style approve/transferFrom/allowance
+                            on the native LICN wrapper contract</li>
+                        <li><strong>Explorer: Merkle proof viewer</strong> &mdash; Block detail shows tx_root;
+                            transaction detail shows full inclusion proof with path visualization</li>
+                        <li><strong>SDK proof methods</strong> &mdash; <code>getTransactionProof()</code> and
+                            <code>verifyTransactionProof()</code> on JS SDK; <code>get_transaction_proof()</code> on
+                            Python SDK</li>
                     </ul>
                 </div>
 
                 <div class="changelog-section" data-type="improved">
                     <h4><i class="fas fa-arrow-up" style="color: var(--primary)"></i> Improvements</h4>
                     <ul>
-                        <li><strong>Developer docs</strong> &mdash; Updated RPC reference, CLI reference, SDK docs (JS + Python), and contract reference with codegen section</li>
-                        <li><strong>Dual dispatch documentation</strong> &mdash; Contract reference now documents both named-export and opcode-dispatch patterns with the authoritative live export matrix</li>
+                        <li><strong>Developer docs</strong> &mdash; Updated RPC reference, CLI reference, SDK docs (JS +
+                            Python), and contract reference with codegen section</li>
+                        <li><strong>Dual dispatch documentation</strong> &mdash; Contract reference now documents both
+                            named-export and opcode-dispatch patterns with the authoritative live export matrix</li>
                     </ul>
                 </div>
             </div>
@@ -147,7 +158,8 @@
                         <li><strong>RPC getHealth/getVersion</strong> &mdash; Fixed on <code>/solana-compat</code> route
                         </li>
                         <li><strong>Solana-compat token methods</strong> &mdash; Added
-                            <code>getTokenAccountsByOwner</code> and <code>getTokenAccountBalance</code></li>
+                            <code>getTokenAccountsByOwner</code> and <code>getTokenAccountBalance</code>
+                        </li>
                         <li><strong>dex_rewards LICN blocking</strong> &mdash; <code>is_zero</code> was rejecting native
                             LICN sentinel</li>
                         <li><strong>Makefile port</strong> &mdash; Health-check port corrected (8000 &rarr; 8899)</li>

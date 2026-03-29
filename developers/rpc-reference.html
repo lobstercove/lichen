@@ -924,7 +924,8 @@
             <!-- getTransactionHistory -->
             <div class="method-card" id="getTransactionHistory">
                 <h3 class="method-name">getTransactionHistory</h3>
-                <p class="method-desc">Alias for <code>getTransactionsByAddress</code>. Both methods use the same handler and return identical responses.</p>
+                <p class="method-desc">Alias for <code>getTransactionsByAddress</code>. Both methods use the same
+                    handler and return identical responses.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -961,7 +962,9 @@
             <!-- getTransactionProof -->
             <div class="method-card" id="getTransactionProof">
                 <h3 class="method-name">getTransactionProof</h3>
-                <p class="method-desc">Returns a binary Merkle inclusion proof for a confirmed transaction. The proof can be used to verify that a transaction is included in a block's <code>tx_root</code> without downloading the entire block.</p>
+                <p class="method-desc">Returns a binary Merkle inclusion proof for a confirmed transaction. The proof
+                    can be used to verify that a transaction is included in a block's <code>tx_root</code> without
+                    downloading the entire block.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -1018,7 +1021,8 @@
                             <tr>
                                 <td>proof</td>
                                 <td><span class="param-type">array</span></td>
-                                <td>Array of proof steps, each with <code>hash</code> (hex) and <code>direction</code> ("left" or "right")</td>
+                                <td>Array of proof steps, each with <code>hash</code> (hex) and <code>direction</code>
+                                    ("left" or "right")</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1044,7 +1048,11 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Verification</h4>
-                    <p>The Merkle tree uses domain-separated SHA-256: leaves are prefixed with <code>0x00</code>, internal nodes with <code>0x01</code>. To verify a proof, start with the leaf hash <code>SHA256(0x00 || tx_hash)</code>, then for each step combine with the sibling according to direction: <code>SHA256(0x01 || left || right)</code>. The final result must equal the <code>root</code>.</p>
+                    <p>The Merkle tree uses domain-separated SHA-256: leaves are prefixed with <code>0x00</code>,
+                        internal nodes with <code>0x01</code>. To verify a proof, start with the leaf hash
+                        <code>SHA256(0x00 || tx_hash)</code>, then for each step combine with the sibling according to
+                        direction: <code>SHA256(0x01 || left || right)</code>. The final result must equal the
+                        <code>root</code>.</p>
                 </div>
             </div>
 
