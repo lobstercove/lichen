@@ -399,6 +399,49 @@
             </table>
         </div>
 
+        <!-- Client Codegen -->
+        <div class="cr-section">
+            <h2><i class="fas fa-magic"></i> Client Code Generation</h2>
+            <p>The CLI can generate fully-typed client libraries from a contract's ABI, eliminating manual encoding of
+                function names, opcodes, and argument layouts.</p>
+
+            <div class="sub-heading">Usage</div>
+            <pre><code class="language-bash"># From a local ABI JSON file
+lichen contract generate-client --abi ./contracts/lichencoin/abi.json --lang typescript --output ./sdk/lichencoin.ts
+
+# From a deployed contract address (fetches ABI via RPC)
+lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./sdk/lichencoin.py</code></pre>
+
+            <div class="sub-heading">Supported Languages</div>
+            <table class="const-table">
+                <tr>
+                    <th>Language</th>
+                    <th>Flag</th>
+                    <th>Output</th>
+                </tr>
+                <tr>
+                    <td>TypeScript</td>
+                    <td><code>--lang typescript</code></td>
+                    <td>Typed class with async methods for each export, argument builders, return decoders</td>
+                </tr>
+                <tr>
+                    <td>Python</td>
+                    <td><code>--lang python</code></td>
+                    <td>Typed class with methods, dataclass argument types, return parsing</td>
+                </tr>
+            </table>
+
+            <div class="sub-heading">What Gets Generated</div>
+            <ul style="margin:0.5rem 0 0 1.2rem; line-height:1.8;">
+                <li>One method per contract export (named-export) or opcode (opcode-dispatch)</li>
+                <li>Typed argument structs / interfaces matching the ABI layout</li>
+                <li>Transaction building helpers (sign, serialize, submit)</li>
+                <li>Return value decoders for each method</li>
+            </ul>
+            <p class="cr-note">The generated code uses the Lichen JS/Python SDK under the hood — install
+                <code>@lichen/sdk</code> or <code>lichen-sdk</code> as a peer dependency.</p>
+        </div>
+
         <!-- TOC -->
         <div class="toc">
             <h2><i class="fas fa-list"></i> Contracts</h2>

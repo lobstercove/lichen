@@ -90,6 +90,7 @@
                 <a href="#simulateTransaction" class="sidebar-link">simulateTransaction</a>
                 <a href="#getTransactionsByAddress" class="sidebar-link">getTransactionsByAddress</a>
                 <a href="#getTransactionHistory" class="sidebar-link">getTransactionHistory</a>
+                <a href="#getTransactionProof" class="sidebar-link">getTransactionProof</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Validator</h3>
@@ -954,6 +955,96 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object — Paginated transaction history.</p>
+                </div>
+            </div>
+
+            <!-- getTransactionProof -->
+            <div class="method-card" id="getTransactionProof">
+                <h3 class="method-name">getTransactionProof</h3>
+                <p class="method-desc">Returns a binary Merkle inclusion proof for a confirmed transaction. The proof can be used to verify that a transaction is included in a block's <code>tx_root</code> without downloading the entire block.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>signature</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Hex-encoded transaction hash</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object with the following fields:</p>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Field</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>slot</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>Block slot containing the transaction</td>
+                            </tr>
+                            <tr>
+                                <td>tx_index</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>Index of the transaction within the block</td>
+                            </tr>
+                            <tr>
+                                <td>tx_hash</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Hex-encoded transaction hash (leaf)</td>
+                            </tr>
+                            <tr>
+                                <td>root</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Hex-encoded Merkle root (matches block <code>tx_root</code>)</td>
+                            </tr>
+                            <tr>
+                                <td>proof</td>
+                                <td><span class="param-type">array</span></td>
+                                <td>Array of proof steps, each with <code>hash</code> (hex) and <code>direction</code> ("left" or "right")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Example</h4>
+                    <pre><code>curl -s http://localhost:8899 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionProof","params":["a1b2c3d4..."]}'</code></pre>
+                    <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "slot": 162,
+    "tx_index": 0,
+    "tx_hash": "a1b2c3d4...",
+    "root": "efca18b2...",
+    "proof": [
+      { "hash": "86bf5cf6...", "direction": "right" },
+      { "hash": "d1f8afed...", "direction": "right" }
+    ]
+  }
+}</code></pre>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Verification</h4>
+                    <p>The Merkle tree uses domain-separated SHA-256: leaves are prefixed with <code>0x00</code>, internal nodes with <code>0x01</code>. To verify a proof, start with the leaf hash <code>SHA256(0x00 || tx_hash)</code>, then for each step combine with the sibling according to direction: <code>SHA256(0x01 || left || right)</code>. The final result must equal the <code>root</code>.</p>
                 </div>
             </div>
 

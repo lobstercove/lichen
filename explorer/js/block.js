@@ -73,6 +73,7 @@ async function displayBlock(block) {
     const hash = block.hash ?? block.header?.hash ?? 'unknown';
     const parentHash = block.parent_hash ?? block.header?.parent_hash;
     const stateRoot = block.state_root ?? block.header?.state_root;
+    const txRoot = block.tx_root ?? block.header?.tx_root;
     const timestamp = block.timestamp ?? block.header?.timestamp;
     const validator = block.validator ?? block.header?.validator;
     const txCount = block.transaction_count ?? block.transactions?.length ?? 0;
@@ -120,6 +121,12 @@ async function displayBlock(block) {
     document.getElementById('parentHash').dataset.full = parentHash;
     document.getElementById('stateRoot').textContent = formatHash(stateRoot);
     document.getElementById('stateRoot').dataset.full = stateRoot;
+    if (txRoot) {
+        document.getElementById('txRoot').textContent = formatHash(txRoot);
+        document.getElementById('txRoot').dataset.full = txRoot;
+    } else {
+        document.getElementById('txRoot').textContent = txCount === 0 ? '(empty block)' : '-';
+    }
     document.getElementById('detailTimestamp').textContent = formatTimeFull(timestamp);
     const nonShieldedParticipants = transactions
         .filter(tx => !isShieldedType(tx?.type || tx?.tx_type || tx?.transaction_type || 'Transfer'))

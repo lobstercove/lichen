@@ -235,6 +235,40 @@
                 </div>
             </div>
 
+            <!-- Merkle Proof Verification -->
+            <div class="detail-card" id="merkleProofCard" style="display:none;">
+                <div class="detail-card-header">
+                    <h2><i class="fas fa-sitemap"></i> Merkle Inclusion Proof</h2>
+                    <span class="badge" id="proofVerifyBadge" style="display:none;"></span>
+                </div>
+                <div class="detail-card-body">
+                    <div class="detail-grid">
+                        <div class="detail-row">
+                            <div class="detail-label">Transaction Root</div>
+                            <div class="detail-value">
+                                <code id="proofRoot">-</code>
+                                <button class="copy-icon"
+                                    onclick="copyToClipboard((document.getElementById('proofRoot')?.dataset?.full) || '')">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Transaction Index</div>
+                            <div class="detail-value" id="proofTxIndex">-</div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Proof Depth</div>
+                            <div class="detail-value" id="proofDepth">-</div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Proof Path</div>
+                            <div class="detail-value" id="proofPath">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Raw Transaction Data -->
             <div class="detail-card">
                 <div class="detail-card-header">

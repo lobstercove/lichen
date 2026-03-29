@@ -995,6 +995,7 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 | `getSlot` | `[{commitment?}]` | Current slot (u64) |
 | `getTransaction` | `[hash_hex]` | `{hash, status, slot, from, to, amount, return_code?, return_data?, contract_logs?}` |
 | `getTransactionsByAddress` | `[pubkey, {limit?, before_slot?}]` | Array of tx summaries |
+| `getTransactionProof` | `[hash_hex]` | `{slot, tx_index, tx_hash, root, proof: [{hash, direction}]}` |
 | `getAccountTxCount` | `[pubkey]` | `{count}` |
 | `getRecentTransactions` | `[{limit?}]` | Array of recent txs |
 | `getTokenAccounts` | `[pubkey]` | Token accounts for owner |
