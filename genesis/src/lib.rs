@@ -352,7 +352,8 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
         match template {
             "token" => {
                 // LICN native token: 500M initial supply, 9 decimals, mintable (inflationary via block rewards)
-                meta["total_supply"] = serde_json::json!((500_000_000_u64 * 1_000_000_000_u64).to_string());
+                meta["total_supply"] =
+                    serde_json::json!((500_000_000_u64 * 1_000_000_000_u64).to_string());
                 meta["decimals"] = serde_json::json!("9");
                 meta["mintable"] = serde_json::json!("true");
                 meta["burnable"] = serde_json::json!("true");

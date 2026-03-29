@@ -999,9 +999,9 @@ impl TxProcessor {
             None => return Ok(None),
         };
 
-        let obj = meta.as_object().ok_or_else(|| {
-            "RegisterSymbol: metadata must be a JSON object".to_string()
-        })?;
+        let obj = meta
+            .as_object()
+            .ok_or_else(|| "RegisterSymbol: metadata must be a JSON object".to_string())?;
 
         // Rebuild with only string values, stripping control characters
         let mut clean = serde_json::Map::new();
@@ -1028,7 +1028,11 @@ impl TxProcessor {
         Ok(Some(serde_json::Value::Object(clean)))
     }
 
-    fn b_register_symbol(&self, symbol: &str, mut entry: SymbolRegistryEntry) -> Result<(), String> {
+    fn b_register_symbol(
+        &self,
+        symbol: &str,
+        mut entry: SymbolRegistryEntry,
+    ) -> Result<(), String> {
         // AUDIT-FIX HIGH-04: Validate and sanitize metadata on every path
         entry.metadata = Self::validate_and_sanitize_metadata(&entry.metadata)?;
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
