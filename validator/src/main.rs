@@ -11197,17 +11197,11 @@ async fn run_validator() {
                         };
 
                     // AUDIT-FIX H1: Verify tx_root to guard against short-ID collision.
-                    // Recompute tx_root from reconstructed transactions and compare
+                    // Recompute Merkle tx_root from reconstructed transactions and compare
                     // against the header's tx_root to detect any collision-based mismatch.
-                    let mut tx_hash_data = Vec::with_capacity(transactions.len() * 32);
-                    for tx in &transactions {
-                        tx_hash_data.extend_from_slice(&tx.hash().0);
-                    }
-                    let reconstructed_tx_root = if transactions.is_empty() {
-                        Hash::default()
-                    } else {
-                        Hash::hash(&tx_hash_data)
-                    };
+                    let tx_hashes: Vec<Hash> = transactions.iter().map(|tx| tx.hash()).collect();
+                    let reconstructed_tx_root =
+                        lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
                     if reconstructed_tx_root != cb.header.tx_root {
                         warn!(
                             "📦 Compact block slot {} tx_root mismatch after reconstruction — \

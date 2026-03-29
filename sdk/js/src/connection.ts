@@ -1,10 +1,16 @@
 // Lichen SDK - Connection Class
 
 import WebSocket from 'ws';
+import { createHash } from 'crypto';
 import { PublicKey } from './publickey';
 import { Keypair } from './keypair';
 import { Transaction, TransactionBuilder } from './transaction';
-import { encodeTransaction } from './bincode';
+import { encodeTransaction, hexToBytes, bytesToHex } from './bincode';
+
+/** SHA-256 hash as Uint8Array */
+function sha256(data: Uint8Array): Uint8Array {
+  return new Uint8Array(createHash('sha256').update(data).digest());
+}
 
 /**
  * Balance information
@@ -92,6 +98,25 @@ export interface Metrics {
   totalTransactions: number;
   totalBlocks: number;
   averageBlockTime: number;
+}
+
+/**
+ * A single step in a Merkle inclusion proof
+ */
+export interface ProofStep {
+  hash: string;
+  direction: 'left' | 'right';
+}
+
+/**
+ * Merkle inclusion proof for a transaction
+ */
+export interface TransactionProof {
+  slot: number;
+  tx_index: number;
+  tx_hash: string;
+  root: string;
+  proof: ProofStep[];
 }
 
 /**
@@ -209,6 +234,43 @@ export class Connection {
    */
   async getTransaction(signature: string): Promise<any> {
     return this.rpc('getTransaction', [signature]);
+  }
+
+  /**
+   * Get a Merkle inclusion proof for a transaction by its signature.
+   */
+  async getTransactionProof(signature: string): Promise<TransactionProof> {
+    return this.rpc('getTransactionProof', [signature]);
+  }
+
+  /**
+   * Verify a Merkle inclusion proof for a transaction against a root.
+   * Uses SHA-256 with domain-separated leaf (0x00) and internal (0x01) nodes.
+   *
+   * This is a pure static function — no RPC call needed.
+   */
+  static verifyTransactionProof(root: string, txHash: string, proof: ProofStep[]): boolean {
+    // Domain-separated leaf: SHA256(0x00 || tx_hash_bytes)
+    const leafData = new Uint8Array(33);
+    leafData[0] = 0x00;
+    leafData.set(hexToBytes(txHash), 1);
+    let current = sha256(leafData);
+
+    for (const step of proof) {
+      const sibling = hexToBytes(step.hash);
+      const nodeData = new Uint8Array(65);
+      nodeData[0] = 0x01; // internal node domain tag
+      if (step.direction === 'left') {
+        nodeData.set(sibling, 1);
+        nodeData.set(current, 33);
+      } else {
+        nodeData.set(current, 1);
+        nodeData.set(sibling, 33);
+      }
+      current = sha256(nodeData);
+    }
+
+    return bytesToHex(current) === root;
   }
 
   /**

@@ -463,17 +463,111 @@ pub fn compute_validators_hash(
     Hash::hash(&data)
 }
 
+/// Domain-separated leaf hash: SHA256(0x00 || tx_hash)
+/// Prefix 0x00 prevents second-preimage attacks against the Merkle tree.
+fn merkle_leaf(tx_hash: &Hash) -> Hash {
+    let mut data = [0u8; 33];
+    data[0] = 0x00;
+    data[1..].copy_from_slice(&tx_hash.0);
+    Hash::hash(&data)
+}
+
+/// Domain-separated internal node: SHA256(0x01 || left || right)
+fn merkle_node(left: &Hash, right: &Hash) -> Hash {
+    let mut data = [0u8; 65];
+    data[0] = 0x01;
+    data[1..33].copy_from_slice(&left.0);
+    data[33..].copy_from_slice(&right.0);
+    Hash::hash(&data)
+}
+
+/// Compute binary Merkle root of the block's transactions.
+///
+/// - Empty block → `Hash::default()` (32 zero bytes)
+/// - Leaf = `SHA256(0x00 || tx_hash)` (domain-separated)
+/// - Internal = `SHA256(0x01 || left || right)`
+/// - Odd leaf count: duplicate the last leaf (standard Bitcoin-style padding)
 fn compute_tx_root(transactions: &[Transaction]) -> Hash {
     if transactions.is_empty() {
         return Hash::default();
     }
-
-    let mut data = Vec::with_capacity(transactions.len() * 32);
-    for tx in transactions {
-        data.extend_from_slice(&tx.hash().0);
+    let mut level: Vec<Hash> = transactions.iter().map(|tx| merkle_leaf(&tx.hash())).collect();
+    while level.len() > 1 {
+        if level.len() % 2 == 1 {
+            let last = *level.last().unwrap();
+            level.push(last);
+        }
+        level = level
+            .chunks(2)
+            .map(|pair| merkle_node(&pair[0], &pair[1]))
+            .collect();
     }
+    level[0]
+}
 
-    Hash::hash(&data)
+/// Build binary Merkle root from pre-computed transaction hashes.
+/// Used by compact block sync where we already have tx hashes.
+pub fn merkle_tx_root_from_hashes(tx_hashes: &[Hash]) -> Hash {
+    if tx_hashes.is_empty() {
+        return Hash::default();
+    }
+    let mut level: Vec<Hash> = tx_hashes.iter().map(merkle_leaf).collect();
+    while level.len() > 1 {
+        if level.len() % 2 == 1 {
+            let last = *level.last().unwrap();
+            level.push(last);
+        }
+        level = level
+            .chunks(2)
+            .map(|pair| merkle_node(&pair[0], &pair[1]))
+            .collect();
+    }
+    level[0]
+}
+
+/// Generate a Merkle inclusion proof for the transaction at `index`.
+///
+/// Returns a list of `(sibling_hash, is_left)` pairs from leaf to root.
+/// `is_left == true` means the sibling is on the LEFT side (i.e., the
+/// current node is on the right).
+///
+/// Returns `None` if `index >= transactions.len()` or the block is empty.
+pub fn merkle_tx_proof(transactions: &[Transaction], index: usize) -> Option<Vec<(Hash, bool)>> {
+    if transactions.is_empty() || index >= transactions.len() {
+        return None;
+    }
+    let mut level: Vec<Hash> = transactions.iter().map(|tx| merkle_leaf(&tx.hash())).collect();
+    let mut proof = Vec::new();
+    let mut idx = index;
+
+    while level.len() > 1 {
+        if level.len() % 2 == 1 {
+            let last = *level.last().unwrap();
+            level.push(last);
+        }
+        let sibling_idx = idx ^ 1; // flip last bit to get sibling
+        let is_left = sibling_idx < idx; // sibling is on the left if its index is smaller
+        proof.push((level[sibling_idx], is_left));
+        idx /= 2;
+        level = level
+            .chunks(2)
+            .map(|pair| merkle_node(&pair[0], &pair[1]))
+            .collect();
+    }
+    Some(proof)
+}
+
+/// Verify a Merkle inclusion proof for a transaction hash against a root.
+pub fn verify_merkle_tx_proof(root: &Hash, tx_hash: &Hash, proof: &[(Hash, bool)]) -> bool {
+    let mut current = merkle_leaf(tx_hash);
+    for (sibling, is_left) in proof {
+        current = if *is_left {
+            merkle_node(sibling, &current)
+        } else {
+            merkle_node(&current, sibling)
+        };
+    }
+    current == *root
 }
 
 /// Get current Unix timestamp (wall clock — only used as fallback)
@@ -1414,5 +1508,206 @@ mod tests {
         let without_ts = json.replace(",\"timestamp\":42", "");
         let cs2: CommitSignature = serde_json::from_str(&without_ts).unwrap();
         assert_eq!(cs2.timestamp, 0);
+    }
+
+    // ─── Merkle tx_root tests (Plan D: PR-02/BS-01) ─────────────────
+
+    fn make_test_txs(count: usize) -> Vec<Transaction> {
+        use crate::transaction::{Instruction, Message};
+        (0..count)
+            .map(|i| {
+                let ix = Instruction {
+                    program_id: crate::Pubkey([0u8; 32]),
+                    accounts: vec![crate::Pubkey([1u8; 32])],
+                    data: vec![i as u8],
+                };
+                Transaction::new(Message::new(vec![ix], Hash::default()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_merkle_root_empty_block() {
+        let root = compute_tx_root(&[]);
+        assert_eq!(root, Hash::default());
+    }
+
+    #[test]
+    fn test_merkle_root_single_tx() {
+        let txs = make_test_txs(1);
+        let root = compute_tx_root(&txs);
+        // Single tx: root = merkle_node(leaf, leaf) because we duplicate for odd count
+        // Actually with 1 element, the loop body doesn't execute since len() == 1
+        // so root == merkle_leaf(tx_hash)
+        let expected = merkle_leaf(&txs[0].hash());
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn test_merkle_root_two_txs() {
+        let txs = make_test_txs(2);
+        let root = compute_tx_root(&txs);
+        let l0 = merkle_leaf(&txs[0].hash());
+        let l1 = merkle_leaf(&txs[1].hash());
+        let expected = merkle_node(&l0, &l1);
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn test_merkle_root_three_txs() {
+        let txs = make_test_txs(3);
+        let root = compute_tx_root(&txs);
+        let l0 = merkle_leaf(&txs[0].hash());
+        let l1 = merkle_leaf(&txs[1].hash());
+        let l2 = merkle_leaf(&txs[2].hash());
+        // Odd count: duplicate last → [l0, l1, l2, l2]
+        let n01 = merkle_node(&l0, &l1);
+        let n22 = merkle_node(&l2, &l2);
+        let expected = merkle_node(&n01, &n22);
+        assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn test_merkle_root_seven_txs() {
+        let txs = make_test_txs(7);
+        let root = compute_tx_root(&txs);
+        assert_ne!(root, Hash::default());
+        // Verify determinism
+        assert_eq!(root, compute_tx_root(&txs));
+    }
+
+    #[test]
+    fn test_merkle_root_128_txs() {
+        let txs = make_test_txs(128);
+        let root = compute_tx_root(&txs);
+        assert_ne!(root, Hash::default());
+        // Power-of-two: no odd-padding needed at any level
+        assert_eq!(root, compute_tx_root(&txs));
+    }
+
+    #[test]
+    fn test_merkle_root_different_tx_sets() {
+        let txs_a = make_test_txs(3);
+        let txs_b = make_test_txs(4);
+        assert_ne!(compute_tx_root(&txs_a), compute_tx_root(&txs_b));
+    }
+
+    #[test]
+    fn test_merkle_root_from_hashes_matches() {
+        let txs = make_test_txs(5);
+        let root_direct = compute_tx_root(&txs);
+        let hashes: Vec<Hash> = txs.iter().map(|tx| tx.hash()).collect();
+        let root_from_hashes = merkle_tx_root_from_hashes(&hashes);
+        assert_eq!(root_direct, root_from_hashes);
+    }
+
+    #[test]
+    fn test_merkle_proof_empty_returns_none() {
+        assert!(merkle_tx_proof(&[], 0).is_none());
+    }
+
+    #[test]
+    fn test_merkle_proof_out_of_bounds_returns_none() {
+        let txs = make_test_txs(3);
+        assert!(merkle_tx_proof(&txs, 3).is_none());
+        assert!(merkle_tx_proof(&txs, 100).is_none());
+    }
+
+    #[test]
+    fn test_merkle_proof_single_tx_roundtrip() {
+        let txs = make_test_txs(1);
+        let root = compute_tx_root(&txs);
+        let proof = merkle_tx_proof(&txs, 0).unwrap();
+        assert!(verify_merkle_tx_proof(&root, &txs[0].hash(), &proof));
+    }
+
+    #[test]
+    fn test_merkle_proof_two_txs_roundtrip() {
+        let txs = make_test_txs(2);
+        let root = compute_tx_root(&txs);
+        for i in 0..2 {
+            let proof = merkle_tx_proof(&txs, i).unwrap();
+            assert!(
+                verify_merkle_tx_proof(&root, &txs[i].hash(), &proof),
+                "Proof verification failed for tx index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merkle_proof_three_txs_roundtrip() {
+        let txs = make_test_txs(3);
+        let root = compute_tx_root(&txs);
+        for i in 0..3 {
+            let proof = merkle_tx_proof(&txs, i).unwrap();
+            assert!(
+                verify_merkle_tx_proof(&root, &txs[i].hash(), &proof),
+                "Proof verification failed for tx index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merkle_proof_seven_txs_roundtrip() {
+        let txs = make_test_txs(7);
+        let root = compute_tx_root(&txs);
+        for i in 0..7 {
+            let proof = merkle_tx_proof(&txs, i).unwrap();
+            assert!(
+                verify_merkle_tx_proof(&root, &txs[i].hash(), &proof),
+                "Proof verification failed for tx index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merkle_proof_128_txs_roundtrip() {
+        let txs = make_test_txs(128);
+        let root = compute_tx_root(&txs);
+        for i in 0..128 {
+            let proof = merkle_tx_proof(&txs, i).unwrap();
+            assert!(
+                verify_merkle_tx_proof(&root, &txs[i].hash(), &proof),
+                "Proof verification failed for tx index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_merkle_proof_wrong_hash_fails() {
+        let txs = make_test_txs(4);
+        let root = compute_tx_root(&txs);
+        let proof = merkle_tx_proof(&txs, 0).unwrap();
+        let wrong_hash = Hash::hash(b"wrong");
+        assert!(!verify_merkle_tx_proof(&root, &wrong_hash, &proof));
+    }
+
+    #[test]
+    fn test_merkle_proof_wrong_root_fails() {
+        let txs = make_test_txs(4);
+        let proof = merkle_tx_proof(&txs, 0).unwrap();
+        let wrong_root = Hash::hash(b"wrong_root");
+        assert!(!verify_merkle_tx_proof(&wrong_root, &txs[0].hash(), &proof));
+    }
+
+    #[test]
+    fn test_merkle_proof_tampered_sibling_fails() {
+        let txs = make_test_txs(4);
+        let root = compute_tx_root(&txs);
+        let mut proof = merkle_tx_proof(&txs, 0).unwrap();
+        if !proof.is_empty() {
+            proof[0].0 = Hash::hash(b"tampered");
+        }
+        assert!(!verify_merkle_tx_proof(&root, &txs[0].hash(), &proof));
+    }
+
+    #[test]
+    fn test_merkle_domain_separation() {
+        // Verify that leaf and internal nodes use different domain tags
+        let h = Hash::hash(b"test");
+        let leaf = merkle_leaf(&h);
+        // An internal node with same data should produce a different hash
+        let internal = merkle_node(&h, &h);
+        assert_ne!(leaf, internal);
     }
 }

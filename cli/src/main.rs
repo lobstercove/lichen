@@ -44,6 +44,13 @@ impl std::fmt::Display for ContractTemplate {
     }
 }
 
+/// Code generation target language
+#[derive(Clone, Debug, ValueEnum)]
+enum CodegenLang {
+    Typescript,
+    Python,
+}
+
 /// Lichen CLI - Blockchain for autonomous agents
 #[derive(Parser)]
 #[command(name = "lichen")]
@@ -509,6 +516,25 @@ enum ContractCommands {
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
+    },
+
+    /// Generate a typed client SDK from a contract ABI
+    GenerateClient {
+        /// Path to abi.json file
+        #[arg(long, group = "source")]
+        abi: Option<PathBuf>,
+
+        /// Contract address (fetches ABI via RPC)
+        #[arg(long, group = "source")]
+        address: Option<String>,
+
+        /// Target language
+        #[arg(long, value_enum)]
+        lang: CodegenLang,
+
+        /// Output file path
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -1470,6 +1496,50 @@ async fn main() -> Result<()> {
 
                 println!("✅ Symbol registered!");
                 println!("📝 Signature: {}", signature);
+            }
+
+            ContractCommands::GenerateClient {
+                abi,
+                address,
+                lang,
+                output,
+            } => {
+                // Load ABI from file or on-chain
+                let contract_abi: lichen_core::ContractAbi = if let Some(ref path) = abi {
+                    let content = std::fs::read_to_string(path)
+                        .map_err(|e| anyhow::anyhow!("Cannot read ABI file: {}", e))?;
+                    serde_json::from_str(&content)
+                        .map_err(|e| anyhow::anyhow!("Invalid ABI JSON: {}", e))?
+                } else if let Some(ref addr) = address {
+                    let abi_json = client.get_contract_abi(addr).await
+                        .map_err(|e| anyhow::anyhow!("Cannot fetch ABI: {}", e))?;
+                    serde_json::from_value(abi_json)
+                        .map_err(|e| anyhow::anyhow!("Invalid ABI: {}", e))?
+                } else {
+                    anyhow::bail!("Either --abi or --address must be specified");
+                };
+
+                let code = match lang {
+                    CodegenLang::Typescript => generate_typescript(&contract_abi),
+                    CodegenLang::Python => generate_python(&contract_abi),
+                };
+
+                std::fs::write(&output, &code)
+                    .map_err(|e| anyhow::anyhow!("Cannot write output: {}", e))?;
+
+                println!(
+                    "✅ Generated {} client → {}",
+                    contract_abi.name,
+                    output.display()
+                );
+                println!(
+                    "   {} functions, {} lang",
+                    contract_abi.functions.len(),
+                    match lang {
+                        CodegenLang::Typescript => "TypeScript",
+                        CodegenLang::Python => "Python",
+                    }
+                );
             }
         },
 
@@ -3128,6 +3198,292 @@ fn print_defi_stats(stats: &serde_json::Value) {
     }
 }
 
+// ─── Contract Client Code Generation (Plan E: DX-01) ────────────────────────
+
+/// Convert snake_case to camelCase
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for (i, c) in s.chars().enumerate() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else if i == 0 {
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Convert snake_case to PascalCase
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Strip _ptr suffix from parameter names
+fn clean_param_name(name: &str) -> String {
+    name.strip_suffix("_ptr").unwrap_or(name).to_string()
+}
+
+/// Map ABI type to TypeScript type
+fn ts_type(t: &lichen_core::AbiType) -> &'static str {
+    use lichen_core::AbiType;
+    match t {
+        AbiType::Pubkey => "string",
+        AbiType::U64 | AbiType::I64 => "bigint",
+        AbiType::U32 | AbiType::I32 | AbiType::U16 | AbiType::I16 | AbiType::U8 => "number",
+        AbiType::F32 | AbiType::F64 => "number",
+        AbiType::Bool => "boolean",
+        AbiType::String => "string",
+        AbiType::Bytes | AbiType::BytesWithLen => "Uint8Array",
+    }
+}
+
+/// Map ABI type to Python type hint
+fn py_type(t: &lichen_core::AbiType) -> &'static str {
+    use lichen_core::AbiType;
+    match t {
+        AbiType::Pubkey => "str",
+        AbiType::U64 | AbiType::I64 | AbiType::U32 | AbiType::I32 | AbiType::U16
+        | AbiType::I16 | AbiType::U8 => "int",
+        AbiType::F32 | AbiType::F64 => "float",
+        AbiType::Bool => "bool",
+        AbiType::String => "str",
+        AbiType::Bytes | AbiType::BytesWithLen => "bytes",
+    }
+}
+
+/// Detect if a function is read-only based on ABI metadata or heuristic
+fn is_readonly(f: &lichen_core::AbiFunction) -> bool {
+    if f.readonly {
+        return true;
+    }
+    let name = f.name.as_str();
+    name.starts_with("get_")
+        || name == "balance_of"
+        || name == "total_supply"
+        || name == "allowance"
+        || name == "owner_of"
+        || name == "token_uri"
+        || name == "name"
+        || name == "symbol"
+        || name == "decimals"
+        || name == "supply"
+}
+
+/// Generate a TypeScript client class from a contract ABI
+fn generate_typescript(abi: &lichen_core::ContractAbi) -> String {
+    let class_name = format!("{}Client", to_pascal_case(&abi.name));
+    let mut out = String::with_capacity(4096);
+
+    out.push_str(&format!(
+        "// Auto-generated by: lichen contract generate-client\n\
+         // Contract: {} | ABI version: {}\n\
+         // DO NOT EDIT — regenerate with: lichen contract generate-client --abi {}/abi.json\n\n\
+         import {{ Connection, Keypair, PublicKey }} from '@lichen/sdk';\n\n",
+        abi.name,
+        abi.version,
+        abi.name,
+    ));
+
+    out.push_str(&format!("export class {} {{\n", class_name));
+    out.push_str("  constructor(\n");
+    out.push_str("    private connection: Connection,\n");
+    out.push_str("    private contractAddress: string,\n");
+    out.push_str("  ) {}\n");
+
+    for func in &abi.functions {
+        let method_name = to_camel_case(&func.name);
+        let readonly = is_readonly(func);
+
+        // Build parameter list
+        let mut params = Vec::new();
+        if !readonly {
+            params.push("signer: Keypair".to_string());
+        }
+        for p in &func.params {
+            let clean = clean_param_name(&p.name);
+            let ts_name = to_camel_case(&clean);
+            params.push(format!("{}: {}", ts_name, ts_type(&p.param_type)));
+        }
+
+        // Build args object
+        let args: Vec<String> = func
+            .params
+            .iter()
+            .map(|p| {
+                let clean = clean_param_name(&p.name);
+                let ts_name = to_camel_case(&clean);
+                format!("{}: {}", p.name, ts_name)
+            })
+            .collect();
+
+        let return_type = if readonly { "any" } else { "string" };
+        let call_method = if readonly {
+            "queryContract"
+        } else {
+            "callContract"
+        };
+
+        // Doc comment
+        let param_desc: Vec<String> = func
+            .params
+            .iter()
+            .map(|p| format!("{}: {:?}", p.name, p.param_type))
+            .collect();
+        out.push_str(&format!(
+            "\n  /** {}({}) */\n",
+            func.name,
+            param_desc.join(", ")
+        ));
+
+        out.push_str(&format!(
+            "  async {}({}): Promise<{}> {{\n",
+            method_name,
+            params.join(", "),
+            return_type,
+        ));
+
+        if readonly {
+            out.push_str(&format!(
+                "    return this.connection.{}(\n\
+                 \x20     new PublicKey(this.contractAddress),\n\
+                 \x20     '{}',\n\
+                 \x20     {{ {} }},\n\
+                 \x20   );\n",
+                call_method,
+                func.name,
+                args.join(", "),
+            ));
+        } else {
+            out.push_str(&format!(
+                "    return this.connection.{}(\n\
+                 \x20     signer,\n\
+                 \x20     new PublicKey(this.contractAddress),\n\
+                 \x20     '{}',\n\
+                 \x20     {{ {} }},\n\
+                 \x20   );\n",
+                call_method,
+                func.name,
+                args.join(", "),
+            ));
+        }
+
+        out.push_str("  }\n");
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+/// Generate a Python client class from a contract ABI
+fn generate_python(abi: &lichen_core::ContractAbi) -> String {
+    let class_name = format!("{}Client", to_pascal_case(&abi.name));
+    let mut out = String::with_capacity(4096);
+
+    out.push_str(&format!(
+        "# Auto-generated by: lichen contract generate-client\n\
+         # Contract: {} | ABI version: {}\n\
+         # DO NOT EDIT — regenerate with: lichen contract generate-client --abi {}/abi.json\n\n\
+         from lichen_sdk import Connection, Keypair\n\n\n",
+        abi.name, abi.version, abi.name,
+    ));
+
+    out.push_str(&format!("class {}:\n", class_name));
+    out.push_str("    def __init__(self, connection: Connection, contract_address: str):\n");
+    out.push_str("        self.connection = connection\n");
+    out.push_str("        self.contract_address = contract_address\n");
+
+    for func in &abi.functions {
+        let readonly = is_readonly(func);
+
+        // Build parameter list
+        let mut params = vec!["self".to_string()];
+        if !readonly {
+            params.push("signer: Keypair".to_string());
+        }
+        for p in &func.params {
+            let clean = clean_param_name(&p.name);
+            params.push(format!("{}: {}", clean, py_type(&p.param_type)));
+        }
+
+        // Build args dict
+        let args: Vec<String> = func
+            .params
+            .iter()
+            .map(|p| {
+                let clean = clean_param_name(&p.name);
+                format!("'{}': {}", p.name, clean)
+            })
+            .collect();
+
+        let return_hint = if readonly { "-> any" } else { "-> str" };
+
+        // Doc comment
+        let param_desc: Vec<String> = func
+            .params
+            .iter()
+            .map(|p| format!("{}: {:?}", p.name, p.param_type))
+            .collect();
+        out.push_str(&format!(
+            "\n    def {}({}) {}:\n",
+            func.name,
+            params.join(", "),
+            return_hint,
+        ));
+        out.push_str(&format!(
+            "        \"\"\"{}({})\"\"\"\n",
+            func.name,
+            param_desc.join(", "),
+        ));
+
+        let call_method = if readonly {
+            "query_contract"
+        } else {
+            "call_contract"
+        };
+
+        if readonly {
+            out.push_str(&format!(
+                "        return self.connection.{}(\n\
+                 \x20           self.contract_address,\n\
+                 \x20           '{}',\n\
+                 \x20           {{{}}},\n\
+                 \x20       )\n",
+                call_method,
+                func.name,
+                args.join(", "),
+            ));
+        } else {
+            out.push_str(&format!(
+                "        return self.connection.{}(\n\
+                 \x20           signer,\n\
+                 \x20           self.contract_address,\n\
+                 \x20           '{}',\n\
+                 \x20           {{{}}},\n\
+                 \x20       )\n",
+                call_method,
+                func.name,
+                args.join(", "),
+            ));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3168,5 +3524,55 @@ mod tests {
         // Values near the u64 limit should saturate, not overflow
         let huge = (u64::MAX / 1_000_000_000) as f64 + 1.0;
         assert_eq!(licn_to_spores(huge), u64::MAX);
+    }
+
+    #[test]
+    fn test_to_camel_case() {
+        assert_eq!(to_camel_case("balance_of"), "balanceOf");
+        assert_eq!(to_camel_case("total_supply"), "totalSupply");
+        assert_eq!(to_camel_case("transfer"), "transfer");
+        assert_eq!(to_camel_case("get_owner_of"), "getOwnerOf");
+    }
+
+    #[test]
+    fn test_to_pascal_case() {
+        assert_eq!(to_pascal_case("lichencoin"), "Lichencoin");
+        assert_eq!(to_pascal_case("dex_core"), "DexCore");
+        assert_eq!(to_pascal_case("moss_storage"), "MossStorage");
+    }
+
+    #[test]
+    fn test_clean_param_name() {
+        assert_eq!(clean_param_name("owner_ptr"), "owner");
+        assert_eq!(clean_param_name("amount"), "amount");
+        assert_eq!(clean_param_name("to_ptr"), "to");
+    }
+
+    #[test]
+    fn test_generate_typescript_lichencoin() {
+        let abi_json = include_str!("../../contracts/lichencoin/abi.json");
+        let abi: lichen_core::ContractAbi = serde_json::from_str(abi_json).unwrap();
+        let code = generate_typescript(&abi);
+        assert!(code.contains("class LichencoinClient"));
+        assert!(code.contains("async balanceOf("));
+        assert!(code.contains("async transfer(signer: Keypair"));
+        assert!(code.contains("async totalSupply("));
+        assert!(code.contains("queryContract")); // read-only methods
+        assert!(code.contains("callContract"));  // write methods
+        assert!(code.contains("@lichen/sdk"));
+    }
+
+    #[test]
+    fn test_generate_python_lichencoin() {
+        let abi_json = include_str!("../../contracts/lichencoin/abi.json");
+        let abi: lichen_core::ContractAbi = serde_json::from_str(abi_json).unwrap();
+        let code = generate_python(&abi);
+        assert!(code.contains("class LichencoinClient:"));
+        assert!(code.contains("def balance_of(self"));
+        assert!(code.contains("def transfer(self, signer: Keypair"));
+        assert!(code.contains("def total_supply(self"));
+        assert!(code.contains("query_contract")); // read-only
+        assert!(code.contains("call_contract"));  // write
+        assert!(code.contains("lichen_sdk"));
     }
 }

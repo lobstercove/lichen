@@ -900,6 +900,13 @@ impl RpcClient {
         Ok(contracts)
     }
 
+    /// Get contract ABI (fetched from on-chain storage via RPC)
+    pub async fn get_contract_abi(&self, address: &str) -> Result<serde_json::Value> {
+        let params = json!([address]);
+        let result = self.call("getContractAbi", params).await?;
+        Ok(result)
+    }
+
     /// Resolve a symbol (e.g., "DAO", "LICN", "DEX") to its on-chain contract address
     /// via the symbol registry. Returns None if the symbol is not registered.
     pub async fn resolve_symbol(&self, symbol: &str) -> Result<Option<Pubkey>> {
