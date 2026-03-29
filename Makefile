@@ -61,8 +61,8 @@ build-cli:
 
 build-sdk:
 	@echo "🔨 Building TypeScript SDKs..."
-	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build 2>/dev/null || npx tsc 2>/dev/null || echo "❌ SDK js build failed" && exit 1); fi
-	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build 2>/dev/null || npx tsc 2>/dev/null || echo "❌ DEX SDK build failed" && exit 1); fi
+	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build || npx tsc || (echo "❌ SDK js build failed" && exit 1)); fi
+	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build || npx tsc || (echo "❌ DEX SDK build failed" && exit 1)); fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test
@@ -161,8 +161,8 @@ start-custody:
 	@echo "🦞 Starting custody service..."
 	cargo run --release -p custody 2>&1 &
 
-start-dex:
-	@echo "🦞 Serving DEX frontend on http://localhost:3000..."
+start-dex: ## Local dev only — NOT for production (use Caddy/nginx instead)
+	@echo "🦞 Serving DEX frontend on http://localhost:3000 (dev mode)..."
 	@cd dex && python3 -m http.server 3000 2>&1 &
 
 start-all: start-validator

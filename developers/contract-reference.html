@@ -295,6 +295,11 @@
                     WASM introspection), clearer error messages (unknown function vs. unknown opcode), and simpler SDK
                     integration. The opcode pattern will be migrated to named exports in a future release with a
                     backward-compatible shim.</p>
+                <p><strong>Runtime resolution:</strong> Callers do not need to know which pattern a contract uses.
+                    The WASM runtime first tries to resolve the function by name as a WASM export. If that fails, it
+                    looks up the function in the contract's ABI — if the ABI entry has an <code>opcode</code> field,
+                    the runtime calls the <code>call()</code> export with the opcode byte prepended to the arguments.
+                    This resolution is fully transparent to RPC callers and SDK users.</p>
             </div>
 
             <div class="sub-heading">Dispatcher Opcode Table</div>

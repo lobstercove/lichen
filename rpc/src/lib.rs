@@ -778,6 +778,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getPrograms"
         | "getAllContracts"
         | "getAllSymbolRegistry"
+        | "getAllSymbols"
         | "getPredictionMarkets"
         | "getPredictionLeaderboard"
         | "batchReverseLichenNames"
@@ -2317,7 +2318,7 @@ async fn handle_rpc(
         "getLatestBlock" => handle_get_latest_block(&state).await,
         "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
-        "getTransactionsByAddress" => handle_get_transactions_by_address(&state, req.params).await,
+        "getTransactionsByAddress" | "getTransactionHistory" => handle_get_transactions_by_address(&state, req.params).await,
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
         "getTokenAccounts" => handle_get_token_accounts(&state, req.params).await,
@@ -2388,7 +2389,6 @@ async fn handle_rpc(
 
         // Account endpoints
         "getAccountInfo" => handle_get_account_info(&state, req.params).await,
-        "getTransactionHistory" => handle_get_transaction_history(&state, req.params).await,
 
         // Contract endpoints
         "getContractInfo" => handle_get_contract_info(&state, req.params).await,
@@ -2432,7 +2432,7 @@ async fn handle_rpc(
         "getSymbolRegistryByProgram" => {
             handle_get_symbol_registry_by_program(&state, req.params).await
         }
-        "getAllSymbolRegistry" => handle_get_all_symbol_registry(&state, req.params).await,
+        "getAllSymbolRegistry" | "getAllSymbols" => handle_get_all_symbol_registry(&state, req.params).await,
 
         // NFT endpoints (draft)
         "getCollection" => handle_get_collection(&state, req.params).await,
@@ -2637,7 +2637,14 @@ async fn handle_solana_rpc(
         ),
         _ => Err(RpcError {
             code: -32601,
-            message: format!("Method not found: {}", req.method),
+            message: format!(
+                "Method '{}' is not supported in the Lichen Solana compatibility layer. \
+                 Supported: getLatestBlockhash, getRecentBlockhash, getBalance, \
+                 getAccountInfo, getBlock, getBlockHeight, getSignaturesForAddress, \
+                 getSignatureStatuses, getSlot, getTransaction, sendTransaction, \
+                 getTokenAccountsByOwner, getTokenAccountBalance, getHealth, getVersion",
+                req.method
+            ),
         }),
     };
 
@@ -7146,136 +7153,6 @@ async fn handle_get_account_info(
     }))
 }
 
-/// Get transaction history for an account (paginated)
-async fn handle_get_transaction_history(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let arr = params.as_array().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: expected array".to_string(),
-    })?;
-
-    let pubkey_str = arr
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: expected [pubkey, options?]".to_string(),
-        })?;
-
-    let opts = arr.get(1);
-    let limit = opts
-        .and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.get("limit").and_then(|l| l.as_u64()))
-        })
-        .unwrap_or(10)
-        .min(500) as usize;
-
-    let before_slot = opts
-        .and_then(|v| v.get("before_slot"))
-        .and_then(|v| v.as_u64());
-
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
-
-    let fee_config = state
-        .state
-        .get_fee_config()
-        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
-
-    // Use paginated reverse-iterator method
-    let indexed = state
-        .state
-        .get_account_tx_signatures_paginated(&pubkey, limit, before_slot)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?;
-
-    let mut transactions: Vec<serde_json::Value> = Vec::new();
-    let mut timestamps: HashMap<u64, u64> = HashMap::new();
-    let mut last_slot: Option<u64> = None;
-
-    for (hash, slot) in &indexed {
-        if transactions.len() >= limit {
-            break;
-        }
-
-        let tx = match state.state.get_transaction(hash) {
-            Ok(Some(tx)) => tx,
-            _ => continue,
-        };
-
-        let timestamp = if let Some(cached) = timestamps.get(slot) {
-            *cached
-        } else {
-            let ts = state
-                .state
-                .get_block_by_slot(*slot)
-                .ok()
-                .and_then(|block| block.map(|b| b.header.timestamp))
-                .unwrap_or(0);
-            timestamps.insert(*slot, ts);
-            ts
-        };
-
-        let first_ix = tx.message.instructions.first();
-        let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix
-                .accounts
-                .first()
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let to = ix
-                .accounts
-                .get(1)
-                .map(|acc| acc.to_base58())
-                .unwrap_or_default();
-            let amount = parse_transfer_amount(ix).unwrap_or(0);
-            (instruction_type(ix), from, to, amount)
-        } else {
-            ("Unknown", String::new(), String::new(), 0)
-        };
-
-        let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
-
-        transactions.push(serde_json::json!({
-            "hash": tx.signature().to_hex(),
-            "signature": tx.signature().to_hex(),
-            "slot": slot,
-            "timestamp": timestamp,
-            "from": from,
-            "to": to,
-            "type": tx_type,
-            "amount": amount as f64 / 1_000_000_000.0,
-            "amount_spores": amount,
-            "fee": fee,
-            "fee_licn": fee as f64 / 1_000_000_000.0,
-            "success": true,
-        }));
-
-        last_slot = Some(*slot);
-    }
-
-    let has_more = transactions.len() == limit;
-    Ok(serde_json::json!({
-        "transactions": transactions,
-        "count": transactions.len(),
-        "limit": limit,
-        "has_more": has_more,
-        "next_before_slot": if has_more { last_slot } else { None::<u64> },
-    }))
-}
-
 // ============================================================================
 // CONTRACT ENDPOINTS
 // ============================================================================
@@ -11774,7 +11651,7 @@ async fn handle_stake_to_mossstake(
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     Err(RpcError {
-        code: -32601,
+        code: -32000,
         message: "stakeToMossStake is deprecated. Use sendTransaction with system instruction \
                   type 13 (MossStake deposit). Data: [13, amount_le_bytes(8)]. \
                   Accounts: [depositor_pubkey]. The transaction must be signed by the depositor."
@@ -11791,7 +11668,7 @@ async fn handle_unstake_from_mossstake(
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     Err(RpcError {
-        code: -32601,
+        code: -32000,
         message: "unstakeFromMossStake is deprecated. Use sendTransaction with system instruction \
                   type 14 (MossStake unstake). Data: [14, st_licn_amount_le_bytes(8)]. \
                   Accounts: [user_pubkey]. The transaction must be signed by the user."
@@ -11808,7 +11685,7 @@ async fn handle_claim_unstaked_tokens(
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     Err(RpcError {
-        code: -32601,
+        code: -32000,
         message: "claimUnstakedTokens is deprecated. Use sendTransaction with system instruction \
                   type 15 (MossStake claim). Data: [15]. \
                   Accounts: [user_pubkey]. The transaction must be signed by the user."

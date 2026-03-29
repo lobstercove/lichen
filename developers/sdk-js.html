@@ -175,7 +175,7 @@ console.log('TX Signature:', signature);</code></pre>
             <h2>Connection Class</h2>
 
             <div class="method-card" id="connection-constructor">
-                <h3 class="method-name">new Connection(rpcUrl, wsUrl?)</h3>
+                <h3 class="method-name">new Connection(rpcUrl, wsUrl?, options?)</h3>
                 <p class="method-desc">Create a connection to a Lichen validator node.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
@@ -200,6 +200,12 @@ console.log('TX Signature:', signature);</code></pre>
                                 <td><span class="param-type">string</span></td>
                                 <td>No</td>
                                 <td>WebSocket endpoint URL (required for subscriptions)</td>
+                            </tr>
+                            <tr>
+                                <td>options.timeoutMs</td>
+                                <td><span class="param-type">number</span></td>
+                                <td>No</td>
+                                <td>Request timeout in milliseconds (default: 30000)</td>
                             </tr>
                         </tbody>
                     </table>

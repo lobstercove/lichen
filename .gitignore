@@ -74,10 +74,12 @@ scripts/dex-liquidity/orders_*.json
 
 # ── Python ─────────────────────────────────────────────────
 venv/
+**/venv/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+**/moltchain_sdk.egg-info/
 .Python
 build/
 develop-eggs/

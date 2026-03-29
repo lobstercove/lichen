@@ -55,6 +55,24 @@
       "name": "total_supply",
       "opcode": 6,
       "params": []
+    },
+    {
+      "name": "transfer_from",
+      "opcode": 7,
+      "params": [
+        { "name": "spender_ptr", "type": "Pubkey" },
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "allowance",
+      "opcode": 8,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" },
+        { "name": "spender_ptr", "type": "Pubkey" }
+      ]
     }
   ]
 }

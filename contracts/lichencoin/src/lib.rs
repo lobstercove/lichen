@@ -94,6 +94,21 @@ pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
     make_token().balance_of(account)
 }
 
+/// Get allowance granted by owner to spender
+#[no_mangle]
+pub extern "C" fn allowance(owner_ptr: *const u8, spender_ptr: *const u8) -> u64 {
+    let mut owner_array = [0u8; 32];
+    let mut spender_array = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32);
+    }
+    let owner = Address::new(owner_array);
+    let spender = Address::new(spender_array);
+
+    make_token().allowance(owner, spender)
+}
+
 /// Transfer tokens
 /// AUDIT-FIX 1.8a: verify caller == from to prevent unauthorized transfers
 #[no_mangle]
@@ -462,6 +477,28 @@ mod tests {
         test_mock::set_caller(owner);
         let result = approve(owner.as_ptr(), spender.as_ptr(), 5000);
         assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_allowance_query() {
+        setup();
+        let owner = [1u8; 32];
+        let spender = [2u8; 32];
+        let _ = initialize(owner.as_ptr());
+
+        // No approval yet — should be 0
+        assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 0);
+
+        // Approve 5000
+        test_mock::set_caller(owner);
+        approve(owner.as_ptr(), spender.as_ptr(), 5000);
+        assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 5000);
+
+        // After partial transfer_from, allowance should decrease
+        test_mock::set_caller(spender);
+        let recipient = [3u8; 32];
+        transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 2000);
+        assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 3000);
     }
 
     // AUDIT-FIX P2: Security regression test
