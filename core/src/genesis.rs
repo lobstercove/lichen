@@ -32,9 +32,9 @@ impl Default for GenesisPrices {
     fn default() -> Self {
         Self {
             licn_usd_8dec: 10_000_000,      // $0.10
-            wsol_usd_8dec: 8_970_000_000,   // $89.70
-            weth_usd_8dec: 215_229_000_000, // $2,152.29
-            wbnb_usd_8dec: 64_249_000_000,  // $642.49
+            wsol_usd_8dec: 8_184_000_000,   // $81.84
+            weth_usd_8dec: 199_934_000_000, // $1,999.34
+            wbnb_usd_8dec: 60_978_000_000,  // $609.78
         }
     }
 }

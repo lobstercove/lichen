@@ -2394,7 +2394,28 @@ async fn handle_rpc(
         "getLichenIdAgentDirectory" => {
             handle_get_lichenid_agent_directory(&state, req.params).await
         }
-        "getLichenIdStats" => handle_get_lichenid_stats(&state).await,
+        "getLichenIdStats" => {
+            let p = None;
+            if let Some(cached) =
+                get_cached_program_list_response(&state, "getLichenIdStats", &p).await
+            {
+                Ok(cached)
+            } else {
+                match handle_get_lichenid_stats(&state).await {
+                    Ok(resp) => {
+                        put_cached_program_list_response(
+                            &state,
+                            "getLichenIdStats",
+                            &p,
+                            resp.clone(),
+                        )
+                        .await;
+                        Ok(resp)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
         "getNameAuction" => handle_get_name_auction(&state, req.params).await,
 
         // EVM address registry
@@ -2432,7 +2453,27 @@ async fn handle_rpc(
 
         // Prediction Market endpoints
         "getPredictionMarketStats" => handle_get_prediction_stats(&state).await,
-        "getPredictionMarkets" => handle_get_prediction_markets(&state, req.params).await,
+        "getPredictionMarkets" => {
+            if let Some(cached) =
+                get_cached_program_list_response(&state, "getPredictionMarkets", &req.params).await
+            {
+                Ok(cached)
+            } else {
+                match handle_get_prediction_markets(&state, req.params.clone()).await {
+                    Ok(resp) => {
+                        put_cached_program_list_response(
+                            &state,
+                            "getPredictionMarkets",
+                            &req.params,
+                            resp.clone(),
+                        )
+                        .await;
+                        Ok(resp)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
         "getPredictionMarket" => handle_get_prediction_market(&state, req.params).await,
         "getPredictionPositions" => handle_get_prediction_positions(&state, req.params).await,
         "getPredictionTraderStats" => handle_get_prediction_trader_stats(&state, req.params).await,

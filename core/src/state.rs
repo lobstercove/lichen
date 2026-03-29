@@ -90,6 +90,10 @@ const CF_TX_META: &str = "tx_meta"; // tx_hash(32) -> compute_units_used(8,LE) �
 const COLD_CF_BLOCKS: &str = "blocks";
 const COLD_CF_TRANSACTIONS: &str = "transactions";
 const COLD_CF_TX_TO_SLOT: &str = "tx_to_slot";
+const COLD_CF_ACCOUNT_TXS: &str = "account_txs";
+const COLD_CF_EVENTS: &str = "events";
+const COLD_CF_TOKEN_TRANSFERS: &str = "token_transfers";
+const COLD_CF_PROGRAM_CALLS: &str = "program_calls";
 
 /// Default number of slots to retain in the hot DB before migration-eligible.
 /// Blocks older than `current_slot - COLD_RETENTION_SLOTS` can be moved.
@@ -615,6 +619,60 @@ impl MetricsStore {
 
         Ok(())
     }
+
+    /// STOR-02: Write all metrics counters into an existing WriteBatch for atomic
+    /// commit alongside block data. This eliminates the window between block commit
+    /// and metrics persistence where a crash could leave counters stale.
+    pub fn save_to_batch(&self, batch: &mut WriteBatch, db: &Arc<DB>) -> Result<(), String> {
+        let cf = db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let total_txs = *self
+            .total_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"total_transactions", total_txs.to_le_bytes());
+
+        let total_blocks = *self.total_blocks.lock().unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"total_blocks", total_blocks.to_le_bytes());
+
+        let total_accounts = *self
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"total_accounts", total_accounts.to_le_bytes());
+
+        let active_accounts = *self
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"active_accounts", active_accounts.to_le_bytes());
+
+        let pc = *self.program_count.lock().unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"program_count", pc.to_le_bytes());
+
+        let vc = *self
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"validator_count", vc.to_le_bytes());
+
+        let daily_txs = *self
+            .daily_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        batch.put_cf(&cf, b"daily_transactions", daily_txs.to_le_bytes());
+
+        let daily_date = self
+            .daily_date
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        batch.put_cf(&cf, b"daily_date", daily_date.as_bytes());
+
+        Ok(())
+    }
 }
 
 /// State store using RocksDB with column families
@@ -1063,7 +1121,7 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_EVM_MAP, point_lookup_opts(20)),      // key=evm_addr(20)
             ColumnFamilyDescriptor::new(CF_EVM_STORAGE, prefix_scan_opts(20)), // key=evm_addr(20)+slot(32)
             // Small/singleton CFs
-            ColumnFamilyDescriptor::new(CF_SLOTS, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_SLOTS, point_lookup_opts(8)), // STOR-01: key=slot(8,BE), bloom+prefix for efficient lookups
             ColumnFamilyDescriptor::new(CF_STATS, write_heavy_opts(0)), // many per-slot seq counters + per-account atomic counters
             ColumnFamilyDescriptor::new(CF_VALIDATORS, small_cf_opts()),
             ColumnFamilyDescriptor::new(CF_MOSSSTAKE, small_cf_opts()),
@@ -1075,7 +1133,7 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES, point_lookup_opts(32)), // key=pubkey(32)->leaf_hash(32)
             ColumnFamilyDescriptor::new(CF_CONTRACT_MERKLE_LEAVES, prefix_scan_opts(32)), // key=program(32)+storage_key->leaf_hash(32)
             // Shielded pool (ZK privacy layer)
-            ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,LE)->commitment(32)
+            ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,BE)->commitment(32)
             ColumnFamilyDescriptor::new(CF_SHIELDED_NULLIFIERS, point_lookup_opts(32)), // key=nullifier(32)->0x01
             ColumnFamilyDescriptor::new(CF_SHIELDED_POOL, small_cf_opts()), // singleton pool state
             // Task 3.4: Per-slot EVM log index for eth_getLogs
@@ -1125,7 +1183,7 @@ impl StateStore {
                     .as_slice()
                     .try_into()
                     .map_err(|_| "Invalid slot data".to_string())?;
-                Ok(u64::from_le_bytes(bytes))
+                Ok(u64::from_be_bytes(bytes))
             }
             Ok(None) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
@@ -1140,7 +1198,7 @@ impl StateStore {
             .ok_or_else(|| "Slots CF not found".to_string())?;
 
         self.db
-            .put_cf(&cf, b"last_slot", slot.to_le_bytes())
+            .put_cf(&cf, b"last_slot", slot.to_be_bytes())
             .map_err(|e| format!("Failed to store slot: {}", e))
     }
 
@@ -1157,7 +1215,7 @@ impl StateStore {
                     .as_slice()
                     .try_into()
                     .map_err(|_| "Invalid confirmed slot data".to_string())?;
-                Ok(u64::from_le_bytes(bytes))
+                Ok(u64::from_be_bytes(bytes))
             }
             Ok(None) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
@@ -1172,7 +1230,7 @@ impl StateStore {
             .ok_or_else(|| "Slots CF not found".to_string())?;
 
         self.db
-            .put_cf(&cf, b"confirmed_slot", slot.to_le_bytes())
+            .put_cf(&cf, b"confirmed_slot", slot.to_be_bytes())
             .map_err(|e| format!("Failed to store confirmed slot: {}", e))
     }
 
@@ -1189,7 +1247,7 @@ impl StateStore {
                     .as_slice()
                     .try_into()
                     .map_err(|_| "Invalid finalized slot data".to_string())?;
-                Ok(u64::from_le_bytes(bytes))
+                Ok(u64::from_be_bytes(bytes))
             }
             Ok(None) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
@@ -1204,7 +1262,7 @@ impl StateStore {
             .ok_or_else(|| "Slots CF not found".to_string())?;
 
         self.db
-            .put_cf(&cf, b"finalized_slot", slot.to_le_bytes())
+            .put_cf(&cf, b"finalized_slot", slot.to_be_bytes())
             .map_err(|e| format!("Failed to store finalized slot: {}", e))
     }
 
@@ -1336,15 +1394,15 @@ impl StateStore {
 
         // Block data + slot index
         batch.put_cf(&cf, block_hash.0, &value);
-        batch.put_cf(&slot_cf, block.header.slot.to_le_bytes(), block_hash.0);
+        batch.put_cf(&slot_cf, block.header.slot.to_be_bytes(), block_hash.0);
         if let Some(slot) = last_slot {
-            batch.put_cf(&slot_cf, b"last_slot", slot.to_le_bytes());
+            batch.put_cf(&slot_cf, b"last_slot", slot.to_be_bytes());
         }
         if let Some(slot) = confirmed_slot {
-            batch.put_cf(&slot_cf, b"confirmed_slot", slot.to_le_bytes());
+            batch.put_cf(&slot_cf, b"confirmed_slot", slot.to_be_bytes());
         }
         if let Some(slot) = finalized_slot {
-            batch.put_cf(&slot_cf, b"finalized_slot", slot.to_le_bytes());
+            batch.put_cf(&slot_cf, b"finalized_slot", slot.to_be_bytes());
         }
 
         // Per-transaction writes: tx body + tx→slot + slot→tx indexes
@@ -1364,7 +1422,7 @@ impl StateStore {
             }
 
             // tx hash → slot (reverse index)
-            batch.put_cf(&tx_to_slot_cf, sig.0, block.header.slot.to_le_bytes());
+            batch.put_cf(&tx_to_slot_cf, sig.0, block.header.slot.to_be_bytes());
 
             // slot+seq → tx hash (forward index)
             let mut key = Vec::with_capacity(16);
@@ -1378,16 +1436,16 @@ impl StateStore {
         // leave transaction history in an inconsistent state.
         self.batch_index_account_transactions(block, &mut batch)?;
 
-        // Commit all block + tx + account-index writes atomically
+        // STOR-02: Track metrics for new slots and fold into the same atomic batch
+        if is_new_slot {
+            self.metrics.track_block(block);
+            self.metrics.save_to_batch(&mut batch, &self.db)?;
+        }
+
+        // Commit all block + tx + account-index + metrics writes atomically
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to write block batch: {}", e))?;
-
-        // Track metrics for new slots (skip fork-choice replacements)
-        if is_new_slot {
-            self.metrics.track_block(block);
-            self.metrics.save(&self.db)?;
-        }
 
         // PERF-OPT 3: Update blockhash cache with newly committed block
         self.push_blockhash_cache(block_hash, block.header.slot);
@@ -1466,7 +1524,7 @@ impl StateStore {
             .cf_handle(CF_SLOTS)
             .ok_or_else(|| "Slots CF not found".to_string())?;
 
-        match self.db.get_cf(&slot_cf, slot.to_le_bytes()) {
+        match self.db.get_cf(&slot_cf, slot.to_be_bytes()) {
             Ok(Some(hash_bytes)) => {
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&hash_bytes);
@@ -1765,7 +1823,9 @@ impl StateStore {
                     snap_key[..32].copy_from_slice(&pubkey.0);
                     snap_key[32..].copy_from_slice(&slot.to_be_bytes());
                     // Reuse already-serialized value
-                    let _ = self.db.put_cf(&snap_cf, snap_key, &value);
+                    if let Err(e) = self.db.put_cf(&snap_cf, snap_key, &value) {
+                        tracing::warn!("Failed to write archive snapshot: {}", e);
+                    }
                 }
             }
         }
@@ -2367,15 +2427,17 @@ impl StateStore {
             let mut key = [0u8; 43]; // 11 ("dirty_acct:") + 32 (pubkey)
             key[..11].copy_from_slice(b"dirty_acct:");
             key[11..43].copy_from_slice(&pubkey.0);
-            let _ = self.db.put_cf(&cf, key, []);
+            if let Err(e) = self.db.put_cf(&cf, key, []) {
+                tracing::warn!("Failed to write dirty_acct marker: {}", e);
+            }
 
             // PERF-OPT 9: Write a non-zero marker instead of read-modify-write.
             // compute_state_root_cached() only checks dirty == 0 vs non-zero,
             // so incrementing is unnecessary. This eliminates a RocksDB GET on
             // every account write (hot path during block processing).
-            let _ = self
-                .db
-                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
+            if let Err(e) = self.db.put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes()) {
+                tracing::warn!("Failed to write dirty_account_count: {}", e);
+            }
         }
     }
 
@@ -2385,9 +2447,9 @@ impl StateStore {
     pub fn mark_account_dirty(&self) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             // PERF-OPT 9: Just write non-zero instead of read-modify-write
-            let _ = self
-                .db
-                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
+            if let Err(e) = self.db.put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes()) {
+                tracing::warn!("Failed to write dirty_account_count: {}", e);
+            }
         }
     }
 
@@ -2399,17 +2461,19 @@ impl StateStore {
             let mut dirty_key = Vec::with_capacity(prefix.len() + full_key.len());
             dirty_key.extend_from_slice(prefix);
             dirty_key.extend_from_slice(full_key);
-            let _ = self.db.put_cf(&cf, &dirty_key, []);
-            let _ = self
-                .db
-                .put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes());
+            if let Err(e) = self.db.put_cf(&cf, &dirty_key, []) {
+                tracing::warn!("Failed to write dirty_cstor marker: {}", e);
+            }
+            if let Err(e) = self.db.put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes()) {
+                tracing::warn!("Failed to write dirty_contract_count: {}", e);
+            }
         }
     }
 
     // ─── Shielded pool (ZK privacy layer) ───────────────────────────────
 
     /// Insert a note commitment into the shielded commitments column family.
-    /// Key = index as u64 LE (8 bytes), value = commitment leaf (32 bytes).
+    /// Key = index as u64 BE (8 bytes), value = commitment leaf (32 bytes).
     pub fn insert_shielded_commitment(
         &self,
         index: u64,
@@ -2421,7 +2485,7 @@ impl StateStore {
             .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
 
         self.db
-            .put_cf(&cf, index.to_le_bytes(), commitment)
+            .put_cf(&cf, index.to_be_bytes(), commitment)
             .map_err(|e| format!("Failed to insert shielded commitment: {}", e))
     }
 
@@ -2432,7 +2496,7 @@ impl StateStore {
             .cf_handle(CF_SHIELDED_COMMITMENTS)
             .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
 
-        match self.db.get_cf(&cf, index.to_le_bytes()) {
+        match self.db.get_cf(&cf, index.to_be_bytes()) {
             Ok(Some(data)) => {
                 if data.len() != 32 {
                     return Err(format!(
@@ -5271,7 +5335,7 @@ impl StateBatch {
             .ok_or_else(|| "Slots CF not found".to_string())?;
         match self.db.get_cf(&cf, b"last_slot") {
             Ok(Some(data)) if data.len() == 8 => {
-                Ok(u64::from_le_bytes(data.as_slice().try_into().unwrap()))
+                Ok(u64::from_be_bytes(data.as_slice().try_into().unwrap()))
             }
             Ok(_) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
@@ -5290,7 +5354,7 @@ impl StateBatch {
             .db
             .cf_handle(CF_SHIELDED_COMMITMENTS)
             .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
-        self.batch.put_cf(&cf, index.to_le_bytes(), commitment);
+        self.batch.put_cf(&cf, index.to_be_bytes(), commitment);
         Ok(())
     }
 
@@ -7962,7 +8026,7 @@ impl StateStore {
 
         match self.db.get_cf(&cf, sig.0) {
             Ok(Some(data)) if data.len() == 8 => {
-                let slot = u64::from_le_bytes(data.as_slice().try_into().unwrap());
+                let slot = u64::from_be_bytes(data.as_slice().try_into().unwrap());
                 Ok(Some(slot))
             }
             Ok(_) => Ok(None),
@@ -7979,7 +8043,7 @@ impl StateStore {
             .ok_or_else(|| "TX to slot CF not found".to_string())?;
 
         self.db
-            .put_cf(&cf, sig.0, slot.to_le_bytes())
+            .put_cf(&cf, sig.0, slot.to_be_bytes())
             .map_err(|e| format!("Failed to index tx to slot: {}", e))
     }
 
@@ -8158,6 +8222,10 @@ impl StateStore {
             ColumnFamilyDescriptor::new(COLD_CF_BLOCKS, archival_cf_opts()),
             ColumnFamilyDescriptor::new(COLD_CF_TRANSACTIONS, archival_cf_opts()),
             ColumnFamilyDescriptor::new(COLD_CF_TX_TO_SLOT, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_ACCOUNT_TXS, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_EVENTS, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_TOKEN_TRANSFERS, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_PROGRAM_CALLS, archival_cf_opts()),
         ];
 
         let cold = DB::open_cf_descriptors(&db_opts, cold_path.as_ref(), cf_descs)
@@ -8217,15 +8285,15 @@ impl StateStore {
         // Scan slots 0..cutoff_slot in the hot DB
         let iter = self.db.iterator_cf(
             &hot_slots_cf,
-            rocksdb::IteratorMode::From(&0u64.to_le_bytes(), Direction::Forward),
+            rocksdb::IteratorMode::From(&0u64.to_be_bytes(), Direction::Forward),
         );
 
         for item in iter.flatten() {
-            // Slot keys are 8-byte LE u64 except "last_slot" which is a string key
+            // Slot keys are 8-byte BE u64 except "last_slot" which is a string key
             if item.0.len() != 8 {
                 continue;
             }
-            let slot = u64::from_le_bytes(item.0[..8].try_into().unwrap());
+            let slot = u64::from_be_bytes(item.0[..8].try_into().unwrap());
             if slot >= cutoff_slot {
                 break;
             }
@@ -8290,6 +8358,126 @@ impl StateStore {
         }
 
         Ok(migrated)
+    }
+
+    /// Migrate per-slot index CFs (account_txs, events, token_transfers,
+    /// program_calls) to cold storage. Keys are pubkey(32) + slot(8,BE) + …
+    /// so we extract the slot at bytes 32..40 and migrate entries below cutoff.
+    pub fn migrate_indexes_to_cold(&self, cutoff_slot: u64) -> Result<u64, String> {
+        let cold = self
+            .cold_db
+            .as_ref()
+            .ok_or_else(|| "Cold storage not attached".to_string())?;
+
+        let cf_pairs: &[(&str, &str)] = &[
+            (CF_ACCOUNT_TXS, COLD_CF_ACCOUNT_TXS),
+            (CF_EVENTS, COLD_CF_EVENTS),
+            (CF_TOKEN_TRANSFERS, COLD_CF_TOKEN_TRANSFERS),
+            (CF_PROGRAM_CALLS, COLD_CF_PROGRAM_CALLS),
+        ];
+
+        let mut total_migrated: u64 = 0;
+
+        for &(hot_name, cold_name) in cf_pairs {
+            let hot_cf = match self.db.cf_handle(hot_name) {
+                Some(cf) => cf,
+                None => continue,
+            };
+            let cold_cf = match cold.cf_handle(cold_name) {
+                Some(cf) => cf,
+                None => continue,
+            };
+
+            let mut batch = WriteBatch::default();
+            let mut count: u64 = 0;
+            let iter = self
+                .db
+                .iterator_cf(&hot_cf, rocksdb::IteratorMode::Start);
+
+            for item in iter.flatten() {
+                // All 4 CFs: key = prefix(32) + slot(8,BE) + …
+                if item.0.len() < 40 {
+                    continue;
+                }
+                let slot = u64::from_be_bytes(item.0[32..40].try_into().unwrap());
+                if slot >= cutoff_slot {
+                    continue;
+                }
+                cold.put_cf(&cold_cf, &item.0, &item.1)
+                    .map_err(|e| format!("Cold write error ({}): {}", cold_name, e))?;
+                batch.delete_cf(&hot_cf, &item.0);
+                count += 1;
+
+                // Flush batch periodically to limit memory usage
+                if count.is_multiple_of(10_000) {
+                    self.db.write(std::mem::take(&mut batch)).map_err(|e| {
+                        format!("Failed to delete {} from hot: {}", hot_name, e)
+                    })?;
+                }
+            }
+
+            if count > 0 {
+                self.db
+                    .write(batch)
+                    .map_err(|e| format!("Failed to delete {} from hot: {}", hot_name, e))?;
+                tracing::info!(
+                    "🗄️  Cold-migrated {} entries from {} (slots < {})",
+                    count,
+                    hot_name,
+                    cutoff_slot
+                );
+            }
+            total_migrated += count;
+        }
+
+        Ok(total_migrated)
+    }
+
+    /// Prune archive snapshots older than `keep_recent_slots` slots from the
+    /// current slot. Returns the number of entries removed.
+    pub fn prune_archive_snapshots(&self, current_slot: u64, keep_recent_slots: u64) -> u64 {
+        if !self.is_archive_mode() {
+            return 0;
+        }
+        let snap_cf = match self.db.cf_handle(CF_ACCOUNT_SNAPSHOTS) {
+            Some(cf) => cf,
+            None => return 0,
+        };
+        let cutoff = current_slot.saturating_sub(keep_recent_slots);
+        if cutoff == 0 {
+            return 0;
+        }
+
+        let mut batch = WriteBatch::default();
+        let mut pruned: u64 = 0;
+        let iter = self
+            .db
+            .iterator_cf(&snap_cf, rocksdb::IteratorMode::Start);
+
+        for item in iter.flatten() {
+            // Key format: pubkey(32) + slot(8,BE)
+            if item.0.len() != 40 {
+                continue;
+            }
+            let slot = u64::from_be_bytes(item.0[32..40].try_into().unwrap());
+            if slot < cutoff {
+                batch.delete_cf(&snap_cf, &item.0);
+                pruned += 1;
+            }
+        }
+
+        if pruned > 0 {
+            if let Err(e) = self.db.write(batch) {
+                tracing::warn!("Failed to prune archive snapshots: {}", e);
+                return 0;
+            }
+            tracing::info!(
+                "🗂️  Pruned {} archive snapshots older than slot {}",
+                pruned,
+                cutoff
+            );
+        }
+        pruned
     }
 
     /// Returns true if a cold DB is attached.
