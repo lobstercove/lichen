@@ -2435,7 +2435,10 @@ impl StateStore {
             // compute_state_root_cached() only checks dirty == 0 vs non-zero,
             // so incrementing is unnecessary. This eliminates a RocksDB GET on
             // every account write (hot path during block processing).
-            if let Err(e) = self.db.put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes()) {
+            if let Err(e) = self
+                .db
+                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes())
+            {
                 tracing::warn!("Failed to write dirty_account_count: {}", e);
             }
         }
@@ -2447,7 +2450,10 @@ impl StateStore {
     pub fn mark_account_dirty(&self) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             // PERF-OPT 9: Just write non-zero instead of read-modify-write
-            if let Err(e) = self.db.put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes()) {
+            if let Err(e) = self
+                .db
+                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes())
+            {
                 tracing::warn!("Failed to write dirty_account_count: {}", e);
             }
         }
@@ -2464,7 +2470,10 @@ impl StateStore {
             if let Err(e) = self.db.put_cf(&cf, &dirty_key, []) {
                 tracing::warn!("Failed to write dirty_cstor marker: {}", e);
             }
-            if let Err(e) = self.db.put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes()) {
+            if let Err(e) = self
+                .db
+                .put_cf(&cf, b"dirty_contract_count", 1u64.to_le_bytes())
+            {
                 tracing::warn!("Failed to write dirty_contract_count: {}", e);
             }
         }
@@ -8390,9 +8399,7 @@ impl StateStore {
 
             let mut batch = WriteBatch::default();
             let mut count: u64 = 0;
-            let iter = self
-                .db
-                .iterator_cf(&hot_cf, rocksdb::IteratorMode::Start);
+            let iter = self.db.iterator_cf(&hot_cf, rocksdb::IteratorMode::Start);
 
             for item in iter.flatten() {
                 // All 4 CFs: key = prefix(32) + slot(8,BE) + …
@@ -8410,9 +8417,9 @@ impl StateStore {
 
                 // Flush batch periodically to limit memory usage
                 if count.is_multiple_of(10_000) {
-                    self.db.write(std::mem::take(&mut batch)).map_err(|e| {
-                        format!("Failed to delete {} from hot: {}", hot_name, e)
-                    })?;
+                    self.db
+                        .write(std::mem::take(&mut batch))
+                        .map_err(|e| format!("Failed to delete {} from hot: {}", hot_name, e))?;
                 }
             }
 
@@ -8450,9 +8457,7 @@ impl StateStore {
 
         let mut batch = WriteBatch::default();
         let mut pruned: u64 = 0;
-        let iter = self
-            .db
-            .iterator_cf(&snap_cf, rocksdb::IteratorMode::Start);
+        let iter = self.db.iterator_cf(&snap_cf, rocksdb::IteratorMode::Start);
 
         for item in iter.flatten() {
             // Key format: pubkey(32) + slot(8,BE)

@@ -3006,10 +3006,7 @@ async fn check_credit_confirmation(
     if result.is_null() {
         return Ok(None);
     }
-    let success = result
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let success = result.get("status").and_then(|v| v.as_str()) == Some("Success");
     Ok(Some(success))
 }
 
@@ -7742,10 +7739,8 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 {
                     Ok(result) => {
                         if !result.is_null() {
-                            let success = result
-                                .get("success")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
+                            let success =
+                                result.get("status").and_then(|v| v.as_str()) == Some("Success");
                             if !success {
                                 continue;
                             }
@@ -7760,12 +7755,14 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 "musd" => state.config.musd_contract_addr.as_deref(),
                                 _ => None,
                             };
-                            let tx_contract =
-                                result.get("contract_address").and_then(|v| v.as_str());
-                            let tx_caller = result.get("caller").and_then(|v| v.as_str());
-                            let tx_method = result.get("method").and_then(|v| v.as_str());
-                            let tx_amount =
-                                result.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let tx_contract = result.get("to").and_then(|v| v.as_str());
+                            let tx_caller = result.get("from").and_then(|v| v.as_str());
+                            let tx_method =
+                                result.get("contract_function").and_then(|v| v.as_str());
+                            let tx_amount = result
+                                .get("token_amount_spores")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
 
                             // Validate contract address matches
                             if let Some(expected) = expected_contract {
@@ -11330,11 +11327,11 @@ mod tests {
             .route("/", post(mock_licn_rpc_handler))
             .with_state(MockLichenRpcState {
                 transaction_result: json!({
-                    "success": true,
-                    "contract_address": "wrapped-weth-contract",
-                    "caller": "22222222222222222222222222222222",
-                    "method": "burn",
-                    "amount": 2500,
+                    "status": "Success",
+                    "to": "wrapped-weth-contract",
+                    "from": "22222222222222222222222222222222",
+                    "contract_function": "burn",
+                    "token_amount_spores": 2500,
                 }),
                 requests: licn_requests.clone(),
             });
@@ -11414,11 +11411,11 @@ mod tests {
             .route("/", post(mock_licn_rpc_handler))
             .with_state(MockLichenRpcState {
                 transaction_result: json!({
-                    "success": true,
-                    "contract_address": "wrong-weth-contract",
-                    "caller": "11111111111111111111111111111111",
-                    "method": "burn",
-                    "amount": 2500,
+                    "status": "Success",
+                    "to": "wrong-weth-contract",
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "burn",
+                    "token_amount_spores": 2500,
                 }),
                 requests: licn_requests.clone(),
             });
@@ -11498,11 +11495,11 @@ mod tests {
             .route("/", post(mock_licn_rpc_handler))
             .with_state(MockLichenRpcState {
                 transaction_result: json!({
-                    "success": true,
-                    "contract_address": "wrapped-weth-contract",
-                    "caller": "11111111111111111111111111111111",
-                    "method": "burn",
-                    "amount": 1234,
+                    "status": "Success",
+                    "to": "wrapped-weth-contract",
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "burn",
+                    "token_amount_spores": 1234,
                 }),
                 requests: licn_requests.clone(),
             });
@@ -11582,11 +11579,11 @@ mod tests {
             .route("/", post(mock_licn_rpc_handler))
             .with_state(MockLichenRpcState {
                 transaction_result: json!({
-                    "success": true,
-                    "contract_address": "wrapped-weth-contract",
-                    "caller": "11111111111111111111111111111111",
-                    "method": "transfer",
-                    "amount": 2500,
+                    "status": "Success",
+                    "to": "wrapped-weth-contract",
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "transfer",
+                    "token_amount_spores": 2500,
                 }),
                 requests: licn_requests.clone(),
             });
@@ -11666,11 +11663,11 @@ mod tests {
             .route("/", post(mock_licn_rpc_handler))
             .with_state(MockLichenRpcState {
                 transaction_result: json!({
-                    "success": true,
-                    "contract_address": "wrapped-weth-contract",
-                    "caller": "11111111111111111111111111111111",
-                    "method": "burn",
-                    "amount": 2500,
+                    "status": "Success",
+                    "to": "wrapped-weth-contract",
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "burn",
+                    "token_amount_spores": 2500,
                 }),
                 requests: licn_requests.clone(),
             });

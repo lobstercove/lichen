@@ -1844,6 +1844,7 @@ fn tx_to_rpc_json(
     timestamp: u64,
     fee_config: &lichen_core::FeeConfig,
     stored_cu: Option<u64>,
+    store: &StateStore,
 ) -> serde_json::Value {
     let first_ix = tx.message.instructions.first();
     let (tx_type, from, to, amount, contract_fn) = if let Some(ix) = first_ix {
@@ -1882,7 +1883,7 @@ fn tx_to_rpc_json(
     let compute_budget = tx.message.effective_compute_budget();
     let compute_unit_price = tx.message.effective_compute_unit_price();
 
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "signature": tx.signature().to_hex(),
         "message_hash": tx.message_hash().to_hex(),
         "signatures": signatures,
@@ -1912,7 +1913,32 @@ fn tx_to_rpc_json(
             "instructions": instructions,
             "recent_blockhash": tx.message.recent_blockhash.to_hex(),
         },
-    })
+    });
+
+    // Enrich contract-call transactions with token metadata
+    if tx_type == "ContractCall" {
+        if let Some(ix) = first_ix {
+            if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(store, ix) {
+                if let Some(m) = obj.as_object_mut() {
+                    m.insert("token_symbol".to_string(), serde_json::json!(symbol));
+                    m.insert(
+                        "token_amount".to_string(),
+                        serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)),
+                    );
+                    m.insert(
+                        "token_amount_spores".to_string(),
+                        serde_json::json!(token_amt),
+                    );
+                    m.insert("token_decimals".to_string(), serde_json::json!(decimals));
+                    if let Some(ref to_addr) = token_to {
+                        m.insert("token_to".to_string(), serde_json::json!(to_addr));
+                    }
+                }
+            }
+        }
+    }
+
+    obj
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3305,6 +3331,7 @@ async fn handle_get_block(
                         block.header.timestamp,
                         &fee_config,
                         cu,
+                        &state.state,
                     )
                 })
                 .collect();
@@ -3905,7 +3932,8 @@ async fn handle_get_transaction(
         Some(tx) => {
             let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
             let stored_cu = tx_meta.as_ref().map(|m| m.compute_units_used);
-            let mut json = tx_to_rpc_json(&tx, slot, timestamp, &fee_config, stored_cu);
+            let mut json =
+                tx_to_rpc_json(&tx, slot, timestamp, &fee_config, stored_cu, &state.state);
             // Add commitment status to transaction response
             let (status, confirmations) = tx_commitment_status(state, slot);
             if let Some(obj) = json.as_object_mut() {
@@ -3927,34 +3955,6 @@ async fn handle_get_transaction(
                         obj.insert("contract_logs".to_string(), serde_json::json!(meta.logs));
                     }
                 }
-                // Enrich contract-call transactions with token metadata
-                if obj.get("type").and_then(|v| v.as_str()) == Some("Contract") {
-                    if let Some(ix) = tx.message.instructions.first() {
-                        if let Some((symbol, token_amt, decimals, token_to)) =
-                            extract_token_info(&state.state, ix)
-                        {
-                            obj.insert("token_symbol".to_string(), serde_json::json!(symbol));
-                            obj.insert(
-                                "token_amount".to_string(),
-                                serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)),
-                            );
-                            obj.insert(
-                                "token_amount_spores".to_string(),
-                                serde_json::json!(token_amt),
-                            );
-                            obj.insert("token_decimals".to_string(), serde_json::json!(decimals));
-                            if let Some(ref to_addr) = token_to {
-                                obj.insert("token_to".to_string(), serde_json::json!(to_addr));
-                            }
-                            if let Some(func) = parse_contract_function(ix) {
-                                obj.insert(
-                                    "contract_function".to_string(),
-                                    serde_json::json!(func),
-                                );
-                            }
-                        }
-                    }
-                }
             }
             Ok(json)
         }
@@ -3969,7 +3969,14 @@ async fn handle_get_transaction(
                             .get_tx_meta_cu(&block_tx.signature())
                             .ok()
                             .flatten();
-                        return Ok(tx_to_rpc_json(block_tx, slot, timestamp, &fee_config, cu));
+                        return Ok(tx_to_rpc_json(
+                            block_tx,
+                            slot,
+                            timestamp,
+                            &fee_config,
+                            cu,
+                            &state.state,
+                        ));
                     }
                 }
             }
@@ -4207,7 +4214,7 @@ async fn handle_get_transactions_by_address(
         });
 
         // Enrich contract-call transactions with token metadata
-        if tx_type == "Contract" {
+        if tx_type == "ContractCall" {
             if let Some(ix) = first_ix {
                 if let Some(func) = parse_contract_function(ix) {
                     entry["contract_function"] = serde_json::json!(func);
@@ -4343,7 +4350,7 @@ async fn handle_get_recent_transactions(
         });
 
         // Enrich contract-call transactions with token metadata
-        if tx_type == "Contract" {
+        if tx_type == "ContractCall" {
             if let Some(ix) = first_ix {
                 if let Some(func) = parse_contract_function(ix) {
                     entry["contract_function"] = serde_json::json!(func);

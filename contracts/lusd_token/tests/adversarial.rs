@@ -31,9 +31,9 @@ fn test_epoch_cap_single_large_mint() {
     let user = addr(2);
     lichen_sdk::test_mock::set_slot(100);
 
-    // MINT_CAP_PER_EPOCH = 100_000_000_000_000 (100K lUSD in spores, 1e9 precision)
+    // MINT_CAP_PER_EPOCH = 100_000_000_000_000_000 (100M lUSD in spores, 1e9 precision)
     assert_eq!(
-        mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000),
+        mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000_000),
         0,
         "exactly at cap should succeed"
     );
@@ -45,7 +45,10 @@ fn test_epoch_cap_exceeded() {
     let user = addr(2);
     lichen_sdk::test_mock::set_slot(100);
 
-    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000), 0);
+    assert_eq!(
+        mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000_000),
+        0
+    );
     // Second mint in same epoch should fail
     let result = mint(admin.as_ptr(), user.as_ptr(), 1);
     assert_eq!(result, 11, "should reject when epoch cap is reached");
@@ -57,13 +60,16 @@ fn test_epoch_cap_reset_after_epoch() {
     let user = addr(2);
     lichen_sdk::test_mock::set_slot(100);
 
-    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000), 0);
+    assert_eq!(
+        mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000_000),
+        0
+    );
 
     // Advance past epoch boundary (EPOCH_SLOTS = 86_400)
     lichen_sdk::test_mock::set_slot(100 + 86_401);
 
     // Should be able to mint again in new epoch
-    let result = mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000);
+    let result = mint(admin.as_ptr(), user.as_ptr(), 100_000_000_000_000_000);
     assert_eq!(result, 0, "should succeed in new epoch");
 }
 
@@ -75,7 +81,10 @@ fn test_epoch_cap_multiple_small_mints() {
 
     // Mint in chunks
     for _ in 0..10 {
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 10_000_000_000_000), 0);
+        assert_eq!(
+            mint(admin.as_ptr(), user.as_ptr(), 10_000_000_000_000_000),
+            0
+        );
     }
     // Next should fail — at cap
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1), 11);
@@ -586,13 +595,16 @@ fn test_epoch_remaining() {
     lichen_sdk::test_mock::set_slot(100);
 
     let remaining_before = get_epoch_remaining();
-    assert_eq!(remaining_before, 100_000_000_000_000);
+    assert_eq!(remaining_before, 100_000_000_000_000_000);
 
-    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 30_000_000_000_000), 0);
+    assert_eq!(
+        mint(admin.as_ptr(), user.as_ptr(), 30_000_000_000_000_000),
+        0
+    );
 
     let remaining_after = get_epoch_remaining();
     assert_eq!(
-        remaining_after, 70_000_000_000_000,
+        remaining_after, 70_000_000_000_000_000,
         "remaining should decrease after mint"
     );
 }
