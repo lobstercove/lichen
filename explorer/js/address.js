@@ -171,6 +171,13 @@ async function loadAddressData() {
             accountData = createEmptyAccountData(currentAddress);
         }
         currentAccountData = accountData;
+        // Fetch oracle prices for token USD values
+        try {
+            const prices = await rpcCall('getOraclePrices', []);
+            window._oraclePrices = prices || {};
+        } catch (_e) {
+            window._oraclePrices = {};
+        }
         await applyValidatorType(accountData);
         displayAddressData(accountData);
         // Pre-fetch current slot for accurate expiry display
@@ -1800,17 +1807,18 @@ function displayAddressData(data) {
     // Token balances — always show tokens tab, render empty state if none
     setTokensTabVisibility(true);
     document.getElementById('tokensCard').style.display = 'block';
-    displayTokenBalances(data.tokens || []);
+    displayTokenBalances(data.tokens || [], window._oraclePrices || {});
 
     document.getElementById('rawData').textContent = JSON.stringify(data, null, 2);
 
     enforceAddressViewOnlyMode();
 }
 
-function displayTokenBalances(tokens) {
+function displayTokenBalances(tokens, oraclePrices) {
     const tbody = document.getElementById('tokensTable');
     if (!tbody) return;
     tbody.innerHTML = '';
+    const prices = oraclePrices || {};
 
     if (!tokens || tokens.length === 0) {
         tbody.innerHTML = `
@@ -1833,6 +1841,19 @@ function displayTokenBalances(tokens) {
             ? Number(token.ui_amount)
             : rawBalance / Math.pow(10, decimals);
 
+        // Lookup USD price from oracle — case-insensitive key match
+        const rawSymbol = token.symbol || '';
+        const priceLookup = Object.fromEntries(
+            Object.entries(prices).map(([k, v]) => [k.toUpperCase(), v])
+        );
+        let usdPrice = priceLookup[rawSymbol.toUpperCase()] || 0;
+        // Stablecoins: lUSD/LUSD = $1.00 if oracle returns 0
+        if (!usdPrice && /^l?usd$/i.test(rawSymbol)) usdPrice = 1.0;
+        const usdValue = uiAmount * usdPrice;
+        const valueStr = usdPrice > 0
+            ? '$' + usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : '—';
+
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>
@@ -1843,7 +1864,7 @@ function displayTokenBalances(tokens) {
             </td>
             <td><strong>${symbol}</strong></td>
             <td>${uiAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: decimals })}</td>
-            <td>—</td>
+            <td>${valueStr}</td>
         `;
         tbody.appendChild(row);
     });
