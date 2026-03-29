@@ -1,6 +1,6 @@
 {
   "name": "@lichen/sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lichen/lichen.git",
+    "url": "https://github.com/lobstercove/lichen.git",
     "directory": "sdk/js"
   },
   "devDependencies": {

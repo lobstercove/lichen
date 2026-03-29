@@ -2,7 +2,7 @@
 // "Every crab, lobster, and shrimp can access the moss!"
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lichen_core::{Keypair, Pubkey};
 use std::path::PathBuf;
 
@@ -16,6 +16,34 @@ use client::RpcClient;
 use keypair_manager::KeypairManager;
 use wallet::WalletManager;
 
+/// Recognized contract template categories
+#[derive(Clone, Debug, ValueEnum)]
+enum ContractTemplate {
+    Token,
+    Nft,
+    Defi,
+    Dex,
+    Governance,
+    Wrapped,
+    Bridge,
+    Oracle,
+    Lending,
+    Marketplace,
+    Auction,
+    Identity,
+    Launchpad,
+    Vault,
+    Payments,
+}
+
+impl std::fmt::Display for ContractTemplate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Output the lowercase variant name to match the on-chain string
+        let s = format!("{:?}", self);
+        write!(f, "{}", s.to_lowercase())
+    }
+}
+
 /// Lichen CLI - Blockchain for autonomous agents
 #[derive(Parser)]
 #[command(name = "lichen")]
@@ -26,8 +54,7 @@ use wallet::WalletManager;
     built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
     WASM smart contracts, Ed25519 signing, ZK privacy (Groth16/BN254).\n\n\
     Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
-    Fee: 0.001 LICN base | 25 LICN deploy | 10 LICN upgrade | 0.5 LICN NFT mint\n\
-    Fee split: 40% burn, 30% producer, 10% voters, 10% treasury, 10% community\n\n\
+    Run 'lichen fees' for current fee schedule\n\n\
     Mainnet RPC: https://rpc.lichen.network\n\
     Testnet RPC: https://testnet-rpc.lichen.network\n\
     Explorer:    https://explorer.lichen.network\n\
@@ -100,7 +127,8 @@ enum Commands {
     #[command(subcommand)]
     Wallet(WalletCommands),
 
-    /// Initialize a new validator keypair (alias for 'identity new')
+    /// [DEPRECATED] Use 'identity new' instead. Creates a new keypair.
+    #[command(hide = true)]
     Init {
         /// Output file path
         #[arg(short, long, id = "init_output_path")]
@@ -162,9 +190,9 @@ enum Commands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Contract template category (e.g. token, nft, defi, dex, governance, wrapped, bridge, oracle, lending, marketplace, auction, identity, launchpad, vault, payments)
-        #[arg(long)]
-        template: Option<String>,
+        /// Contract template category
+        #[arg(long, value_enum)]
+        template: Option<ContractTemplate>,
 
         /// Token decimals (e.g. 9 for LICN-style tokens)
         #[arg(long)]
@@ -470,9 +498,9 @@ enum ContractCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Template category (e.g. token, nft, defi, dex, governance, wrapped, bridge, oracle, lending, marketplace, auction, identity, launchpad, vault, payments)
-        #[arg(long)]
-        template: Option<String>,
+        /// Template category
+        #[arg(long, value_enum)]
+        template: Option<ContractTemplate>,
 
         /// Decimals (e.g. 9)
         #[arg(long)]
@@ -834,6 +862,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Init { output } => {
+            eprintln!("⚠️  'lichen init' is deprecated. Use 'lichen identity new' instead.");
             let keypair = Keypair::new();
             let pubkey = keypair.pubkey();
 
@@ -1427,13 +1456,14 @@ async fn main() -> Result<()> {
                 println!("👤 Owner: {}", owner.pubkey().to_base58());
                 println!();
 
+                let template_str = template.as_ref().map(|t| t.to_string());
                 let signature = client
                     .register_symbol(
                         &owner,
                         &contract_pubkey,
                         &symbol,
                         name.as_deref(),
-                        template.as_deref(),
+                        template_str.as_deref(),
                         decimals,
                     )
                     .await?;
@@ -1657,7 +1687,7 @@ async fn main() -> Result<()> {
                     registry.insert("name".to_string(), serde_json::json!(n));
                 }
                 if let Some(ref t) = template {
-                    registry.insert("template".to_string(), serde_json::json!(t));
+                    registry.insert("template".to_string(), serde_json::json!(t.to_string()));
                 }
                 if let Some(d) = decimals {
                     registry.insert("decimals".to_string(), serde_json::json!(d));
@@ -1800,13 +1830,14 @@ async fn main() -> Result<()> {
                                 "⚠️  Symbol '{}' not found in registry — auto-registering...",
                                 s
                             );
+                            let template_str = template.as_ref().map(|t| t.to_string());
                             match client
                                 .register_symbol(
                                     &deployer,
                                     &contract_addr,
                                     s,
                                     name.as_deref(),
-                                    template.as_deref(),
+                                    template_str.as_deref(),
                                     decimals,
                                 )
                                 .await

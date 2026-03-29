@@ -621,14 +621,17 @@ class LichenRPC {
     // MOSSSTAKE (LIQUID STAKING)
     // ========================================================================
 
+    /** @deprecated Use sendTransaction with system instruction type 13 instead */
     async stakeToMossStake(params) {
         return await this.call('stakeToMossStake', [params]);
     }
 
+    /** @deprecated Use sendTransaction with system instruction type 14 instead */
     async unstakeFromMossStake(params) {
         return await this.call('unstakeFromMossStake', [params]);
     }
 
+    /** @deprecated Use sendTransaction with system instruction type 15 instead */
     async claimUnstakedTokens(params) {
         return await this.call('claimUnstakedTokens', [params]);
     }

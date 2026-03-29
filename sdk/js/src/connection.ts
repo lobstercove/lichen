@@ -103,26 +103,43 @@ export class Connection {
   private ws?: WebSocket;
   private subscriptions = new Map<number, (data: any) => void>();
   private nextId = 1;
+  private timeoutMs: number;
 
-  constructor(rpcUrl: string, wsUrl?: string) {
+  constructor(rpcUrl: string, wsUrl?: string, options?: { timeoutMs?: number }) {
     this.rpcUrl = rpcUrl;
     this.wsUrl = wsUrl;
+    this.timeoutMs = options?.timeoutMs ?? 30_000;
   }
 
   /**
    * Make an RPC call
    */
   private async rpc(method: string, params: any[] = []): Promise<any> {
-    const response = await fetch(this.rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: this.nextId++,
-        method,
-        params,
-      }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: this.nextId++,
+          method,
+          params,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        throw new Error(`RPC request timed out after ${this.timeoutMs}ms: ${method}`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
