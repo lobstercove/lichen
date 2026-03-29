@@ -299,7 +299,9 @@ impl Transaction {
 
     /// Check if this is a Solana-compat transaction.
     /// AUDIT-FIX MED-05: Deprecated — SolanaCompat has no distinct validation path.
-    #[deprecated(note = "SolanaCompat has no distinct validation; use is_evm() to distinguish EVM vs native")]
+    #[deprecated(
+        note = "SolanaCompat has no distinct validation; use is_evm() to distinguish EVM vs native"
+    )]
     pub fn is_solana_compat(&self) -> bool {
         self.tx_type == TransactionType::SolanaCompat
     }

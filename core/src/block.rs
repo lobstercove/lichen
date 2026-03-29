@@ -491,7 +491,10 @@ fn compute_tx_root(transactions: &[Transaction]) -> Hash {
     if transactions.is_empty() {
         return Hash::default();
     }
-    let mut level: Vec<Hash> = transactions.iter().map(|tx| merkle_leaf(&tx.hash())).collect();
+    let mut level: Vec<Hash> = transactions
+        .iter()
+        .map(|tx| merkle_leaf(&tx.hash()))
+        .collect();
     while level.len() > 1 {
         if level.len() % 2 == 1 {
             let last = *level.last().unwrap();
@@ -536,7 +539,10 @@ pub fn merkle_tx_proof(transactions: &[Transaction], index: usize) -> Option<Vec
     if transactions.is_empty() || index >= transactions.len() {
         return None;
     }
-    let mut level: Vec<Hash> = transactions.iter().map(|tx| merkle_leaf(&tx.hash())).collect();
+    let mut level: Vec<Hash> = transactions
+        .iter()
+        .map(|tx| merkle_leaf(&tx.hash()))
+        .collect();
     let mut proof = Vec::new();
     let mut idx = index;
 

@@ -254,7 +254,10 @@ fn fetch_genesis_prices() -> GenesisPrices {
     let resp = match ureq::get(url).call() {
         Ok(r) => r,
         Err(e) => {
-            warn!("Binance price fetch failed ({}), using compiled defaults", e);
+            warn!(
+                "Binance price fetch failed ({}), using compiled defaults",
+                e
+            );
             return defaults;
         }
     };
@@ -262,7 +265,10 @@ fn fetch_genesis_prices() -> GenesisPrices {
     let body = match resp.into_string() {
         Ok(b) => b,
         Err(e) => {
-            warn!("Failed to read Binance response ({}), using compiled defaults", e);
+            warn!(
+                "Failed to read Binance response ({}), using compiled defaults",
+                e
+            );
             return defaults;
         }
     };
@@ -270,7 +276,10 @@ fn fetch_genesis_prices() -> GenesisPrices {
     let tickers: Vec<Ticker> = match serde_json::from_str(&body) {
         Ok(t) => t,
         Err(e) => {
-            warn!("Failed to parse Binance JSON ({}), using compiled defaults", e);
+            warn!(
+                "Failed to parse Binance JSON ({}), using compiled defaults",
+                e
+            );
             return defaults;
         }
     };
@@ -1078,7 +1087,10 @@ fn main() {
         let mut config_tx = Transaction::new(message);
         config_tx.signatures.push([0u8; 64]); // synthetic signature
         genesis_txs.push(config_tx);
-        info!("  ✓ GenesisConfig embedded in genesis block (opcode 40, {} bytes)", config_json.len());
+        info!(
+            "  ✓ GenesisConfig embedded in genesis block (opcode 40, {} bytes)",
+            config_json.len()
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════

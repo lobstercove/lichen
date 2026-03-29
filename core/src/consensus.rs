@@ -331,9 +331,7 @@ impl RewardConfig {
 
         // Convert multiplier to fixed-point: scale by 1_000_000 then do integer math
         let multiplier_fp = (multiplier * 1_000_000.0) as u128;
-        let adjusted = (base_reward as u128)
-            .saturating_mul(multiplier_fp)
-            / 1_000_000;
+        let adjusted = (base_reward as u128).saturating_mul(multiplier_fp) / 1_000_000;
         adjusted as u64
     }
 

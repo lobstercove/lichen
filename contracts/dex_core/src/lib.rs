@@ -1203,7 +1203,9 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel.
+    if is_zero(&q) {
+        return 2;
+    }
     // Clear existing allowed quotes
     let old_count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..old_count {

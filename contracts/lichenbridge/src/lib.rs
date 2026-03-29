@@ -1427,7 +1427,9 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
         core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
     }
 
-    // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
+    if is_zero(&addr) {
+        return 5;
+    }
     storage_set(LICHENCOIN_ADDRESS_KEY, &addr);
     log_info("Token address configured");
     0

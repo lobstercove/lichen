@@ -122,7 +122,7 @@ fn test_user_order_count_at_limit() {
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_slot(100);
     lichen_sdk::test_mock::set_caller(trader);
-    for i in 0..100u64 {
+    for i in 0..500u64 {
         let price = P + (i + 1) * 1_000_000;
         assert_eq!(
             place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0),
@@ -131,7 +131,7 @@ fn test_user_order_count_at_limit() {
             i
         );
     }
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 501_000_000, Q, 0, 0);
     assert_eq!(result, 5, "should reject at max open orders");
 }
 
@@ -141,7 +141,7 @@ fn test_user_order_count_after_cancel() {
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_slot(100);
     lichen_sdk::test_mock::set_caller(trader);
-    for i in 0..100u64 {
+    for i in 0..500u64 {
         let price = P + (i + 1) * 1_000_000;
         assert_eq!(
             place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0),
@@ -149,7 +149,7 @@ fn test_user_order_count_after_cancel() {
         );
     }
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 501_000_000, Q, 0, 0);
     assert!(
         result == 0 || result == 5,
         "cancel count: result={}",
