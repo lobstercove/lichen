@@ -1895,13 +1895,18 @@ impl StateStore {
         let root = *tree.last()?.first()?;
         let proof = generate_proof(&tree, leaf_index)?;
 
-        // The block header stores a composite state_root = H(0x02 || accounts_root || contract_root).
+        // The block header stores a composite state_root =
+        //   H(0x02 || accounts_root || contract_root || stake_pool_hash || mossstake_hash).
         // Embed the composite root so RPC can compare directly against the anchor block.
         let contract_root = self.compute_contract_storage_root();
-        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
         composite.push(0x02);
         composite.extend_from_slice(&root.0);
         composite.extend_from_slice(&contract_root.0);
+        composite.extend_from_slice(&stake_pool_hash.0);
+        composite.extend_from_slice(&mossstake_pool_hash.0);
         let composite_root = Hash::hash(&composite);
 
         Some(AccountProof {
@@ -1934,21 +1939,53 @@ impl StateStore {
     /// where dirty_count is typically tiny (transactions per block ~10-100).
     ///
     /// The final state_root is a composite:
-    ///   H(0x02 || accounts_root || contract_storage_root)
-    /// This domain-separates the two sub-trees and enables independent proofs.
+    ///   H(0x02 || accounts_root || contract_storage_root || stake_pool_hash || mossstake_pool_hash)
+    /// This domain-separates all sub-trees and commits the full consensus-critical state.
     pub fn compute_state_root(&self) -> Hash {
         let accounts_root = self.compute_accounts_root();
         let contract_root = self.compute_contract_storage_root();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
         // Composite root with 0x02 domain separator
-        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
         composite.push(0x02);
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
+        composite.extend_from_slice(&stake_pool_hash.0);
+        composite.extend_from_slice(&mossstake_pool_hash.0);
         let root = Hash::hash(&composite);
+        // Diagnostic: log individual component hashes for state root debugging
+        tracing::debug!(
+            "🔍 STATE_ROOT_COMPONENTS: accts={} contracts={} stake={} moss={} → root={}",
+            hex::encode(&accounts_root.0[..8]),
+            hex::encode(&contract_root.0[..8]),
+            hex::encode(&stake_pool_hash.0[..8]),
+            hex::encode(&mossstake_pool_hash.0[..8]),
+            hex::encode(&root.0[..8]),
+        );
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
             let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
         }
         root
+    }
+
+    /// Deterministic hash of the stake pool singleton.
+    pub fn compute_stake_pool_hash(&self) -> Hash {
+        match self.get_stake_pool() {
+            Ok(pool) => {
+                let h = pool.canonical_hash();
+                h
+            }
+            Err(_) => Hash::default(),
+        }
+    }
+
+    /// Deterministic hash of the MossStake pool singleton.
+    pub fn compute_mossstake_pool_hash(&self) -> Hash {
+        match self.get_mossstake_pool() {
+            Ok(pool) => pool.canonical_hash(),
+            Err(_) => Hash::default(),
+        }
     }
 
     /// Compute the accounts sub-root using incremental dirty tracking.
@@ -2058,7 +2095,7 @@ impl StateStore {
 
     /// Compute the contract storage sub-root using incremental dirty tracking.
     /// Mirrors the accounts root approach but over CF_CONTRACT_STORAGE.
-    fn compute_contract_storage_root(&self) -> Hash {
+    pub fn compute_contract_storage_root(&self) -> Hash {
         let cf_storage = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
             Some(h) => h,
             None => return Hash::default(),
@@ -2223,10 +2260,14 @@ impl StateStore {
     pub fn compute_state_root_cold_start(&self) -> Hash {
         let accounts_root = self.compute_accounts_root_cold_start();
         let contract_root = self.compute_contract_storage_root_cold_start();
-        let mut composite = Vec::with_capacity(1 + 32 + 32);
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
         composite.push(0x02);
         composite.extend_from_slice(&accounts_root.0);
         composite.extend_from_slice(&contract_root.0);
+        composite.extend_from_slice(&stake_pool_hash.0);
+        composite.extend_from_slice(&mossstake_pool_hash.0);
         let root = Hash::hash(&composite);
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
             let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);

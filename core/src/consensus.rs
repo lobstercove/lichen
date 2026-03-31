@@ -5,7 +5,7 @@ use crate::genesis::ConsensusParams;
 use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
 use crate::{Block, Hash, Pubkey};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 // ============================================================================
@@ -1942,6 +1942,51 @@ impl StakePool {
             }
         }
         migrated
+    }
+
+    /// Compute a deterministic hash of the entire stake pool.
+    ///
+    /// HashMaps have non-deterministic iteration order, so we collect into
+    /// sorted BTreeMaps before bincode-serializing.  This ensures every
+    /// validator computing the state root arrives at the same bytes and
+    /// therefore the same hash.
+    pub fn canonical_hash(&self) -> Hash {
+        let sorted_stakes: BTreeMap<&Pubkey, &StakeInfo> = self.stakes.iter().collect();
+        let sorted_unstake: BTreeMap<&(Pubkey, Pubkey), &UnstakeRequest> =
+            self.unstake_requests.iter().collect();
+        let sorted_delegations: BTreeMap<&Pubkey, BTreeMap<&Pubkey, &u64>> = self
+            .delegations
+            .iter()
+            .map(|(k, v)| (k, v.iter().collect()))
+            .collect();
+        let sorted_fp: BTreeMap<&[u8; 32], &Pubkey> = self.fingerprint_registry.iter().collect();
+
+        let data = bincode::serialize(&(
+            0x03u8, // domain separator
+            self.total_staked,
+            self.total_slashed,
+            self.bootstrap_grants_issued,
+            &sorted_stakes,
+            &sorted_unstake,
+            &sorted_delegations,
+            &sorted_fp,
+        ))
+        .unwrap_or_default();
+
+        Hash::hash(&data)
+    }
+
+    /// Diagnostic summary of pool internal fields for state root debugging.
+    pub fn diagnostic_summary(&self) -> String {
+        format!(
+            "staked={} slashed={} grants={} fp_reg={} unstake={} deleg={}",
+            self.total_staked,
+            self.total_slashed,
+            self.bootstrap_grants_issued,
+            self.fingerprint_registry.len(),
+            self.unstake_requests.len(),
+            self.delegations.len(),
+        )
     }
 }
 

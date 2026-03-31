@@ -601,6 +601,27 @@ impl MossStakePool {
     pub fn calculate_apy_display(&self, blocks_per_day: u64, block_reward: u64) -> f64 {
         self.calculate_apy_bp(blocks_per_day, block_reward) as f64 / 100.0
     }
+
+    /// Compute a deterministic hash of the entire MossStake pool.
+    ///
+    /// `positions` is already a BTreeMap (sorted).  `unstake_requests` is a
+    /// HashMap, so we collect into a sorted BTreeMap before serializing.
+    pub fn canonical_hash(&self) -> crate::Hash {
+        let sorted_unstake: BTreeMap<&Pubkey, &Vec<UnstakeRequest>> =
+            self.unstake_requests.iter().collect();
+
+        let data = bincode::serialize(&(
+            0x04u8, // domain separator
+            &self.st_licn_token,
+            &self.positions,
+            &sorted_unstake,
+            self.total_validators,
+            self.average_apy_bp,
+        ))
+        .unwrap_or_default();
+
+        crate::Hash::hash(&data)
+    }
 }
 
 #[cfg(test)]

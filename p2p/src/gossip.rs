@@ -157,11 +157,27 @@ impl GossipManager {
     pub async fn start(&self) {
         info!("🦞 P2P: Starting gossip protocol");
 
-        // Connect to seed peers
+        // Spawn seed connections as background tasks so we don't block
+        // the P2P message loop while waiting for unreachable external seeds.
         for seed_addr in &self.seed_peers {
-            if let Err(e) = self.peer_manager.connect_peer(*seed_addr).await {
-                info!("P2P: Failed to connect to seed peer {}: {}", seed_addr, e);
-            }
+            let pm = self.peer_manager.clone();
+            let addr = *seed_addr;
+            tokio::spawn(async move {
+                match tokio::time::timeout(Duration::from_secs(5), pm.connect_peer(addr)).await {
+                    Ok(Ok(())) => {
+                        info!("🦞 P2P: Connected to seed peer {}", addr);
+                    }
+                    Ok(Err(e)) => {
+                        info!("P2P: Failed to connect to seed peer {}: {}", addr, e);
+                    }
+                    Err(_) => {
+                        info!(
+                            "P2P: Seed peer {} connection timed out (5s) — will retry in gossip loop",
+                            addr
+                        );
+                    }
+                }
+            });
         }
 
         // Start periodic gossip + reconnection

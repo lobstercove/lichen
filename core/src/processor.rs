@@ -129,6 +129,19 @@ pub const NONCE_ACCOUNT_MIN_BALANCE: u64 = 10_000_000;
 /// Magic marker stored at data[0] to identify nonce accounts.
 pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
 
+// ── Virtual conflict keys for parallel TX scheduling ──
+// These sentinel Pubkeys force transactions that touch the same singleton
+// state (stake pool, MossStake pool, governance counter) into the same
+// scheduling group, preventing lost-update races in parallel execution.
+// Values are chosen to never collide with real Ed25519 public keys.
+
+/// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31).
+pub const CONFLICT_KEY_STAKE_POOL: Pubkey = Pubkey([0xFE; 32]);
+/// Virtual key: any TX that reads/writes the MossStake pool (opcodes 13, 14, 15, 16).
+pub const CONFLICT_KEY_MOSSSTAKE_POOL: Pubkey = Pubkey([0xFD; 32]);
+/// Virtual key: any TX that allocates/reads governed proposal IDs (opcode 21).
+pub const CONFLICT_KEY_GOVERNED_PROPOSALS: Pubkey = Pubkey([0xFC; 32]);
+
 // ── Governance parameter IDs (system instruction type 29) ──
 /// base_fee (spores per transaction)
 pub const GOV_PARAM_BASE_FEE: u8 = 0;
@@ -1525,6 +1538,32 @@ impl TxProcessor {
                     }
                     for key in &ix.accounts {
                         accounts.insert(*key);
+                    }
+                    // SINGLETON-STATE-FIX: Inject virtual conflict keys for system
+                    // instructions that read/write singleton consensus state (stake
+                    // pool, MossStake pool, governed proposal counter).  Without
+                    // these, two TXs with disjoint user accounts can race on the
+                    // same singleton, causing lost updates and non-deterministic
+                    // replay across validators.
+                    if ix.program_id == SYSTEM_PROGRAM_ID {
+                        if let Some(&opcode) = ix.data.first() {
+                            match opcode {
+                                // Stake pool: stake, request_unstake, claim_unstake,
+                                // register_validator, slash_validator, deregister_validator
+                                9 | 10 | 11 | 26 | 27 | 31 => {
+                                    accounts.insert(CONFLICT_KEY_STAKE_POOL);
+                                }
+                                // MossStake pool: deposit, unstake, claim, transfer
+                                13..=16 => {
+                                    accounts.insert(CONFLICT_KEY_MOSSSTAKE_POOL);
+                                }
+                                // Governed proposals: propose transfer
+                                21 => {
+                                    accounts.insert(CONFLICT_KEY_GOVERNED_PROPOSALS);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 accounts

@@ -433,6 +433,7 @@ impl P2PNetwork {
 
         // Start gossip
         self.gossip_manager.start().await;
+        info!("🦞 P2P: Gossip started, entering message loop");
 
         // Main message loop
         while let Some((peer_addr, message)) = self.message_rx.recv().await {
@@ -440,6 +441,7 @@ impl P2PNetwork {
                 error!("P2P: Error handling message from {}: {}", peer_addr, e);
             }
         }
+        error!("🦞 P2P: Message loop exited (message_rx closed)");
     }
 
     /// Handle incoming message

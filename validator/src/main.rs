@@ -5235,6 +5235,90 @@ async fn run_validator() {
         }
     };
 
+    // ── STARTUP STATE INTEGRITY CHECK ──────────────────────────────────
+    // Detect state corruption caused by crashes during BFT proposal execution.
+    // When a proposer calls build_block → process_transactions_parallel, the
+    // resulting state changes are written directly to RocksDB. If the node is
+    // killed before CommitBlock stores the block, the state has orphaned writes
+    // from the uncommitted proposal. On restart the computed state_root no
+    // longer matches the last committed block's state_root.
+    // Fix: detect the mismatch, wipe only the RocksDB files (preserving
+    // identity files like TLS keys, validator keypair, known-peers), and let
+    // sync rebuild from peers.
+    //
+    // SAFETY: Only wipe if the node has bootstrap peers to recover from.
+    // A primary validator (no --bootstrap-peers) would lose all state
+    // permanently. In that case, log a warning and continue — the orphaned
+    // writes will be overwritten on the next committed block.
+    let has_bootstrap_peers = get_flag_value(&args, &["--bootstrap-peers"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    {
+        let tip = state.get_last_slot().unwrap_or(0);
+        if tip > 0 {
+            if let Ok(Some(last_block)) = state.get_block_by_slot(tip) {
+                let current_root = state.compute_state_root();
+                if last_block.header.state_root != current_root {
+                    if !has_bootstrap_peers {
+                        warn!(
+                            "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {} \
+                             (expected {}, got {}). No bootstrap peers — skipping wipe to \
+                             preserve genesis state. Orphaned proposal writes will be \
+                             overwritten on next committed block.",
+                            tip,
+                            last_block.header.state_root.to_hex(),
+                            current_root.to_hex(),
+                        );
+                    } else {
+                        warn!(
+                            "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {}. \
+                         Expected {}, got {}. Wiping RocksDB for clean resync.",
+                            tip,
+                            last_block.header.state_root.to_hex(),
+                            current_root.to_hex(),
+                        );
+                        drop(state);
+                        // Preserve identity files, wipe only RocksDB artifacts
+                        let preserve = [
+                            "validator-keypair.json",
+                            "genesis-keys",
+                            "home",
+                            "IDENTITY",
+                            "known-peers.json",
+                        ];
+                        if let Ok(entries) = std::fs::read_dir(&data_dir) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name();
+                                let name_str = name.to_string_lossy();
+                                if !preserve.iter().any(|p| *p == name_str.as_ref()) {
+                                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                        let _ = std::fs::remove_dir_all(entry.path());
+                                    } else {
+                                        let _ = std::fs::remove_file(entry.path());
+                                    }
+                                }
+                            }
+                        }
+                        state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!("Failed to reopen state after wipe: {}", e);
+                                return;
+                            }
+                        };
+                        info!("✅ State wiped (identity preserved). Node will resync from peers.");
+                    }
+                } else {
+                    info!(
+                        "✅ State integrity OK at slot {} (root={})",
+                        tip,
+                        current_root.to_hex(),
+                    );
+                }
+            }
+        }
+    }
+
     // ── P2-3: Open cold/archival storage if --cold-store is given ──
     let cold_store_path: Option<String> =
         get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
@@ -6485,31 +6569,20 @@ async fn run_validator() {
         if existing >= BOOTSTRAP_GRANT_AMOUNT {
             info!("✅ Already staked: {} LICN", existing / 1_000_000_000);
 
-            // Ensure fingerprint is registered (may be missing from pre-graduation validators)
+            // NOTE: Fingerprint registration was previously done here, but it
+            // caused non-deterministic state: the in-memory pool gets persisted
+            // by the periodic save task BEFORE the first block, so the genesis
+            // node's pool would contain a fingerprint that joining validators
+            // cannot replicate (they don't know the genesis machine's fingerprint).
+            // Fingerprints should instead be set through consensus (inside the
+            // RegisterValidator or a dedicated SetFingerprint transaction) so all
+            // validators produce the same canonical stake pool hash.
             if machine_fingerprint != [0u8; 32] {
-                match pool.register_fingerprint(&validator_pubkey, machine_fingerprint) {
-                    Ok(()) => info!("🔒 Machine fingerprint registered"),
-                    Err(e) => {
-                        // Check if this is a migration (known key, new machine)
-                        let existing_fp = pool
-                            .get_stake(&validator_pubkey)
-                            .map(|s| s.machine_fingerprint)
-                            .unwrap_or([0u8; 32]);
-                        if existing_fp != [0u8; 32] && existing_fp != machine_fingerprint {
-                            info!("🔄 Machine migration detected — updating fingerprint");
-                            match pool.migrate_fingerprint(
-                                &validator_pubkey,
-                                machine_fingerprint,
-                                current_slot,
-                            ) {
-                                Ok(()) => info!("✅ Fingerprint migrated successfully"),
-                                Err(e) => warn!("⚠️  Fingerprint migration failed: {}", e),
-                            }
-                        } else {
-                            warn!("⚠️  Fingerprint registration failed: {}", e);
-                        }
-                    }
-                }
+                info!(
+                    "🔒 Machine fingerprint: {}..{} (deferred — will register through consensus)",
+                    hex::encode(&machine_fingerprint[..4]),
+                    hex::encode(&machine_fingerprint[28..]),
+                );
             }
         } else if needs_on_chain_registration {
             // ── GENESIS BOOTSTRAP ──
@@ -6702,6 +6775,11 @@ async fn run_validator() {
     let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
 
     // Start P2P network - need to extract peer manager before starting
+    // Keep a clone of sync_block_tx so the channel stays open even if P2P
+    // initialization fails and drops the original sender.  Without this guard
+    // the sync_block_rx receiver closes immediately, making the block receiver
+    // loop unable to ever receive sync blocks.
+    let _sync_block_tx_guard = sync_block_tx.clone();
     let (p2p_peer_manager, _p2p_handle) = match P2PNetwork::new(
         p2p_config.clone(),
         block_tx,
@@ -6743,7 +6821,11 @@ async fn run_validator() {
         }
         Err(e) => {
             warn!("⚠️  P2P network failed to start: {}", e);
-            warn!("⚠️  Running in single-validator mode");
+            if is_joining_network {
+                error!("❌ P2P is required for joining nodes — sync will not work!");
+            } else {
+                warn!("⚠️  Running in single-validator mode");
+            }
             (None, None)
         }
     };
@@ -6964,6 +7046,15 @@ async fn run_validator() {
         VoteAuthority::new(validator_keypair.to_seed(), validator_pubkey),
     ));
 
+    // BFT RACE GUARD: AtomicU64 shared between BFT CommitBlock and the
+    // block receiver. When BFT is committing a block (replay → state root
+    // → put_block → effects), it stores the height here so the block
+    // receiver skips the same block. Without this, the compact block
+    // reconstruction can feed the same block to block_rx concurrently,
+    // causing the receiver's compute_state_root to read hybrid state
+    // (partially modified by BFT's apply_block_effects).
+    let bft_committing_slot = Arc::new(AtomicU64::new(0));
+
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
@@ -6996,7 +7087,8 @@ async fn run_validator() {
         let slash_keypair_seed_for_blocks = validator_keypair.to_seed();
         let p2p_config_for_slash_blocks = p2p_config.clone();
         let p2p_pm_for_slash_blocks = p2p_pm.clone();
-        tokio::spawn(async move {
+        let bft_committing_for_blocks = bft_committing_slot.clone();
+        let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
             let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
@@ -7018,10 +7110,10 @@ async fn run_validator() {
             // Priority select: drain sync-response blocks (BlockRangeResponse /
             // BlockResponse) before live blocks so catch-up is never starved.
             loop {
-                let block = tokio::select! {
+                let (block, is_sync_block) = tokio::select! {
                     biased;
-                    Some(b) = sync_block_rx.recv() => b,
-                    Some(b) = block_rx.recv() => b,
+                    Some(b) = sync_block_rx.recv() => (b, true),
+                    Some(b) = block_rx.recv() => (b, false),
                     // Periodic sync check: fires every 5s to trigger catch-up
                     // when the chain is stalled and no blocks are arriving.
                     _ = sync_check_interval.tick() => {
@@ -7377,9 +7469,12 @@ async fn run_validator() {
                         warn!("⚠️  Ignoring duplicate genesis block from network");
                         continue;
                     }
-                    // Genesis block - store it and initialize full genesis state
-                    if state_for_blocks.put_block(&block).is_ok() {
-                        state_for_blocks.set_last_slot(0).ok();
+                    // Genesis block — defer put_block until reconstruction is
+                    // complete. This prevents the block receiver from chaining
+                    // block 1+ to genesis while contract deployment / oracle
+                    // seeding is still in progress, which would cause state root
+                    // mismatches on the partially-initialized state.
+                    {
                         *last_block_time_for_blocks.lock().await = std::time::Instant::now();
 
                         // ── C3 fix: Initialize genesis state from network block ──
@@ -7646,48 +7741,53 @@ async fn run_validator() {
                                         .ok();
                                     state_for_blocks.put_stake_pool(&pool).ok();
 
-                                    {
-                                        let mut live_pool = stake_pool_for_blocks.write().await;
+                                    // Update in-memory pool/validator-set.
+                                    // Use try_write to avoid deadlocking with
+                                    // the joining-network loop that reads these
+                                    // locks. The joined loop also checks RocksDB
+                                    // directly if in-memory is empty.
+                                    if let Ok(mut live_pool) = stake_pool_for_blocks.try_write() {
                                         *live_pool = pool.clone();
                                     }
 
                                     {
-                                        let mut live_vs = validator_set_for_blocks.write().await;
+                                        // Build the validator set from pool data
+                                        // and persist to RocksDB (joining-network
+                                        // loop reads from DB if in-memory is empty).
+                                        let mut reconstructed_vs = ValidatorSet::new();
                                         for entry in pool.stake_entries() {
                                             let resolved_stake = entry.total_stake();
                                             if resolved_stake < min_validator_stake {
                                                 continue;
                                             }
-
-                                            if let Some(existing) =
-                                                live_vs.get_validator_mut(&entry.validator)
-                                            {
-                                                existing.stake = resolved_stake;
-                                                existing.pending_activation = false;
-                                            } else {
-                                                live_vs.add_validator(ValidatorInfo {
-                                                    pubkey: entry.validator,
-                                                    stake: resolved_stake,
-                                                    reputation: 100,
-                                                    blocks_proposed: 0,
-                                                    votes_cast: 0,
-                                                    correct_votes: 0,
-                                                    last_active_slot: 0,
-                                                    joined_slot: 0,
-                                                    commission_rate: 500,
-                                                    transactions_processed: 0,
-                                                    pending_activation: false,
-                                                });
-                                            }
+                                            reconstructed_vs.add_validator(ValidatorInfo {
+                                                pubkey: entry.validator,
+                                                stake: resolved_stake,
+                                                reputation: 100,
+                                                blocks_proposed: 0,
+                                                votes_cast: 0,
+                                                correct_votes: 0,
+                                                last_active_slot: 0,
+                                                joined_slot: 0,
+                                                commission_rate: 500,
+                                                transactions_processed: 0,
+                                                pending_activation: false,
+                                            });
                                         }
 
                                         if let Err(err) =
-                                            state_for_blocks.save_validator_set(&live_vs)
+                                            state_for_blocks.save_validator_set(&reconstructed_vs)
                                         {
                                             warn!(
                                                 "⚠️  [sync] Failed to persist reconstructed validator set: {}",
                                                 err
                                             );
+                                        }
+
+                                        if let Ok(mut live_vs) =
+                                            validator_set_for_blocks.try_write()
+                                        {
+                                            *live_vs = reconstructed_vs;
                                         }
                                     }
                                 }
@@ -7777,11 +7877,102 @@ async fn run_validator() {
                                 hex::encode(local_root.0)
                             );
 
+                            // ── Seed CF_STATS consensus oracle prices ──
+                            // The genesis node's RECONCILE startup code seeds these
+                            // so that apply_oracle_from_block can write deterministic
+                            // oracle prices to contract storage every block. Joining
+                            // nodes must replicate this seeding AFTER genesis state
+                            // root verification (the prices live in CF_STATS, which
+                            // is NOT part of the state root, but drive contract
+                            // storage writes that ARE part of subsequent state roots).
+                            seed_bootstrap_consensus_oracle_prices(
+                                &state_for_blocks,
+                                0, // genesis slot
+                                &genesis_prices,
+                            );
+
+                            // ── Replicate RECONCILE post-genesis writes ──
+                            // The genesis node's RECONCILE startup code patches
+                            // state AFTER genesis when WASM oracle seeding left
+                            // price_LICN empty (submit_price may fail if the oracle
+                            // contract lacks the admin check at init time). These
+                            // writes are NOT in the genesis state_root but ARE in the
+                            // state that the proposer uses for block 1+. Joining
+                            // nodes must replicate them exactly.
+                            {
+                                let oracle_pk_opt = derive_contract_address(&gpk, "lichenoracle");
+                                let licn_price_exists = state_for_blocks
+                                    .get_program_storage("ORACLE", b"price_LICN")
+                                    .is_some();
+                                if !licn_price_exists {
+                                    if let Some(oracle_pk) = oracle_pk_opt {
+                                        const ORACLE_DECIMALS: u8 = 8;
+                                        let oracle_feeds: &[(&str, u64)] = &[
+                                            ("LICN", genesis_prices.licn_usd_8dec),
+                                            ("wSOL", genesis_prices.wsol_usd_8dec),
+                                            ("wETH", genesis_prices.weth_usd_8dec),
+                                            ("wBNB", genesis_prices.wbnb_usd_8dec),
+                                        ];
+                                        for (asset, price) in oracle_feeds {
+                                            let price_key = format!("price_{}", asset);
+                                            let _ = state_for_blocks.put_contract_storage(
+                                                &oracle_pk,
+                                                price_key.as_bytes(),
+                                                &price.to_le_bytes(),
+                                            );
+                                            let ts_key = format!("price_{}_ts", asset);
+                                            let _ = state_for_blocks.put_contract_storage(
+                                                &oracle_pk,
+                                                ts_key.as_bytes(),
+                                                &block.header.timestamp.to_le_bytes(),
+                                            );
+                                            let dec_key = format!("price_{}_dec", asset);
+                                            let _ = state_for_blocks.put_contract_storage(
+                                                &oracle_pk,
+                                                dec_key.as_bytes(),
+                                                &[ORACLE_DECIMALS],
+                                            );
+                                        }
+                                        info!(
+                                            "  📡 [sync] Replicated RECONCILE oracle price feeds"
+                                        );
+                                    }
+                                }
+
+                                // Replicate margin price seeding if missing
+                                let mrg_mark_1_exists = state_for_blocks
+                                    .get_program_storage("MARGIN", b"mrg_mark_1")
+                                    .is_some();
+                                if !mrg_mark_1_exists {
+                                    genesis_seed_margin_prices(
+                                        &state_for_blocks,
+                                        &gpk,
+                                        block.header.timestamp,
+                                        &genesis_prices,
+                                    );
+                                    info!("  📡 [sync] Replicated RECONCILE margin prices");
+                                }
+                            }
+
+                            // NOW store the genesis block and advance last_slot.
+                            // This must happen AFTER reconstruction so the block
+                            // receiver cannot chain new blocks to an incomplete state.
+                            if let Err(e) = state_for_blocks.put_block(&block) {
+                                error!("Failed to store genesis block: {}", e);
+                                std::process::exit(1);
+                            }
+                            state_for_blocks.set_last_slot(0).ok();
+
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
                             warn!(
                                 "⚠️  Genesis block has no mint tx — cannot extract genesis pubkey"
                             );
+                            // Store genesis even without full reconstruction
+                            if let Err(e) = state_for_blocks.put_block(&block) {
+                                error!("Failed to store genesis block: {}", e);
+                            }
+                            state_for_blocks.set_last_slot(0).ok();
                             info!(
                                 "✅ 📡 [sync] Applied genesis block (slot 0) from network (state incomplete)"
                             );
@@ -7794,8 +7985,26 @@ async fn run_validator() {
                             let pending_slot = pending_block.header.slot;
                             // P1-1: Header-first sync — skip TX replay for blocks
                             // outside the full-execution window during catch-up.
-                            if sync_mgr.should_full_validate(pending_slot).await {
+                            let did_full_validate =
+                                sync_mgr.should_full_validate(pending_slot).await;
+                            if did_full_validate {
                                 replay_block_transactions(&processor_for_blocks, &pending_block);
+                            }
+                            // STATE-ROOT-CHECK: Validate state root for pending blocks
+                            // (same phase boundary as the proposer: after TX replay,
+                            // before apply_block_effects). This catches divergence
+                            // immediately instead of waiting until live sync.
+                            if did_full_validate {
+                                let local_root = state_for_blocks.compute_state_root();
+                                let block_root = pending_block.header.state_root;
+                                if local_root != block_root && block_root != Hash::default() {
+                                    warn!(
+                                        "⚠️  PENDING STATE MISMATCH at slot {}: local={} block={}",
+                                        pending_slot,
+                                        hex::encode(&local_root.0[..8]),
+                                        hex::encode(&block_root.0[..8]),
+                                    );
+                                }
                             }
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
@@ -7956,6 +8165,11 @@ async fn run_validator() {
                             sync_mgr_complete.complete_sync().await;
                         });
                     }
+                    info!(
+                        "🔄 Genesis case done — returning to block receiver loop (tip={})",
+                        state_for_blocks.get_last_slot().unwrap_or(0)
+                    );
+                    continue;
                 } else if block_slot > current_slot {
                     // Check if this block extends our chain (parent matches our latest block)
                     // With slot gaps (when some leaders can't produce), we only
@@ -7968,6 +8182,48 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if can_chain {
+                        // BFT RACE GUARD: If BFT CommitBlock is currently processing
+                        // this slot (replay → state_root → put_block → effects), skip.
+                        // The compact block reconstruction can deliver the block to
+                        // block_rx BEFORE BFT finishes put_block_atomic, so the old
+                        // get_block_by_slot check below would miss it. Without this,
+                        // the block receiver's compute_state_root reads hybrid state
+                        // (partially modified by BFT's concurrent apply_block_effects).
+                        // SYNC EXCEPTION: Blocks from the sync channel are already
+                        // committed by the network — BFT at this height is just
+                        // spinning with nil votes (no peer proposes for old heights).
+                        // Applying them lets the tip advance so BFT can catch up.
+                        let bft_height = bft_committing_for_blocks.load(Ordering::Acquire);
+                        if !is_sync_block && bft_height > 0 && bft_height <= block_slot {
+                            debug!(
+                                "Block {} being committed by BFT — skipping block receiver",
+                                block_slot
+                            );
+                            sync_mgr.record_progress(block_slot).await;
+                            continue;
+                        }
+
+                        // RACE GUARD: If this block's slot was already stored by the
+                        // pending-block path (genesis sync) or BFT CommitBlock, skip
+                        // the entire block receiver processing to prevent duplicate
+                        // TX replay and double apply_block_effects. The pending path
+                        // stores via put_block_atomic BEFORE effects, so checking
+                        // for an existing block is sufficient.
+                        if state_for_blocks
+                            .get_block_by_slot(block_slot)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        {
+                            debug!(
+                                "Block {} already stored by parallel path — skipping block receiver",
+                                block_slot
+                            );
+                            // Update tip tracking so subsequent blocks still chain
+                            sync_mgr.record_progress(block_slot).await;
+                            continue;
+                        }
+
                         // Replicate genesis producer bootstrap on early blocks.
                         // The genesis node bootstraps its own validator via direct
                         // state write at startup; joiners must replicate this when
@@ -8037,8 +8293,39 @@ async fn run_validator() {
 
                         // Valid next block in chain - replay transactions then store
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
-                        if sync_mgr.should_full_validate(block_slot).await {
+                        let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
+                        if did_full_validate {
                             replay_block_transactions(&processor_for_blocks, &block);
+                        }
+                        // STATE-ROOT-FIX: Verify state_root BEFORE apply_block_effects.
+                        // The proposer stamps state_root after TX execution but before
+                        // effects (rewards, fees, staking).  Verifying at the same phase
+                        // boundary ensures the roots match.  Only check when we did full
+                        // TX replay (header-only sync skips TXs so the root won't match).
+                        if did_full_validate {
+                            let local_root = state_for_blocks.compute_state_root();
+                            let block_root = block.header.state_root;
+                            if local_root != block_root && block_root != Hash::default() {
+                                warn!(
+                                    "⚠️  SYNC STATE MISMATCH at slot {}: local={} block={}",
+                                    block_slot,
+                                    hex::encode(&local_root.0[..8]),
+                                    hex::encode(&block_root.0[..8]),
+                                );
+                                // Diagnostic: log individual components for debugging
+                                let accts = state_for_blocks.compute_accounts_root();
+                                let contracts = state_for_blocks.compute_contract_storage_root();
+                                let stake = state_for_blocks.compute_stake_pool_hash();
+                                let moss = state_for_blocks.compute_mossstake_pool_hash();
+                                warn!(
+                                    "⚠️  SYNC MISMATCH COMPONENTS slot={}: accts={} contracts={} stake={} moss={}",
+                                    block_slot,
+                                    hex::encode(&accts.0[..8]),
+                                    hex::encode(&contracts.0[..8]),
+                                    hex::encode(&stake.0[..8]),
+                                    hex::encode(&moss.0[..8]),
+                                );
+                            }
                         }
                         // SYNC-FIX: Apply block effects (rewards, staking) during sync
                         // so that the joining node's CF_ACCOUNTS state matches the
@@ -8074,20 +8361,6 @@ async fn run_validator() {
                             .await;
                         }
                         apply_oracle_from_block(&state_for_blocks, &block);
-                        // DIAG: Compare local state_root with block's stored state_root
-                        // to detect the first sync slot where state diverges.
-                        {
-                            let local_root = state_for_blocks.compute_state_root();
-                            let block_root = block.header.state_root;
-                            if local_root != block_root && block_root != Hash::default() {
-                                warn!(
-                                    "⚠️  SYNC STATE MISMATCH at slot {}: local={} block={}",
-                                    block_slot,
-                                    hex::encode(&local_root.0[..8]),
-                                    hex::encode(&block_root.0[..8]),
-                                );
-                            }
-                        }
                         run_analytics_bridge_from_state(
                             &state_for_blocks,
                             block.header.slot,
@@ -8766,6 +9039,14 @@ async fn run_validator() {
                 } else {
                     debug!("Block {} is old (current: {})", block_slot, current_slot);
                 }
+            }
+            error!("❌ Block receiver loop EXITED");
+        });
+        // Watch block receiver task for panics
+        tokio::spawn(async move {
+            match block_receiver_handle.await {
+                Ok(_) => error!("❌ Block receiver task completed (loop broke)"),
+                Err(e) => error!("❌ Block receiver task PANICKED: {:?}", e),
             }
         });
 
@@ -9961,6 +10242,14 @@ async fn run_validator() {
                 (u64, [u8; 32]),
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<(u64, [u8; 32])> = None;
+            // Staged snapshot buffer: accumulate entries in memory instead of
+            // writing directly to the live DB.  Only commit after the state root
+            // has been verified on a staging StateStore.
+            #[allow(clippy::type_complexity)]
+            let mut staged_snapshot_entries: std::collections::HashMap<
+                String,
+                Vec<(Vec<u8>, Vec<u8>)>,
+            > = std::collections::HashMap::new();
 
             while let Some(response) = snapshot_response_rx.recv().await {
                 // Handle CheckpointMetaResponse
@@ -10138,34 +10427,21 @@ async fn run_validator() {
                         snapshot_slot
                     );
 
-                    // Deserialize and import entries
+                    // Deserialize and stage entries (NOT written to live DB yet)
                     match bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(entries_bytes) {
                         Ok(entries) => {
-                            let import_result = match category.as_str() {
-                                "accounts" => state_for_snapshot_apply.import_accounts(&entries),
-                                "contract_storage" => {
-                                    state_for_snapshot_apply.import_contract_storage(&entries)
-                                }
-                                "programs" => state_for_snapshot_apply.import_programs(&entries),
-                                _ => {
-                                    warn!("⚠️  Unknown snapshot category: {}", category);
-                                    Ok(0)
-                                }
-                            };
-                            match import_result {
-                                Ok(count) => {
-                                    info!(
-                                        "✅ Imported {} {} entries (chunk {}/{})",
-                                        count,
-                                        category,
-                                        chunk_index + 1,
-                                        total_chunks
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!("⚠️  Failed to import {} entries: {}", category, e);
-                                }
-                            }
+                            let count = entries.len();
+                            staged_snapshot_entries
+                                .entry(category.clone())
+                                .or_default()
+                                .extend(entries);
+                            info!(
+                                "📦 Staged {} {} entries (chunk {}/{})",
+                                count,
+                                category,
+                                chunk_index + 1,
+                                total_chunks
+                            );
                         }
                         Err(e) => {
                             warn!(
@@ -10218,28 +10494,106 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if accounts_done && storage_done && programs_done {
-                        info!("✅ State snapshot sync complete — all categories imported");
+                        info!("✅ All snapshot categories received — verifying on staging DB");
 
-                        // P3-1: Verify the state root matches what the peer reported.
-                        // Recompute our Merkle root from imported accounts and compare
-                        // against the snapshot's advertised state_root.
-                        let expected_root = state_root;
-                        let computed_root =
-                            state_for_snapshot_apply.compute_state_root_cold_start();
-                        if computed_root.0 == expected_root {
-                            info!(
-                                "✅ State root verified: {} (matches snapshot)",
-                                hex::encode(&computed_root.0[..8])
-                            );
-                        } else {
-                            warn!(
-                                "⚠️  State root MISMATCH! Computed {} vs expected {}. \
-                                 Snapshot may be corrupted — falling back to header-only sync.",
-                                hex::encode(&computed_root.0[..8]),
-                                hex::encode(&expected_root[..8]),
-                            );
-                            // Don't set last_slot — let the node re-sync via blocks.
+                        // ── Staged Verification ─────────────────────────────
+                        // Open a throw-away StateStore, import the buffered
+                        // entries there, copy the singleton pools from the live
+                        // DB, and verify the state root.  Only if it matches do
+                        // we commit entries to the live DB.
+                        let staging_dir = format!(
+                            "{}/staging-snapshot-{}",
+                            data_dir_for_snapshot_apply, snapshot_slot
+                        );
+                        let staging_ok = 'staging: {
+                            let staging_state =
+                                match lichen_core::state::StateStore::open(&staging_dir) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        warn!("⚠️  Failed to open staging DB: {}", e);
+                                        break 'staging false;
+                                    }
+                                };
+
+                            // Import buffered entries into staging
+                            for (cat, entries) in &staged_snapshot_entries {
+                                let res = match cat.as_str() {
+                                    "accounts" => staging_state.import_accounts(entries),
+                                    "contract_storage" => {
+                                        staging_state.import_contract_storage(entries)
+                                    }
+                                    "programs" => staging_state.import_programs(entries),
+                                    _ => Ok(0),
+                                };
+                                if let Err(e) = res {
+                                    warn!("⚠️  Staging import of {} failed: {}", cat, e);
+                                    break 'staging false;
+                                }
+                            }
+
+                            // Copy singleton pools from live DB so the full
+                            // state root (accounts + contracts + stake + mossstake) matches.
+                            if let Ok(pool) = state_for_snapshot_apply.get_stake_pool() {
+                                if let Err(e) = staging_state.put_stake_pool(&pool) {
+                                    warn!("⚠️  Staging stake pool copy failed: {}", e);
+                                    break 'staging false;
+                                }
+                            }
+                            if let Ok(pool) = state_for_snapshot_apply.get_mossstake_pool() {
+                                if let Err(e) = staging_state.put_mossstake_pool(&pool) {
+                                    warn!("⚠️  Staging mossstake pool copy failed: {}", e);
+                                    break 'staging false;
+                                }
+                            }
+
+                            // Verify state root on staging
+                            let expected_root = state_root;
+                            let computed_root = staging_state.compute_state_root_cold_start();
+                            if computed_root.0 == expected_root {
+                                info!(
+                                    "✅ State root verified on staging: {} (matches snapshot)",
+                                    hex::encode(&computed_root.0[..8])
+                                );
+                                true
+                            } else {
+                                warn!(
+                                    "⚠️  State root MISMATCH on staging! Computed {} vs expected {}. \
+                                     Snapshot rejected — live DB untouched.",
+                                    hex::encode(&computed_root.0[..8]),
+                                    hex::encode(&expected_root[..8]),
+                                );
+                                false
+                            }
+                        };
+
+                        // Clean up staging DB
+                        let _ = std::fs::remove_dir_all(&staging_dir);
+
+                        if !staging_ok {
+                            staged_snapshot_entries.clear();
+                            state_snap_progress.clear();
                             continue;
+                        }
+
+                        // ── Commit verified entries to live DB ──────────────
+                        for (cat, entries) in staged_snapshot_entries.drain() {
+                            let res = match cat.as_str() {
+                                "accounts" => state_for_snapshot_apply.import_accounts(&entries),
+                                "contract_storage" => {
+                                    state_for_snapshot_apply.import_contract_storage(&entries)
+                                }
+                                "programs" => state_for_snapshot_apply.import_programs(&entries),
+                                _ => Ok(0),
+                            };
+                            match res {
+                                Ok(count) => info!(
+                                    "✅ Committed {} verified {} entries to live DB",
+                                    count, cat
+                                ),
+                                Err(e) => {
+                                    warn!("⚠️  Failed to commit {} entries to live DB: {}", cat, e)
+                                }
+                            }
                         }
 
                         // Update last_slot to the checkpoint slot
@@ -11530,6 +11884,8 @@ async fn run_validator() {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_WATCHDOG_TIMEOUT_SECS);
 
+    let watchdog_disabled = has_flag(&args, "--no-watchdog");
+
     // Shared flag: suppress watchdog during the joining sync phase.
     // Joining nodes may spend minutes syncing without committing blocks,
     // which is NOT a stall — the watchdog must not kill them.
@@ -11540,6 +11896,10 @@ async fn run_validator() {
     let sync_manager_for_watchdog = sync_manager.clone();
     let joining_sync_for_watchdog = joining_sync_active.clone();
     tokio::spawn(async move {
+        if watchdog_disabled {
+            info!("🐺 Watchdog: disabled via --no-watchdog, exiting watchdog task");
+            return;
+        }
         // Give the validator time to start up and sync before monitoring.
         // Use 60s startup grace — newly joining nodes need time to discover
         // peers, request genesis, and begin syncing.
@@ -12056,19 +12416,38 @@ async fn run_validator() {
 
             let snapshot_ready = {
                 let mut ss = snapshot_sync_join.lock().await;
-                // If snapshot exchange hasn't marked pool/validators ready yet,
-                // check if block replay already populated them (apply_block_effects
-                // during sync creates pool entries and validator set entries).
+                // Check both in-memory locks AND RocksDB state directly.
+                // The block receiver's genesis reconstruction writes to
+                // RocksDB without async locks, so we must check the DB too
+                // to avoid deadlocking on RwLock acquisition order.
                 if !ss.validator_set {
+                    // Try in-memory first (fast path)
                     let vs = vs_join.read().await;
                     if !vs.validators().is_empty() {
                         ss.validator_set = true;
+                    }
+                    drop(vs);
+                    // Fall back to DB if in-memory is empty
+                    if !ss.validator_set {
+                        if let Ok(db_vs) = state.load_validator_set() {
+                            if !db_vs.validators().is_empty() {
+                                ss.validator_set = true;
+                            }
+                        }
                     }
                 }
                 if !ss.stake_pool {
                     let pool = sp_join.read().await;
                     if !pool.stake_entries().is_empty() {
                         ss.stake_pool = true;
+                    }
+                    drop(pool);
+                    if !ss.stake_pool {
+                        if let Ok(db_pool) = state.get_stake_pool() {
+                            if !db_pool.stake_entries().is_empty() {
+                                ss.stake_pool = true;
+                            }
+                        }
                     }
                 }
                 ss.is_ready()
@@ -12079,9 +12458,20 @@ async fn run_validator() {
                 continue;
             }
 
-            let vs = vs_join.read().await;
-            let validator_count = vs.validators().len();
-            drop(vs);
+            // Read validator count from DB state directly (avoids
+            // contending with block receiver's genesis reconstruction).
+            let validator_count = {
+                let vs = vs_join.read().await;
+                let count = vs.validators().len();
+                drop(vs);
+                if count > 0 {
+                    count
+                } else if let Ok(db_vs) = state.load_validator_set() {
+                    db_vs.validators().len()
+                } else {
+                    0
+                }
+            };
 
             if validator_count == 0 {
                 info!(
@@ -12226,6 +12616,8 @@ async fn run_validator() {
     // Start the first height
     let start_height = state.get_last_slot().unwrap_or(0) + 1;
     bft.start_height(start_height);
+    // Signal block receiver: BFT owns this height and above.
+    bft_committing_slot.store(start_height, Ordering::Release);
     consensus_wal.log_height_start(start_height);
     // Restore lock from WAL recovery (G-2 fix: lock persistence across crashes)
     if let Some((lock_h, lock_r, lock_hash)) = wal_recovery.locked_state {
@@ -12290,6 +12682,7 @@ async fn run_validator() {
                 slot_duration_ms,
                 &validator_keypair,
                 min_validator_stake,
+                &bft_committing_slot,
             )
             .await;
             // Schedule timeout for the step we landed on after proposing
@@ -12346,6 +12739,8 @@ async fn run_validator() {
             last_wal_lock = None;
 
             bft.start_height(new_height);
+            // Signal block receiver: BFT owns this height and above.
+            bft_committing_slot.store(new_height, Ordering::Release);
             consensus_wal.log_height_start(new_height);
             parent_hash = get_parent_hash(&state);
 
@@ -12388,6 +12783,7 @@ async fn run_validator() {
                 slot_duration_ms,
                 &validator_keypair,
                 min_validator_stake,
+                &bft_committing_slot,
             )
             .await;
 
@@ -12439,6 +12835,7 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
+                    &bft_committing_slot,
                 )
                 .await;
                 // Schedule timeout for post-proposal step
@@ -12522,6 +12919,7 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
+                    &bft_committing_slot,
                 ).await;
             }
 
@@ -12551,6 +12949,7 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
+                    &bft_committing_slot,
                 ).await;
             }
 
@@ -12580,6 +12979,7 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
+                    &bft_committing_slot,
                 ).await;
             }
 
@@ -12646,6 +13046,7 @@ async fn run_validator() {
                             slot_duration_ms,
                             &validator_keypair,
                             min_validator_stake,
+                            &bft_committing_slot,
                         ).await;
                         // Schedule timeout for post-proposal step
                         timeout_handle = match bft.step {
@@ -12699,6 +13100,7 @@ async fn run_validator() {
                         slot_duration_ms,
                         &validator_keypair,
                         min_validator_stake,
+                        &bft_committing_slot,
                     ).await;
 
                     // After timeout handling, if we moved to a new round's Propose step
@@ -12751,6 +13153,7 @@ async fn run_validator() {
                                 slot_duration_ms,
                                 &validator_keypair,
                                 min_validator_stake,
+                                &bft_committing_slot,
                             ).await;
                     }
                 }
@@ -12862,6 +13265,7 @@ async fn run_validator() {
                         slot_duration_ms,
                         &validator_keypair,
                         min_validator_stake,
+                        &bft_committing_slot,
                     )
                     .await;
 
@@ -12977,6 +13381,7 @@ async fn execute_consensus_actions(
     slot_duration_ms: u64,
     validator_keypair: &Keypair,
     min_validator_stake: u64,
+    bft_committing_slot: &Arc<AtomicU64>,
 ) {
     match action {
         ConsensusAction::None => {}
@@ -13066,6 +13471,7 @@ async fn execute_consensus_actions(
             block,
             block_hash,
         } => {
+            // Guard is already set by the BFT height-loop start.
             // Non-proposer nodes must replay the block's transactions so
             // their on-chain state (accounts, stake pool, contracts) matches
             // the proposer.  The proposer already executed TXs during
@@ -13076,25 +13482,13 @@ async fn execute_consensus_actions(
                 replay_block_transactions(processor, &block);
             }
 
-            // Apply block effects (rewards, staking, oracle)
-            apply_block_effects(
-                state,
-                validator_set,
-                stake_pool,
-                vote_aggregator,
-                &block,
-                false,
-                min_validator_stake,
-            )
-            .await;
-            apply_oracle_from_block(state, &block);
-
-            // Verify state_root: non-proposer nodes compute their local
-            // state root after replaying TXs and compare against the
-            // proposer's committed root. The block is stored AS-PROPOSED
-            // (identical bytes on all nodes) so parent_hash stays consistent.
-            // The verification is a soft check — log mismatch but don't reject
-            // (the BFT quorum already accepted this block).
+            // Verify state_root BEFORE apply_block_effects.  The proposer
+            // stamps state_root after TX execution but before effects
+            // (rewards, fees, staking), so non-proposers must verify at
+            // the same phase boundary.  Verifying after effects would
+            // compare a post-TX root against post-TX-plus-effects state,
+            // causing systematic mismatches on every block with fees or
+            // epoch rewards.
             {
                 let local_root = state.compute_state_root();
                 let block_root = block.header.state_root;
@@ -13111,20 +13505,29 @@ async fn execute_consensus_actions(
                         hex::encode(&local_root.0[..8]),
                         hex::encode(&block_root.0[..8]),
                     );
+                    // Diagnostic: log individual components for debugging
+                    let accts = state.compute_accounts_root();
+                    let contracts = state.compute_contract_storage_root();
+                    let stake = state.compute_stake_pool_hash();
+                    let moss = state.compute_mossstake_pool_hash();
+                    warn!(
+                        "⚠️  MISMATCH COMPONENTS h={}: accts={} contracts={} stake={} moss={}",
+                        height,
+                        hex::encode(&accts.0[..8]),
+                        hex::encode(&contracts.0[..8]),
+                        hex::encode(&stake.0[..8]),
+                        hex::encode(&moss.0[..8]),
+                    );
                 }
             }
 
-            // Store block AS-PROPOSED — do NOT recompute state_root or re-sign.
-            // All validators must store identical blocks so that parent_hash
-            // (derived from block.hash()) is the same on every node. If each
-            // node recomputes state_root from local state and overwrites the
-            // header, any micro-divergence in genesis initialization, contract
-            // state, or reward rounding causes a different stored hash, which
-            // makes leader election disagree and stalls the chain.
-            //
-            // Effects (rewards, staking) are still applied to local state above
-            // so CF_ACCOUNTS stays as up-to-date as possible, but the block
-            // header is authoritative and untouched.
+            // Apply block effects (rewards, staking, oracle) — these
+            // mutations are deterministic and applied identically on all
+            // validators, but occur AFTER the state_root commitment point.
+
+            // Store block FIRST — before effects, so the block receiver's
+            // duplicate guard (get_block_by_slot) fires and prevents the
+            // same block from being processed twice via BFT + P2P paths.
             let final_hash = block.hash();
             info!(
                 "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
@@ -13143,6 +13546,21 @@ async fn execute_consensus_actions(
             {
                 error!("Failed to store block at height {}: {e}", height);
             }
+
+            // Now apply effects AFTER the block is stored. This ordering
+            // ensures the block receiver's duplicate guard fires if it
+            // tries to process the same block concurrently.
+            apply_block_effects(
+                state,
+                validator_set,
+                stake_pool,
+                vote_aggregator,
+                &block,
+                false,
+                min_validator_stake,
+            )
+            .await;
+            apply_oracle_from_block(state, &block);
 
             // EVM tx inclusion tracking
             for tx in &block.transactions {
@@ -13266,6 +13684,9 @@ async fn execute_consensus_actions(
             }
 
             *parent_hash = block_hash;
+
+            // Guard stays set — the BFT height-loop top will advance it
+            // to the next height. Block receiver skips all slots >= guard.
         }
 
         ConsensusAction::EquivocationDetected {
@@ -13325,6 +13746,7 @@ async fn execute_consensus_actions(
                     slot_duration_ms,
                     validator_keypair,
                     min_validator_stake,
+                    bft_committing_slot,
                 ))
                 .await;
             }
