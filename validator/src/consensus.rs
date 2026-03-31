@@ -1348,34 +1348,80 @@ impl ConsensusEngine {
                 self.height, self.round, max_round, future_voters.len()
             );
             let skip_action = self.start_round(max_round);
-            // After skipping, check if we already have a stored proposal
-            // for the new round and process it immediately.
-            if let Some(proposal) = self.proposals.get(&max_round).cloned() {
-                let block_hash = proposal.block.hash();
-                // Tendermint prevote rule after skip
-                let should_prevote_block = if self.locked_round.is_none()
-                    || self.locked_value == Some(block_hash)
-                {
-                    true
-                } else if proposal.valid_round >= 0 {
-                    let vr = proposal.valid_round as u32;
-                    if let Some(lr) = self.locked_round {
-                        vr > lr
-                            && self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
+            let mut all_actions = vec![skip_action];
+
+            // Fast catch-up loop: rapidly advance through rounds where we
+            // already have sufficient vote data (stored proposals, nil polka,
+            // nil commit), without waiting for timeouts.  This is critical
+            // for late-joining validators that received nil votes from peers
+            // while still at a lower round.  Without this, a joining node
+            // waits for exponentially-increasing propose timeouts at each
+            // skipped round, causing minutes-long stalls.
+            for _ in 0..100 {
+                let round = self.round;
+
+                // 1. Stored proposal → prevote for it and stop.
+                if let Some(proposal) = self.proposals.get(&round).cloned() {
+                    let block_hash = proposal.block.hash();
+                    let should_prevote_block =
+                        if self.locked_round.is_none() || self.locked_value == Some(block_hash) {
+                            true
+                        } else if proposal.valid_round >= 0 {
+                            let vr = proposal.valid_round as u32;
+                            if let Some(lr) = self.locked_round {
+                                vr > lr
+                                    && self.has_polka_for(
+                                        vr,
+                                        &Some(block_hash),
+                                        validator_set,
+                                        stake_pool,
+                                    )
+                            } else {
+                                self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
+                            }
+                        } else {
+                            false
+                        };
+                    let prevote_action = if should_prevote_block {
+                        self.do_prevote(Some(block_hash), validator_set, stake_pool)
                     } else {
-                        self.has_polka_for(vr, &Some(block_hash), validator_set, stake_pool)
+                        self.do_prevote(None, validator_set, stake_pool)
+                    };
+                    all_actions.push(prevote_action);
+                    break;
+                }
+
+                // 2. Nil polka (≥2/3 nil prevotes) → prevote nil and cascade.
+                //    do_prevote(None) automatically chains: nil polka detected
+                //    → do_precommit(None) → if nil commit → start_round(+1).
+                //    This lets the loop advance through multiple nil rounds
+                //    in a single call.
+                let has_nil_polka = self
+                    .prevotes
+                    .get(&(round, None))
+                    .is_some_and(|v| self.has_supermajority_voters(v, validator_set, stake_pool));
+                if has_nil_polka {
+                    info!(
+                        "🔄 BFT: Fast catch-up: nil polka at h={} r={}, advancing",
+                        self.height, round
+                    );
+                    let prevote_action = self.do_prevote(None, validator_set, stake_pool);
+                    all_actions.push(prevote_action);
+                    if self.round > round {
+                        continue; // Cascaded through nil commit → check next round
                     }
-                } else {
-                    false
-                };
-                let prevote_action = if should_prevote_block {
-                    self.do_prevote(Some(block_hash), validator_set, stake_pool)
-                } else {
-                    self.do_prevote(None, validator_set, stake_pool)
-                };
-                return ConsensusAction::Multiple(vec![skip_action, prevote_action]);
+                    break; // At Precommit step, wait for more precommits
+                }
+
+                // 3. No stored proposal, no nil polka — wait for proposal.
+                break;
             }
-            return skip_action;
+
+            return if all_actions.len() == 1 {
+                all_actions.remove(0)
+            } else {
+                ConsensusAction::Multiple(all_actions)
+            };
         }
 
         ConsensusAction::None

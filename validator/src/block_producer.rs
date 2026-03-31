@@ -4,7 +4,7 @@
 // a signed Block ready for inclusion in a BFT proposal. The block is NOT
 // yet stored or broadcast — that's the consensus engine's responsibility.
 
-use lichen_core::{Block, Hash, Mempool, Pubkey, StateStore, TxProcessor};
+use lichen_core::{Block, FeeConfig, Hash, Mempool, Pubkey, StateStore, TxProcessor};
 use tracing::{debug, info};
 
 /// Build a new block from pending mempool transactions.
@@ -26,7 +26,7 @@ use tracing::{debug, info};
 ///   - Sign the block (caller signs after setting state_root)
 #[allow(clippy::too_many_arguments)]
 pub fn build_block(
-    _state: &StateStore,
+    state: &StateStore,
     mempool: &mut Mempool,
     processor: &TxProcessor,
     height: u64,
@@ -42,12 +42,19 @@ pub fn build_block(
     // Process in parallel (non-conflicting TXs run simultaneously)
     let results = processor.process_transactions_parallel(&pending, validator_pubkey);
 
+    // Fee config for computing burn/treasury split when reversing failed fees
+    let fee_config = state
+        .get_fee_config()
+        .unwrap_or_else(|_| FeeConfig::default_from_constants());
+
     // Keep only successful TXs; track ALL processed hashes (success + fail)
     // so we can remove failed TXs from mempool immediately.
     let mut transactions = Vec::with_capacity(pending_count);
     let mut tx_fees_paid = Vec::with_capacity(pending_count);
     let mut processed_hashes = Vec::with_capacity(pending_count);
     let mut failed_hashes = Vec::new();
+    // RC8: Collect info needed to reverse fee charges for failed TXs
+    let mut failed_fee_reversals: Vec<(Pubkey, u64, u64)> = Vec::new(); // (payer, fee_paid, to_treasury)
 
     for (tx, result) in pending.into_iter().zip(results) {
         let tx_hash = tx.hash();
@@ -55,12 +62,70 @@ pub fn build_block(
             tx_fees_paid.push(result.fee_paid);
             transactions.push(tx);
         } else {
+            // RC8: If a fee was charged, record the info needed to reverse it.
+            // charge_fee_with_priority persists outside the WriteBatch (M4 anti-DoS),
+            // but failed TXs aren't in the block so verifiers never charge these fees.
+            // Without reversal, the proposer's accounts_root diverges from verifiers'.
+            if result.fee_paid > 0 {
+                if let Some(ix) = tx.message.instructions.first() {
+                    if let Some(&fee_payer) = ix.accounts.first() {
+                        let priority_fee = TxProcessor::compute_priority_fee(&tx);
+                        let total_fee = TxProcessor::compute_base_fee(&tx, &fee_config)
+                            .saturating_add(priority_fee);
+                        let base_portion = total_fee.saturating_sub(priority_fee);
+                        let base_burn = (base_portion as u128 * fee_config.fee_burn_percent as u128
+                            / 100) as u64;
+                        let priority_burn = priority_fee / 2;
+                        let burn_amount = base_burn.saturating_add(priority_burn);
+                        let to_treasury = total_fee.saturating_sub(burn_amount);
+                        failed_fee_reversals.push((fee_payer, result.fee_paid, to_treasury));
+                    }
+                }
+            }
             if let Some(ref err) = result.error {
                 debug!("❌ TX {} failed: {}", tx_hash.to_hex(), err);
             }
             failed_hashes.push(tx_hash);
         }
         processed_hashes.push(tx_hash);
+    }
+
+    // RC8 FIX: Reverse fee charges for failed TXs that won't be in the block.
+    //
+    // process_transaction_inner charges fees BEFORE begin_batch (M4 anti-DoS):
+    //   charge_fee_with_priority → atomic_put_accounts (payer debit + treasury credit + burn)
+    // For failed TXs, rollback_batch only undoes instruction effects — the fee
+    // persists.  Since failed TXs are excluded from the block, verifiers never
+    // replay them and never charge those fees.  This causes accounts_root
+    // divergence between proposer and all verifiers.
+    //
+    // Fix: credit fee_paid back to payer, debit treasury portion from treasury.
+    // The burn counter (CF_STATS) is NOT part of the state root so we skip it.
+    if !failed_fee_reversals.is_empty() {
+        info!(
+            "🔄 RC8: Reversing {} failed-tx fee charge(s) at height {} to prevent state root divergence",
+            failed_fee_reversals.len(),
+            height,
+        );
+        let treasury_pk = state.get_treasury_pubkey().ok().flatten();
+        for (fee_payer, fee_paid, to_treasury) in &failed_fee_reversals {
+            // Credit fee_paid back to payer
+            if let Ok(Some(mut payer_account)) = state.get_account(fee_payer) {
+                if payer_account.add_spendable(*fee_paid).is_ok() {
+                    let _ = state.put_account(fee_payer, &payer_account);
+                }
+            }
+            // Debit treasury's portion (everything except burned amount)
+            if let Some(ref tpk) = treasury_pk {
+                if *to_treasury > 0 {
+                    if let Ok(Some(mut treasury_account)) = state.get_account(tpk) {
+                        if treasury_account.deduct_spendable(*to_treasury).is_ok() {
+                            let _ = state.put_account(tpk, &treasury_account);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Immediately remove failed TXs from mempool so they aren't

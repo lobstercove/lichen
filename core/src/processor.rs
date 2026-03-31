@@ -4827,8 +4827,12 @@ impl TxProcessor {
         // 2/3+ of active stake required for oracle consensus (matches BFT supermajority).
         // Additionally, require at least 2 distinct attestors so a single validator
         // can never unilaterally set prices regardless of stake weight.
+        // Exception: when '1 active validator in the network, allow it to set
+        // prices alone (solo testnet / early bootstrap).
         let threshold = (total_active_stake as u128) * 2 / 3;
-        if attested_stake >= threshold && attestations.len() >= 2 {
+        let active_validators = pool.active_validators().len();
+        let min_attestors = if active_validators <= 1 { 1 } else { 2 };
+        if attested_stake >= threshold && attestations.len() >= min_attestors {
             // Compute stake-weighted median price
             let consensus_price = compute_stake_weighted_median(&attestations);
             self.state.put_oracle_consensus_price(

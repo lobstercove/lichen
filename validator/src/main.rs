@@ -3138,7 +3138,6 @@ async fn apply_block_effects(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
-    vote_aggregator: &Arc<RwLock<VoteAggregator>>,
     block: &Block,
     skip_rewards: bool,
     _min_validator_stake: u64,
@@ -3521,17 +3520,18 @@ async fn apply_block_effects(
     }
 
     if voters_share > 0 {
-        let voters = {
-            let agg = vote_aggregator.read().await;
-            match agg.get_votes(slot, &block_hash) {
-                Some(votes) => votes.clone(),
-                None => Vec::new(),
-            }
-        };
-
-        let mut voter_pubkeys: Vec<Pubkey> = voters
+        // RC7-FIX: Derive voters from the block's commit_signatures instead
+        // of the ephemeral VoteAggregator.  commit_signatures are consensus
+        // data persisted in every block, so syncing nodes that replay effects
+        // from stored blocks produce identical fee distributions as nodes
+        // that processed blocks live through BFT.  The VoteAggregator is
+        // only populated for live BFT rounds and is empty during sync,
+        // which caused voter fees to stay in treasury on joining nodes —
+        // producing a cumulative accounts_root divergence.
+        let mut voter_pubkeys: Vec<Pubkey> = block
+            .commit_signatures
             .iter()
-            .map(|vote| vote.validator)
+            .map(|cs| Pubkey(cs.validator))
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -5235,6 +5235,14 @@ async fn run_validator() {
         }
     };
 
+    // Force Merkle leaf cache rebuild on startup.  The incremental cache
+    // (CF_MERKLE_LEAVES / CF_CONTRACT_MERKLE_LEAVES) might be stale if the
+    // previous process was killed between account writes and dirty-marker
+    // persistence.  Setting leaf counts to 0 makes the next
+    // compute_state_root() call take the cold-start path, which does a full
+    // scan of CF_ACCOUNTS / CF_CONTRACT_STORAGE and repopulates the cache.
+    state.invalidate_merkle_cache();
+
     // ── STARTUP STATE INTEGRITY CHECK ──────────────────────────────────
     // Detect state corruption caused by crashes during BFT proposal execution.
     // When a proposer calls build_block → process_transactions_parallel, the
@@ -5578,9 +5586,11 @@ async fn run_validator() {
         cached
     } else if !explicit_seed_peers.is_empty() {
         info!("🔒 Using explicit bootstrap peers (--bootstrap-peers)");
-        // Still load seeds.json for additional connectivity
-        let seed_file_peers = load_seed_peers(&genesis_config.chain_id, &seeds_path);
-        seed_peers.extend(resolve_peer_list(&seed_file_peers));
+        if !local_only {
+            // Load seeds.json for additional connectivity on remote nodes
+            let seed_file_peers = load_seed_peers(&genesis_config.chain_id, &seeds_path);
+            seed_peers.extend(resolve_peer_list(&seed_file_peers));
+        }
         Vec::new()
     } else {
         info!("🔒 Local-only mode: external seed peers disabled");
@@ -7067,7 +7077,6 @@ async fn run_validator() {
         let vote_agg_for_blocks = vote_aggregator.clone();
         let validator_set_for_blocks = validator_set.clone();
         let stake_pool_for_blocks = stake_pool.clone();
-        let vote_agg_for_effects = vote_aggregator.clone();
         let local_addr = p2p_config.listen_addr;
         let last_block_time_for_blocks = last_block_time_for_blocks.clone();
         let global_last_user_tx_activity_for_blocks =
@@ -7983,6 +7992,19 @@ async fn run_validator() {
                         let pending = sync_mgr.try_apply_pending(0, genesis_hash).await;
                         for pending_block in pending {
                             let pending_slot = pending_block.header.slot;
+
+                            // Skip if BFT already committed this block.
+                            if state_for_blocks
+                                .get_block_by_slot(pending_slot)
+                                .ok()
+                                .flatten()
+                                .is_some()
+                            {
+                                debug!("Pending block {} already stored — skipping", pending_slot);
+                                sync_mgr.record_progress(pending_slot).await;
+                                continue;
+                            }
+
                             // P1-1: Header-first sync — skip TX replay for blocks
                             // outside the full-execution window during catch-up.
                             let did_full_validate =
@@ -8031,7 +8053,6 @@ async fn run_validator() {
                                     &state_for_blocks,
                                     &validator_set_for_blocks,
                                     &stake_pool_for_blocks,
-                                    &vote_agg_for_effects,
                                     &pending_block,
                                     false,
                                     min_validator_stake,
@@ -8182,24 +8203,33 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if can_chain {
-                        // BFT RACE GUARD: If BFT CommitBlock is currently processing
-                        // this slot (replay → state_root → put_block → effects), skip.
-                        // The compact block reconstruction can deliver the block to
-                        // block_rx BEFORE BFT finishes put_block_atomic, so the old
-                        // get_block_by_slot check below would miss it. Without this,
-                        // the block receiver's compute_state_root reads hybrid state
-                        // (partially modified by BFT's concurrent apply_block_effects).
+                        // BFT RACE GUARD: When BFT consensus is active, defer
+                        // ALL chainable live blocks to the BFT CommitBlock path.
+                        // The P2P compact block arrives BEFORE BFT reaches
+                        // CommitBlock for that height, so checking block_slot vs
+                        // bft_height is insufficient — the block can arrive 1-2
+                        // slots ahead.  Processing it here causes double TX
+                        // replay: BFT CommitBlock also replays, corrupting state
+                        // (double effects, nonce mismatches, state root divergence).
+                        //
                         // SYNC EXCEPTION: Blocks from the sync channel are already
                         // committed by the network — BFT at this height is just
                         // spinning with nil votes (no peer proposes for old heights).
                         // Applying them lets the tip advance so BFT can catch up.
                         let bft_height = bft_committing_for_blocks.load(Ordering::Acquire);
-                        if !is_sync_block && bft_height > 0 && bft_height <= block_slot {
+                        if !is_sync_block && bft_height > 0 {
                             debug!(
-                                "Block {} being committed by BFT — skipping block receiver",
-                                block_slot
+                                "🛡️  Block {} deferred to BFT CommitBlock (bft_height={}) — block receiver yields",
+                                block_slot, bft_height
                             );
                             sync_mgr.record_progress(block_slot).await;
+                            // RC9: Remove from seen_blocks so the sync-channel
+                            // copy can be applied later.  Without this, a compact
+                            // block skipped here poisons seen_blocks and the sync
+                            // version is rejected as "Truly duplicate" — the node
+                            // can never advance past the BFT starting height
+                            // after a restart.
+                            seen_blocks.remove(&(block_slot, block.header.validator));
                             continue;
                         }
 
@@ -8337,7 +8367,6 @@ async fn run_validator() {
                             &state_for_blocks,
                             &validator_set_for_blocks,
                             &stake_pool_for_blocks,
-                            &vote_agg_for_effects,
                             &block,
                             false,
                             min_validator_stake,
@@ -8478,7 +8507,6 @@ async fn run_validator() {
                                 &state_for_blocks,
                                 &validator_set_for_blocks,
                                 &stake_pool_for_blocks,
-                                &vote_agg_for_effects,
                                 &block,
                                 false,
                                 min_validator_stake,
@@ -8502,6 +8530,22 @@ async fn run_validator() {
                                 .await;
                             for pending_block in pending {
                                 let pending_slot = pending_block.header.slot;
+
+                                // Skip if BFT already committed this block.
+                                if state_for_blocks
+                                    .get_block_by_slot(pending_slot)
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                                {
+                                    debug!(
+                                        "Pending block {} already stored — skipping",
+                                        pending_slot
+                                    );
+                                    sync_mgr.record_progress(pending_slot).await;
+                                    continue;
+                                }
+
                                 if sync_mgr
                                     .should_full_validate(pending_block.header.slot)
                                     .await
@@ -8533,7 +8577,6 @@ async fn run_validator() {
                                         &state_for_blocks,
                                         &validator_set_for_blocks,
                                         &stake_pool_for_blocks,
-                                        &vote_agg_for_effects,
                                         &pending_block,
                                         false,
                                         min_validator_stake,
@@ -8947,7 +8990,6 @@ async fn run_validator() {
                                         &state_for_blocks,
                                         &validator_set_for_blocks,
                                         &stake_pool_for_blocks,
-                                        &vote_agg_for_effects,
                                         &block,
                                         false,
                                         min_validator_stake,
@@ -8969,6 +9011,22 @@ async fn run_validator() {
                                         sync_mgr.try_apply_pending(block_slot, fork_tip_hash).await;
                                     for pending_block in pending {
                                         let pending_slot = pending_block.header.slot;
+
+                                        // Skip if BFT already committed this block.
+                                        if state_for_blocks
+                                            .get_block_by_slot(pending_slot)
+                                            .ok()
+                                            .flatten()
+                                            .is_some()
+                                        {
+                                            debug!(
+                                                "Pending block {} already stored — skipping",
+                                                pending_slot
+                                            );
+                                            sync_mgr.record_progress(pending_slot).await;
+                                            continue;
+                                        }
+
                                         if sync_mgr
                                             .should_full_validate(pending_block.header.slot)
                                             .await
@@ -9009,7 +9067,6 @@ async fn run_validator() {
                                                 &state_for_blocks,
                                                 &validator_set_for_blocks,
                                                 &stake_pool_for_blocks,
-                                                &vote_agg_for_effects,
                                                 &pending_block,
                                                 false,
                                                 min_validator_stake,
@@ -13179,11 +13236,87 @@ async fn run_validator() {
                     .map(|t| t.0 != RoundStep::Propose || t.1 != bft.round)
                     .unwrap_or(true)
                 {
-                    timeout_handle = Some((
-                        RoundStep::Propose,
-                        bft.round,
-                        Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
-                    ));
+                    // Round changed (e.g., round-skip from on_prevote/on_precommit
+                    // or fast catch-up).  Check if we're the proposer for the new
+                    // round and propose immediately instead of waiting for the
+                    // propose timeout.  Without this, a late-joining validator
+                    // that round-skips to r=8 would wait ~51s before proposing,
+                    // causing all validators to nil-vote that round.
+                    if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
+                        info!(
+                            "👑 BFT: We are proposer for height={} round={} (post-skip)",
+                            bft.height, bft.round
+                        );
+                        let mut mp = mempool.lock().await;
+                        let bft_ts = compute_proposed_timestamp(
+                            &state,
+                            &parent_hash,
+                            &height_vs,
+                            &height_pool,
+                        );
+                        let (mut block, _) = block_producer::build_block(
+                            &state,
+                            &mut mp,
+                            &processor,
+                            bft.height,
+                            parent_hash,
+                            &validator_pubkey,
+                            Vec::new(),
+                            bft_ts,
+                        );
+                        drop(mp);
+                        block.header.validators_hash =
+                            compute_validators_hash(&height_vs, &height_pool);
+                        block.header.state_root = state.compute_state_root();
+                        block.sign(&validator_keypair);
+                        let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
+                        execute_consensus_actions(
+                            proposal_action,
+                            &bft,
+                            &state,
+                            &validator_set,
+                            &stake_pool,
+                            &vote_aggregator,
+                            &mempool,
+                            &processor,
+                            &finality_tracker,
+                            &p2p_peer_manager,
+                            &p2p_config,
+                            &ws_event_tx,
+                            &ws_dex_broadcaster,
+                            &shared_oracle_prices,
+                            &last_block_time_for_local,
+                            &mut last_dex_trade_count,
+                            &data_dir,
+                            &sync_manager,
+                            &mut parent_hash,
+                            slot_duration_ms,
+                            &validator_keypair,
+                            min_validator_stake,
+                            &bft_committing_slot,
+                        )
+                        .await;
+                        // Schedule timeout for post-proposal step
+                        timeout_handle = match bft.step {
+                            RoundStep::Prevote => Some((
+                                RoundStep::Prevote,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                            )),
+                            RoundStep::Precommit => Some((
+                                RoundStep::Precommit,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                            )),
+                            _ => None,
+                        };
+                    } else {
+                        timeout_handle = Some((
+                            RoundStep::Propose,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                        ));
+                    }
                 }
             }
             RoundStep::Prevote => {
@@ -13471,14 +13604,21 @@ async fn execute_consensus_actions(
             block,
             block_hash,
         } => {
-            // Guard is already set by the BFT height-loop start.
+            // DOUBLE-PROCESSING GUARD: If the block receiver already
+            // processed and stored this block (race between compact block
+            // reconstruction and BFT commit), skip TX replay + state root
+            // check.  The block receiver applied effects, so we only need
+            // to advance BFT state.  Without this, TX replay would either
+            // fail ("Transaction already processed") or corrupt state by
+            // double-charging fees.
+            let already_stored = state.get_block_by_slot(height).ok().flatten().is_some();
+
             // Non-proposer nodes must replay the block's transactions so
             // their on-chain state (accounts, stake pool, contracts) matches
             // the proposer.  The proposer already executed TXs during
-            // build_block, so replay is skipped for our own blocks (the
-            // duplicate-TX guard would reject them anyway).
+            // build_block, so replay is skipped for our own blocks.
             let our_pubkey = validator_keypair.pubkey();
-            if block.header.validator != our_pubkey.0 {
+            if !already_stored && block.header.validator != our_pubkey.0 {
                 replay_block_transactions(processor, &block);
             }
 
@@ -13489,7 +13629,9 @@ async fn execute_consensus_actions(
             // compare a post-TX root against post-TX-plus-effects state,
             // causing systematic mismatches on every block with fees or
             // epoch rewards.
-            {
+            // Skip verification if already stored — block receiver already
+            // applied effects, so state is past the pre-effects boundary.
+            if !already_stored {
                 let local_root = state.compute_state_root();
                 let block_root = block.header.state_root;
                 if local_root == block_root {
@@ -13499,25 +13641,42 @@ async fn execute_consensus_actions(
                         hex::encode(&local_root.0[..8])
                     );
                 } else if block_root != Hash::default() {
-                    warn!(
-                        "⚠️  STATE ROOT MISMATCH at height {}: local={} block={}",
-                        height,
-                        hex::encode(&local_root.0[..8]),
-                        hex::encode(&block_root.0[..8]),
-                    );
-                    // Diagnostic: log individual components for debugging
-                    let accts = state.compute_accounts_root();
-                    let contracts = state.compute_contract_storage_root();
-                    let stake = state.compute_stake_pool_hash();
-                    let moss = state.compute_mossstake_pool_hash();
-                    warn!(
-                        "⚠️  MISMATCH COMPONENTS h={}: accts={} contracts={} stake={} moss={}",
-                        height,
-                        hex::encode(&accts.0[..8]),
-                        hex::encode(&contracts.0[..8]),
-                        hex::encode(&stake.0[..8]),
-                        hex::encode(&moss.0[..8]),
-                    );
+                    // Incremental Merkle cache may have a transient stale leaf.
+                    // Self-heal: invalidate the cache and recompute from scratch.
+                    // If the cold-start root matches the block, the cache was
+                    // stale and is now repaired.  If it still mismatches, log
+                    // the genuine divergence for debugging.
+                    state.invalidate_merkle_cache();
+                    let healed_root = state.compute_state_root();
+                    if healed_root == block_root {
+                        info!(
+                            "🔄 State root self-healed at height {} via cold-start rebuild (was={}, now={})",
+                            height,
+                            hex::encode(&local_root.0[..8]),
+                            hex::encode(&healed_root.0[..8]),
+                        );
+                    } else {
+                        warn!(
+                            "⚠️  STATE ROOT MISMATCH at height {}: local={} cold_start={} block={}",
+                            height,
+                            hex::encode(&local_root.0[..8]),
+                            hex::encode(&healed_root.0[..8]),
+                            hex::encode(&block_root.0[..8]),
+                        );
+                        // Diagnostic: log individual components for debugging
+                        let accts = state.compute_accounts_root();
+                        let contracts = state.compute_contract_storage_root();
+                        let stake = state.compute_stake_pool_hash();
+                        let moss = state.compute_mossstake_pool_hash();
+                        warn!(
+                            "⚠️  MISMATCH COMPONENTS h={}: accts={} contracts={} stake={} moss={}",
+                            height,
+                            hex::encode(&accts.0[..8]),
+                            hex::encode(&contracts.0[..8]),
+                            hex::encode(&stake.0[..8]),
+                            hex::encode(&moss.0[..8]),
+                        );
+                    }
                 }
             }
 
@@ -13528,39 +13687,68 @@ async fn execute_consensus_actions(
             // Store block FIRST — before effects, so the block receiver's
             // duplicate guard (get_block_by_slot) fires and prevents the
             // same block from being processed twice via BFT + P2P paths.
+            // If already stored (block receiver won the race), skip storage.
             let final_hash = block.hash();
-            info!(
-                "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
-                height,
-                hex::encode(&final_hash.0[..8]),
-                hex::encode(&block.header.state_root.0[..8]),
-                Pubkey(block.header.validator).to_base58(),
-            );
+            if !already_stored {
+                info!(
+                    "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
+                    height,
+                    hex::encode(&final_hash.0[..8]),
+                    hex::encode(&block.header.state_root.0[..8]),
+                    Pubkey(block.header.validator).to_base58(),
+                );
 
-            let confirmed_slot = height;
-            let finalized_slot = height;
+                let confirmed_slot = height;
+                let finalized_slot = height;
 
-            // Store block, tip, and commitment metadata atomically.
-            if let Err(e) =
-                state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
-            {
-                error!("Failed to store block at height {}: {e}", height);
+                // Store block, tip, and commitment metadata atomically.
+                if let Err(e) =
+                    state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
+                {
+                    error!("Failed to store block at height {}: {e}", height);
+                }
+            } else {
+                info!(
+                    "🔐 BFT: Block {} already stored by block receiver — skipping storage",
+                    height
+                );
             }
 
             // Now apply effects AFTER the block is stored. This ordering
             // ensures the block receiver's duplicate guard fires if it
             // tries to process the same block concurrently.
+            // apply_block_effects has its own idempotency guard (per-slot
+            // reward_distribution_hash), so calling it when the block
+            // receiver already applied effects is safe — it will return
+            // early.
             apply_block_effects(
                 state,
                 validator_set,
                 stake_pool,
-                vote_aggregator,
                 &block,
                 false,
                 min_validator_stake,
             )
             .await;
             apply_oracle_from_block(state, &block);
+
+            // BFT-ACTIVATION: Activate pending validators after applying
+            // block effects so the in-memory validator set stays in sync
+            // with the on-chain stake pool during live BFT.  Without this,
+            // BFT nodes never activate pending validators (only the sync
+            // path did), causing leader election disagreements when a
+            // rejoining node has a different active validator set.
+            {
+                let pool = stake_pool.read().await;
+                activate_pending_validators_for_height(
+                    state,
+                    validator_set,
+                    &pool,
+                    height,
+                    min_validator_stake,
+                )
+                .await;
+            }
 
             // EVM tx inclusion tracking
             for tx in &block.transactions {

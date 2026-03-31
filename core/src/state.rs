@@ -1972,10 +1972,7 @@ impl StateStore {
     /// Deterministic hash of the stake pool singleton.
     pub fn compute_stake_pool_hash(&self) -> Hash {
         match self.get_stake_pool() {
-            Ok(pool) => {
-                let h = pool.canonical_hash();
-                h
-            }
+            Ok(pool) => pool.canonical_hash(),
             Err(_) => Hash::default(),
         }
     }
@@ -2207,6 +2204,15 @@ impl StateStore {
         let mut batch = WriteBatch::default();
         let mut count = 0u64;
 
+        // Clear stale leaf cache entries from a previous run.
+        let clear_iter = self
+            .db
+            .iterator_cf(&cf_cs_leaves, rocksdb::IteratorMode::Start);
+        for item in clear_iter.flatten() {
+            let (key, _) = item;
+            batch.delete_cf(&cf_cs_leaves, &*key);
+        }
+
         let iter = self
             .db
             .iterator_cf(&cf_storage, rocksdb::IteratorMode::Start);
@@ -2275,6 +2281,22 @@ impl StateStore {
         root
     }
 
+    /// Reset Merkle leaf cache counts so the next `compute_state_root()` call
+    /// triggers a full cold-start rebuild.  Call this on validator startup to
+    /// guarantee the leaf cache matches the persisted account/contract state,
+    /// regardless of whether the previous shutdown was clean.
+    pub fn invalidate_merkle_cache(&self) {
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            let _ = self
+                .db
+                .put_cf(&cf_stats, b"merkle_leaf_count", 0u64.to_le_bytes());
+            let _ = self
+                .db
+                .put_cf(&cf_stats, b"contract_merkle_leaf_count", 0u64.to_le_bytes());
+            tracing::info!("🔄 Merkle leaf cache invalidated — cold start will run on next state root computation");
+        }
+    }
+
     /// Accounts-only cold start: populate CF_MERKLE_LEAVES cache.
     fn compute_accounts_root_cold_start(&self) -> Hash {
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
@@ -2289,6 +2311,17 @@ impl StateStore {
         let mut leaves: Vec<Hash> = Vec::new();
         let mut batch = WriteBatch::default();
         let mut count = 0u64;
+
+        // Clear stale leaf cache entries from a previous run.  Without this,
+        // entries for accounts that became dormant or were removed since the
+        // last cold start would persist and produce wrong Merkle roots.
+        let iter = self
+            .db
+            .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start);
+        for item in iter.flatten() {
+            let (key, _) = item;
+            batch.delete_cf(&cf_leaves, &*key);
+        }
 
         let iter = self
             .db
@@ -3008,6 +3041,7 @@ impl StateStore {
             .write(batch)
             .map_err(|e| format!("Atomic mint account write failed: {}", e))?;
 
+        // Post-commit: metrics + dirty markers
         for (pubkey, is_new, old_balance, new_balance) in meta {
             if is_new {
                 self.metrics.increment_accounts();
