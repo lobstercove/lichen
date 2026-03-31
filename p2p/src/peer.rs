@@ -328,9 +328,43 @@ impl PeerManager {
             server_config.transport_config(Arc::new(transport));
         }
 
-        // Create QUIC endpoint
-        let endpoint = Endpoint::server(server_config, local_addr)
-            .map_err(|e| format!("Failed to create endpoint: {}", e))?;
+        // Create QUIC endpoint with retry for port conflicts (e.g. stale process
+        // hasn't released the UDP port yet after a restart).
+        let endpoint = {
+            let max_retries = 5u32;
+            let mut last_err = String::new();
+            let mut bound = None;
+            for attempt in 0..max_retries {
+                match Endpoint::server(server_config.clone(), local_addr) {
+                    Ok(ep) => {
+                        if attempt > 0 {
+                            info!("🦞 P2P: Endpoint bound on attempt {}", attempt + 1);
+                        }
+                        bound = Some(ep);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("{}", e);
+                        if attempt + 1 < max_retries {
+                            warn!(
+                                "⚠️  P2P: Failed to bind {} (attempt {}/{}): {} — retrying in 2s",
+                                local_addr,
+                                attempt + 1,
+                                max_retries,
+                                e
+                            );
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+            }
+            bound.ok_or_else(|| {
+                format!(
+                    "Failed to create endpoint after {} attempts: {}",
+                    max_retries, last_err
+                )
+            })?
+        };
 
         info!("🦞 P2P: QUIC endpoint listening on {}", local_addr);
 
