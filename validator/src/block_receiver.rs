@@ -57,7 +57,7 @@ pub fn validate_block_basic(block: &Block) -> Result<(), BlockValidationError> {
         return Ok(());
     }
 
-    // Verify Ed25519 signature
+    // Verify the block signature
     if !block.verify_signature() {
         return Err(BlockValidationError::InvalidSignature);
     }

@@ -41,10 +41,6 @@ TX_CONFIRM_TIMEOUT = 20  # seconds
 
 def load_keypair(path: Path) -> Keypair:
     """Load a keypair from a genesis-keys JSON file."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if "secret_key" in raw:
-        seed = bytes.fromhex(raw["secret_key"])
-        return Keypair.from_seed(seed)
     return Keypair.load(path)
 
 
@@ -109,7 +105,7 @@ async def send_named_call(
 
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [signer.public_key(), contract_addr],
+        [signer.address(), contract_addr],
         data,
     )
 
@@ -170,8 +166,8 @@ async def main():
     deployer = load_keypair(deployer_path)
     reserve_pool = load_keypair(reserve_path)
 
-    print(f"  Deployer (admin): {deployer.public_key()}")
-    print(f"  Reserve pool:     {reserve_pool.public_key()}")
+    print(f"  Deployer (admin): {deployer.address()}")
+    print(f"  Reserve pool:     {reserve_pool.address()}")
     print()
 
     # Resolve lusd_token contract
@@ -179,8 +175,8 @@ async def main():
     print(f"  lUSD contract:    {lusd_addr}")
 
     # Check current balances
-    deployer_balance = await conn.get_balance(deployer.public_key())
-    reserve_balance = await conn.get_balance(reserve_pool.public_key())
+    deployer_balance = await conn.get_balance(deployer.address())
+    reserve_balance = await conn.get_balance(reserve_pool.address())
     deployer_spores = deployer_balance.get("spendable", deployer_balance.get("spores", 0))
     reserve_spores = reserve_balance.get("spendable", reserve_balance.get("spores", 0))
     print(f"  Deployer LICN:    {deployer_spores / SPORES_PER_LICN:,.4f}")
@@ -190,15 +186,15 @@ async def main():
     amount_spores = int(args.amount * SPORES_PER_LICN)
 
     if args.dry_run:
-        print(f"  [DRY RUN] Would mint {args.amount:,.0f} lUSD to {reserve_pool.public_key()}")
+        print(f"  [DRY RUN] Would mint {args.amount:,.0f} lUSD to {reserve_pool.address()}")
         return
 
     # Mint lUSD: deployer calls lusd_token.mint(caller, to, amount)
     # The deployer is the admin set during genesis initialization.
     # The 'to' is the reserve_pool wallet where lUSD will be received.
     # Args layout: [caller 32B][to 32B][amount 8B] = 72 bytes
-    caller_bytes = list(deployer.public_key().to_bytes())
-    to_bytes = list(reserve_pool.public_key().to_bytes())
+    caller_bytes = list(deployer.address().to_bytes())
+    to_bytes = list(reserve_pool.address().to_bytes())
     amount_bytes = list(struct.pack("<Q", amount_spores))
     args_raw = caller_bytes + to_bytes + amount_bytes
 

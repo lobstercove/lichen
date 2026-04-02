@@ -1,4 +1,4 @@
-//! ZK Circuit Definitions (R1CS)
+//! Internal shielded witness-adapter circuits.
 //!
 //! Three circuits for the shielded pool:
 //! - Shield: transparent -> shielded (deposit)

@@ -25,7 +25,7 @@
 //   NFT ENDPOINTS                  — getCollection, getNFT, getNFTsByOwner
 //   MARKETPLACE ENDPOINTS          — getMarketListings, getMarketSales
 //   ETHEREUM JSON-RPC LAYER        — eth_getBalance, eth_sendRawTransaction, …
-//   MOSSSTAKE ENDPOINTS            — stakeToMossStake, unstakeFromMossStake
+//   MOSSSTAKE QUERY ENDPOINTS      — getStakingPosition, getMossStakePoolInfo
 //   TOKEN ENDPOINTS                — getTokenBalance, getTokenHolders, getTokenTransfers
 //   DEX REST API                    — /api/v1/* endpoints (dex.rs)
 //   DEX WEBSOCKET FEEDS             — orderbook, trades, ticker, candles (dex_ws.rs)
@@ -55,9 +55,9 @@ use lichen_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
-    FinalityTracker, Hash, Instruction, MarketActivityKind, Message, Pubkey, StakePool, StateStore,
-    SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID,
-    SYSTEM_PROGRAM_ID,
+    FinalityTracker, Hash, Instruction, MarketActivityKind, Message, PqSignature, Pubkey,
+    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID,
+    EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -79,7 +79,7 @@ const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 const MAX_TX_BINCODE_SIZE: u64 = 4 * 1024 * 1024;
 
 /// Decode raw bytes into a Transaction using the wire-format envelope (M-6).
-/// Supports V1 envelope, legacy bincode, JSON (serde), and wallet JSON format.
+/// Supports V1 envelope, raw bincode, JSON (serde), and wallet JSON format.
 pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcError> {
     Transaction::from_wire(bytes, MAX_TX_BINCODE_SIZE)
         .or_else(|_| {
@@ -110,6 +110,41 @@ use tracing::{info, warn};
 
 // Re-export WebSocket types
 pub use ws::{start_ws_server, Event as WsEvent};
+
+pub(crate) fn pq_signature_json(signature: &PqSignature) -> serde_json::Value {
+    serde_json::to_value(signature).unwrap_or(serde_json::Value::Null)
+}
+
+pub(crate) fn pq_signature_option_json(signature: Option<&PqSignature>) -> serde_json::Value {
+    signature
+        .map(pq_signature_json)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+pub(crate) fn pq_signature_is_zero(signature: &PqSignature) -> bool {
+    signature.sig.iter().all(|&byte| byte == 0)
+}
+
+fn parse_pq_signature_value(value: &serde_json::Value) -> Result<PqSignature, RpcError> {
+    if value.is_object() {
+        return serde_json::from_value(value.clone()).map_err(|error| RpcError {
+            code: -32602,
+            message: format!("Invalid PQ signature object: {}", error),
+        });
+    }
+
+    if let Some(encoded) = value.as_str() {
+        return serde_json::from_str(encoded).map_err(|error| RpcError {
+            code: -32602,
+            message: format!("Invalid PQ signature JSON string: {}", error),
+        });
+    }
+
+    Err(RpcError {
+        code: -32602,
+        message: "Signature must be a PQ signature object or JSON string".to_string(),
+    })
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SHARED STATE & TYPES
@@ -1516,11 +1551,11 @@ fn anchored_block_context(
         "validators_hash": block.header.validators_hash.to_hex(),
         "timestamp": block.header.timestamp,
         "validator": Pubkey(block.header.validator).to_base58(),
-        "block_signature": hex::encode(block.header.signature),
+        "block_signature": pq_signature_option_json(block.header.signature.as_ref()),
         "commit_signatures": block.commit_signatures.iter().map(|cs| {
             serde_json::json!({
                 "validator": Pubkey(cs.validator).to_base58(),
-                "signature": hex::encode(cs.signature),
+                "signature": pq_signature_json(&cs.signature),
                 "timestamp": cs.timestamp,
             })
         }).collect::<Vec<_>>(),
@@ -1871,7 +1906,7 @@ fn tx_to_rpc_json(
         })
         .collect();
 
-    let signatures: Vec<String> = tx.signatures.iter().map(hex::encode).collect();
+    let signatures: Vec<serde_json::Value> = tx.signatures.iter().map(pq_signature_json).collect();
     let amount_licn = amount
         .map(|val| val as f64 / 1_000_000_000.0)
         .unwrap_or(0.0);
@@ -2193,7 +2228,6 @@ pub fn build_rpc_router_with_min_validator_stake(
     Router::new()
         .route("/", post(handle_rpc))
         .route("/solana-compat", post(handle_solana_rpc))
-        .route("/solana", post(handle_solana_rpc)) // backward-compat alias
         .route("/evm", post(handle_evm_rpc))
         // DEX REST API — /api/v1/*
         .nest("/api/v1", dex::build_dex_router())
@@ -2370,10 +2404,7 @@ async fn handle_rpc(
         "getStakingStatus" => handle_get_staking_status(&state, req.params).await,
         "getStakingRewards" => handle_get_staking_rewards(&state, req.params).await,
 
-        // MossStake liquid staking endpoints
-        "stakeToMossStake" => handle_stake_to_mossstake(&state, req.params).await,
-        "unstakeFromMossStake" => handle_unstake_from_mossstake(&state, req.params).await,
-        "claimUnstakedTokens" => handle_claim_unstaked_tokens(&state, req.params).await,
+        // MossStake liquid staking query endpoints
         "getStakingPosition" => handle_get_staking_position(&state, req.params).await,
         "getMossStakePoolInfo" => handle_get_mossstake_pool_info(&state).await,
         "getUnstakingQueue" => handle_get_unstaking_queue(&state, req.params).await,
@@ -3383,7 +3414,7 @@ async fn handle_get_block(
                 "commit_signatures": block.commit_signatures.iter().map(|cs| {
                     serde_json::json!({
                         "validator": Pubkey(cs.validator).to_base58(),
-                        "signature": hex::encode(cs.signature),
+                        "signature": pq_signature_json(&cs.signature),
                     })
                 }).collect::<Vec<_>>(),
                 "commit_validator_count": block.commit_signatures.len(),
@@ -3417,7 +3448,7 @@ async fn handle_get_block_commit(
                 .map(|cs| {
                     serde_json::json!({
                         "validator": Pubkey(cs.validator).to_base58(),
-                        "signature": hex::encode(cs.signature),
+                        "signature": pq_signature_json(&cs.signature),
                         "timestamp": cs.timestamp,
                     })
                 })
@@ -4707,37 +4738,9 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
             code: -32602,
             message: "Missing signatures array".into(),
         })?;
-    let mut signatures: Vec<[u8; 64]> = Vec::new();
+    let mut signatures = Vec::new();
     for sig_val in sigs_raw {
-        if let Some(sig_arr) = sig_val.as_array() {
-            let bytes: Vec<u8> = sig_arr
-                .iter()
-                .filter_map(|b| b.as_u64().map(|n| n as u8))
-                .collect();
-            if bytes.len() != 64 {
-                return Err(RpcError {
-                    code: -32602,
-                    message: format!("Signature must be 64 bytes, got {}", bytes.len()),
-                });
-            }
-            let mut sig = [0u8; 64];
-            sig.copy_from_slice(&bytes);
-            signatures.push(sig);
-        } else if let Some(sig_hex) = sig_val.as_str() {
-            let bytes = hex::decode(sig_hex).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid signature hex: {}", e),
-            })?;
-            if bytes.len() != 64 {
-                return Err(RpcError {
-                    code: -32602,
-                    message: format!("Signature must be 64 bytes, got {}", bytes.len()),
-                });
-            }
-            let mut sig = [0u8; 64];
-            sig.copy_from_slice(&bytes);
-            signatures.push(sig);
-        }
+        signatures.push(parse_pq_signature_value(sig_val)?);
     }
 
     let msg_val = json_val.get("message").ok_or_else(|| RpcError {
@@ -4931,7 +4934,7 @@ async fn handle_send_transaction(
     }
     // 2. Reject zero signatures (all bytes 0x00)
     for sig in &tx.signatures {
-        if sig.iter().all(|&b| b == 0) {
+        if pq_signature_is_zero(sig) {
             return Err(RpcError {
                 code: -32003,
                 message: "Transaction contains an invalid zero signature".to_string(),
@@ -7827,7 +7830,7 @@ async fn handle_get_all_contracts(
 ///
 /// Params: [deployer_base58, code_base64, init_data_json_or_null, signature_hex]
 ///
-/// The deployer signs SHA-256(code_bytes) with their ed25519 key.
+/// The deployer signs SHA-256(code_bytes) with their native PQ key.
 /// Deploy fee (2.5 LICN) is charged from the deployer's account.
 /// Contract address is derived as SHA-256(deployer_pubkey + code_bytes).
 async fn handle_deploy_contract(
@@ -7905,29 +7908,13 @@ async fn handle_deploy_contract(
         serde_json::to_vec(&arr[2]).unwrap_or_default()
     };
 
-    // Parse signature (hex-encoded, 64 bytes = 128 hex chars)
-    let sig_hex = arr[3].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "signature must be a hex string".to_string(),
-    })?;
-    let sig_bytes = hex::decode(sig_hex).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid hex signature: {}", e),
-    })?;
-    if sig_bytes.len() != 64 {
-        return Err(RpcError {
-            code: -32602,
-            message: format!("Signature must be 64 bytes, got {}", sig_bytes.len()),
-        });
-    }
-    let mut sig_array = [0u8; 64];
-    sig_array.copy_from_slice(&sig_bytes);
+    let signature = parse_pq_signature_value(&arr[3])?;
 
     // Verify signature: deployer must sign SHA-256(code_bytes)
     let mut hasher = Sha256::new();
     hasher.update(&code_bytes);
     let code_hash = hasher.finalize();
-    if !LichenKeypair::verify(&deployer_pubkey, &code_hash, &sig_array) {
+    if !LichenKeypair::verify(&deployer_pubkey, &code_hash, &signature) {
         return Err(RpcError {
             code: -32003,
             message: "Invalid signature: deployer must sign SHA-256(code)".to_string(),
@@ -8208,29 +8195,13 @@ async fn handle_upgrade_contract(
         });
     }
 
-    // Parse signature (hex-encoded)
-    let sig_hex = arr[3].as_str().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "signature must be a hex string".to_string(),
-    })?;
-    let sig_bytes = hex::decode(sig_hex).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid hex signature: {}", e),
-    })?;
-    if sig_bytes.len() != 64 {
-        return Err(RpcError {
-            code: -32602,
-            message: format!("Signature must be 64 bytes, got {}", sig_bytes.len()),
-        });
-    }
-    let mut sig_array = [0u8; 64];
-    sig_array.copy_from_slice(&sig_bytes);
+    let signature = parse_pq_signature_value(&arr[3])?;
 
     // Verify signature: owner must sign SHA-256(code_bytes)
     let mut hasher = Sha256::new();
     hasher.update(&code_bytes);
     let code_hash_bytes = hasher.finalize();
-    if !LichenKeypair::verify(&owner_pubkey, &code_hash_bytes, &sig_array) {
+    if !LichenKeypair::verify(&owner_pubkey, &code_hash_bytes, &signature) {
         return Err(RpcError {
             code: -32003,
             message: "Invalid signature: owner must sign SHA-256(code)".to_string(),
@@ -11761,60 +11732,6 @@ async fn handle_eth_get_storage_at(
     Ok(serde_json::json!(format!("0x{:064x}", value)))
 }
 
-// ===== MossStake Liquid Staking RPC Handlers =====
-
-/// Handle stakeToMossStake: Stake LICN, receive stLICN
-/// T2.5 fix: MossStake deposit now requires a signed transaction.
-/// Use sendTransaction with instruction type 13 (MossStake deposit).
-/// Data format: [13, amount(8 bytes LE)]
-/// Accounts: [depositor_pubkey]
-async fn handle_stake_to_mossstake(
-    _state: &RpcState,
-    _params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    Err(RpcError {
-        code: -32000,
-        message: "stakeToMossStake is deprecated. Use sendTransaction with system instruction \
-                  type 13 (MossStake deposit). Data: [13, amount_le_bytes(8)]. \
-                  Accounts: [depositor_pubkey]. The transaction must be signed by the depositor."
-            .to_string(),
-    })
-}
-
-/// T2.5 fix: MossStake unstake now requires a signed transaction.
-/// Use sendTransaction with instruction type 14 (MossStake unstake).
-/// Data format: [14, st_licn_amount(8 bytes LE)]
-/// Accounts: [user_pubkey]
-async fn handle_unstake_from_mossstake(
-    _state: &RpcState,
-    _params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    Err(RpcError {
-        code: -32000,
-        message: "unstakeFromMossStake is deprecated. Use sendTransaction with system instruction \
-                  type 14 (MossStake unstake). Data: [14, st_licn_amount_le_bytes(8)]. \
-                  Accounts: [user_pubkey]. The transaction must be signed by the user."
-            .to_string(),
-    })
-}
-
-/// T2.5 fix: MossStake claim now requires a signed transaction.
-/// Use sendTransaction with instruction type 15 (MossStake claim).
-/// Data format: [15]
-/// Accounts: [user_pubkey]
-async fn handle_claim_unstaked_tokens(
-    _state: &RpcState,
-    _params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    Err(RpcError {
-        code: -32000,
-        message: "claimUnstakedTokens is deprecated. Use sendTransaction with system instruction \
-                  type 15 (MossStake claim). Data: [15]. \
-                  Accounts: [user_pubkey]. The transaction must be signed by the user."
-            .to_string(),
-    })
-}
-
 /// Handle getStakingPosition: Get user's MossStake position
 async fn handle_get_staking_position(
     state: &RpcState,
@@ -14027,8 +13944,10 @@ mod tests {
             accounts: Vec::new(),
             data: vec![0],
         };
+        let mut seed = [0u8; 32];
+        seed[0] = 1;
         let tx = lichen_core::Transaction {
-            signatures: vec![[1u8; 64]],
+            signatures: vec![lichen_core::Keypair::from_seed(&seed).sign(b"limits-1")],
             message: lichen_core::Message {
                 instructions: vec![
                     instruction;
@@ -14049,8 +13968,10 @@ mod tests {
 
     #[test]
     fn test_l01_rejects_oversized_instruction_data_on_incoming_transaction() {
+        let mut seed = [0u8; 32];
+        seed[0] = 2;
         let tx = lichen_core::Transaction {
-            signatures: vec![[2u8; 64]],
+            signatures: vec![lichen_core::Keypair::from_seed(&seed).sign(b"limits-2")],
             message: lichen_core::Message {
                 instructions: vec![lichen_core::Instruction {
                     program_id: lichen_core::SYSTEM_PROGRAM_ID,

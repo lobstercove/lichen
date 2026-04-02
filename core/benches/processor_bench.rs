@@ -3,7 +3,11 @@
 // Run:  cargo bench --bench processor_bench
 // Quick: cargo bench --bench processor_bench -- --warmup-time 1 --measurement-time 3
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+#[cfg(feature = "zk")]
+use lichen_core::zk::circuits::shield::ShieldCircuit;
+#[cfg(feature = "zk")]
+use lichen_core::zk::{commitment_hash, random_scalar_bytes, Prover, Verifier};
 use lichen_core::StateStore;
 use lichen_core::{
     Account, Block, Hash, Instruction, Keypair, Message, Pubkey, Transaction, TxProcessor,
@@ -34,6 +38,14 @@ fn make_signed_transfer(sender: &Keypair, recent_blockhash: Hash) -> Transaction
     let sig = sender.sign(&tx.message.serialize());
     tx.signatures.push(sig);
     tx
+}
+
+#[cfg(feature = "zk")]
+fn make_shield_circuit(amount: u64) -> ShieldCircuit {
+    let blinding = random_scalar_bytes();
+    let commitment = commitment_hash(amount, &blinding);
+
+    ShieldCircuit::new_bytes(amount, amount, blinding, commitment)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +125,7 @@ fn bench_block_creation(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Ed25519 signature verification
+// 3. ML-DSA-65 signature verification
 // ---------------------------------------------------------------------------
 
 fn bench_signature_verification(c: &mut Criterion) {
@@ -122,14 +134,14 @@ fn bench_signature_verification(c: &mut Criterion) {
     group.measurement_time(std::time::Duration::from_secs(5));
 
     // --- Single signature verify ---
-    group.bench_function("ed25519_verify_single", |b| {
+    group.bench_function("mldsa65_verify_single", |b| {
         let kp = Keypair::generate();
         let message = b"benchmark payload for signature verification";
         let sig = kp.sign(message);
         let pubkey = kp.pubkey();
 
         b.iter(|| {
-            let _ = Keypair::verify(&pubkey, message, &sig);
+            let _ = Keypair::verify(black_box(&pubkey), black_box(message), black_box(&sig));
         });
     });
 
@@ -154,27 +166,73 @@ fn bench_signature_verification(c: &mut Criterion) {
     // --- Batch signature verification (N signatures) ---
     for &n in &[10, 50, 100] {
         group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::new("ed25519_verify_batch", n), &n, |b, &n| {
-            let pairs: Vec<(Keypair, [u8; 64])> = (0..n)
+        group.bench_with_input(BenchmarkId::new("mldsa65_verify_batch", n), &n, |b, &n| {
+            let pairs: Vec<_> = (0..n)
                 .map(|i| {
                     let kp = Keypair::generate();
-                    let msg = format!("message {}", i);
-                    let sig = kp.sign(msg.as_bytes());
-                    (kp, sig)
+                    let msg = format!("message {}", i).into_bytes();
+                    let sig = kp.sign(&msg);
+                    (kp.pubkey(), msg, sig)
                 })
                 .collect();
 
-            let messages: Vec<String> = (0..n).map(|i| format!("message {}", i)).collect();
-
             b.iter(|| {
-                for (i, (kp, sig)) in pairs.iter().enumerate() {
-                    let _ = Keypair::verify(&kp.pubkey(), messages[i].as_bytes(), sig);
+                for (pubkey, message, sig) in &pairs {
+                    let _ = Keypair::verify(
+                        black_box(pubkey),
+                        black_box(message.as_slice()),
+                        black_box(sig),
+                    );
                 }
             });
         });
     }
     group.finish();
 }
+
+// ---------------------------------------------------------------------------
+// 4. Plonky3 shield prove/verify
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "zk")]
+fn bench_shielded_proofs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shielded_proofs");
+    group.warm_up_time(std::time::Duration::from_secs(1));
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.sample_size(10);
+
+    let amount = 500_000_000u64;
+
+    group.bench_function("plonky3_shield_prove", |b| {
+        let prover = Prover::new();
+
+        b.iter(|| {
+            let circuit = make_shield_circuit(amount);
+            let _ = prover
+                .prove_shield(black_box(circuit))
+                .expect("prove shield benchmark");
+        });
+    });
+
+    group.bench_function("plonky3_shield_verify", |b| {
+        let prover = Prover::new();
+        let proof = prover
+            .prove_shield(make_shield_circuit(amount))
+            .expect("seed shield proof benchmark");
+        let verifier = Verifier::new();
+
+        b.iter(|| {
+            let _ = verifier
+                .verify(black_box(&proof))
+                .expect("verify shield benchmark");
+        });
+    });
+
+    group.finish();
+}
+
+#[cfg(not(feature = "zk"))]
+fn bench_shielded_proofs(_: &mut Criterion) {}
 
 // ---------------------------------------------------------------------------
 // Criterion harness
@@ -185,5 +243,6 @@ criterion_group!(
     bench_process_transactions,
     bench_block_creation,
     bench_signature_verification,
+    bench_shielded_proofs,
 );
 criterion_main!(benches);

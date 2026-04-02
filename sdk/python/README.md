@@ -12,11 +12,15 @@ pip install lichen-sdk
 
 ```python
 import asyncio
-from lichen import Connection, PublicKey
+from lichen import Connection, Keypair, PublicKey
 
 async def main():
     # Connect to Lichen
     connection = Connection('http://localhost:8899')
+
+    # Generate a native PQ keypair
+    keypair = Keypair.generate()
+    print(f"Address: {keypair.pubkey().to_base58()}")
     
     # Get account balance
     pubkey = PublicKey('YourPublicKeyHere...')
@@ -36,9 +40,10 @@ asyncio.run(main())
 
 - ✅ Complete async RPC client (24 endpoints)
 - ✅ WebSocket subscriptions (real-time events)
+- ✅ Native PQ keypairs and self-contained signatures
 - ✅ Transaction builder
 - ✅ Type hints throughout
-- ✅ PublicKey utilities
+- ✅ Address and PQ public-key utilities
 - ✅ Full blockchain interaction
 
 ## Documentation

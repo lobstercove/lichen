@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::Keypair;
-use lichen_core::{Transaction as CoreTransaction, Message, Instruction, Hash};
+use lichen_core::{Hash, Instruction, Message, Transaction as CoreTransaction};
 
 /// Transaction builder
 pub struct TransactionBuilder {
@@ -33,26 +33,27 @@ impl TransactionBuilder {
     
     /// Build and sign the transaction
     pub fn build_and_sign(self, keypair: &Keypair) -> Result<CoreTransaction> {
-        let blockhash = self.recent_blockhash
+        let blockhash = self
+            .recent_blockhash
             .ok_or(Error::BuildError("Recent blockhash not set".to_string()))?;
-        
+
         if self.instructions.is_empty() {
             return Err(Error::BuildError("No instructions added".to_string()));
         }
-        
+
         // Create message
         let message = Message::new(self.instructions, blockhash);
-        
+
         // Sign message
         let message_bytes = message.serialize();
         let signature = keypair.sign(&message_bytes);
-        
+
         // Create transaction
         Ok(CoreTransaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-})
+            tx_type: Default::default(),
+        })
     }
 }
 
@@ -135,7 +136,8 @@ mod tests {
             .build_and_sign(&kp)
             .expect("should build");
         assert_eq!(tx.signatures.len(), 1);
-        assert_eq!(tx.signatures[0].len(), 64);
+        assert!(tx.signatures[0].validate().is_ok());
+        assert_eq!(tx.signatures[0].signer_address(), kp.pubkey());
     }
 
     #[test]

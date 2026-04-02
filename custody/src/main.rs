@@ -4,13 +4,14 @@ use axum::{
 };
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
-use frost_ed25519 as frost;
 use hmac::Mac;
-use lichen_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
+use lichen_core::{
+    Hash, Instruction, Keypair, Message, PqSignature, Pubkey, Transaction, SYSTEM_PROGRAM_ID,
+};
 use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, DB};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -89,32 +90,7 @@ impl DepositRateState {
     }
 }
 
-// ── Webhook & Event System ──
-
-/// Custody event payload — sent to registered webhooks and WebSocket subscribers.
-/// Covers every state transition in deposit, sweep, credit, withdrawal, and rebalance flows.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CustodyWebhookEvent {
-    /// Unique event ID
-    event_id: String,
-    /// Event type identifier (matches audit event types)
-    event_type: String,
-    /// Primary entity ID (job_id, deposit_id, etc.)
-    entity_id: String,
-    /// Associated deposit ID (if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    deposit_id: Option<String>,
-    /// Transaction hash (on-chain tx, if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tx_hash: Option<String>,
-    /// Additional structured data about the event
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
-    /// Unix timestamp (seconds)
-    timestamp: i64,
-}
-
-/// Registered webhook endpoint
+/// Registered webhook destination.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WebhookRegistration {
     /// Unique webhook ID
@@ -144,6 +120,17 @@ struct CreateWebhookRequest {
     event_filter: Vec<String>,
     #[serde(default)]
     description: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CustodyWebhookEvent {
+    event_id: String,
+    event_type: String,
+    entity_id: String,
+    deposit_id: Option<String>,
+    tx_hash: Option<String>,
+    data: Option<Value>,
+    timestamp: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -180,17 +167,16 @@ struct CustodyConfig {
     weth_contract_addr: Option<String>,
     wbnb_contract_addr: Option<String>,
     // Reserve rebalance settings
-    rebalance_threshold_bps: u64, // trigger when one side exceeds this (e.g. 7000 = 70%)
-    rebalance_target_bps: u64,    // swap to reach this ratio (e.g. 5000 = 50/50)
-    jupiter_api_url: Option<String>, // Solana DEX aggregator for USDT↔USDC swaps
-    uniswap_router: Option<String>, // Ethereum DEX router for USDT↔USDC swaps
+    rebalance_threshold_bps: u64,
+    rebalance_target_bps: u64,
+    jupiter_api_url: Option<String>,
+    uniswap_router: Option<String>,
     /// AUDIT-FIX M14: Max tolerable slippage (bps) for rebalance swaps.
     /// Swaps exceeding this are rejected; unverifiable outputs are not credited.
     /// Set via CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS (default: 50 = 0.5%).
     rebalance_max_slippage_bps: u64,
-    deposit_ttl_secs: i64, // Expire unfunded deposits after this many seconds (default: 24h)
+    deposit_ttl_secs: i64,
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
-    /// Load from CUSTODY_MASTER_SEED env var. Required for production.
     master_seed: String,
     /// Dedicated seed root for deposit address derivation and deposit sweeps.
     /// Falls back to master_seed when no separate deposit root is configured.
@@ -201,13 +187,11 @@ struct CustodyConfig {
     /// Set via CUSTODY_SIGNER_AUTH_TOKENS=token1,token2,...
     /// Falls back to signer_auth_token if not set for a given index.
     signer_auth_tokens: Vec<Option<String>>,
+    /// Allowed PQ signer addresses for custody approvals, in the same order as signer_endpoints.
+    /// Set via CUSTODY_SIGNER_PQ_ADDRESSES=addr1,addr2,...
+    signer_pq_addresses: Vec<Pubkey>,
     /// M17 fix: API auth token for withdrawal and other write endpoints
-    /// Load from CUSTODY_API_AUTH_TOKEN env var. Required for production.
     api_auth_token: Option<String>,
-    /// FROST threshold signing: hex-encoded PublicKeyPackage from DKG ceremony.
-    /// Required for multi-signer Solana withdrawals.
-    /// Set via CUSTODY_FROST_PUBKEY_PACKAGE env var.
-    frost_pubkey_package_hex: Option<String>,
     /// EVM multisig contract address (e.g. Gnosis Safe).
     /// Required for multi-signer EVM withdrawals.
     /// Set via CUSTODY_EVM_MULTISIG_ADDRESS env var.
@@ -388,12 +372,46 @@ struct WithdrawalJob {
     created_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+enum SignerSignatureKind {
+    #[default]
+    EvmEcdsa,
+    PqApproval,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct SignerSignature {
+    #[serde(default)]
+    kind: SignerSignatureKind,
     signer_pubkey: String,
     signature: String,
     message_hash: String,
     received_at: i64,
+}
+
+impl SignerSignature {
+    fn pq_approval(
+        signer_address: &Pubkey,
+        message_hex: String,
+        signature: &PqSignature,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            kind: SignerSignatureKind::PqApproval,
+            signer_pubkey: signer_address.to_base58(),
+            signature: serde_json::to_string(signature)
+                .map_err(|e| format!("encode PQ signature: {}", e))?,
+            message_hash: message_hex,
+            received_at: chrono::Utc::now().timestamp(),
+        })
+    }
+
+    fn decode_pq_signature(&self) -> Result<PqSignature, String> {
+        if self.kind != SignerSignatureKind::PqApproval {
+            return Err("signer entry does not contain a PQ approval".to_string());
+        }
+        serde_json::from_str(&self.signature).map_err(|e| format!("decode PQ signature: {}", e))
+    }
 }
 
 const CF_DEPOSITS: &str = "deposits";
@@ -718,30 +736,27 @@ async fn main() {
             config.signer_endpoints.len()
         );
     }
+    if let Err(err) = validate_pq_signer_configuration(&config) {
+        panic!("FATAL: {}", err);
+    }
     if config.signer_endpoints.len() > 1 {
         tracing::warn!(
-            "MULTI-SIGNER MODE DETECTED ({}-of-{}). Native Solana withdrawals can use \
-             the wired FROST path, but deposit sweeps remain locally signed from derived \
-             deposit keys and EVM threshold withdrawals are still rejected until a \
-             production-safe executor path is implemented.",
+            "MULTI-SIGNER MODE DETECTED ({}-of-{}). Deposit sweeps remain locally signed from \
+             derived deposit keys, Solana withdrawals now require PQ signer approvals before the \
+             local executor signs the outbound transfer, and the EVM Safe path remains the only \
+             classical threshold executor.",
             config.signer_threshold,
             config.signer_endpoints.len()
         );
         info!(
-            "Multi-signer mode: {}-of-{} threshold (FROST Ed25519 for Solana, packed ECDSA for EVM)",
+            "Multi-signer mode: {}-of-{} threshold (ML-DSA approvals for custody flows, packed ECDSA only for isolated EVM Safe execution)",
             config.signer_threshold,
             config.signer_endpoints.len()
         );
-        // Verify FROST public key package is available for Solana multi-sig
-        if config.frost_pubkey_package_hex.is_some() {
-            info!("  FROST public key package loaded for Solana threshold signing");
-        } else {
-            warn!(
-                "  WARNING: No FROST public key package configured. \
-                 Multi-signer Solana withdrawals will fail until FROST DKG is completed. \
-                 Set CUSTODY_FROST_PUBKEY_PACKAGE to enable."
-            );
-        }
+        info!(
+            "  Loaded {} PQ signer address(es) for withdrawal approval verification",
+            config.signer_pq_addresses.len()
+        );
     }
 
     let db = open_db(&config.db_path).expect("open custody db");
@@ -1921,6 +1936,24 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or_else(|| default_signer_threshold(signer_endpoints.len()));
+    let signer_pq_addresses = std::env::var("CUSTODY_SIGNER_PQ_ADDRESSES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|entry| entry.trim())
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    Pubkey::from_base58(entry).unwrap_or_else(|err| {
+                        panic!(
+                            "FATAL: invalid PQ signer address '{}' in CUSTODY_SIGNER_PQ_ADDRESSES: {}",
+                            entry, err
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let webhook_allowed_hosts = std::env::var("CUSTODY_WEBHOOK_ALLOWED_HOSTS")
         .ok()
         .map(|value| {
@@ -2007,6 +2040,7 @@ fn load_config() -> CustodyConfig {
                     .collect()
             })
             .unwrap_or_default(),
+        signer_pq_addresses,
         // AUDIT-FIX 0.10: API auth token is MANDATORY — running without it
         // leaves the withdrawal endpoint completely unauthenticated.
         api_auth_token: {
@@ -2021,7 +2055,6 @@ fn load_config() -> CustodyConfig {
             }
             token
         },
-        frost_pubkey_package_hex: std::env::var("CUSTODY_FROST_PUBKEY_PACKAGE").ok(),
         evm_multisig_address: std::env::var("CUSTODY_EVM_MULTISIG_ADDRESS").ok(),
         webhook_allowed_hosts,
     }
@@ -2068,6 +2101,30 @@ fn default_signer_threshold(endpoint_count: usize) -> usize {
     } else {
         0
     }
+}
+
+fn validate_pq_signer_configuration(config: &CustodyConfig) -> Result<(), String> {
+    if config.signer_endpoints.is_empty() || config.signer_threshold == 0 {
+        return Ok(());
+    }
+
+    if config.signer_pq_addresses.len() != config.signer_endpoints.len() {
+        return Err(format!(
+            "configured {} signer endpoint(s) but {} PQ signer address(es); set CUSTODY_SIGNER_PQ_ADDRESSES to match signer endpoints one-for-one",
+            config.signer_endpoints.len(),
+            config.signer_pq_addresses.len()
+        ));
+    }
+
+    if config.signer_threshold > config.signer_pq_addresses.len() {
+        return Err(format!(
+            "signer_threshold={} exceeds configured PQ signer count={}",
+            config.signer_threshold,
+            config.signer_pq_addresses.len()
+        ));
+    }
+
+    Ok(())
 }
 
 fn multi_signer_local_sweep_mode(config: &CustodyConfig) -> bool {
@@ -3493,7 +3550,10 @@ struct SignerRequest {
     from_address: String,
     to_address: String,
     amount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_hex: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3505,11 +3565,38 @@ struct SignerResponse {
     _message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PqSignerResponse {
+    status: String,
+    #[serde(alias = "signature")]
+    pq_signature: PqSignature,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WithdrawalSigningMode {
-    ExternalSingleSigner,
-    SolanaThresholdFrost,
+    PqApprovalQuorum,
     EvmThresholdSafe,
+}
+
+#[derive(Debug, Serialize)]
+struct WithdrawalApprovalMessage<'a> {
+    domain: &'static str,
+    version: u8,
+    job_id: &'a str,
+    user_id: &'a str,
+    wrapped_asset: &'a str,
+    outbound_asset: &'a str,
+    outbound_amount: String,
+    dest_chain: &'a str,
+    dest_address: &'a str,
+    preferred_stablecoin: &'a str,
+    executor_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_contract: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_token_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination_token_account: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3523,79 +3610,145 @@ struct EvmSafeTransactionPlan {
     exec_calldata: Vec<u8>,
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  FROST Ed25519 Two-Round Signing Protocol
-//
-//  For multi-signer Solana threshold signatures:
-//    Round 1: POST /frost/commit → signer generates nonce, returns commitment
-//    Round 2: POST /frost/sign   → signer receives signing package, returns share
-//
-//  Signer service must implement:
-//    POST /frost/commit  → FrostCommitRequest  → FrostCommitResponse
-//    POST /frost/sign    → FrostSignRequest    → FrostSignResponse
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[allow(dead_code)]
-#[derive(Debug, Serialize)]
-struct FrostCommitRequest {
-    job_id: String,
-    message_hex: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct FrostCommitResponse {
-    status: String,
-    signer_id_hex: String,  // FROST Identifier (hex-encoded serialized)
-    commitment_hex: String, // SigningCommitments (hex-encoded serialized)
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Serialize)]
-struct FrostSignRequest {
-    job_id: String,
-    message_hex: String,
-    commitments: Vec<FrostCommitmentEntry>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Serialize)]
-struct FrostCommitmentEntry {
-    signer_id_hex: String,
-    commitment_hex: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct FrostSignResponse {
-    status: String,
-    signer_id_hex: String,
-    share_hex: String, // SignatureShare (hex-encoded serialized)
-}
-
-/// Execute FROST two-round threshold signing protocol for Solana transactions.
-/// Coordinates between multiple signer services to produce a single group Ed25519 signature.
-///
-/// Returns the number of valid signature shares collected and stored on the job.
-async fn collect_frost_signature_entries(
+fn withdrawal_authorization_executor_address(
     state: &CustodyState,
-    job_id: &str,
-    signatures: &mut Vec<SignerSignature>,
-    message: &[u8],
+    dest_chain: &str,
+) -> Result<String, String> {
+    match dest_chain {
+        "solana" | "sol" => {
+            derive_solana_address("custody/treasury/solana", &state.config.master_seed)
+        }
+        chain if is_evm_chain(chain) => derive_evm_address(
+            evm_executor_derivation_path(chain),
+            &state.config.master_seed,
+        ),
+        other => Err(format!("unsupported destination chain: {}", other)),
+    }
+}
+
+fn build_withdrawal_approval_message(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<Vec<u8>, String> {
+    let outbound_amount = if job.dest_chain == "solana" && outbound_asset == "sol" {
+        if job.amount <= SOLANA_SWEEP_FEE_LAMPORTS {
+            return Err("withdrawal amount too small to cover fees".to_string());
+        }
+        (job.amount - SOLANA_SWEEP_FEE_LAMPORTS).to_string()
+    } else {
+        spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset).to_string()
+    };
+
+    let mut token_contract = None;
+    let mut source_token_account = None;
+    let mut destination_token_account = None;
+
+    if job.dest_chain == "solana" || job.dest_chain == "sol" {
+        if is_solana_stablecoin(outbound_asset) {
+            let (_, mint, from_token_account, to_token_account) =
+                resolve_solana_token_withdrawal_accounts(
+                    &state.config,
+                    outbound_asset,
+                    &job.dest_address,
+                )?;
+            token_contract = Some(mint);
+            source_token_account = Some(from_token_account);
+            destination_token_account = Some(to_token_account);
+        }
+    } else if matches!(outbound_asset, "usdt" | "usdc") {
+        token_contract = Some(evm_contract_for_asset(&state.config, outbound_asset)?);
+    }
+
+    serde_json::to_vec(&WithdrawalApprovalMessage {
+        domain: "lichen-custody-withdrawal-approval",
+        version: 1,
+        job_id: &job.job_id,
+        user_id: &job.user_id,
+        wrapped_asset: &job.asset,
+        outbound_asset,
+        outbound_amount,
+        dest_chain: &job.dest_chain,
+        dest_address: &job.dest_address,
+        preferred_stablecoin: &job.preferred_stablecoin,
+        executor_address: withdrawal_authorization_executor_address(state, &job.dest_chain)?,
+        token_contract,
+        source_token_account,
+        destination_token_account,
+    })
+    .map_err(|e| format!("encode withdrawal approval message: {}", e))
+}
+
+fn valid_pq_withdrawal_approvers(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<BTreeSet<Pubkey>, String> {
+    let message = build_withdrawal_approval_message(state, job, outbound_asset)?;
+    let message_hex = hex::encode(&message);
+    let allowed: BTreeSet<Pubkey> = state.config.signer_pq_addresses.iter().copied().collect();
+    let mut approvers = BTreeSet::new();
+
+    for signature in &job.signatures {
+        if signature.kind != SignerSignatureKind::PqApproval
+            || signature.message_hash != message_hex
+        {
+            continue;
+        }
+
+        let signer_address = match Pubkey::from_base58(&signature.signer_pubkey) {
+            Ok(address) => address,
+            Err(_) => continue,
+        };
+        if !allowed.contains(&signer_address) {
+            continue;
+        }
+
+        let pq_signature = match signature.decode_pq_signature() {
+            Ok(decoded) => decoded,
+            Err(_) => continue,
+        };
+        if Keypair::verify(&signer_address, &message, &pq_signature) {
+            approvers.insert(signer_address);
+        }
+    }
+
+    Ok(approvers)
+}
+
+async fn collect_pq_withdrawal_approvals(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    outbound_asset: &str,
 ) -> Result<usize, String> {
-    let message_hex = hex::encode(message);
+    validate_pq_signer_configuration(&state.config)?;
 
-    // ── Round 1: Collect nonce commitments from all signers ──
-    let commit_req = FrostCommitRequest {
-        job_id: job_id.to_string(),
-        message_hex: message_hex.clone(),
+    let message = build_withdrawal_approval_message(state, job, outbound_asset)?;
+    let message_hex = hex::encode(&message);
+    job.signatures.retain(|signature| {
+        signature.kind == SignerSignatureKind::PqApproval && signature.message_hash == message_hex
+    });
+
+    let mut approved = valid_pq_withdrawal_approvers(state, job, outbound_asset)?;
+    let request = SignerRequest {
+        job_id: job.job_id.clone(),
+        chain: job.dest_chain.clone(),
+        asset: outbound_asset.to_string(),
+        from_address: withdrawal_authorization_executor_address(state, &job.dest_chain)?,
+        to_address: job.dest_address.clone(),
+        amount: Some(job.amount.to_string()),
+        tx_hash: None,
+        message_hex: Some(message_hex.clone()),
     };
 
-    let mut commitments: Vec<(String, String)> = Vec::new(); // (signer_id_hex, commitment_hex)
-
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
-        let url = format!("{}/frost/commit", endpoint.trim_end_matches('/'));
-        let mut req = state.http.post(&url).json(&commit_req);
+        let expected_address = state.config.signer_pq_addresses[idx];
+        if approved.contains(&expected_address) {
+            continue;
+        }
+
+        let url = format!("{}/sign", endpoint.trim_end_matches('/'));
+        let mut req = state.http.post(&url).json(&request);
         let token = state
             .config
             .signer_auth_tokens
@@ -3607,117 +3760,50 @@ async fn collect_frost_signature_entries(
         }
 
         match req.send().await {
-            Ok(response) => match response.json::<FrostCommitResponse>().await {
-                Ok(resp) if resp.status == "committed" => {
-                    commitments.push((resp.signer_id_hex, resp.commitment_hex));
+            Ok(response) => match response.json::<PqSignerResponse>().await {
+                Ok(payload) if payload.status == "signed" => {
+                    if Keypair::verify(&expected_address, &message, &payload.pq_signature) {
+                        job.signatures.push(SignerSignature::pq_approval(
+                            &expected_address,
+                            message_hex.clone(),
+                            &payload.pq_signature,
+                        )?);
+                        approved.insert(expected_address);
+                    } else {
+                        warn!(
+                            "PQ signer response failed verification for withdrawal {} from signer {}",
+                            job.job_id,
+                            expected_address.to_base58()
+                        );
+                    }
                 }
-                Ok(resp) => {
+                Ok(payload) => {
                     warn!(
-                        "FROST commit: signer {} returned status={}",
-                        idx, resp.status
+                        "PQ signer request for withdrawal {} returned status={}",
+                        job.job_id, payload.status
                     );
                 }
-                Err(e) => {
+                Err(err) => {
                     warn!(
-                        "FROST commit: failed to parse response from signer {}: {}",
-                        idx, e
-                    );
-                }
-            },
-            Err(e) => {
-                warn!("FROST commit: request failed for signer {}: {}", idx, e);
-            }
-        }
-    }
-
-    if commitments.len() < state.config.signer_threshold {
-        return Err(format!(
-            "FROST round 1 failed: only {} commitments received, need {}",
-            commitments.len(),
-            state.config.signer_threshold
-        ));
-    }
-
-    // ── Round 2: Send all commitments to each signer, collect signature shares ──
-    let sign_req = FrostSignRequest {
-        job_id: job_id.to_string(),
-        message_hex: message_hex.clone(),
-        commitments: commitments
-            .iter()
-            .map(|(id, c)| FrostCommitmentEntry {
-                signer_id_hex: id.clone(),
-                commitment_hex: c.clone(),
-            })
-            .collect(),
-    };
-
-    // Clear old signatures and store FROST-specific data
-    signatures.clear();
-
-    for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
-        let url = format!("{}/frost/sign", endpoint.trim_end_matches('/'));
-        let mut req = state.http.post(&url).json(&sign_req);
-        let token = state
-            .config
-            .signer_auth_tokens
-            .get(idx)
-            .and_then(|t| t.as_ref())
-            .or(state.config.signer_auth_token.as_ref());
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-
-        match req.send().await {
-            Ok(response) => match response.json::<FrostSignResponse>().await {
-                Ok(resp) if resp.status == "signed" => {
-                    // Look up the matching commitment for this signer
-                    let commitment_hex = commitments
-                        .iter()
-                        .find(|(id, _)| *id == resp.signer_id_hex)
-                        .map(|(_, c)| c.clone())
-                        .unwrap_or_default();
-
-                    // AUDIT-FIX P10-CUST-02: Use length-prefixed encoding instead of
-                    // "frost_commitment:" delimiter. The ":" delimiter could collide with
-                    // hex data or other payload formats, causing parse ambiguity.
-                    // Format: 4-byte big-endian msg_len || message_hex || commitment_hex
-                    let frost_payload = {
-                        let msg_bytes = message_hex.as_bytes();
-                        let cmt_bytes = commitment_hex.as_bytes();
-                        let mut buf = Vec::with_capacity(4 + msg_bytes.len() + cmt_bytes.len());
-                        buf.extend_from_slice(&(msg_bytes.len() as u32).to_be_bytes());
-                        buf.extend_from_slice(msg_bytes);
-                        buf.extend_from_slice(cmt_bytes);
-                        hex::encode(buf)
-                    };
-                    signatures.push(SignerSignature {
-                        signer_pubkey: resp.signer_id_hex,
-                        signature: resp.share_hex,
-                        message_hash: frost_payload,
-                        received_at: chrono::Utc::now().timestamp(),
-                    });
-                }
-                Ok(resp) => {
-                    warn!("FROST sign: signer {} returned status={}", idx, resp.status);
-                }
-                Err(e) => {
-                    warn!(
-                        "FROST sign: failed to parse response from signer {}: {}",
-                        idx, e
+                        "PQ signer response decode failed for withdrawal {}: {}",
+                        job.job_id, err
                     );
                 }
             },
-            Err(e) => {
-                warn!("FROST sign: request failed for signer {}: {}", idx, e);
+            Err(err) => {
+                warn!(
+                    "PQ signer request failed for withdrawal {}: {}",
+                    job.job_id, err
+                );
             }
         }
 
-        if signatures.len() >= state.config.signer_threshold {
+        if approved.len() >= state.config.signer_threshold {
             break;
         }
     }
 
-    Ok(signatures.len())
+    Ok(approved.len())
 }
 
 fn promote_locally_signed_sweep_jobs(state: &CustodyState, sweep_mode: &str) -> Result<(), String> {
@@ -3743,15 +3829,6 @@ fn promote_locally_signed_sweep_jobs(state: &CustodyState, sweep_mode: &str) -> 
     Ok(())
 }
 
-#[allow(dead_code)]
-async fn collect_frost_signatures(
-    state: &CustodyState,
-    job: &mut SweepJob,
-    message: &[u8],
-) -> Result<usize, String> {
-    collect_frost_signature_entries(state, &job.job_id, &mut job.signatures, message).await
-}
-
 /// Collect individual ECDSA signatures from EVM signers.
 /// Each signer produces a standard secp256k1 ECDSA signature independently.
 /// These are later packed into Gnosis Safe execTransaction format.
@@ -3769,6 +3846,7 @@ async fn collect_evm_multisig_signatures(
         to_address: job.to_treasury.clone(),
         amount: job.amount.clone(),
         tx_hash: Some(hex::encode(tx_hash)),
+        message_hex: None,
     };
 
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
@@ -3793,6 +3871,7 @@ async fn collect_evm_multisig_signatures(
                         .any(|s| s.signer_pubkey == payload.signer_pubkey);
                     if !already_signed {
                         job.signatures.push(SignerSignature {
+                            kind: SignerSignatureKind::EvmEcdsa,
                             signer_pubkey: payload.signer_pubkey,
                             signature: payload.signature,
                             message_hash: payload.message_hash,
@@ -3825,6 +3904,7 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
         to_address: job.to_treasury.clone(),
         amount: job.amount.clone(),
         tx_hash: Some(job.tx_hash.clone()),
+        message_hex: None,
     };
 
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
@@ -3867,6 +3947,7 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
         }
 
         job.signatures.push(SignerSignature {
+            kind: SignerSignatureKind::EvmEcdsa,
             signer_pubkey: payload.signer_pubkey,
             signature: payload.signature,
             message_hash: payload.message_hash,
@@ -3879,16 +3960,6 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
     }
 
     Ok(job.signatures.len())
-}
-
-fn withdrawal_treasury_address(config: &CustodyConfig, dest_chain: &str) -> String {
-    match dest_chain {
-        "solana" | "sol" => config.treasury_solana_address.clone().unwrap_or_default(),
-        "ethereum" | "eth" | "bsc" | "bnb" => {
-            config.treasury_evm_address.clone().unwrap_or_default()
-        }
-        _ => String::new(),
-    }
 }
 
 fn evm_executor_derivation_path(dest_chain: &str) -> &'static str {
@@ -3907,9 +3978,7 @@ fn determine_withdrawal_signing_mode(
         return Ok(None);
     }
 
-    if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
-        return Ok(Some(WithdrawalSigningMode::ExternalSingleSigner));
-    }
+    validate_pq_signer_configuration(&state.config)?;
 
     match job.dest_chain.as_str() {
         "solana" | "sol" => {
@@ -3919,19 +3988,21 @@ fn determine_withdrawal_signing_mode(
                     outbound_asset
                 ));
             }
-            if state.config.frost_pubkey_package_hex.is_none() {
-                return Err(
-                    "FROST public key package not configured (set CUSTODY_FROST_PUBKEY_PACKAGE)"
-                        .to_string(),
-                );
-            }
-            Ok(Some(WithdrawalSigningMode::SolanaThresholdFrost))
+            Ok(Some(WithdrawalSigningMode::PqApprovalQuorum))
         }
-        "ethereum" | "eth" | "bsc" | "bnb" => Err(if state.config.evm_multisig_address.is_none() {
-            "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)".to_string()
-        } else {
-            return Ok(Some(WithdrawalSigningMode::EvmThresholdSafe));
-        }),
+        "ethereum" | "eth" | "bsc" | "bnb" => {
+            if state.config.signer_threshold > 1 && state.config.signer_endpoints.len() > 1 {
+                if state.config.evm_multisig_address.is_none() {
+                    return Err(
+                        "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)"
+                            .to_string(),
+                    );
+                }
+                Ok(Some(WithdrawalSigningMode::EvmThresholdSafe))
+            } else {
+                Ok(Some(WithdrawalSigningMode::PqApprovalQuorum))
+            }
+        }
         other => Err(format!("unsupported destination chain: {}", other)),
     }
 }
@@ -4214,6 +4285,7 @@ fn build_solana_token_transfer_message(
     ))
 }
 
+#[cfg(test)]
 fn build_threshold_solana_withdrawal_message(
     state: &CustodyState,
     job: &WithdrawalJob,
@@ -4288,82 +4360,7 @@ async fn collect_threshold_solana_withdrawal_signatures(
         ensure_associated_token_account_for_str(state, &job.dest_address, &mint, &to_token_account)
             .await?;
     }
-
-    let url = state
-        .config
-        .solana_rpc_url
-        .as_ref()
-        .ok_or_else(|| "missing solana RPC".to_string())?;
-    let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let message =
-        build_threshold_solana_withdrawal_message(state, job, outbound_asset, &recent_blockhash)?;
-    collect_frost_signature_entries(state, &job.job_id, &mut job.signatures, &message).await
-}
-
-async fn collect_single_signer_withdrawal_signatures(
-    state: &CustodyState,
-    job: &mut WithdrawalJob,
-    outbound_asset: &str,
-) -> Result<usize, String> {
-    let signer_request = SignerRequest {
-        job_id: job.job_id.clone(),
-        chain: job.dest_chain.clone(),
-        asset: outbound_asset.to_string(),
-        from_address: withdrawal_treasury_address(&state.config, &job.dest_chain),
-        to_address: job.dest_address.clone(),
-        amount: Some(job.amount.to_string()),
-        tx_hash: None,
-    };
-
-    let mut sig_count = job.signatures.len();
-    for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
-        let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-        let mut req = state.http.post(&url).json(&signer_request);
-        let token = state
-            .config
-            .signer_auth_tokens
-            .get(idx)
-            .and_then(|t| t.as_ref())
-            .or(state.config.signer_auth_token.as_ref());
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-
-        match req.send().await {
-            Ok(response) => {
-                if let Ok(payload) = response.json::<SignerResponse>().await {
-                    if payload.status == "signed" {
-                        let already_signed = job
-                            .signatures
-                            .iter()
-                            .any(|s| s.signer_pubkey == payload.signer_pubkey);
-                        if !already_signed {
-                            job.signatures.push(SignerSignature {
-                                signer_pubkey: payload.signer_pubkey,
-                                signature: payload.signature,
-                                message_hash: payload.message_hash,
-                                received_at: chrono::Utc::now().timestamp(),
-                            });
-                            sig_count = job.signatures.len();
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "signer request failed for withdrawal {}: {}",
-                    job.job_id,
-                    err
-                );
-            }
-        }
-
-        if sig_count >= state.config.signer_threshold {
-            break;
-        }
-    }
-
-    Ok(sig_count)
+    collect_pq_withdrawal_approvals(state, job, outbound_asset).await
 }
 
 async fn collect_threshold_evm_withdrawal_signatures(
@@ -4377,11 +4374,9 @@ async fn collect_threshold_evm_withdrawal_signatures(
     let safe_tx_hash_hex = hex::encode(plan.safe_tx_hash);
     job.safe_nonce = Some(plan.nonce);
 
-    if job
-        .signatures
-        .iter()
-        .any(|sig| sig.message_hash != safe_tx_hash_hex)
-    {
+    if job.signatures.iter().any(|sig| {
+        sig.kind != SignerSignatureKind::EvmEcdsa || sig.message_hash != safe_tx_hash_hex
+    }) {
         job.signatures.clear();
     }
 
@@ -4393,6 +4388,7 @@ async fn collect_threshold_evm_withdrawal_signatures(
         to_address: job.dest_address.clone(),
         amount: Some(job.amount.to_string()),
         tx_hash: Some(safe_tx_hash_hex.clone()),
+        message_hex: None,
     };
 
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
@@ -4422,6 +4418,7 @@ async fn collect_threshold_evm_withdrawal_signatures(
                     });
                     if !already_signed {
                         job.signatures.push(SignerSignature {
+                            kind: SignerSignatureKind::EvmEcdsa,
                             signer_pubkey: signer_addr,
                             signature: payload.signature,
                             message_hash: safe_tx_hash_hex.clone(),
@@ -7949,12 +7946,13 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
         }
 
         let sig_count = match signing_mode.unwrap() {
-            WithdrawalSigningMode::ExternalSingleSigner => {
-                collect_single_signer_withdrawal_signatures(state, &mut job, &outbound_asset).await
-            }
-            WithdrawalSigningMode::SolanaThresholdFrost => {
-                collect_threshold_solana_withdrawal_signatures(state, &mut job, &outbound_asset)
-                    .await
+            WithdrawalSigningMode::PqApprovalQuorum => {
+                if job.dest_chain == "solana" || job.dest_chain == "sol" {
+                    collect_threshold_solana_withdrawal_signatures(state, &mut job, &outbound_asset)
+                        .await
+                } else {
+                    collect_pq_withdrawal_approvals(state, &mut job, &outbound_asset).await
+                }
             }
             WithdrawalSigningMode::EvmThresholdSafe => {
                 collect_threshold_evm_withdrawal_signatures(state, &mut job, &outbound_asset).await
@@ -8156,11 +8154,6 @@ async fn broadcast_outbound_withdrawal(
     state: &CustodyState,
     job: &WithdrawalJob,
 ) -> Result<String, String> {
-    // Self-custody mode: build and sign the withdrawal transaction directly
-    // using the master-seed-derived treasury keys
-    let self_custody =
-        state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0;
-
     match job.dest_chain.as_str() {
         "solana" | "sol" => {
             let url = state
@@ -8174,24 +8167,21 @@ async fn broadcast_outbound_withdrawal(
                 _ => return Err(format!("unsupported solana withdrawal: {}", job.asset)),
             };
 
-            if self_custody {
-                return broadcast_self_custody_solana_withdrawal(state, url, job, &outbound_asset)
-                    .await;
+            if matches!(
+                determine_withdrawal_signing_mode(state, job, &outbound_asset)?,
+                Some(WithdrawalSigningMode::PqApprovalQuorum)
+            ) {
+                let approval_count =
+                    valid_pq_withdrawal_approvers(state, job, &outbound_asset)?.len();
+                if approval_count < state.config.signer_threshold {
+                    return Err(format!(
+                        "insufficient PQ withdrawal approvals: have {}, need {}",
+                        approval_count, state.config.signer_threshold
+                    ));
+                }
             }
 
-            let signed_tx = assemble_signed_solana_tx(state, job, &outbound_asset)?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&signed_tx);
-            let result = solana_rpc_call(
-                &state.http,
-                url,
-                "sendTransaction",
-                json!([encoded, {"encoding": "base64"}]),
-            )
-            .await?;
-            result
-                .as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| "no tx hash returned".to_string())
+            broadcast_self_custody_solana_withdrawal(state, url, job, &outbound_asset).await
         }
         "ethereum" | "eth" | "bsc" | "bnb" => {
             let url = rpc_url_for_chain(&state.config, &job.dest_chain)
@@ -8203,19 +8193,33 @@ async fn broadcast_outbound_withdrawal(
                 _ => return Err(format!("unsupported EVM withdrawal: {}", job.asset)),
             };
 
-            if self_custody {
-                return broadcast_self_custody_evm_withdrawal(state, &url, job, &outbound_asset)
-                    .await;
+            match determine_withdrawal_signing_mode(state, job, &outbound_asset)? {
+                Some(WithdrawalSigningMode::EvmThresholdSafe) => {
+                    let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset).await?;
+                    let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+                    let result =
+                        evm_rpc_call(&state.http, &url, "eth_sendRawTransaction", json!([tx_hex]))
+                            .await?;
+                    result
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| "no tx hash returned".to_string())
+                }
+                Some(WithdrawalSigningMode::PqApprovalQuorum) => {
+                    let approval_count =
+                        valid_pq_withdrawal_approvers(state, job, &outbound_asset)?.len();
+                    if approval_count < state.config.signer_threshold {
+                        return Err(format!(
+                            "insufficient PQ withdrawal approvals: have {}, need {}",
+                            approval_count, state.config.signer_threshold
+                        ));
+                    }
+                    broadcast_self_custody_evm_withdrawal(state, &url, job, &outbound_asset).await
+                }
+                None => {
+                    broadcast_self_custody_evm_withdrawal(state, &url, job, &outbound_asset).await
+                }
             }
-
-            let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset).await?;
-            let tx_hex = format!("0x{}", hex::encode(&signed_tx));
-            let result =
-                evm_rpc_call(&state.http, &url, "eth_sendRawTransaction", json!([tx_hex])).await?;
-            result
-                .as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| "no tx hash returned".to_string())
         }
         other => Err(format!("unsupported destination chain: {}", other)),
     }
@@ -8373,156 +8377,6 @@ async fn broadcast_self_custody_evm_withdrawal(
     }
 }
 
-/// Assemble a Solana transaction from threshold signatures.
-///
-/// **Single-signer mode**: The signer returns a fully-signed serialized transaction.
-///
-/// **Multi-signer mode (FROST Ed25519)**: Each signer returns a FROST signature share.
-/// The custody service aggregates shares into a single Ed25519 group signature using
-/// the FROST protocol, then constructs a valid Solana transaction with that signature.
-///
-/// FROST protocol flow (2-round):
-///   Round 1: POST /frost/commit → signer returns nonce commitment
-///   Round 2: POST /frost/sign   → signer receives all commitments, returns signature share
-///   Aggregation: custody combines t-of-n shares into one Ed25519 signature
-fn assemble_signed_solana_tx(
-    state: &CustodyState,
-    job: &WithdrawalJob,
-    _asset: &str,
-) -> Result<Vec<u8>, String> {
-    if job.signatures.is_empty() {
-        return Err("no signatures available".to_string());
-    }
-
-    if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
-        // Single-signer mode: signer returns fully assembled signed transaction
-        let first_sig = &job.signatures[0];
-        return hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e));
-    }
-
-    // ── Multi-signer FROST Ed25519 aggregation ──
-    let pubkey_package_hex = state
-        .config
-        .frost_pubkey_package_hex
-        .as_ref()
-        .ok_or("FROST public key package not configured (set CUSTODY_FROST_PUBKEY_PACKAGE)")?;
-
-    let pubkey_package_bytes = hex::decode(pubkey_package_hex)
-        .map_err(|e| format!("invalid FROST pubkey package hex: {}", e))?;
-
-    let pubkey_package: frost::keys::PublicKeyPackage =
-        frost::keys::PublicKeyPackage::deserialize(&pubkey_package_bytes)
-            .map_err(|e| format!("deserialize FROST pubkey package: {:?}", e))?;
-
-    // Each signature entry contains a FROST signature share (hex-encoded serialized SignatureShare)
-    // and the signer_pubkey field contains the FROST Identifier (hex-encoded)
-    let mut signature_shares: BTreeMap<frost::Identifier, frost::round2::SignatureShare> =
-        BTreeMap::new();
-
-    for sig_entry in &job.signatures {
-        // Parse signer identifier
-        let id_bytes = hex::decode(&sig_entry.signer_pubkey)
-            .map_err(|e| format!("decode signer id: {}", e))?;
-        let identifier = frost::Identifier::deserialize(&id_bytes)
-            .map_err(|e| format!("deserialize FROST identifier: {:?}", e))?;
-
-        // Parse signature share
-        let share_bytes = hex::decode(&sig_entry.signature)
-            .map_err(|e| format!("decode signature share: {}", e))?;
-        let share = frost::round2::SignatureShare::deserialize(&share_bytes)
-            .map_err(|e| format!("deserialize FROST share: {:?}", e))?;
-
-        signature_shares.insert(identifier, share);
-    }
-
-    if signature_shares.len() < state.config.signer_threshold {
-        return Err(format!(
-            "insufficient FROST shares: have {}, need {}",
-            signature_shares.len(),
-            state.config.signer_threshold
-        ));
-    }
-
-    // AUDIT-FIX P10-CUST-02: Parse length-prefixed encoding to extract both the
-    // signing message and per-signer commitments. The old "frost_commitment:" delimiter
-    // was ambiguous and also lost the original message bytes.
-    // Format: 4-byte big-endian msg_len || message_hex_utf8 || commitment_hex_utf8
-    let message_bytes = {
-        let raw = hex::decode(&job.signatures[0].message_hash)
-            .map_err(|e| format!("decode FROST payload: {}", e))?;
-        if raw.len() < 4 {
-            return Err("FROST payload too short for length prefix".to_string());
-        }
-        let msg_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-        if raw.len() < 4 + msg_len {
-            return Err(format!(
-                "FROST payload truncated: need {} + 4, have {}",
-                msg_len,
-                raw.len()
-            ));
-        }
-        let msg_hex = std::str::from_utf8(&raw[4..4 + msg_len])
-            .map_err(|e| format!("FROST message hex not UTF-8: {}", e))?;
-        hex::decode(msg_hex).map_err(|e| format!("decode signing message: {}", e))?
-    };
-
-    // Reconstruct commitments from length-prefixed FROST payloads
-    let mut commitments_map: BTreeMap<frost::Identifier, frost::round1::SigningCommitments> =
-        BTreeMap::new();
-
-    for sig_entry in &job.signatures {
-        let id_bytes = hex::decode(&sig_entry.signer_pubkey)
-            .map_err(|e| format!("decode signer id for commitment: {}", e))?;
-        let identifier = frost::Identifier::deserialize(&id_bytes)
-            .map_err(|e| format!("deserialize FROST identifier for commitment: {:?}", e))?;
-
-        // Parse length-prefixed payload to extract commitment_hex
-        let raw = hex::decode(&sig_entry.message_hash)
-            .map_err(|e| format!("decode FROST payload for commitment: {}", e))?;
-        if raw.len() >= 4 {
-            let msg_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-            if raw.len() > 4 + msg_len {
-                let commitment_hex = std::str::from_utf8(&raw[4 + msg_len..])
-                    .map_err(|e| format!("commitment hex not UTF-8: {}", e))?;
-                let commitment_bytes =
-                    hex::decode(commitment_hex).map_err(|e| format!("decode commitment: {}", e))?;
-                let commitment = frost::round1::SigningCommitments::deserialize(&commitment_bytes)
-                    .map_err(|e| format!("deserialize commitment: {:?}", e))?;
-                commitments_map.insert(identifier, commitment);
-            }
-        }
-    }
-
-    if commitments_map.len() < state.config.signer_threshold {
-        return Err(format!(
-            "insufficient FROST commitments: have {}, need {}",
-            commitments_map.len(),
-            state.config.signer_threshold
-        ));
-    }
-
-    // Build the FROST signing package and aggregate
-    let signing_package = frost::SigningPackage::new(commitments_map, &message_bytes);
-
-    let group_signature = frost::aggregate(&signing_package, &signature_shares, &pubkey_package)
-        .map_err(|e| format!("FROST aggregation failed: {:?}", e))?;
-
-    // Build a Solana transaction with the FROST group signature
-    // The group verifying key is the treasury's on-chain Ed25519 key
-    let group_sig_bytes = group_signature
-        .serialize()
-        .map_err(|e| format!("serialize FROST group signature: {:?}", e))?;
-
-    // Return the assembled transaction:
-    // [signature_count(1)][signature(64)][serialized_message]
-    let mut tx_bytes = Vec::new();
-    tx_bytes.push(1u8); // 1 signature (the FROST group signature)
-    tx_bytes.extend_from_slice(&group_sig_bytes);
-    tx_bytes.extend_from_slice(&message_bytes);
-
-    Ok(tx_bytes)
-}
-
 /// Assemble an EVM transaction from threshold signatures.
 ///
 /// **Single-signer mode**: Signer returns a fully-signed RLP-encoded transaction.
@@ -8547,6 +8401,9 @@ async fn assemble_signed_evm_tx(
     if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
         // Single-signer mode: signer returns fully signed RLP tx
         let first_sig = &job.signatures[0];
+        if first_sig.kind != SignerSignatureKind::EvmEcdsa {
+            return Err("expected isolated EVM ECDSA signature entry".to_string());
+        }
         return hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e));
     }
 
@@ -8555,6 +8412,9 @@ async fn assemble_signed_evm_tx(
     let mut seen_signer_addrs = std::collections::HashSet::new();
 
     for sig_entry in &job.signatures {
+        if sig_entry.kind != SignerSignatureKind::EvmEcdsa {
+            return Err("EVM Safe path received a non-ECDSA signer entry".to_string());
+        }
         let sig_bytes = normalize_evm_signature(
             &hex::decode(&sig_entry.signature)
                 .map_err(|e| format!("decode EVM signature: {}", e))?,
@@ -9440,8 +9300,8 @@ mod tests {
             deposit_master_seed: "test_master_seed_for_unit_tests".to_string(),
             signer_auth_token: Some("test_token".to_string()),
             signer_auth_tokens: vec![],
+            signer_pq_addresses: vec![],
             api_auth_token: Some("test_api_token".to_string()),
-            frost_pubkey_package_hex: None,
             evm_multisig_address: None,
             webhook_allowed_hosts: vec![],
         }
@@ -9520,6 +9380,11 @@ mod tests {
         }
     }
 
+    fn test_pq_signer(fill: u8) -> (Pubkey, [u8; 32]) {
+        let seed = [fill; 32];
+        (Keypair::from_seed(&seed).pubkey(), seed)
+    }
+
     #[test]
     fn test_determine_withdrawal_signing_mode_self_custody() {
         let state = test_state();
@@ -9531,7 +9396,7 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_withdrawal_signing_mode_routes_native_solana_to_frost() {
+    fn test_determine_withdrawal_signing_mode_routes_native_solana_to_pq_approvals() {
         let mut state = test_state();
         state.config.signer_endpoints = vec![
             "http://signer-1".to_string(),
@@ -9539,16 +9404,20 @@ mod tests {
             "http://signer-3".to_string(),
         ];
         state.config.signer_threshold = 2;
-        state.config.frost_pubkey_package_hex = Some("deadbeef".to_string());
+        state.config.signer_pq_addresses = vec![
+            test_pq_signer(1).0,
+            test_pq_signer(2).0,
+            test_pq_signer(3).0,
+        ];
         let job = test_withdrawal_job();
 
         let mode = determine_withdrawal_signing_mode(&state, &job, "sol").unwrap();
 
-        assert_eq!(mode, Some(WithdrawalSigningMode::SolanaThresholdFrost));
+        assert_eq!(mode, Some(WithdrawalSigningMode::PqApprovalQuorum));
     }
 
     #[test]
-    fn test_determine_withdrawal_signing_mode_routes_solana_stablecoin_to_frost() {
+    fn test_determine_withdrawal_signing_mode_routes_solana_stablecoin_to_pq_approvals() {
         let mut state = test_state();
         state.config.signer_endpoints = vec![
             "http://signer-1".to_string(),
@@ -9556,14 +9425,18 @@ mod tests {
             "http://signer-3".to_string(),
         ];
         state.config.signer_threshold = 2;
-        state.config.frost_pubkey_package_hex = Some("deadbeef".to_string());
+        state.config.signer_pq_addresses = vec![
+            test_pq_signer(4).0,
+            test_pq_signer(5).0,
+            test_pq_signer(6).0,
+        ];
         let mut job = test_withdrawal_job();
         job.asset = "lUSD".to_string();
         job.amount = 1_000_000_000;
 
         let mode = determine_withdrawal_signing_mode(&state, &job, "usdt").unwrap();
 
-        assert_eq!(mode, Some(WithdrawalSigningMode::SolanaThresholdFrost));
+        assert_eq!(mode, Some(WithdrawalSigningMode::PqApprovalQuorum));
     }
 
     #[test]
@@ -9575,6 +9448,11 @@ mod tests {
             "http://signer-3".to_string(),
         ];
         state.config.signer_threshold = 2;
+        state.config.signer_pq_addresses = vec![
+            test_pq_signer(7).0,
+            test_pq_signer(8).0,
+            test_pq_signer(9).0,
+        ];
         state.config.evm_multisig_address =
             Some("0x2222222222222222222222222222222222222222".to_string());
         let mut job = test_withdrawal_job();
@@ -9629,6 +9507,12 @@ mod tests {
     struct MockSignerState {
         signer_pubkey: String,
         signature_hex: String,
+        requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
+    }
+
+    #[derive(Clone)]
+    struct MockPqSignerState {
+        seed: [u8; 32],
         requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
     }
 
@@ -9693,6 +9577,24 @@ mod tests {
             "signature": state.signature_hex,
             "message_hash": payload.get("tx_hash").cloned().unwrap_or(Value::String(String::new())),
             "_message": payload.get("tx_hash").cloned().unwrap_or(Value::String(String::new())),
+        }))
+    }
+
+    async fn mock_pq_signer_handler(
+        axum::extract::State(state): axum::extract::State<MockPqSignerState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        state.requests.lock().await.push(payload.clone());
+        let message_hex = payload
+            .get("message_hex")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let message = hex::decode(message_hex).unwrap_or_default();
+        let signer = Keypair::from_seed(&state.seed);
+
+        Json(json!({
+            "status": "signed",
+            "pq_signature": signer.sign(&message),
         }))
     }
 
@@ -9808,6 +9710,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_collect_pq_withdrawal_approvals_for_solana() {
+        let mut state = test_state();
+        let (signer_one_addr, signer_one_seed) = test_pq_signer(11);
+        let (signer_two_addr, signer_two_seed) = test_pq_signer(12);
+        let signer_one_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let signer_two_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let signer_one = spawn_mock_server(
+            Router::new()
+                .route("/sign", post(mock_pq_signer_handler))
+                .with_state(MockPqSignerState {
+                    seed: signer_one_seed,
+                    requests: signer_one_requests.clone(),
+                }),
+        )
+        .await;
+        let signer_two = spawn_mock_server(
+            Router::new()
+                .route("/sign", post(mock_pq_signer_handler))
+                .with_state(MockPqSignerState {
+                    seed: signer_two_seed,
+                    requests: signer_two_requests.clone(),
+                }),
+        )
+        .await;
+
+        state.config.signer_endpoints = vec![signer_one, signer_two];
+        state.config.signer_threshold = 2;
+        state.config.signer_pq_addresses = vec![signer_one_addr, signer_two_addr];
+
+        let mut job = test_withdrawal_job();
+        let sig_count = collect_pq_withdrawal_approvals(&state, &mut job, "sol")
+            .await
+            .expect("collect PQ approvals");
+
+        assert_eq!(sig_count, 2);
+        assert_eq!(
+            valid_pq_withdrawal_approvers(&state, &job, "sol")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(job.signatures.len(), 2);
+        assert!(job
+            .signatures
+            .iter()
+            .all(|signature| signature.kind == SignerSignatureKind::PqApproval));
+        assert_eq!(signer_one_requests.lock().await.len(), 1);
+        assert_eq!(signer_two_requests.lock().await.len(), 1);
+        assert!(signer_one_requests.lock().await[0]
+            .get("message_hex")
+            .is_some());
+    }
+
+    #[tokio::test]
     async fn test_collect_and_assemble_threshold_evm_safe_flow() {
         let mut state = test_state();
         let safe_tx_hash_hex =
@@ -9847,6 +9803,7 @@ mod tests {
         state.config.eth_rpc_url = Some(rpc_url);
         state.config.signer_endpoints = vec![signer_one, signer_two];
         state.config.signer_threshold = 2;
+        state.config.signer_pq_addresses = vec![test_pq_signer(21).0, test_pq_signer(22).0];
         state.config.evm_multisig_address =
             Some("0x9999999999999999999999999999999999999999".to_string());
 
@@ -9942,6 +9899,7 @@ mod tests {
         job.safe_nonce = Some(7);
         job.signatures = vec![
             SignerSignature {
+                kind: SignerSignatureKind::EvmEcdsa,
                 signer_pubkey: "1111111111111111111111111111111111111111".to_string(),
                 signature: format!("{}1b", "11".repeat(64)),
                 message_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -9949,6 +9907,7 @@ mod tests {
                 received_at: 0,
             },
             SignerSignature {
+                kind: SignerSignatureKind::EvmEcdsa,
                 signer_pubkey: "2222222222222222222222222222222222222222".to_string(),
                 signature: format!("{}1c", "22".repeat(64)),
                 message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
@@ -9985,6 +9944,7 @@ mod tests {
         state.config.signer_threshold = 2;
         state.config.signer_endpoints =
             vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.signer_pq_addresses = vec![test_pq_signer(23).0, test_pq_signer(24).0];
         state.config.evm_multisig_address =
             Some("0x9999999999999999999999999999999999999999".to_string());
 
@@ -9996,12 +9956,14 @@ mod tests {
         job.safe_nonce = Some(7);
         job.signatures = vec![
             SignerSignature {
+                kind: SignerSignatureKind::EvmEcdsa,
                 signer_pubkey: "1111111111111111111111111111111111111111".to_string(),
                 signature: format!("{}1b", "11".repeat(64)),
                 message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
                 received_at: 0,
             },
             SignerSignature {
+                kind: SignerSignatureKind::EvmEcdsa,
                 signer_pubkey: "0x1111111111111111111111111111111111111111".to_string(),
                 signature: format!("{}1c", "22".repeat(64)),
                 message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
@@ -10844,6 +10806,7 @@ mod tests {
             amount: Some("1000".to_string()),
             credited_amount: None,
             signatures: vec![SignerSignature {
+                kind: SignerSignatureKind::EvmEcdsa,
                 signer_pubkey: "placeholder-signer".to_string(),
                 signature: "deadbeef".to_string(),
                 message_hash: "cafebabe".to_string(),

@@ -149,14 +149,13 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
     successMessage.classList.add('hidden');
     errorMessage.classList.add('hidden');
 
-    // F16.4 fix: validate address format (base58 addresses, 32-44 chars)
-    if (!address || address.length < 32 || address.length > 44) {
-        showError('Invalid address. Enter a valid Lichen base58 address (32-44 characters).');
+    if (!window.LichenPQ || typeof window.LichenPQ.isValidAddress !== 'function') {
+        showError('Address validator unavailable. Reload the page and try again.');
         return;
     }
-    // Reject non-base58 characters
-    if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(address)) {
-        showError('Invalid address. Only base58 characters are allowed.');
+
+    if (!window.LichenPQ.isValidAddress(address)) {
+        showError('Invalid address. Enter a valid native Lichen address.');
         return;
     }
 

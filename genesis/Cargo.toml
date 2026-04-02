@@ -4,6 +4,7 @@ version = "0.5.0"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen genesis block creator — standalone tool for bootstrapping a new chain"
+license = "MIT"
 
 [dependencies]
 lichen-core = { path = "../core" }

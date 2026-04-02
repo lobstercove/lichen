@@ -1,13 +1,53 @@
 // Lichen Core - Account Model
-// Based on Solana's account model with dual address support
+// Based on Solana's account model with versioned PQ addresses
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use serde::{Deserialize, Serialize};
+use ml_dsa::{
+    EncodedVerifyingKey, KeyGen, MlDsa65, Signature as MlDsaSignature,
+    SigningKey as MlDsaSigningKey, VerifyingKey as MlDsaVerifyingKey, B32,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
+use slh_dsa::{
+    Shake128f as SlhDsa128f, Signature as SlhDsaSignature, VerifyingKey as SlhDsaVerifyingKey,
+};
 use std::fmt;
 
-/// Ed25519 public key (32 bytes)
+pub const PQ_SCHEME_ML_DSA_65: u8 = 0x01;
+pub const PQ_SCHEME_SLH_DSA_128F: u8 = 0x02;
+
+pub const ML_DSA_65_PUBLIC_KEY_BYTES: usize = 1952;
+pub const ML_DSA_65_SIGNATURE_BYTES: usize = 3309;
+pub const SLH_DSA_128F_PUBLIC_KEY_BYTES: usize = 32;
+pub const SLH_DSA_128F_SIGNATURE_BYTES: usize = 17_088;
+
+fn serialize_pq_blob<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if serializer.is_human_readable() {
+        String::serialize(&hex::encode(bytes), serializer)
+    } else {
+        serializer.serialize_bytes(bytes)
+    }
+}
+
+fn deserialize_pq_blob<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    if deserializer.is_human_readable() {
+        let encoded = String::deserialize(deserializer)?;
+        hex::decode(encoded).map_err(serde::de::Error::custom)
+    } else {
+        Vec::<u8>::deserialize(deserializer)
+    }
+}
+
+/// Versioned 32-byte address digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Pubkey(pub [u8; 32]);
+
+pub type Address = Pubkey;
 
 impl AsRef<[u8]> for Pubkey {
     fn as_ref(&self) -> &[u8] {
@@ -55,9 +95,165 @@ impl fmt::Display for Pubkey {
     }
 }
 
-/// Ed25519 Keypair for signing
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqPublicKey {
+    pub scheme_version: u8,
+    #[serde(
+        serialize_with = "serialize_pq_blob",
+        deserialize_with = "deserialize_pq_blob"
+    )]
+    pub bytes: Vec<u8>,
+}
+
+impl PqPublicKey {
+    pub fn new(scheme_version: u8, bytes: Vec<u8>) -> Result<Self, String> {
+        let key = Self {
+            scheme_version,
+            bytes,
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let expected_len = match self.scheme_version {
+            PQ_SCHEME_ML_DSA_65 => ML_DSA_65_PUBLIC_KEY_BYTES,
+            PQ_SCHEME_SLH_DSA_128F => SLH_DSA_128F_PUBLIC_KEY_BYTES,
+            other => return Err(format!("Unsupported PQ public key scheme: 0x{other:02x}")),
+        };
+
+        if self.bytes.len() != expected_len {
+            return Err(format!(
+                "Invalid PQ public key length for scheme 0x{:02x}: {} (expected {})",
+                self.scheme_version,
+                self.bytes.len(),
+                expected_len
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn address(&self) -> Pubkey {
+        let digest = Sha256::digest(&self.bytes);
+        let mut address = [0u8; 32];
+        address[0] = self.scheme_version;
+        address[1..].copy_from_slice(&digest[..31]);
+        Pubkey(address)
+    }
+
+    pub fn from_ml_dsa(verifying_key: &MlDsaVerifyingKey<MlDsa65>) -> Self {
+        Self {
+            scheme_version: PQ_SCHEME_ML_DSA_65,
+            bytes: verifying_key.encode().as_slice().to_vec(),
+        }
+    }
+
+    fn as_ml_dsa_verifying_key(&self) -> Option<MlDsaVerifyingKey<MlDsa65>> {
+        if self.scheme_version != PQ_SCHEME_ML_DSA_65 {
+            return None;
+        }
+
+        let encoded = EncodedVerifyingKey::<MlDsa65>::try_from(self.bytes.as_slice()).ok()?;
+        Some(MlDsaVerifyingKey::<MlDsa65>::decode(&encoded))
+    }
+
+    fn as_slh_dsa_verifying_key(&self) -> Option<SlhDsaVerifyingKey<SlhDsa128f>> {
+        if self.scheme_version != PQ_SCHEME_SLH_DSA_128F {
+            return None;
+        }
+
+        SlhDsaVerifyingKey::<SlhDsa128f>::try_from(self.bytes.as_slice()).ok()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqSignature {
+    pub scheme_version: u8,
+    pub public_key: PqPublicKey,
+    #[serde(
+        serialize_with = "serialize_pq_blob",
+        deserialize_with = "deserialize_pq_blob"
+    )]
+    pub sig: Vec<u8>,
+}
+
+impl PqSignature {
+    pub fn new(scheme_version: u8, public_key: PqPublicKey, sig: Vec<u8>) -> Result<Self, String> {
+        let signature = Self {
+            scheme_version,
+            public_key,
+            sig,
+        };
+        signature.validate()?;
+        Ok(signature)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.public_key.validate()?;
+
+        if self.public_key.scheme_version != self.scheme_version {
+            return Err(format!(
+                "PQ signature/public-key scheme mismatch: 0x{:02x} vs 0x{:02x}",
+                self.scheme_version, self.public_key.scheme_version
+            ));
+        }
+
+        let expected_len = match self.scheme_version {
+            PQ_SCHEME_ML_DSA_65 => ML_DSA_65_SIGNATURE_BYTES,
+            PQ_SCHEME_SLH_DSA_128F => SLH_DSA_128F_SIGNATURE_BYTES,
+            other => return Err(format!("Unsupported PQ signature scheme: 0x{other:02x}")),
+        };
+
+        if self.sig.len() != expected_len {
+            return Err(format!(
+                "Invalid PQ signature length for scheme 0x{:02x}: {} (expected {})",
+                self.scheme_version,
+                self.sig.len(),
+                expected_len
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn signer_address(&self) -> Pubkey {
+        self.public_key.address()
+    }
+
+    fn as_ml_dsa_signature(&self) -> Option<MlDsaSignature<MlDsa65>> {
+        if self.scheme_version != PQ_SCHEME_ML_DSA_65 {
+            return None;
+        }
+
+        MlDsaSignature::<MlDsa65>::try_from(self.sig.as_slice()).ok()
+    }
+
+    fn as_slh_dsa_signature(&self) -> Option<SlhDsaSignature<SlhDsa128f>> {
+        if self.scheme_version != PQ_SCHEME_SLH_DSA_128F {
+            return None;
+        }
+
+        SlhDsaSignature::<SlhDsa128f>::try_from(self.sig.as_slice()).ok()
+    }
+
+    #[cfg(test)]
+    pub fn test_fixture(fill: u8) -> Self {
+        let public_key = PqPublicKey {
+            scheme_version: PQ_SCHEME_ML_DSA_65,
+            bytes: vec![fill; ML_DSA_65_PUBLIC_KEY_BYTES],
+        };
+        Self {
+            scheme_version: PQ_SCHEME_ML_DSA_65,
+            public_key,
+            sig: vec![fill; ML_DSA_65_SIGNATURE_BYTES],
+        }
+    }
+}
+
+/// ML-DSA-65 keypair for signing native Lichen transactions.
 pub struct Keypair {
-    signing_key: SigningKey,
+    keypair: MlDsaSigningKey<MlDsa65>,
     seed: [u8; 32],
 }
 
@@ -66,8 +262,7 @@ impl Keypair {
     pub fn new() -> Self {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).expect("Failed to generate random seed");
-        let signing_key = SigningKey::from_bytes(&seed);
-        Keypair { signing_key, seed }
+        Self::from_seed(&seed)
     }
 
     /// Alias for new() - generates random keypair
@@ -86,17 +281,27 @@ impl Keypair {
 
     /// Create from seed bytes
     pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let signing_key = SigningKey::from_bytes(seed);
+        let pq_seed = match B32::try_from(seed.as_slice()) {
+            Ok(seed) => seed,
+            Err(_) => unreachable!("ML-DSA seed length must be 32 bytes"),
+        };
+        let keypair = MlDsa65::from_seed(&pq_seed);
         Keypair {
-            signing_key,
+            keypair,
             seed: *seed,
         }
     }
 
-    /// Get public key
+    /// Get account address.
     pub fn pubkey(&self) -> Pubkey {
-        let verifying_key = self.signing_key.verifying_key();
-        Pubkey(verifying_key.to_bytes())
+        self.public_key().address()
+    }
+
+    /// Get the full PQ public key used for verification.
+    pub fn public_key(&self) -> PqPublicKey {
+        let verifying_key =
+            <MlDsaSigningKey<MlDsa65> as ml_dsa::signature::Keypair>::verifying_key(&self.keypair);
+        PqPublicKey::from_ml_dsa(&verifying_key)
     }
 
     /// Get seed bytes (for saving to file)
@@ -104,20 +309,57 @@ impl Keypair {
         self.seed
     }
 
-    /// Sign message
-    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
-        let signature: Signature = self.signing_key.sign(message);
-        signature.to_bytes()
+    /// Sign message with ML-DSA-65 and embed the verifying key.
+    pub fn sign(&self, message: &[u8]) -> PqSignature {
+        let signature = self
+            .keypair
+            .signing_key()
+            .sign_deterministic(message, &[])
+            .expect("ML-DSA-65 deterministic signing failed");
+
+        PqSignature::new(
+            PQ_SCHEME_ML_DSA_65,
+            self.public_key(),
+            signature.encode().as_slice().to_vec(),
+        )
+        .expect("ML-DSA-65 signature encoding produced invalid output")
     }
 
-    /// Verify signature
-    pub fn verify(pubkey: &Pubkey, message: &[u8], signature: &[u8; 64]) -> bool {
-        match VerifyingKey::from_bytes(&pubkey.0) {
-            Ok(verifying_key) => {
-                let sig = Signature::from_bytes(signature);
-                verifying_key.verify(message, &sig).is_ok()
+    /// Verify a native PQ signature against an address.
+    pub fn verify(address: &Pubkey, message: &[u8], signature: &PqSignature) -> bool {
+        if signature.validate().is_err() {
+            return false;
+        }
+
+        if signature.signer_address() != *address {
+            return false;
+        }
+
+        match signature.scheme_version {
+            PQ_SCHEME_ML_DSA_65 => {
+                let verifying_key = match signature.public_key.as_ml_dsa_verifying_key() {
+                    Some(verifying_key) => verifying_key,
+                    None => return false,
+                };
+                let ml_signature = match signature.as_ml_dsa_signature() {
+                    Some(signature) => signature,
+                    None => return false,
+                };
+                verifying_key.verify_with_context(message, &[], &ml_signature)
             }
-            Err(_) => false,
+            PQ_SCHEME_SLH_DSA_128F => {
+                let verifying_key = match signature.public_key.as_slh_dsa_verifying_key() {
+                    Some(verifying_key) => verifying_key,
+                    None => return false,
+                };
+                let slh_signature = match signature.as_slh_dsa_signature() {
+                    Some(signature) => signature,
+                    None => return false,
+                };
+                slh_dsa::signature::Verifier::verify(&verifying_key, message, &slh_signature)
+                    .is_ok()
+            }
+            _ => false,
         }
     }
 }
@@ -149,6 +391,10 @@ pub struct Account {
 
     /// Arbitrary data storage
     pub data: Vec<u8>,
+
+    /// Optional cache of the first PQ public key observed for this account.
+    #[serde(default)]
+    pub public_key: Option<PqPublicKey>,
 
     /// Program that owns this account
     pub owner: Pubkey,
@@ -198,6 +444,7 @@ impl Account {
             staked: 0,
             locked: 0,
             data: Vec::new(),
+            public_key: None,
             owner,
             executable: false,
             rent_epoch: 0,
@@ -410,5 +657,47 @@ mod tests {
         let base58 = original.to_base58();
         let parsed = Pubkey::from_base58(&base58).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_pq_sign_and_verify_roundtrip() {
+        let keypair = Keypair::new();
+        let message = b"lichen-native-pq";
+        let signature = keypair.sign(message);
+
+        assert!(Keypair::verify(&keypair.pubkey(), message, &signature));
+        assert!(!Keypair::verify(&Pubkey([7u8; 32]), message, &signature));
+        assert!(!Keypair::verify(
+            &keypair.pubkey(),
+            b"different",
+            &signature
+        ));
+    }
+
+    #[test]
+    fn test_slh_verify_roundtrip() {
+        use slh_dsa::signature::Signer;
+
+        let signing_key = slh_dsa::SigningKey::<SlhDsa128f>::slh_keygen_internal(
+            &[1u8; 16], &[2u8; 16], &[3u8; 16],
+        );
+        let message = b"lichen-native-slh";
+        let slh_signature = signing_key.sign(message);
+
+        let public_key =
+            PqPublicKey::new(PQ_SCHEME_SLH_DSA_128F, signing_key.as_ref().to_vec()).unwrap();
+        let signature =
+            PqSignature::new(PQ_SCHEME_SLH_DSA_128F, public_key, slh_signature.to_vec()).unwrap();
+
+        assert!(Keypair::verify(
+            &signature.signer_address(),
+            message,
+            &signature
+        ));
+        assert!(!Keypair::verify(
+            &signature.signer_address(),
+            b"different",
+            &signature,
+        ));
     }
 }

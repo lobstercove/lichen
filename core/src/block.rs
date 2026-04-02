@@ -2,6 +2,7 @@
 
 use crate::hash::Hash;
 use crate::transaction::Transaction;
+use crate::PqSignature;
 use serde::{Deserialize, Serialize};
 
 /// Maximum block size in bytes (serialized) — 10 MB
@@ -12,23 +13,6 @@ pub const MAX_TX_PER_BLOCK: usize = 10_000;
 
 /// Maximum WASM contract code size — 2 MB
 pub const MAX_CONTRACT_CODE: usize = 2 * 1024 * 1024;
-
-/// Custom serde for [u8; 64] (ed25519 signatures)
-mod sig_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(sig: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        sig.as_slice().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: Vec<u8> = Vec::deserialize(d)?;
-        let arr: [u8; 64] = v
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("expected 64 bytes for signature"))?;
-        Ok(arr)
-    }
-}
 
 /// Custom serde for [u8; 32] (validator pubkeys in commit signatures)
 mod pubkey_serde {
@@ -54,12 +38,11 @@ mod pubkey_serde {
 /// can verify finality without replaying consensus.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommitSignature {
-    /// Validator public key (Ed25519).
+    /// Validator address recorded in the commit certificate.
     #[serde(with = "pubkey_serde")]
     pub validator: [u8; 32],
-    /// Ed25519 signature over `(0x02 || height || round || block_hash || timestamp)`.
-    #[serde(with = "sig_serde")]
-    pub signature: [u8; 64],
+    /// Self-contained PQ signature over `(0x02 || height || round || block_hash || timestamp)`.
+    pub signature: PqSignature,
     /// Validator's wall-clock timestamp when casting the precommit vote.
     /// Used to compute BFT Time (weighted median) for deterministic block timestamps.
     #[serde(default)]
@@ -97,13 +80,9 @@ pub struct BlockHeader {
     /// Validator that produced this block
     pub validator: [u8; 32],
 
-    /// Ed25519 signature of the block producer over the header fields
-    #[serde(with = "sig_serde", default = "zero_signature")]
-    pub signature: [u8; 64],
-}
-
-fn zero_signature() -> [u8; 64] {
-    [0u8; 64]
+    /// Optional PQ signature of the block producer over the header fields.
+    #[serde(default)]
+    pub signature: Option<PqSignature>,
 }
 
 /// Complete block
@@ -145,7 +124,7 @@ pub struct Block {
 
     /// Commit certificate: precommit signatures from 2/3+ of stake that
     /// finalized this block. Each entry contains the validator pubkey and
-    /// their Ed25519 signature over `(0x02 || height || round || block_hash)`.
+    /// their PQ signature over `(0x02 || height || round || block_hash || timestamp)`.
     ///
     /// Light clients verify finality by checking these signatures sum to
     /// ≥2/3 of the total stake. Genesis block (slot 0) has no commit.
@@ -168,7 +147,7 @@ impl Block {
                 timestamp,
                 validators_hash: Hash::default(),
                 validator: [0u8; 32],
-                signature: [0u8; 64],
+                signature: None,
             },
             transactions,
             tx_fees_paid: Vec::new(),
@@ -196,7 +175,7 @@ impl Block {
                 timestamp: current_timestamp(),
                 validators_hash: Hash::default(),
                 validator,
-                signature: [0u8; 64],
+                signature: None,
             },
             transactions,
             tx_fees_paid: Vec::new(),
@@ -225,7 +204,7 @@ impl Block {
                 timestamp,
                 validators_hash: Hash::default(),
                 validator,
-                signature: [0u8; 64],
+                signature: None,
             },
             transactions,
             tx_fees_paid: Vec::new(),
@@ -252,20 +231,20 @@ impl Block {
     /// Sign the block with the validator's keypair
     pub fn sign(&mut self, keypair: &crate::account::Keypair) {
         let hash = self.signable_hash();
-        self.header.signature = keypair.sign(&hash.0);
+        self.header.signature = Some(keypair.sign(&hash.0));
     }
 
     /// Verify the block signature against the validator public key.
-    /// T1.6 fix: Zero/unsigned signatures are now REJECTED.
     /// Only the genesis block (slot 0) may be unsigned.
     pub fn verify_signature(&self) -> bool {
-        if self.header.signature.iter().all(|&b| b == 0) {
-            // Only allow unsigned genesis block (slot 0)
-            return self.header.slot == 0;
-        }
         let validator_pubkey = crate::account::Pubkey(self.header.validator);
         let hash = self.signable_hash();
-        crate::account::Keypair::verify(&validator_pubkey, &hash.0, &self.header.signature)
+        match &self.header.signature {
+            Some(signature) => {
+                crate::account::Keypair::verify(&validator_pubkey, &hash.0, signature)
+            }
+            None => self.header.slot == 0,
+        }
     }
 
     /// Get block hash — uses signable_hash so the hash is stable before/after signing.
@@ -279,7 +258,7 @@ impl Block {
     /// Returns `Ok(())` if the commit signatures represent ≥2/3 of the total
     /// eligible stake. Genesis block (slot 0) always passes (no commit required).
     ///
-    /// Each signature is verified as Ed25519 over `Precommit::signable_bytes`
+    /// Each signature is verified as a self-contained PQ signature over `Precommit::signable_bytes`
     /// (tag 0x02 || height || round || block_hash). Duplicate validators or
     /// validators not in the set are silently skipped.
     pub fn verify_commit(
@@ -686,6 +665,10 @@ impl Block {
 mod tests {
     use super::*;
 
+    fn test_signature(fill: u8) -> crate::PqSignature {
+        crate::PqSignature::test_fixture(fill)
+    }
+
     #[test]
     fn test_genesis_block() {
         let genesis = Block::genesis(Hash::hash(b"genesis_state"), 1, Vec::new());
@@ -735,7 +718,7 @@ mod tests {
 
         // Sign the block
         block.sign(&kp);
-        assert_ne!(block.header.signature, [0u8; 64]);
+        assert!(block.header.signature.is_some());
 
         // Signed block should verify
         assert!(block.verify_signature());
@@ -815,7 +798,7 @@ mod tests {
 
     #[test]
     fn test_block_serde_backward_compat() {
-        // A BlockHeader without a "signature" field should deserialize with zero signature
+        // A BlockHeader without a "signature" field should deserialize as unsigned.
         let header = BlockHeader {
             slot: 0,
             parent_hash: Hash::default(),
@@ -824,14 +807,14 @@ mod tests {
             timestamp: 0,
             validators_hash: Hash::default(),
             validator: [0u8; 32],
-            signature: [0u8; 64],
+            signature: None,
         };
         // Serialize, strip signature, then deserialize
         let mut json_val: serde_json::Value = serde_json::to_value(&header).unwrap();
         json_val.as_object_mut().unwrap().remove("signature");
         let json = json_val.to_string();
         let deserialized: BlockHeader = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.signature, [0u8; 64]);
+        assert_eq!(deserialized.signature, None);
     }
 
     // ─── Block structure validation tests (T1.7) ─────────────────────
@@ -989,7 +972,7 @@ mod tests {
     fn test_commit_signature_serde_roundtrip() {
         let cs = CommitSignature {
             validator: [42u8; 32],
-            signature: [17u8; 64],
+            signature: test_signature(17),
             timestamp: 1000,
         };
         let json = serde_json::to_string(&cs).unwrap();
@@ -1030,12 +1013,12 @@ mod tests {
         block.commit_signatures = vec![
             CommitSignature {
                 validator: [1u8; 32],
-                signature: [2u8; 64],
+                signature: test_signature(2),
                 timestamp: 2000,
             },
             CommitSignature {
                 validator: [3u8; 32],
-                signature: [4u8; 64],
+                signature: test_signature(4),
                 timestamp: 2001,
             },
         ];
@@ -1259,7 +1242,7 @@ mod tests {
             },
             CommitSignature {
                 validator: kp2.pubkey().0,
-                signature: [0xAA; 64], // garbage
+                signature: test_signature(0xAA),
                 timestamp: ts,
             },
         ];
@@ -1367,17 +1350,17 @@ mod tests {
         let sigs = vec![
             CommitSignature {
                 validator: keys[0],
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1000,
             },
             CommitSignature {
                 validator: keys[1],
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1002,
             },
             CommitSignature {
                 validator: keys[2],
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1004,
             },
         ];
@@ -1432,17 +1415,17 @@ mod tests {
         let sigs = vec![
             CommitSignature {
                 validator: ka,
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1000,
             },
             CommitSignature {
                 validator: kb,
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1005,
             },
             CommitSignature {
                 validator: kc,
-                signature: [0u8; 64],
+                signature: test_signature(0),
                 timestamp: 1010,
             },
         ];
@@ -1483,7 +1466,7 @@ mod tests {
 
         let sigs = vec![CommitSignature {
             validator: k,
-            signature: [0u8; 64],
+            signature: test_signature(0),
             timestamp: 500,
         }];
 
@@ -1503,10 +1486,9 @@ mod tests {
     #[test]
     fn test_commit_signature_timestamp_serde_default() {
         // Legacy CommitSignature without timestamp field should default to 0.
-        // Our custom serde serialises [u8; N] as JSON arrays of numbers.
         let cs = CommitSignature {
             validator: [0u8; 32],
-            signature: [0u8; 64],
+            signature: test_signature(0),
             timestamp: 42,
         };
         let json = serde_json::to_string(&cs).unwrap();

@@ -234,8 +234,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
             }
         };
 
-        if listing_data.len() < 145 {
-            // Accept both legacy 145-byte and new 147-byte listings
+        if listing_data.len() < 147 {
             log_info("Invalid listing data");
             reentrancy_exit();
             return 0;
@@ -267,15 +266,9 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
         royalty_recipient_bytes.copy_from_slice(&listing_data[112..144]);
         let royalty_recipient = Address(royalty_recipient_bytes);
         let has_royalty = royalty_recipient_bytes != [0u8; 32];
-        let royalty_bps: u64 = if listing_data.len() >= 147 {
-            let mut rbps = [0u8; 2];
-            rbps.copy_from_slice(&listing_data[145..147]);
-            u16::from_le_bytes(rbps) as u64
-        } else if has_royalty {
-            1000 // default 10% for legacy listings with royalty recipient
-        } else {
-            0
-        };
+        let mut rbps = [0u8; 2];
+        rbps.copy_from_slice(&listing_data[145..147]);
+        let royalty_bps = u16::from_le_bytes(rbps) as u64;
 
         // Calculate marketplace fee (2.5%)
         let fee = get_marketplace_fee();

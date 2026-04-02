@@ -62,29 +62,6 @@ async fn test_solana_health_route() {
 }
 
 #[tokio::test]
-async fn test_solana_legacy_alias_route() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let state = StateStore::open(dir.path()).expect("state");
-    let app = build_rpc_router(
-        state,
-        None,
-        None,
-        None,
-        "lichen-test".to_string(),
-        "lichen-test".to_string(),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
-
-    let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
-    assert_eq!(response["result"]["status"], "behind");
-    assert_eq!(response["result"]["slot"], 0);
-}
-
-#[tokio::test]
 async fn test_evm_chain_id_route() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");

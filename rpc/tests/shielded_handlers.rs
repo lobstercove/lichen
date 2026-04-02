@@ -140,9 +140,6 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
         merkle_root: tree.root(),
         commitment_count: n_commitments,
         total_shielded: n_commitments * 1_000_000_000, // 1 LICN per commitment
-        vk_shield_hash: [0xAA; 32],
-        vk_unshield_hash: [0xBB; 32],
-        vk_transfer_hash: [0xCC; 32],
         nullifier_count: 0,
         shield_count: 0,
         unshield_count: 0,
@@ -218,10 +215,7 @@ async fn test_rpc_get_shielded_pool_state_populated() {
     assert_eq!(result["commitmentCount"], 5);
     assert_eq!(result["totalShielded"], 5_000_000_000u64);
     assert_eq!(result["totalShieldedLicn"], "5.000000000");
-    assert_eq!(
-        result["vkShieldHash"].as_str().unwrap(),
-        hex::encode([0xAA; 32])
-    );
+    assert_eq!(result["zkScheme"], "plonky3-fri-poseidon2");
 }
 
 #[tokio::test]
@@ -859,9 +853,6 @@ async fn test_rpc_reflects_processor_shielded_state() {
         merkle_root: tree.root(),
         commitment_count: 3,
         total_shielded: 1_500_000_000,
-        vk_shield_hash: [0x11; 32],
-        vk_unshield_hash: [0x22; 32],
-        vk_transfer_hash: [0x33; 32],
         nullifier_count: 1,
         shield_count: 3,
         unshield_count: 1,

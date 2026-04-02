@@ -2,7 +2,7 @@
 """
 Lichen Wallet Generator
 
-Generates Ed25519 keypairs compatible with Lichen validator.
+Generates native PQ keypairs compatible with the Lichen validator.
 Saves keypair to a JSON file for later use.
 """
 
@@ -23,11 +23,11 @@ def main():
     wallets_dir.mkdir(exist_ok=True)
     
     # Generate new keypair
-    print("\n🔑 Generating new Ed25519 keypair...")
+    print("\n🔑 Generating new ML-DSA-65 keypair...")
     keypair = Keypair.generate()
-    pubkey_b58 = keypair.public_key().to_base58()
+    pubkey_b58 = keypair.pubkey().to_base58()
     print(f"\n✅ Keypair Generated!")
-    print(f"\n📍 Public Key (Base58):")
+    print(f"\n📍 Address (Base58):")
     print(f"   {pubkey_b58}")
     print(f"\n🔐 Private Seed (hex, first 16 bytes):")
     print(f"   {keypair.seed()[:16].hex()}...")
@@ -44,7 +44,7 @@ def main():
     test_message = b"Hello Lichen!"
     signature = keypair.sign(test_message)
     print(f"   Message: {test_message.decode()}")
-    print(f"   Signature (first 16 bytes): {signature[:16].hex()}...")
+    print(f"   Signature (first 16 bytes): {signature.sig[:16].hex()}...")
     
     # Verify signature
     print(f"   ✅ Signature generated successfully!")

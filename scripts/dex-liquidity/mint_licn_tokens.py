@@ -19,8 +19,7 @@ def load_kp(network, role):
     path = ROOT / "artifacts" / network / "genesis-keys"
     for f in path.glob("*.json"):
         if f.name.startswith(role):
-            raw = json.loads(f.read_text())
-            return Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
+            return Keypair.load(f)
     raise FileNotFoundError(f"No keypair for {role}")
 
 
@@ -34,7 +33,7 @@ async def resolve(conn, symbol):
 
 async def send_call(conn, signer, contract, fn, args_bytes):
     envelope = json.dumps({"Call": {"function": fn, "args": args_bytes, "value": 0}})
-    ix = Instruction(CONTRACT_PROGRAM, [signer.public_key(), contract], envelope.encode("utf-8"))
+    ix = Instruction(CONTRACT_PROGRAM, [signer.address(), contract], envelope.encode("utf-8"))
     tb = TransactionBuilder()
     tb.add(ix)
     latest = await conn.get_latest_block()
@@ -46,7 +45,7 @@ async def send_call(conn, signer, contract, fn, args_bytes):
 
 async def get_token_balance(conn, token_addr, account_kp):
     storage = await conn._rpc("getProgramStorage", [str(token_addr)])
-    hex_addr = account_kp.public_key().to_bytes().hex()
+    hex_addr = account_kp.address().to_bytes().hex()
     key = f"licn_bal_{hex_addr}"
     for e in storage.get("entries", []):
         if e.get("key_decoded", "") == key:
@@ -64,16 +63,16 @@ async def main():
 
     print(f"LICN token: {licn_addr}")
     print(f"DEX: {dex_addr}")
-    print(f"Deployer: {deployer.public_key()}")
-    print(f"Reserve: {reserve.public_key()}")
+    print(f"Deployer: {deployer.address()}")
+    print(f"Reserve: {reserve.address()}")
 
     bal = await get_token_balance(conn, licn_addr, reserve)
     print(f"Current LICN token balance: {bal / SPORES:,.4f}")
 
     # Mint 20M LICN tokens
     mint_amount = 20_000_000 * SPORES
-    caller_b = list(deployer.public_key().to_bytes())
-    to_b = list(reserve.public_key().to_bytes())
+    caller_b = list(deployer.address().to_bytes())
+    to_b = list(reserve.address().to_bytes())
     amt_b = list(struct.pack("<Q", mint_amount))
     sig = await send_call(conn, deployer, licn_addr, "mint", caller_b + to_b + amt_b)
     print(f"Mint TX: {sig}")
@@ -84,7 +83,7 @@ async def main():
 
     # Approve DEX to spend 100M (generous overshoot)
     approve_amount = 100_000_000 * SPORES
-    owner_b = list(reserve.public_key().to_bytes())
+    owner_b = list(reserve.address().to_bytes())
     spender_b = list(dex_addr.to_bytes())
     amt2_b = list(struct.pack("<Q", approve_amount))
     sig2 = await send_call(conn, reserve, licn_addr, "approve", owner_b + spender_b + amt2_b)

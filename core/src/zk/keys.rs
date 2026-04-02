@@ -1,42 +1,33 @@
-//! Shielded Key Derivation
+//! Shielded key derivation.
 //!
-//! Generates shielded keypairs for privacy transactions.
-//!
-//! spending_key: random scalar (Fr), used to compute nullifiers
-//! viewing_key:  spending_key * G (public point), used for note encryption/decryption
-//!
-//! The spending key is the master secret. The viewing key can be shared
-//! with auditors for compliance (selective disclosure).
+//! The live runtime now derives both spending and viewing keys as canonical
+//! 32-byte byte strings.
 
-use super::merkle::fr_to_bytes;
-use ark_bn254::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{PrimeField, UniformRand};
-use ark_serialize::CanonicalSerialize;
-use ark_std::rand::rngs::OsRng;
+use super::merkle::{random_scalar_bytes, scalar_bytes_from_seed};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Spending key: secret scalar used to derive nullifiers
-#[derive(Clone, Debug)]
-pub struct SpendingKey(pub Fr);
+const DOMAIN_SPENDING_KEY: u64 = 0x4c49434e534b5631;
+const DOMAIN_VIEWING_KEY: u64 = 0x4c49434e564b5931;
 
-/// Viewing key: public point used for note encryption
-#[derive(Clone, Debug)]
-pub struct ViewingKey(pub G1Affine);
+/// Spending key: secret bytes used to derive nullifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpendingKey(pub [u8; 32]);
 
-/// Complete shielded keypair
-#[derive(Clone, Debug)]
+/// Viewing key: public 32-byte encryption identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ViewingKey(pub [u8; 32]);
+
+/// Complete shielded keypair.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedKeypair {
-    /// Secret spending key (never shared)
     pub spending_key: SpendingKey,
-    /// Public viewing key (can be shared with auditors)
     pub viewing_key: ViewingKey,
 }
 
 impl ShieldedKeypair {
-    /// Generate a new random shielded keypair
     pub fn generate() -> Self {
-        let spending_key = SpendingKey(Fr::rand(&mut OsRng));
+        let spending_key = SpendingKey(random_scalar_bytes());
         let viewing_key = spending_key.derive_viewing_key();
         Self {
             spending_key,
@@ -44,15 +35,13 @@ impl ShieldedKeypair {
         }
     }
 
-    /// Derive a shielded keypair from an existing seed (e.g., wallet seed phrase)
-    /// Uses HKDF-like derivation: spending_key = SHA256(seed || "lichen-shielded-key")
     pub fn from_seed(seed: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(seed);
         hasher.update(b"lichen-shielded-spending-key-v1");
-        let hash = hasher.finalize();
+        let hash: [u8; 32] = hasher.finalize().into();
 
-        let spending_key = SpendingKey(Fr::from_le_bytes_mod_order(&hash));
+        let spending_key = SpendingKey(scalar_bytes_from_seed(DOMAIN_SPENDING_KEY, hash));
         let viewing_key = spending_key.derive_viewing_key();
         Self {
             spending_key,
@@ -60,62 +49,36 @@ impl ShieldedKeypair {
         }
     }
 
-    /// Get the viewing key as 32 bytes (for note encryption)
     pub fn viewing_key_bytes(&self) -> [u8; 32] {
         self.viewing_key.to_bytes()
     }
 
-    /// Get the spending key as 32 bytes
     pub fn spending_key_bytes(&self) -> [u8; 32] {
-        fr_to_bytes(&self.spending_key.0)
+        self.spending_key.to_bytes()
     }
 }
 
 impl SpendingKey {
-    /// Derive the corresponding viewing key: V = sk * G
     pub fn derive_viewing_key(&self) -> ViewingKey {
-        let g = G1Affine::generator();
-        let point = (G1Projective::from(g) * self.0).into_affine();
-        ViewingKey(point)
+        ViewingKey(scalar_bytes_from_seed(DOMAIN_VIEWING_KEY, self.0))
     }
 
-    /// Restore spending key from 32 bytes
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+
     pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-        Self(Fr::from_le_bytes_mod_order(bytes))
+        Self(*bytes)
     }
 }
 
 impl ViewingKey {
-    /// Serialize viewing key to 32 bytes (hash of compressed point)
     pub fn to_bytes(&self) -> [u8; 32] {
-        let mut serialized = Vec::new();
         self.0
-            .serialize_compressed(&mut serialized)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.",
-                    e
-                )
-            });
-
-        let mut hasher = Sha256::new();
-        hasher.update(&serialized);
-        let hash = hasher.finalize();
-        let mut output = [0u8; 32];
-        output.copy_from_slice(&hash);
-        output
     }
 
-    /// Get the full compressed point bytes
     pub fn to_compressed_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        self.0.serialize_compressed(&mut bytes).unwrap_or_else(|e| {
-            panic!(
-                "FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.",
-                e
-            )
-        });
-        bytes
+        self.0.to_vec()
     }
 }
 
@@ -127,7 +90,6 @@ mod tests {
     fn test_keypair_generation() {
         let kp1 = ShieldedKeypair::generate();
         let kp2 = ShieldedKeypair::generate();
-        // Different keypairs each time
         assert_ne!(kp1.spending_key_bytes(), kp2.spending_key_bytes());
         assert_ne!(kp1.viewing_key_bytes(), kp2.viewing_key_bytes());
     }
@@ -150,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_viewing_key_derivation() {
-        let sk = SpendingKey(Fr::from(42u64));
+        let sk = SpendingKey([42u8; 32]);
         let vk1 = sk.derive_viewing_key();
         let vk2 = sk.derive_viewing_key();
         assert_eq!(vk1.to_bytes(), vk2.to_bytes());
@@ -161,9 +123,6 @@ mod tests {
         let kp = ShieldedKeypair::generate();
         let bytes = kp.spending_key_bytes();
         let restored = SpendingKey::from_bytes(&bytes);
-        assert_eq!(
-            restored.derive_viewing_key().to_bytes(),
-            kp.viewing_key_bytes()
-        );
+        assert_eq!(restored.to_bytes(), kp.spending_key_bytes());
     }
 }

@@ -8,11 +8,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
 from lichen import Keypair
 
-# Load reserve_pool public key
-raw = json.loads((ROOT / "artifacts/testnet/genesis-keys/reserve_pool-lichen-testnet-1.json").read_text())
-kp = Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
-pub_bytes = kp.public_key().to_bytes()
-print(f"Reserve pool: {kp.public_key()}")
+# Load reserve_pool address
+kp = Keypair.load(ROOT / "artifacts/testnet/genesis-keys/reserve_pool-lichen-testnet-1.json")
+pub_bytes = kp.address().to_bytes()
+print(f"Reserve pool: {kp.address()}")
 
 # Build place_order args (opcode 2)
 buf = bytearray(75)

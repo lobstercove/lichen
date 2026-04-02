@@ -52,7 +52,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen --bin lichen-custody --bin zk-setup
+        run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen --bin lichen-custody
 
       - name: Strip binary (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target != 'aarch64-unknown-linux-gnu'
@@ -62,7 +62,6 @@ jobs:
           strip target/${{ matrix.target }}/release/lichen-faucet
           strip target/${{ matrix.target }}/release/lichen
           strip target/${{ matrix.target }}/release/lichen-custody
-          strip target/${{ matrix.target }}/release/zk-setup
 
       - name: Strip binary (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -72,7 +71,6 @@ jobs:
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-faucet
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-custody
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/zk-setup
 
       - name: Strip binary (macOS)
         if: startsWith(matrix.os, 'macos')
@@ -82,33 +80,28 @@ jobs:
           strip target/${{ matrix.target }}/release/lichen-faucet
           strip target/${{ matrix.target }}/release/lichen
           strip target/${{ matrix.target }}/release/lichen-custody
-          strip target/${{ matrix.target }}/release/zk-setup
 
       - name: Create archive
         if: matrix.os != 'windows-latest'
         run: |
-          mkdir -p ${{ matrix.artifact }}/zk
+          mkdir -p ${{ matrix.artifact }}
           cp target/${{ matrix.target }}/release/lichen-validator ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-genesis ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-faucet ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-custody ${{ matrix.artifact }}/
-          cp target/${{ matrix.target }}/release/zk-setup ${{ matrix.artifact }}/
-          cp zk-keys/*.bin ${{ matrix.artifact }}/zk/
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Create archive (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path ${{ matrix.artifact }}/zk | Out-Null
+          New-Item -ItemType Directory -Force -Path ${{ matrix.artifact }} | Out-Null
           Copy-Item target/${{ matrix.target }}/release/lichen-validator.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-genesis.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-faucet.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-custody.exe ${{ matrix.artifact }}/
-          Copy-Item target/${{ matrix.target }}/release/zk-setup.exe ${{ matrix.artifact }}/
-          Copy-Item zk-keys/*.bin ${{ matrix.artifact }}/zk/
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Upload artifact
@@ -206,5 +199,5 @@ jobs:
             > **Note:** To add a detached signature, a maintainer should:
             > 1. Download SHA256SUMS from this release
             > 2. Sign it offline: `./scripts/sign-release.sh SHA256SUMS release-signing-keypair.json`
-            > 3. Upload SHA256SUMS.sig to the release
+            > 3. Upload SHA256SUMS.sig to the release (`SHA256SUMS.sig` is JSON-encoded `PqSignature` data)
             > 4. Publish the release

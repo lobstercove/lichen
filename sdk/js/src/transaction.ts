@@ -2,7 +2,8 @@
 
 import { PublicKey } from './publickey';
 import { Keypair } from './keypair';
-import { bytesToHex, encodeMessage } from './bincode';
+import { encodeMessage } from './bincode';
+import { PqSignature } from './pq';
 
 /**
  * Transaction instruction
@@ -27,7 +28,7 @@ export interface Message {
  * Signed transaction
  */
 export interface Transaction {
-  signatures: string[];
+  signatures: PqSignature[];
   message: Message;
 }
 
@@ -79,7 +80,7 @@ export class TransactionBuilder {
     const messageBytes = encodeMessage(message);
     const signature = keypair.sign(messageBytes);
     return {
-      signatures: [bytesToHex(signature)],
+      signatures: [signature],
       message,
     };
   }

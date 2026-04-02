@@ -1644,7 +1644,7 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
         }),
         Event::Transaction(tx) => serde_json::json!({
             "signatures": tx.signatures.iter()
-                .map(hex::encode)
+                .map(crate::pq_signature_json)
                 .collect::<Vec<_>>(),
             "instructions": tx.message.instructions.len(),
             "recent_blockhash": tx.message.recent_blockhash.to_hex(),

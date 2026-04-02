@@ -34,7 +34,8 @@ use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
 use crate::zk::circuits::utils::poseidon_hash_var;
-use crate::zk::merkle::{poseidon_config, TREE_DEPTH};
+use crate::zk::merkle::TREE_DEPTH;
+use crate::zk::r1cs_bn254::{bytes_to_fr, poseidon_config};
 
 /// Unshield circuit: proves correct withdrawal from shielded pool
 #[derive(Clone, Debug)]
@@ -99,6 +100,39 @@ impl UnshieldCircuit {
             merkle_path: Some(merkle_path),
             path_bits: Some(path_bits),
         }
+    }
+
+    /// Create a new unshield circuit from canonical 32-byte witness values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bytes(
+        merkle_root: [u8; 32],
+        nullifier: [u8; 32],
+        amount: u64,
+        recipient: [u8; 32],
+        note_value: u64,
+        note_blinding: [u8; 32],
+        note_serial: [u8; 32],
+        spending_key: [u8; 32],
+        recipient_preimage: [u8; 32],
+        merkle_path: Vec<[u8; 32]>,
+        path_bits: Vec<bool>,
+    ) -> Self {
+        Self::new(
+            bytes_to_fr(&merkle_root),
+            bytes_to_fr(&nullifier),
+            amount,
+            bytes_to_fr(&recipient),
+            note_value,
+            bytes_to_fr(&note_blinding),
+            bytes_to_fr(&note_serial),
+            bytes_to_fr(&spending_key),
+            bytes_to_fr(&recipient_preimage),
+            merkle_path
+                .into_iter()
+                .map(|sibling| bytes_to_fr(&sibling))
+                .collect(),
+            path_bits,
+        )
     }
 
     /// Empty circuit for key generation (setup/ceremony phase).
@@ -225,7 +259,8 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::merkle::{fr_to_bytes, poseidon_hash_fr, MerkleTree};
+    use crate::zk::merkle::MerkleTree;
+    use crate::zk::r1cs_bn254::{fr_to_bytes, poseidon_hash_fr};
     use ark_ff::{PrimeField, UniformRand};
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;

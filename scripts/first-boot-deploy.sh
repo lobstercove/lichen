@@ -25,6 +25,10 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 TOOLS_DIR="${REPO_ROOT}/tools"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 MANIFEST="${REPO_ROOT}/deploy-manifest.json"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN="python3"
+fi
 
 RPC_URL="${CUSTODY_LICHEN_RPC_URL:-http://127.0.0.1:8899}"
 SKIP_BUILD=false
@@ -58,7 +62,7 @@ echo -e "  Manifest: ${MANIFEST}"
 # Step 1: Check if already deployed
 # ─────────────────────────────────────────────────────────
 if [ -f "$MANIFEST" ]; then
-    CONTRACT_COUNT=$(python3 -c "import json; m=json.load(open('$MANIFEST')); print(len(m.get('contracts',{})))" 2>/dev/null || echo "0")
+    CONTRACT_COUNT=$($PYTHON_BIN -c "import json; m=json.load(open('$MANIFEST')); print(len(m.get('contracts',{})))" 2>/dev/null || echo "0")
     if [ "$CONTRACT_COUNT" -ge 10 ]; then
         echo -e "\n  ${GREEN}✅ Deploy manifest exists with ${CONTRACT_COUNT} contracts.${NC}"
         echo -e "  ${GREEN}   Contracts already deployed. Use --force to redeploy.${NC}"
@@ -77,9 +81,9 @@ HEALTHY=false
 for i in $(seq 1 $MAX_RETRIES); do
     RESPONSE=$(curl -s -X POST "${RPC_URL}" \
         -H "Content-Type: application/json" \
-        -d '{"jsonrpc":"2.0","id":1,"method":"health"}' 2>/dev/null || echo "")
+        -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' 2>/dev/null || echo "")
     
-    if echo "$RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); assert r.get('result',{}).get('status') in ['ok','healthy',True]" 2>/dev/null; then
+    if echo "$RESPONSE" | $PYTHON_BIN -c "import json,sys; r=json.load(sys.stdin); result=r.get('result'); assert result is True or result in ['ok','healthy'] or (isinstance(result, dict) and result.get('status') in ['ok','healthy',True])" 2>/dev/null; then
         HEALTHY=true
         echo -e "  ${GREEN}✅ Validator healthy (attempt ${i}/${MAX_RETRIES})${NC}"
         break
@@ -138,7 +142,7 @@ if [ ! -f "${TOOLS_DIR}/deploy_dex.py" ]; then
 fi
 
 # Run deployment
-python3 "${TOOLS_DIR}/deploy_dex.py" --rpc "${RPC_URL}" 2>&1 | sed 's/^/    /'
+$PYTHON_BIN "${TOOLS_DIR}/deploy_dex.py" --rpc "${RPC_URL}" 2>&1 | sed 's/^/    /'
 DEPLOY_EXIT=$?
 
 if [ $DEPLOY_EXIT -ne 0 ]; then
@@ -153,11 +157,21 @@ fi
 CUSTODY_TREASURY_TARGET="/etc/lichen/custody-treasury.json"
 DEPLOYER_KP="${SCRIPT_DIR}/../keypairs/deployer.json"
 if [ -f "$DEPLOYER_KP" ]; then
-    echo -e "  Copying deployer keypair to custody treasury: ${CUSTODY_TREASURY_TARGET}"
-    sudo mkdir -p /etc/lichen
-    sudo cp "$DEPLOYER_KP" "$CUSTODY_TREASURY_TARGET"
-    sudo chmod 600 "$CUSTODY_TREASURY_TARGET"
-    echo -e "  ${GREEN}✅ Custody treasury keypair aligned with contract admin${NC}"
+    echo -e "  Aligning custody treasury keypair with contract admin"
+    if [ "$(id -u)" -eq 0 ]; then
+        mkdir -p /etc/lichen
+        cp "$DEPLOYER_KP" "$CUSTODY_TREASURY_TARGET"
+        chmod 600 "$CUSTODY_TREASURY_TARGET"
+        echo -e "  ${GREEN}✅ Installed custody treasury keypair at ${CUSTODY_TREASURY_TARGET}${NC}"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo mkdir -p /etc/lichen
+        sudo cp "$DEPLOYER_KP" "$CUSTODY_TREASURY_TARGET"
+        sudo chmod 600 "$CUSTODY_TREASURY_TARGET"
+        echo -e "  ${GREEN}✅ Installed custody treasury keypair at ${CUSTODY_TREASURY_TARGET}${NC}"
+    else
+        echo -e "  ${YELLOW}⚠  Skipping /etc/lichen custody key install because passwordless sudo is unavailable.${NC}"
+        echo -e "  ${YELLOW}   For local runs, set CUSTODY_TREASURY_KEYPAIR=${DEPLOYER_KP}${NC}"
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────
@@ -176,7 +190,7 @@ if [ -f "${TOOLS_DIR}/deploy_contract.py" ]; then
         WASM="${CONTRACTS_DIR}/${c}/${c}.wasm"
         if [ -f "$WASM" ]; then
             echo -e "  Deploying ${c}..."
-            CUSTODY_LICHEN_RPC_URL="${RPC_URL}" python3 "${TOOLS_DIR}/deploy_contract.py" \
+            CUSTODY_LICHEN_RPC_URL="${RPC_URL}" $PYTHON_BIN "${TOOLS_DIR}/deploy_contract.py" \
                 "$WASM" 2>&1 | sed 's/^/    /' || true
         fi
     done
@@ -190,7 +204,7 @@ fi
 # ─────────────────────────────────────────────────────────
 echo -e "\n${CYAN}[5/5]${NC} Seeding AMM pools + insurance fund..."
 
-CUSTODY_LICHEN_RPC_URL="${RPC_URL}" python3 "${SCRIPT_DIR}/seed_pools.py" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
+CUSTODY_LICHEN_RPC_URL="${RPC_URL}" $PYTHON_BIN "${SCRIPT_DIR}/seed_pools.py" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
 
 # ─────────────────────────────────────────────────────────
 # Final verification
@@ -200,12 +214,12 @@ echo -e "${CYAN}║  FIRST-BOOT DEPLOYMENT COMPLETE                          ║
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 
 if [ -f "$MANIFEST" ]; then
-    CONTRACT_COUNT=$(python3 -c "import json; m=json.load(open('$MANIFEST')); print(len(m.get('contracts',{})))" 2>/dev/null || echo "0")
+    CONTRACT_COUNT=$($PYTHON_BIN -c "import json; m=json.load(open('$MANIFEST')); print(len(m.get('contracts',{})))" 2>/dev/null || echo "0")
     echo -e "  ${GREEN}Manifest: ${MANIFEST}${NC}"
     echo -e "  ${GREEN}Deployed: ${CONTRACT_COUNT} contracts${NC}"
     
     # Print contract addresses
-    python3 -c "
+    $PYTHON_BIN -c "
 import json
 m = json.load(open('$MANIFEST'))
 for name, addr in m.get('contracts', {}).items():

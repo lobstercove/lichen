@@ -16,8 +16,8 @@
 // different values at the same height.
 
 use lichen_core::{
-    Block, CommitSignature, Hash, Keypair, Precommit, Prevote, Proposal, Pubkey, RoundStep,
-    StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
+    Block, CommitSignature, Hash, Keypair, PqSignature, Precommit, Prevote, Proposal, Pubkey,
+    RoundStep, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -117,7 +117,7 @@ pub struct ConsensusEngine {
     /// Precommits we've already processed: (round, validator) → voted hash.
     seen_precommits: HashMap<(u32, Pubkey), Option<Hash>>,
     /// Precommit signatures retained for commit certificates: (round, validator) → (signature, timestamp).
-    precommit_sigs: HashMap<(u32, Pubkey), ([u8; 64], u64)>,
+    precommit_sigs: HashMap<(u32, Pubkey), (PqSignature, u64)>,
     /// Rounds for which we already signed a prevote, to prevent equivocation.
     signed_prevote_rounds: HashMap<u32, Option<Hash>>,
     /// Rounds for which we already signed a precommit, to prevent equivocation.
@@ -635,7 +635,7 @@ impl ConsensusEngine {
         // Retain precommit signature + timestamp for commit certificate
         self.precommit_sigs.insert(
             (precommit.round, precommit.validator),
-            (precommit.signature, precommit.timestamp),
+            (precommit.signature.clone(), precommit.timestamp),
         );
 
         let round = precommit.round;
@@ -990,7 +990,7 @@ impl ConsensusEngine {
             round: self.round,
             block_hash,
             validator: self.validator_pubkey,
-            signature,
+            signature: signature.clone(),
             timestamp,
         };
 
@@ -1136,7 +1136,7 @@ impl ConsensusEngine {
                     .get(&(round, *pk))
                     .map(|(sig, ts)| CommitSignature {
                         validator: pk.0,
-                        signature: *sig,
+                        signature: sig.clone(),
                         timestamp: *ts,
                     })
             })
@@ -1845,7 +1845,9 @@ mod tests {
         engine.start_height(1);
 
         // Insert a fake signature + timestamp
-        engine.precommit_sigs.insert((0, pk), ([42u8; 64], 1000));
+        engine
+            .precommit_sigs
+            .insert((0, pk), (make_validator(42).0.sign(b"fixture"), 1000));
         assert!(!engine.precommit_sigs.is_empty());
 
         // Start new height

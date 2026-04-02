@@ -3,7 +3,7 @@
 
 use crate::genesis::ConsensusParams;
 use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
-use crate::{Block, Hash, Pubkey};
+use crate::{Block, Hash, PqSignature, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -1896,54 +1896,6 @@ impl StakePool {
         self.stakes.get_mut(validator)
     }
 
-    /// One-time migration: re-assign bootstrap indices to validators that were
-    /// staked before the contributory-stake system existed. These validators have
-    /// `bootstrap_index == u64::MAX` (the default from `StakeInfo::new()`) even
-    /// though they joined within the first 200 and deserve a bootstrap grant.
-    ///
-    /// Returns the number of validators migrated.
-    pub fn migrate_legacy_bootstrap_indices(&mut self) -> u64 {
-        // Collect validators that need migration: index==MAX, amount==MIN_VALIDATOR_STAKE,
-        // and status is FullyVested (incorrectly — they were never vested, just default)
-        let mut to_migrate: Vec<Pubkey> = self
-            .stakes
-            .iter()
-            .filter(|(_, info)| {
-                info.bootstrap_index == u64::MAX
-                    && info.amount >= MIN_VALIDATOR_STAKE
-                    && info.bootstrap_debt == 0
-                    && info.graduation_slot.is_none()
-                    && info.total_debt_repaid == 0
-            })
-            .map(|(pubkey, _)| *pubkey)
-            .collect();
-
-        // Sort by start_slot for deterministic ordering
-        to_migrate.sort_by_key(|pk| {
-            self.stakes
-                .get(pk)
-                .map(|s| s.start_slot)
-                .unwrap_or(u64::MAX)
-        });
-
-        let mut migrated = 0u64;
-        for pubkey in to_migrate {
-            if self.bootstrap_grants_issued >= MAX_BOOTSTRAP_VALIDATORS {
-                break; // No more bootstrap slots available
-            }
-            let idx = self.bootstrap_grants_issued;
-            self.bootstrap_grants_issued += 1;
-
-            if let Some(stake_info) = self.stakes.get_mut(&pubkey) {
-                stake_info.bootstrap_index = idx;
-                stake_info.bootstrap_debt = stake_info.amount; // Full debt = 100K LICN
-                stake_info.status = BootstrapStatus::Bootstrapping;
-                migrated += 1;
-            }
-        }
-        migrated
-    }
-
     /// Compute a deterministic hash of the entire stake pool.
     ///
     /// HashMaps have non-deterministic iteration order, so we collect into
@@ -2000,30 +1952,6 @@ pub struct StakingStats {
     pub average_stake: u64,
 }
 
-// Helper functions for [u8; 64] signature serialization
-fn serialize_signature<S>(sig: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::Serialize;
-    hex::encode(sig).serialize(serializer)
-}
-
-fn deserialize_signature<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-    let hex_str: String = String::deserialize(deserializer)?;
-    let bytes = hex::decode(&hex_str).map_err(serde::de::Error::custom)?;
-    if bytes.len() != 64 {
-        return Err(serde::de::Error::custom("Invalid signature length"));
-    }
-    let mut sig = [0u8; 64];
-    sig.copy_from_slice(&bytes);
-    Ok(sig)
-}
-
 /// Consensus vote for a block
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Vote {
@@ -2033,19 +1961,15 @@ pub struct Vote {
     pub block_hash: Hash,
     /// Validator who cast this vote
     pub validator: Pubkey,
-    /// Ed25519 signature over (slot, block_hash)
-    #[serde(
-        serialize_with = "serialize_signature",
-        deserialize_with = "deserialize_signature"
-    )]
-    pub signature: [u8; 64],
+    /// Self-contained PQ signature over (slot, block_hash).
+    pub signature: PqSignature,
     /// Timestamp when vote was created
     pub timestamp: u64,
 }
 
 impl Vote {
     /// Create a new vote
-    pub fn new(slot: u64, block_hash: Hash, validator: Pubkey, signature: [u8; 64]) -> Self {
+    pub fn new(slot: u64, block_hash: Hash, validator: Pubkey, signature: PqSignature) -> Self {
         Vote {
             slot,
             block_hash,
@@ -2085,7 +2009,7 @@ impl Vote {
 /// - Prevents all three DoubleVote scenarios: P2P echo, fork re-evaluation,
 ///   and view rotation races.
 pub struct VoteAuthority {
-    /// Signing seed — used to reconstruct Ed25519 keypair for each signing op.
+    /// Signing seed — used to reconstruct the ML-DSA signing key for each signing op.
     signing_seed: [u8; 32],
     /// Our validator public key.
     validator_pubkey: Pubkey,
@@ -2203,12 +2127,8 @@ pub struct Proposal {
     pub valid_round: i32,
     /// Public key of the proposer.
     pub proposer: Pubkey,
-    /// Ed25519 signature over (height || round || block_hash || valid_round).
-    #[serde(
-        serialize_with = "serialize_signature",
-        deserialize_with = "deserialize_signature"
-    )]
-    pub signature: [u8; 64],
+    /// Self-contained PQ signature over (height || round || block_hash || valid_round).
+    pub signature: PqSignature,
 }
 
 impl Proposal {
@@ -2223,7 +2143,7 @@ impl Proposal {
         msg
     }
 
-    /// Verify the proposer's Ed25519 signature.
+    /// Verify the proposer's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = self.signable_bytes();
         crate::Keypair::verify(&self.proposer, &msg, &self.signature)
@@ -2260,12 +2180,8 @@ pub struct Prevote {
     pub block_hash: Option<Hash>,
     /// Validator who cast this prevote.
     pub validator: Pubkey,
-    /// Ed25519 signature over (height || round || block_hash_or_nil).
-    #[serde(
-        serialize_with = "serialize_signature",
-        deserialize_with = "deserialize_signature"
-    )]
-    pub signature: [u8; 64],
+    /// Self-contained PQ signature over (height || round || block_hash_or_nil).
+    pub signature: PqSignature,
 }
 
 impl Prevote {
@@ -2282,7 +2198,7 @@ impl Prevote {
         msg
     }
 
-    /// Verify the voter's Ed25519 signature.
+    /// Verify the voter's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = Self::signable_bytes(self.height, self.round, &self.block_hash);
         crate::Keypair::verify(&self.validator, &msg, &self.signature)
@@ -2304,12 +2220,8 @@ pub struct Precommit {
     pub block_hash: Option<Hash>,
     /// Validator who cast this precommit.
     pub validator: Pubkey,
-    /// Ed25519 signature over (0x02 || height || round || block_hash_or_nil || timestamp).
-    #[serde(
-        serialize_with = "serialize_signature",
-        deserialize_with = "deserialize_signature"
-    )]
-    pub signature: [u8; 64],
+    /// Self-contained PQ signature over (0x02 || height || round || block_hash_or_nil || timestamp).
+    pub signature: PqSignature,
     /// Validator's wall-clock timestamp (Unix seconds) when casting this precommit.
     /// Used for BFT Time: weighted median of commit precommit timestamps.
     #[serde(default)]
@@ -2341,7 +2253,7 @@ impl Precommit {
         msg
     }
 
-    /// Verify the voter's Ed25519 signature.
+    /// Verify the voter's PQ signature.
     pub fn verify_signature(&self) -> bool {
         let msg = Self::signable_bytes(self.height, self.round, &self.block_hash, self.timestamp);
         crate::Keypair::verify(&self.validator, &msg, &self.signature)
@@ -3698,6 +3610,10 @@ impl SlashingTracker {
 mod tests {
     use super::*;
 
+    fn test_signature(fill: u8) -> crate::PqSignature {
+        crate::PqSignature::test_fixture(fill)
+    }
+
     #[test]
     fn test_validator_set() {
         let mut set = ValidatorSet::new();
@@ -3723,7 +3639,7 @@ mod tests {
             1,
             Hash::new([0u8; 32]),
             Pubkey::new([1u8; 32]),
-            [0u8; 64], // Dummy signature
+            test_signature(0),
         );
 
         // Note: Will fail verification, but tests structure
@@ -4927,8 +4843,8 @@ mod tests {
         // Push directly to bypass signature verification (test-only)
         let evidence_list = tracker.evidence.entry(pk).or_default();
         for slot in 0..4u64 {
-            let vote_1 = Vote::new(slot, Hash::new([0xAA; 32]), pk, [0u8; 64]);
-            let vote_2 = Vote::new(slot, Hash::new([0xBB; 32]), pk, [0u8; 64]);
+            let vote_1 = Vote::new(slot, Hash::new([0xAA; 32]), pk, test_signature(0xAA));
+            let vote_2 = Vote::new(slot, Hash::new([0xBB; 32]), pk, test_signature(0xBB));
             evidence_list.push(SlashingEvidence::new(
                 SlashingOffense::DoubleVote {
                     slot,

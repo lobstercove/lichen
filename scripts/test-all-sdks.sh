@@ -8,6 +8,12 @@ echo "🦞 Lichen - Complete SDK Coverage Test"
 echo "========================================================================"
 echo ""
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN="python3"
+fi
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -80,7 +86,7 @@ echo "🐍 Testing Python SDK"
 echo "------------------------------------------------------------------------"
 
 cd sdk/python
-if PYTHONPATH=$PWD python3 examples/comprehensive_test.py 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
+if PYTHONPATH=$PWD "$PYTHON_BIN" examples/comprehensive_test.py 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
     echo -e "${GREEN}✅ Python comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else

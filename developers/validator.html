@@ -287,13 +287,13 @@ lichen-validator \
             </ol>
 
             <p>Typical files under the state path include validator identity files, signer material, RocksDB chain
-                state, <code>known-peers.json</code>, and <code>home/.lichen/</code> for the persistent P2P TLS
-                identity and TOFU fingerprint store. Preserving that directory preserves the validator identity and
+                state, <code>known-peers.json</code>, and <code>home/.lichen/</code> for the persistent native PQ P2P
+                identity and peer-identity TOFU store. Preserving that directory preserves the validator identity and
                 local progress.</p>
             <p>For new or state-scoped installs, the validator prefers <code>--db-path/home</code> for those P2P runtime
-                files. If an existing deployment already has <code>node_cert.der</code> and <code>node_key.der</code>
-                under the current process <code>HOME</code>, it keeps using that identity to avoid breaking established
-                peers.</p>
+                files. If an existing deployment already has <code>node_identity.json</code> under the current process
+                <code>HOME</code>, it keeps using that identity instead of generating a new node address.
+            </p>
             <p>For unattended updates, run the validator under a restart supervisor or service manager. Auto-update
                 handles download and staging; the supervisor handles relaunch.</p>
 
@@ -427,7 +427,7 @@ cargo build --release
 
             <h3>Initialize Validator Identity</h3>
 
-            <p>Generate a validator keypair. This Ed25519 key is your node's on-chain identity. The start script does
+            <p>Generate a validator keypair. This native PQ key is your node's on-chain identity. The start script does
                 this automatically, but you can also do it manually:</p>
 
             <div class="code-block">
@@ -485,7 +485,8 @@ cargo build --release
                         <td><code>keypair_path</code></td>
                         <td>String</td>
                         <td><code>~/.lichen/validator-keypair.json</code></td>
-                        <td>Path to the validator Ed25519 keypair JSON file. Generate with <code>lichen init</code>.</td>
+                        <td>Path to the validator native PQ keypair JSON file. Generate with <code>lichen init</code>.
+                        </td>
                     </tr>
                     <tr>
                         <td><code>data_dir</code></td>
@@ -1471,13 +1472,6 @@ print(releases[0]['tag_name'])
     mv lichen-validator "$BINARY"
     chmod +x "$BINARY"
 
-    # Install bundled ZK verification keys to the shared cache
-    ZK_SHARED="$HOME/.lichen/zk"
-    if [ -d "zk" ]; then
-        mkdir -p "$ZK_SHARED"
-        cp zk/*.bin "$ZK_SHARED/"
-        echo "$(date): ZK keys installed to $ZK_SHARED"
-    fi
     cd /
 
     echo "$(date): Installed lichen-validator $VERSION"
@@ -1594,10 +1588,6 @@ launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre
                             <td>Blockchain state DB</td>
                         </tr>
                         <tr>
-                            <td><code>~/.lichen/zk/</code></td>
-                            <td>ZK verification &amp; proving keys</td>
-                        </tr>
-                        <tr>
                             <td><code>~/.lichen/logs/validator.log</code></td>
                             <td>Stdout/stderr log</td>
                         </tr>
@@ -1626,15 +1616,10 @@ launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre
 $Version = "v0.2.14"  # Update to latest
 $Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"
 $InstallDir = "$env:LOCALAPPDATA\Lichen"
-New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-mainnet", "$InstallDir\logs", "$InstallDir\zk"
+New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-mainnet", "$InstallDir\logs"
 
 Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\lichen.tar.gz"
 tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
-
-# Copy ZK keys if bundled
-if (Test-Path "$InstallDir\bin\zk") {
-    Copy-Item "$InstallDir\bin\zk\*" "$InstallDir\zk\"
-}
 
 # 2. Install NSSM (https://nssm.cc/download)
 # Extract nssm.exe to a directory in your PATH
@@ -1702,16 +1687,8 @@ nssm remove LichenValidator confirm</code></pre>
                 <table>
                     <tbody>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\Lichen\bin\</code></td>
-                            <td>Binary + ZK setup tool</td>
-                        </tr>
-                        <tr>
                             <td><code>%LOCALAPPDATA%\Lichen\state-mainnet\</code></td>
                             <td>Blockchain state DB</td>
-                        </tr>
-                        <tr>
-                            <td><code>%LOCALAPPDATA%\Lichen\zk\</code></td>
-                            <td>ZK verification &amp; proving keys</td>
                         </tr>
                         <tr>
                             <td><code>%LOCALAPPDATA%\Lichen\logs\</code></td>
@@ -1721,51 +1698,18 @@ nssm remove LichenValidator confirm</code></pre>
                 </table>
             </div>
 
-            <!-- ========== 7d. ZK Keys ========== -->
-            <h2 id="zk-keys">ZK Verification Keys</h2>
+            <!-- ========== 7d. Shielded Runtime ========== -->
+            <h2 id="shielded-runtime">Shielded Runtime</h2>
 
-            <p>The validator requires Groth16 ZK verification keys to process shielded transactions. These are
-                pre-generated ceremony keys shipped in every release tarball under a <code>zk/</code> directory.</p>
+            <p>The live shielded verifier consumes native Plonky3 proof envelopes directly. Validators do not load
+                proving-key or verification-key bundles at startup, and no shared <code>zk/</code> cache is required
+                for shielded verification.
+            </p>
 
-            <p>On first run, the validator checks these locations in order:</p>
-            <ol>
-                <li>Environment variables: <code>LICHEN_ZK_SHIELD_VK_PATH</code>,
-                    <code>LICHEN_ZK_UNSHIELD_VK_PATH</code>, <code>LICHEN_ZK_TRANSFER_VK_PATH</code>
-                </li>
-                <li>Shared cache: <code>~/.lichen/zk/</code> (Linux/macOS) or
-                    <code>%LOCALAPPDATA%\Lichen\zk\</code> (Windows)
-                </li>
-                <li>Bundled: <code>zk/</code> directory next to the binary (auto-copied to shared cache)</li>
-            </ol>
-
-            <p>If keys are missing, shielded transactions are unavailable but the validator continues normally for
-                regular transactions.</p>
-
-            <h3>Manual Installation</h3>
-
-            <div class="code-block">
-                <div class="code-block-header">
-                    <span class="code-lang">Shell</span>
-                    <button class="code-copy-btn">Copy</button>
-                </div>
-                <pre><code># Copy from the release tarball's zk/ directory
-mkdir -p ~/.lichen/zk
-cp /path/to/release/zk/*.bin ~/.lichen/zk/
-
-# Verify keys (SHA-256 hashes must match across all validators)
-sha256sum ~/.lichen/zk/vk_*.bin
-# Expected:
-# af980fb4...  vk_shield.bin
-# e368eeaf...  vk_transfer.bin
-# f39b6e2e...  vk_unshield.bin</code></pre>
-            </div>
-
-            <div class="callout callout-warning">
-                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Key Consistency</div>
-                All validators in the network <strong>must</strong> use identical ZK verification keys. Keys generated
-                from different ceremony runs will reject each other's proofs. Always use the canonical keys shipped in
-                the official release tarball.
-            </div>
+            <p>Operationally, this means a validator installation only needs the standard binaries, contract artifacts,
+                and state/log directories. The shielded pool RPC surface now reports the active scheme via
+                <code>zkScheme</code> / <code>zk_scheme</code> instead of publishing verification-key hashes.
+            </p>
 
             <!-- ========== 8. TROUBLESHOOTING ========== -->
             <h2 id="troubleshooting">Troubleshooting</h2>

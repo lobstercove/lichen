@@ -141,7 +141,7 @@ async fn sign_request(
     axum::response::IntoResponse::into_response(axum::Json(SignResponse {
         status: "signed".to_string(),
         signer_pubkey: state.pubkey_base58.clone(),
-        signature: hex::encode(signature),
+        signature: serde_json::to_string(&signature).expect("serialize signature"),
         message_hash: hex::encode(hash),
         message: "threshold signer signature produced".to_string(),
     }))
@@ -190,6 +190,11 @@ fn load_signer_keypair(path: &Path) -> Result<Keypair, String> {
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&keypair_file.private_key);
     let kp = Keypair::from_seed(&seed);
+    if !keypair_file.public_key_base58.is_empty()
+        && kp.pubkey().to_base58() != keypair_file.public_key_base58
+    {
+        return Err("signer key file address does not match derived PQ address".to_string());
+    }
     // AUDIT-FIX C-9: Zeroize seed material after use
     seed.zeroize();
     Ok(kp)
@@ -201,10 +206,11 @@ fn save_signer_keypair(keypair: &Keypair, path: &Path) -> Result<(), String> {
     }
 
     let pubkey = keypair.pubkey();
+    let public_key = keypair.public_key();
     let mut seed = keypair.to_seed();
     let mut keypair_file = SignerKeyFile {
         private_key: seed.to_vec(),
-        public_key: pubkey.0.to_vec(),
+        public_key: public_key.bytes,
         public_key_base58: pubkey.to_base58(),
     };
     // AUDIT-FIX C-9: Zeroize seed material after use

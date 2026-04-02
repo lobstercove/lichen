@@ -4,6 +4,7 @@ version = "0.5.0"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen command-line interface"
+license = "MIT"
 
 [[bin]]
 name = "lichen"
@@ -16,10 +17,6 @@ path = "src/marketplace_demo.rs"
 [[bin]]
 name = "zk-prove"
 path = "src/zk_prove.rs"
-
-[[bin]]
-name = "zk-setup"
-path = "src/zk_setup.rs"
 
 [dependencies]
 lichen-core = { path = "../core" }
@@ -42,9 +39,6 @@ sha2 = "0.10"
 getrandom = "0.4.1"
 aes-gcm = "0.10"
 argon2 = "0.5"
-ark-bn254 = "0.4"
-ark-ff = "0.4"
-ark-std = { version = "0.4", features = ["getrandom"] }
 
 [dev-dependencies]
 tempfile = "3"

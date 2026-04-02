@@ -53,7 +53,7 @@ rpc_call() {
 }
 
 check_health() {
-    local response=$(rpc_call "health")
+    local response=$(rpc_call "getHealth")
     
     if [ -z "$response" ]; then
         print_error "RPC server not responding"

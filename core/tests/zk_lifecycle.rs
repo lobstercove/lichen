@@ -2,24 +2,21 @@
 // ZK Privacy Full Lifecycle Integration Tests
 //
 // These tests exercise the complete shielded pool pipeline end-to-end:
-//   1. Trusted setup → proving + verification keys
-//   2. Generate real Groth16 proofs for shield/unshield operations
-//   3. Process transactions through the TxProcessor with real state
-//   4. Verify all state changes (balances, commitments, nullifiers, merkle root)
-//   5. Verify security properties (double-spend rejection, invalid proofs)
+//   1. Generate native STARK proofs for shield/unshield operations
+//   2. Process transactions through the TxProcessor with real state
+//   3. Verify all state changes (balances, commitments, nullifiers, merkle root)
+//   4. Verify security properties (double-spend rejection, invalid proofs)
 //
 // Each test performs full cryptographic operations so execution is slow
 // (~30–60 seconds per test on commodity hardware).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use ark_bn254::Fr;
-use ark_ff::{PrimeField, UniformRand};
-use ark_std::rand::rngs::OsRng;
 use lichen_core::zk::circuits::shield::ShieldCircuit;
 use lichen_core::zk::circuits::unshield::UnshieldCircuit;
-use lichen_core::zk::merkle::{fr_to_bytes, poseidon_hash_fr, MerkleTree};
-use lichen_core::zk::prover::Prover;
-use lichen_core::zk::setup;
+use lichen_core::zk::{
+    commitment_hash, nullifier_hash, random_scalar_bytes, recipient_hash,
+    recipient_preimage_from_bytes, MerkleTree, Prover,
+};
 use lichen_core::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,14 +102,14 @@ fn make_unshield_tx(
     amount: u64,
     nullifier: &[u8; 32],
     merkle_root: &[u8; 32],
-    recipient_fr_bytes: &[u8; 32],
+    recipient_public_bytes: &[u8; 32],
     proof_bytes: &[u8],
 ) -> Transaction {
     let mut data = vec![24u8];
     data.extend_from_slice(&amount.to_le_bytes());
     data.extend_from_slice(nullifier);
     data.extend_from_slice(merkle_root);
-    data.extend_from_slice(recipient_fr_bytes);
+    data.extend_from_slice(recipient_public_bytes);
     data.extend_from_slice(proof_bytes);
 
     let ix = Instruction {
@@ -139,35 +136,15 @@ fn test_shield_then_unshield_full_lifecycle() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
 
-    // ── Step 1: Trusted setup for shield + unshield circuits ────────────
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
-    let mut prover = Prover::new();
-    prover
-        .load_shield_key(&shield_ceremony.proving_key_bytes)
-        .expect("load shield PK");
-    prover
-        .load_unshield_key(&unshield_ceremony.proving_key_bytes)
-        .expect("load unshield PK");
+    let prover = Prover::new();
 
     // ── Step 2: Shield 0.5 LICN ─────────────────────────────────────────
     let shield_amount = 500_000_000u64; // 0.5 LICN
-    let blinding = Fr::rand(&mut OsRng);
-    let amount_fr = Fr::from(shield_amount);
-    let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
-    let commitment_bytes = fr_to_bytes(&commitment_fr);
+    let blinding = random_scalar_bytes();
+    let commitment_bytes = commitment_hash(shield_amount, &blinding);
 
-    let shield_circuit = ShieldCircuit::new(shield_amount, shield_amount, blinding, commitment_fr);
+    let shield_circuit =
+        ShieldCircuit::new_bytes(shield_amount, shield_amount, blinding, commitment_bytes);
     let shield_proof = prover.prove_shield(shield_circuit).expect("prove shield");
 
     let alice_balance_before = env.state.get_balance(&env.alice).unwrap();
@@ -211,31 +188,23 @@ fn test_shield_then_unshield_full_lifecycle() {
 
     // ── Step 4: Unshield the same amount ────────────────────────────────
     // Derive secrets for unshield
-    let serial = Fr::rand(&mut OsRng);
-    let spending_key = Fr::rand(&mut OsRng);
-    let nullifier_fr = poseidon_hash_fr(serial, spending_key);
-    let nullifier_bytes = fr_to_bytes(&nullifier_fr);
+    let serial = random_scalar_bytes();
+    let spending_key = random_scalar_bytes();
+    let nullifier_bytes = nullifier_hash(&serial, &spending_key);
 
-    // Recipient binding: Poseidon(Fr(alice_pubkey), 0)
-    let recipient_preimage = Fr::from_le_bytes_mod_order(&env.alice.0);
-    let recipient_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
-    let recipient_fr_bytes = fr_to_bytes(&recipient_fr);
+    let recipient_preimage = recipient_preimage_from_bytes(env.alice.0);
+    let recipient_public_bytes = recipient_hash(&recipient_preimage);
 
     // Get Merkle path for the commitment we just shielded
-    let merkle_root_fr = Fr::from_le_bytes_mod_order(&pool_after_shield.merkle_root);
     let proof_path = expected_tree.proof(0).unwrap();
-    let merkle_path: Vec<Fr> = proof_path
-        .siblings
-        .iter()
-        .map(|s| Fr::from_le_bytes_mod_order(s))
-        .collect();
+    let merkle_path = proof_path.siblings.clone();
 
     // Build and prove unshield circuit
-    let unshield_circuit = UnshieldCircuit::new(
-        merkle_root_fr,
-        nullifier_fr,
+    let unshield_circuit = UnshieldCircuit::new_bytes(
+        pool_after_shield.merkle_root,
+        nullifier_bytes,
         shield_amount,
-        recipient_fr,
+        recipient_public_bytes,
         shield_amount,
         blinding,
         serial,
@@ -253,7 +222,7 @@ fn test_shield_then_unshield_full_lifecycle() {
         shield_amount,
         &nullifier_bytes,
         &pool_after_shield.merkle_root,
-        &recipient_fr_bytes,
+        &recipient_public_bytes,
         &unshield_proof.proof_bytes,
     );
     let unshield_result = env.processor.process_transaction(&unshield_tx, &validator);
@@ -310,7 +279,7 @@ fn test_shield_then_unshield_full_lifecycle() {
     dupe_data.extend_from_slice(&shield_amount.to_le_bytes());
     dupe_data.extend_from_slice(&nullifier_bytes);
     dupe_data.extend_from_slice(&pool_after_unshield.merkle_root);
-    dupe_data.extend_from_slice(&recipient_fr_bytes);
+    dupe_data.extend_from_slice(&recipient_public_bytes);
     dupe_data.extend_from_slice(&unshield_proof.proof_bytes);
 
     let dupe_ix = Instruction {
@@ -349,27 +318,11 @@ fn test_invalid_proof_bytes_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
 
-    // Setup VKs
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
     // Build a shield transaction with garbage proof bytes
     let amount = 100_000_000u64;
-    let blinding = Fr::rand(&mut OsRng);
-    let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
-    let commitment_bytes = fr_to_bytes(&commitment_fr);
+    let commitment_bytes = commitment_hash(amount, &random_scalar_bytes());
 
-    // 128 bytes of garbage (not a valid BN254 point)
-    let garbage_proof = vec![0xFFu8; 128];
+    let garbage_proof = vec![0xFFu8; 7];
 
     let tx = make_shield_tx(&env, amount, &commitment_bytes, &garbage_proof);
     let result = env.processor.process_transaction(&tx, &validator);
@@ -394,32 +347,14 @@ fn test_invalid_proof_bytes_rejected() {
 fn test_wrong_merkle_root_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
-
-    // Setup VKs and shield first
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
-    let mut prover = Prover::new();
-    prover
-        .load_shield_key(&shield_ceremony.proving_key_bytes)
-        .unwrap();
+    let prover = Prover::new();
 
     // Shield some amount
     let amount = 200_000_000u64;
-    let blinding = Fr::rand(&mut OsRng);
-    let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
-    let commitment_bytes = fr_to_bytes(&commitment_fr);
+    let blinding = random_scalar_bytes();
+    let commitment_bytes = commitment_hash(amount, &blinding);
 
-    let shield_circuit = ShieldCircuit::new(amount, amount, blinding, commitment_fr);
+    let shield_circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment_bytes);
     let shield_proof = prover.prove_shield(shield_circuit).unwrap();
     let shield_tx = make_shield_tx(&env, amount, &commitment_bytes, &shield_proof.proof_bytes);
     let shield_result = env.processor.process_transaction(&shield_tx, &validator);
@@ -427,14 +362,8 @@ fn test_wrong_merkle_root_rejected() {
 
     // Now try to unshield with a WRONG merkle root
     let wrong_root = [0xAB; 32];
-    // Use a canonical nullifier (valid BN254 field element) so the test
-    // reaches the merkle-root check instead of being rejected earlier by
-    // the C-1 nullifier canonicality validation.
-    let nullifier_fr = Fr::from(123456789u64);
-    let nullifier = fr_to_bytes(&nullifier_fr);
-    let recipient_preimage = Fr::from_le_bytes_mod_order(&env.alice.0);
-    let recipient_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
-    let recipient_fr_bytes = fr_to_bytes(&recipient_fr);
+    let nullifier = random_scalar_bytes();
+    let recipient_public_bytes = recipient_hash(&recipient_preimage_from_bytes(env.alice.0));
     let dummy_proof = vec![0u8; 128];
 
     let tx = make_unshield_tx(
@@ -442,7 +371,7 @@ fn test_wrong_merkle_root_rejected() {
         amount,
         &nullifier,
         &wrong_root,
-        &recipient_fr_bytes,
+        &recipient_public_bytes,
         &dummy_proof,
     );
     let result = env.processor.process_transaction(&tx, &validator);
@@ -466,34 +395,17 @@ fn test_wrong_merkle_root_rejected() {
 fn test_multiple_shields_maintain_consistent_pool_state() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
-
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
-    let mut prover = Prover::new();
-    prover
-        .load_shield_key(&shield_ceremony.proving_key_bytes)
-        .unwrap();
+    let prover = Prover::new();
 
     let amounts = [100_000_000u64, 250_000_000u64, 150_000_000u64];
     let mut expected_tree = MerkleTree::new();
     let mut total_shielded = 0u64;
 
     for (i, &amount) in amounts.iter().enumerate() {
-        let blinding = Fr::rand(&mut OsRng);
-        let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
-        let commitment_bytes = fr_to_bytes(&commitment_fr);
+        let blinding = random_scalar_bytes();
+        let commitment_bytes = commitment_hash(amount, &blinding);
 
-        let circuit = ShieldCircuit::new(amount, amount, blinding, commitment_fr);
+        let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment_bytes);
         let proof = prover.prove_shield(circuit).unwrap();
         let tx = make_shield_tx(&env, amount, &commitment_bytes, &proof.proof_bytes);
         let result = env.processor.process_transaction(&tx, &validator);
@@ -541,20 +453,8 @@ fn test_shield_zero_amount_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
 
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
     let commitment = [0x11u8; 32];
-    let proof_bytes = vec![0u8; 128];
+    let proof_bytes = vec![0u8; 7];
 
     let tx = make_shield_tx(&env, 0, &commitment, &proof_bytes);
     let result = env.processor.process_transaction(&tx, &validator);
@@ -576,31 +476,14 @@ fn test_shield_zero_amount_rejected() {
 fn test_shield_insufficient_balance_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
-
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
-    let mut prover = Prover::new();
-    prover
-        .load_shield_key(&shield_ceremony.proving_key_bytes)
-        .unwrap();
+    let prover = Prover::new();
 
     // Try to shield 100 LICN when alice only has 10 LICN
     let huge_amount = 100_000_000_000_000u64;
-    let blinding = Fr::rand(&mut OsRng);
-    let commitment_fr = poseidon_hash_fr(Fr::from(huge_amount), blinding);
-    let commitment_bytes = fr_to_bytes(&commitment_fr);
+    let blinding = random_scalar_bytes();
+    let commitment_bytes = commitment_hash(huge_amount, &blinding);
 
-    let circuit = ShieldCircuit::new(huge_amount, huge_amount, blinding, commitment_fr);
+    let circuit = ShieldCircuit::new_bytes(huge_amount, huge_amount, blinding, commitment_bytes);
     let proof = prover.prove_shield(circuit).unwrap();
 
     let tx = make_shield_tx(&env, huge_amount, &commitment_bytes, &proof.proof_bytes);
@@ -625,19 +508,7 @@ fn test_shielded_transfer_short_data_rejected() {
     let env = create_test_env();
     let validator = Pubkey([42u8; 32]);
 
-    let shield_ceremony = setup::setup_shield().expect("shield setup");
-    let unshield_ceremony = setup::setup_unshield().expect("unshield setup");
-    let transfer_ceremony = setup::setup_transfer().expect("transfer setup");
-
-    env.processor
-        .load_zk_verification_keys(
-            &shield_ceremony.verification_key_bytes,
-            &unshield_ceremony.verification_key_bytes,
-            &transfer_ceremony.verification_key_bytes,
-        )
-        .expect("load VKs");
-
-    // Type 25 with only 100 bytes (needs 289)
+    // Type 25 with only 101 bytes total (needs at least 162)
     let mut data = vec![25u8];
     data.extend_from_slice(&[0u8; 100]);
 

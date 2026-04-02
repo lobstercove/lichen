@@ -125,11 +125,11 @@
                         </div>
                         <div class="detail-row">
                             <div class="detail-label">Tree Depth</div>
-                            <div class="detail-value">32 levels (Poseidon hash, SNARK-friendly)</div>
+                            <div class="detail-value">20 levels (Poseidon2 commitments, transparent STARK path)</div>
                         </div>
                         <div class="detail-row">
                             <div class="detail-label">Max Capacity</div>
-                            <div class="detail-value">2<sup>32</sup> = 4,294,967,296 commitments</div>
+                            <div class="detail-value">2<sup>20</sup> = 1,048,576 commitments</div>
                         </div>
                         <div class="detail-row">
                             <div class="detail-label">Utilization</div>
@@ -147,9 +147,9 @@
                             </div>
                         </div>
                         <div class="detail-row">
-                            <div class="detail-label">Verification Keys</div>
+                            <div class="detail-label">Proof Runtime</div>
                             <div class="detail-value">
-                                <span id="vkStatusText">Pending Setup</span>
+                                <span id="vkStatusText">Transparent STARK path</span>
                             </div>
                         </div>
                     </div>
@@ -307,7 +307,8 @@
                     <ul class="footer-links">
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Getting
                                 Started</a></li>
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/architecture.html">Architecture</a>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Architecture</a>
                         </li>
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API Docs</a>
                         </li>

@@ -933,7 +933,7 @@ fn decode_route(data: &[u8]) -> Option<RouteJson> {
         1 => "amm",
         2 => "split",
         3 => "multi_hop",
-        _ => "legacy",
+        _ => return None,
     };
     let pool_or_pair_id = u64::from_le_bytes(data[73..81].try_into().ok()?);
     let secondary_id = u64::from_le_bytes(data[81..89].try_into().ok()?);
@@ -3336,16 +3336,13 @@ mod tests {
 
     #[test]
     fn decode_route_all_types() {
-        for (byte, expected) in [
-            (0u8, "clob"),
-            (1, "amm"),
-            (2, "split"),
-            (3, "multi_hop"),
-            (4, "legacy"),
-        ] {
+        for (byte, expected) in [(0u8, "clob"), (1, "amm"), (2, "split"), (3, "multi_hop")] {
             let blob = make_route_blob(1, byte, 0, 0, 0, false);
             assert_eq!(decode_route(&blob).unwrap().route_type, expected);
         }
+
+        let invalid = make_route_blob(1, 4, 0, 0, 0, false);
+        assert!(decode_route(&invalid).is_none());
     }
 
     // ── decode_proposal ─────────────────────────────────────────────────

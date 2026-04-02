@@ -1,104 +1,54 @@
-//! Trusted Setup Ceremony Tools
+//! ZK runtime artifact metadata.
 //!
-//! Generates circuit-specific proving/verification keys using Groth16.
-//!
-//! Development: deterministic seed for reproducible keys.
-//! Production: multi-party computation (MPC) ceremony where
-//! only ONE honest participant is needed for security.
-//!
-//! Output: proving_key.bin (~100MB) and verification_key.bin (~1KB) per circuit.
+//! Lichen shielded proofs now use native Plonky3 STARK envelopes and no longer
+//! require proving-key or verification-key ceremonies. This module reports the
+//! active runtime scheme for each shielded circuit so callers that still expect
+//! a setup step can introspect the live configuration without relying on
+//! trusted-setup artifacts.
 
-use super::circuits::shield::ShieldCircuit;
-use super::circuits::transfer::TransferCircuit;
-use super::circuits::unshield::UnshieldCircuit;
-use ark_bn254::Bn254;
-use ark_groth16::{Groth16, ProvingKey, VerifyingKey};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_snark::SNARK;
-use ark_std::rand::rngs::OsRng;
+use super::{ProofType, ZkSchemeVersion};
 
-/// Result of a trusted setup ceremony for one circuit
+/// Runtime artifact metadata for one shielded circuit.
 #[derive(Clone)]
 pub struct CeremonyOutput {
-    /// Serialized proving key (~100MB)
-    pub proving_key_bytes: Vec<u8>,
-    /// Serialized verification key (~1KB)
-    pub verification_key_bytes: Vec<u8>,
     /// Circuit name for identification
     pub circuit_name: String,
+    /// Which shielded circuit this metadata belongs to
+    pub proof_type: ProofType,
+    /// Which proof scheme the runtime expects
+    pub zk_scheme_version: ZkSchemeVersion,
+    /// Human-readable description of the live runtime
+    pub note: String,
 }
 
-/// Run the trusted setup for the shield circuit
+fn runtime_artifact(proof_type: ProofType) -> CeremonyOutput {
+    CeremonyOutput {
+        circuit_name: proof_type.as_str().to_string(),
+        proof_type,
+        zk_scheme_version: ZkSchemeVersion::Plonky3FriPoseidon2,
+        note: "Native Plonky3 STARK runtime; no external setup artifacts required".to_string(),
+    }
+}
+
+/// Return the live runtime metadata for the shield circuit.
 pub fn setup_shield() -> Result<CeremonyOutput, String> {
-    let circuit = ShieldCircuit::empty();
-
-    let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut OsRng)
-        .map_err(|e| format!("shield setup failed: {}", e))?;
-
-    Ok(serialize_keys(pk, vk, "shield"))
+    Ok(runtime_artifact(ProofType::Shield))
 }
 
-/// Run the trusted setup for the unshield circuit
+/// Return the live runtime metadata for the unshield circuit.
 pub fn setup_unshield() -> Result<CeremonyOutput, String> {
-    let circuit = UnshieldCircuit::empty();
-
-    let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut OsRng)
-        .map_err(|e| format!("unshield setup failed: {}", e))?;
-
-    Ok(serialize_keys(pk, vk, "unshield"))
+    Ok(runtime_artifact(ProofType::Unshield))
 }
 
-/// Run the trusted setup for the transfer circuit
+/// Return the live runtime metadata for the transfer circuit.
 pub fn setup_transfer() -> Result<CeremonyOutput, String> {
-    let circuit = TransferCircuit::empty();
-
-    let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut OsRng)
-        .map_err(|e| format!("transfer setup failed: {}", e))?;
-
-    Ok(serialize_keys(pk, vk, "transfer"))
+    Ok(runtime_artifact(ProofType::Transfer))
 }
 
-/// Run all three setups at once
+/// Return the live runtime metadata for all shielded circuits.
 pub fn setup_all() -> Result<Vec<CeremonyOutput>, String> {
     let shield = setup_shield()?;
     let unshield = setup_unshield()?;
     let transfer = setup_transfer()?;
     Ok(vec![shield, unshield, transfer])
-}
-
-/// Serialize proving and verification keys
-fn serialize_keys(pk: ProvingKey<Bn254>, vk: VerifyingKey<Bn254>, name: &str) -> CeremonyOutput {
-    let mut pk_bytes = Vec::new();
-    pk.serialize_compressed(&mut pk_bytes).unwrap_or_else(|e| {
-        panic!(
-            "FATAL: ProvingKey '{}' serialization failed: {}. OOM or ark-serialize bug.",
-            name, e
-        )
-    });
-
-    let mut vk_bytes = Vec::new();
-    vk.serialize_compressed(&mut vk_bytes).unwrap_or_else(|e| {
-        panic!(
-            "FATAL: VerifyingKey '{}' serialization failed: {}. OOM or ark-serialize bug.",
-            name, e
-        )
-    });
-
-    CeremonyOutput {
-        proving_key_bytes: pk_bytes,
-        verification_key_bytes: vk_bytes,
-        circuit_name: name.to_string(),
-    }
-}
-
-/// Load a verification key from bytes
-pub fn load_verification_key(bytes: &[u8]) -> Result<VerifyingKey<Bn254>, String> {
-    VerifyingKey::<Bn254>::deserialize_compressed(bytes)
-        .map_err(|e| format!("failed to deserialize VK: {}", e))
-}
-
-/// Load a proving key from bytes
-pub fn load_proving_key(bytes: &[u8]) -> Result<ProvingKey<Bn254>, String> {
-    ProvingKey::<Bn254>::deserialize_compressed(bytes)
-        .map_err(|e| format!("failed to deserialize PK: {}", e))
 }

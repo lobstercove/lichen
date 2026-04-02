@@ -68,7 +68,6 @@ COPY --from=builder /build/target/release/lichen-genesis /usr/local/bin/
 COPY --from=builder /build/target/release/lichen /usr/local/bin/
 COPY --from=builder /build/target/release/lichen-faucet /usr/local/bin/
 COPY --from=builder /build/target/release/lichen-custody /usr/local/bin/
-COPY --from=builder /build/target/release/zk-setup /usr/local/bin/
 
 # Copy default config
 COPY config.toml /etc/lichen/config.toml

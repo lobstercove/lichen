@@ -22,19 +22,20 @@ setup(
         "Topic :: Software Development :: Libraries :: Python Modules",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     packages=find_packages(),
-    python_requires=">=3.8",
+    python_requires=">=3.9",
     install_requires=[
         "httpx>=0.25.0",
         "websockets>=12.0",
         "base58>=2.1.1",
-        "pynacl>=1.5.0",
+        "cryptography>=43.0.0",
+        "dilithium-py>=1.4.0",
     ],
     extras_require={
         "dev": [

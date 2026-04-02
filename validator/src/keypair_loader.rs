@@ -9,7 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
-/// Keypair file format (Solana-compatible)
+/// Keypair file format with a 32-byte seed, full PQ verifying key bytes,
+/// and the compact address for operator display.
 #[derive(Debug, Serialize, Deserialize)]
 struct KeypairFile {
     #[serde(rename = "privateKey")]
@@ -27,8 +28,7 @@ struct KeypairFile {
 /// 2. Data-directory-local path: `{data_dir}/validator-keypair.json`
 /// 3. Shared HOME path: `~/.lichen/validators/validator-{network}.json`
 ///    (survives state-directory flushes — the keypair is NOT inside the DB)
-/// 4. Legacy port-based HOME path: `~/.lichen/validators/validator-{port}.json`
-/// 5. Generate new keypair and save to BOTH data-dir AND shared HOME path
+/// 4. Generate new keypair and save to BOTH data-dir AND shared HOME path
 ///
 /// The shared HOME path ensures that `rm -rf state-testnet` (a common
 /// operational reset) does NOT destroy the validator identity.  Without
@@ -37,7 +37,7 @@ struct KeypairFile {
 /// grant — inflating the validator set and total staked supply.
 pub fn load_or_generate_keypair(
     config_path: Option<&str>,
-    p2p_port: u16,
+    _p2p_port: u16,
     data_dir: Option<&Path>,
     network: Option<&str>,
 ) -> Result<Keypair> {
@@ -94,53 +94,15 @@ pub fn load_or_generate_keypair(
         }
     }
 
-    // 4. Legacy port-based HOME path
-    let legacy_path = default_validator_keypair_path(p2p_port);
-    if legacy_path.exists() {
-        info!(
-            "📁 Loading validator keypair from legacy path: {}",
-            legacy_path.display()
-        );
-        let keypair = load_keypair(&legacy_path)?;
-
-        // Migrate to data directory for future restarts
-        if let Some(dir) = data_dir {
-            let data_dir_path = dir.join("validator-keypair.json");
-            match save_keypair(&keypair, &data_dir_path) {
-                Ok(()) => info!(
-                    "📋 Migrated keypair to data dir: {}",
-                    data_dir_path.display()
-                ),
-                Err(e) => warn!(
-                    "⚠️  Failed to migrate keypair to data dir: {} (using legacy path)",
-                    e
-                ),
-            }
-        }
-
-        // Also save to shared path for future flush-resilience
-        if let Some(net) = network {
-            let shared_path = shared_validator_keypair_path(net);
-            if !shared_path.exists() {
-                let _ = save_keypair(&keypair, &shared_path);
-            }
-        }
-
-        return Ok(keypair);
-    }
-
-    // 5. Generate new keypair
-    warn!(
-        "⚠️  No keypair found at data dir or legacy path: {}",
-        legacy_path.display()
-    );
+    // 4. Generate new keypair
+    warn!("⚠️  No validator keypair found in the configured data or shared paths");
     info!("🔑 Generating new validator keypair...");
     let keypair = Keypair::new();
 
-    // Save to data directory (preferred) or legacy path
+    // Save to data directory when available.
     let save_path = data_dir
         .map(|d| d.join("validator-keypair.json"))
-        .unwrap_or_else(|| legacy_path.clone());
+        .unwrap_or_else(|| PathBuf::from("validator-keypair.json"));
     if let Err(e) = save_keypair(&keypair, &save_path) {
         warn!("Failed to save keypair: {}. Will use in-memory only.", e);
     } else {
@@ -165,19 +127,6 @@ pub fn load_or_generate_keypair(
     Ok(keypair)
 }
 
-/// Get legacy HOME-based validator keypair path.
-/// Prefer data-directory-local path via `load_or_generate_keypair`.
-pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
-    let home = std::env::var("LICHEN_REAL_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".lichen")
-        .join("validators")
-        .join(format!("validator-{}.json", p2p_port))
-}
-
 /// Shared HOME-based path keyed by network name (e.g. "testnet", "mainnet").
 /// Lives OUTSIDE the state directory so it survives `rm -rf state-*` resets.
 ///
@@ -188,7 +137,7 @@ pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
 /// causing a new keypair to be generated → ghost validator.
 ///
 /// Path: `$LICHEN_REAL_HOME/.lichen/validators/validator-{network}.json`
-fn shared_validator_keypair_path(network: &str) -> PathBuf {
+pub fn shared_validator_keypair_path(network: &str) -> PathBuf {
     let home = std::env::var("LICHEN_REAL_HOME")
         .ok()
         .map(PathBuf::from)
@@ -213,6 +162,11 @@ fn load_keypair(path: &Path) -> Result<Keypair> {
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&keypair_file.private_key);
     let keypair = Keypair::from_seed(&seed);
+    if !keypair_file.public_key_base58.is_empty()
+        && keypair.pubkey().to_base58() != keypair_file.public_key_base58
+    {
+        bail!("Keypair file publicKeyBase58 does not match derived PQ address");
+    }
     // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
     seed.iter_mut().for_each(|b| *b = 0);
     Ok(keypair)
@@ -227,11 +181,12 @@ fn save_keypair(keypair: &Keypair, path: &Path) -> Result<()> {
 
     // Create keypair file
     let pubkey = keypair.pubkey();
+    let public_key = keypair.public_key();
     let seed = keypair.to_seed();
 
     let keypair_file = KeypairFile {
         private_key: seed.to_vec(),
-        public_key: pubkey.0.to_vec(),
+        public_key: public_key.bytes,
         public_key_base58: pubkey.to_base58(),
     };
 

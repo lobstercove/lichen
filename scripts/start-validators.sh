@@ -1,46 +1,19 @@
-#!/bin/bash
-cd "$(dirname "$0")/.."
+#!/usr/bin/env bash
 
-# Start Validator 1
-./target/release/lichen-validator \
-  --p2p-port 7001 --rpc-port 8899 --ws-port 8900 \
-  > /tmp/v1.log 2>&1 &
-V1_PID=$!
-echo "✅ Started Validator 1 (PID: $V1_PID)"
-sleep 3
+set -euo pipefail
 
-# Start Validator 2
-./target/release/lichen-validator \
-  --p2p-port 7002 --rpc-port 8901 --ws-port 8902 \
-  --seed-peer /ip4/127.0.0.1/udp/7001/quic-v1 \
-  > /tmp/v2.log 2>&1 &
-V2_PID=$!
-echo "✅ Started Validator 2 (PID: $V2_PID)"
-sleep 3
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+CLUSTER_SCRIPT="$ROOT_DIR/scripts/start-local-3validators.sh"
 
-# Start Validator 3
-./target/release/lichen-validator \
-  --p2p-port 7003 --rpc-port 8903 --ws-port 8904 \
-  --seed-peer /ip4/127.0.0.1/udp/7001/quic-v1 \
-  > /tmp/v3.log 2>&1 &
-V3_PID=$!
-echo "✅ Started Validator 3 (PID: $V3_PID)"
-sleep 3
+if [[ ! -x "$CLUSTER_SCRIPT" ]]; then
+    echo "[start-validators] ERROR: missing executable cluster launcher at $CLUSTER_SCRIPT" >&2
+    exit 1
+fi
 
-echo ""
-echo "📊 Validator Status:"
-ps aux | grep lichen-validator | grep -v grep | awk '{print "  - PID " $2 ": " $13 " " $14}'
+COMMAND="${1:-start}"
+if [[ $# -gt 0 ]]; then
+    shift
+fi
 
-echo ""
-echo "🔍 Checking network..."
-curl -s http://localhost:8899 -X POST -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}' | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    if 'result' in d:
-        print(f'Network has {d[\"result\"][\"count\"]} validators')
-        for v in d['result']['validators']:
-            print(f'  - {v[\"pubkey\"][:20]}... (blocks: {v[\"blocks_proposed\"]}, rep: {v[\"reputation\"]})')
-except:
-    print('RPC not ready yet')
-"
+exec "$CLUSTER_SCRIPT" "$COMMAND" "$@"

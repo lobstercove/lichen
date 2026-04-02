@@ -8,7 +8,7 @@ covering $0.05–$0.25, as specified in DEX_LIQUIDITY_STRATEGY.md Phase 1.
 The dex_amm contract uses opcode dispatch (single `call()` export).
 Opcode 3 = add_liquidity, with layout:
   [0]      opcode      u8      = 0x03
-  [1:33]   provider    [u8;32] = Ed25519 pubkey (tx signer)
+    [1:33]   provider    [u8;32] = native Lichen address (tx signer)
   [33:41]  pool_id     u64 LE
   [41:45]  lower_tick  i32 LE
   [45:49]  upper_tick  i32 LE
@@ -58,9 +58,6 @@ LUSD_AMOUNT = 500_000     # 500K lUSD
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_keypair(path: Path) -> Keypair:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if "secret_key" in raw:
-        return Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
     return Keypair.load(path)
 
 
@@ -110,7 +107,7 @@ async def approve_token(
     Args layout: [owner 32B][spender 32B][amount 8B] = 72 bytes.
     """
     args_bytes = (
-        list(signer.public_key().to_bytes())
+        list(signer.address().to_bytes())
         + list(spender.to_bytes())
         + list(struct.pack("<Q", amount))
     )
@@ -123,7 +120,7 @@ async def approve_token(
     })
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [signer.public_key(), token_addr],
+        [signer.address(), token_addr],
         envelope.encode("utf-8"),
     )
     tb = TransactionBuilder()
@@ -185,9 +182,9 @@ async def main():
     print(f"  Network:   {args.network}")
 
     # ── Load reserve_pool keypair ──
-    reserve_path = Path(args.reserve_key) if args.reserve_key else find_keypair(args.network, "reserve")
+    reserve_path = Path(args.reserve_key) if args.reserve_key else find_keypair(args.network, "reserve_pool")
     reserve_kp = load_keypair(reserve_path)
-    print(f"  Provider:  {reserve_kp.public_key()}")
+    print(f"  Provider:  {reserve_kp.address()}")
 
     # ── Resolve contract addresses ──
     dex_amm_addr = await resolve_contract(conn, "DEXAMM")
@@ -213,7 +210,7 @@ async def main():
 
     # ── Check token balances ──
     # Storage keys use hex-encoded pubkey bytes: licn_bal_{hex(pubkey)}
-    reserve_hex = reserve_kp.public_key().to_bytes().hex()
+    reserve_hex = reserve_kp.address().to_bytes().hex()
 
     licn_storage = await conn._rpc("getProgramStorage", [str(licn_addr), {"limit": 500}])
     licn_entries = licn_storage.get("entries", []) if isinstance(licn_storage, dict) else []
@@ -288,7 +285,7 @@ async def main():
     # ── Add liquidity ──
     print(f"\n  Adding liquidity to pool {LICN_LUSD_POOL_ID}...")
     order_bytes = build_add_liquidity(
-        provider_pubkey=reserve_kp.public_key().to_bytes(),
+        provider_pubkey=reserve_kp.address().to_bytes(),
         pool_id=LICN_LUSD_POOL_ID,
         lower_tick=LOWER_TICK,
         upper_tick=UPPER_TICK,
@@ -305,7 +302,7 @@ async def main():
     })
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [reserve_kp.public_key(), dex_amm_addr],
+        [reserve_kp.address(), dex_amm_addr],
         envelope.encode("utf-8"),
     )
     tb = TransactionBuilder()

@@ -1384,12 +1384,12 @@ impl ContractRuntime {
 
 // ─── Host functions callable from WASM ───────────────────────────────────────
 
-/// Poseidon hash host function: hash two 32-byte field elements and write
-/// the 32-byte result into WASM memory.
+/// Poseidon hash host function: hash two canonical 32-byte values and write
+/// the 32-byte Poseidon2 result into WASM memory.
 ///
 /// Signature: host_poseidon_hash(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32
-///   left_ptr  — pointer to 32 bytes (Fr element, little-endian)
-///   right_ptr — pointer to 32 bytes (Fr element, little-endian)
+///   left_ptr  — pointer to 32 input bytes
+///   right_ptr — pointer to 32 input bytes
 ///   out_ptr   — pointer to 32-byte output buffer
 ///   Returns 0 on success, 1 on error
 fn host_poseidon_hash(
@@ -1398,9 +1398,6 @@ fn host_poseidon_hash(
     right_ptr: u32,
     out_ptr: u32,
 ) -> u32 {
-    use ark_bn254::Fr;
-    use ark_ff::PrimeField;
-
     {
         let ctx = env.data_mut();
         if !deduct_compute(ctx, COMPUTE_POSEIDON_HASH) {
@@ -1414,7 +1411,7 @@ fn host_poseidon_hash(
     };
     let view = memory.view(&env);
 
-    // Read left and right field elements
+    // Read the two raw 32-byte inputs.
     let mut left_bytes = [0u8; 32];
     let mut right_bytes = [0u8; 32];
     if view.read(left_ptr as u64, &mut left_bytes).is_err() {
@@ -1424,13 +1421,8 @@ fn host_poseidon_hash(
         return 1;
     }
 
-    // Convert to Fr (little-endian, reduced mod field order)
-    let left_fr = Fr::from_le_bytes_mod_order(&left_bytes);
-    let right_fr = Fr::from_le_bytes_mod_order(&right_bytes);
-
-    // Compute Poseidon hash
-    let result_fr = crate::zk::poseidon_hash_fr(left_fr, right_fr);
-    let result_bytes = crate::zk::fr_to_bytes(&result_fr);
+    // Compute the native Poseidon2 hash over the raw 32-byte inputs.
+    let result_bytes = crate::zk::poseidon_hash_pair(&left_bytes, &right_bytes);
 
     // Write result to output buffer
     if view.write(out_ptr as u64, &result_bytes).is_err() {

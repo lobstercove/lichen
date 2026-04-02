@@ -15,7 +15,7 @@ import hashlib
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
-from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction, PqPublicKey
 
 RPC_URL = os.environ.get("CUSTODY_LICHEN_RPC_URL", "http://127.0.0.1:8899")
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
@@ -28,11 +28,11 @@ def load_or_create_deployer() -> Keypair:
     KEYPAIR_DIR.mkdir(parents=True, exist_ok=True)
     if DEPLOYER_PATH.exists():
         kp = Keypair.load(DEPLOYER_PATH)
-        print(f"\U0001f511 Loaded deployer: {kp.public_key()}")
+        print(f"\U0001f511 Loaded deployer: {kp.address()}")
         return kp
     kp = Keypair.generate()
     kp.save(DEPLOYER_PATH)
-    print(f"\U0001f511 Generated new deployer: {kp.public_key()}")
+    print(f"\U0001f511 Generated new deployer: {kp.address()}")
     return kp
 
 
@@ -45,12 +45,41 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
 def find_treasury_keypair() -> str:
     """Discover treasury pubkey from genesis state."""
     repo_root = Path(__file__).resolve().parent.parent
+
+    def resolve_address(payload: dict) -> str:
+        for key in ("pubkey", "address_base58", "publicKeyBase58"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+
+        address = payload.get("address")
+        if isinstance(address, str) and address:
+            return address
+        if isinstance(address, list) and address:
+            return PublicKey(bytes(address)).to_base58()
+
+        pq_public_key = payload.get("public_key", payload.get("publicKey"))
+        if isinstance(pq_public_key, dict):
+            return PqPublicKey.from_json(pq_public_key).address().to_base58()
+        if isinstance(pq_public_key, list) and pq_public_key:
+            return PqPublicKey.ml_dsa65(pq_public_key).address().to_base58()
+
+        for seed_key in ("seed", "privateKey"):
+            seed = payload.get(seed_key)
+            if seed:
+                try:
+                    return Keypair.from_seed(seed).address().to_base58()
+                except Exception:
+                    continue
+
+        return ""
+
     # Try common locations for treasury keypair
     candidates = list(repo_root.glob("data/*/genesis-keys/treasury-*.json"))
     for c in candidates:
         try:
             d = json.loads(c.read_text())
-            pk = d.get("pubkey", d.get("address", ""))
+            pk = resolve_address(d)
             if pk:
                 return pk
         except Exception:
@@ -86,7 +115,7 @@ async def deploy(wasm_path: str, init_data: dict = None):
     treasury_pubkey = PublicKey(treasury_b58)
     print(f"\U0001f3e6 Treasury: {treasury_pubkey}")
 
-    program_pubkey = derive_program_address(deployer.public_key(), wasm_bytes)
+    program_pubkey = derive_program_address(deployer.address(), wasm_bytes)
     print(f"\U0001f4cd Derived program address: {program_pubkey}")
 
     # Build deploy instruction data:
@@ -100,7 +129,7 @@ async def deploy(wasm_path: str, init_data: dict = None):
 
     ix = Instruction(
         program_id=SYSTEM_PROGRAM,
-        accounts=[deployer.public_key(), treasury_pubkey],
+        accounts=[deployer.address(), treasury_pubkey],
         data=bytes(data),
     )
 
@@ -129,7 +158,7 @@ async def deploy(wasm_path: str, init_data: dict = None):
 
     print(f"\n\U0001f4cb Summary")
     print(f"   Program ID : {program_pubkey}")
-    print(f"   Deployer   : {deployer.public_key()}")
+    print(f"   Deployer   : {deployer.address()}")
     print(f"   Signature  : {sig}")
 
 

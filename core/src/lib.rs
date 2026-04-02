@@ -31,7 +31,7 @@ pub mod transaction;
 pub mod zk;
 
 // Re-exports
-pub use account::{Account, Keypair, Pubkey};
+pub use account::{Account, Address, Keypair, PqPublicKey, PqSignature, Pubkey};
 pub use block::{
     compute_bft_timestamp, compute_validators_hash, merkle_tx_proof, merkle_tx_root_from_hashes,
     verify_merkle_tx_proof, Block, BlockHeader, CommitSignature, MAX_BLOCK_SIZE, MAX_CONTRACT_CODE,

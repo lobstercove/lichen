@@ -1,89 +1,86 @@
-"""Keypair utilities for Lichen"""
+"""Keypair utilities for Lichen."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import base58
-from nacl.signing import SigningKey
+from dilithium_py.ml_dsa import ML_DSA_65
 
 from .publickey import PublicKey
+from .pq import PQ_SCHEME_ML_DSA_65, PqPublicKey, PqSignature
 
 
-@dataclass
+def _decode_seed(value: object, field_name: str) -> bytes:
+    if isinstance(value, str):
+        return bytes.fromhex(value.removeprefix("0x"))
+    if isinstance(value, list):
+        return bytes(value)
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    raise ValueError(f"{field_name} must be bytes, hex string, or list of integers")
+
+
+@dataclass(repr=False)
 class Keypair:
-    _signing_key: SigningKey
+    _seed: bytes
+    _public_key: bytes
+    _secret_key: bytes
 
     @classmethod
     def generate(cls) -> "Keypair":
-        return cls(SigningKey.generate())
+        return cls.from_seed(os.urandom(32))
 
     @classmethod
     def from_seed(cls, seed: bytes) -> "Keypair":
+        seed = _decode_seed(seed, "seed")
         if len(seed) != 32:
             raise ValueError("Seed must be 32 bytes")
-        return cls(SigningKey(seed))
+        public_key, secret_key = ML_DSA_65.key_derive(seed)
+        return cls(bytes(seed), bytes(public_key), bytes(secret_key))
 
     @classmethod
     def load(cls, path: Path, password: Optional[str] = None) -> "Keypair":
         data = json.loads(path.read_text())
 
-        # P9-SDK-02: Check for encrypted format (v2)
-        if data.get("version") == 2 and "encrypted_seed" in data:
+        if "encrypted_seed" in data:
             if password is None:
                 raise ValueError(
                     "Keypair file is encrypted — provide a password to load()"
                 )
-            import hmac
 
             salt = bytes.fromhex(data["salt"])
             nonce = bytes.fromhex(data["nonce"])
             ct = bytes.fromhex(data["encrypted_seed"])
             stored_tag = bytes.fromhex(data["tag"])
-
-            # Derive key via PBKDF2-HMAC-SHA256
             key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 600_000)
 
-            # Decrypt via AES-256-GCM
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
             aead = AESGCM(key)
-            # Verify HMAC tag (seed-bytes || pubkey-base58)
             plaintext = aead.decrypt(nonce, ct + stored_tag, None)
-            seed = plaintext[:32]
-            return cls.from_seed(seed)
+            return cls.from_seed(plaintext[:32])
 
-        # Legacy cleartext (v1) — support "seed", "privateKey", and "secret_key" formats
         if "seed" in data:
-            seed = bytes(data["seed"])
+            seed = _decode_seed(data["seed"], "seed")
         elif "privateKey" in data:
-            raw = bytes(data["privateKey"])
-            # Rust NaCl keypair is 64 bytes (seed[32] + public[32]); extract seed
-            seed = raw[:32]
-        elif "secret_key" in data:
-            # Genesis-generated keypairs store seed as hex string
-            seed = bytes.fromhex(data["secret_key"])
+            seed = _decode_seed(data["privateKey"], "privateKey")
         else:
             raise ValueError(
-                f"Keypair file missing 'seed', 'privateKey', or 'secret_key' field: {path}"
+                f"Keypair file missing 'seed', 'privateKey', or 'encrypted_seed' field: {path}"
             )
         return cls.from_seed(seed)
 
     def save(self, path: Path, password: Optional[str] = None) -> None:
-        """Save keypair to a JSON file.
-
-        P9-SDK-02: When *password* is provided the seed is encrypted with
-        AES-256-GCM using a key derived via PBKDF2-HMAC-SHA256 (600k rounds).
-        Without a password the seed is stored in cleartext (legacy v1 format)
-        for quick-start scripts and test wallets.
-        """
-        pubkey_bytes = self.public_key().to_bytes()
-        pubkey_b58 = base58.b58encode(pubkey_bytes).decode("ascii")
+        """Save the keypair seed and verifying key metadata to JSON."""
+        address = self.pubkey()
+        pq_public_key = self.public_key()
 
         if password is not None:
             salt = os.urandom(32)
@@ -95,15 +92,16 @@ class Keypair:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
             aead = AESGCM(key)
-            seed_bytes = self._signing_key.encode()
-            ct_and_tag = aead.encrypt(nonce, seed_bytes, None)
-            # AES-GCM appends a 16-byte tag
+            ct_and_tag = aead.encrypt(nonce, self._seed, None)
             ct = ct_and_tag[:-16]
             tag = ct_and_tag[-16:]
 
             payload = {
-                "version": 2,
-                "pubkey_base58": pubkey_b58,
+                "version": 3,
+                "scheme_version": PQ_SCHEME_ML_DSA_65,
+                "address": list(address.to_bytes()),
+                "address_base58": address.to_base58(),
+                "public_key": pq_public_key.to_json(),
                 "salt": salt.hex(),
                 "nonce": nonce.hex(),
                 "encrypted_seed": ct.hex(),
@@ -111,20 +109,44 @@ class Keypair:
             }
         else:
             payload = {
-                "seed": list(self._signing_key.encode()),
-                "pubkey": list(pubkey_bytes),
-                "pubkey_base58": pubkey_b58,
+                "version": 3,
+                "scheme_version": PQ_SCHEME_ML_DSA_65,
+                "seed": list(self._seed),
+                "address": list(address.to_bytes()),
+                "address_base58": address.to_base58(),
+                "public_key": pq_public_key.to_json(),
             }
 
         path.write_text(json.dumps(payload, indent=2))
-        # Set restrictive permissions (owner-only)
         path.chmod(0o600)
 
-    def public_key(self) -> PublicKey:
-        return PublicKey(self._signing_key.verify_key.encode())
+    def public_key(self) -> PqPublicKey:
+        return PqPublicKey.ml_dsa65(self._public_key)
 
-    def sign(self, message: bytes) -> bytes:
-        return self._signing_key.sign(message).signature
+    def pubkey(self) -> PublicKey:
+        return self.public_key().address()
+
+    def address(self) -> PublicKey:
+        return self.pubkey()
+
+    def sign(self, message: bytes) -> PqSignature:
+        return PqSignature.ml_dsa65(
+            self.public_key(),
+            ML_DSA_65.sign(self._secret_key, message, deterministic=True),
+        )
+
+    @staticmethod
+    def verify(address: PublicKey, message: bytes, signature: PqSignature) -> bool:
+        return address == signature.signer_address() and signature.verify(message)
 
     def seed(self) -> bytes:
-        return self._signing_key.encode()
+        return bytes(self._seed)
+
+    def to_seed(self) -> bytes:
+        return self.seed()
+
+    def __str__(self) -> str:
+        return f"Keypair(address='{self.pubkey().to_base58()}')"
+
+    def __repr__(self) -> str:
+        return str(self)

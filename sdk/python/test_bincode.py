@@ -1,57 +1,66 @@
-"""Tests for bincode encoding — verifies signature format matches Rust bincode Vec<[u8; 64]>."""
+"""Tests for bincode encoding — verifies PQ signature format matches Rust bincode Vec<PqSignature>."""
 
 import struct
-from lichen.bincode import encode_transaction, _encode_u64
+from lichen.bincode import encode_transaction
+from lichen.pq import PqPublicKey, PqSignature
+
+
+def _fixture_signature(fill: int) -> PqSignature:
+    return PqSignature(
+        scheme_version=0x01,
+        public_key=PqPublicKey(0x01, bytes([fill]) * 1952),
+        sig=bytes([fill]) * 3309,
+    )
 
 def test_encode_transaction_signature_format():
-    """Signatures must be encoded as raw 64-byte arrays (no per-element length prefix)."""
-    # Create a fake 64-byte signature as hex
-    sig_bytes = bytes(range(64))
-    sig_hex = sig_bytes.hex()
+    """Signatures must be encoded as PQ objects with public key and blob lengths."""
+    signature = _fixture_signature(0xBB)
 
-    # Fake message bytes (just a placeholder)
     message_bytes = b"\x00" * 40
 
-    result = encode_transaction([sig_hex], message_bytes)
+    result = encode_transaction([signature], message_bytes)
 
-    # Expected layout: u64(1) + 64 raw sig bytes + 40 message bytes + u32(tx_type)
-    # Total: 8 + 64 + 40 + 4 = 116 bytes
-    assert len(result) == 116, f"Expected 116 bytes, got {len(result)}"
+    # Expected layout: u64(1) + encoded PQ signature (5279) + 40 message bytes + u32(tx_type)
+    assert len(result) == 5331, f"Expected 5331 bytes, got {len(result)}"
 
-    # First 8 bytes: vector length = 1 (little-endian u64)
     vec_len = struct.unpack("<Q", result[:8])[0]
     assert vec_len == 1, f"Expected vec len 1, got {vec_len}"
 
-    # Next 64 bytes: raw signature (no length prefix)
-    assert result[8:72] == sig_bytes, "Signature bytes mismatch"
-
-    # Next: message bytes
-    assert result[72:112] == message_bytes, "Message bytes mismatch"
-
-    # Last 4 bytes: tx_type = 0 (Native) as u32 LE
-    assert result[112:] == b"\x00\x00\x00\x00", "tx_type mismatch"
+    assert result[8] == 0x01
+    assert result[9] == 0x01
+    assert struct.unpack("<Q", result[10:18])[0] == 1952
+    assert struct.unpack("<Q", result[1970:1978])[0] == 3309
+    assert result[-4:] == b"\x00\x00\x00\x00", "tx_type mismatch"
 
 
 def test_encode_transaction_rejects_wrong_signature_length():
-    """Signatures that aren't 64 bytes should raise ValueError."""
-    short_sig = ("ab" * 32)  # 32 bytes, not 64
+    """Signatures that aren't the full ML-DSA-65 size should raise ValueError."""
     try:
-        encode_transaction([short_sig], b"\x00")
+        encode_transaction(
+            [
+                PqSignature(
+                    scheme_version=0x01,
+                    public_key=PqPublicKey(0x01, bytes([0xAA]) * 1952),
+                    sig=b"\xAB" * 64,
+                )
+            ],
+            b"\x00",
+        )
         assert False, "Should have raised ValueError"
     except ValueError as e:
-        assert "64 bytes" in str(e)
+        assert "3309" in str(e)
 
 
 def test_encode_transaction_multiple_signatures():
-    """Multiple signatures are packed sequentially (no per-element length prefix)."""
-    sig1 = bytes(range(64)).hex()
-    sig2 = bytes(range(64, 128)).hex()
+    """Multiple PQ signatures are packed sequentially."""
+    sig1 = _fixture_signature(0xBB)
+    sig2 = _fixture_signature(0xAA)
     message = b"\xff" * 10
 
     result = encode_transaction([sig1, sig2], message)
 
-    # Layout: u64(2) + 64 + 64 + 10 + u32(tx_type) = 150 bytes
-    assert len(result) == 150
+    # Layout: u64(2) + 5279 + 5279 + 10 + u32(tx_type) = 10580 bytes
+    assert len(result) == 10580
     vec_len = struct.unpack("<Q", result[:8])[0]
     assert vec_len == 2
 

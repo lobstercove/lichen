@@ -5,7 +5,11 @@ from typing import Union
 
 
 class PublicKey:
-    """A 32-byte public key"""
+    """A 32-byte address digest.
+
+    The historical `PublicKey` name is preserved for SDK compatibility, but
+    native PQ verifying keys live in `PqPublicKey`.
+    """
     
     def __init__(self, value: Union[str, bytes, list]):
         """
@@ -31,7 +35,7 @@ class PublicKey:
     
     def to_bytes(self) -> bytes:
         """Convert to bytes"""
-        return self._bytes
+        return bytes(self._bytes)
     
     def __str__(self) -> str:
         """String representation (base58)"""

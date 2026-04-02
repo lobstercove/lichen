@@ -10,6 +10,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit all Cargo.lock files
+        run: |
+          set -euo pipefail
+          while IFS= read -r lockfile; do
+            echo "Auditing ${lockfile}"
+            cargo audit -q -D warnings --file "$lockfile"
+          done < <(find . -path '*/target' -prune -o -name Cargo.lock -print | sort)
+
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo-deny
+        run: cargo deny check --config deny.toml advisories licenses sources
+
   expected-contracts:
     name: Expected Contract Lockfile
     runs-on: ubuntu-latest

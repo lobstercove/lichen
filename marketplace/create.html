@@ -1,18 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Create NFT - Lichen Market</title>
-    <meta name="description" content="Create and mint your NFT on Lichen. Upload your art, set properties, and deploy to the blockchain.">
+    <meta name="description"
+        content="Create and mint your NFT on Lichen. Upload your art, set properties, and deploy to the blockchain.">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/marketplace.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 </head>
+
 <body>
     <!-- Navigation -->
     <nav class="nav">
@@ -82,7 +87,8 @@
                         <label class="form-label" for="nftDescription">
                             Description
                         </label>
-                        <textarea id="nftDescription" class="form-textarea" rows="4" placeholder="Tell collectors about your NFT..."></textarea>
+                        <textarea id="nftDescription" class="form-textarea" rows="4"
+                            placeholder="Tell collectors about your NFT..."></textarea>
                         <p class="form-hint">Markdown syntax is supported</p>
                     </div>
 
@@ -96,14 +102,20 @@
                             <option value="new">+ Create New Collection</option>
                         </select>
                         <!-- New Collection Fields (shown when "Create New" selected) -->
-                        <div id="newCollectionFields" style="display:none;margin-top:16px;padding:16px;background:var(--bg-secondary);border-radius:12px;border:1px solid var(--border-color);">
+                        <div id="newCollectionFields"
+                            style="display:none;margin-top:16px;padding:16px;background:var(--bg-secondary);border-radius:12px;border:1px solid var(--border-color);">
                             <div style="margin-bottom:12px;">
-                                <label class="form-label" for="newCollectionName" style="font-size:13px;">Collection Name <span class="required">*</span></label>
-                                <input type="text" id="newCollectionName" class="form-input" placeholder="e.g. Pixel Crabs" maxlength="64">
+                                <label class="form-label" for="newCollectionName" style="font-size:13px;">Collection
+                                    Name <span class="required">*</span></label>
+                                <input type="text" id="newCollectionName" class="form-input"
+                                    placeholder="e.g. Pixel Crabs" maxlength="64">
                             </div>
                             <div>
-                                <label class="form-label" for="newCollectionSymbol" style="font-size:13px;">Symbol</label>
-                                <input type="text" id="newCollectionSymbol" class="form-input" placeholder="e.g. PXCRB (auto-generated if empty)" maxlength="10" style="text-transform:uppercase;">
+                                <label class="form-label" for="newCollectionSymbol"
+                                    style="font-size:13px;">Symbol</label>
+                                <input type="text" id="newCollectionSymbol" class="form-input"
+                                    placeholder="e.g. PXCRB (auto-generated if empty)" maxlength="10"
+                                    style="text-transform:uppercase;">
                             </div>
                         </div>
                     </div>
@@ -144,8 +156,10 @@
                         <label class="form-label" for="nftListingPrice">
                             Listing Price (LICN)
                         </label>
-                        <input type="number" id="nftListingPrice" class="form-input" placeholder="e.g. 10.0 — leave empty to mint without listing" min="0" step="0.001">
-                        <p class="form-hint">Set a price to list for sale immediately after minting. Leave empty to mint only.</p>
+                        <input type="number" id="nftListingPrice" class="form-input"
+                            placeholder="e.g. 10.0 — leave empty to mint without listing" min="0" step="0.001">
+                        <p class="form-hint">Set a price to list for sale immediately after minting. Leave empty to mint
+                            only.</p>
                     </div>
 
                     <!-- Blockchain -->
@@ -165,9 +179,12 @@
                     <!-- Price Breakdown -->
                     <div class="form-section">
                         <label class="form-label">Cost Breakdown</label>
-                        <div id="priceBreakdown" class="preview-details" style="padding:16px;background:var(--bg-secondary);border-radius:12px;border:1px solid var(--border-color);">
+                        <div id="priceBreakdown" class="preview-details"
+                            style="padding:16px;background:var(--bg-secondary);border-radius:12px;border:1px solid var(--border-color);">
                             <div class="detail-row"><span>Minting Fee (1&times;)</span><strong>0.500 LICN</strong></div>
-                            <div class="detail-row" style="border-top:1px solid var(--border-color);padding-top:8px;margin-top:8px;"><span><strong>Total</strong></span><strong>0.500 LICN</strong></div>
+                            <div class="detail-row"
+                                style="border-top:1px solid var(--border-color);padding-top:8px;margin-top:8px;">
+                                <span><strong>Total</strong></span><strong>0.500 LICN</strong></div>
                         </div>
                     </div>
 
@@ -246,10 +263,13 @@
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Documentation</a></li>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/getting-started.html">Documentation</a></li>
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API</a></li>
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/cli-reference.html">Help Center</a></li>
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/changelog.html">Terms of Service</a></li>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/cli-reference.html">Help
+                                Center</a></li>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/changelog.html">Terms of
+                                Service</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
@@ -277,10 +297,11 @@
     <script src="shared/utils.js"></script>
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+    <script src="shared/pq.js"></script>
     <script src="shared/wallet-connect.js"></script>
     <script src="js/marketplace-config.js"></script>
     <script src="js/marketplace-data.js"></script>
     <script src="js/create.js"></script>
 </body>
+
 </html>

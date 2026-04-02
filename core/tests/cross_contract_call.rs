@@ -43,6 +43,7 @@ fn account_with_spores(owner: Pubkey, spores: u64) -> Account {
         staked: 0,
         locked: 0,
         data: Vec::new(),
+        public_key: None,
         owner,
         executable: false,
         rent_epoch: 0,

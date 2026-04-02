@@ -104,11 +104,11 @@ def load_or_create_deployer() -> Keypair:
     KEYPAIR_DIR.mkdir(parents=True, exist_ok=True)
     if DEPLOYER_PATH.exists():
         kp = Keypair.load(DEPLOYER_PATH)
-        print(f"🔑 Deployer: {kp.public_key()}")
+        print(f"🔑 Deployer: {kp.address()}")
         return kp
     kp = Keypair.generate()
     kp.save(DEPLOYER_PATH)
-    print(f"🔑 New deployer generated: {kp.public_key()}")
+    print(f"🔑 New deployer generated: {kp.address()}")
     return kp
 
 
@@ -182,9 +182,9 @@ async def deploy_contract(
 ) -> tuple:
     """Deploy a single contract via system program instruction type 17.
     Returns (signature, program_pubkey)."""
-    program_pubkey = derive_program_address(deployer.public_key(), wasm_bytes)
+    program_pubkey = derive_program_address(deployer.address(), wasm_bytes)
     if treasury_pubkey is None:
-        treasury_pubkey = deployer.public_key()
+        treasury_pubkey = deployer.address()
     # Instruction type 17: [17 | code_length(4 LE) | raw_wasm_bytes]
     data = bytearray()
     data.append(17)
@@ -192,7 +192,7 @@ async def deploy_contract(
     data.extend(wasm_bytes)
     ix = Instruction(
         program_id=SYSTEM_PROGRAM,
-        accounts=[deployer.public_key(), treasury_pubkey],
+        accounts=[deployer.address(), treasury_pubkey],
         data=bytes(data),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -215,7 +215,7 @@ async def call_contract(
     payload = json.dumps({"Call": {"function": func, "args": list(args_bytes), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program_pubkey],
+        accounts=[caller.address(), program_pubkey],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -236,7 +236,7 @@ async def call_contract_raw(
     payload = json.dumps({"Call": {"function": func, "args": raw_args, "value": value}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program_pubkey],
+        accounts=[caller.address(), program_pubkey],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -330,7 +330,7 @@ async def phase_initialize_dex(
     print(f"  INITIALIZING DEX CONTRACTS")
     print(f"{'═' * 60}")
 
-    deployer_bytes = list(deployer.public_key().to_bytes())
+    deployer_bytes = list(deployer.address().to_bytes())
     admin_bytes = list(admin_pubkey.to_bytes())
 
     # ── Initialize each DEX contract ──────────────────────────
@@ -388,7 +388,7 @@ async def phase_initialize_dex(
                 print(f"  ⚠️  create_pair({base_sym}/{quote_sym}): token address unknown, skipping")
                 continue
             data = (bytes([1])
-                    + bytes(deployer.public_key().to_bytes())
+                    + bytes(deployer.address().to_bytes())
                     + bytes(base_pk.to_bytes())
                     + bytes(quote_pk.to_bytes())
                     + struct.pack('<Q', DEFAULT_TICK)
@@ -407,7 +407,7 @@ async def phase_initialize_dex(
         lusd_pk = symbol_addrs.get("lUSD")
         if lusd_pk:
             data = (bytes([4])
-                    + bytes(deployer.public_key().to_bytes())
+                    + bytes(deployer.address().to_bytes())
                     + bytes(lusd_pk.to_bytes()))
             try:
                 sig = await call_contract_raw(
@@ -421,7 +421,7 @@ async def phase_initialize_dex(
     if "dex_router" in addrs and "dex_core" in addrs and "dex_amm" in addrs:
         print(f"\n  --- Wiring dex_router → dex_core + dex_amm ---")
         data = (bytes([1])
-                + bytes(deployer.public_key().to_bytes())
+                + bytes(deployer.address().to_bytes())
                 + bytes(addrs["dex_core"].to_bytes())
                 + bytes(addrs["dex_amm"].to_bytes()))
         try:
@@ -563,7 +563,7 @@ async def main():
     # Resolve admin pubkey — enforce multisig for mainnet
     if args.admin:
         admin_pubkey = PublicKey.from_base58(args.admin)
-        if admin_pubkey == deployer.public_key():
+        if admin_pubkey == deployer.address():
             if args.network == "mainnet":
                 print("❌ MAINNET ERROR: --admin must be a multisig address, not the deployer keypair")
                 print("   Deploy a multisig contract first, then use its address as --admin")
@@ -578,7 +578,7 @@ async def main():
             print("   A multisig-controlled admin address must be specified:")
             print("   python3 deploy_dex.py --network mainnet --admin <MULTISIG_PUBKEY>")
             sys.exit(1)
-        admin_pubkey = deployer.public_key()
+        admin_pubkey = deployer.address()
         print(f"⚠️  Admin (deployer — single-key, testnet only): {admin_pubkey}")
         print(f"   For production: use --admin <MULTISIG_PUBKEY> --network mainnet")
 
@@ -591,9 +591,9 @@ async def main():
         sys.exit(1)
 
     # ── Ensure deployer is funded (self-fund via requestAirdrop if needed) ──
-    deployer_pk_str = str(deployer.public_key())
+    deployer_pk_str = str(deployer.address())
     try:
-        bal = await conn.get_balance(deployer.public_key())
+        bal = await conn.get_balance(deployer.address())
         # bal may be dict with 'spores' key or an int
         if isinstance(bal, dict):
             spores = int(bal.get("spores", bal.get("balance", 0)))
@@ -662,13 +662,13 @@ async def main():
     await phase_verify(conn, all_addrs)
 
     # Save manifest
-    save_manifest(deployer.public_key(), all_addrs)
+    save_manifest(deployer.address(), all_addrs)
 
     # ── Summary ──
     print(f"\n{'═' * 60}")
     print(f"  DEPLOYMENT COMPLETE")
     print(f"{'═' * 60}")
-    print(f"  Deployer:  {deployer.public_key()}")
+    print(f"  Deployer:  {deployer.address()}")
     print(f"  Admin:     {admin_pubkey}")
     print(f"  Contracts: {len(all_addrs)}/{len(ALL_CONTRACTS)}")
     print()

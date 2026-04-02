@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
@@ -16,8 +16,12 @@ esac
 
 echo "🛑 Stopping Lichen local stack ($NETWORK)"
 
+pkill -f "validator-supervisor.sh" || true
+pkill -f "run-validator.sh ${NETWORK}" || true
 pkill -f "lichen-validator" || true
 pkill -f "lichen-custody" || true
+pkill -f "lichen-faucet" || true
+pkill -f "first-boot-deploy.sh" || true
 
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 if [ -d "$LOG_DIR" ]; then
@@ -34,4 +38,10 @@ if pgrep -f "lichen-custody" >/dev/null; then
   echo "⚠️  Custody still running"
 else
   echo "✅ Custody stopped"
+fi
+
+if pgrep -f "lichen-faucet" >/dev/null; then
+  echo "⚠️  Faucet still running"
+else
+  echo "✅ Faucet stopped"
 fi

@@ -3,7 +3,10 @@
 import bs58 from 'bs58';
 
 /**
- * A 32-byte public key
+ * A 32-byte address digest.
+ *
+ * The historical `PublicKey` name is preserved for SDK compatibility, but
+ * native PQ verifying keys live in `PqPublicKey`.
  */
 export class PublicKey {
   private readonly bytes: Uint8Array;

@@ -21,8 +21,6 @@
 //   getShieldedCommitments     — args: [{from, limit}]
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use ark_bn254::Fr;
-use ark_ff::PrimeField;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -33,11 +31,10 @@ use axum::{
 use lichen_core::zk::MerkleTree;
 use lichen_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
-    circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr, Prover, TREE_DEPTH,
+    circuits::unshield::UnshieldCircuit, commitment_hash, nullifier_hash, recipient_hash,
+    recipient_preimage_from_bytes, Prover, TREE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 // AUDIT-FIX M11: Cached merkle tree to avoid O(n) rebuild per request.
@@ -111,9 +108,11 @@ struct PoolStateResponse {
     commitment_count: u64,
     total_shielded: u64,
     total_shielded_licn: String,
-    vk_shield_hash: String,
-    vk_unshield_hash: String,
-    vk_transfer_hash: String,
+    nullifier_count: u64,
+    shield_count: u64,
+    unshield_count: u64,
+    transfer_count: u64,
+    zk_scheme: String,
 }
 
 #[derive(Serialize)]
@@ -186,9 +185,13 @@ async fn rest_get_pool_state(State(state): State<Arc<RpcState>>) -> Response {
             commitment_count: pool.commitment_count,
             total_shielded: pool.total_shielded,
             total_shielded_licn: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
-            vk_shield_hash: hex::encode(pool.vk_shield_hash),
-            vk_unshield_hash: hex::encode(pool.vk_unshield_hash),
-            vk_transfer_hash: hex::encode(pool.vk_transfer_hash),
+            nullifier_count: pool.nullifier_count,
+            shield_count: pool.shield_count,
+            unshield_count: pool.unshield_count,
+            transfer_count: pool.transfer_count,
+            zk_scheme: lichen_core::zk::ZkSchemeVersion::Plonky3FriPoseidon2
+                .as_str()
+                .to_string(),
         }),
         Err(e) => api_err(&format!("Failed to get pool state: {}", e)),
     }
@@ -385,7 +388,7 @@ async fn submit_shielded_tx(
         return api_err("Transaction has no signatures");
     }
     for sig in &tx.signatures {
-        if sig.iter().all(|&b| b == 0) {
+        if crate::pq_signature_is_zero(sig) {
             return api_err("Transaction contains an invalid zero signature");
         }
     }
@@ -670,13 +673,12 @@ pub(crate) async fn handle_compute_shield_commitment(
             code: -32602,
             message: "Invalid params: blinding (hex) is required".to_string(),
         })?;
-    let blinding_fr = parse_hex_to_fr(blinding_hex)?;
-
-    let commitment = fr_to_bytes(&poseidon_hash_fr(Fr::from(amount), blinding_fr));
+    let blinding = parse_hex_32(blinding_hex)?;
+    let commitment = commitment_hash(amount, &blinding);
 
     Ok(serde_json::json!({
         "amount": amount,
-        "blinding": hex::encode(fr_to_bytes(&blinding_fr)),
+        "blinding": hex::encode(blinding),
         "commitment": hex::encode(commitment),
     }))
 }
@@ -707,26 +709,16 @@ pub(crate) async fn handle_generate_shield_proof(
             code: -32602,
             message: "Invalid params: blinding (hex) is required".to_string(),
         })?;
-    let blinding_fr = parse_hex_to_fr(blinding_hex)?;
+    let blinding = parse_hex_32(blinding_hex)?;
 
-    let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_SHIELD_PK_PATH", &key_dir, "pk_shield.bin")?;
-    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_SHIELD_VK_PATH", &key_dir, "vk_shield.bin")?;
+    let commitment = commitment_hash(amount, &blinding);
 
-    let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding_fr);
-    let commitment = fr_to_bytes(&commitment_fr);
+    let prover = Prover::new();
 
-    let mut prover = Prover::new();
-    prover
-        .load_shield_key(&pk_bytes)
-        .map_err(internal_rpc_err)?;
+    let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment);
+    let proof = prover.prove_shield(circuit).map_err(internal_rpc_err)?;
 
-    let circuit = ShieldCircuit::new(amount, amount, blinding_fr, commitment_fr);
-    let mut proof = prover.prove_shield(circuit).map_err(internal_rpc_err)?;
-    proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), commitment];
-
-    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = lichen_core::zk::Verifier::from_vk_shield(vk);
+    let verifier = lichen_core::zk::Verifier::new();
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -740,7 +732,7 @@ pub(crate) async fn handle_generate_shield_proof(
     Ok(serde_json::json!({
         "type": "shield",
         "amount": amount,
-        "blinding": hex::encode(fr_to_bytes(&blinding_fr)),
+        "blinding": hex::encode(blinding),
         "commitment": hex::encode(commitment),
         "proof": hex::encode(&proof.proof_bytes),
     }))
@@ -773,7 +765,6 @@ pub(crate) async fn handle_generate_unshield_proof(
             message: "Invalid params: merkle_root (hex) is required".to_string(),
         })?;
     let merkle_root_bytes = parse_hex_32(merkle_root_hex)?;
-    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
 
     let recipient_raw = obj
         .get("recipient")
@@ -784,19 +775,22 @@ pub(crate) async fn handle_generate_unshield_proof(
         })?;
     let recipient_bytes = parse_recipient_32(recipient_raw)?;
 
-    let blinding_fr = parse_hex_to_fr(obj.get("blinding").and_then(|v| v.as_str()).ok_or_else(
+    let blinding = parse_hex_32(obj.get("blinding").and_then(|v| v.as_str()).ok_or_else(
         || RpcError {
             code: -32602,
             message: "Invalid params: blinding (hex) is required".to_string(),
         },
     )?)?;
-    let serial_fr = parse_hex_to_fr(obj.get("serial").and_then(|v| v.as_str()).ok_or_else(
-        || RpcError {
-            code: -32602,
-            message: "Invalid params: serial (hex) is required".to_string(),
-        },
-    )?)?;
-    let spending_key_fr = parse_hex_to_fr(
+    let serial =
+        parse_hex_32(
+            obj.get("serial")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: serial (hex) is required".to_string(),
+                })?,
+        )?;
+    let spending_key = parse_hex_32(
         obj.get("spending_key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| RpcError {
@@ -821,11 +815,11 @@ pub(crate) async fn handle_generate_unshield_proof(
                 code: -32602,
                 message: "Invalid params: merkle_path elements must be hex strings".to_string(),
             })?;
-            out.push(Fr::from_le_bytes_mod_order(&parse_hex_32(hex_str)?));
+            out.push(parse_hex_32(hex_str)?);
         }
         out
     } else {
-        vec![Fr::from(0u64); TREE_DEPTH]
+        vec![[0u8; 32]; TREE_DEPTH]
     };
 
     let path_bits = if let Some(bits_vals) = obj.get("path_bits").and_then(|v| v.as_array()) {
@@ -850,42 +844,28 @@ pub(crate) async fn handle_generate_unshield_proof(
         vec![false; TREE_DEPTH]
     };
 
-    let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_UNSHIELD_PK_PATH", &key_dir, "pk_unshield.bin")?;
-    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_UNSHIELD_VK_PATH", &key_dir, "vk_unshield.bin")?;
+    let nullifier = nullifier_hash(&serial, &spending_key);
+    let recipient_preimage = recipient_preimage_from_bytes(recipient_bytes);
+    let recipient_commitment = recipient_hash(&recipient_preimage);
 
-    let nullifier_fr = poseidon_hash_fr(serial_fr, spending_key_fr);
-    let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_bytes);
-    let recipient_hash_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
-
-    let circuit = UnshieldCircuit::new(
-        merkle_root_fr,
-        nullifier_fr,
+    let circuit = UnshieldCircuit::new_bytes(
+        merkle_root_bytes,
+        nullifier,
         amount,
-        recipient_hash_fr,
+        recipient_commitment,
         amount,
-        blinding_fr,
-        serial_fr,
-        spending_key_fr,
+        blinding,
+        serial,
+        spending_key,
         recipient_preimage,
         merkle_path,
         path_bits,
     );
 
-    let mut prover = Prover::new();
-    prover
-        .load_unshield_key(&pk_bytes)
-        .map_err(internal_rpc_err)?;
-    let mut proof = prover.prove_unshield(circuit).map_err(internal_rpc_err)?;
-    proof.public_inputs = vec![
-        fr_to_bytes(&merkle_root_fr),
-        fr_to_bytes(&nullifier_fr),
-        fr_to_bytes(&Fr::from(amount)),
-        fr_to_bytes(&recipient_hash_fr),
-    ];
+    let prover = Prover::new();
+    let proof = prover.prove_unshield(circuit).map_err(internal_rpc_err)?;
 
-    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = lichen_core::zk::Verifier::from_vk_unshield(vk);
+    let verifier = lichen_core::zk::Verifier::new();
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -900,8 +880,8 @@ pub(crate) async fn handle_generate_unshield_proof(
         "type": "unshield",
         "amount": amount,
         "merkle_root": hex::encode(merkle_root_bytes),
-        "nullifier": hex::encode(fr_to_bytes(&nullifier_fr)),
-        "recipient_hash": hex::encode(fr_to_bytes(&recipient_hash_fr)),
+        "nullifier": hex::encode(nullifier),
+        "recipient_hash": hex::encode(recipient_commitment),
         "proof": hex::encode(&proof.proof_bytes),
     }))
 }
@@ -925,7 +905,6 @@ pub(crate) async fn handle_generate_transfer_proof(
             message: "Invalid params: merkle_root (hex) is required".to_string(),
         })?;
     let merkle_root_bytes = parse_hex_32(merkle_root_hex)?;
-    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
 
     let inputs = obj
         .get("inputs")
@@ -962,12 +941,12 @@ pub(crate) async fn handle_generate_transfer_proof(
     }
 
     let mut input_values = [0u64; 2];
-    let mut input_blindings_fr = [Fr::from(0u64); 2];
-    let mut input_serials_fr = [Fr::from(0u64); 2];
-    let mut spending_keys_fr = [Fr::from(0u64); 2];
-    let mut input_merkle_paths: [Vec<Fr>; 2] = [vec![], vec![]];
+    let mut input_blindings = [[0u8; 32]; 2];
+    let mut input_serials = [[0u8; 32]; 2];
+    let mut spending_keys = [[0u8; 32]; 2];
+    let mut input_merkle_paths: [Vec<[u8; 32]>; 2] = [vec![], vec![]];
     let mut input_path_bits: [Vec<bool>; 2] = [vec![], vec![]];
-    let mut nullifiers_fr = [Fr::from(0u64); 2];
+    let mut nullifiers = [[0u8; 32]; 2];
 
     for (i, input) in inputs.iter().enumerate() {
         let input_obj = input.as_object().ok_or_else(|| RpcError {
@@ -982,7 +961,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                 code: -32602,
                 message: format!("Invalid params: inputs[{}].amount (u64) is required", i),
             })?;
-        input_blindings_fr[i] = parse_hex_to_fr(
+        input_blindings[i] = parse_hex_32(
             input_obj
                 .get("blinding")
                 .and_then(|v| v.as_str())
@@ -991,7 +970,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                     message: format!("Invalid params: inputs[{}].blinding (hex) is required", i),
                 })?,
         )?;
-        input_serials_fr[i] = parse_hex_to_fr(
+        input_serials[i] = parse_hex_32(
             input_obj
                 .get("serial")
                 .and_then(|v| v.as_str())
@@ -1000,7 +979,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                     message: format!("Invalid params: inputs[{}].serial (hex) is required", i),
                 })?,
         )?;
-        spending_keys_fr[i] = parse_hex_to_fr(
+        spending_keys[i] = parse_hex_32(
             input_obj
                 .get("spending_key")
                 .and_then(|v| v.as_str())
@@ -1012,7 +991,6 @@ pub(crate) async fn handle_generate_transfer_proof(
                     ),
                 })?,
         )?;
-
         let merkle_path_vals = input_obj
             .get("merkle_path")
             .and_then(|v| v.as_array())
@@ -1044,9 +1022,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                             i
                         ),
                     })
-                    .and_then(|hex_str| {
-                        parse_hex_32(hex_str).map(|b| Fr::from_le_bytes_mod_order(&b))
-                    })
+                    .and_then(parse_hex_32)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1079,12 +1055,11 @@ pub(crate) async fn handle_generate_transfer_proof(
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        nullifiers_fr[i] = poseidon_hash_fr(input_serials_fr[i], spending_keys_fr[i]);
+        nullifiers[i] = nullifier_hash(&input_serials[i], &spending_keys[i]);
     }
 
     let mut output_values = [0u64; 2];
-    let mut output_blindings_fr = [Fr::from(0u64); 2];
-    let mut output_commitments_fr = [Fr::from(0u64); 2];
+    let mut output_blindings = [[0u8; 32]; 2];
     let mut output_commitments_bytes = [[0u8; 32]; 2];
 
     for (i, output) in outputs.iter().enumerate() {
@@ -1100,7 +1075,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                 code: -32602,
                 message: format!("Invalid params: outputs[{}].amount (u64) is required", i),
             })?;
-        output_blindings_fr[i] = parse_hex_to_fr(
+        output_blindings[i] = parse_hex_32(
             output_obj
                 .get("blinding")
                 .and_then(|v| v.as_str())
@@ -1109,10 +1084,7 @@ pub(crate) async fn handle_generate_transfer_proof(
                     message: format!("Invalid params: outputs[{}].blinding (hex) is required", i),
                 })?,
         )?;
-
-        output_commitments_fr[i] =
-            poseidon_hash_fr(Fr::from(output_values[i]), output_blindings_fr[i]);
-        output_commitments_bytes[i] = fr_to_bytes(&output_commitments_fr[i]);
+        output_commitments_bytes[i] = commitment_hash(output_values[i], &output_blindings[i]);
     }
 
     let total_in: u64 = input_values.iter().sum();
@@ -1127,40 +1099,24 @@ pub(crate) async fn handle_generate_transfer_proof(
         });
     }
 
-    let circuit = TransferCircuit::new(
-        merkle_root_fr,
-        nullifiers_fr,
-        output_commitments_fr,
+    let circuit = TransferCircuit::new_bytes(
+        merkle_root_bytes,
+        nullifiers,
+        output_commitments_bytes,
         input_values,
-        input_blindings_fr,
-        input_serials_fr,
-        spending_keys_fr,
+        input_blindings,
+        input_serials,
+        spending_keys,
         input_merkle_paths,
         input_path_bits,
         output_values,
-        output_blindings_fr,
+        output_blindings,
     );
 
-    let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_TRANSFER_PK_PATH", &key_dir, "pk_transfer.bin")?;
-    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_TRANSFER_VK_PATH", &key_dir, "vk_transfer.bin")?;
+    let prover = Prover::new();
+    let proof = prover.prove_transfer(circuit).map_err(internal_rpc_err)?;
 
-    let mut prover = Prover::new();
-    prover
-        .load_transfer_key(&pk_bytes)
-        .map_err(internal_rpc_err)?;
-    let mut proof = prover.prove_transfer(circuit).map_err(internal_rpc_err)?;
-
-    proof.public_inputs = vec![
-        fr_to_bytes(&merkle_root_fr),
-        fr_to_bytes(&nullifiers_fr[0]),
-        fr_to_bytes(&nullifiers_fr[1]),
-        output_commitments_bytes[0],
-        output_commitments_bytes[1],
-    ];
-
-    let vk = lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = lichen_core::zk::Verifier::from_vk_transfer(vk);
+    let verifier = lichen_core::zk::Verifier::new();
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -1174,8 +1130,8 @@ pub(crate) async fn handle_generate_transfer_proof(
     Ok(serde_json::json!({
         "type": "transfer",
         "merkle_root": hex::encode(merkle_root_bytes),
-        "nullifier_a": hex::encode(fr_to_bytes(&nullifiers_fr[0])),
-        "nullifier_b": hex::encode(fr_to_bytes(&nullifiers_fr[1])),
+        "nullifier_a": hex::encode(nullifiers[0]),
+        "nullifier_b": hex::encode(nullifiers[1]),
         "commitment_c": hex::encode(output_commitments_bytes[0]),
         "commitment_d": hex::encode(output_commitments_bytes[1]),
         "proof": hex::encode(&proof.proof_bytes),
@@ -1216,41 +1172,6 @@ fn first_param_object(
             .and_then(|v| v.as_object())
             .or_else(|| p.as_object())
     })
-}
-
-fn resolve_zk_key_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".lichen")
-        .join("zk")
-}
-
-fn load_zk_key_bytes(
-    env_var: &str,
-    key_dir: &std::path::Path,
-    default_file: &str,
-) -> Result<Vec<u8>, RpcError> {
-    let path = std::env::var(env_var)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| key_dir.join(default_file));
-    fs::read(&path).map_err(|e| RpcError {
-        code: -32000,
-        message: format!(
-            "Failed to load ZK key {} ({}): {}. Run zk-setup if keys are missing.",
-            default_file,
-            path.display(),
-            e
-        ),
-    })
-}
-
-fn parse_hex_to_fr(hex_str: &str) -> Result<Fr, RpcError> {
-    let bytes = hex::decode(hex_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid hex: {}", e),
-    })?;
-    Ok(Fr::from_le_bytes_mod_order(&bytes))
 }
 
 fn parse_hex_32(hex_str: &str) -> Result<[u8; 32], RpcError> {
@@ -1302,9 +1223,7 @@ fn parse_recipient_32(input: &str) -> Result<[u8; 32], RpcError> {
 fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_json::Value {
     let merkle_root = hex::encode(pool.merkle_root);
     let total_shielded_licn = format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0);
-    let vk_shield_hash = hex::encode(pool.vk_shield_hash);
-    let vk_unshield_hash = hex::encode(pool.vk_unshield_hash);
-    let vk_transfer_hash = hex::encode(pool.vk_transfer_hash);
+    let zk_scheme = lichen_core::zk::ZkSchemeVersion::Plonky3FriPoseidon2.as_str();
 
     serde_json::json!({
         // camelCase (current canonical)
@@ -1316,9 +1235,7 @@ fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_
         "shieldCount": pool.shield_count,
         "unshieldCount": pool.unshield_count,
         "transferCount": pool.transfer_count,
-        "vkShieldHash": vk_shield_hash,
-        "vkUnshieldHash": vk_unshield_hash,
-        "vkTransferHash": vk_transfer_hash,
+        "zkScheme": zk_scheme,
 
         // snake_case compatibility for wallet/extension callers
         "merkle_root": hex::encode(pool.merkle_root),
@@ -1331,9 +1248,7 @@ fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_
         "shield_count": pool.shield_count,
         "unshield_count": pool.unshield_count,
         "transfer_count": pool.transfer_count,
-        "vk_shield_hash": hex::encode(pool.vk_shield_hash),
-        "vk_unshield_hash": hex::encode(pool.vk_unshield_hash),
-        "vk_transfer_hash": hex::encode(pool.vk_transfer_hash),
+        "zk_scheme": zk_scheme,
     })
 }
 
@@ -1401,14 +1316,17 @@ mod tests {
             commitment_count: 42,
             total_shielded: 1_000_000_000,
             total_shielded_licn: "1.000000000".to_string(),
-            vk_shield_hash: "def456".to_string(),
-            vk_unshield_hash: "789abc".to_string(),
-            vk_transfer_hash: "0ed123".to_string(),
+            nullifier_count: 2,
+            shield_count: 3,
+            unshield_count: 1,
+            transfer_count: 4,
+            zk_scheme: "plonky3-fri-poseidon2".to_string(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["commitmentCount"], 42);
         assert_eq!(json["totalShielded"], 1_000_000_000u64);
         assert_eq!(json["merkleRoot"], "abc123");
+        assert_eq!(json["zkScheme"], "plonky3-fri-poseidon2");
     }
 
     #[test]

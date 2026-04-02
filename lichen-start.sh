@@ -170,12 +170,6 @@ export HOME="$VALIDATOR_HOME"
 # (outside the state directory — survives `rm -rf data/state-*` flushes).
 export LICHEN_REAL_HOME="$REAL_HOME"
 
-# Preserve ZK verification key paths from the real home directory so the
-# validator can find them even though HOME was overridden above.
-export LICHEN_ZK_SHIELD_VK_PATH="${LICHEN_ZK_SHIELD_VK_PATH:-${REAL_HOME}/.lichen/zk/vk_shield.bin}"
-export LICHEN_ZK_UNSHIELD_VK_PATH="${LICHEN_ZK_UNSHIELD_VK_PATH:-${REAL_HOME}/.lichen/zk/vk_unshield.bin}"
-export LICHEN_ZK_TRANSFER_VK_PATH="${LICHEN_ZK_TRANSFER_VK_PATH:-${REAL_HOME}/.lichen/zk/vk_transfer.bin}"
-
 # Contract directory for genesis auto-deploy to find WASM artifacts
 export LICHEN_CONTRACTS_DIR="${LICHEN_CONTRACTS_DIR:-${REAL_HOME}/lichen/contracts}"
 

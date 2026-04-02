@@ -6,9 +6,9 @@
 //!
 //! - **Type-safe RPC client** - Interact with validators via JSON-RPC
 //! - **Transaction building** - Create and sign transactions
-//! - **Keypair management** - Ed25519 keypair generation and management
+//! - **Keypair management** - Native PQ keypair generation and signing
 //! - **Async/await** - Built on Tokio for async operations
-//! - **Solana-compatible** - Compatible with Solana wallet formats
+//! - **PQ-native wire format** - Matches the core `PqSignature` transaction model
 //!
 //! ## Quick Start
 //!
@@ -40,7 +40,7 @@ pub mod types;
 // Re-exports for convenience
 pub use client::{Client, ClientBuilder};
 pub use error::{Error, Result};
-pub use keypair::{Keypair, Pubkey};
+pub use keypair::{Address, Keypair, PqPublicKey, PqSignature, Pubkey};
 pub use transaction::TransactionBuilder;
 pub use types::{Balance, Block, NetworkInfo, Transaction};
 

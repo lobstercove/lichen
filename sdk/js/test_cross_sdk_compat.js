@@ -4,6 +4,7 @@
 // test_cross_sdk_message_golden_vector and test_cross_sdk_transaction_golden_vector.
 
 const assert = require('assert');
+const crypto = require('crypto');
 
 // --- Inline minimal encoder (mirrors bincode.ts without TS/ESM deps) ---
 
@@ -73,11 +74,28 @@ function encodeU32LE(value) {
   return out;
 }
 
+function encodeU8(value) {
+  return Uint8Array.of(value & 0xff);
+}
+
+function encodeBytes(data) {
+  return concat([encodeU64LE(data.length), data]);
+}
+
+function encodePqPublicKey(publicKey) {
+  return concat([encodeU8(publicKey.scheme_version), encodeBytes(publicKey.bytes)]);
+}
+
+function encodePqSignature(signature) {
+  return concat([
+    encodeU8(signature.scheme_version),
+    encodePqPublicKey(signature.public_key),
+    encodeBytes(signature.sig),
+  ]);
+}
+
 function encodeTransaction(sigs, messageBytes) {
-  const sigParts = sigs.map(s => {
-    if (s.length !== 64) throw new Error('Sig must be 64 bytes');
-    return s;
-  });
+  const sigParts = sigs.map(encodePqSignature);
   // tx_type: Native = 0 (u32 LE)
   const txType = encodeU32LE(0);
   return concat([encodeU64LE(sigParts.length), ...sigParts, messageBytes, txType]);
@@ -89,7 +107,14 @@ const programId = new Uint8Array(32).fill(0x01);
 const account0 = new Uint8Array(32).fill(0x02);
 const data = new Uint8Array([0x00, 0x01, 0x02, 0x03]);
 const blockhash = new Uint8Array(32).fill(0xAA);
-const sig = new Uint8Array(64).fill(0xBB);
+const sig = {
+  scheme_version: 0x01,
+  public_key: {
+    scheme_version: 0x01,
+    bytes: new Uint8Array(1952).fill(0xBB),
+  },
+  sig: new Uint8Array(3309).fill(0xBB),
+};
 
 const message = {
   instructions: [{ programId, accounts: [account0], data }],
@@ -122,22 +147,13 @@ const message = {
   const txBytes = encodeTransaction([sig], msgBytes);
   const hex = bytesToHex(txBytes);
 
-  const sigHex = 'bb'.repeat(64); // 64 bytes
-  const expected =
-    '0100000000000000' +                                          // Vec<[u8;64]> len = 1
-    sigHex +                                                      // sig
-    '0100000000000000' +                                          // Vec<Ix> len = 1
-    '0101010101010101010101010101010101010101010101010101010101010101' + // program_id
-    '0100000000000000' +                                          // Vec<Pubkey> len = 1
-    '0202020202020202020202020202020202020202020202020202020202020202' + // accounts[0]
-    '040000000000000000010203' +                                  // Vec<u8> len=4 + data
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' + // blockhash
-    '0000' +                                                      // compute_budget: None + compute_unit_price: None
-    '00000000';                                                   // tx_type: Native (u32 LE)
+  const hash = crypto.createHash('sha256').update(Buffer.from(txBytes)).digest('hex');
 
-  assert.strictEqual(hex, expected,
-    `K4-02 JS TX GOLDEN VECTOR MISMATCH!\nGot:      ${hex}\nExpected: ${expected}`);
-  console.log('  ✓ Transaction golden vector matches Rust');
+  assert.strictEqual(txBytes.length, 5417,
+    `K4-02 JS TX LENGTH MISMATCH!\nGot:      ${txBytes.length}\nExpected: 5417`);
+  assert.strictEqual(hash, '9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91',
+    `K4-02 JS TX HASH MISMATCH!\nGot:      ${hash}\nExpected: 9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91`);
+  console.log('  ✓ Transaction golden vector matches Rust length + hash');
 }
 
 console.log('K4-02: All JS cross-SDK compatibility tests passed');

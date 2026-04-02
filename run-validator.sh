@@ -76,22 +76,13 @@ CLI_BIN="${REPO_ROOT}/target/release/lichen"
 GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
 VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
 
-# Save real user home BEFORE overriding — needed for shared ZK verification keys
+# Save real user home BEFORE overriding.
 REAL_USER_HOME="${HOME}"
 
-# Ensure each validator has isolated persistent identity/fingerprint stores.
-# Without this, multiple local validators share ~/.lichen/node_cert.der and
-# can be rejected as banned/duplicate peers.
+# Ensure each validator has isolated persistent PQ identity/TOFU stores.
+# Without this, multiple local validators share ~/.lichen/node_identity.json and
+# can appear as the same peer address.
 export HOME="$VALIDATOR_HOME"
-
-# Point ZK verification keys to the shared cache in the REAL user home.
-# The per-validator HOME override above prevents dirs::home_dir() from finding
-# ~/.lichen/zk/ — we fix that by setting explicit env vars.
-if [[ -d "${REAL_USER_HOME}/.lichen/zk" ]]; then
-	export LICHEN_ZK_SHIELD_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_shield.bin"
-	export LICHEN_ZK_UNSHIELD_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_unshield.bin"
-	export LICHEN_ZK_TRANSFER_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_transfer.bin"
-fi
 
 if [[ "${LICHEN_SUPERVISED:-0}" != "1" && "${LICHEN_DISABLE_SUPERVISOR:-0}" != "1" && -x "$SUPERVISOR_SCRIPT" ]]; then
 	SUPERVISOR_INSTANCE="${NETWORK}-v${VALIDATOR_NUM}-p${P2P_PORT}"
@@ -154,7 +145,7 @@ except: pass
 
 	if [[ ! -x "$CLI_BIN" || ! -x "$GENESIS_BIN" || ! -x "$VALIDATOR_BIN" ]]; then
 		echo "Building required release binaries..."
-		cargo build --release --bin licn --bin lichen-genesis --bin lichen-validator || exit 1
+		cargo build --release --bin lichen --bin lichen-genesis --bin lichen-validator || exit 1
 	fi
 
 	if [[ ! -f "$VALIDATOR_KEYPAIR_FILE" ]]; then

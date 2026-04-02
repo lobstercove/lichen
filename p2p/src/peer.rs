@@ -3,10 +3,19 @@
 use crate::message::P2PMessage;
 use crate::peer_ban::PeerBanList;
 use crate::peer_store::PeerStore;
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    XChaCha20Poly1305, XNonce,
+};
 use dashmap::DashMap;
-use lichen_core::Pubkey;
+use hkdf::Hkdf;
+use lichen_core::{Keypair, PqSignature, Pubkey};
+use ml_kem::kem::{Decapsulate, Encapsulate};
+use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
 use quinn::{Connection, Endpoint, ServerConfig};
+use rand::{rngs::OsRng, RngCore};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -29,11 +38,12 @@ fn runtime_lichen_dir(runtime_home: Option<&Path>) -> PathBuf {
 pub struct PeerInfo {
     pub address: SocketAddr,
     pub connection: Option<Connection>,
+    secure_session: Option<Arc<SecureSession>>,
     pub last_seen: u64,
     pub reputation: u64,
     pub is_validator: bool,
     pub score: i64,
-    /// P3-2: Kademlia node ID (SHA-256 of public key). [0; 32] if unknown.
+    /// P3-2: Kademlia node ID (native PQ node address). [0; 32] if unknown.
     pub node_id: [u8; 32],
     /// P3-5: Validator pubkey (set when we receive a verified ValidatorAnnounce from this peer)
     pub validator_pubkey: Option<Pubkey>,
@@ -60,6 +70,7 @@ impl PeerInfo {
         PeerInfo {
             address,
             connection: None,
+            secure_session: None,
             last_seen: now,
             reputation: 500,
             is_validator: false,
@@ -180,17 +191,14 @@ pub struct PeerManager {
     /// Persistent ban list
     ban_list: Arc<Mutex<PeerBanList>>,
 
-    /// AUDIT-FIX C1-01: Persistent node certificate chain for mutual TLS
-    node_cert_chain: Vec<CertificateDer<'static>>,
+    /// Persistent native PQ node identity for transport authentication.
+    node_identity: Arc<NodeIdentity>,
 
-    /// AUDIT-FIX C1-01: Raw node private key bytes for client cert auth
-    node_key_bytes: Vec<u8>,
+    /// Local native PQ node address for self-connection detection.
+    local_node_address: Pubkey,
 
-    /// Local node certificate fingerprint for self-connection detection
-    local_fingerprint: [u8; 32],
-
-    /// AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
-    fingerprint_store: Arc<PeerFingerprintStore>,
+    /// Native PQ peer identity TOFU store.
+    identity_store: Arc<PeerIdentityStore>,
 
     /// C2-01: Bounded seen-message cache to prevent re-processing of
     /// duplicate gossip messages.  Stores SHA-256 hashes of deserialized
@@ -278,26 +286,21 @@ impl PeerManager {
             .install_default()
             .ok(); // Ignore error if already installed
 
-        // AUDIT-FIX C1-01: Load or generate persistent node identity
-        // Replaces ephemeral per-startup certificate with persistent cert+key
-        // stored at ~/.lichen/node_cert.der + ~/.lichen/node_key.der
+        // Load or generate the persistent native PQ node identity used by the
+        // application-layer transport handshake.
         let runtime_dir = runtime_lichen_dir(runtime_home.as_deref());
-        let identity = NodeIdentity::load_or_generate(&runtime_dir)?;
+        let node_identity = Arc::new(NodeIdentity::load_or_generate(&runtime_dir)?);
+        let local_node_address = node_identity.address;
 
-        // Clone cert chain + key bytes for client connections (mutual TLS)
-        let node_cert_chain = vec![identity.cert_der.clone()];
-        let node_key_bytes = identity.key_bytes.clone();
-        let local_fingerprint = NodeIdentity::compute_fingerprint(node_cert_chain[0].as_ref());
-
-        // AUDIT-FIX C1-01: Server config with mutual TLS
-        // Replaces .with_no_client_auth() — server now validates connecting peers'
-        // certificates using LichenClientCertVerifier (self-signature verification).
-        // client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
-        let server_key = PrivateKeyDer::try_from(identity.key_bytes)
+        // QUIC still requires a TLS certificate, but it is treated strictly as an
+        // anonymous carrier. Peer authentication and key establishment happen in
+        // the native PQ handshake before any P2P message is accepted.
+        let carrier_identity = CarrierIdentity::generate()?;
+        let server_key = PrivateKeyDer::try_from(carrier_identity.key_bytes)
             .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut server_crypto = rustls::ServerConfig::builder()
-            .with_client_cert_verifier(Arc::new(LichenClientCertVerifier))
-            .with_single_cert(vec![identity.cert_der], server_key)
+            .with_no_client_auth()
+            .with_single_cert(vec![carrier_identity.cert_der], server_key)
             .map_err(|e| format!("Failed to create rustls config: {}", e))?;
 
         server_crypto.alpn_protocols = vec![b"lichen".to_vec()];
@@ -370,9 +373,8 @@ impl PeerManager {
 
         let ban_list_path = runtime_dir.join("peer-banlist.json");
 
-        // AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
-        let fp_path = runtime_dir.join("peer_fingerprints.json");
-        let fingerprint_store = Arc::new(PeerFingerprintStore::new(fp_path));
+        let identity_store_path = runtime_dir.join("peer_identities.json");
+        let identity_store = Arc::new(PeerIdentityStore::new(identity_store_path));
 
         Ok(PeerManager {
             peers: Arc::new(DashMap::new()),
@@ -381,16 +383,15 @@ impl PeerManager {
             message_tx,
             peer_store,
             ban_list: Arc::new(Mutex::new(PeerBanList::new(ban_list_path))),
-            node_cert_chain,
-            node_key_bytes,
-            local_fingerprint,
-            fingerprint_store,
+            node_identity,
+            local_node_address,
+            identity_store,
             // C2-01: 20K capacity ≈ 640KB — covers ~5 minutes of peak traffic
             seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
             max_peers,
             reserved_peers,
             kademlia: Arc::new(Mutex::new(crate::kademlia::KademliaTable::new(
-                local_fingerprint,
+                local_node_address.0,
             ))),
         })
     }
@@ -545,16 +546,10 @@ impl PeerManager {
 
         info!("🦞 P2P: Connecting to peer {}", peer_addr);
 
-        // AUDIT-FIX C1-01: Proper TLS certificate verification + mutual TLS
-        // Replaces SkipServerVerification with LichenCertVerifier (validates self-signatures).
-        // Client now presents its own certificate for mutual authentication.
-        let client_key = PrivateKeyDer::try_from(self.node_key_bytes.clone())
-            .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut rustls_config = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(LichenCertVerifier))
-            .with_client_auth_cert(self.node_cert_chain.clone(), client_key)
-            .map_err(|e| format!("Failed to create TLS client config: {}", e))?;
+            .with_custom_certificate_verifier(Arc::new(AnonymousCarrierCertVerifier))
+            .with_no_client_auth();
 
         // Configure ALPN
         rustls_config.alpn_protocols = vec![b"lichen".to_vec()];
@@ -583,53 +578,28 @@ impl PeerManager {
             .await
             .map_err(|e| format!("Connection failed: {}", e))?;
 
-        // AUDIT-FIX C1-01: TOFU fingerprint check after connection
-        // Extract peer certificate and verify fingerprint against known peers.
-        // Rejects connections if a known peer's certificate fingerprint changes
-        // (potential MITM attack or unauthorized identity change).
-        if let Some(identity) = connection.peer_identity() {
-            if let Some(certs) = identity.downcast_ref::<Vec<CertificateDer<'static>>>() {
-                if let Some(cert) = certs.first() {
-                    let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
-                    if fp == self.local_fingerprint {
-                        warn!(
-                            "P2P: Rejecting self-connection attempt to {} (same node identity)",
-                            peer_addr
-                        );
-                        connection.close(quinn::VarInt::from_u32(1), b"self_connection");
-                        return Err("Refusing self-connection (same node identity)".to_string());
-                    }
-                    match self.fingerprint_store.check_or_store(&peer_addr, &fp) {
-                        Ok(true) => info!(
-                            "P2P TOFU: New peer {} registered (fingerprint: {})",
-                            peer_addr,
-                            NodeIdentity::fingerprint_hex(&fp)
-                        ),
-                        Ok(false) => info!("P2P TOFU: Peer {} identity verified", peer_addr),
-                        Err(e) => {
-                            if self.reserved_peers.contains(&peer_addr) {
-                                warn!(
-                                    "P2P TOFU: Reserved peer {} rotated certificate — auto-accepting new fingerprint",
-                                    peer_addr
-                                );
-                                self.fingerprint_store.update_fingerprint(&peer_addr, &fp);
-                            } else {
-                                warn!("{}", e);
-                                connection
-                                    .close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
-                                return Err(e);
-                            }
-                        }
-                    }
-                    // P3-2: Register peer in Kademlia routing table using certificate fingerprint
-                    self.update_kademlia(fp, peer_addr);
-                }
-            }
+        let (remote_identity, secure_session) = self
+            .perform_outbound_handshake(&connection, peer_addr)
+            .await?;
+
+        if remote_identity.address == self.local_node_address {
+            warn!(
+                "P2P: Rejecting self-connection attempt to {} (same node identity)",
+                peer_addr
+            );
+            connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+            return Err("Refusing self-connection (same node identity)".to_string());
         }
+
+        self.identity_store
+            .check_or_store(peer_addr, &remote_identity)?;
+        self.update_kademlia(remote_identity.node_id, peer_addr);
 
         // Store peer info
         let mut peer_info = PeerInfo::new(peer_addr);
         peer_info.connection = Some(connection.clone());
+        peer_info.secure_session = Some(Arc::new(secure_session.clone()));
+        peer_info.node_id = remote_identity.node_id;
         self.peers.insert(peer_addr, peer_info);
         if let Some(store) = &self.peer_store {
             store.record_peer(peer_addr);
@@ -641,6 +611,7 @@ impl PeerManager {
         let peers = self.peers.clone();
         let message_tx = self.message_tx.clone();
         let seen_messages = self.seen_messages.clone();
+        let secure_session = Arc::new(secure_session);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(
                 connection,
@@ -648,6 +619,7 @@ impl PeerManager {
                 peers.clone(),
                 message_tx,
                 seen_messages,
+                secure_session,
             )
             .await
             {
@@ -674,12 +646,12 @@ impl PeerManager {
     ) -> Result<(), String> {
         // M18 fix: clone connection handle and drop DashMap guard before async I/O
         // to prevent holding shard read lock across .await points
-        let connection = {
+        let (connection, secure_session) = {
             let peer = self.peers.get(peer_addr).ok_or("Peer not found")?;
-            peer.connection.clone()
+            (peer.connection.clone(), peer.secure_session.clone())
         }; // guard dropped here
 
-        if let Some(connection) = connection {
+        if let (Some(connection), Some(secure_session)) = (connection, secure_session) {
             let msg_type_label = match &message.msg_type {
                 crate::MessageType::BlockRangeResponse { blocks } => {
                     format!("BlockRangeResponse({} blocks)", blocks.len())
@@ -690,7 +662,8 @@ impl PeerManager {
                 _ => String::new(),
             };
 
-            let bytes = message.serialize()?;
+            let plaintext = message.serialize()?;
+            let bytes = secure_session.encrypt(&plaintext)?;
 
             if !msg_type_label.is_empty() {
                 tracing::info!(
@@ -722,7 +695,7 @@ impl PeerManager {
 
             Ok(())
         } else {
-            Err(format!("No active connection to {}", peer_addr))
+            Err(format!("No active secure connection to {}", peer_addr))
         }
     }
 
@@ -741,7 +714,7 @@ impl PeerManager {
             return;
         }
 
-        let bytes = match message.serialize() {
+        let plaintext = match message.serialize() {
             Ok(b) => std::sync::Arc::new(b),
             Err(e) => {
                 warn!("P2P: broadcast_except serialize error: {}", e);
@@ -749,18 +722,30 @@ impl PeerManager {
             }
         };
 
-        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> =
-            Vec::with_capacity(peers.len());
+        let mut conn_tasks: Vec<(
+            SocketAddr,
+            Option<quinn::Connection>,
+            Option<Arc<SecureSession>>,
+        )> = Vec::with_capacity(peers.len());
         for addr in &peers {
-            let conn = self.peers.get(addr).and_then(|p| p.connection.clone());
-            conn_tasks.push((*addr, conn));
+            let peer = self.peers.get(addr);
+            let conn = peer.as_ref().and_then(|p| p.connection.clone());
+            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
+            conn_tasks.push((*addr, conn, session));
         }
 
         let mut handles = Vec::with_capacity(conn_tasks.len());
-        for (peer_addr, connection) in conn_tasks {
-            let bytes = bytes.clone();
+        for (peer_addr, connection, secure_session) in conn_tasks {
+            let plaintext = plaintext.clone();
             handles.push(tokio::spawn(async move {
-                if let Some(conn) = connection {
+                if let (Some(conn), Some(session)) = (connection, secure_session) {
+                    let bytes = match session.encrypt(plaintext.as_ref()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            warn!("P2P: Failed to encrypt relay to {}: {}", peer_addr, e);
+                            return;
+                        }
+                    };
                     match conn.open_uni().await {
                         Ok(mut stream) => {
                             if let Err(e) = stream.write_all(&bytes).await {
@@ -795,7 +780,7 @@ impl PeerManager {
         }
 
         // Pre-serialize once (avoid N redundant serializations)
-        let bytes = match message.serialize() {
+        let plaintext = match message.serialize() {
             Ok(b) => std::sync::Arc::new(b),
             Err(e) => {
                 warn!("P2P: broadcast serialize error: {}", e);
@@ -804,19 +789,31 @@ impl PeerManager {
         };
 
         // Extract connection handles upfront (drop DashMap guards before async)
-        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> =
-            Vec::with_capacity(peers.len());
+        let mut conn_tasks: Vec<(
+            SocketAddr,
+            Option<quinn::Connection>,
+            Option<Arc<SecureSession>>,
+        )> = Vec::with_capacity(peers.len());
         for addr in &peers {
-            let conn = self.peers.get(addr).and_then(|p| p.connection.clone());
-            conn_tasks.push((*addr, conn));
+            let peer = self.peers.get(addr);
+            let conn = peer.as_ref().and_then(|p| p.connection.clone());
+            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
+            conn_tasks.push((*addr, conn, session));
         }
 
         // Spawn concurrent send tasks
         let mut handles = Vec::with_capacity(conn_tasks.len());
-        for (peer_addr, connection) in conn_tasks {
-            let bytes = bytes.clone();
+        for (peer_addr, connection, secure_session) in conn_tasks {
+            let plaintext = plaintext.clone();
             handles.push(tokio::spawn(async move {
-                if let Some(conn) = connection {
+                if let (Some(conn), Some(session)) = (connection, secure_session) {
+                    let bytes = match session.encrypt(plaintext.as_ref()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            warn!("P2P: Failed to encrypt send to {}: {}", peer_addr, e);
+                            return;
+                        }
+                    };
                     match conn.open_uni().await {
                         Ok(mut stream) => {
                             if let Err(e) = stream.write_all(&bytes).await {
@@ -854,82 +851,22 @@ impl PeerManager {
         self.peers.iter().map(|entry| *entry.key()).collect()
     }
 
-    /// Clear the stored TOFU fingerprint for a specific peer, allowing it
-    /// to reconnect with a new certificate. Returns true if a fingerprint
-    /// was removed.
-    pub fn clear_peer_fingerprint(&self, addr: &SocketAddr) -> bool {
-        let removed = self.fingerprint_store.remove_fingerprint(addr);
+    /// Clear the stored TOFU node identity for a specific peer.
+    pub fn clear_peer_identity(&self, addr: &SocketAddr) -> bool {
+        let removed = self.identity_store.remove_identity(addr);
         if removed {
             info!(
-                "P2P TOFU: Cleared fingerprint for {} — will re-trust on next connection",
+                "P2P TOFU: Cleared node identity for {} — will re-trust on next connection",
                 addr
             );
         }
         removed
     }
 
-    /// Clear all stored TOFU fingerprints (used during network-wide reset).
-    pub fn clear_all_fingerprints(&self) {
-        self.fingerprint_store.clear_all();
-        info!("P2P TOFU: Cleared ALL fingerprints — will re-trust all peers on next connection");
-    }
-
-    /// M-9: Handle an incoming CertRotation message.
-    /// Delegates to PeerFingerprintStore::apply_rotation for validation.
-    pub fn handle_cert_rotation(
-        &self,
-        addr: &SocketAddr,
-        old_fingerprint: &[u8; 32],
-        new_fingerprint: &[u8; 32],
-        new_cert_der: &[u8],
-        timestamp: u64,
-    ) -> Result<(), String> {
-        self.fingerprint_store.apply_rotation(
-            addr,
-            old_fingerprint,
-            new_fingerprint,
-            new_cert_der,
-            timestamp,
-        )
-    }
-
-    /// M-9: Initiate a local certificate rotation.
-    /// Generates a new NodeIdentity, updates the local TOFU store, and returns
-    /// a CertRotation message to broadcast to all peers.
-    pub fn rotate_local_certificate(
-        &mut self,
-        lichen_dir: &std::path::Path,
-    ) -> Result<crate::message::MessageType, String> {
-        let old_fp = self.local_fingerprint;
-
-        // Generate new identity (overwrites node_cert.der + node_key.der)
-        let new_identity = NodeIdentity::load_or_generate_fresh(lichen_dir)?;
-        let new_fp = new_identity.fingerprint;
-        let new_cert_der = new_identity.cert_der.as_ref().to_vec();
-
-        // Update local state
-        self.node_cert_chain = vec![new_identity.cert_der.clone()];
-        self.node_key_bytes = new_identity.key_bytes.clone();
-        self.local_fingerprint = new_fp;
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        info!(
-            "P2P TOFU: Local certificate rotated ({}... → {}...)",
-            &NodeIdentity::fingerprint_hex(&old_fp)[..16],
-            &NodeIdentity::fingerprint_hex(&new_fp)[..16]
-        );
-
-        Ok(crate::message::MessageType::CertRotation {
-            old_fingerprint: old_fp,
-            new_fingerprint: new_fp,
-            new_cert_der,
-            rotation_proof: vec![],
-            timestamp,
-        })
+    /// Clear all stored TOFU identities (used during network-wide reset).
+    pub fn clear_all_peer_identities(&self) {
+        self.identity_store.clear_all();
+        info!("P2P TOFU: Cleared ALL node identities — will re-trust all peers on next connection");
     }
 
     /// P3-2: Route a message to the `count` closest peers by XOR distance
@@ -940,7 +877,7 @@ impl PeerManager {
             return;
         }
 
-        let bytes = match message.serialize() {
+        let plaintext = match message.serialize() {
             Ok(b) => std::sync::Arc::new(b),
             Err(e) => {
                 warn!("P2P: route serialize error: {}", e);
@@ -950,10 +887,19 @@ impl PeerManager {
 
         let mut handles = Vec::with_capacity(targets.len());
         for addr in targets {
-            let conn = self.peers.get(&addr).and_then(|p| p.connection.clone());
-            let bytes = bytes.clone();
+            let peer = self.peers.get(&addr);
+            let conn = peer.as_ref().and_then(|p| p.connection.clone());
+            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
+            let plaintext = plaintext.clone();
             handles.push(tokio::spawn(async move {
-                if let Some(conn) = conn {
+                if let (Some(conn), Some(session)) = (conn, session) {
+                    let bytes = match session.encrypt(plaintext.as_ref()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            warn!("P2P: Failed to encrypt routed send to {}: {}", addr, e);
+                            return;
+                        }
+                    };
                     match conn.open_uni().await {
                         Ok(mut stream) => {
                             if let Err(e) = stream.write_all(&bytes).await {
@@ -1023,7 +969,7 @@ impl PeerManager {
             return;
         }
 
-        let bytes = match message.serialize() {
+        let plaintext = match message.serialize() {
             Ok(b) => std::sync::Arc::new(b),
             Err(e) => {
                 warn!("P2P: validator broadcast serialize error: {}", e);
@@ -1033,10 +979,19 @@ impl PeerManager {
 
         let mut handles = Vec::with_capacity(validator_addrs.len());
         for addr in validator_addrs {
-            let conn = self.peers.get(&addr).and_then(|p| p.connection.clone());
-            let bytes = bytes.clone();
+            let peer = self.peers.get(&addr);
+            let conn = peer.as_ref().and_then(|p| p.connection.clone());
+            let session = peer.as_ref().and_then(|p| p.secure_session.clone());
+            let plaintext = plaintext.clone();
             handles.push(tokio::spawn(async move {
-                if let Some(conn) = conn {
+                if let (Some(conn), Some(session)) = (conn, session) {
+                    let bytes = match session.encrypt(plaintext.as_ref()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            warn!("P2P: Failed to encrypt validator send to {}: {}", addr, e);
+                            return;
+                        }
+                    };
                     match conn.open_uni().await {
                         Ok(mut stream) => {
                             if let Err(e) = stream.write_all(&bytes).await {
@@ -1152,13 +1107,13 @@ impl PeerManager {
         let message_tx = self.message_tx.clone();
         let peer_store = self.peer_store.clone();
         let ban_list = self.ban_list.clone();
-        let fingerprint_store = self.fingerprint_store.clone();
         let seen_messages = self.seen_messages.clone();
         let kademlia = self.kademlia.clone();
         let max_peers = self.max_peers;
         let local_addr = self.local_addr;
-        let local_fingerprint = self.local_fingerprint;
-        let reserved_peers_for_listener = self.reserved_peers.clone();
+        let node_identity = self.node_identity.clone();
+        let local_node_address = self.local_node_address;
+        let identity_store = self.identity_store.clone();
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -1166,10 +1121,10 @@ impl PeerManager {
                 let message_tx = message_tx.clone();
                 let peer_store = peer_store.clone();
                 let ban_list = ban_list.clone();
-                let fingerprint_store = fingerprint_store.clone();
                 let seen_messages = seen_messages.clone();
                 let kademlia = kademlia.clone();
-                let reserved_peers_for_inbound = reserved_peers_for_listener.clone();
+                let node_identity = node_identity.clone();
+                let identity_store = identity_store.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -1225,64 +1180,66 @@ impl PeerManager {
                             }
                             info!("🦞 P2P: Accepted connection from {}", peer_addr);
 
-                            // AUDIT-FIX C1-01: TOFU fingerprint check for inbound connections
-                            if let Some(identity) = connection.peer_identity() {
-                                if let Some(certs) =
-                                    identity.downcast_ref::<Vec<CertificateDer<'static>>>()
-                                {
-                                    if let Some(cert) = certs.first() {
-                                        let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
-                                        if fp == local_fingerprint {
-                                            warn!("P2P: Rejected inbound self-identity connection from {}", peer_addr);
-                                            connection.close(
-                                                quinn::VarInt::from_u32(1),
-                                                b"self_connection",
-                                            );
-                                            return;
-                                        }
-                                        match fingerprint_store.check_or_store(&peer_addr, &fp) {
-                                            Ok(true) => info!("P2P TOFU: New inbound peer {} registered (fingerprint: {})",
-                                                peer_addr, NodeIdentity::fingerprint_hex(&fp)),
-                                            Ok(false) => {},
-                                            Err(e) => {
-                                                if reserved_peers_for_inbound.contains(&peer_addr) {
-                                                    warn!(
-                                                        "P2P TOFU: Reserved inbound peer {} rotated certificate — auto-accepting",
-                                                        peer_addr
-                                                    );
-                                                    fingerprint_store.update_fingerprint(&peer_addr, &fp);
-                                                } else {
-                                                    warn!("{}", e);
-                                                    connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                        // P3-2: Register inbound peer in Kademlia routing table
-                                        if fp != [0u8; 32] {
-                                            let mut table =
-                                                kademlia.lock().unwrap_or_else(|e| e.into_inner());
-                                            table.insert(fp, peer_addr);
-                                        }
-                                    }
+                            let handshake =
+                                perform_inbound_handshake(&connection, peer_addr, &node_identity)
+                                    .await;
+
+                            let (remote_identity, secure_session) = match handshake {
+                                Ok(handshake) => handshake,
+                                Err(error) => {
+                                    warn!(
+                                        "P2P: Inbound transport handshake rejected from {}: {}",
+                                        peer_addr, error
+                                    );
+                                    connection.close(
+                                        quinn::VarInt::from_u32(1),
+                                        b"transport_handshake_failed",
+                                    );
+                                    return;
                                 }
+                            };
+
+                            if remote_identity.address == local_node_address {
+                                warn!(
+                                    "P2P: Rejected inbound self-identity connection from {}",
+                                    peer_addr
+                                );
+                                connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+                                return;
+                            }
+
+                            if let Err(error) =
+                                identity_store.check_or_store(peer_addr, &remote_identity)
+                            {
+                                warn!("{}", error);
+                                connection.close(quinn::VarInt::from_u32(1), b"identity_mismatch");
+                                return;
+                            }
+
+                            if remote_identity.node_id != [0u8; 32] {
+                                let mut table = kademlia.lock().unwrap_or_else(|e| e.into_inner());
+                                table.insert(remote_identity.node_id, peer_addr);
                             }
 
                             // Store peer
                             let mut peer_info = PeerInfo::new(peer_addr);
                             peer_info.connection = Some(connection.clone());
+                            peer_info.secure_session = Some(Arc::new(secure_session.clone()));
+                            peer_info.node_id = remote_identity.node_id;
                             peers.insert(peer_addr, peer_info);
                             if let Some(store) = &peer_store {
                                 store.record_peer(peer_addr);
                             }
 
                             // Handle connection
+                            let secure_session = Arc::new(secure_session);
                             if let Err(e) = handle_connection(
                                 connection,
                                 peer_addr,
                                 peers.clone(),
                                 message_tx,
                                 seen_messages,
+                                secure_session,
                             )
                             .await
                             {
@@ -1352,6 +1309,7 @@ async fn handle_connection(
     peers: Arc<DashMap<SocketAddr, PeerInfo>>,
     message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
     seen_messages: Arc<Mutex<SeenMessageCache>>,
+    secure_session: Arc<SecureSession>,
 ) -> Result<(), String> {
     let mut deser_failures: u32 = 0;
     let mut deser_total: u32 = 0;
@@ -1370,7 +1328,7 @@ async fn handle_connection(
 
         stream_count += 1;
 
-        let bytes = stream
+        let encrypted_bytes = stream
             .read_to_end(16 * 1024 * 1024) // AUDIT-FIX H3: Align with P2PMessage serialize limit (16MB).
             // Previous 2MB limit silently rejected valid state snapshot chunks.
             .await
@@ -1380,6 +1338,13 @@ async fn handle_connection(
                     stream_count, peer_addr, e
                 )
             })?;
+
+        let bytes = secure_session.decrypt(&encrypted_bytes).map_err(|e| {
+            format!(
+                "Failed to decrypt stream #{} from {}: {}",
+                stream_count, peer_addr, e
+            )
+        })?;
 
         // Log every Nth stream for debugging connection liveness, and always
         // log large payloads that might be sync responses.
@@ -1494,113 +1459,96 @@ async fn handle_connection(
 }
 
 // ============================================================================
-// AUDIT-FIX C1-01: Proper TLS certificate validation infrastructure
-// Replaces SkipServerVerification with cryptographic self-signature verification,
-// persistent node identity, TOFU fingerprint pinning, and mutual TLS.
+// Native PQ transport identity + handshake.
+// QUIC remains the carrier, but peer authentication and key establishment happen
+// in an application-layer ML-DSA + ML-KEM handshake before any P2P message is
+// accepted. Every payload after that handshake is encrypted under the derived
+// PQ session key.
 // ============================================================================
 
-/// Persistent node identity — generates or loads a certificate + private key
-/// from ~/.lichen/node_cert.der and ~/.lichen/node_key.der.
-/// Provides stable cryptographic identity across node restarts.
+const TRANSPORT_HANDSHAKE_VERSION: u32 = 1;
+const TRANSPORT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+const TRANSPORT_FRAME_LIMIT_BYTES: usize = 64 * 1024;
+const CLIENT_HELLO_TAG: &[u8] = b"lichen-p2p-client-hello-v1";
+const SERVER_HELLO_TAG: &[u8] = b"lichen-p2p-server-hello-v1";
+const SESSION_KEY_INFO_TAG: &[u8] = b"lichen-p2p-session-key-v1";
+
+type MlKem768EncapsulationKey = <MlKem768 as KemCore>::EncapsulationKey;
+type MlKem768DecapsulationKey = <MlKem768 as KemCore>::DecapsulationKey;
+type MlKem768Ciphertext = ml_kem::Ciphertext<MlKem768>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NodeIdentityFile {
+    #[serde(rename = "privateKey")]
+    private_key: Vec<u8>,
+    #[serde(rename = "publicKey")]
+    public_key: Vec<u8>,
+    #[serde(rename = "publicKeyBase58")]
+    public_key_base58: String,
+}
+
 struct NodeIdentity {
-    cert_der: CertificateDer<'static>,
-    key_bytes: Vec<u8>,
-    #[allow(dead_code)]
-    fingerprint: [u8; 32],
+    keypair: Keypair,
+    address: Pubkey,
 }
 
 impl NodeIdentity {
     fn load_or_generate(lichen_dir: &Path) -> Result<Self, String> {
-        let cert_path = lichen_dir.join("node_cert.der");
-        let key_path = lichen_dir.join("node_key.der");
-
-        if cert_path.exists() && key_path.exists() {
-            let cert_bytes = fs::read(&cert_path)
-                .map_err(|e| format!("Failed to read {}: {}", cert_path.display(), e))?;
-            let key_bytes = fs::read(&key_path)
-                .map_err(|e| format!("Failed to read {}: {}", key_path.display(), e))?;
-
-            let fingerprint = Self::compute_fingerprint(&cert_bytes);
-            let cert_der = CertificateDer::from(cert_bytes);
-
-            info!(
-                "🔑 P2P: Loaded persistent node identity (fingerprint: {})",
-                Self::fingerprint_hex(&fingerprint)
-            );
-            Ok(NodeIdentity {
-                cert_der,
-                key_bytes,
-                fingerprint,
-            })
-        } else {
-            fs::create_dir_all(lichen_dir)
-                .map_err(|e| format!("Failed to create {}: {}", lichen_dir.display(), e))?;
-
-            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-                .map_err(|e| format!("Failed to generate certificate: {}", e))?;
-
-            let cert_der = CertificateDer::from(cert.cert);
-            let cert_bytes = cert_der.as_ref().to_vec();
-            let key_bytes = cert.key_pair.serialize_der();
-
-            // Save to disk with fsync for durability
-            Self::write_file(&cert_path, &cert_bytes)?;
-            Self::write_file(&key_path, &key_bytes)?;
-
-            let fingerprint = Self::compute_fingerprint(&cert_bytes);
-
-            info!(
-                "🔑 P2P: Generated new persistent node identity (fingerprint: {})",
-                Self::fingerprint_hex(&fingerprint)
-            );
-            Ok(NodeIdentity {
-                cert_der,
-                key_bytes,
-                fingerprint,
-            })
-        }
-    }
-
-    fn compute_fingerprint(cert_der: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(cert_der);
-        hasher.finalize().into()
-    }
-
-    /// M-9: Generate a fresh certificate, overwriting existing one.
-    /// Used for deliberate certificate rotation.
-    fn load_or_generate_fresh(lichen_dir: &Path) -> Result<Self, String> {
         fs::create_dir_all(lichen_dir)
             .map_err(|e| format!("Failed to create {}: {}", lichen_dir.display(), e))?;
 
-        let cert_path = lichen_dir.join("node_cert.der");
-        let key_path = lichen_dir.join("node_key.der");
+        let identity_path = lichen_dir.join("node_identity.json");
+        if identity_path.exists() {
+            let json = fs::read_to_string(&identity_path)
+                .map_err(|e| format!("Failed to read {}: {}", identity_path.display(), e))?;
+            let file: NodeIdentityFile = serde_json::from_str(&json)
+                .map_err(|e| format!("Failed to parse {}: {}", identity_path.display(), e))?;
+            if file.private_key.len() != 32 {
+                return Err(format!(
+                    "Node identity {} has invalid seed length {} (expected 32 bytes)",
+                    identity_path.display(),
+                    file.private_key.len()
+                ));
+            }
 
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .map_err(|e| format!("Failed to generate certificate: {}", e))?;
-        let cert_der = CertificateDer::from(cert.cert);
-        let cert_bytes = cert_der.as_ref().to_vec();
-        let key_bytes = cert.key_pair.serialize_der();
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&file.private_key);
+            let keypair = Keypair::from_seed(&seed);
+            if keypair.public_key().bytes != file.public_key {
+                return Err(format!(
+                    "Node identity {} publicKey does not match the derived PQ verifying key",
+                    identity_path.display()
+                ));
+            }
+            let address = keypair.pubkey();
+            if address.to_base58() != file.public_key_base58 {
+                return Err(format!(
+                    "Node identity {} publicKeyBase58 does not match the derived PQ address",
+                    identity_path.display()
+                ));
+            }
 
-        Self::write_file(&cert_path, &cert_bytes)?;
-        Self::write_file(&key_path, &key_bytes)?;
-        let fingerprint = Self::compute_fingerprint(&cert_bytes);
+            info!("🔑 P2P: Loaded native node identity ({})", address);
+            return Ok(Self { keypair, address });
+        }
 
-        info!(
-            "🔑 P2P: Generated fresh node identity for rotation (fingerprint: {})",
-            Self::fingerprint_hex(&fingerprint)
-        );
-        Ok(NodeIdentity {
-            cert_der,
-            key_bytes,
-            fingerprint,
-        })
+        let keypair = Keypair::new();
+        let address = keypair.pubkey();
+        let file = NodeIdentityFile {
+            private_key: keypair.to_seed().to_vec(),
+            public_key: keypair.public_key().bytes,
+            public_key_base58: address.to_base58(),
+        };
+        Self::write_file(
+            &identity_path,
+            serde_json::to_string_pretty(&file)
+                .map_err(|e| format!("Failed to serialize {}: {}", identity_path.display(), e))?
+                .as_bytes(),
+        )?;
+
+        info!("🔑 P2P: Generated native node identity ({})", address);
+        Ok(Self { keypair, address })
     }
-
-    fn fingerprint_hex(fp: &[u8; 32]) -> String {
-        fp.iter().map(|b| format!("{:02x}", b)).collect()
-    }
-
     fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
         use std::io::Write;
         let mut file = fs::File::create(path)
@@ -1609,7 +1557,6 @@ impl NodeIdentity {
             .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
         file.sync_all()
             .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))?;
-        // P10-P2P-01: Restrict key/cert file permissions to owner-only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1619,62 +1566,73 @@ impl NodeIdentity {
     }
 }
 
-/// AUDIT-FIX C1-01: TOFU (Trust On First Use) peer certificate fingerprint store.
-/// Tracks known peer certificate fingerprints to detect identity changes.
-/// Persists to ~/.lichen/peer_fingerprints.json for durability across restarts.
-struct PeerFingerprintStore {
-    /// Map from peer address string to hex-encoded SHA-256 certificate fingerprint
-    fingerprints: Mutex<HashMap<String, String>>,
-    /// M-9: Per-peer last rotation timestamp (unix epoch) — rate limit 1/hour
-    last_rotation: Mutex<HashMap<String, u64>>,
+#[derive(Debug, Clone)]
+struct RemoteNodeIdentity {
+    address: Pubkey,
+    node_id: [u8; 32],
+    public_key_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KnownPeerIdentity {
+    address: String,
+    public_key: String,
+}
+
+struct PeerIdentityStore {
+    identities: Mutex<HashMap<String, KnownPeerIdentity>>,
     path: PathBuf,
 }
 
-impl PeerFingerprintStore {
+impl PeerIdentityStore {
     fn new(path: PathBuf) -> Self {
-        let fingerprints: HashMap<String, String> = match fs::read_to_string(&path) {
+        let identities = match fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
             Err(_) => HashMap::new(),
         };
-        PeerFingerprintStore {
-            fingerprints: Mutex::new(fingerprints),
-            last_rotation: Mutex::new(HashMap::new()),
+        Self {
+            identities: Mutex::new(identities),
             path,
         }
     }
 
-    /// Check a peer's certificate fingerprint against the TOFU store.
-    /// Returns Ok(true) for new peers, Ok(false) for known peers with matching fingerprint,
-    /// and Err for known peers with changed fingerprints (potential MITM/impersonation).
-    fn check_or_store(&self, addr: &SocketAddr, fingerprint: &[u8; 32]) -> Result<bool, String> {
-        let hex_fp = NodeIdentity::fingerprint_hex(fingerprint);
-        let addr_str = addr.to_string();
-        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
-
-        match store.get(&addr_str) {
-            Some(known) if *known == hex_fp => Ok(false), // known, matches
+    fn check_or_store(
+        &self,
+        addr: SocketAddr,
+        identity: &RemoteNodeIdentity,
+    ) -> Result<bool, String> {
+        let addr_key = addr.to_string();
+        let candidate = KnownPeerIdentity {
+            address: identity.address.to_base58(),
+            public_key: identity.public_key_hex.clone(),
+        };
+        let mut store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
+        match store.get(&addr_key) {
+            Some(known)
+                if known.address == candidate.address && known.public_key == candidate.public_key =>
+            {
+                Ok(false)
+            }
             Some(known) => Err(format!(
-                "TOFU VIOLATION: Peer {} certificate fingerprint changed! \
-                     Known: {}..., Got: {}... — possible MITM or unauthorized identity change.",
+                "TOFU VIOLATION: Peer {} identity changed (known address {}, got {}; known key {}..., got {}...)",
                 addr,
-                &known[..16],
-                &hex_fp[..16]
+                known.address,
+                candidate.address,
+                &known.public_key[..16.min(known.public_key.len())],
+                &candidate.public_key[..16.min(candidate.public_key.len())]
             )),
             None => {
-                store.insert(addr_str, hex_fp);
-                drop(store); // release lock before I/O
+                store.insert(addr_key, candidate);
+                drop(store);
                 self.save();
-                Ok(true) // new peer registered
+                Ok(true)
             }
         }
     }
 
-    /// Remove a peer's stored fingerprint to allow reconnection after legitimate
-    /// certificate rotation. Returns true if the peer had a stored fingerprint.
-    pub fn remove_fingerprint(&self, addr: &SocketAddr) -> bool {
-        let addr_str = addr.to_string();
-        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
-        let removed = store.remove(&addr_str).is_some();
+    fn remove_identity(&self, addr: &SocketAddr) -> bool {
+        let mut store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = store.remove(&addr.to_string()).is_some();
         drop(store);
         if removed {
             self.save();
@@ -1682,115 +1640,19 @@ impl PeerFingerprintStore {
         removed
     }
 
-    /// Replace a peer's stored fingerprint with a new one.
-    /// Used when a reserved/seed peer legitimately rotated its certificate.
-    pub fn update_fingerprint(&self, addr: &SocketAddr, fingerprint: &[u8; 32]) {
-        let hex_fp = NodeIdentity::fingerprint_hex(fingerprint);
-        let addr_str = addr.to_string();
-        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
-        store.insert(addr_str, hex_fp);
-        drop(store);
-        self.save();
-    }
-
-    /// Remove all stored fingerprints (used during full network reset).
-    pub fn clear_all(&self) {
-        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+    fn clear_all(&self) {
+        let mut store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
         store.clear();
         drop(store);
         self.save();
     }
 
-    /// M-9: Minimum seconds between certificate rotations for a single peer.
-    const ROTATION_COOLDOWN_SECS: u64 = 3600; // 1 hour
-
-    /// M-9: Apply a certificate rotation for a peer identified by its address.
-    ///
-    /// Validates: (1) peer is known and old\_fingerprint matches stored value,
-    /// (2) new certificate is valid self-signed X.509, (3) new certificate's
-    /// fingerprint matches declared new\_fingerprint, (4) rate limit of at most
-    /// one rotation per `ROTATION_COOLDOWN_SECS`.
-    ///
-    /// Returns `Ok(())` on success, `Err(reason)` on rejection.
-    pub fn apply_rotation(
-        &self,
-        addr: &SocketAddr,
-        old_fingerprint: &[u8; 32],
-        new_fingerprint: &[u8; 32],
-        new_cert_der: &[u8],
-        timestamp: u64,
-    ) -> Result<(), String> {
-        let old_hex = NodeIdentity::fingerprint_hex(old_fingerprint);
-        let new_hex = NodeIdentity::fingerprint_hex(new_fingerprint);
-        let addr_str = addr.to_string();
-
-        // 1. Verify the peer is known and old fingerprint matches
-        {
-            let store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
-            match store.get(&addr_str) {
-                Some(known) if *known == old_hex => {} // matches — proceed
-                Some(known) => {
-                    return Err(format!(
-                        "CertRotation rejected for {}: old_fingerprint mismatch (stored: {}..., got: {}...)",
-                        addr, &known[..16.min(known.len())], &old_hex[..16]
-                    ));
-                }
-                None => {
-                    return Err(format!(
-                        "CertRotation rejected for {}: unknown peer (not in TOFU store)",
-                        addr
-                    ));
-                }
-            }
-        }
-
-        // 2. Validate the new certificate is properly self-signed
-        let computed_fp = verify_self_signed_cert(new_cert_der)?;
-
-        // 3. Verify the declared new_fingerprint matches the actual cert fingerprint
-        if computed_fp != *new_fingerprint {
-            return Err(format!(
-                "CertRotation rejected for {}: new_fingerprint doesn't match certificate",
-                addr
-            ));
-        }
-
-        // 4. Rate limit
-        {
-            let mut rotations = self.last_rotation.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(&last_ts) = rotations.get(&addr_str) {
-                if timestamp.saturating_sub(last_ts) < Self::ROTATION_COOLDOWN_SECS {
-                    return Err(format!(
-                        "CertRotation rejected for {}: rate limited (cooldown {}s, elapsed {}s)",
-                        addr,
-                        Self::ROTATION_COOLDOWN_SECS,
-                        timestamp.saturating_sub(last_ts)
-                    ));
-                }
-            }
-            rotations.insert(addr_str, timestamp);
-        }
-
-        // 5. Apply: update stored fingerprint
-        self.update_fingerprint(addr, new_fingerprint);
-        info!(
-            "P2P TOFU: Certificate rotation accepted for {} ({}... → {}...)",
-            addr,
-            &old_hex[..16],
-            &new_hex[..16]
-        );
-        Ok(())
-    }
-
     fn save(&self) {
-        let store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        let store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(json) = serde_json::to_string_pretty(&*store) {
             if let Some(parent) = self.path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            // Atomic write: write to temp file, sync, then rename.
-            // This prevents crash between truncation and write from
-            // leaving an empty/corrupt fingerprint file.
             let tmp_path = self.path.with_extension("tmp");
             if let Ok(mut file) = fs::File::create(&tmp_path) {
                 use std::io::Write;
@@ -1804,163 +1666,454 @@ impl PeerFingerprintStore {
     }
 }
 
-/// AUDIT-FIX C1-01: Verify a certificate is properly self-signed and return its SHA-256 fingerprint.
-/// Uses x509-parser for robust X.509 parsing and ring for cryptographic signature verification.
-/// This replaces the old SkipServerVerification which only checked DER tag formatting.
-fn verify_self_signed_cert(cert_der: &[u8]) -> Result<[u8; 32], String> {
-    use x509_parser::prelude::*;
-
-    if cert_der.is_empty() {
-        return Err("Empty certificate".to_string());
-    }
-
-    // Parse the X.509 certificate structure
-    let (_, cert) = X509Certificate::from_der(cert_der)
-        .map_err(|e| format!("Invalid X.509 certificate: {}", e))?;
-
-    // Verify the certificate is self-signed: the signature on the certificate
-    // must validate against the certificate's own public key. This prevents
-    // attackers from presenting arbitrary certificates they cannot prove ownership of.
-    // (None = verify against the certificate's own public key, i.e., self-signature check)
-    cert.verify_signature(None)
-        .map_err(|e| format!("Certificate self-signature verification failed: {:?}", e))?;
-
-    // Compute SHA-256 fingerprint of the full certificate DER
-    let fingerprint: [u8; 32] = {
-        let mut hasher = Sha256::new();
-        hasher.update(cert_der);
-        hasher.finalize().into()
-    };
-
-    Ok(fingerprint)
+#[derive(Debug)]
+struct CarrierIdentity {
+    cert_der: CertificateDer<'static>,
+    key_bytes: Vec<u8>,
 }
 
-/// AUDIT-FIX C1-01: Proper TLS server certificate verifier replacing SkipServerVerification.
-/// Validates that peer certificates are properly self-signed X.509 certificates using
-/// x509-parser + ring for cryptographic verification, instead of blindly accepting any
-/// DER-formatted data. Combined with TOFU fingerprint pinning (done after connection
-/// establishment in connect_peer/start_accepting) for complete peer identity verification.
-#[derive(Debug)]
-struct LichenCertVerifier;
+impl CarrierIdentity {
+    fn generate() -> Result<Self, String> {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .map_err(|e| format!("Failed to generate carrier certificate: {}", e))?;
+        Ok(Self {
+            cert_der: CertificateDer::from(cert.cert),
+            key_bytes: cert.key_pair.serialize_der(),
+        })
+    }
+}
 
-impl rustls::client::danger::ServerCertVerifier for LichenCertVerifier {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TransportClientHello {
+    version: u32,
+    address: Pubkey,
+    kem_public_key: Vec<u8>,
+    nonce: [u8; 32],
+    signature: PqSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TransportServerHello {
+    version: u32,
+    address: Pubkey,
+    nonce: [u8; 32],
+    kem_ciphertext: Vec<u8>,
+    signature: PqSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SecureTransportFrame {
+    nonce: [u8; 24],
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+struct SecureSession {
+    key: [u8; 32],
+}
+
+impl SecureSession {
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        let cipher = XChaCha20Poly1305::new_from_slice(&self.key)
+            .map_err(|e| format!("Failed to create transport cipher: {}", e))?;
+        let mut nonce = [0u8; 24];
+        OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(XNonce::from_slice(&nonce), plaintext)
+            .map_err(|e| format!("Failed to encrypt transport frame: {}", e))?;
+        bincode::serialize(&SecureTransportFrame { nonce, ciphertext })
+            .map_err(|e| format!("Failed to serialize secure transport frame: {}", e))
+    }
+
+    fn decrypt(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let frame: SecureTransportFrame = bincode::deserialize(bytes)
+            .map_err(|e| format!("Failed to deserialize secure transport frame: {}", e))?;
+        let cipher = XChaCha20Poly1305::new_from_slice(&self.key)
+            .map_err(|e| format!("Failed to create transport cipher: {}", e))?;
+        cipher
+            .decrypt(XNonce::from_slice(&frame.nonce), frame.ciphertext.as_ref())
+            .map_err(|e| format!("Failed to decrypt transport frame: {}", e))
+    }
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut output, "{:02x}", byte);
+    }
+    output
+}
+
+fn transport_client_hello_signing_message(
+    address: &Pubkey,
+    kem_public_key: &[u8],
+    nonce: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    if kem_public_key.len() > u16::MAX as usize {
+        return Err(format!(
+            "ML-KEM public key too large for transport hello: {} bytes",
+            kem_public_key.len()
+        ));
+    }
+    let mut message =
+        Vec::with_capacity(CLIENT_HELLO_TAG.len() + 32 + 2 + kem_public_key.len() + 32);
+    message.extend_from_slice(CLIENT_HELLO_TAG);
+    message.extend_from_slice(&address.0);
+    message.extend_from_slice(&(kem_public_key.len() as u16).to_le_bytes());
+    message.extend_from_slice(kem_public_key);
+    message.extend_from_slice(nonce);
+    Ok(message)
+}
+
+fn transport_server_hello_signing_message(
+    client_hello_hash: &[u8; 32],
+    address: &Pubkey,
+    nonce: &[u8; 32],
+    kem_ciphertext: &[u8],
+) -> Result<Vec<u8>, String> {
+    if kem_ciphertext.len() > u16::MAX as usize {
+        return Err(format!(
+            "ML-KEM ciphertext too large for transport hello: {} bytes",
+            kem_ciphertext.len()
+        ));
+    }
+    let mut message =
+        Vec::with_capacity(SERVER_HELLO_TAG.len() + 32 + 32 + 32 + 2 + kem_ciphertext.len());
+    message.extend_from_slice(SERVER_HELLO_TAG);
+    message.extend_from_slice(client_hello_hash);
+    message.extend_from_slice(&address.0);
+    message.extend_from_slice(nonce);
+    message.extend_from_slice(&(kem_ciphertext.len() as u16).to_le_bytes());
+    message.extend_from_slice(kem_ciphertext);
+    Ok(message)
+}
+
+fn transport_transcript_hash(client_hello_bytes: &[u8], server_hello_bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(client_hello_bytes);
+    hasher.update(server_hello_bytes);
+    hasher.finalize().into()
+}
+
+fn derive_transport_session_key(
+    shared_secret: &[u8],
+    client_nonce: &[u8; 32],
+    server_nonce: &[u8; 32],
+    client_address: &Pubkey,
+    server_address: &Pubkey,
+    transcript_hash: &[u8; 32],
+) -> Result<[u8; 32], String> {
+    let mut salt = Vec::with_capacity(64);
+    salt.extend_from_slice(client_nonce);
+    salt.extend_from_slice(server_nonce);
+
+    let mut info = Vec::with_capacity(SESSION_KEY_INFO_TAG.len() + 32 + 32 + 32);
+    info.extend_from_slice(SESSION_KEY_INFO_TAG);
+    info.extend_from_slice(&client_address.0);
+    info.extend_from_slice(&server_address.0);
+    info.extend_from_slice(transcript_hash);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), shared_secret);
+    let mut key = [0u8; 32];
+    hkdf.expand(&info, &mut key)
+        .map_err(|_| "Failed to derive PQ transport session key".to_string())?;
+    Ok(key)
+}
+
+fn remote_identity_from_signature(
+    address: &Pubkey,
+    signature: &PqSignature,
+) -> Result<RemoteNodeIdentity, String> {
+    if signature.signer_address() != *address {
+        return Err(format!(
+            "Transport handshake address mismatch: claimed {}, derived {}",
+            address,
+            signature.signer_address()
+        ));
+    }
+    Ok(RemoteNodeIdentity {
+        address: *address,
+        node_id: address.0,
+        public_key_hex: encode_hex(&signature.public_key.bytes),
+    })
+}
+
+fn decode_mlkem_encapsulation_key(bytes: &[u8]) -> Result<MlKem768EncapsulationKey, String> {
+    let encoded = Encoded::<MlKem768EncapsulationKey>::try_from(bytes)
+        .map_err(|_| format!("Invalid ML-KEM encapsulation key length: {}", bytes.len()))?;
+    Ok(MlKem768EncapsulationKey::from_bytes(&encoded))
+}
+
+fn decode_mlkem_ciphertext(bytes: &[u8]) -> Result<MlKem768Ciphertext, String> {
+    bytes
+        .try_into()
+        .map_err(|_| format!("Invalid ML-KEM ciphertext length: {}", bytes.len()))
+}
+
+fn build_client_hello(
+    node_identity: &NodeIdentity,
+    kem_public_key: &[u8],
+    nonce: [u8; 32],
+) -> Result<TransportClientHello, String> {
+    let signing_message =
+        transport_client_hello_signing_message(&node_identity.address, kem_public_key, &nonce)?;
+    Ok(TransportClientHello {
+        version: TRANSPORT_HANDSHAKE_VERSION,
+        address: node_identity.address,
+        kem_public_key: kem_public_key.to_vec(),
+        nonce,
+        signature: node_identity.keypair.sign(&signing_message),
+    })
+}
+
+fn verify_client_hello(hello: &TransportClientHello) -> Result<RemoteNodeIdentity, String> {
+    if hello.version != TRANSPORT_HANDSHAKE_VERSION {
+        return Err(format!(
+            "Unsupported transport hello version {}",
+            hello.version
+        ));
+    }
+    let signing_message = transport_client_hello_signing_message(
+        &hello.address,
+        &hello.kem_public_key,
+        &hello.nonce,
+    )?;
+    if !Keypair::verify(&hello.address, &signing_message, &hello.signature) {
+        return Err("Invalid transport client hello signature".to_string());
+    }
+    remote_identity_from_signature(&hello.address, &hello.signature)
+}
+
+fn build_server_hello(
+    node_identity: &NodeIdentity,
+    client_hello_hash: &[u8; 32],
+    nonce: [u8; 32],
+    kem_ciphertext: &[u8],
+) -> Result<TransportServerHello, String> {
+    let signing_message = transport_server_hello_signing_message(
+        client_hello_hash,
+        &node_identity.address,
+        &nonce,
+        kem_ciphertext,
+    )?;
+    Ok(TransportServerHello {
+        version: TRANSPORT_HANDSHAKE_VERSION,
+        address: node_identity.address,
+        nonce,
+        kem_ciphertext: kem_ciphertext.to_vec(),
+        signature: node_identity.keypair.sign(&signing_message),
+    })
+}
+
+fn verify_server_hello(
+    response: &TransportServerHello,
+    client_hello_hash: &[u8; 32],
+) -> Result<RemoteNodeIdentity, String> {
+    if response.version != TRANSPORT_HANDSHAKE_VERSION {
+        return Err(format!(
+            "Unsupported transport response version {}",
+            response.version
+        ));
+    }
+    let signing_message = transport_server_hello_signing_message(
+        client_hello_hash,
+        &response.address,
+        &response.nonce,
+        &response.kem_ciphertext,
+    )?;
+    if !Keypair::verify(&response.address, &signing_message, &response.signature) {
+        return Err("Invalid transport server hello signature".to_string());
+    }
+    remote_identity_from_signature(&response.address, &response.signature)
+}
+
+async fn perform_inbound_handshake(
+    connection: &Connection,
+    peer_addr: SocketAddr,
+    node_identity: &NodeIdentity,
+) -> Result<(RemoteNodeIdentity, SecureSession), String> {
+    let (mut send, mut recv) = tokio::time::timeout(
+        Duration::from_secs(TRANSPORT_HANDSHAKE_TIMEOUT_SECS),
+        connection.accept_bi(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "Timed out waiting for inbound transport handshake from {}",
+            peer_addr
+        )
+    })?
+    .map_err(|e| {
+        format!(
+            "Failed to accept inbound transport handshake from {}: {}",
+            peer_addr, e
+        )
+    })?;
+
+    let client_hello_bytes = recv
+        .read_to_end(TRANSPORT_FRAME_LIMIT_BYTES)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to read transport client hello from {}: {}",
+                peer_addr, e
+            )
+        })?;
+    let client_hello: TransportClientHello =
+        bincode::deserialize(&client_hello_bytes).map_err(|e| {
+            format!(
+                "Failed to decode transport client hello from {}: {}",
+                peer_addr, e
+            )
+        })?;
+    let remote_identity = verify_client_hello(&client_hello)?;
+
+    let client_ek = decode_mlkem_encapsulation_key(&client_hello.kem_public_key)?;
+    let (ciphertext, shared_secret) = client_ek.encapsulate(&mut OsRng).map_err(|e| {
+        format!(
+            "Failed to encapsulate ML-KEM secret for {}: {:?}",
+            peer_addr, e
+        )
+    })?;
+    let server_nonce = random_bytes::<32>();
+    let client_hello_hash: [u8; 32] = Sha256::digest(&client_hello_bytes).into();
+    let server_hello = build_server_hello(
+        node_identity,
+        &client_hello_hash,
+        server_nonce,
+        ciphertext.as_slice(),
+    )?;
+    let server_hello_bytes = bincode::serialize(&server_hello)
+        .map_err(|e| format!("Failed to serialize transport server hello: {}", e))?;
+
+    send.write_all(&server_hello_bytes).await.map_err(|e| {
+        format!(
+            "Failed to write transport server hello to {}: {}",
+            peer_addr, e
+        )
+    })?;
+    send.finish().map_err(|e| {
+        format!(
+            "Failed to finish transport handshake stream to {}: {}",
+            peer_addr, e
+        )
+    })?;
+
+    let transcript_hash = transport_transcript_hash(&client_hello_bytes, &server_hello_bytes);
+    let session_key = derive_transport_session_key(
+        shared_secret.as_slice(),
+        &client_hello.nonce,
+        &server_hello.nonce,
+        &client_hello.address,
+        &node_identity.address,
+        &transcript_hash,
+    )?;
+
+    Ok((remote_identity, SecureSession { key: session_key }))
+}
+
+impl PeerManager {
+    async fn perform_outbound_handshake(
+        &self,
+        connection: &Connection,
+        peer_addr: SocketAddr,
+    ) -> Result<(RemoteNodeIdentity, SecureSession), String> {
+        let (client_dk, client_ek): (MlKem768DecapsulationKey, MlKem768EncapsulationKey) =
+            MlKem768::generate(&mut OsRng);
+        let client_nonce = random_bytes::<32>();
+        let client_hello = build_client_hello(
+            &self.node_identity,
+            client_ek.as_bytes().as_slice(),
+            client_nonce,
+        )?;
+        let client_hello_bytes = bincode::serialize(&client_hello)
+            .map_err(|e| format!("Failed to serialize transport client hello: {}", e))?;
+
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| format!("Failed to open transport handshake to {}: {}", peer_addr, e))?;
+        send.write_all(&client_hello_bytes).await.map_err(|e| {
+            format!(
+                "Failed to write transport client hello to {}: {}",
+                peer_addr, e
+            )
+        })?;
+        send.finish().map_err(|e| {
+            format!(
+                "Failed to finish transport handshake stream to {}: {}",
+                peer_addr, e
+            )
+        })?;
+
+        let server_hello_bytes = tokio::time::timeout(
+            Duration::from_secs(TRANSPORT_HANDSHAKE_TIMEOUT_SECS),
+            recv.read_to_end(TRANSPORT_FRAME_LIMIT_BYTES),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "Timed out waiting for transport response from {}",
+                peer_addr
+            )
+        })?
+        .map_err(|e| {
+            format!(
+                "Failed to read transport response from {}: {}",
+                peer_addr, e
+            )
+        })?;
+
+        let server_hello: TransportServerHello = bincode::deserialize(&server_hello_bytes)
+            .map_err(|e| {
+                format!(
+                    "Failed to decode transport response from {}: {}",
+                    peer_addr, e
+                )
+            })?;
+        let client_hello_hash: [u8; 32] = Sha256::digest(&client_hello_bytes).into();
+        let remote_identity = verify_server_hello(&server_hello, &client_hello_hash)?;
+        let ciphertext = decode_mlkem_ciphertext(&server_hello.kem_ciphertext)?;
+        let shared_secret = client_dk.decapsulate(&ciphertext).map_err(|e| {
+            format!(
+                "Failed to decapsulate ML-KEM secret from {}: {:?}",
+                peer_addr, e
+            )
+        })?;
+        let transcript_hash = transport_transcript_hash(&client_hello_bytes, &server_hello_bytes);
+        let session_key = derive_transport_session_key(
+            shared_secret.as_slice(),
+            &client_hello.nonce,
+            &server_hello.nonce,
+            &self.node_identity.address,
+            &server_hello.address,
+            &transcript_hash,
+        )?;
+
+        Ok((remote_identity, SecureSession { key: session_key }))
+    }
+}
+
+#[derive(Debug)]
+struct AnonymousCarrierCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for AnonymousCarrierCertVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &CertificateDer,
+        _end_entity: &CertificateDer,
         _intermediates: &[CertificateDer],
         _server_name: &rustls::pki_types::ServerName,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let cert_data = end_entity.as_ref();
-
-        // AUDIT-FIX C1-01: Cryptographic self-signature verification
-        // Replaces the old verify_server_cert which only checked DER tag (0x30)
-        // and length encoding. Now performs full X.509 parsing and verifies the
-        // certificate's self-signature using the certificate's own public key.
-        match verify_self_signed_cert(cert_data) {
-            Ok(fingerprint) => {
-                info!(
-                    "P2P TLS: Verified peer certificate (fingerprint: {})",
-                    NodeIdentity::fingerprint_hex(&fingerprint)
-                );
-                Ok(rustls::client::danger::ServerCertVerified::assertion())
-            }
-            Err(e) => {
-                warn!("P2P TLS: Server certificate verification FAILED: {}", e);
-                Err(rustls::Error::InvalidCertificate(
-                    rustls::CertificateError::BadEncoding,
-                ))
-            }
-        }
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        // C4 fix: Actually verify the handshake signature using the cert's public key
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        // C4 fix: Actually verify the handshake signature using the cert's public key
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
-    }
-}
-
-/// AUDIT-FIX C1-01: Server-side client certificate verifier for mutual TLS.
-/// Validates that connecting peers present properly self-signed certificates.
-/// client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
-#[derive(Debug)]
-struct LichenClientCertVerifier;
-
-impl rustls::server::danger::ClientCertVerifier for LichenClientCertVerifier {
-    fn offer_client_auth(&self) -> bool {
-        true
-    }
-
-    fn client_auth_mandatory(&self) -> bool {
-        // P9-NET-02: Enforce mutual TLS — all peers MUST present a valid
-        // self-signed certificate.  Without this, unauthenticated peers can
-        // connect and inject malicious blocks/votes.  All nodes now generate
-        // a certificate at startup so no backwards-compat concern remains.
-        true
-    }
-
-    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
-        // No CA root hints — self-signed certs in a permissionless network
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        end_entity: &CertificateDer,
-        _intermediates: &[CertificateDer],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
-        let cert_data = end_entity.as_ref();
-
-        match verify_self_signed_cert(cert_data) {
-            Ok(fingerprint) => {
-                info!(
-                    "P2P TLS: Verified client certificate (fingerprint: {})",
-                    NodeIdentity::fingerprint_hex(&fingerprint)
-                );
-                Ok(rustls::server::danger::ClientCertVerified::assertion())
-            }
-            Err(e) => {
-                warn!("P2P TLS: Client certificate verification FAILED: {}", e);
-                Err(rustls::Error::InvalidCertificate(
-                    rustls::CertificateError::BadEncoding,
-                ))
-            }
-        }
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -1995,7 +2148,6 @@ impl rustls::server::danger::ClientCertVerifier for LichenClientCertVerifier {
         vec![
             rustls::SignatureScheme::RSA_PKCS1_SHA256,
             rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
         ]
     }
 }
@@ -2003,7 +2155,6 @@ impl rustls::server::danger::ClientCertVerifier for LichenClientCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustls::client::danger::ServerCertVerifier;
 
     #[test]
     fn test_peer_info_new() {
@@ -2093,286 +2244,118 @@ mod tests {
     }
 
     // =========================================================================
-    // AUDIT-FIX C1-01 Tests: TLS certificate validation
+    // Native PQ transport tests
     // =========================================================================
 
-    /// Test that a genuine self-signed certificate passes verification
-    #[test]
-    fn test_c1_01_verify_self_signed_valid() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
-
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert");
-        let cert_der = CertificateDer::from(cert.cert);
-        let result = verify_self_signed_cert(cert_der.as_ref());
-        assert!(
-            result.is_ok(),
-            "Valid self-signed cert should pass: {:?}",
-            result
-        );
-
-        // Fingerprint should be 32 bytes (SHA-256)
-        let fp = result.unwrap();
-        assert_eq!(fp.len(), 32);
-        // Non-zero fingerprint
-        assert!(fp.iter().any(|&b| b != 0));
+    fn temp_path(prefix: &str, suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{}_{}_{}.{}",
+            prefix,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix
+        ))
     }
 
-    /// Test that an empty certificate is rejected
-    #[test]
-    fn test_c1_01_verify_self_signed_empty() {
-        let result = verify_self_signed_cert(&[]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Empty certificate"));
-    }
-
-    /// Test that random garbage bytes are rejected
-    #[test]
-    fn test_c1_01_verify_self_signed_garbage() {
-        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
-        let result = verify_self_signed_cert(&garbage);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid X.509"));
-    }
-
-    /// Test that a valid cert with a flipped bit in the signature fails
-    #[test]
-    fn test_c1_01_verify_self_signed_modified() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
-
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert");
-        let cert_der = CertificateDer::from(cert.cert);
-        let mut modified = cert_der.as_ref().to_vec();
-        // Flip bit in last byte (part of the signature)
-        if let Some(last) = modified.last_mut() {
-            *last ^= 0x01;
+    fn sample_remote_identity() -> RemoteNodeIdentity {
+        let keypair = Keypair::new();
+        let address = keypair.pubkey();
+        RemoteNodeIdentity {
+            address,
+            node_id: address.0,
+            public_key_hex: encode_hex(&keypair.public_key().bytes),
         }
-        let result = verify_self_signed_cert(&modified);
-        // Should fail because self-signature no longer matches
-        assert!(result.is_err(), "Modified cert should fail verification");
     }
 
-    /// Test that same cert data produces same fingerprint (deterministic)
     #[test]
-    fn test_c1_01_fingerprint_deterministic() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
+    fn test_native_node_identity_generates_canonical_file() {
+        let dir = temp_path("lichen_p2p_identity", "dir");
+        fs::create_dir_all(&dir).unwrap();
 
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert");
-        let cert_der = CertificateDer::from(cert.cert);
-        let fp1 = verify_self_signed_cert(cert_der.as_ref()).unwrap();
-        let fp2 = verify_self_signed_cert(cert_der.as_ref()).unwrap();
-        assert_eq!(fp1, fp2, "Same cert should produce same fingerprint");
-    }
+        let identity = NodeIdentity::load_or_generate(&dir).unwrap();
+        let identity_path = dir.join("node_identity.json");
+        let stored: NodeIdentityFile =
+            serde_json::from_str(&fs::read_to_string(&identity_path).unwrap()).unwrap();
 
-    /// Test that different certs produce different fingerprints
-    #[test]
-    fn test_c1_01_fingerprint_unique() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
+        assert_eq!(stored.private_key.len(), 32);
+        assert_eq!(stored.public_key, identity.keypair.public_key().bytes);
+        assert_eq!(stored.public_key_base58, identity.address.to_base58());
 
-        let cert1 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert 1");
-        let cert2 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert 2");
-        let fp1 = verify_self_signed_cert(CertificateDer::from(cert1.cert).as_ref()).unwrap();
-        let fp2 = verify_self_signed_cert(CertificateDer::from(cert2.cert).as_ref()).unwrap();
-        assert_ne!(
-            fp1, fp2,
-            "Different certs should produce different fingerprints"
+        let reloaded = NodeIdentity::load_or_generate(&dir).unwrap();
+        assert_eq!(identity.address, reloaded.address);
+        assert_eq!(
+            identity.keypair.public_key().bytes,
+            reloaded.keypair.public_key().bytes
         );
+
+        let _ = fs::remove_file(identity_path);
+        let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Test TOFU fingerprint store: new peer is accepted
     #[test]
-    fn test_c1_01_tofu_new_peer() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_new_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
+    fn test_peer_identity_store_accepts_known_identity() {
+        let path = temp_path("lichen_peer_identity", "json");
+        let store = PeerIdentityStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let fp = [42u8; 32];
+        let identity = sample_remote_identity();
 
-        let result = store.check_or_store(&addr, &fp);
-        assert!(result.is_ok());
-        assert!(result.unwrap(), "New peer should return true");
+        assert!(store.check_or_store(addr, &identity).unwrap());
+        assert!(!store.check_or_store(addr, &identity).unwrap());
 
         let _ = fs::remove_file(&path);
     }
 
-    /// Test TOFU fingerprint store: known peer with same fingerprint is accepted
     #[test]
-    fn test_c1_01_tofu_known_peer_match() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_match_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
+    fn test_peer_identity_store_rejects_identity_change() {
+        let path = temp_path("lichen_peer_identity_change", "json");
+        let store = PeerIdentityStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let fp = [42u8; 32];
+        let identity = sample_remote_identity();
+        let changed_identity = sample_remote_identity();
 
-        // First connection: register
-        assert!(store.check_or_store(&addr, &fp).unwrap());
-        // Second connection: verify match
-        let result = store.check_or_store(&addr, &fp);
-        assert!(result.is_ok());
-        assert!(!result.unwrap(), "Known peer should return false (not new)");
-
-        let _ = fs::remove_file(&path);
-    }
-
-    /// Test TOFU fingerprint store: known peer with changed fingerprint is rejected
-    #[test]
-    fn test_c1_01_tofu_fingerprint_changed() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_changed_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let fp1 = [42u8; 32];
-        let fp2 = [99u8; 32];
-
-        // First connection: register with fp1
-        assert!(store.check_or_store(&addr, &fp1).unwrap());
-        // Second connection: different fingerprint → TOFU violation
-        let result = store.check_or_store(&addr, &fp2);
+        assert!(store.check_or_store(addr, &identity).unwrap());
+        let result = store.check_or_store(addr, &changed_identity);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("TOFU VIOLATION"));
 
         let _ = fs::remove_file(&path);
     }
 
-    /// Test TOFU fingerprint store: persistence across reloads
     #[test]
-    fn test_c1_01_tofu_persistence() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_persist_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn test_peer_identity_store_persists_across_reload() {
+        let path = temp_path("lichen_peer_identity_persist", "json");
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let fp = [42u8; 32];
+        let identity = sample_remote_identity();
 
-        // Register peer in first store instance
         {
-            let store = PeerFingerprintStore::new(path.clone());
-            assert!(store.check_or_store(&addr, &fp).unwrap());
+            let store = PeerIdentityStore::new(path.clone());
+            assert!(store.check_or_store(addr, &identity).unwrap());
         }
-        // Reload from disk — peer should still be known
+
         {
-            let store = PeerFingerprintStore::new(path.clone());
-            let result = store.check_or_store(&addr, &fp);
-            assert!(result.is_ok());
-            assert!(!result.unwrap(), "Peer should be known after reload");
-        }
-        // Reload — changed fingerprint should still be rejected
-        {
-            let store = PeerFingerprintStore::new(path.clone());
-            let fp2 = [99u8; 32];
-            let result = store.check_or_store(&addr, &fp2);
-            assert!(result.is_err());
-            assert!(result.unwrap_err().contains("TOFU VIOLATION"));
+            let store = PeerIdentityStore::new(path.clone());
+            assert!(!store.check_or_store(addr, &identity).unwrap());
         }
 
         let _ = fs::remove_file(&path);
     }
 
-    /// Test fingerprint hex encoding
     #[test]
-    fn test_c1_01_fingerprint_hex_encoding() {
-        let fp = [
-            0x00, 0x01, 0x0a, 0xff, 0xab, 0xcd, 0xef, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ];
-        let hex = NodeIdentity::fingerprint_hex(&fp);
-        assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars");
-        assert!(hex.starts_with("00010aff"));
+    fn test_secure_session_roundtrip() {
+        let session = SecureSession { key: [7u8; 32] };
+        let plaintext = b"hello pq transport";
+        let ciphertext = session.encrypt(plaintext).unwrap();
+        let decrypted = session.decrypt(&ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
-    /// Test NodeIdentity::compute_fingerprint is SHA-256
     #[test]
-    fn test_c1_01_compute_fingerprint_sha256() {
-        // SHA-256 of empty input is known
-        let fp_empty = NodeIdentity::compute_fingerprint(&[]);
-        // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-        assert_eq!(fp_empty[0], 0xe3);
-        assert_eq!(fp_empty[1], 0xb0);
-        assert_eq!(fp_empty[2], 0xc4);
-
-        // Different input → different fingerprint
-        let fp_data = NodeIdentity::compute_fingerprint(&[1, 2, 3]);
-        assert_ne!(fp_empty, fp_data);
-    }
-
-    /// Test LichenCertVerifier accepts valid self-signed certificates
-    #[test]
-    fn test_c1_01_licn_cert_verifier_accepts_valid() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
-
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("Failed to generate cert");
-        let cert_der = CertificateDer::from(cert.cert);
-
-        let verifier = LichenCertVerifier;
-        let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-        let result = verifier.verify_server_cert(
-            &cert_der,
-            &[],
-            &server_name,
-            &[],
-            rustls::pki_types::UnixTime::now(),
-        );
-        assert!(
-            result.is_ok(),
-            "Valid self-signed cert should be accepted by LichenCertVerifier"
-        );
-    }
-
-    /// Test LichenCertVerifier rejects garbage data
-    #[test]
-    fn test_c1_01_licn_cert_verifier_rejects_garbage() {
-        let garbage = CertificateDer::from(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        let verifier = LichenCertVerifier;
-        let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-        let result = verifier.verify_server_cert(
-            &garbage,
-            &[],
-            &server_name,
-            &[],
-            rustls::pki_types::UnixTime::now(),
-        );
-        assert!(
-            result.is_err(),
-            "Garbage data should be rejected by LichenCertVerifier"
-        );
+    fn test_encode_hex_roundtrip_shape() {
+        let hex = encode_hex(&[0x00, 0x01, 0x0a, 0xff]);
+        assert_eq!(hex, "00010aff");
     }
 
     /// C2-01: SeenMessageCache correctly deduplicates and evicts
@@ -2808,225 +2791,43 @@ mod tests {
         assert!(bps >= 1.0, "bps should be positive, got {}", bps);
     }
 
-    // ── M-9: TOFU Certificate Rotation Tests ────────────────────────
+    // ── PQ Identity Store Maintenance Tests ────────────────────────
 
     #[test]
-    fn test_cert_rotation_accepted() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
+    fn test_peer_identity_store_remove_identity() {
+        let path = temp_path("lichen_peer_identity_remove", "json");
+        let store = PeerIdentityStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let old_fp = [42u8; 32];
+        let identity = sample_remote_identity();
 
-        // Register peer
-        assert!(store.check_or_store(&addr, &old_fp).unwrap());
-
-        // Generate a real self-signed cert for rotation
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let cert_der_wrapped = CertificateDer::from(cert.cert);
-        let cert_der = cert_der_wrapped.as_ref();
-        let new_fp = NodeIdentity::compute_fingerprint(cert_der);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let result = store.apply_rotation(&addr, &old_fp, &new_fp, cert_der, now);
-        assert!(
-            result.is_ok(),
-            "Rotation should succeed: {:?}",
-            result.err()
-        );
-
-        // Verify the store now has the new fingerprint
-        let check = store.check_or_store(&addr, &new_fp);
-        assert!(check.is_ok());
-        assert!(!check.unwrap(), "New fingerprint should be known");
+        assert!(store.check_or_store(addr, &identity).unwrap());
+        assert!(store.remove_identity(&addr));
+        assert!(store.check_or_store(addr, &identity).unwrap());
 
         let _ = fs::remove_file(&path);
     }
 
     #[test]
-    fn test_cert_rotation_rejected_unknown_peer() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_unk_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.99:8000".parse().unwrap();
-        let old_fp = [42u8; 32];
-        let new_fp = [99u8; 32];
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+    fn test_peer_identity_store_clear_all() {
+        let path = temp_path("lichen_peer_identity_clear", "json");
+        let store = PeerIdentityStore::new(path.clone());
+        let addr_a: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let addr_b: SocketAddr = "10.0.0.2:8000".parse().unwrap();
 
-        let result = store.apply_rotation(&addr, &old_fp, &new_fp, &[], now);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown peer"));
+        assert!(store
+            .check_or_store(addr_a, &sample_remote_identity())
+            .unwrap());
+        assert!(store
+            .check_or_store(addr_b, &sample_remote_identity())
+            .unwrap());
+        store.clear_all();
 
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_cert_rotation_rejected_wrong_old_fp() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_mismatch_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let real_fp = [42u8; 32];
-        let wrong_fp = [11u8; 32];
-
-        // Register with real_fp
-        store.check_or_store(&addr, &real_fp).unwrap();
-
-        // Try rotation claiming wrong old_fp
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let cert_der_wrapped = CertificateDer::from(cert.cert);
-        let cert_der = cert_der_wrapped.as_ref();
-        let new_fp = NodeIdentity::compute_fingerprint(cert_der);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let result = store.apply_rotation(&addr, &wrong_fp, &new_fp, cert_der, now);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("old_fingerprint mismatch"));
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_cert_rotation_rejected_fp_mismatch_cert() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_certmm_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let old_fp = [42u8; 32];
-        store.check_or_store(&addr, &old_fp).unwrap();
-
-        // Generate a cert but declare a different new_fingerprint
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let cert_der_wrapped = CertificateDer::from(cert.cert);
-        let cert_der = cert_der_wrapped.as_ref();
-        let fake_new_fp = [77u8; 32]; // doesn't match cert
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let result = store.apply_rotation(&addr, &old_fp, &fake_new_fp, cert_der, now);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("new_fingerprint doesn't match"));
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_cert_rotation_rate_limited() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_rate_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let old_fp = [42u8; 32];
-        store.check_or_store(&addr, &old_fp).unwrap();
-
-        // First rotation succeeds
-        let cert1 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let cert1_wrapped = CertificateDer::from(cert1.cert);
-        let cert1_der = cert1_wrapped.as_ref();
-        let fp1 = NodeIdentity::compute_fingerprint(cert1_der);
-        let now = 1_000_000u64;
-        store
-            .apply_rotation(&addr, &old_fp, &fp1, cert1_der, now)
-            .unwrap();
-
-        // Second rotation within cooldown rejected
-        let cert2 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-        let cert2_wrapped = CertificateDer::from(cert2.cert);
-        let cert2_der = cert2_wrapped.as_ref();
-        let fp2 = NodeIdentity::compute_fingerprint(cert2_der);
-        let too_soon = now + 60; // 60s < 3600s cooldown
-
-        let result = store.apply_rotation(&addr, &fp1, &fp2, cert2_der, too_soon);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("rate limited"));
-
-        // After cooldown, rotation succeeds
-        let later = now + PeerFingerprintStore::ROTATION_COOLDOWN_SECS + 1;
-        let result = store.apply_rotation(&addr, &fp1, &fp2, cert2_der, later);
-        assert!(
-            result.is_ok(),
-            "Should succeed after cooldown: {:?}",
-            result.err()
-        );
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_cert_rotation_invalid_cert_rejected() {
-        let path = std::env::temp_dir().join(format!(
-            "lichen_tofu_rot_invcert_{}_{}.json",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = PeerFingerprintStore::new(path.clone());
-        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
-        let old_fp = [42u8; 32];
-        store.check_or_store(&addr, &old_fp).unwrap();
-
-        // Submit garbage bytes as the new certificate
-        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let fake_fp = NodeIdentity::compute_fingerprint(&garbage);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let result = store.apply_rotation(&addr, &old_fp, &fake_fp, &garbage, now);
-        assert!(result.is_err());
-        // Should fail in verify_self_signed_cert
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("Invalid X.509") || err.contains("certificate"),
-            "Expected cert validation error, got: {}",
-            err
-        );
+        assert!(store
+            .check_or_store(addr_a, &sample_remote_identity())
+            .unwrap());
+        assert!(store
+            .check_or_store(addr_b, &sample_remote_identity())
+            .unwrap());
 
         let _ = fs::remove_file(&path);
     }

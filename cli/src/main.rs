@@ -59,7 +59,7 @@ enum CodegenLang {
 #[command(
     long_about = "Lichen CLI — command-line interface for Lichen, a Layer 1 blockchain\n\
     built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
-    WASM smart contracts, Ed25519 signing, ZK privacy (Groth16/BN254).\n\n\
+    WASM smart contracts, ML-DSA-65 signing, ZK privacy (Plonky3 STARK).\n\n\
     Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
     Run 'lichen fees' for current fee schedule\n\n\
     Mainnet RPC: https://rpc.lichen.network\n\
@@ -2468,9 +2468,9 @@ async fn main() -> Result<()> {
                 "binary": "lichen",
                 "chain": "Lichen",
                 "consensus": "Tendermint BFT",
-                "signing": "Ed25519",
+                "signing": "ML-DSA-65",
                 "contracts": "WASM (Rust → wasm32-unknown-unknown)",
-                "zk": "Groth16 over BN254",
+                "zk": "Plonky3 STARK",
                 "native_token": "LICN",
                 "spores_per_licn": 1_000_000_000u64,
                 "rpc_url": cli.rpc_url,
@@ -2500,9 +2500,9 @@ async fn main() -> Result<()> {
                 println!();
                 println!("Chain:       Lichen (custom L1)");
                 println!("Consensus:   Tendermint BFT (~800ms blocks)");
-                println!("Signing:     Ed25519");
+                println!("Signing:     ML-DSA-65");
                 println!("Contracts:   WASM (Rust → wasm32-unknown-unknown)");
-                println!("ZK Proofs:   Groth16 over BN254");
+                println!("ZK Proofs:   Plonky3 STARK");
                 println!("Token:       LICN (1 LICN = 1,000,000,000 spores)");
                 println!();
                 println!("RPC (current): {}", cli.rpc_url);
@@ -3133,7 +3133,7 @@ async fn main() -> Result<()> {
                     {"name": "get_args", "signature": "(buf_ptr: u32, buf_len: u32) -> u32", "category": "arguments", "description": "Copy call arguments into a buffer."},
                     {"name": "set_return_data", "signature": "(data_ptr: u32, data_len: u32)", "category": "arguments", "description": "Set the return data for this contract call."},
                     {"name": "cross_contract_call", "signature": "(addr_ptr: u32, fn_ptr: u32, fn_len: u32, args_ptr: u32, args_len: u32, value: u64) -> i32", "category": "interop", "description": "Call another contract. Returns 0 on success, -1 on error."},
-                    {"name": "host_poseidon_hash", "signature": "(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32", "category": "crypto", "description": "Compute Poseidon hash (BN254 Fr) of two 32-byte field elements. ZK-friendly."}
+                    {"name": "host_poseidon_hash", "signature": "(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32", "category": "crypto", "description": "Compute Poseidon hash of two 32-byte field elements. ZK-friendly."}
                 ],
                 "sdk_crate": "lichen-contract-sdk",
                 "compile_target": "wasm32-unknown-unknown",

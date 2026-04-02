@@ -10,10 +10,22 @@ from .publickey import PublicKey
 from .keypair import Keypair
 from .connection import Connection
 from .transaction import Transaction, TransactionBuilder, Instruction
+from .pq import (
+    ML_DSA_65_PUBLIC_KEY_BYTES,
+    ML_DSA_65_SIGNATURE_BYTES,
+    PQ_SCHEME_ML_DSA_65,
+    PqPublicKey,
+    PqSignature,
+)
 from .shielded import shield_instruction, unshield_instruction, transfer_instruction
 
 __all__ = [
     "PublicKey",
+    "PqPublicKey",
+    "PqSignature",
+    "PQ_SCHEME_ML_DSA_65",
+    "ML_DSA_65_PUBLIC_KEY_BYTES",
+    "ML_DSA_65_SIGNATURE_BYTES",
     "Keypair",
     "Connection", 
     "Transaction",

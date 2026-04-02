@@ -18,18 +18,24 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 cd "$REPO_ROOT" || exit 1
 
-if [ -z "${CUSTODY_SIGNER_ENDPOINTS:-}" ]; then
-  CUSTODY_SIGNER_ENDPOINTS="http://127.0.0.1:9201,http://127.0.0.1:9202,http://127.0.0.1:9203"
+# In dev/insecure mode skip remote signers entirely (single-key local custody).
+if [ "${CUSTODY_ALLOW_INSECURE_SEED:-0}" = "1" ]; then
+  CUSTODY_SIGNER_ENDPOINTS=""
   export CUSTODY_SIGNER_ENDPOINTS
-fi
-
-if [ -z "${CUSTODY_SIGNER_THRESHOLD:-}" ]; then
-  if [ "$NETWORK" = "mainnet" ]; then
-    CUSTODY_SIGNER_THRESHOLD=3
-  else
-    CUSTODY_SIGNER_THRESHOLD=2
+  export CUSTODY_SIGNER_THRESHOLD=1
+else
+  if [ -z "${CUSTODY_SIGNER_ENDPOINTS:-}" ]; then
+    CUSTODY_SIGNER_ENDPOINTS="http://127.0.0.1:9201,http://127.0.0.1:9202,http://127.0.0.1:9203"
+    export CUSTODY_SIGNER_ENDPOINTS
   fi
-  export CUSTODY_SIGNER_THRESHOLD
+  if [ -z "${CUSTODY_SIGNER_THRESHOLD:-}" ]; then
+    if [ "$NETWORK" = "mainnet" ]; then
+      CUSTODY_SIGNER_THRESHOLD=3
+    else
+      CUSTODY_SIGNER_THRESHOLD=2
+    fi
+    export CUSTODY_SIGNER_THRESHOLD
+  fi
 fi
 
 if [ -z "${CUSTODY_DB_PATH:-}" ]; then

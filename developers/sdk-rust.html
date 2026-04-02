@@ -552,7 +552,8 @@ let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</cod
             <!-- KEYPAIR -->
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2>Keypair</h2>
-            <p>Ed25519 keypair wrapper around <code>ed25519_dalek</code>. Thread-safe and <code>Clone</code>-able.</p>
+            <p>ML-DSA-65 keypair wrapper around <code>lichen_core::Keypair</code>. Thread-safe and
+                <code>Clone</code>-able.</p>
 
             <div class="method-card" id="keypair-new">
                 <h3 class="method-name">Keypair::new() -&gt; Keypair</h3>
@@ -576,13 +577,13 @@ let kp = Keypair::from_seed(&seed);</code></pre>
             </div>
 
             <div class="method-card" id="keypair-sign">
-                <h3 class="method-name">keypair.sign(message: &amp;[u8]) -&gt; Vec&lt;u8&gt;</h3>
-                <p class="method-desc">Sign an arbitrary message. Returns the 64-byte detached signature.</p>
+                <h3 class="method-name">keypair.sign(message: &amp;[u8]) -&gt; PqSignature</h3>
+                <p class="method-desc">Sign an arbitrary message. Returns a self-contained PQ signature.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">keypair.pubkey() -&gt; String</h3>
-                <p class="method-desc">Get the base58-encoded public key string.</p>
+                <h3 class="method-name">keypair.pubkey() -&gt; Pubkey</h3>
+                <p class="method-desc">Get the 32-byte versioned native address.</p>
             </div>
 
             <div class="method-card">
@@ -591,9 +592,9 @@ let kp = Keypair::from_seed(&seed);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">keypair.inner() -&gt; &amp;ed25519_dalek::SigningKey</h3>
-                <p class="method-desc">Access the underlying <code>ed25519_dalek::SigningKey</code> for advanced use
-                    cases.</p>
+                <h3 class="method-name">keypair.inner() -&gt; &amp;lichen_core::Keypair</h3>
+                <p class="method-desc">Access the underlying <code>lichen_core::Keypair</code> for advanced use cases.
+                </p>
             </div>
 
             <!-- ═══════════════════════════════════════════════════════ -->

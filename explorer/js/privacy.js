@@ -41,15 +41,8 @@ async function loadPoolStats() {
     const stats = await rpc.call('getShieldedPoolState');
 
     if (stats) {
-        const vkInitialized = Boolean(
-            (stats.vkShieldHash && !/^0+$/.test(stats.vkShieldHash)) &&
-            (stats.vkUnshieldHash && !/^0+$/.test(stats.vkUnshieldHash)) &&
-            (stats.vkTransferHash && !/^0+$/.test(stats.vkTransferHash))
-        );
-
         poolStats = {
             ...stats,
-            vk_initialized: vkInitialized,
         };
         updatePoolStatsUI(poolStats);
     } else {
@@ -64,10 +57,11 @@ async function loadPoolStats() {
             shieldCount: 0,
             unshieldCount: 0,
             transferCount: 0,
-            vk_initialized: false,
             shield_count: 0,
             unshield_count: 0,
             transfer_count: 0,
+            zkScheme: 'plonky3-fri-poseidon2',
+            zk_scheme: 'plonky3-fri-poseidon2',
         });
     }
 }
@@ -155,22 +149,12 @@ function updatePoolStatsUI(stats) {
     if (utilizationBarEl) utilizationBarEl.style.width = Math.max(utilPct, 0.1) + '%';
     if (utilizationPctEl) utilizationPctEl.textContent = utilPct < 0.01 ? '<0.01%' : utilPct.toFixed(4) + '%';
 
-    // VK status
+    // Proof runtime status
     const vkText = el('vkStatusText');
     if (!vkText) return;
-    const ZERO_HASH = '0'.repeat(64);
-    const vkLoaded = stats.vk_shield_hash && stats.vk_shield_hash !== ZERO_HASH
-        && stats.vk_unshield_hash && stats.vk_unshield_hash !== ZERO_HASH
-        && stats.vk_transfer_hash && stats.vk_transfer_hash !== ZERO_HASH;
-    if (vkLoaded) {
-        vkText.textContent = 'Initialized';
-        vkText.style.background = 'rgba(6, 214, 160, 0.2)';
-        vkText.style.color = '#06d6a0';
-    } else {
-        vkText.textContent = 'Pending Setup';
-        vkText.style.background = 'rgba(255, 210, 63, 0.2)';
-        vkText.style.color = '#ffd23f';
-    }
+    vkText.textContent = 'Transparent STARK path';
+    vkText.style.background = 'rgba(6, 214, 160, 0.2)';
+    vkText.style.color = '#06d6a0';
 }
 
 function renderShieldedTxs(txs) {

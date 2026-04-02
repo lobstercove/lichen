@@ -47,8 +47,10 @@ fn test_mempool_basic() {
         Hash::default(),
     );
 
+    let signer = Keypair::from_seed(&[1u8; 32]);
+
     let tx = Transaction {
-        signatures: vec![[1u8; 64]],
+        signatures: vec![signer.sign(&msg.serialize())],
         message: msg,
         tx_type: Default::default(),
     };

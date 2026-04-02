@@ -1,0 +1,44 @@
+# Mirrors the workspace-relevant subset of the accepted RustSec policy in
+# .cargo/audit.toml so cargo-deny enforces the same advisory posture as
+# cargo-audit in CI.
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0370", # proc-macro-error: unmaintained proc-macro helper, build-time only.
+    "RUSTSEC-2024-0384", # instant: unmaintained, transitive via parking_lot/reed-solomon-erasure in validator networking.
+    "RUSTSEC-2024-0388", # derivative: unmaintained derive helper, no known exploit path in runtime surface.
+    "RUSTSEC-2024-0436", # paste: unmaintained macro utility, build-time only.
+    "RUSTSEC-2025-0055", # tracing-subscriber ANSI log poisoning; mitigated by non-TTY structured logs + sanitizer roadmap.
+    "RUSTSEC-2025-0057", # fxhash unmaintained; retained for non-cryptographic internal maps.
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained; used in controlled deployment paths.
+    "RUSTSEC-2025-0141", # bincode unmaintained; pinned pending migration to bincode2/postcard where applicable.
+]
+
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = [
+    { allow = ["GPL-2.0-only"], crate = "self_cell" },
+]

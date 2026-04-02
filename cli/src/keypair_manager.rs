@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Production keypair format (Solana-compatible)
+/// Production keypair format (native PQ seed + full verifying key)
 #[derive(Serialize, Deserialize)]
 struct KeypairFile {
     #[serde(rename = "privateKey")]
@@ -42,11 +42,12 @@ impl KeypairManager {
     /// Save keypair to file
     pub fn save_keypair(&self, keypair: &Keypair, path: &Path) -> Result<()> {
         let pubkey = keypair.pubkey();
+        let public_key = keypair.public_key();
         let seed = keypair.to_seed();
 
         let keypair_file = KeypairFile {
             private_key: seed.to_vec(),
-            public_key: pubkey.0.to_vec(),
+            public_key: public_key.bytes,
             public_key_base58: pubkey.to_base58(),
         };
 
@@ -72,80 +73,36 @@ impl KeypairManager {
         Ok(())
     }
 
-    /// Load keypair from file
-    ///
-    /// Supports multiple formats:
-    ///   1. KeypairFile  — `{ "privateKey": [u8 array], "publicKey": [...], "publicKeyBase58": "..." }`
-    ///   2. Hex strings  — `{ "privateKey": "hex...", ... }` (wallet-create format)
-    ///   3. Flat array   — `[172, 31, 143, ...]` (faucet-keypair / Solana-style)
-    ///   4. secretKey    — `{ "secretKey": [64 bytes], ... }` (browser wallet export)
+    /// Load keypair from the canonical keypair file format.
     pub fn load_keypair(&self, path: &Path) -> Result<Keypair> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read keypair file: {}", path.display()))?;
 
-        // --- Format 1: canonical KeypairFile (int-array privateKey) ---
-        if let Ok(keypair_file) = serde_json::from_str::<KeypairFile>(&contents) {
-            if keypair_file.private_key.len() == 32 {
-                let mut seed = [0u8; 32];
-                seed.copy_from_slice(&keypair_file.private_key);
-                return Ok(Keypair::from_seed(&seed));
-            }
+        let keypair_file = serde_json::from_str::<KeypairFile>(&contents).with_context(|| {
+            format!(
+                "Unsupported keypair format in {}. Expected the canonical KeypairFile JSON shape",
+                path.display()
+            )
+        })?;
+
+        if keypair_file.private_key.len() != 32 {
+            anyhow::bail!(
+                "Invalid privateKey length in {}: expected 32 bytes, got {}",
+                path.display(),
+                keypair_file.private_key.len()
+            );
         }
 
-        let json: serde_json::Value =
-            serde_json::from_str(&contents).context("Failed to parse keypair file as JSON")?;
-
-        // --- Format 2: hex-string privateKey or secret_key (wallet create / genesis keys) ---
-        if let Some(hex_str) = json
-            .get("privateKey")
-            .or_else(|| json.get("secret_key"))
-            .and_then(|v| v.as_str())
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&keypair_file.private_key);
+        let keypair = Keypair::from_seed(&seed);
+        if !keypair_file.public_key_base58.is_empty()
+            && keypair.pubkey().to_base58() != keypair_file.public_key_base58
         {
-            let seed_bytes = hex::decode(hex_str)
-                .context("Failed to hex-decode privateKey/secret_key string")?;
-            if seed_bytes.len() != 32 {
-                anyhow::bail!(
-                    "Invalid hex privateKey length: expected 32 bytes, got {}",
-                    seed_bytes.len()
-                );
-            }
-            let mut seed = [0u8; 32];
-            seed.copy_from_slice(&seed_bytes);
-            return Ok(Keypair::from_seed(&seed));
+            anyhow::bail!("Keypair file publicKeyBase58 does not match derived PQ address");
         }
 
-        // --- Format 4: secretKey (browser wallet / extension export, 64-byte ed25519) ---
-        if let Some(arr) = json.get("secretKey").and_then(|v| v.as_array()) {
-            let bytes: Vec<u8> = arr
-                .iter()
-                .filter_map(|v| v.as_u64().map(|n| n as u8))
-                .collect();
-            if bytes.len() >= 32 {
-                let mut seed = [0u8; 32];
-                seed.copy_from_slice(&bytes[..32]);
-                return Ok(Keypair::from_seed(&seed));
-            }
-        }
-
-        // --- Format 3: flat byte array [172, 31, 143, ...] ---
-        if let Some(arr) = json.as_array() {
-            let bytes: Vec<u8> = arr
-                .iter()
-                .filter_map(|v| v.as_u64().map(|n| n as u8))
-                .collect();
-            if bytes.len() >= 32 {
-                let mut seed = [0u8; 32];
-                seed.copy_from_slice(&bytes[..32]);
-                return Ok(Keypair::from_seed(&seed));
-            }
-        }
-
-        anyhow::bail!(
-            "Unsupported keypair format in {}. Expected one of: \
-             KeypairFile (int-array), hex-string privateKey, flat byte array, \
-             or secretKey (64-byte ed25519)",
-            path.display()
-        )
+        Ok(keypair)
     }
 
     /// Save seed to file (helper for keypair generation)

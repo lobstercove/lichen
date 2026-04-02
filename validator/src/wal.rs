@@ -98,16 +98,6 @@ impl ConsensusWal {
             ]) as usize;
             cursor += 4;
             if cursor + len + 4 > data.len() {
-                // Try legacy format (no checksum) for backward compatibility
-                if cursor + len <= data.len() {
-                    if let Ok(entry) = bincode::deserialize::<WalEntry>(&data[cursor..cursor + len])
-                    {
-                        warn!("⚠️ WAL: Legacy entry without checksum at offset {} — accepting on this replay", cursor - 4);
-                        entries.push(entry);
-                        cursor += len;
-                        continue;
-                    }
-                }
                 warn!(
                     "⚠️ WAL: Truncated entry at offset {}, stopping replay",
                     cursor - 4

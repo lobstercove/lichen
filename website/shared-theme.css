@@ -1,7 +1,7 @@
 /* ========================================
    Lichen Design System - FROM SCRATCH
    Teal Theme, Professional Grade
-   Built for Agent-First Blockchain
+    Built for the post-quantum Lichen network
    ======================================== */
 
 /* ===== CSS Reset ===== */
@@ -36,7 +36,7 @@ body {
     --blue-accent: #118AB2;
     --green-success: #06D6A0;
     --yellow-warning: #FFD23F;
-    
+
     /* Backgrounds */
     --bg-dark: #0A0E27;
     --bg-darker: #060812;
@@ -44,16 +44,16 @@ body {
     --bg-hover: #1a1f3a;
     --bg-primary: var(--bg-dark);
     --bg-surface: var(--bg-card);
-    
+
     /* Text */
     --text-primary: #FFFFFF;
     --text-secondary: #B8C1EC;
     --text-muted: #6B7A99;
-    
+
     /* Borders */
     --border: #1F2544;
     --border-light: #2a3052;
-    
+
     /* Spacing - TIGHTER */
     --space-xs: 0.25rem;
     --space-sm: 0.5rem;
@@ -62,14 +62,14 @@ body {
     --space-xl: 1.5rem;
     --space-2xl: 2rem;
     --space-3xl: 3rem;
-    
+
     /* Border Radius */
     --radius-sm: 6px;
     --radius-md: 10px;
     --radius-lg: 16px;
     --radius-xl: 24px;
     --radius-full: 9999px;
-    
+
     /* Shadows */
     --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -78,18 +78,40 @@ body {
 }
 
 /* ===== Typography ===== */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
     font-weight: 700;
     line-height: 1.2;
     color: var(--text-primary);
 }
 
-h1 { font-size: 3.5rem; }
-h2 { font-size: 2.5rem; }
-h3 { font-size: 2rem; }
-h4 { font-size: 1.5rem; }
-h5 { font-size: 1.25rem; }
-h6 { font-size: 1rem; }
+h1 {
+    font-size: 3.5rem;
+}
+
+h2 {
+    font-size: 2.5rem;
+}
+
+h3 {
+    font-size: 2rem;
+}
+
+h4 {
+    font-size: 1.5rem;
+}
+
+h5 {
+    font-size: 1.25rem;
+}
+
+h6 {
+    font-size: 1rem;
+}
 
 p {
     margin-bottom: var(--space-md);
@@ -244,26 +266,70 @@ code {
     gap: var(--space-xl);
 }
 
-.grid-2 { grid-template-columns: repeat(2, 1fr); }
-.grid-3 { grid-template-columns: repeat(3, 1fr); }
-.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.grid-4 {
+    grid-template-columns: repeat(4, 1fr);
+}
 
 /* ===== Utilities ===== */
-.text-center { text-align: center; }
-.text-primary { color: var(--text-primary); }
-.text-secondary { color: var(--text-secondary); }
-.text-muted { color: var(--text-muted); }
-.text-teal { color: var(--teal-primary); }
+.text-center {
+    text-align: center;
+}
 
-.mt-sm { margin-top: var(--space-sm); }
-.mt-md { margin-top: var(--space-md); }
-.mt-lg { margin-top: var(--space-lg); }
-.mt-xl { margin-top: var(--space-xl); }
+.text-primary {
+    color: var(--text-primary);
+}
 
-.mb-sm { margin-bottom: var(--space-sm); }
-.mb-md { margin-bottom: var(--space-md); }
-.mb-lg { margin-bottom: var(--space-lg); }
-.mb-xl { margin-bottom: var(--space-xl); }
+.text-secondary {
+    color: var(--text-secondary);
+}
+
+.text-muted {
+    color: var(--text-muted);
+}
+
+.text-teal {
+    color: var(--teal-primary);
+}
+
+.mt-sm {
+    margin-top: var(--space-sm);
+}
+
+.mt-md {
+    margin-top: var(--space-md);
+}
+
+.mt-lg {
+    margin-top: var(--space-lg);
+}
+
+.mt-xl {
+    margin-top: var(--space-xl);
+}
+
+.mb-sm {
+    margin-bottom: var(--space-sm);
+}
+
+.mb-md {
+    margin-bottom: var(--space-md);
+}
+
+.mb-lg {
+    margin-bottom: var(--space-lg);
+}
+
+.mb-xl {
+    margin-bottom: var(--space-xl);
+}
 
 .gradient-text {
     background: var(--gradient-1);
@@ -275,17 +341,26 @@ code {
 
 /* ===== Responsive ===== */
 @media (max-width: 1024px) {
-    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-4 {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 
 @media (max-width: 768px) {
-    h1 { font-size: 2.5rem; }
-    h2 { font-size: 2rem; }
-    
-    .grid-2, .grid-3, .grid-4 {
+    h1 {
+        font-size: 2.5rem;
+    }
+
+    h2 {
+        font-size: 2rem;
+    }
+
+    .grid-2,
+    .grid-3,
+    .grid-4 {
         grid-template-columns: 1fr;
     }
-    
+
     .nav-menu {
         display: none;
     }
@@ -297,6 +372,7 @@ code {
         opacity: 0;
         transform: translateY(30px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -304,13 +380,25 @@ code {
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-10px); }
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
 }
 
 .animate-slideUp {

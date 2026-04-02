@@ -2,11 +2,11 @@
 //
 // Production-grade automatic update module for validators.
 // Checks GitHub Releases for new versions, downloads the binary,
-// verifies integrity (Ed25519 signature + SHA256 hash), and performs
+// verifies integrity (PQ signature + SHA256 hash), and performs
 // a graceful binary swap with rollback guard.
 
 use anyhow::{anyhow, bail, Context, Result};
-use lichen_core::{Keypair, Pubkey};
+use lichen_core::{Keypair, PqSignature, Pubkey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -45,18 +45,16 @@ const ROLLBACK_CRASH_THRESHOLD: u32 = 3;
 /// it counts as a "fast crash" for rollback purposes
 const ROLLBACK_CRASH_WINDOW_SECS: u64 = 60;
 
-// ── Release Signing Public Key ──────────────────────────────────────────────
+// ── Release Signing Trust Anchor ────────────────────────────────────────────
 //
-// This is the Ed25519 public key used to verify release signatures.
-// Generated once with `scripts/generate-release-keys.sh` and embedded here.
-// To rotate: generate new keypair, update this constant, release a signed
-// build with the OLD key, then switch to signing with the NEW key.
+// This is the compact Lichen address of the trusted PQ release signer.
+// `SHA256SUMS.sig` carries a self-contained `PqSignature`, and verification
+// succeeds only if the embedded signer public key hashes to this address.
+// To rotate: generate a new release keypair, update this constant, release a
+// signed build with the OLD signer, then switch signing to the NEW signer.
 //
-// PLACEHOLDER — replace with actual key after running generate-release-keys.sh
-// AUDIT-FIX V5.5: Replaced placeholder all-zeros key with real Ed25519
-// public key. Private seed stored in keypairs/release-signing-key.json.
-const RELEASE_SIGNING_PUBKEY_HEX: &str =
-    "dd34731c7bc7e9317ed0f83991930c3859b05ecf2d74f10c4dc08de6b6bad332";
+// Derived from the offline seed stored in keypairs/release-signing-key.json.
+const RELEASE_SIGNING_ADDRESS_BASE58: &str = "8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -254,7 +252,7 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
     let sha256sums = download_text(&sums_asset.browser_download_url).await?;
     let sig_hex = download_text(&sig_asset.browser_download_url).await?;
 
-    // 4. Verify Ed25519 signature on SHA256SUMS
+    // 4. Verify PQ signature on SHA256SUMS
     verify_signature(&sha256sums, sig_hex.trim())?;
     info!("✅ SHA256SUMS signature verified");
 
@@ -600,30 +598,15 @@ async fn download_binary(url: &str, expected_size: u64) -> Result<Vec<u8>> {
 
 // ── Cryptographic Verification ──────────────────────────────────────────────
 
-/// Verify Ed25519 signature over SHA256SUMS content
-fn verify_signature(sha256sums_content: &str, sig_hex: &str) -> Result<()> {
-    // Decode the release signing public key
-    let pubkey_bytes = hex::decode(RELEASE_SIGNING_PUBKEY_HEX)
-        .context("Invalid release signing public key hex")?;
-    if pubkey_bytes.len() != 32 {
-        bail!("Release signing public key must be 32 bytes");
-    }
+/// Verify a self-contained PQ signature over SHA256SUMS content.
+fn verify_signature(sha256sums_content: &str, sig_json: &str) -> Result<()> {
+    let release_signer = Pubkey::from_base58(RELEASE_SIGNING_ADDRESS_BASE58)
+        .map_err(|error| anyhow!("Invalid release signing address: {}", error))?;
+    let signature: PqSignature =
+        serde_json::from_str(sig_json).context("Invalid PQ signature JSON")?;
 
-    let mut pubkey_arr = [0u8; 32];
-    pubkey_arr.copy_from_slice(&pubkey_bytes);
-    let pubkey = Pubkey(pubkey_arr);
-
-    // Decode the signature
-    let sig_bytes = hex::decode(sig_hex).context("Invalid signature hex encoding")?;
-    if sig_bytes.len() != 64 {
-        bail!("Signature must be 64 bytes, got {} bytes", sig_bytes.len());
-    }
-    let mut sig_arr = [0u8; 64];
-    sig_arr.copy_from_slice(&sig_bytes);
-
-    // Verify
-    if !Keypair::verify(&pubkey, sha256sums_content.as_bytes(), &sig_arr) {
-        bail!("Ed25519 signature verification FAILED — release may be tampered");
+    if !Keypair::verify(&release_signer, sha256sums_content.as_bytes(), &signature) {
+        bail!("PQ signature verification FAILED — release may be tampered");
     }
 
     Ok(())
@@ -870,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_verify_signature_rejects_bad_sig() {
-        let result = verify_signature("hello", "aa".repeat(64).as_str());
+        let result = verify_signature("hello", "{\"sig\":\"deadbeef\"}");
         assert!(result.is_err());
     }
 
@@ -889,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ed25519_sign_verify_roundtrip() {
+    fn test_pq_sign_verify_roundtrip() {
         use lichen_core::Keypair;
 
         // Generate a keypair, sign a message, then verify
@@ -903,27 +886,14 @@ mod tests {
         assert!(!Keypair::verify(&kp.pubkey(), b"tampered", &sig));
     }
 
-    /// AUDIT-FIX V5.5: Ensure the release signing public key is not the
-    /// placeholder all-zeros value, which would make update verification
-    /// non-functional.
+    /// Ensure the release signing address is valid and non-zero.
     #[test]
-    fn test_release_signing_pubkey_not_placeholder() {
-        let all_zeros = "0".repeat(64);
-        assert_ne!(
-            RELEASE_SIGNING_PUBKEY_HEX, all_zeros,
-            "Release signing public key must not be all-zeros placeholder"
-        );
-        // Must be valid 32-byte hex
-        let bytes = hex::decode(RELEASE_SIGNING_PUBKEY_HEX).expect("Invalid hex in release pubkey");
-        assert_eq!(
-            bytes.len(),
-            32,
-            "Release signing public key must be 32 bytes"
-        );
-        // Must not be all zeros even after decode
+    fn test_release_signing_address_is_valid() {
+        let address = Pubkey::from_base58(RELEASE_SIGNING_ADDRESS_BASE58)
+            .expect("Invalid release signing address");
         assert!(
-            bytes.iter().any(|&b| b != 0),
-            "Decoded release signing pubkey must not be all zeros"
+            address.0.iter().any(|&b| b != 0),
+            "Decoded release signing address must not be all zeros"
         );
     }
 }

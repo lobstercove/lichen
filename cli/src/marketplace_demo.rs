@@ -9,7 +9,7 @@ use lichen_core::{
     Pubkey, Transaction, CONTRACT_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod keypair_manager;
 
@@ -255,32 +255,9 @@ fn derive_pubkey(seed: &[u8]) -> Pubkey {
     Pubkey(hash.0)
 }
 
-fn load_demo_keypair(path: &PathBuf) -> Result<Keypair> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read keypair file: {}", path.display()))?;
-
-    let json_value: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse keypair file")?;
-
-    if json_value.get("privateKey").is_some() {
-        let keypair_manager = KeypairManager::new();
-        return keypair_manager.load_keypair(path);
-    }
-
-    let secret_hex = json_value
-        .get("secret_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing privateKey or secret_key"))?;
-
-    let bytes = hex::decode(secret_hex).context("Failed to decode secret_key hex")?;
-
-    if bytes.len() != 32 {
-        anyhow::bail!("Invalid secret_key length: expected 32 bytes");
-    }
-
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&bytes);
-    Ok(Keypair::from_seed(&seed))
+fn load_demo_keypair(path: &Path) -> Result<Keypair> {
+    let keypair_manager = KeypairManager::new();
+    keypair_manager.load_keypair(path)
 }
 
 async fn send_tx(
