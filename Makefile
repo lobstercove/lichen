@@ -262,6 +262,12 @@ sync-shared:
 		cp monitoring/shared/utils.js $$dir/shared/utils.js; \
 		echo "  ✓ $$dir/shared/utils.js"; \
 	done
+	@for dir in explorer dex wallet marketplace faucet programs; do \
+		cp monitoring/shared/pq.js $$dir/shared/pq.js; \
+		echo "  ✓ $$dir/shared/pq.js"; \
+	done
+	@cp monitoring/shared/pq.js wallet/extension/shared/pq.js
+	@echo "  ✓ wallet/extension/shared/pq.js"
 	@for dir in explorer dex wallet faucet programs; do \
 		cp monitoring/shared/wallet-connect.js $$dir/shared/wallet-connect.js; \
 		echo "  ✓ $$dir/shared/wallet-connect.js"; \

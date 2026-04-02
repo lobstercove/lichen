@@ -30,7 +30,7 @@ done
 ```
 
 > **Note:** `marketplace/shared/wallet-connect.js` is a deliberate full rewrite
-> with a DEX-style modal (TweetNaCl + BIP39). It is NOT synced from the canonical.
+> with a DEX-style modal and PQ-native wallet flow. It is NOT synced from the canonical.
 
 ### INF-18 Audit Note
 
