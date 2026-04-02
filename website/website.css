@@ -112,68 +112,43 @@ body {
 }
 
 .hero-subtitle {
-    max-width: 980px;
+    max-width: 920px;
     margin-left: auto;
     margin-right: auto;
+    margin-bottom: 1.5rem;
 }
 
-.hero-highlights {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1rem;
-    max-width: 1500px;
-    margin: 0 auto 1.5rem;
-    animation: slideUp 0.8s ease-out 0.5s both;
-}
-
-.hero-highlight {
-    padding: 1.15rem 1.2rem;
-    text-align: left;
-    background: rgba(20, 24, 48, 0.88);
-    border: 1px solid rgba(0, 201, 219, 0.12);
-    border-radius: 16px;
-    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.2);
-}
-
-.hero-highlight-label {
-    display: inline-block;
-    margin-bottom: 0.55rem;
-    color: var(--primary);
-    font-size: 0.78rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-.hero-highlight p {
-    color: var(--text-secondary);
-    font-size: 0.95rem;
-    line-height: 1.65;
-}
-
-/* ═══════ SHOWROOM CARDS ═══════ */
-.surface-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1.75rem;
-}
-
-.surface-card {
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-}
-
-.surface-head {
-    display: flex;
+.hero-rotating-text {
+    display: inline-flex;
     align-items: center;
-    gap: 1rem;
+    justify-content: center;
+    min-width: 14ch;
+    white-space: nowrap;
 }
 
-.surface-head .feature-icon {
-    margin-bottom: 0;
+.hero-rotating-word {
+    display: inline-block;
+    min-width: 1ch;
+    text-align: left;
 }
 
+.typing-cursor {
+    width: 0.08em;
+    height: 1.05em;
+    margin-left: 0.12em;
+    border-radius: 999px;
+    background: var(--primary);
+    box-shadow: 0 0 18px rgba(0, 201, 219, 0.45);
+    animation: heroCursorBlink 1s steps(1, end) infinite;
+}
+
+@keyframes heroCursorBlink {
+    50% {
+        opacity: 0;
+    }
+}
+
+/* ═══════ CATEGORY SHOWROOM ═══════ */
 .surface-kicker {
     display: inline-block;
     margin-bottom: 0.4rem;
@@ -184,41 +159,247 @@ body {
     text-transform: uppercase;
 }
 
-.surface-card h3 {
+.showroom-lead {
+    display: grid;
+    gap: 1.5rem;
+    margin: 0 auto 2.5rem;
+    justify-items: center;
+}
+
+.showroom-copy {
+    max-width: 980px;
+    margin: 0;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.8;
+    font-size: 1.05rem;
+}
+
+.category-nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.category-jump {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.7rem 1rem;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 201, 219, 0.18);
+    background: rgba(20, 24, 48, 0.72);
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    font-weight: 700;
+    transition: all 0.25s ease;
+}
+
+.category-jump:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 201, 219, 0.42);
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+    background: rgba(0, 201, 219, 0.12);
+}
+
+.showroom-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+}
+
+.showroom-card {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.6rem;
+    background: rgba(20, 24, 48, 0.82);
+    border: 1px solid rgba(0, 201, 219, 0.1);
+    border-radius: 18px;
+    transition: all 0.3s ease;
+}
+
+.showroom-card:hover {
+    transform: translateY(-6px);
+    border-color: rgba(0, 201, 219, 0.3);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.showroom-card-head {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+}
+
+.showroom-card-head .feature-icon {
     margin-bottom: 0;
 }
 
-.surface-summary {
+.showroom-card h3 {
+    margin: 0;
+    font-size: 1.22rem;
+    line-height: 1.35;
+}
+
+.showroom-card p {
+    margin: 0;
     color: var(--text-secondary);
-    line-height: 1.75;
+    line-height: 1.65;
 }
 
-.surface-points {
+.showroom-card-meta {
+    display: inline-flex;
+    width: fit-content;
+    padding: 0.45rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(0, 201, 219, 0.1);
+    border: 1px solid rgba(0, 201, 219, 0.2);
+    color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+/* ═══════ CATEGORY BREAKDOWNS ═══════ */
+.category-section {
+    scroll-margin-top: 96px;
+}
+
+.category-shell {
+    padding: 2.3rem;
+    border-radius: 24px;
+    border: 1px solid rgba(0, 201, 219, 0.12);
+    background:
+        radial-gradient(circle at top right, rgba(0, 201, 219, 0.08) 0%, transparent 32%),
+        linear-gradient(180deg, rgba(20, 24, 48, 0.96) 0%, rgba(10, 14, 39, 0.98) 100%);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.2);
+}
+
+.category-heading {
     display: grid;
-    gap: 0.8rem;
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+    gap: 1.5rem;
+    align-items: start;
+    margin-bottom: 1.75rem;
 }
 
-.surface-point {
-    padding: 1rem 1.1rem;
+.category-title {
+    margin: 0.55rem 0 0.85rem;
+    font-size: 2rem;
+    line-height: 1.2;
+}
+
+.category-description {
+    margin: 0;
+    max-width: 900px;
+    color: var(--text-secondary);
+    line-height: 1.8;
+}
+
+.category-focus {
+    padding: 1.25rem 1.35rem;
+    border-radius: 18px;
+    border: 1px solid rgba(0, 201, 219, 0.14);
     background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(0, 201, 219, 0.08);
-    border-radius: 14px;
 }
 
-.surface-point-label {
+.category-focus-label,
+.category-card-label,
+.category-meta-label {
     display: inline-block;
-    margin-bottom: 0.4rem;
-    color: var(--text-primary);
+    margin-bottom: 0.7rem;
+    color: var(--primary);
     font-size: 0.78rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
 
-.surface-point p {
+.category-focus p {
     margin: 0;
     color: var(--text-secondary);
+    line-height: 1.7;
+}
+
+.category-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.category-card {
+    padding: 1.3rem;
+    border-radius: 18px;
+    border: 1px solid rgba(0, 201, 219, 0.1);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.category-card h3 {
+    margin: 0 0 0.85rem;
+    font-size: 1.12rem;
+}
+
+.category-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.75rem;
+}
+
+.category-list li {
+    position: relative;
+    padding-left: 1rem;
+    color: var(--text-secondary);
     line-height: 1.65;
+}
+
+.category-list li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.68rem;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--primary);
+}
+
+.category-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.category-meta-group {
+    padding: 1rem 1.1rem;
+    border-radius: 16px;
+    border: 1px solid rgba(0, 201, 219, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.category-meta-label {
+    margin-bottom: 0.85rem;
+}
+
+.category-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+}
+
+.category-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.45rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 201, 219, 0.18);
+    background: rgba(0, 201, 219, 0.08);
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 /* ═══════ AGENT SHOWCASE ═══════ */
@@ -876,8 +1057,12 @@ body {
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .hero-highlights,
-    .surface-grid {
+    .category-heading,
+    .category-meta {
+        grid-template-columns: 1fr;
+    }
+
+    .category-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
@@ -977,14 +1162,15 @@ body {
 
 @media (max-width: 768px) {
 
-    .hero-highlights,
+    .showroom-overview-grid,
     .vision-grid,
     .specs-grid,
     .tokenomics-grid,
     .identity-grid,
     .discount-grid,
     #architecture .comparison-grid,
-    .surface-grid {
+    .category-grid,
+    .category-meta {
         grid-template-columns: 1fr;
     }
 
@@ -992,8 +1178,28 @@ body {
         font-size: 2.5rem;
     }
 
+    .hero-rotating-text {
+        min-width: 11ch;
+    }
+
     .hero-cta {
         flex-direction: column;
+    }
+
+    .showroom-copy {
+        font-size: 1rem;
+    }
+
+    .category-shell {
+        padding: 1.5rem;
+    }
+
+    .category-title {
+        font-size: 1.65rem;
+    }
+
+    .category-jump {
+        width: 100%;
     }
 
     .agent-overview {

@@ -421,7 +421,7 @@ const observer = new IntersectionObserver((entries) => {
 }, observerOptions);
 
 // Observe all sections and cards
-document.querySelectorAll('.section, .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case').forEach(el => {
+document.querySelectorAll('.section, .feature-card, .showroom-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case, .category-shell, .category-card, .category-meta-group').forEach(el => {
     observer.observe(el);
 });
 
@@ -499,6 +499,51 @@ function setupWizardTabs() {
     });
 }
 
+function initHeroTypewriter() {
+    const wordEl = document.getElementById('heroRotatingWord');
+    if (!wordEl) return;
+
+    const words = ['agents', 'payments', 'programs', 'commerce', 'storage', 'markets', 'communication'];
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (prefersReducedMotion) {
+        wordEl.textContent = words[0];
+        return;
+    }
+
+    let wordIndex = 0;
+    let charIndex = 0;
+    let deleting = false;
+
+    const tick = () => {
+        const currentWord = words[wordIndex];
+
+        if (deleting) {
+            charIndex = Math.max(0, charIndex - 1);
+        } else {
+            charIndex = Math.min(currentWord.length, charIndex + 1);
+        }
+
+        wordEl.textContent = currentWord.slice(0, charIndex);
+
+        let delay = deleting ? 55 : 95;
+
+        if (!deleting && charIndex === currentWord.length) {
+            delay = 1300;
+            deleting = true;
+        } else if (deleting && charIndex === 0) {
+            deleting = false;
+            wordIndex = (wordIndex + 1) % words.length;
+            delay = 240;
+        }
+
+        window.setTimeout(tick, delay);
+    };
+
+    wordEl.textContent = '';
+    tick();
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     // Wire network selector via LICHEN_CONFIG (auto-populates, hides local-* in production)
@@ -514,6 +559,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Connect WebSocket for live block updates
     connectWebsiteWS();
+
+    // Rotate the hero category word
+    initHeroTypewriter();
 
     // Add fade-in animation to hero
     setTimeout(() => {
@@ -555,13 +603,13 @@ window.addEventListener('scroll', () => {
 // Add animation classes for visibility
 const style = document.createElement('style');
 style.textContent = `
-    .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case {
+    .feature-card, .showroom-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case, .category-shell, .category-card, .category-meta-group {
         opacity: 0;
         transform: translateY(30px);
         transition: opacity 0.6s ease, transform 0.6s ease;
     }
     
-    .feature-card.visible, .vision-card.visible, .comparison-card.visible, .spec-card.visible, .token-card.visible, .chain-card.visible, .contract-card.visible, .roadmap-phase.visible, .discount-tier.visible, .community-card.visible, .reputation-discounts.visible, .agent-overview.visible, .agent-use-case.visible {
+    .feature-card.visible, .showroom-card.visible, .vision-card.visible, .comparison-card.visible, .spec-card.visible, .token-card.visible, .chain-card.visible, .contract-card.visible, .roadmap-phase.visible, .discount-tier.visible, .community-card.visible, .reputation-discounts.visible, .agent-overview.visible, .agent-use-case.visible, .category-shell.visible, .category-card.visible, .category-meta-group.visible {
         opacity: 1;
         transform: translateY(0);
     }
