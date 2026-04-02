@@ -74,6 +74,48 @@ function getInjectedLichenProvider() {
     return null;
 }
 
+function normalizeRecentBlockhash(result) {
+    var blockhash = typeof result === 'string' ? result : result && result.blockhash;
+    if (!blockhash || typeof blockhash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(blockhash)) {
+        throw new Error('Recent blockhash unavailable');
+    }
+    return blockhash;
+}
+
+function normalizeRpcInstruction(ix, signerAddress) {
+    var programId = ix.program_id || ix.programId;
+    if (!programId) {
+        throw new Error('Instruction missing program_id');
+    }
+
+    var accounts = Array.isArray(ix.accounts) && ix.accounts.length ? ix.accounts : [signerAddress];
+    var rawData = ix.data;
+    var dataBytes;
+    if (rawData instanceof Uint8Array) {
+        dataBytes = rawData;
+    } else if (Array.isArray(rawData)) {
+        dataBytes = new Uint8Array(rawData);
+    } else if (typeof rawData === 'string') {
+        dataBytes = new TextEncoder().encode(rawData);
+    } else {
+        dataBytes = new Uint8Array(0);
+    }
+
+    return {
+        program_id: new Uint8Array(bs58decode(programId)),
+        accounts: accounts.map(function (account) { return new Uint8Array(bs58decode(account)); }),
+        data: dataBytes,
+    };
+}
+
+function encodeTransactionPayload(transaction) {
+    return btoa(String.fromCharCode.apply(null, new TextEncoder().encode(JSON.stringify(transaction))));
+}
+
+function unwrapTransactionResult(result) {
+    return result && typeof result === 'object' && result.txHash ? result.txHash : result;
+}
+
 function waitForInjectedLichenProvider(timeoutMs) {
     var existing = getInjectedLichenProvider();
     if (existing) return Promise.resolve(existing);
@@ -139,6 +181,7 @@ function LichenWallet(options) {
     this._balanceInterval = null;
     this._provider = null;
     this._providerListenersBound = false;
+    this._sdkWallet = null;
 
     // Try to restore from localStorage
     if (this.persist) {
@@ -157,6 +200,8 @@ LichenWallet.prototype._clearConnectionState = function (notifyDisconnect, oldAd
     this.address = null;
     this.balance = 0;
     this._walletData = null;
+    this._sdkWallet = null;
+    this._provider = null;
 
     if (this.persist) {
         try { localStorage.removeItem(this.storageKey); } catch (e) { }
@@ -214,6 +259,7 @@ LichenWallet.prototype._bindInjectedProvider = function (provider) {
 
 LichenWallet.prototype._connectInjectedProvider = async function (provider) {
     this._bindInjectedProvider(provider);
+    this._sdkWallet = null;
 
     var accounts = [];
     if (typeof provider.getProviderState === 'function') {
@@ -260,6 +306,7 @@ LichenWallet.prototype._connectInjectedProvider = async function (provider) {
  */
 LichenWallet.prototype.connect = async function (importData) {
     var injectedProvider = !importData ? await waitForInjectedLichenProvider() : null;
+    this._sdkWallet = null;
 
     if (injectedProvider) {
         await this._connectInjectedProvider(injectedProvider);
@@ -277,6 +324,7 @@ LichenWallet.prototype.connect = async function (importData) {
                 wallet = new Lichen.Wallet();
             }
             this.address = wallet.address || wallet.publicKey;
+            this._sdkWallet = wallet;
             this._walletData = {
                 address: this.address,
                 hasKeys: true,
@@ -354,6 +402,88 @@ LichenWallet.prototype.disconnect = function () {
     this._clearConnectionState(true, oldAddr);
 };
 
+LichenWallet.prototype._resolveInjectedProvider = async function () {
+    var provider = this._provider || getInjectedLichenProvider();
+    if (!provider) {
+        provider = await waitForInjectedLichenProvider(800);
+    }
+    if (!provider) return null;
+
+    this._bindInjectedProvider(provider);
+
+    if (typeof provider.getProviderState === 'function') {
+        var state = await provider.getProviderState().catch(function () { return null; });
+        if (state && state.connected === false) {
+            return null;
+        }
+        if (state && Array.isArray(state.accounts) && state.accounts.length && this.address && state.accounts.indexOf(this.address) === -1) {
+            return null;
+        }
+    }
+
+    return provider;
+};
+
+LichenWallet.prototype.sendTransaction = async function (instructions) {
+    if (!this.address) {
+        throw new Error('Connect a wallet before sending transactions');
+    }
+
+    if (!Array.isArray(instructions) || !instructions.length) {
+        throw new Error('At least one instruction is required');
+    }
+
+    var normalizedInstructions = instructions.map(function (ix) {
+        return normalizeRpcInstruction(ix, this.address);
+    }, this);
+    var blockhash = normalizeRecentBlockhash(await lichenRpcCall('getRecentBlockhash', [], this.rpcUrl));
+
+    if (this._walletData && this._walletData.provider === 'extension') {
+        var provider = await this._resolveInjectedProvider();
+        if (!provider || typeof provider.sendTransaction !== 'function') {
+            throw new Error('Lichen wallet extension not available for transaction approval');
+        }
+
+        return unwrapTransactionResult(await provider.sendTransaction({
+            signatures: [],
+            message: {
+                instructions: normalizedInstructions.map(function (ix) {
+                    return {
+                        program_id: Array.from(ix.program_id),
+                        accounts: ix.accounts.map(function (account) { return Array.from(account); }),
+                        data: Array.from(ix.data),
+                    };
+                }),
+                blockhash: blockhash,
+            },
+        }));
+    }
+
+    if (this._sdkWallet && typeof this._sdkWallet.sign === 'function') {
+        if (typeof serializeMessageBincode !== 'function') {
+            throw new Error('Transaction serializer unavailable on this page');
+        }
+
+        var message = { instructions: normalizedInstructions, blockhash: blockhash };
+        var signature = await this._sdkWallet.sign(serializeMessageBincode(message));
+        return lichenRpcCall('sendTransaction', [encodeTransactionPayload({
+            signatures: [signature],
+            message: {
+                instructions: normalizedInstructions.map(function (ix) {
+                    return {
+                        program_id: Array.from(ix.program_id),
+                        accounts: ix.accounts.map(function (account) { return Array.from(account); }),
+                        data: Array.from(ix.data),
+                    };
+                }),
+                blockhash: blockhash,
+            },
+        })], this.rpcUrl);
+    }
+
+    throw new Error('Connected wallet cannot sign in this page session. Reconnect the extension or reconnect the local wallet.');
+};
+
 /** Toggle connect/disconnect */
 LichenWallet.prototype.toggle = async function () {
     if (this.isConnected()) {
@@ -405,6 +535,11 @@ LichenWallet.prototype._restore = function () {
         if (stored) {
             var data = JSON.parse(stored);
             if (data && data.address) {
+                if (data.provider !== 'extension') {
+                    this._clearConnectionState(false);
+                    return;
+                }
+
                 this.address = data.address;
                 this._walletData = data;
                 this._startBalancePolling();
