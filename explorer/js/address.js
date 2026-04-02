@@ -818,13 +818,121 @@ function getActiveWalletFromStorage() {
     return state.wallets.find(wallet => wallet.id === state.activeWalletId) || null;
 }
 
-function ensureWalletAvailable() {
-    const wallet = getActiveWalletFromStorage();
-    if (!wallet || !wallet.address || !wallet.encryptedKey) {
-        showAddressToast('No active wallet found. Open Wallet to create/import and unlock.');
+function getConnectedSharedWallet() {
+    try {
+        const raw = localStorage.getItem('lichen_wallet');
+        if (!raw) return null;
+        const wallet = JSON.parse(raw);
+        return wallet && wallet.address ? wallet : null;
+    } catch (error) {
         return null;
     }
-    return wallet;
+}
+
+async function getInjectedWalletProvider(timeoutMs = 0) {
+    if (typeof getInjectedLichenProvider === 'function') {
+        const provider = getInjectedLichenProvider();
+        if (provider) return provider;
+    }
+    if (timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+        const provider = await waitForInjectedLichenProvider(timeoutMs);
+        if (provider) return provider;
+    }
+    if (window.licnwallet && window.licnwallet.isLichenWallet) {
+        return window.licnwallet;
+    }
+    return null;
+}
+
+async function getConnectedExtensionWallet() {
+    const provider = await getInjectedWalletProvider(250);
+    if (!provider) return null;
+
+    const sharedWallet = getConnectedSharedWallet();
+    let address = sharedWallet?.address || null;
+
+    if (!address && typeof provider.getProviderState === 'function') {
+        const state = await provider.getProviderState().catch(() => null);
+        if (state?.connected && Array.isArray(state.accounts) && state.accounts.length) {
+            address = state.accounts[0];
+        }
+    }
+
+    if (!address && typeof provider.accounts === 'function') {
+        const accounts = await provider.accounts().catch(() => []);
+        if (Array.isArray(accounts) && accounts.length) {
+            address = accounts[0];
+        }
+    }
+
+    if (!address) return null;
+
+    return {
+        mode: 'extension',
+        address,
+        provider,
+    };
+}
+
+function getLocalWalletSession() {
+    const wallet = getActiveWalletFromStorage();
+    if (!wallet || !wallet.address || !wallet.encryptedKey) {
+        return null;
+    }
+    return {
+        mode: 'local',
+        address: wallet.address,
+        encryptedKey: wallet.encryptedKey,
+        wallet,
+    };
+}
+
+async function requestExtensionWalletSession() {
+    const provider = await getInjectedWalletProvider(800);
+    if (!provider || typeof provider.requestAccounts !== 'function') {
+        return null;
+    }
+
+    const accounts = await provider.requestAccounts().catch(() => []);
+    if (!Array.isArray(accounts) || !accounts.length) {
+        return null;
+    }
+
+    return {
+        mode: 'extension',
+        address: accounts[0],
+        provider,
+    };
+}
+
+async function ensureWalletAvailable() {
+    const extensionWallet = await getConnectedExtensionWallet();
+    const localWallet = getLocalWalletSession();
+
+    if (extensionWallet && extensionWallet.address === currentAddress) {
+        return extensionWallet;
+    }
+    if (localWallet && localWallet.address === currentAddress) {
+        return localWallet;
+    }
+    if (extensionWallet) {
+        return extensionWallet;
+    }
+    if (localWallet) {
+        return localWallet;
+    }
+
+    try {
+        const promptedExtensionWallet = await requestExtensionWalletSession();
+        if (promptedExtensionWallet) {
+            return promptedExtensionWallet;
+        }
+    } catch (error) {
+        console.warn('Extension wallet connection failed:', error);
+    }
+
+    showAddressToast('No active wallet found. Connect the extension or open Wallet to create/import and unlock.');
+    return null;
 }
 
 async function requestWalletPassword(actionText) {
@@ -860,6 +968,13 @@ async function requestWalletPassword(actionText) {
             if (event.target === overlay) resolve(null);
         }, { once: true });
     });
+}
+
+async function requestWalletPasswordIfNeeded(wallet, actionText) {
+    if (wallet?.mode !== 'local') {
+        return null;
+    }
+    return requestWalletPassword(actionText);
 }
 
 async function getLichenIdProgramAddress() {
@@ -934,12 +1049,26 @@ async function signAndSendInstructions(wallet, password, instructions) {
         blockhash: latestBlock.hash
     };
 
+    if (wallet?.mode === 'extension') {
+        const provider = wallet.provider || await getInjectedWalletProvider(800);
+        if (!provider || typeof provider.sendTransaction !== 'function') {
+            throw new Error('Wallet extension signing unavailable. Reconnect the extension and try again.');
+        }
+
+        const result = await provider.sendTransaction({
+            signatures: [],
+            message,
+        });
+
+        return result?.txHash || result?.signature || result;
+    }
+
     const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
     const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
     const transaction = {
-        signatures: [Array.from(signature)],
+        signatures: [signature],
         message
     };
     const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
@@ -961,7 +1090,7 @@ async function resolveRecipient(value) {
 }
 
 async function openSendModal() {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
 
     openActionModal({
@@ -990,8 +1119,8 @@ async function openSendModal() {
                 if (!amount || amount <= 0) throw new Error('Enter a valid amount');
 
                 const recipient = await resolveRecipient(recipientInput);
-                const password = await requestWalletPassword(`Send ${amount} LICN to ${recipient.display}`);
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, `Send ${amount} LICN to ${recipient.display}`);
+                if (wallet.mode === 'local' && !password) return false;
 
                 const instruction = buildTransferInstruction(wallet.address, recipient.address, amount);
                 showAddressToast('Sending transaction...');
@@ -1008,7 +1137,7 @@ async function openSendModal() {
 }
 
 async function openRegisterIdentityModal() {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
     if (wallet.address !== currentAddress) {
         showAddressToast('Identity registration is only available for the active wallet address.');
@@ -1058,8 +1187,8 @@ async function openRegisterIdentityModal() {
                 }
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPassword(`Register identity for ${wallet.address}`);
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, `Register identity for ${wallet.address}`);
+                if (wallet.mode === 'local' && !password) return false;
 
                 const registerInstruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1108,7 +1237,7 @@ async function openRegisterIdentityModal() {
 }
 
 async function openRegisterNameModal() {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
     if (wallet.address !== currentAddress) {
         showAddressToast('Name registration is only available for the active wallet identity page.');
@@ -1147,8 +1276,8 @@ async function openRegisterNameModal() {
                 if (availability?.owner) throw new Error(`${label}.lichen is already registered`);
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPassword(`Register ${label}.lichen`);
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, `Register ${label}.lichen`);
+                if (wallet.mode === 'local' && !password) return false;
 
                 // Name cost: 20 LICN/yr for 5+ chars, 100 for 4, 500 for ≤3
                 const nameLen = label.length;
@@ -1199,7 +1328,7 @@ async function openRegisterNameModal() {
 }
 
 async function openVouchModal() {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
     if (wallet.address === currentAddress) {
         showAddressToast('You cannot vouch for your own identity.');
@@ -1214,8 +1343,8 @@ async function openVouchModal() {
         onConfirm: async () => {
             try {
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPassword('Sign vouch transaction');
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, 'Sign vouch transaction');
+                if (wallet.mode === 'local' && !password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1241,7 +1370,7 @@ async function openVouchModal() {
 }
 
 async function openAttestSkillModal(initialSkillName = '') {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
     if (wallet.address === currentAddress) {
         showAddressToast('Use attestations for other identities.');
@@ -1273,8 +1402,8 @@ async function openAttestSkillModal(initialSkillName = '') {
                 if (level < 1 || level > 5) throw new Error('Level must be between 1 and 5');
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPassword(`Attest ${skill} at level ${level}`);
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, `Attest ${skill} at level ${level}`);
+                if (wallet.mode === 'local' && !password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1307,7 +1436,7 @@ async function openAttestSkillModal(initialSkillName = '') {
 }
 
 async function openEditProfileModal() {
-    const wallet = ensureWalletAvailable();
+    const wallet = await ensureWalletAvailable();
     if (!wallet) return;
     if (wallet.address !== currentAddress) {
         showAddressToast('Profile updates are only available for the active wallet identity.');
@@ -1403,8 +1532,8 @@ async function openEditProfileModal() {
                     value: 0
                 }));
 
-                const password = await requestWalletPassword('Sign profile update transaction');
-                if (!password) return false;
+                const password = await requestWalletPasswordIfNeeded(wallet, 'Sign profile update transaction');
+                if (wallet.mode === 'local' && !password) return false;
 
                 for (const instruction of instructions) {
                     await signAndSendInstructions(wallet, password, [instruction]);
@@ -1422,6 +1551,13 @@ async function openEditProfileModal() {
 }
 
 function bindIdentityActionButtons() {
+    const registerIdentityBtn = document.getElementById('registerIdentityBtn');
+    if (registerIdentityBtn) {
+        registerIdentityBtn.onclick = async () => {
+            await openRegisterIdentityModal();
+        };
+    }
+
     document.querySelectorAll('[data-identity-action]').forEach(button => {
         button.addEventListener('click', async (event) => {
             const action = event.currentTarget?.dataset?.identityAction;

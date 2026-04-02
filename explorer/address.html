@@ -412,11 +412,12 @@
         </div>
     </footer>
 
-    <!-- Cryptographic libraries for proper Solana -> EVM address conversion -->
+    <!-- Cryptographic libraries for proper native-address and EVM address handling -->
     <!-- sha3 for keccak_256 (EVM address derivation) -->
     <script src="shared/utils.js?v=20260322"></script>
+    <script src="shared/pq.js?v=20260322"></script>
+    <script src="shared/wallet-connect.js?v=20260322"></script>
     <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/build/sha3.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
 
     <script src="shared/env.js?v=20260322"></script>
     <script src="shared-config.js?v=20260322"></script>

@@ -268,14 +268,15 @@ document.addEventListener('DOMContentLoaded', () => {
             this.keypair = localKeypair || (this.signingReady ? { connected: true } : null);
             return this;
         },
-        /** Import wallet from hex or base58 private key */
-        async fromSecretKey(secretInput) {
+        /** Import wallet from a canonical 32-byte private key seed. */
+        async fromPrivateKey(secretInput) {
+            const pq = requireLichenPQ();
             const text = (secretInput || '').trim();
             if (!text) throw new Error('Private key is required');
             let bytes;
             try {
                 const hex = text.startsWith('0x') ? text.slice(2) : text;
-                if (/^[0-9a-fA-F]+$/.test(hex) && (hex.length === 64 || hex.length === 128)) {
+                if (/^[0-9a-fA-F]+$/.test(hex) && hex.length === 64) {
                     bytes = hexToBytes(hex);
                 } else {
                     bytes = bs58decode(text);
@@ -284,49 +285,42 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error('Invalid private key format (expected hex or base58)');
             }
 
-            let kp;
-            if (bytes.length === 64) {
-                kp = nacl.sign.keyPair.fromSecretKey(bytes);
-            } else if (bytes.length === 32) {
-                kp = nacl.sign.keyPair.fromSeed(bytes);
-            } else {
-                throw new Error('Private key must be 32-byte seed or 64-byte Ed25519 secret key');
+            if (bytes.length !== pq.ML_DSA_65_SEED_BYTES) {
+                throw new Error('Private key must be a 32-byte ML-DSA-65 seed');
             }
 
-            this.keypair = kp;
-            this.address = bs58encode(kp.publicKey);
+            const kp = await pq.keypairFromSeed(bytes);
+            this.keypair = makeLocalWalletKeypair(kp);
+            this.address = kp.address;
             this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
             this.signingReady = true;
             return this;
         },
-        /** Generate a fresh Ed25519 keypair */
+        /** Generate a fresh ML-DSA-65 keypair */
         async generate() {
-            const kp = nacl.sign.keyPair();
-            this.keypair = kp;
-            this.address = bs58encode(kp.publicKey);
+            const kp = await requireLichenPQ().generateKeypair();
+            this.keypair = makeLocalWalletKeypair(kp);
+            this.address = kp.address;
             this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
             this.signingReady = true;
             return this;
         },
-        sign(message) {
-            if (!this.keypair || !this.keypair.secretKey) throw new Error('No local keypair available for signing');
-            return nacl.sign.detached(message, this.keypair.secretKey);
+        async sign(message) {
+            if (!this.keypair || !this.keypair.privateKey) throw new Error('No local keypair available for signing');
+            const payload = message instanceof Uint8Array ? message : new Uint8Array(message || []);
+            return requireLichenPQ().signMessage(this.keypair.privateKey, payload);
         },
         async sendTransaction(instructions) {
             if (!this.address) throw new Error('Wallet not connected');
             if (!this.signingReady) throw new Error('Signing session not active. Reconnect wallet extension to sign.');
             // Prefer local keypair (import/create)
-            if (this.keypair && this.keypair.secretKey) {
-                const blockhash = await api.rpc('getRecentBlockhash');
-                const normalizedIx = instructions.map(ix => {
-                    const accounts = ix.accounts || [this.address];
-                    const dataBytes = typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data);
-                    return { program_id: ix.program_id, accounts, data: dataBytes };
-                });
-                const msg = encodeTransactionMessage(normalizedIx, blockhash, this.address);
-                const sig = this.sign(msg);
+            if (this.keypair && this.keypair.privateKey) {
+                const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
+                const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
+                const msg = serializeMessageBincode({ instructions: normalizedIx, blockhash: blockhash });
+                const sig = await this.sign(msg);
                 const txPayload = {
-                    signatures: [bytesToHex(sig)],
+                    signatures: [sig],
                     message: { instructions: normalizedIx, blockhash: blockhash },
                 };
                 const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
@@ -337,22 +331,33 @@ document.addEventListener('DOMContentLoaded', () => {
             if (w && typeof w.sendTransaction === 'function') {
                 return w.sendTransaction(instructions);
             }
+            const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
+            const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
+            const txPayload = {
+                signatures: [],
+                message: { instructions: normalizedIx, blockhash: blockhash },
+            };
+
+            let injectedProvider = null;
+            if (typeof waitForInjectedLichenProvider === 'function') {
+                injectedProvider = await waitForInjectedLichenProvider(800);
+            } else if (typeof getInjectedLichenProvider === 'function') {
+                injectedProvider = getInjectedLichenProvider();
+            } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+                injectedProvider = window.licnwallet;
+            }
+
+            if (injectedProvider && typeof injectedProvider.sendTransaction === 'function') {
+                const result = await injectedProvider.sendTransaction(txPayload);
+                return result && typeof result === 'object' && result.txHash ? result.txHash : result;
+            }
+
             // Fallback: build unsigned TX and request extension signature
             if (typeof window !== 'undefined' && window.Lichen && window.Lichen.Wallet) {
                 return window.Lichen.Wallet.signAndSend(instructions);
             }
             // Last resort: submit via RPC (for server-side wallets)
-            const blockhash = await api.rpc('getRecentBlockhash');
-            const normalizedIx = instructions.map(ix => {
-                const accounts = ix.accounts || [this.address];
-                const dataBytes = typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data);
-                return { program_id: ix.program_id, accounts, data: dataBytes };
-            });
-            const txPayload = {
-                signatures: [],
-                message: { instructions: normalizedIx, blockhash: blockhash },
-                signer: this.address,
-            };
+            txPayload.signer = this.address;
             const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
             return api.rpc('sendTransaction', [txBase64]);
         },
@@ -362,10 +367,45 @@ document.addEventListener('DOMContentLoaded', () => {
         return !!(wallet.address && wallet.signingReady);
     }
 
+    function requireLichenPQ() {
+        if (!window.LichenPQ) {
+            throw new Error('Shared PQ runtime not loaded');
+        }
+        return window.LichenPQ;
+    }
+
+    function makeLocalWalletKeypair(keypair) {
+        return {
+            privateKey: String(keypair.privateKey || ''),
+            publicKeyHex: String(keypair.publicKeyHex || ''),
+            address: String(keypair.address || ''),
+        };
+    }
+
+    function normalizeRecentBlockhash(result) {
+        const blockhash = typeof result === 'string' ? result : result?.blockhash;
+        if (!blockhash || typeof blockhash !== 'string') {
+            throw new Error('Recent blockhash unavailable');
+        }
+        return blockhash;
+    }
+
+    function normalizeRpcInstruction(ix, signerAddress) {
+        const programId = ix.program_id || ix.programId;
+        const accounts = ix.accounts || [signerAddress];
+        const dataBytes = typeof ix.data === 'string'
+            ? new TextEncoder().encode(ix.data)
+            : (ix.data instanceof Uint8Array ? ix.data : new Uint8Array(ix.data || []));
+        return {
+            program_id: Array.from(bs58decode(programId)),
+            accounts: accounts.map(account => Array.from(bs58decode(account))),
+            data: Array.from(dataBytes),
+        };
+    }
+
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
     function keypairSeedHex(keypair) {
-        if (!keypair || !keypair.secretKey) return '';
-        return bytesToHex(keypair.secretKey.slice(0, 32));
+        return keypair?.privateKey || '';
     }
     function hexToBytes(h) {
         const c = h.startsWith('0x') ? h.slice(2) : h;
@@ -1048,23 +1088,25 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             console.warn('[DEX] Symbol registry unavailable, trying deploy manifest:', e.message);
         }
-        // If symbol registry is unavailable, use hardcoded fallback addresses as safety net.
-        // Registry is always preferred; fallbacks are a resilience measure for cold-start scenarios.
-        // AUDIT-FIX FE-1: Fallback addresses are for testnet v0.4.x genesis only.
-        // If the chain restarts with a new genesis, update these or remove them.
-        let needsFallback = false;
-        if (!contracts.dex_core) {
-            needsFallback = true;
-            contracts.dex_core = '7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds';
-            contracts.dex_amm = '72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay';
-            contracts.dex_router = 'FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf';
-            contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
-            console.warn('[DEX] Using fallback contract addresses (testnet v0.4.x) — registry unavailable');
+        const requiredContracts = [
+            'dex_core',
+            'dex_amm',
+            'dex_router',
+            'dex_margin',
+            'dex_rewards',
+            'dex_governance',
+            'dex_analytics',
+            'prediction_market',
+        ];
+        const missingContracts = requiredContracts.filter((name) => !contracts[name]);
+        if (missingContracts.length) {
             const banner = document.getElementById('dexWarningBanner');
+            const message = `Missing contract addresses in symbol registry: ${missingContracts.join(', ')}`;
             if (banner) {
-                banner.textContent = '⚠ Using fallback contract addresses — symbol registry unavailable.';
+                banner.textContent = `⚠ ${message}`;
                 banner.style.display = 'block';
             }
+            throw new Error(message);
         }
     }
 
@@ -2107,7 +2149,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
-    const ROUTE_TYPE_LABELS = { clob: 'CLOB Direct', amm: 'AMM Pool', split: 'CLOB + AMM Split', multi_hop: 'Multi-Hop', legacy_swap: 'Legacy Swap' };
+    const ROUTE_TYPE_LABELS = { clob: 'CLOB Direct', amm: 'AMM Pool', split: 'CLOB + AMM Split', multi_hop: 'Multi-Hop' };
     function calcTotal() {
         if (!priceInput || !amountInput || !totalInput) return;
         const rawP = parseFloat(priceInput.value);
@@ -2743,8 +2785,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function walletSeedHex(keypair) {
-        if (!keypair || !keypair.secretKey) return '';
-        return bytesToHex(keypair.secretKey.slice(0, 32));
+        return keypair?.privateKey || '';
     }
 
     function persistSessionStoragePassword(address, password) {
@@ -2766,7 +2807,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Use sessionStorage (cleared on tab close) instead of localStorage
     // to limit the attack window for XSS-based session theft.
     async function persistLocalWalletSession(address, keypair, password) {
-        if (!address || !keypair || !keypair.secretKey) return;
+        if (!address || !keypair || !keypair.privateKey) return;
         if (!password) throw new Error('Password is required');
         const seedHex = walletSeedHex(keypair);
         const encrypted = await encryptSeedHex(seedHex, password);
@@ -2808,10 +2849,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const seedHex = await decryptSeedHex(encrypted, password);
             const seedBytes = hexToBytes(seedHex);
-            if (seedBytes.length !== 32) throw new Error('Invalid wallet seed length');
-            const kp = nacl.sign.keyPair.fromSeed(seedBytes);
-            const derivedAddress = bs58encode(kp.publicKey);
-            if (String(derivedAddress) !== String(address)) throw new Error('Password does not match wallet');
+            const pq = requireLichenPQ();
+            if (seedBytes.length !== pq.ML_DSA_65_SEED_BYTES) throw new Error('Invalid wallet seed length');
+            const kp = makeLocalWalletKeypair(await pq.keypairFromSeed(seedBytes));
+            if (String(kp.address) !== String(address)) throw new Error('Password does not match wallet');
             localWalletSessions.set(address, kp);
             persistSessionStoragePassword(address, password);
             return kp;
@@ -2943,11 +2984,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     keyMaterial, 512
                 );
                 const seed = new Uint8Array(seedBuffer).slice(0, 32);
-                const kp = nacl.sign.keyPair.fromSeed(seed);
-                connectedWallet = await wallet.connectAddress(bs58encode(kp.publicKey), { signingReady: true, localKeypair: kp });
+                const kp = makeLocalWalletKeypair(await requireLichenPQ().keypairFromSeed(seed));
+                connectedWallet = await wallet.connectAddress(kp.address, { signingReady: true, localKeypair: kp });
             } else {
                 const pkInput = document.getElementById('wmPrivateKey')?.value || '';
-                connectedWallet = await wallet.fromSecretKey(pkInput);
+                connectedWallet = await wallet.fromPrivateKey(pkInput);
             }
 
             localWalletSessions.set(connectedWallet.address, connectedWallet.keypair);
@@ -2979,7 +3020,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
     });
 
-    // Create tab — generate a new Ed25519 keypair
+    // Create tab — generate a new ML-DSA-65 keypair
     const wmCreateBtn = document.getElementById('wmCreateBtn');
     if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
         try {
