@@ -35,7 +35,8 @@ use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
 use crate::zk::circuits::utils::poseidon_hash_var;
-use crate::zk::merkle::{poseidon_config, TREE_DEPTH};
+use crate::zk::merkle::TREE_DEPTH;
+use crate::zk::r1cs_bn254::{bytes_to_fr, poseidon_config};
 
 /// Number of inputs and outputs per transfer (fixed for circuit structure)
 pub const TRANSFER_INPUTS: usize = 2;
@@ -118,6 +119,40 @@ impl TransferCircuit {
             output_values: output_values.iter().map(|v| Some(Fr::from(*v))).collect(),
             output_blindings: output_blindings.iter().map(|b| Some(*b)).collect(),
         }
+    }
+
+    /// Create a new transfer circuit from canonical 32-byte witness values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bytes(
+        merkle_root: [u8; 32],
+        nullifiers: [[u8; 32]; TRANSFER_INPUTS],
+        output_commitments: [[u8; 32]; TRANSFER_OUTPUTS],
+        input_values: [u64; TRANSFER_INPUTS],
+        input_blindings: [[u8; 32]; TRANSFER_INPUTS],
+        input_serials: [[u8; 32]; TRANSFER_INPUTS],
+        spending_keys: [[u8; 32]; TRANSFER_INPUTS],
+        input_merkle_paths: [Vec<[u8; 32]>; TRANSFER_INPUTS],
+        input_path_bits: [Vec<bool>; TRANSFER_INPUTS],
+        output_values: [u64; TRANSFER_OUTPUTS],
+        output_blindings: [[u8; 32]; TRANSFER_OUTPUTS],
+    ) -> Self {
+        Self::new(
+            bytes_to_fr(&merkle_root),
+            nullifiers.map(|value| bytes_to_fr(&value)),
+            output_commitments.map(|value| bytes_to_fr(&value)),
+            input_values,
+            input_blindings.map(|value| bytes_to_fr(&value)),
+            input_serials.map(|value| bytes_to_fr(&value)),
+            spending_keys.map(|value| bytes_to_fr(&value)),
+            input_merkle_paths.map(|path| {
+                path.into_iter()
+                    .map(|sibling| bytes_to_fr(&sibling))
+                    .collect()
+            }),
+            input_path_bits,
+            output_values,
+            output_blindings.map(|value| bytes_to_fr(&value)),
+        )
     }
 
     /// Empty circuit for key generation (setup/ceremony phase).
@@ -295,7 +330,8 @@ impl ConstraintSynthesizer<Fr> for TransferCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::merkle::{fr_to_bytes, poseidon_hash_fr, MerkleTree};
+    use crate::zk::merkle::MerkleTree;
+    use crate::zk::r1cs_bn254::{fr_to_bytes, poseidon_hash_fr};
     use ark_ff::{PrimeField, UniformRand};
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;

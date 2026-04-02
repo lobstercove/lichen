@@ -1,29 +1,130 @@
-//! Poseidon-based Sparse Merkle Tree (32-level)
+//! Poseidon2-based sparse Merkle tree for the native shielded runtime.
 //!
-//! Uses Poseidon hash which is algebraic and SNARK-friendly,
-//! approximately 8x cheaper in-circuit than SHA-256.
-//!
-//! The tree stores note commitments as leaves. The root changes
-//! with each insertion. Wallets maintain a local copy for
-//! generating Merkle proofs needed by ZK circuits.
+//! The live runtime uses domain-separated Poseidon2/Goldilocks hashing over
+//! canonical 32-byte byte strings for commitments, nullifiers, and Merkle
+//! nodes.
 
-use ark_bn254::Fr;
-use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
-use ark_crypto_primitives::sponge::CryptographicSponge;
-use ark_ff::{BigInteger, Field, PrimeField};
+use ark_std::rand::{rngs::OsRng, RngCore};
+use p3_field::PrimeField64;
+use p3_goldilocks::{default_goldilocks_poseidon2_8, Goldilocks, Poseidon2Goldilocks};
+use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+type NativePermutation = Poseidon2Goldilocks<8>;
+type NativeHasher = PaddingFreeSponge<NativePermutation, 8, 4, 4>;
+
+const DOMAIN_MERKLE_NODE: u64 = 0x4c49434e4d524b31;
+const DOMAIN_COMMITMENT: u64 = 0x4c49434e434d5431;
+const DOMAIN_NULLIFIER: u64 = 0x4c49434e4e554c31;
+const DOMAIN_RECIPIENT: u64 = 0x4c49434e52435031;
+const DOMAIN_RECIPIENT_PREIMAGE: u64 = 0x4c49434e52504331;
+const DOMAIN_RANDOM_SCALAR: u64 = 0x4c49434e524e4431;
+
+const CANONICAL_SCALAR_MODULUS_LE: [u8; 32] = [
+    1, 0, 0, 240, 147, 245, 225, 67, 145, 112, 185, 121, 72, 232, 51, 40, 93, 88, 129, 129, 182,
+    69, 80, 184, 41, 160, 49, 225, 114, 78, 100, 48,
+];
+
+const BYTES32_WORDS: usize = 8;
 
 /// Tree depth: supports 2^20 = ~1 million commitments.
-///
-/// Depth 20 is the sweet spot for Groth16/BN254: the trusted setup completes
-/// in seconds (vs. minutes for depth 32) and stays within memory limits on
-/// standard developer hardware (16 GB).  Production can increase this if
-/// needed — the on-chain transaction format (proof, nullifier, root) is
-/// independent of tree depth.
 pub const TREE_DEPTH: usize = 20;
 
-/// A Merkle path (authentication path) for proving leaf membership
+fn poseidon2_hasher() -> NativeHasher {
+    NativeHasher::new(default_goldilocks_poseidon2_8())
+}
+
+fn u64_to_words(value: u64) -> [u64; 2] {
+    [value & 0xFFFF_FFFF, (value >> 32) & 0xFFFF_FFFF]
+}
+
+fn bytes32_to_words(bytes: &[u8; 32]) -> [u64; BYTES32_WORDS] {
+    let mut words = [0u64; BYTES32_WORDS];
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        words[index] = u32::from_le_bytes(chunk.try_into().expect("4-byte limb")) as u64;
+    }
+    words
+}
+
+fn digest_to_bytes(digest: [Goldilocks; 4]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    for (index, word) in digest.into_iter().enumerate() {
+        output[index * 8..(index + 1) * 8].copy_from_slice(&word.as_canonical_u64().to_le_bytes());
+    }
+    output
+}
+
+pub(crate) fn is_canonical_scalar_bytes(bytes: &[u8; 32]) -> bool {
+    for (candidate, modulus) in bytes.iter().zip(CANONICAL_SCALAR_MODULUS_LE.iter()).rev() {
+        if candidate < modulus {
+            return true;
+        }
+        if candidate > modulus {
+            return false;
+        }
+    }
+
+    false
+}
+
+fn canonical_poseidon2_hash(domain: u64, input_words: &[u64]) -> [u8; 32] {
+    let hasher = poseidon2_hasher();
+
+    for counter in 0u64.. {
+        let digest = hasher.hash_iter(
+            std::iter::once(Goldilocks::new(domain))
+                .chain(std::iter::once(Goldilocks::new(counter)))
+                .chain(input_words.iter().copied().map(Goldilocks::new)),
+        );
+
+        let mut output = digest_to_bytes(digest);
+        output[31] &= 0x3F;
+        if is_canonical_scalar_bytes(&output) {
+            return output;
+        }
+    }
+
+    unreachable!("u64 counter exhausted while canonicalizing Poseidon2 digest")
+}
+
+pub(crate) fn scalar_bytes_from_seed(domain: u64, seed: [u8; 32]) -> [u8; 32] {
+    canonical_poseidon2_hash(domain, &bytes32_to_words(&seed))
+}
+
+/// Generate a random canonical 32-byte scalar-compatible value.
+pub fn random_scalar_bytes() -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    OsRng.fill_bytes(&mut seed);
+    scalar_bytes_from_seed(DOMAIN_RANDOM_SCALAR, seed)
+}
+
+/// Derive the canonical recipient preimage bytes used by the current witness model.
+pub fn recipient_preimage_from_bytes(bytes: [u8; 32]) -> [u8; 32] {
+    scalar_bytes_from_seed(DOMAIN_RECIPIENT_PREIMAGE, bytes)
+}
+
+/// Native Poseidon2 commitment hash for a value and blinding secret.
+pub fn commitment_hash(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
+    let mut words = Vec::with_capacity(2 + BYTES32_WORDS);
+    words.extend(u64_to_words(value));
+    words.extend(bytes32_to_words(blinding));
+    canonical_poseidon2_hash(DOMAIN_COMMITMENT, &words)
+}
+
+/// Native Poseidon2 nullifier hash for a note serial and spending key.
+pub fn nullifier_hash(serial: &[u8; 32], spending_key: &[u8; 32]) -> [u8; 32] {
+    let mut words = Vec::with_capacity(BYTES32_WORDS * 2);
+    words.extend(bytes32_to_words(serial));
+    words.extend(bytes32_to_words(spending_key));
+    canonical_poseidon2_hash(DOMAIN_NULLIFIER, &words)
+}
+
+/// Native Poseidon2 recipient binding hash.
+pub fn recipient_hash(recipient_preimage: &[u8; 32]) -> [u8; 32] {
+    canonical_poseidon2_hash(DOMAIN_RECIPIENT, &bytes32_to_words(recipient_preimage))
+}
+
+/// A Merkle path (authentication path) for proving leaf membership.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MerklePath {
     /// Sibling hashes from leaf to root (TREE_DEPTH elements)
@@ -34,17 +135,14 @@ pub struct MerklePath {
     pub index: u64,
 }
 
-/// Sparse Merkle Tree with Poseidon hash
+/// Sparse Merkle tree with native Poseidon2 node hashing.
 #[derive(Clone, Debug)]
 pub struct MerkleTree {
-    /// All leaf nodes (note commitment hashes)
     leaves: Vec<[u8; 32]>,
-    /// Precomputed empty subtree hashes for each level
     empty_hashes: Vec<[u8; 32]>,
 }
 
 impl MerkleTree {
-    /// Create a new empty Merkle tree
     pub fn new() -> Self {
         let empty_hashes = Self::compute_empty_hashes();
         Self {
@@ -53,36 +151,27 @@ impl MerkleTree {
         }
     }
 
-    /// Compute the empty tree root (deterministic constant)
     pub fn empty_root() -> [u8; 32] {
         let empty_hashes = Self::compute_empty_hashes();
         empty_hashes[TREE_DEPTH]
     }
 
-    /// Precompute empty subtree hashes: H(empty, empty) at each level
     fn compute_empty_hashes() -> Vec<[u8; 32]> {
         let mut hashes = vec![[0u8; 32]; TREE_DEPTH + 1];
-        // Level 0: empty leaf = zeros
         hashes[0] = [0u8; 32];
-        // Each level: hash of two empty children
         for i in 1..=TREE_DEPTH {
             hashes[i] = poseidon_hash_pair(&hashes[i - 1], &hashes[i - 1]);
         }
         hashes
     }
 
-    /// Insert a new leaf (note commitment hash) and return its index
     pub fn insert(&mut self, leaf: [u8; 32]) -> u64 {
         let index = self.leaves.len() as u64;
         self.leaves.push(leaf);
-
-        // Rebuild affected path from leaf to root
         self.rebuild_path(index as usize);
-
         index
     }
 
-    /// Get the current root hash
     pub fn root(&self) -> [u8; 32] {
         if self.leaves.is_empty() {
             return self.empty_hashes[TREE_DEPTH];
@@ -90,14 +179,11 @@ impl MerkleTree {
         self.compute_root()
     }
 
-    /// Compute root from current state
     fn compute_root(&self) -> [u8; 32] {
-        let n = self.leaves.len();
-        if n == 0 {
+        if self.leaves.is_empty() {
             return self.empty_hashes[TREE_DEPTH];
         }
 
-        // Build tree bottom-up
         let mut current_level: Vec<[u8; 32]> = self.leaves.clone();
 
         for depth in 0..TREE_DEPTH {
@@ -120,20 +206,9 @@ impl MerkleTree {
         current_level[0]
     }
 
-    /// Rebuild the path from a leaf index to the root.
-    ///
-    /// AUDIT-FIX CORE-03: This is intentionally a no-op. The tree uses full
-    /// O(n) recomputation via `root()` on demand, which is acceptable for
-    /// privacy-set trees where leaf count is bounded by shielded pool depth.
-    /// Incremental path updates add complexity without meaningful gain for
-    /// trees of depth TREE_DEPTH (20).
     #[allow(dead_code)]
-    fn rebuild_path(&mut self, _leaf_index: usize) {
-        // Full recomputation in root() — O(leaves) per call.
-        // See root() for the bottom-up rebuild.
-    }
+    fn rebuild_path(&mut self, _leaf_index: usize) {}
 
-    /// Generate a Merkle proof for the leaf at the given index
     pub fn proof(&self, index: u64) -> Option<MerklePath> {
         let index_usize = index as usize;
         if index_usize >= self.leaves.len() {
@@ -147,11 +222,9 @@ impl MerkleTree {
         let mut current_index = index_usize;
 
         for depth in 0..TREE_DEPTH {
-            // Determine if we're a left or right child
             let is_right = current_index % 2 == 1;
             path_bits.push(is_right);
 
-            // Get sibling
             let sibling_index = if is_right {
                 current_index - 1
             } else {
@@ -165,7 +238,6 @@ impl MerkleTree {
             };
             siblings.push(sibling);
 
-            // Move up: compute next level
             let mut next_level = Vec::new();
             let pairs = current_level.len().div_ceil(2);
             for i in 0..pairs {
@@ -189,7 +261,6 @@ impl MerkleTree {
         })
     }
 
-    /// Verify a Merkle proof against a given root
     pub fn verify_proof(root: &[u8; 32], leaf: &[u8; 32], proof: &MerklePath) -> bool {
         if proof.siblings.len() != TREE_DEPTH || proof.path_bits.len() != TREE_DEPTH {
             return false;
@@ -209,12 +280,10 @@ impl MerkleTree {
         current == *root
     }
 
-    /// Get the number of leaves in the tree
     pub fn leaf_count(&self) -> u64 {
         self.leaves.len() as u64
     }
 
-    /// Get a leaf by index
     pub fn get_leaf(&self, index: u64) -> Option<[u8; 32]> {
         self.leaves.get(index as usize).copied()
     }
@@ -226,107 +295,12 @@ impl Default for MerkleTree {
     }
 }
 
-/// Poseidon hash of two 32-byte inputs (SNARK-friendly)
-///
-/// Uses Poseidon sponge construction over BN254 scalar field.
-/// In-circuit, this is ~8x cheaper than SHA-256.
+/// Poseidon2 hash of two canonical 32-byte nodes.
 pub fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let left_fr = Fr::from_le_bytes_mod_order(left);
-    let right_fr = Fr::from_le_bytes_mod_order(right);
-    let result = poseidon_hash_fr(left_fr, right_fr);
-    fr_to_bytes(&result)
-}
-
-/// Poseidon hash of a single 32-byte input
-pub fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
-    let fr = Fr::from_le_bytes_mod_order(input);
-    let config = poseidon_config();
-    let mut sponge = PoseidonSponge::<Fr>::new(&config);
-    sponge.absorb(&fr);
-    let result: Vec<Fr> = sponge.squeeze_field_elements(1);
-    fr_to_bytes(&result[0])
-}
-
-/// Poseidon hash of two Fr elements, returning Fr (for use in circuits)
-///
-/// This is the canonical Poseidon computation shared by both native
-/// code and in-circuit gadgets. Circuits must use the same `poseidon_config()`
-/// to produce matching hashes.
-pub fn poseidon_hash_fr(left: Fr, right: Fr) -> Fr {
-    let config = poseidon_config();
-    let mut sponge = PoseidonSponge::<Fr>::new(&config);
-    sponge.absorb(&left);
-    sponge.absorb(&right);
-    let result: Vec<Fr> = sponge.squeeze_field_elements(1);
-    result[0]
-}
-
-/// Convert Fr to its canonical 32-byte little-endian representation
-pub fn fr_to_bytes(fr: &Fr) -> [u8; 32] {
-    let mut output = [0u8; 32];
-    let bytes = fr.into_bigint().to_bytes_le();
-    let len = std::cmp::min(bytes.len(), 32);
-    output[..len].copy_from_slice(&bytes[..len]);
-    output
-}
-
-/// Standard Poseidon config for BN254 (rate=2, capacity=1, width=3)
-///
-/// This config MUST be used by all code that computes or verifies Poseidon
-/// hashes: the native Merkle tree, the circuit gadgets, commitment hashes,
-/// and nullifier derivation. Using a different config will produce different
-/// hashes and break proof verification.
-pub fn poseidon_config() -> PoseidonConfig<Fr> {
-    // Use standard Poseidon parameters for BN254
-    // Full rounds = 8, partial rounds = 57 (for 128-bit security)
-    let full_rounds = 8;
-    let partial_rounds = 57;
-    let alpha = 5; // x^5 S-box
-
-    // Generate round constants and MDS matrix deterministically
-    // In production, use the standard Poseidon constants from the paper
-    let width = 3; // rate 2 + capacity 1
-    let total_rounds = full_rounds + partial_rounds;
-
-    // Round constants (deterministically generated)
-    // ark field is Vec<Vec<F>> indexed by [round_num][state_element_index]
-    let mut round_constants: Vec<Vec<Fr>> = Vec::new();
-    for r in 0..total_rounds {
-        let mut round_rc = Vec::new();
-        for w in 0..width {
-            let i: u64 = (r * width + w) as u64;
-            let mut hasher = Sha256::new();
-            hasher.update(b"Lichen-Poseidon-RC-");
-            hasher.update(i.to_le_bytes());
-            let hash = hasher.finalize();
-            round_rc.push(Fr::from_le_bytes_mod_order(&hash));
-        }
-        round_constants.push(round_rc);
-    }
-
-    // MDS matrix (Cauchy matrix construction)
-    let mut mds = Vec::new();
-    for i in 0..width {
-        let mut row = Vec::new();
-        for j in 0..width {
-            // Use 1/(x_i + y_j) for Cauchy matrix
-            let x = Fr::from((i + 1) as u64);
-            let y = Fr::from((width + j + 1) as u64);
-            let entry = (x + y).inverse().unwrap_or(Fr::from(1u64));
-            row.push(entry);
-        }
-        mds.push(row);
-    }
-
-    PoseidonConfig {
-        full_rounds: full_rounds as usize,
-        partial_rounds: partial_rounds as usize,
-        alpha: alpha as u64,
-        ark: round_constants,
-        mds,
-        rate: 2,
-        capacity: 1,
-    }
+    let mut words = Vec::with_capacity(BYTES32_WORDS * 2);
+    words.extend(bytes32_to_words(left));
+    words.extend(bytes32_to_words(right));
+    canonical_poseidon2_hash(DOMAIN_MERKLE_NODE, &words)
 }
 
 #[cfg(test)]
@@ -338,6 +312,29 @@ mod tests {
         let tree = MerkleTree::new();
         assert_eq!(tree.leaf_count(), 0);
         assert_eq!(tree.root(), MerkleTree::empty_root());
+    }
+
+    #[test]
+    fn test_random_scalar_bytes_are_canonical() {
+        let scalar = random_scalar_bytes();
+        assert!(is_canonical_scalar_bytes(&scalar));
+        assert_ne!(scalar, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_recipient_preimage_is_deterministic() {
+        let seed = [7u8; 32];
+        assert_eq!(
+            recipient_preimage_from_bytes(seed),
+            recipient_preimage_from_bytes(seed)
+        );
+    }
+
+    #[test]
+    fn test_commitment_hash_depends_on_blinding() {
+        let commitment_a = commitment_hash(42, &[1u8; 32]);
+        let commitment_b = commitment_hash(42, &[2u8; 32]);
+        assert_ne!(commitment_a, commitment_b);
     }
 
     #[test]
@@ -385,22 +382,17 @@ mod tests {
             tree.insert(leaf);
         }
 
-        // Verify proof for each leaf
         let root = tree.root();
         for i in 0..10 {
             let mut leaf = [0u8; 32];
             leaf[0] = i;
             let proof = tree.proof(i as u64).unwrap();
-            assert!(
-                MerkleTree::verify_proof(&root, &leaf, &proof),
-                "Proof failed for leaf {}",
-                i
-            );
+            assert!(MerkleTree::verify_proof(&root, &leaf, &proof));
         }
     }
 
     #[test]
-    fn test_poseidon_hash_deterministic() {
+    fn test_poseidon2_hash_deterministic() {
         let a = [1u8; 32];
         let b = [2u8; 32];
         let h1 = poseidon_hash_pair(&a, &b);
@@ -409,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_poseidon_hash_different_inputs() {
+    fn test_poseidon2_hash_different_inputs() {
         let a = [1u8; 32];
         let b = [2u8; 32];
         let c = [3u8; 32];

@@ -31,8 +31,8 @@ async def main():
     
     print(f"\n🔑 Loading wallet from: {wallet_path}")
     keypair = Keypair.load(wallet_path)
-    pubkey_b58 = keypair.public_key().to_base58()
-    print(f"   Public Key: {pubkey_b58}")
+    pubkey_b58 = keypair.pubkey().to_base58()
+    print(f"   Address: {pubkey_b58}")
     
     # Connect to validator
     connection = Connection('http://localhost:8899', 'ws://localhost:8900')
@@ -69,7 +69,7 @@ async def main():
         
         amount = 1_000_000  # 0.001 LICN
         instruction = TransactionBuilder.transfer(
-            keypair.public_key(),
+            keypair.pubkey(),
             PublicKey(recipient_pubkey_b58),
             amount,
         )
@@ -81,7 +81,7 @@ async def main():
         )
         
         print(f"\n🔏 Signing transaction...")
-        print(f"   Signature: {tx.signatures[0][:32]}...")
+        print(f"   Signature: {tx.signatures[0].sig[:16].hex()}...")
         
         print(f"\n📡 Sending transaction to validator...")
         result = await connection.send_transaction(tx)

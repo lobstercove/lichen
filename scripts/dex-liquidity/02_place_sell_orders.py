@@ -85,9 +85,6 @@ SELL_LEVELS: List[Tuple[float, float]] = [
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_keypair(path: Path) -> Keypair:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if "secret_key" in raw:
-        return Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
     return Keypair.load(path)
 
 
@@ -173,7 +170,7 @@ async def send_dex_order(
 
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [signer.public_key(), dex_addr],
+        [signer.address(), dex_addr],
         data,
     )
 
@@ -210,7 +207,7 @@ async def approve_token(
     Token contracts use named exports, so function="approve".
     Args layout: [owner 32B][spender 32B][amount 8B] = 72 bytes.
     """
-    owner_bytes = signer.public_key().to_bytes()
+    owner_bytes = signer.address().to_bytes()
     spender_bytes = spender.to_bytes()
 
     args_bytes = list(owner_bytes) + list(spender_bytes) + list(struct.pack("<Q", amount))
@@ -226,7 +223,7 @@ async def approve_token(
 
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [signer.public_key(), token_addr],
+        [signer.address(), token_addr],
         data,
     )
 
@@ -250,7 +247,7 @@ async def send_token_transfer(
 
     Args layout: [from 32B][to 32B][amount 8B] = 72 bytes.
     """
-    from_bytes = signer.public_key().to_bytes()
+    from_bytes = signer.address().to_bytes()
     to_bytes = to_pubkey.to_bytes()
 
     args_bytes = list(from_bytes) + list(to_bytes) + list(struct.pack("<Q", amount))
@@ -266,7 +263,7 @@ async def send_token_transfer(
 
     ix = Instruction(
         CONTRACT_PROGRAM,
-        [signer.public_key(), token_addr],
+        [signer.address(), token_addr],
         data,
     )
 
@@ -318,12 +315,12 @@ async def main():
     # Load reserve_pool keypair
     reserve_path = Path(args.reserve_key) if args.reserve_key else find_keypair(args.network, "reserve_pool")
     reserve_kp = load_keypair(reserve_path)
-    caller_bytes = reserve_kp.public_key().to_bytes()
+    caller_bytes = reserve_kp.address().to_bytes()
 
-    print(f"  Reserve pool: {reserve_kp.public_key()}")
+    print(f"  Reserve pool: {reserve_kp.address()}")
 
     # Check balance
-    bal = await conn.get_balance(reserve_kp.public_key())
+    bal = await conn.get_balance(reserve_kp.address())
     available = bal.get("spendable", bal.get("spores", 0))
     available_licn = available / SPORES_PER_LICN
     print(f"  LICN balance: {available_licn:,.4f}")
@@ -358,7 +355,7 @@ async def main():
     total_spores = int(total_licn * SPORES_PER_LICN)
     try:
         licn_storage = await conn._rpc("getProgramStorage", [str(licn_addr)])
-        reserve_hex = reserve_kp.public_key().to_bytes().hex()
+        reserve_hex = reserve_kp.address().to_bytes().hex()
         bal_key = f"licn_bal_{reserve_hex}"
         token_bal = 0
         for e in licn_storage.get("entries", []):
@@ -380,13 +377,13 @@ async def main():
 
         deployer_path = Path(args.deployer_key) if args.deployer_key else find_keypair(args.network, "genesis-primary")
         deployer_kp = load_keypair(deployer_path)
-        print(f"  Genesis-primary: {deployer_kp.public_key()}")
+        print(f"  Genesis-primary: {deployer_kp.address()}")
 
         try:
             # Mint lichencoin tokens to reserve_pool (deployer is admin/owner)
             # mint(caller, to, amount) — args: [caller 32B][to 32B][amount 8B]
-            caller_mint = list(deployer_kp.public_key().to_bytes())
-            to_mint = list(reserve_kp.public_key().to_bytes())
+            caller_mint = list(deployer_kp.address().to_bytes())
+            to_mint = list(reserve_kp.address().to_bytes())
             amount_mint = list(struct.pack("<Q", needed))
             mint_args = caller_mint + to_mint + amount_mint
 
@@ -399,7 +396,7 @@ async def main():
             })
             ix = Instruction(
                 CONTRACT_PROGRAM,
-                [deployer_kp.public_key(), licn_addr],
+                [deployer_kp.address(), licn_addr],
                 envelope.encode("utf-8"),
             )
             tb = TransactionBuilder()

@@ -23,8 +23,6 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, str(Path(__file__).parent))
 from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
-import nacl.signing
-
 RPC_URL = "http://127.0.0.1:8000"
 EXPLORER_URL = "http://127.0.0.1:3007"
 SPORES_PER_LICN = 1_000_000_000
@@ -65,9 +63,8 @@ def load_treasury():
     with open(TREASURY_KEY_PATH) as f:
         data = json.load(f)
     seed = bytes.fromhex(data["secret_key"])
-    signing_key = nacl.signing.SigningKey(seed)
-    kp = Keypair(signing_key)
-    assert kp.public_key().to_base58() == data["pubkey"]
+    kp = Keypair.from_seed(seed)
+    assert kp.pubkey().to_base58() == data["pubkey"]
     return kp
 
 
@@ -79,7 +76,7 @@ async def main():
 
     conn = Connection(RPC_URL)
     treasury = load_treasury()
-    treasury_b58 = treasury.public_key().to_base58()
+    treasury_b58 = treasury.pubkey().to_base58()
 
     # ── TEST 1: Rapid-fire transfers ────────────────────────────────
     print("\n--- 1. Rapid-fire 10 transfers in sequence ---")
@@ -91,7 +88,7 @@ async def main():
     sigs = []
     for w in wallets:
         blockhash = await conn.get_recent_blockhash()
-        ix = TransactionBuilder.transfer(treasury.public_key(), w.public_key(), amount)
+        ix = TransactionBuilder.transfer(treasury.pubkey(), w.pubkey(), amount)
         tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury)
         sig = await conn.send_transaction(tx)
         sigs.append(sig)
@@ -104,7 +101,7 @@ async def main():
     # Verify all balances
     bal_ok = 0
     for w in wallets:
-        b = await conn.get_balance(w.public_key())
+        b = await conn.get_balance(w.pubkey())
         spores = b.get("spores", 0) if isinstance(b, dict) else 0
         if spores >= SPORES_PER_LICN * 0.99:
             bal_ok += 1
@@ -181,7 +178,7 @@ async def main():
     for w in wallets:
         try:
             blockhash = await conn.get_recent_blockhash()
-            ix = TransactionBuilder.transfer(w.public_key(), treasury.public_key(), send_amount)
+            ix = TransactionBuilder.transfer(w.pubkey(), treasury.pubkey(), send_amount)
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(w)
             sig = await conn.send_transaction(tx)
             return_sigs.append(sig)
@@ -194,7 +191,7 @@ async def main():
     # Check remaining balances (~0.5 LICN - fees)
     remaining_ok = 0
     for w in wallets:
-        b = await conn.get_balance(w.public_key())
+        b = await conn.get_balance(w.pubkey())
         spores = b.get("spores", 0) if isinstance(b, dict) else 0
         if 0 < spores < SPORES_PER_LICN:  # Between 0 and 1 LICN
             remaining_ok += 1
@@ -294,7 +291,7 @@ async def main():
     # Create a wallet with exactly 1 LICN
     double_wallet = Keypair.generate()
     blockhash = await conn.get_recent_blockhash()
-    ix = TransactionBuilder.transfer(treasury.public_key(), double_wallet.public_key(), 1 * SPORES_PER_LICN)
+    ix = TransactionBuilder.transfer(treasury.pubkey(), double_wallet.pubkey(), 1 * SPORES_PER_LICN)
     tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury)
     await conn.send_transaction(tx)
     await asyncio.sleep(2)
@@ -305,10 +302,10 @@ async def main():
     target2 = Keypair.generate()
 
     blockhash = await conn.get_recent_blockhash()
-    ix1 = TransactionBuilder.transfer(double_wallet.public_key(), target1.public_key(), spend_amount)
+    ix1 = TransactionBuilder.transfer(double_wallet.pubkey(), target1.pubkey(), spend_amount)
     tx1 = TransactionBuilder().add(ix1).set_recent_blockhash(blockhash).build_and_sign(double_wallet)
 
-    ix2 = TransactionBuilder.transfer(double_wallet.public_key(), target2.public_key(), spend_amount)
+    ix2 = TransactionBuilder.transfer(double_wallet.pubkey(), target2.pubkey(), spend_amount)
     tx2 = TransactionBuilder().add(ix2).set_recent_blockhash(blockhash).build_and_sign(double_wallet)
 
     # Send both as fast as possible
@@ -328,8 +325,8 @@ async def main():
     await asyncio.sleep(3)
 
     # At most ONE should succeed (0.8 + 0.8 > 1.0)
-    t1_bal = await conn.get_balance(target1.public_key())
-    t2_bal = await conn.get_balance(target2.public_key())
+    t1_bal = await conn.get_balance(target1.pubkey())
+    t2_bal = await conn.get_balance(target2.pubkey())
     t1_spores = t1_bal.get("spores", 0) if isinstance(t1_bal, dict) else 0
     t2_spores = t2_bal.get("spores", 0) if isinstance(t2_bal, dict) else 0
 

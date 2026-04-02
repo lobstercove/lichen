@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const nacl = require('tweetnacl');
+const pq = require('./helpers/pq-node');
 const { loadFundedWallets } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
@@ -119,9 +119,9 @@ async function buildTxBase64(keypair, instructions) {
     data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
   }));
   const msg = encodeMsg(normalized, blockhash, keypair.address);
-  const sig = nacl.sign.detached(msg, keypair.secretKey);
+  const pqSig = pq.sign(msg, keypair);
   const payload = {
-    signatures: [bytesToHex(sig)],
+    signatures: [pqSig],
     message: { instructions: normalized, blockhash },
   };
   return Buffer.from(JSON.stringify(payload)).toString('base64');
@@ -203,6 +203,7 @@ function newestOpenByType(positions, marginType) {
 }
 
 (async function main() {
+  await pq.init();
   try {
     console.log(`RPC: ${RPC_URL}`);
     const slot = await rpc('getSlot');

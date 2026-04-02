@@ -39,6 +39,7 @@ fn make_account(owner: Pubkey, spores: u64) -> Account {
         staked: 0,
         locked: 0,
         data: Vec::new(),
+        public_key: None,
         owner,
         executable: false,
         rent_epoch: 0,
@@ -278,12 +279,11 @@ fn test_charge_fee_direct_uses_atomic_write() {
     };
     let blockhash = state.get_block_by_slot(0).unwrap().unwrap().hash();
     let msg = Message::new(vec![ix], blockhash);
-    let mut tx = Transaction {
-        signatures: vec![[0u8; 64]],
+    let tx = Transaction {
+        signatures: vec![payer_kp.sign(&msg.serialize())],
         message: msg,
         tx_type: Default::default(),
     };
-    tx.signatures[0] = payer_kp.sign(&tx.message.serialize());
 
     let validator_pubkey = Keypair::new().pubkey();
     let processor = TxProcessor::new(state);

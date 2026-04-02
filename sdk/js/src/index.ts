@@ -2,8 +2,16 @@
 // Official SDK for interacting with Lichen blockchain
 
 export { PublicKey } from './publickey';
+export { PublicKey as Address } from './publickey';
 export { Keypair } from './keypair';
 export { Connection } from './connection';
+export {
+  ML_DSA_65_PUBLIC_KEY_BYTES,
+  ML_DSA_65_SIGNATURE_BYTES,
+  PQ_SCHEME_ML_DSA_65,
+  PqPublicKey,
+  PqSignature,
+} from './pq';
 export {
   Transaction,
   TransactionBuilder,

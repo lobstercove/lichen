@@ -90,13 +90,6 @@ else
     echo "   ⚠  lichen CLI not found in target/release/ (skipping)"
 fi
 
-# Install ZK setup binary (for generating ZK keys)
-if [ -f "target/release/zk-setup" ]; then
-    cp "target/release/zk-setup" "$INSTALL_DIR/zk-setup"
-    chmod +x "$INSTALL_DIR/zk-setup"
-    echo "   Installed: zk-setup → $INSTALL_DIR"
-fi
-
 # ── 3b. Copy seeds.json to config dir ──
 if [ -f "seeds.json" ]; then
     cp seeds.json "$CONFIG_DIR/seeds.json"
@@ -115,33 +108,6 @@ if [ -d "contracts" ]; then
     echo "✅ Installed contract artifacts → $DATA_DIR/contracts"
 else
     echo "   ⚠  contracts/ directory not found (genesis bootstrap may skip contract deployment)"
-fi
-
-# ── 3d. Install ZK keys (prefer bundled, fallback to zk-setup) ──
-# HOME is overridden to /var/lib/lichen in the systemd service (ProtectHome=true),
-# so ZK keys must live at /var/lib/lichen/.lichen/zk/ to be found at runtime.
-ZK_DIR="$DATA_DIR/.lichen/zk"
-sudo -u "$USER" mkdir -p "$ZK_DIR"
-if [ -d "zk" ] && [ -f "zk/vk_shield.bin" ]; then
-    # Release tarballs ship pre-generated ZK keys — use those (instant)
-    echo "   Installing bundled ZK keys..."
-    cp zk/*.bin "$ZK_DIR/"
-    chown "$USER":"$GROUP" "$ZK_DIR"/*.bin
-    echo "✅ ZK verification keys installed from release bundle"
-elif [ -f "$ZK_DIR/vk_shield.bin" ] && [ -f "$ZK_DIR/vk_unshield.bin" ] && [ -f "$ZK_DIR/vk_transfer.bin" ]; then
-    echo "✅ ZK verification keys already exist"
-elif [ -x "$INSTALL_DIR/zk-setup" ]; then
-    echo "   Running ZK trusted setup (this may take several minutes)..."
-    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
-    echo "✅ ZK verification keys ready"
-elif [ -f "target/release/zk-setup" ]; then
-    cp "target/release/zk-setup" "$INSTALL_DIR/zk-setup"
-    chmod +x "$INSTALL_DIR/zk-setup"
-    echo "   Running ZK trusted setup (this may take several minutes)..."
-    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
-    echo "✅ ZK verification keys ready"
-else
-    echo "   ⚠  zk-setup binary not found — shielded transactions unavailable until keys are generated"
 fi
 
 # ── 4. Generate env file + install systemd per network ──

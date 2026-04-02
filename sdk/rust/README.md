@@ -5,8 +5,8 @@ Official Rust SDK for building on Lichen blockchain.
 ## Features
 
 - ✅ **Production-Ready** - Type-safe, async RPC client
-- ✅ **Ed25519 Keypairs** - Industry-standard cryptography
-- ✅ **Solana-Compatible** - Compatible wallet formats
+- ✅ **PQ Keypairs** - Native ML-DSA-65 addresses and signatures
+- ✅ **Self-Contained Signatures** - Matches the core `PqSignature` wire model
 - ✅ **Transaction Building** - Easy transaction creation and signing
 - ✅ **Developer-Friendly** - Comprehensive examples and docs
 
@@ -23,7 +23,7 @@ tokio = { version = "1.35", features = ["full"] }
 ## Quick Start
 
 ```rust
-use lichen_sdk::{Client, Keypair};
+use lichen_client_sdk::{Client, Keypair};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,9 +93,14 @@ let keypair = Keypair::from_seed(&seed);
 let pubkey = keypair.pubkey();
 println!("Address: {}", pubkey.to_base58());
 
+// Get the full PQ verifying key
+let public_key = keypair.public_key();
+println!("Scheme: 0x{:02x}", public_key.scheme_version);
+
 // Sign message
 let message = b"Hello Lichen";
 let signature = keypair.sign(message);
+assert!(Keypair::verify(&pubkey, message, &signature));
 ```
 
 ### Transaction Building
@@ -115,16 +120,6 @@ let tx_base64 = base64::encode(&tx_bytes);
 client.send_raw_transaction(&tx_base64).await?;
 ```
 
-## Wallet Compatibility
-
-### Solana Compatibility
-
-Lichen uses Ed25519 keypairs with Base58 encoding, making it compatible with Solana wallet formats:
-
-- ✅ Phantom Wallet (import/export)
-- ✅ Solflare Wallet (import/export)
-- ✅ Solana CLI format
-
 ### File Format
 
 Keypairs are saved in JSON format:
@@ -132,7 +127,7 @@ Keypairs are saved in JSON format:
 ```json
 {
   "privateKey": [/* 32 bytes */],
-  "publicKey": [/* 32 bytes */],
+    "publicKey": [/* 1952 bytes */],
   "publicKeyBase58": "3dmaXkMCpRn9wvD3wQNihjRPN3znnG9y56Xtq2drZZgU"
 }
 ```

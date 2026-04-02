@@ -1,335 +1,182 @@
-#!/bin/bash
-# Lichen Genesis Generator
-# Production-ready genesis creation for testnet and mainnet
+#!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+GENESIS_BIN="${LICHEN_GENESIS_BIN:-$ROOT_DIR/target/release/lichen-genesis}"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+usage() {
+    cat <<'EOF'
+Lichen genesis wrapper for the canonical PQ launch path.
 
-# Print with color
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
+Wallet artifact preparation:
+  ./scripts/generate-genesis.sh --network testnet --prepare-wallet --output-dir ./artifacts/testnet
 
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
+Genesis DB creation with an explicit validator address:
+  ./scripts/generate-genesis.sh \
+    --network testnet \
+    --db-path ./data/state-7001 \
+    --wallet-file ./artifacts/testnet/genesis-wallet.json \
+    --validator-keypair ./data/state-7001/validator-keypair.json
 
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
+Options:
+  --network <testnet|mainnet>      Required network name
+  --prepare-wallet                 Generate wallet artifacts only
+  --output-dir <path>              Required with --prepare-wallet
+  --db-path <path>                 Required for genesis DB creation
+  --wallet-file <path>             Required for genesis DB creation
+  --initial-validator <base58>     Repeatable explicit validator address
+  --validator-keypair <path>       Derive the validator address from a canonical keypair file
+  --config <path>                  Optional genesis config override passed through to lichen-genesis
+  --help                           Show this message
+
+Removed legacy options:
+  --output, --validators, --treasury, and --chain-id are intentionally rejected.
+  The canonical PQ launch path stores the genesis block in a DB path, not in a handcrafted genesis.json file.
+EOF
 }
 
 print_error() {
-    echo -e "${RED}✗${NC} $1"
+    echo "[generate-genesis] ERROR: $*" >&2
 }
 
-# Show usage
-usage() {
-    cat <<EOF
-🦞 Lichen Genesis Generator
-
-Usage: $0 [OPTIONS]
-
-OPTIONS:
-    --network <testnet|mainnet>    Network type (required)
-    --chain-id <ID>               Custom chain ID (optional)
-    --output <PATH>               Output file path (default: genesis.json)
-    --validators <N>              Number of initial validators (default: 3)
-    --treasury <LICN>             Treasury amount in LICN (default: 500M)
-    --help                        Show this help message
-
-EXAMPLES:
-    # Generate testnet genesis
-    $0 --network testnet
-
-    # Generate mainnet genesis with custom chain ID
-    $0 --network mainnet --chain-id lichen-mainnet-1
-
-    # Generate testnet with 5 validators
-    $0 --network testnet --validators 5
-
-EOF
-    exit 1
+require_value() {
+    local flag="$1"
+    local value="${2:-}"
+    if [[ -z "$value" ]]; then
+        print_error "Missing value for $flag"
+        exit 2
+    fi
 }
 
-# Parse arguments
+derive_validator_address() {
+    local keypair_path="$1"
+    python3 - "$keypair_path" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as handle:
+    data = json.load(handle)
+
+for key in ('publicKeyBase58', 'address', 'pubkey'):
+    value = data.get(key)
+    if isinstance(value, str) and value.strip():
+        print(value.strip())
+        raise SystemExit(0)
+
+raise SystemExit('validator keypair file is missing publicKeyBase58/address/pubkey')
+PY
+}
+
 NETWORK=""
-CHAIN_ID=""
-OUTPUT="genesis.json"
-NUM_VALIDATORS=3
-TREASURY=500000000
+PREPARE_WALLET=0
+OUTPUT_DIR=""
+DB_PATH=""
+WALLET_FILE=""
+VALIDATOR_KEYPAIR=""
+CONFIG_PATH=""
+INITIAL_VALIDATORS=()
 
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --network)
+            require_value "$1" "${2:-}"
             NETWORK="$2"
             shift 2
             ;;
-        --chain-id)
-            CHAIN_ID="$2"
+        --prepare-wallet)
+            PREPARE_WALLET=1
+            shift
+            ;;
+        --output-dir)
+            require_value "$1" "${2:-}"
+            OUTPUT_DIR="$2"
             shift 2
             ;;
-        --output)
-            OUTPUT="$2"
+        --db-path)
+            require_value "$1" "${2:-}"
+            DB_PATH="$2"
             shift 2
             ;;
-        --validators)
-            NUM_VALIDATORS="$2"
+        --wallet-file)
+            require_value "$1" "${2:-}"
+            WALLET_FILE="$2"
             shift 2
             ;;
-        --treasury)
-            TREASURY="$2"
+        --initial-validator)
+            require_value "$1" "${2:-}"
+            INITIAL_VALIDATORS+=("$2")
             shift 2
             ;;
-        --help)
+        --validator-keypair)
+            require_value "$1" "${2:-}"
+            VALIDATOR_KEYPAIR="$2"
+            shift 2
+            ;;
+        --config)
+            require_value "$1" "${2:-}"
+            CONFIG_PATH="$2"
+            shift 2
+            ;;
+        --output|--validators|--treasury|--chain-id)
+            print_error "$1 is a removed legacy option. Use --prepare-wallet/--output-dir or --db-path/--wallet-file instead."
+            exit 2
+            ;;
+        --help|-h)
             usage
+            exit 0
             ;;
         *)
             print_error "Unknown option: $1"
             usage
+            exit 2
             ;;
     esac
 done
 
-# Validate required arguments
-if [ -z "$NETWORK" ]; then
-    print_error "Network type is required (--network testnet|mainnet)"
-    usage
+if [[ "$NETWORK" != "testnet" && "$NETWORK" != "mainnet" ]]; then
+    print_error "--network must be testnet or mainnet"
+    exit 2
 fi
 
-if [ "$NETWORK" != "testnet" ] && [ "$NETWORK" != "mainnet" ]; then
-    print_error "Invalid network type: $NETWORK (must be testnet or mainnet)"
-    exit 1
+if [[ ! -x "$GENESIS_BIN" ]]; then
+    echo "[generate-genesis] Building lichen-genesis..."
+    cargo build --release --bin lichen-genesis >/dev/null
 fi
 
-# Set default chain ID if not provided
-if [ -z "$CHAIN_ID" ]; then
-    CHAIN_ID="lichen-${NETWORK}-1"
+COMMAND=("$GENESIS_BIN" --network "$NETWORK")
+
+if [[ -n "$CONFIG_PATH" ]]; then
+    COMMAND+=(--config "$CONFIG_PATH")
 fi
 
-print_info "Generating genesis for ${NETWORK}"
-print_info "Chain ID: ${CHAIN_ID}"
-print_info "Output: ${OUTPUT}"
-print_info "Validators: ${NUM_VALIDATORS}"
-print_info "Treasury: ${TREASURY} LICN"
-echo ""
-
-# Generate validator keypairs
-print_info "Generating validator keypairs..."
-VALIDATORS_JSON="[]"
-
-for i in $(seq 1 $NUM_VALIDATORS); do
-    KEYPAIR_FILE="/tmp/lichen-genesis-validator-${i}.json"
-    
-    if [ "$NETWORK" == "testnet" ]; then
-        # For testnet: generate a real keypair using lichen CLI or openssl
-        if command -v lichen &> /dev/null; then
-            print_info "  Validator $i: Generating keypair via lichen CLI..."
-            lichen keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
-            PUBKEY=$(grep -o '"publicKeyBase58":"[^"]*"' "$KEYPAIR_FILE" | cut -d'"' -f4)
-        elif command -v openssl &> /dev/null; then
-            # Generate Ed25519 keypair via openssl, extract raw pubkey as Base58
-            print_info "  Validator $i: Generating keypair via openssl..."
-            SEED="000000000000000000000000000000$(printf '%02d' $i)"
-            # Derive a deterministic 32-byte seed from the input
-            RAW_SEED=$(echo -n "$SEED" | openssl dgst -sha256 -binary | xxd -p -c 64)
-            # Use the SHA-256 hash as the private key seed, encode pubkey as hex
-            PUBKEY=$(echo -n "$RAW_SEED" | head -c 64 | fold -w2 | while read byte; do printf "\\x$byte"; done | openssl pkey -inform DER -outform DER -pubout 2>/dev/null | tail -c 32 | basenc --base58 2>/dev/null || echo "TESTNET_KEY_$(echo -n "$RAW_SEED" | head -c 40)")
-            # If basenc is not available, generate a deterministic but identifiable key
-            if [[ "$PUBKEY" == TESTNET_KEY_* ]]; then
-                print_warning "  Validator $i: basenc not available — using SHA-256 derived identifier"
-                print_warning "  Install basenc (coreutils 8.31+) for proper Base58 keys"
-            fi
-        else
-            print_error "  Validator $i: Neither lichen CLI nor openssl available"
-            print_error "  Cannot generate real keypairs. Install lichen CLI: cargo install --path cli"
-            exit 1
-        fi
-    else
-        # For mainnet: REQUIRE real keypair files — never generate placeholder keys
-        print_error "  Mainnet genesis REQUIRES pre-generated validator keypairs"
-        print_error "  Generate keypairs securely: lichen keygen --output validator-${i}.json"
-        print_error "  Then re-run with: --validator-keys validator-1.json,validator-2.json,..."
-        exit 1
+if (( PREPARE_WALLET )); then
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        print_error "--prepare-wallet requires --output-dir <path>"
+        exit 2
     fi
-    
-    # Validate the pubkey is not a placeholder
-    if [[ "$PUBKEY" == *"Placeholder"* ]] || [[ "$PUBKEY" == *"FormatHere"* ]] || [[ "$PUBKEY" == *"REPLACE"* ]] || [[ -z "$PUBKEY" ]]; then
-        print_error "  Validator $i: Invalid or placeholder public key detected: $PUBKEY"
-        print_error "  Cannot use placeholder keys in genesis. Generate real keys first."
-        exit 1
-    fi
-    
-    print_success "  Validator $i pubkey: ${PUBKEY:0:20}..."
-    
-    # Build validator JSON
-    if [ "$i" -eq 1 ]; then
-        VALIDATORS_JSON=$(cat <<EOF
-[
-    {
-        "pubkey": "$PUBKEY",
-        "stake_licn": 1000000,
-        "reputation": 100,
-        "comment": "Genesis validator $i"
-    }
-EOF
-)
-    else
-        VALIDATORS_JSON=$(cat <<EOF
-$VALIDATORS_JSON,
-    {
-        "pubkey": "$PUBKEY",
-        "stake_licn": 1000000,
-        "reputation": 100,
-        "comment": "Genesis validator $i"
-    }
-EOF
-)
-    fi
-done
-
-VALIDATORS_JSON="${VALIDATORS_JSON}\n]"
-
-# Generate genesis accounts
-print_info "Generating genesis accounts..."
-
-# For testnet, use deterministic treasury address
-if [ "$NETWORK" == "testnet" ]; then
-    TREASURY_ADDR="6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H"
+    COMMAND+=(--prepare-wallet --output-dir "$OUTPUT_DIR")
 else
-    # Mainnet: require treasury address as argument or environment variable
-    if [ -n "${MAINNET_TREASURY_ADDR:-}" ]; then
-        TREASURY_ADDR="$MAINNET_TREASURY_ADDR"
-    else
-        print_error "Mainnet requires a securely generated treasury address"
-        print_error "Set MAINNET_TREASURY_ADDR environment variable or use --treasury-addr"
-        exit 1
+    if [[ -n "$VALIDATOR_KEYPAIR" ]]; then
+        INITIAL_VALIDATORS+=("$(derive_validator_address "$VALIDATOR_KEYPAIR")")
     fi
-fi
 
-# Validate treasury address is not a placeholder
-if [[ "$TREASURY_ADDR" == *"REPLACE"* ]] || [[ "$TREASURY_ADDR" == *"placeholder"* ]] || [[ -z "$TREASURY_ADDR" ]]; then
-    print_error "Treasury address is a placeholder or empty: $TREASURY_ADDR"
-    print_error "Set a real treasury address before generating genesis"
-    exit 1
-fi
-
-# Set consensus parameters based on network
-if [ "$NETWORK" == "testnet" ]; then
-    MIN_VALIDATOR_STAKE="75000000000"  # 75 LICN
-    SLOT_DURATION_MS="400"
-else
-    MIN_VALIDATOR_STAKE="1000000000000"  # 1000 LICN  
-    SLOT_DURATION_MS="400"
-fi
-
-GENESIS_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-# Generate genesis.json
-print_info "Writing genesis configuration..."
-
-cat > "$OUTPUT" <<EOF
-{
-  "chain_id": "$CHAIN_ID",
-  "genesis_time": "$GENESIS_TIME",
-  "consensus": {
-    "slot_duration_ms": $SLOT_DURATION_MS,
-    "epoch_slots": 216000,
-    "min_validator_stake": $MIN_VALIDATOR_STAKE,
-    "validator_reward_per_block": 20000000,
-    "slashing_percentage_double_sign": 50,
-    "slashing_downtime_per_100_missed": 1,
-    "slashing_downtime_max_percent": 10,
-    "slashing_percentage_invalid_state": 100,
-    "finality_threshold_percent": 66
-  },
-  "initial_accounts": [
-    {
-      "address": "$TREASURY_ADDR",
-      "balance_licn": $TREASURY,
-      "comment": "Genesis treasury"
-    }
-  ],
-  "initial_validators": $(echo -e "$VALIDATORS_JSON"),
-  "network": {
-    "p2p_port": 7001,
-    "rpc_port": 8899,
-    "seed_nodes": [
-      "127.0.0.1:7001"
-    ]
-  },
-  "features": {
-    "fee_burn_percentage": 40,
-    "fee_producer_percentage": 30,
-    "fee_voters_percentage": 10,
-    "fee_treasury_percentage": 10,
-    "fee_community_percentage": 10,
-    "base_fee_spores": 1000000,
-    "rent_rate_spores_per_kb_month": 10000,
-    "rent_free_kb": 1,
-    "enable_smart_contracts": true,
-    "enable_staking": true,
-    "enable_slashing": true
-  }
-}
-EOF
-
-print_success "Genesis configuration written to: ${OUTPUT}"
-echo ""
-
-# Validate genesis
-print_info "Validating genesis configuration..."
-if command -v jq &> /dev/null; then
-    if jq empty "$OUTPUT" 2>/dev/null; then
-        print_success "Genesis JSON is valid"
-    else
-        print_error "Genesis JSON is invalid"
-        exit 1
+    if [[ -z "$DB_PATH" || -z "$WALLET_FILE" ]]; then
+        print_error "Genesis DB creation requires --db-path <path> and --wallet-file <path>"
+        exit 2
     fi
-else
-    print_warning "jq not found - skipping JSON validation"
+    if [[ ${#INITIAL_VALIDATORS[@]} -eq 0 && -z "$CONFIG_PATH" ]]; then
+        print_error "Pass at least one --initial-validator <base58> or --validator-keypair <path>"
+        exit 2
+    fi
+
+    COMMAND+=(--db-path "$DB_PATH" --wallet-file "$WALLET_FILE")
+    for validator in "${INITIAL_VALIDATORS[@]}"; do
+        COMMAND+=(--initial-validator "$validator")
+    done
 fi
 
-# Calculate total supply
-TOTAL_SUPPLY=$TREASURY
-print_info "Total supply: ${TOTAL_SUPPLY} LICN"
-
-# Show next steps
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-print_success "Genesis generation complete!"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "📋 Next Steps:"
-echo ""
-echo "1. Review genesis configuration:"
-echo "   cat $OUTPUT"
-echo ""
-echo "2. Start validator with genesis:"
-echo "   ./scripts/setup-validator.sh --genesis $OUTPUT"
-echo ""
-echo "3. Or manually start validator:"
-echo "   cargo run --release --bin lichen-validator -- --genesis $OUTPUT"
-echo ""
-
-if [ "$NETWORK" == "mainnet" ]; then
-    print_warning "⚠️  MAINNET SECURITY CHECKLIST:"
-    echo "   ✓ Placeholder keys are automatically rejected"
-    echo "   ✓ Treasury address validated (not placeholder)"
-    echo "   □ Verify all validator identities out-of-band"
-    echo "   □ Backup genesis.json securely (offline)"
-    echo "   □ Test on testnet first with identical config"
-    echo "   □ Coordinate launch time with all validators"
-    echo "   □ Verify genesis hash matches across all validators"
-fi
-
-echo ""
-print_success "🦞 Ready to grow! 🦞"
+echo "[generate-genesis] Executing: ${COMMAND[*]}"
+exec "${COMMAND[@]}"

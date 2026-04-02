@@ -403,7 +403,8 @@ console.log('Signature:', sig);</code></pre>
                     <h4 class="method-section-title">Returns</h4>
                     <p><code>TransactionProof</code> — Object with <code>slot</code>, <code>tx_index</code>,
                         <code>tx_hash</code>, <code>root</code>, and <code>proof</code> (array of
-                        <code>ProofStep</code>).</p>
+                        <code>ProofStep</code>).
+                    </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button
@@ -702,7 +703,7 @@ const sig = await conn.callContract(keypair, contract, 'transfer', args);</code>
             <!-- KEYPAIR -->
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2>Keypair Class</h2>
-            <p>Ed25519 keypair for signing transactions. Uses <code>tweetnacl</code> under the hood.</p>
+            <p>ML-DSA-65 keypair for signing transactions. Uses the SDK's native PQ runtime.</p>
 
             <div class="method-card" id="keypair-generate">
                 <h3 class="method-name">Keypair.generate(): Keypair</h3>
@@ -711,8 +712,8 @@ const sig = await conn.callContract(keypair, contract, 'transfer', args);</code>
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>const kp = Keypair.generate();
-console.log('Public key:', kp.pubkey().toBase58());
-console.log('Secret key length:', kp.secretKey.length); // 64 bytes</code></pre>
+console.log('Address:', kp.pubkey().toBase58());
+console.log('Seed length:', kp.toSeed().length); // 32 bytes</code></pre>
                 </div>
             </div>
 
@@ -732,8 +733,8 @@ const kp = Keypair.fromSeed(seed);</code></pre>
             </div>
 
             <div class="method-card" id="keypair-sign">
-                <h3 class="method-name">keypair.sign(message: Uint8Array): Uint8Array</h3>
-                <p class="method-desc">Sign an arbitrary message. Returns the 64-byte Ed25519 detached signature.</p>
+                <h3 class="method-name">keypair.sign(message: Uint8Array): PqSignature</h3>
+                <p class="method-desc">Sign an arbitrary message. Returns a self-contained PQ signature.</p>
             </div>
 
             <div class="method-card">
@@ -753,9 +754,9 @@ const kp = Keypair.fromSeed(seed);</code></pre>
                             <td>32-byte public key</td>
                         </tr>
                         <tr>
-                            <td>secretKey</td>
+                            <td>privateKey</td>
                             <td><span class="param-type">Uint8Array</span></td>
-                            <td>64-byte secret key (seed + public key)</td>
+                            <td>32-byte ML-DSA-65 seed</td>
                         </tr>
                     </tbody>
                 </table>

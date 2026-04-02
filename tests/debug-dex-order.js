@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Debug script: place a DEX order and check contract storage
 const http = require('http');
-const nacl = require('tweetnacl');
+const pq = require('./helpers/pq-node');
 const fs = require('fs');
 const path = require('path');
 
@@ -45,11 +45,11 @@ function hexToBytes(h) { const b = []; for (let i = 0; i < h.length; i += 2) b.p
 function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
 
 function genKeypair() {
-    const kp = nacl.sign.keyPair();
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 
 async function main() {
+    await pq.init();
     console.log('=== DEX Order Debug ===');
 
     // 1. Check symbol registry for DEX
@@ -123,9 +123,9 @@ async function main() {
     let off = 0;
     for (const p of parts) { msg.set(p, off); off += p.length; }
 
-    const sig = nacl.sign.detached(msg, wallet.secretKey);
+    const pqSig = pq.sign(msg, wallet);
     const payload = {
-        signatures: [bytesToHex(sig)],
+        signatures: [pqSig],
         message: { instructions: [ix], blockhash: bh }
     };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');

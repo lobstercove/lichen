@@ -23,6 +23,7 @@
         rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <script src="shared/utils.js"></script>
+    <script src="shared/pq.js"></script>
     <script src="shared/wallet-connect.js"></script>
     <script src="shared/env.js"></script>
     <script src="shared-config.js?v=20260307"></script>
@@ -575,8 +576,7 @@
                         <div class="predict-create-form">
                             <div class="form-group">
                                 <label>Question</label>
-                                <textarea id="predictQuestion" class="form-textarea"
-                                    maxlength="200"
+                                <textarea id="predictQuestion" class="form-textarea" maxlength="200"
                                     placeholder="Will [event] happen by [date]?" rows="2"></textarea>
                             </div>
 
@@ -610,12 +610,14 @@
                                         style="font-weight:400;color:var(--text-muted);font-size:0.8rem;">(2-8
                                         choices)</span></label>
                                 <div id="outcomeInputs">
-                                    <div class="outcome-input-row outcome-theme-1"><span class="outcome-dot multi-dot"></span><input
-                                        type="text" class="form-input outcome-name" placeholder="Outcome 1"
-                                            maxlength="64"></div>
-                                    <div class="outcome-input-row outcome-theme-2"><span class="outcome-dot multi-dot"></span><input
-                                        type="text" class="form-input outcome-name" placeholder="Outcome 2"
-                                            maxlength="64"></div>
+                                    <div class="outcome-input-row outcome-theme-1"><span
+                                            class="outcome-dot multi-dot"></span><input type="text"
+                                            class="form-input outcome-name" placeholder="Outcome 1" maxlength="64">
+                                    </div>
+                                    <div class="outcome-input-row outcome-theme-2"><span
+                                            class="outcome-dot multi-dot"></span><input type="text"
+                                            class="form-input outcome-name" placeholder="Outcome 2" maxlength="64">
+                                    </div>
                                 </div>
                                 <button type="button" class="btn btn-small btn-secondary" id="addOutcomeBtn"
                                     style="margin-top:6px;"><i class="fas fa-plus"></i> Add Outcome</button>
@@ -1703,7 +1705,6 @@
     </div>
 
     <script src="charting_library/charting_library.standalone.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
     <script src="dex.js?v=20260309"></script>
 </body>
 

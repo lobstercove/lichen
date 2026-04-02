@@ -23,7 +23,16 @@ use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-const TREASURY_RESERVE_LICN: u64 = 100_000_000;
+
+#[derive(serde::Deserialize)]
+struct GenesisKeypairFile {
+    #[serde(rename = "privateKey")]
+    private_key: Vec<u8>,
+    #[serde(rename = "publicKey")]
+    public_key: Vec<u8>,
+    #[serde(rename = "publicKeyBase58")]
+    public_key_base58: String,
+}
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
@@ -54,33 +63,36 @@ fn parse_genesis_timestamp(genesis_time: &str) -> Result<u64, String> {
         .map_err(|err| format!("Failed to parse genesis_time '{}': {}", genesis_time, err))
 }
 
-fn load_hex_keypair(path: &std::path::Path) -> Result<Keypair, String> {
+fn load_genesis_keypair(path: &std::path::Path) -> Result<Keypair, String> {
     let json = std::fs::read_to_string(path)
         .map_err(|err| format!("Failed to read keypair file {}: {}", path.display(), err))?;
-    let value: serde_json::Value = serde_json::from_str(&json)
+    let keypair_file: GenesisKeypairFile = serde_json::from_str(&json)
         .map_err(|err| format!("Failed to parse keypair file {}: {}", path.display(), err))?;
-    let hex_seed = value
-        .get("secret_key")
-        .and_then(|entry| entry.as_str())
-        .or_else(|| value.get("seed").and_then(|entry| entry.as_str()))
-        .ok_or_else(|| {
-            format!(
-                "Keypair file {} must contain 'secret_key' or 'seed' hex bytes",
-                path.display()
-            )
-        })?;
-    let seed_bytes = hex::decode(hex_seed)
-        .map_err(|err| format!("Invalid hex seed in {}: {}", path.display(), err))?;
-    if seed_bytes.len() != 32 {
+    if keypair_file.private_key.len() != 32 {
         return Err(format!(
             "Keypair file {} has invalid seed length {} (expected 32 bytes)",
             path.display(),
-            seed_bytes.len()
+            keypair_file.private_key.len()
         ));
     }
     let mut seed = [0u8; 32];
-    seed.copy_from_slice(&seed_bytes);
-    Ok(Keypair::from_seed(&seed))
+    seed.copy_from_slice(&keypair_file.private_key);
+
+    let keypair = Keypair::from_seed(&seed);
+    if keypair.public_key().bytes != keypair_file.public_key {
+        return Err(format!(
+            "Keypair file {} publicKey does not match the derived PQ verifying key",
+            path.display()
+        ));
+    }
+    if keypair.pubkey().to_base58() != keypair_file.public_key_base58 {
+        return Err(format!(
+            "Keypair file {} publicKeyBase58 does not match the derived PQ address",
+            path.display()
+        ));
+    }
+
+    Ok(keypair)
 }
 
 fn resolve_artifact_path(base_file: &std::path::Path, relative_or_absolute: &str) -> PathBuf {
@@ -398,7 +410,7 @@ fn main() {
 
     let genesis_signer_path = genesis_keypair_file
         .unwrap_or_else(|| resolve_artifact_path(&wallet_file, &wallet.keypair_path));
-    let genesis_signer = match load_hex_keypair(&genesis_signer_path) {
+    let genesis_signer = match load_genesis_keypair(&genesis_signer_path) {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("{}", err);
@@ -824,67 +836,9 @@ fn main() {
             tx.signatures.push(signature);
             genesis_txs.push(tx);
         }
-    }
-    // Legacy: single treasury (backward compat)
-    else if let Some(treasury_pubkey) = wallet.treasury_pubkey {
-        let reward_pool_licn = TREASURY_RESERVE_LICN.min(1_000_000_000);
-        let treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-        if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
-            error!("Failed to store treasury account: {e}");
-        }
-        if let Err(e) = state.set_treasury_pubkey(&treasury_pubkey) {
-            error!("Failed to set treasury pubkey: {e}");
-        }
-        info!(
-            "  ✓ Treasury account created: {}",
-            treasury_pubkey.to_base58()
-        );
-        info!("  ✓ Treasury reserve pending: {} LICN", reward_pool_licn);
-
-        let reward_spores = Account::licn_to_spores(reward_pool_licn);
-
-        let mut src_acct = match state.get_account(&genesis_pubkey).ok().flatten() {
-            Some(a) => a,
-            None => {
-                error!("Genesis account missing — cannot fund treasury");
-                Account::new(0, genesis_pubkey)
-            }
-        };
-        src_acct.spores = src_acct.spores.saturating_sub(reward_spores);
-        src_acct.spendable = src_acct.spendable.saturating_sub(reward_spores);
-        if let Err(e) = state.put_account(&genesis_pubkey, &src_acct) {
-            error!("Failed to update genesis account balance: {e}");
-        }
-
-        let mut trs_acct = state
-            .get_account(&treasury_pubkey)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-        trs_acct.spores = trs_acct.spores.saturating_add(reward_spores);
-        trs_acct.spendable = trs_acct.spendable.saturating_add(reward_spores);
-        if let Err(e) = state.put_account(&treasury_pubkey, &trs_acct) {
-            error!("Failed to update treasury account balance: {e}");
-        }
-
-        info!("  ✓ Treasury reserve funded via genesis transfer tx");
-
-        // Legacy treasury transaction
-        let mut data = Vec::with_capacity(9);
-        data.push(4); // Genesis transfer (fee-free)
-        data.extend_from_slice(&Account::licn_to_spores(reward_pool_licn).to_le_bytes());
-
-        let instruction = Instruction {
-            program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![genesis_pubkey, treasury_pubkey],
-            data,
-        };
-
-        let message = Message::new(vec![instruction], Hash::default());
-        let mut treasury_tx = Transaction::new(message.clone());
-        let signature = genesis_signer.sign(&message.serialize());
-        treasury_tx.signatures.push(signature);
-        genesis_txs.push(treasury_tx);
+    } else {
+        error!("Genesis wallet missing required distribution_wallets configuration");
+        std::process::exit(1);
     }
 
     // Create initial accounts from genesis config
@@ -923,8 +877,7 @@ fn main() {
     };
 
     let mint_message = Message::new(vec![mint_instruction], Hash::default());
-    let mut mint_tx = Transaction::new(mint_message);
-    mint_tx.signatures.push([0u8; 64]);
+    let mint_tx = Transaction::new(mint_message);
 
     // Insert mint tx at the beginning
     genesis_txs.insert(0, mint_tx);
@@ -1084,8 +1037,7 @@ fn main() {
             data: ix_data,
         };
         let message = Message::new(vec![instruction], Hash::default());
-        let mut config_tx = Transaction::new(message);
-        config_tx.signatures.push([0u8; 64]); // synthetic signature
+        let config_tx = Transaction::new(message);
         genesis_txs.push(config_tx);
         info!(
             "  ✓ GenesisConfig embedded in genesis block (opcode 40, {} bytes)",
@@ -1130,4 +1082,32 @@ fn main() {
         network_str, db_dir
     );
     info!("═══════════════════════════════════════════════════════");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_genesis_keypair_from_canonical_file() {
+        let keypair = Keypair::generate();
+        let public_key = keypair.public_key();
+        let path = std::env::temp_dir().join(format!(
+            "lichen-genesis-keypair-{}-{}.json",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let json = serde_json::json!({
+            "privateKey": keypair.to_seed(),
+            "publicKey": public_key.bytes,
+            "publicKeyBase58": keypair.pubkey().to_base58(),
+        });
+
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let loaded = load_genesis_keypair(&path).unwrap();
+        assert_eq!(loaded.to_seed(), keypair.to_seed());
+
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -198,6 +198,7 @@ ul {
     font-weight: 600;
     cursor: pointer;
 }
+
 .network-select:focus {
     outline: none;
     border-color: var(--primary);
@@ -237,7 +238,7 @@ ul {
     left: -64px;
     right: -64px;
     bottom: -64px;
-    background: 
+    background:
         radial-gradient(circle at 20% 50%, rgba(0, 201, 219, 0.15) 0%, transparent 50%),
         radial-gradient(circle at 80% 80%, rgba(0, 229, 255, 0.12) 0%, transparent 50%),
         radial-gradient(circle at 40% 80%, rgba(17, 138, 178, 0.12) 0%, transparent 50%),
@@ -247,17 +248,28 @@ ul {
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
 }
 
 @keyframes float {
-    0%, 100% {
+
+    0%,
+    100% {
         transform: translate(0, 0) scale(1);
     }
+
     33% {
         transform: translate(30px, -20px) scale(1.05);
     }
+
     66% {
         transform: translate(-20px, 20px) scale(0.95);
     }
@@ -287,6 +299,7 @@ ul {
         opacity: 0;
         transform: translateY(-20px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -306,6 +319,7 @@ ul {
         opacity: 0;
         transform: translateY(30px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -444,9 +458,22 @@ ul {
 }
 
 @keyframes bounce {
-    0%, 20%, 50%, 80%, 100% { transform: translateX(-50%) translateY(0); }
-    40% { transform: translateX(-50%) translateY(-10px); }
-    60% { transform: translateX(-50%) translateY(-5px); }
+
+    0%,
+    20%,
+    50%,
+    80%,
+    100% {
+        transform: translateX(-50%) translateY(0);
+    }
+
+    40% {
+        transform: translateX(-50%) translateY(-10px);
+    }
+
+    60% {
+        transform: translateX(-50%) translateY(-5px);
+    }
 }
 
 .scroll-arrow {
@@ -842,6 +869,7 @@ ul {
         opacity: 0;
         transform: translateY(10px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -974,13 +1002,11 @@ ul {
     align-items: center;
     justify-content: space-between;
     padding: 1.5rem;
-    background: linear-gradient(
-        to right,
-        var(--color) 0%,
-        var(--color) var(--percentage),
-        var(--bg-card) var(--percentage),
-        var(--bg-card) 100%
-    );
+    background: linear-gradient(to right,
+            var(--color) 0%,
+            var(--color) var(--percentage),
+            var(--bg-card) var(--percentage),
+            var(--bg-card) 100%);
     border-radius: 12px;
     border: 1px solid var(--border);
     transition: all 0.3s ease;
@@ -1175,7 +1201,7 @@ ul {
     margin-bottom: 1rem;
 }
 
-.cta-content > p {
+.cta-content>p {
     font-size: 1.25rem;
     margin-bottom: 2.5rem;
     color: #FFFFFF;
@@ -1366,13 +1392,14 @@ ul {
     .footer-content {
         grid-template-columns: repeat(2, 1fr);
     }
-    
+
     .footer-grid {
         grid-template-columns: repeat(2, 1fr);
     }
 }
 
 @media (max-width: 768px) {
+
     .nav-menu,
     .nav-cta {
         display: none;
@@ -1417,16 +1444,16 @@ ul {
     .footer-content {
         flex-direction: column;
     }
-    
+
     .footer-grid {
         grid-template-columns: 1fr;
         gap: 2rem;
     }
-    
+
     .footer-brand {
         max-width: 100%;
     }
-    
+
     .footer-column {
         width: 100%;
     }
@@ -1505,8 +1532,8 @@ ul {
     display: flex;
     align-items: center;
     gap: 1rem;
-    margin-bottom: 2rem;
-    padding-bottom: 1rem;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.75rem;
     border-bottom: 2px solid var(--border);
 }
 
@@ -1527,9 +1554,16 @@ ul {
 }
 
 .chain-header h3 {
-    font-size: 1.8rem;
+    font-size: 1.35rem;
     margin: 0;
     color: var(--text-primary);
+}
+
+.chain-summary {
+    margin: 0 0 1.25rem;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    line-height: 1.6;
 }
 
 .chain-metrics {
@@ -1540,7 +1574,8 @@ ul {
 .metric {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: 1rem;
     padding: 0.75rem;
     background: var(--bg-darker);
     border-radius: 8px;
@@ -1552,11 +1587,18 @@ ul {
     font-weight: 500;
 }
 
-.metric-value {
+.chain-card .metric-value {
     color: var(--text-primary);
-    font-size: 1.2rem;
+    font-size: 1rem;
     font-weight: 700;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: inherit;
+    line-height: 1.35;
+    max-width: 52%;
+    text-align: right;
+}
+
+.metric-value.metric-value-small {
+    font-size: 0.9rem;
 }
 
 .metric-value.bad {
@@ -1612,11 +1654,11 @@ ul {
     .blockchain-comparison {
         grid-template-columns: 1fr;
     }
-    
+
     .features-grid {
         grid-template-columns: repeat(2, 1fr);
     }
-    
+
     .contracts-grid {
         grid-template-columns: 1fr;
     }
@@ -1971,12 +2013,12 @@ ul {
     .contracts-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .deploy-step {
         grid-template-columns: 1fr;
         gap: 1rem;
     }
-    
+
     .step-number {
         width: 50px;
         height: 50px;
@@ -2043,13 +2085,13 @@ ul {
         flex-direction: column;
         gap: 0;
     }
-    
+
     .api-tab {
         border-bottom: 1px solid var(--border);
         border-left: 3px solid transparent;
         padding: 1rem;
     }
-    
+
     .api-tab.active {
         border-bottom-color: var(--border);
         border-left-color: var(--primary);
@@ -2145,6 +2187,7 @@ ul {
         opacity: 0;
         transform: translateY(20px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -2218,13 +2261,13 @@ ul {
     .wizard-tabs {
         flex-wrap: wrap;
     }
-    
+
     .wizard-tab {
         flex: 1 1 calc(50% - 1px);
         border-right: 1px solid var(--border);
         border-bottom: 1px solid var(--border);
     }
-    
+
     .wizard-tab:nth-child(2n) {
         border-right: none;
     }
@@ -2234,7 +2277,7 @@ ul {
     .wizard-tabs {
         flex-direction: column;
     }
-    
+
     .wizard-tab {
         flex: 1 1 auto;
         border-right: none;
@@ -2243,21 +2286,21 @@ ul {
         justify-content: flex-start;
         padding: 1rem 1.5rem;
     }
-    
+
     .wizard-tab:last-child {
         border-bottom: none;
     }
-    
+
     .wizard-number {
         width: 32px;
         height: 32px;
         font-size: 1rem;
     }
-    
+
     .contract-tabs {
         justify-content: flex-start;
     }
-    
+
     .contract-tab {
         flex: 1 1 calc(50% - 0.25rem);
         font-size: 0.9rem;

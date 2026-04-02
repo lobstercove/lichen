@@ -1,6 +1,6 @@
 //! Keypair and public key management
 
-pub use lichen_core::{Keypair as CoreKeypair, Pubkey};
+pub use lichen_core::{Address, Keypair as CoreKeypair, PqPublicKey, PqSignature, Pubkey};
 
 /// Keypair wrapper with SDK convenience methods
 pub struct Keypair(CoreKeypair);
@@ -10,27 +10,37 @@ impl Keypair {
     pub fn new() -> Self {
         Self(CoreKeypair::new())
     }
-    
+
     /// Create keypair from seed bytes
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         Self(CoreKeypair::from_seed(seed))
     }
-    
-    /// Get public key
+
+    /// Get the 32-byte account address.
     pub fn pubkey(&self) -> Pubkey {
         self.0.pubkey()
     }
-    
+
+    /// Get the full PQ verifying key.
+    pub fn public_key(&self) -> PqPublicKey {
+        self.0.public_key()
+    }
+
     /// Get seed for saving
     pub fn to_seed(&self) -> [u8; 32] {
         self.0.to_seed()
     }
-    
-    /// Sign a message
-    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+
+    /// Sign a message with a self-contained PQ signature.
+    pub fn sign(&self, message: &[u8]) -> PqSignature {
         self.0.sign(message)
     }
-    
+
+    /// Verify a self-contained PQ signature against an address.
+    pub fn verify(address: &Pubkey, message: &[u8], signature: &PqSignature) -> bool {
+        CoreKeypair::verify(address, message, signature)
+    }
+
     /// Get reference to inner keypair
     pub fn inner(&self) -> &CoreKeypair {
         &self.0
@@ -77,10 +87,18 @@ mod tests {
     }
 
     #[test]
-    fn sign_produces_64_bytes() {
+    fn public_key_roundtrip_matches_address() {
+        let kp = Keypair::new();
+        assert_eq!(kp.public_key().address(), kp.pubkey());
+    }
+
+    #[test]
+    fn sign_produces_valid_pq_signature() {
         let kp = Keypair::new();
         let sig = kp.sign(b"hello lichen");
-        assert_eq!(sig.len(), 64);
+        assert!(sig.validate().is_ok());
+        assert_eq!(sig.signer_address(), kp.pubkey());
+        assert!(sig.sig.len() > 64);
     }
 
     #[test]
@@ -103,6 +121,15 @@ mod tests {
     fn inner_returns_core_keypair() {
         let kp = Keypair::from_seed(&[5u8; 32]);
         assert_eq!(kp.inner().pubkey(), kp.pubkey());
+    }
+
+    #[test]
+    fn verify_accepts_self_contained_signature() {
+        let kp = Keypair::from_seed(&[6u8; 32]);
+        let message = b"pq rust sdk";
+        let signature = kp.sign(message);
+        assert!(Keypair::verify(&kp.pubkey(), message, &signature));
+        assert!(!Keypair::verify(&kp.pubkey(), b"tampered", &signature));
     }
 
     #[test]

@@ -10,37 +10,30 @@
 
 ### Running Cluster
 
-All on-chain E2E tests require a running Lichen validator cluster + faucet.
+All on-chain E2E tests require a running PQ-native validator cluster. The supported local smoke path is the canonical 3-validator launcher, which delegates to `run-validator.sh` and prepares the genesis DB via `lichen-genesis` automatically.
 
 ```bash
-# 1. Build the node
+# 1. Build the required binaries
 cargo build --release
 
-# 2. Generate genesis (if fresh start)
-./reset-blockchain.sh          # WARNING: wipes all state
-# OR manually:
-#   target/release/lichen-genesis --data-dir data/state-7001 --chain-id lichen-testnet-1
+# 2. Start a fresh 3-validator local cluster
+bash scripts/start-local-3validators.sh start-reset
 
-# 3. Copy genesis to other validators (if multi-validator)
-cp -r data/state-7001/blockchain.db data/state-7002/blockchain.db
-cp -r data/state-7001/blockchain.db data/state-7003/blockchain.db
+# 3. Verify RPC health
+curl -s http://127.0.0.1:8899 \
+	-H 'Content-Type: application/json' \
+	-d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' | jq
 
-# 4. Start validators
-target/release/lichen-validator --data-dir data/state-7001 --rpc-port 8899 --ws-port 8900 --p2p-port 7001 &
-target/release/lichen-validator --data-dir data/state-7002 --rpc-port 8901 --ws-port 8902 --p2p-port 7002 &
-target/release/lichen-validator --data-dir data/state-7003 --rpc-port 8903 --ws-port 8904 --p2p-port 7003 &
-
-# 5. Start faucet
-target/release/lichen-faucet --rpc-url http://127.0.0.1:8899 --port 9100 &
-
-# 6. Health check
-curl -s http://127.0.0.1:8899/health | jq .
+# 4. Optional strict launch gate
+STRICT_NO_SKIPS=1 bash scripts/launch-verification.sh
 ```
+
+For broader local-stack scenarios that also need custody or faucet sidecars, start those services with your existing harness before running the suites that depend on them.
 
 ### Node.js Dependencies
 
 ```bash
-npm install   # installs tweetnacl, node-fetch, ws, etc.
+npm install   # installs the shared JavaScript test dependencies
 ```
 
 ### Python Dependencies
@@ -69,7 +62,7 @@ pip install aiohttp requests nacl   # for Python tests
 make test
 
 # Full production gate (requires running 3-validator cluster)
-bash tests/production-e2e-gate.sh
+STRICT_NO_SKIPS=1 bash scripts/launch-verification.sh
 
 # Full 43-suite matrix
 bash tests/run-full-matrix-feb24.sh
@@ -398,7 +391,7 @@ const { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, byte
 
 | Function | Description |
 |----------|-------------|
-| `genKeypair()` | Returns `{ address, pubkey, secretKey }` via Ed25519 |
+| `genKeypair()` | Returns a PQ-native wallet object `{ address, publicKey, seed }` |
 | `fundAccount(address, amountLicn)` | Funds via airdrop (max 10 LICN chunks) with faucet fallback |
 | `loadFundedWallets(count, amountEach)` | Returns array of funded wallets |
 | `bs58encode(bytes)` / `bs58decode(str)` | Base58 encoding/decoding |

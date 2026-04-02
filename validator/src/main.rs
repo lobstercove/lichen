@@ -30,8 +30,8 @@ use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
     ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
     GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity,
-    NftActivityKind, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep,
-    SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
+    NftActivityKind, PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey,
+    RoundStep, SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
     ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
     BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
     GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
@@ -71,10 +71,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::consensus::{ConsensusAction, ConsensusEngine};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
-const LEGACY_CONTRACT_DEPLOY_FEE_SPORES: u64 = 2_500_000_000;
-/// Treasury reserve funded at genesis for bootstrap grants (50M LICN = 10% of 500M genesis).
-/// Block rewards are now minted via the inflation curve, not debited from treasury.
-const TREASURY_RESERVE_LICN: u64 = 50_000_000;
 
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
@@ -276,7 +272,7 @@ fn verify_validator_announcement_signature(
     stake: u64,
     current_slot: u64,
     version: &str,
-    signature: &[u8; 64],
+    signature: &PqSignature,
     machine_fingerprint: &[u8; 32],
     require_version_binding: bool,
 ) -> bool {
@@ -376,155 +372,6 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
     resolved
 }
 
-fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Path) {
-    // ZK keys are cached in a shared location (~/.lichen/zk/) so they
-    // survive blockchain resets.  Release tarballs ship pre-generated keys
-    // in a `zk/` directory next to the binary — those are copied into the
-    // shared cache on first run so the expensive Groth16 setup never needs
-    // to happen on the operator's machine.
-    //
-    // Priority: env vars > ~/.lichen/zk/ (shared cache) > bundled (next to exe) > auto-generate
-    let shared_zk_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".lichen")
-        .join("zk");
-
-    let shield_path = env::var("LICHEN_ZK_SHIELD_VK_PATH")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| shared_zk_dir.join("vk_shield.bin"));
-    let unshield_path = env::var("LICHEN_ZK_UNSHIELD_VK_PATH")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| shared_zk_dir.join("vk_unshield.bin"));
-    let transfer_path = env::var("LICHEN_ZK_TRANSFER_VK_PATH")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| shared_zk_dir.join("vk_transfer.bin"));
-
-    // If keys are missing from the shared cache, search well-known locations
-    // and copy them into the shared cache so all future starts find them.
-    //
-    // Search order:
-    //   1. zk/ next to the binary     (release tarball layout)
-    //   2. zk-keys/ in CWD            (source-build / repo root)
-    //   3. zk-keys/ next to binary    (uncommon but consistent)
-    if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Ok(exe_path) = env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                candidates.push(exe_dir.join("zk"));
-                candidates.push(exe_dir.join("zk-keys"));
-            }
-        }
-        candidates.push(PathBuf::from("zk-keys"));
-
-        for candidate in &candidates {
-            if candidate.is_dir()
-                && candidate.join("vk_shield.bin").exists()
-                && candidate.join("vk_unshield.bin").exists()
-                && candidate.join("vk_transfer.bin").exists()
-            {
-                info!(
-                    "🔑 Installing ZK keys from {} → {}",
-                    candidate.display(),
-                    shared_zk_dir.display()
-                );
-                if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
-                    warn!(
-                        "⚠️  Failed creating ZK directory {}: {}",
-                        shared_zk_dir.display(),
-                        e
-                    );
-                    break;
-                }
-                if let Ok(entries) = fs::read_dir(candidate) {
-                    for entry in entries.flatten() {
-                        let dest = shared_zk_dir.join(entry.file_name());
-                        if let Err(e) = fs::copy(entry.path(), &dest) {
-                            warn!("⚠️  Failed copying {}: {}", entry.path().display(), e);
-                        }
-                    }
-                    info!("✅ ZK keys installed to {}", shared_zk_dir.display());
-                }
-                break;
-            }
-        }
-    }
-
-    // If keys are still missing after checking bundled directory, log a clear
-    // error.  We no longer auto-generate keys at runtime — the canonical
-    // ceremony keys are committed to the repo and shipped in every release.
-    if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
-        warn!(
-            "⚠️  ZK verification keys not found at {} — shielded transactions unavailable. \
-             Install from a release tarball or run `zk-setup --output {}` manually.",
-            shared_zk_dir.display(),
-            shared_zk_dir.display()
-        );
-        return;
-    } else {
-        info!(
-            "🔑 ZK verification keys loaded from {}",
-            shared_zk_dir.display()
-        );
-    }
-
-    // Read all three VK files
-    let shield_vk = match fs::read(&shield_path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed reading shield VK at {}: {}",
-                shield_path.display(),
-                e
-            );
-            return;
-        }
-    };
-    let unshield_vk = match fs::read(&unshield_path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed reading unshield VK at {}: {}",
-                unshield_path.display(),
-                e
-            );
-            return;
-        }
-    };
-    let transfer_vk = match fs::read(&transfer_path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed reading transfer VK at {}: {}",
-                transfer_path.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    match processor.load_zk_verification_keys(&shield_vk, &unshield_vk, &transfer_vk) {
-        Ok(_) => {
-            info!(
-                "✓ Loaded ZK verification keys (shield={}, unshield={}, transfer={})",
-                shield_path.display(),
-                unshield_path.display(),
-                transfer_path.display()
-            );
-            // Persist VK hashes to pool state so the explorer / RPC
-            // can confirm the verifier is initialised (vkShieldHash ≠ 0x00…).
-            match processor.persist_vk_hashes_to_pool_state(&shield_vk, &unshield_vk, &transfer_vk)
-            {
-                Ok(_) => info!("✓ VK hashes persisted to shielded pool state"),
-                Err(e) => warn!("⚠️  Failed persisting VK hashes: {}", e),
-            }
-        }
-        Err(e) => warn!("⚠️  Failed loading ZK verification keys: {}", e),
-    }
-}
-
 /// Discover companion binaries (faucet, custody, cli) installed alongside
 /// the validator.  Only returns entries for binaries that actually exist on
 /// disk — this way an agent running just the validator won't try to update
@@ -561,7 +408,7 @@ fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
 
 fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
     let lichen_dir = runtime_home.join(".lichen");
-    lichen_dir.join("node_cert.der").exists() && lichen_dir.join("node_key.der").exists()
+    lichen_dir.join("node_identity.json").exists()
 }
 
 fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
@@ -602,12 +449,6 @@ fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
     state_home
 }
 
-/// Run the Groth16 trusted setup and write VK + PK files to `zk_dir`.
-///
-/// Each circuit is set up independently and written to disk before the next
-/// one starts.  This keeps peak memory usage at ~300MB instead of ~900MB
-/// (which triggers the macOS OOM killer / jetsam for the transfer circuit's
-/// 32-level Merkle path constraints).
 fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
     let contents = match fs::read_to_string(seeds_path) {
         Ok(data) => data,
@@ -738,7 +579,25 @@ fn hash_stake_pool(pool: &StakePool) -> Hash {
 
 #[derive(Deserialize)]
 struct TreasuryKeyFile {
-    secret_key: String,
+    #[serde(default, rename = "privateKey")]
+    private_key: Option<serde_json::Value>,
+}
+
+fn decode_treasury_seed_value(value: &serde_json::Value) -> Option<[u8; 32]> {
+    let entries = value.as_array()?;
+    if entries.len() != 32 {
+        return None;
+    }
+
+    let mut seed = [0u8; 32];
+    for (index, entry) in entries.iter().enumerate() {
+        let byte = entry.as_u64()?;
+        if byte > u8::MAX as u64 {
+            return None;
+        }
+        seed[index] = byte as u8;
+    }
+    Some(seed)
 }
 
 fn resolve_treasury_keypair_path(
@@ -803,29 +662,22 @@ fn load_treasury_keypair(
         }
     };
 
-    let bytes = match hex::decode(parsed.secret_key) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed to decode treasury keypair {}: {}",
-                path.display(),
-                e
-            );
-            return None;
-        }
-    };
-
-    if bytes.len() != 32 {
+    let Some(seed_value) = parsed.private_key.as_ref() else {
         warn!(
-            "⚠️  Treasury keypair {} has invalid length {}",
-            path.display(),
-            bytes.len()
+            "⚠️  Treasury keypair {} is missing a privateKey field",
+            path.display()
         );
         return None;
-    }
+    };
 
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&bytes[..32]);
+    let Some(mut seed) = decode_treasury_seed_value(seed_value) else {
+        warn!(
+            "⚠️  Treasury keypair {} has an invalid privateKey payload",
+            path.display()
+        );
+        return None;
+    };
+
     let keypair = Keypair::from_seed(&seed);
     // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
     seed.iter_mut().for_each(|b| *b = 0);
@@ -836,7 +688,7 @@ fn load_treasury_keypair(
 /// Extract the embedded GenesisConfig from the genesis block.
 /// The genesis creator embeds a TX with opcode 40 (GENESIS_CONFIG) containing
 /// the full serialized GenesisConfig (including frozen GenesisPrices).
-/// Returns None if the block predates this feature (backward compat).
+/// Returns None when the block does not embed a GenesisConfig payload.
 fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
     for tx in &block.transactions {
         for ix in &tx.message.instructions {
@@ -846,27 +698,6 @@ fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
         }
     }
     None
-}
-
-fn is_reward_or_debt_tx(tx: &Transaction) -> bool {
-    let Some(ix) = tx.message.instructions.first() else {
-        return false;
-    };
-
-    if ix.program_id != CORE_SYSTEM_PROGRAM_ID {
-        return false;
-    }
-
-    matches!(ix.data.first(), Some(2) | Some(3))
-}
-
-fn block_has_user_transactions(block: &Block) -> bool {
-    // With protocol-level rewards (coinbase model), blocks only contain user txs.
-    // Keep the is_reward_or_debt_tx filter for backward-compat with legacy blocks.
-    block
-        .transactions
-        .iter()
-        .any(|tx| !is_reward_or_debt_tx(tx))
 }
 
 fn validate_p2p_transaction_signatures(tx: &Transaction) -> bool {
@@ -1356,92 +1187,6 @@ fn emit_dex_events(
                 }
             }
         }
-    }
-}
-
-// ========================================================================
-//  TRADE BRIDGE — dex_core → dex_analytics
-//
-//  After each block, iterates new dex_trade_* records from the DEX matching
-//  engine and writes trade-driven analytics data directly to dex_analytics
-//  contract storage:
-//    • ana_lp_{pair_id}           — last trade price (overrides oracle)
-//    • ana_24h_{pair_id}          — 24h volume, OHLC, trade count
-//    • ana_24h_ts_{pair_id}       — unix timestamp of last 24h window reset
-//    • ana_c_{pair_id}_{iv}_{idx} — candles for all 9 intervals
-//    • ana_last_trade_ts_{pair_id}— unix timestamp of last real trade
-//                                   (used by oracle feeder to skip writes)
-//
-//  This makes real trades drive displayed prices, charts, and volume.
-//  The oracle feeder (Phase B) checks ana_last_trade_ts and only writes
-//  indicative prices when no real trade occurred within 60 seconds.
-// ========================================================================
-
-/// Rolling 24h window reset — called every block.
-/// Checks each trading pair's 24h stats window. If >86400 seconds have elapsed
-/// since the last reset, sets open=current close, zeroes volume/trades,
-/// resets high/low to current price.  This gives the user a true rolling 24h view.
-/// P9-VAL-05: Accept deterministic block timestamp instead of SystemTime::now()
-fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
-    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
-        Ok(Some(entry)) => entry.program,
-        _ => return,
-    };
-
-    let now_ts = block_ts;
-
-    let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
-    for pair_id in 1..=pair_count {
-        let ts_key = format!("ana_24h_ts_{}", pair_id);
-        let last_reset = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-            _ => 0,
-        };
-
-        // If never reset, seed the timestamp but don't clear stats (first boot)
-        if last_reset == 0 {
-            let _ =
-                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
-            continue;
-        }
-
-        // Check if 24 hours have elapsed
-        if now_ts.saturating_sub(last_reset) < 86400 {
-            continue;
-        }
-
-        // Window expired — read current close price, then reset
-        let stats_key = format!("ana_24h_{}", pair_id);
-        let current_close = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-            Ok(Some(d)) if d.len() >= 48 => {
-                u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8]))
-            }
-            _ => {
-                // Fallback: try ana_lp_ (last traded price)
-                let lp_key = format!("ana_lp_{}", pair_id);
-                match state.get_contract_storage(&analytics_pk, lp_key.as_bytes()) {
-                    Ok(Some(d)) if d.len() >= 8 => {
-                        u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
-                    }
-                    _ => 0,
-                }
-            }
-        };
-
-        // Reset: open = current close, volume = 0, trades = 0, high = close, low = close
-        let mut stats = Vec::with_capacity(48);
-        stats.extend_from_slice(&0u64.to_le_bytes()); // volume = 0
-        stats.extend_from_slice(&current_close.to_le_bytes()); // high = close
-        stats.extend_from_slice(&current_close.to_le_bytes()); // low = close
-        stats.extend_from_slice(&current_close.to_le_bytes()); // open = close
-        stats.extend_from_slice(&current_close.to_le_bytes()); // close = close
-        stats.extend_from_slice(&0u64.to_le_bytes()); // trades = 0
-        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
-
-        // Update reset timestamp
-        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
-
-        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
     }
 }
 
@@ -3067,6 +2812,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                     staked: 0,
                                     locked: 0,
                                     data: Vec::new(),
+                                    public_key: None,
                                     owner: SYSTEM_ACCOUNT_OWNER,
                                     executable: false,
                                     rent_epoch: 0,
@@ -3165,7 +2911,7 @@ async fn apply_block_effects(
         let mut pool = stake_pool.write().await;
         *pool = fresh_pool;
         drop(pool);
-        if block_has_user_transactions(block) || entry_count > 1 {
+        if !block.transactions.is_empty() || entry_count > 1 {
             info!(
                 "📊 apply_block_effects slot {}: reloaded pool with {} entries from state",
                 block.header.slot, entry_count
@@ -3176,7 +2922,7 @@ async fn apply_block_effects(
     let producer = Pubkey(block.header.validator);
     let slot = block.header.slot;
 
-    let has_user_transactions = block_has_user_transactions(block);
+    let has_user_transactions = !block.transactions.is_empty();
     let is_heartbeat = !has_user_transactions;
     let reward_already = if !skip_rewards {
         match state.get_reward_distribution_hash(slot) {
@@ -4183,37 +3929,72 @@ fn checkpoint_anchor_support(
         .count()
 }
 
-// ========================================================================
-// FIRST-BOOT CONTRACT AUTO-DEPLOY
-// ========================================================================
-//  BACKGROUND ORACLE PRICE FEEDER — Real-time Binance WebSocket price feed
-//  with REST API fallback. Submits native oracle attestations and broadcasts
-//  consensus-derived analytics updates.
-//
-//  Architecture:
-//    1. WebSocket reader: connects to Binance aggTrade streams for SOL/ETH,
-//       stores latest prices in lock-free AtomicU64 (microdollars).
-//    2. Attestation writer: periodic tick reads atomics and submits signed
-//       oracle-attestation transactions when prices change or need refresh.
-//    3. REST fallback: if WebSocket is unhealthy (no message in 30s),
-//       fetches prices from Binance REST API as backup.
-//    4. Auto-reconnect: exponential backoff 1s → 2s → 4s → ... → 30s max.
-// ========================================================================
-
-/// Price stored as microdollars in AtomicU64 (price * 1_000_000).
-/// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
-const MICRO_SCALE: f64 = 1_000_000.0;
-
-/// Default Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB.
-/// Override via LICHEN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
-const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
-
 /// Default Binance REST fallback URL.
 /// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
+const MICRO_SCALE: f64 = 1_000_000.0;
+const DEFAULT_BINANCE_WS_URL: &str =
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
 
+fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
+    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+
+    let now_ts = block_ts;
+
+    let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
+    for pair_id in 1..=pair_count {
+        let ts_key = format!("ana_24h_ts_{}", pair_id);
+        let last_reset = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
+            Ok(Some(data)) if data.len() >= 8 => {
+                u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
+            }
+            _ => 0,
+        };
+
+        if last_reset == 0 {
+            let _ =
+                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
+            continue;
+        }
+
+        if now_ts.saturating_sub(last_reset) < 86400 {
+            continue;
+        }
+
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let current_close = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+            Ok(Some(data)) if data.len() >= 48 => {
+                u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]))
+            }
+            _ => {
+                let lp_key = format!("ana_lp_{}", pair_id);
+                match state.get_contract_storage(&analytics_pk, lp_key.as_bytes()) {
+                    Ok(Some(data)) if data.len() >= 8 => {
+                        u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
+                    }
+                    _ => 0,
+                }
+            }
+        };
+
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&0u64.to_le_bytes());
+        stats.extend_from_slice(&current_close.to_le_bytes());
+        stats.extend_from_slice(&current_close.to_le_bytes());
+        stats.extend_from_slice(&current_close.to_le_bytes());
+        stats.extend_from_slice(&current_close.to_le_bytes());
+        stats.extend_from_slice(&0u64.to_le_bytes());
+        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+
+        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
+
+        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
+    }
+}
 /// REST ticker response
 #[derive(Deserialize)]
 struct BinanceTicker {
@@ -5341,10 +5122,6 @@ async fn run_validator() {
     // Create transaction processor
     let processor = Arc::new(TxProcessor::new(state.clone()));
 
-    // Load ZK verification keys at runtime (if present) so shielded tx
-    // verification is available outside tests.
-    try_load_runtime_zk_verification_keys(&processor, &data_dir_path);
-
     // ========================================================================
     // GENESIS CONFIGURATION
     // ========================================================================
@@ -5399,41 +5176,8 @@ async fn run_validator() {
     // Supports:
     //   --bootstrap <host:port>
     //   --bootstrap-peers <host:port,host:port>
-    //   positional peers (legacy)
     let mut seed_peer_strings: Vec<String> = Vec::new();
     let mut explicit_seed_peer_strings: Vec<String> = Vec::new();
-
-    // Known flags that take a value — used to skip their arguments in the
-    // positional-peer fallback below.
-    const VALUE_FLAGS: &[&str] = &[
-        "--bootstrap",
-        "--bootstrap-peers",
-        "--rpc-port",
-        "--ws-port",
-        "--p2p-port",
-        "--db-path",
-        "--db",
-        "--data-dir",
-        "--genesis",
-        "--keypair",
-        "--import-key",
-        "--network",
-        "--admin-token",
-        "--watchdog-timeout",
-        "--max-restarts",
-        "--listen-addr",
-        "--auto-update",
-        "--update-check-interval",
-        "--update-channel",
-        "--cache-size-mb",
-        "--cold-store",
-    ];
-    const BOOL_FLAGS: &[&str] = &[
-        "--supervised",
-        "--no-watchdog",
-        "--no-auto-restart",
-        "--dev-mode",
-    ];
 
     // Extract --bootstrap / --bootstrap-peers via get_flag_value helpers
     if let Some(val) = get_flag_value(&args, &["--bootstrap"]) {
@@ -5466,34 +5210,6 @@ async fn run_validator() {
                 );
             }
         }
-    }
-
-    // Collect positional peer arguments (legacy)
-    let mut skip_next = false;
-    for (i, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if i == 0 {
-            continue; // binary name
-        }
-        // Check if this arg is a known flag (either --flag or --flag=value)
-        let is_flag = VALUE_FLAGS
-            .iter()
-            .any(|f| arg == *f || arg.starts_with(&format!("{}=", f)))
-            || BOOL_FLAGS
-                .iter()
-                .any(|f| arg == *f || arg.starts_with(&format!("{}=", f)));
-        if is_flag {
-            // If it's a space-separated value flag (not --flag=...), skip next arg
-            if VALUE_FLAGS.iter().any(|f| arg == *f) {
-                skip_next = true;
-            }
-            continue;
-        }
-        seed_peer_strings.push(arg.to_string());
-        explicit_seed_peer_strings.push(arg.to_string());
     }
 
     // Parse --listen-addr flag for P2P bind address.
@@ -5747,54 +5463,6 @@ async fn run_validator() {
 
     let genesis_exists = has_genesis_block;
 
-    // --- Migration: ensure genesis/treasury pubkeys are stored in DB ---
-    // Older DBs may not have these keys set. Backfill from genesis-wallet.json.
-    if genesis_exists {
-        if let Some(ref gpk) = genesis_pubkey {
-            if state.get_genesis_pubkey().ok().flatten().is_none() {
-                if let Err(e) = state.set_genesis_pubkey(gpk) {
-                    warn!("⚠️  Migration: failed to set genesis pubkey: {}", e);
-                } else {
-                    info!("  ✓ Migration: stored genesis pubkey in DB");
-                }
-            }
-        }
-        if let Some(ref gw) = genesis_wallet {
-            if let Some(ref tpk) = gw.treasury_pubkey {
-                if state.get_treasury_pubkey().ok().flatten().is_none() {
-                    if let Err(e) = state.set_treasury_pubkey(tpk) {
-                        warn!("⚠️  Migration: failed to set treasury pubkey: {}", e);
-                    } else {
-                        info!("  ✓ Migration: stored treasury pubkey in DB");
-                    }
-                }
-            }
-        }
-        // Backfill genesis accounts from wallet if missing in DB
-        if state
-            .get_genesis_accounts()
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
-        {
-            if let Some(ref gw) = genesis_wallet {
-                if let Some(ref dist_wallets) = gw.distribution_wallets {
-                    let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
-                        .iter()
-                        .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_licn, dw.percentage))
-                        .collect();
-                    if let Err(e) = state.set_genesis_accounts(&ga_entries) {
-                        warn!("⚠️  Migration: failed to store genesis accounts: {}", e);
-                    } else {
-                        info!(
-                            "  ✓ Migration: stored {} genesis accounts in DB",
-                            ga_entries.len()
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     // --- Fetch genesis accounts from bootstrap peer if still missing ---
     // This handles V2/V3 joining the network without genesis-wallet.json
     if state
@@ -5883,135 +5551,6 @@ async fn run_validator() {
         // Use CLI command `lichen admin reconcile-accounts` if needed
         let metrics = state.get_metrics();
         info!("  Total accounts (counter): {}", metrics.total_accounts);
-
-        if let Some(wallet) = genesis_wallet.as_ref() {
-            if let Some(treasury_pubkey) = wallet.treasury_pubkey {
-                // Only set if not already stored (avoid overwriting canonical pubkey)
-                if state.get_treasury_pubkey().ok().flatten().is_none() {
-                    state.set_treasury_pubkey(&treasury_pubkey).ok();
-                }
-                if let Ok(None) = state.get_account(&treasury_pubkey) {
-                    let treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                    state.put_account(&treasury_pubkey, &treasury_account).ok();
-                }
-            }
-        }
-
-        // ================================================================
-        // MIGRATION: Auto-generate treasury keypair if missing
-        // Handles genesis wallets created by older code versions that
-        // did not generate a separate treasury keypair.
-        // ================================================================
-        let needs_treasury_migration = genesis_wallet
-            .as_ref()
-            .map(|w| w.treasury_pubkey.is_none())
-            .unwrap_or(false);
-
-        if needs_treasury_migration && state.get_treasury_pubkey().ok().flatten().is_none() {
-            info!("🔄 MIGRATION: Genesis wallet missing treasury keypair — generating...");
-
-            let treasury_keypair = Keypair::generate();
-            let treasury_pubkey = treasury_keypair.pubkey();
-
-            // 1. Save treasury keypair to disk
-            match GenesisWallet::save_treasury_keypair(
-                &treasury_keypair,
-                &genesis_keypairs_dir,
-                &genesis_config.chain_id,
-            ) {
-                Ok(path) => info!("  ✓ Treasury keypair saved: {}", path),
-                Err(e) => error!("  ✗ Failed to save treasury keypair: {}", e),
-            }
-
-            // 2. Set treasury pubkey in state
-            if let Err(e) = state.set_treasury_pubkey(&treasury_pubkey) {
-                error!("  ✗ Failed to set treasury pubkey in state: {}", e);
-            }
-
-            // 3. Create treasury account
-            let mut treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-
-            // 4. Fund treasury from genesis account (treasury reserve for bootstrap grants)
-            let reward_spores = Account::licn_to_spores(TREASURY_RESERVE_LICN.min(1_000_000_000));
-            if let Some(genesis_pk) = genesis_wallet.as_ref().map(|w| w.pubkey) {
-                if let Ok(Some(mut genesis_acct)) = state.get_account(&genesis_pk) {
-                    if genesis_acct.spendable >= reward_spores {
-                        genesis_acct.spores = genesis_acct.spores.saturating_sub(reward_spores);
-                        genesis_acct.spendable =
-                            genesis_acct.spendable.saturating_sub(reward_spores);
-                        treasury_account.spores = reward_spores;
-                        treasury_account.spendable = reward_spores;
-                        state.put_account(&genesis_pk, &genesis_acct).ok();
-                        info!(
-                            "  ✓ Funded treasury with {} LICN from genesis (bootstrap reserve)",
-                            TREASURY_RESERVE_LICN
-                        );
-                    } else {
-                        warn!(
-                            "  ⚠️  Genesis account has insufficient spendable balance ({} < {})",
-                            genesis_acct.spendable, reward_spores
-                        );
-                    }
-                }
-            }
-
-            state.put_account(&treasury_pubkey, &treasury_account).ok();
-            info!("  ✓ Treasury account: {}", treasury_pubkey.to_base58());
-
-            // 5. Update genesis wallet JSON with treasury info
-            if let Some(mut wallet) = genesis_wallet.clone() {
-                wallet.treasury_pubkey = Some(treasury_pubkey);
-                wallet.treasury_keypair_path = Some(format!(
-                    "genesis-keys/treasury-{}.json",
-                    genesis_config.chain_id
-                ));
-                if let Err(e) = wallet.save(&genesis_wallet_path) {
-                    error!("  ✗ Failed to update genesis wallet: {}", e);
-                } else {
-                    info!("  ✓ Updated genesis-wallet.json with treasury info");
-                }
-            }
-
-            // 6. Persist fee config only if not already present
-            {
-                if state.get_fee_config().is_err() {
-                    let fee_config = FeeConfig::default_from_constants();
-                    if let Err(e) = state.set_fee_config_full(&fee_config) {
-                        warn!("  ⚠️  Failed to persist fee config: {}", e);
-                    } else {
-                        info!("  ✓ Fee config persisted");
-                    }
-                }
-            }
-
-            info!("✅ Treasury migration complete");
-        }
-
-        // ================================================================
-        // STARTUP RECONCILIATION: Correct legacy deploy-fee typo in DB.
-        // Some nodes persisted 2.5 LICN instead of canonical 25 LICN.
-        // ================================================================
-        {
-            match state.get_fee_config() {
-                Ok(mut cfg) if cfg.contract_deploy_fee == LEGACY_CONTRACT_DEPLOY_FEE_SPORES => {
-                    warn!(
-                        "🔧 RECONCILE: correcting legacy contract deploy fee {} -> {} spores",
-                        cfg.contract_deploy_fee, CONTRACT_DEPLOY_FEE
-                    );
-                    cfg.contract_deploy_fee = CONTRACT_DEPLOY_FEE;
-                    if let Err(e) = state.set_fee_config_full(&cfg) {
-                        error!("  ✗ Failed to reconcile contract deploy fee: {}", e);
-                    } else {
-                        info!(
-                            "  ✓ Contract deploy fee reconciled to {} spores (25 LICN)",
-                            CONTRACT_DEPLOY_FEE
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => warn!("⚠️  Unable to read fee config for reconciliation: {}", e),
-            }
-        }
 
         // ================================================================
         // STARTUP RECONCILIATION: Seed analytics prices if missing.
@@ -6172,7 +5711,7 @@ async fn run_validator() {
             error!("❌ --import-key file not found: {}", import_path);
             std::process::exit(1);
         }
-        let dest = keypair_loader::default_validator_keypair_path(p2p_port);
+        let dest = data_dir_path.join("validator-keypair.json");
         if dest.exists() {
             // Back up existing keypair before overwriting
             let backup = dest.with_extension("json.bak");
@@ -6189,6 +5728,19 @@ async fn run_validator() {
             error!("❌ Failed to copy keypair file for --import-key: {}", e);
             std::process::exit(1);
         }
+        if let Some(network) = network_arg.as_deref() {
+            let shared_dest = keypair_loader::shared_validator_keypair_path(network);
+            if let Some(parent) = shared_dest.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            if let Err(e) = fs::copy(source, &shared_dest) {
+                warn!(
+                    "⚠️  Failed to mirror imported keypair to shared path {}: {}",
+                    shared_dest.display(),
+                    e
+                );
+            }
+        }
         // Set restrictive permissions
         #[cfg(unix)]
         {
@@ -6204,8 +5756,9 @@ async fn run_validator() {
     // Priority order:
     // 1. --keypair CLI argument
     // 2. LICHEN_VALIDATOR_KEYPAIR env var
-    // 3. ~/.lichen/validators/validator-{port}.json
-    // 4. Generate new and save
+    // 3. {data_dir}/validator-keypair.json
+    // 4. ~/.lichen/validators/validator-{network}.json
+    // 5. Generate new and save
 
     let keypair_path = get_flag_value(&args, &["--keypair"]);
 
@@ -6637,6 +6190,7 @@ async fn run_validator() {
                                     staked: 0,
                                     locked: 0,
                                     data: Vec::new(),
+                                    public_key: None,
                                     owner: Pubkey([0x01; 32]),
                                     executable: false,
                                     rent_epoch: 0,
@@ -6716,18 +6270,6 @@ async fn run_validator() {
                         warn!("⚠️  Failed to restore stake pool entry: {}", e);
                     }
                 }
-            }
-        }
-
-        // Migrate legacy validators that were staked before bootstrap system existed
-        let migrated = pool.migrate_legacy_bootstrap_indices();
-        if migrated > 0 {
-            info!(
-                "🔄 Migrated {} validator(s) to bootstrap debt system",
-                migrated
-            );
-            if let Err(e) = state.put_stake_pool(&pool) {
-                warn!("⚠️  Failed to persist bootstrap migration: {}", e);
             }
         }
     };
@@ -13949,28 +13491,21 @@ mod tests {
 
     // ── Helper builders ─────────────────────────────────────────────
 
+    fn make_test_signature(seed_byte: u8, message: &[u8]) -> lichen_core::PqSignature {
+        let mut seed = [0u8; 32];
+        seed[0] = seed_byte;
+        Keypair::from_seed(&seed).sign(message)
+    }
+
     fn make_tx_with_opcode(program_id: Pubkey, opcode: u8) -> Transaction {
         Transaction {
-            signatures: vec![[0u8; 64]],
+            signatures: vec![make_test_signature(opcode, b"validator-main-test")],
             message: Message {
                 instructions: vec![Instruction {
                     program_id,
                     accounts: vec![Pubkey([1u8; 32])],
                     data: vec![opcode],
                 }],
-                recent_blockhash: Hash([0u8; 32]),
-                compute_budget: None,
-                compute_unit_price: None,
-            },
-            tx_type: Default::default(),
-        }
-    }
-
-    fn make_empty_tx() -> Transaction {
-        Transaction {
-            signatures: vec![],
-            message: Message {
-                instructions: vec![],
                 recent_blockhash: Hash([0u8; 32]),
                 compute_budget: None,
                 compute_unit_price: None,
@@ -13989,7 +13524,7 @@ mod tests {
                 timestamp: 0,
                 validators_hash: Hash([0u8; 32]),
                 validator: [0u8; 32],
-                signature: [0u8; 64],
+                signature: None,
             },
             transactions: txs,
             tx_fees_paid: vec![],
@@ -14426,32 +13961,6 @@ mod tests {
         ));
     }
 
-    // ── is_reward_or_debt_tx ────────────────────────────────────────
-
-    #[test]
-    fn reward_tx_opcode_2_is_reward() {
-        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
-        assert!(is_reward_or_debt_tx(&tx));
-    }
-
-    #[test]
-    fn debt_tx_opcode_3_is_reward() {
-        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 3);
-        assert!(is_reward_or_debt_tx(&tx));
-    }
-
-    #[test]
-    fn transfer_opcode_0_is_not_reward() {
-        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
-        assert!(!is_reward_or_debt_tx(&tx));
-    }
-
-    #[test]
-    fn non_system_program_is_not_reward() {
-        let tx = make_tx_with_opcode(Pubkey([99u8; 32]), 2);
-        assert!(!is_reward_or_debt_tx(&tx));
-    }
-
     #[test]
     fn apply_oracle_from_block_uses_consensus_prices_not_block_payload() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
@@ -14581,42 +14090,6 @@ mod tests {
         assert_eq!(ix.data[14], 8);
         assert_eq!(tx.message.recent_blockhash, tip.hash());
         assert_eq!(tx.signatures.len(), 1);
-    }
-
-    #[test]
-    fn empty_tx_is_not_reward() {
-        let tx = make_empty_tx();
-        assert!(!is_reward_or_debt_tx(&tx));
-    }
-
-    // ── block_has_user_transactions ─────────────────────────────────
-
-    #[test]
-    fn block_with_only_rewards_has_no_user_tx() {
-        let reward = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
-        let block = make_block_with_txs(vec![reward]);
-        assert!(!block_has_user_transactions(&block));
-    }
-
-    #[test]
-    fn block_with_transfer_has_user_tx() {
-        let transfer = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
-        let block = make_block_with_txs(vec![transfer]);
-        assert!(block_has_user_transactions(&block));
-    }
-
-    #[test]
-    fn empty_block_has_no_user_tx() {
-        let block = make_block_with_txs(vec![]);
-        assert!(!block_has_user_transactions(&block));
-    }
-
-    #[test]
-    fn mixed_block_has_user_tx() {
-        let reward = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
-        let transfer = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
-        let block = make_block_with_txs(vec![reward, transfer]);
-        assert!(block_has_user_transactions(&block));
     }
 
     #[test]
@@ -15063,11 +14536,6 @@ mod tests {
     // ── constants sanity ────────────────────────────────────────────
 
     #[test]
-    fn treasury_reserve_is_50m() {
-        assert_eq!(TREASURY_RESERVE_LICN, 50_000_000);
-    }
-
-    #[test]
     #[allow(clippy::assertions_on_constants)]
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
@@ -15202,6 +14670,7 @@ mod tests {
                 staked: 0,
                 locked: 0,
                 data: vec![],
+                public_key: None,
                 owner: Pubkey([0u8; 32]),
                 executable: false,
                 rent_epoch: 0,

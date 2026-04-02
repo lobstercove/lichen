@@ -12,21 +12,20 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 
-/// Keypair file format (production-ready, Solana-compatible)
+/// Keypair file format (production-ready, native PQ)
 /// Supports optional at-rest encryption via LICHEN_KEYPAIR_PASSWORD env var (T1.8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeypairFile {
     /// Private key seed (32 bytes) as array of integers
-    /// Compatible with Solana wallet format.
     /// When encrypted, contains the encrypted seed bytes.
     #[serde(rename = "privateKey")]
     pub private_key: Vec<u8>,
 
-    /// Public key (32 bytes) for quick access
+    /// Full PQ verifying key bytes for quick access.
     #[serde(rename = "publicKey")]
     pub public_key: Vec<u8>,
 
-    /// Base58-encoded public key (standard format)
+    /// Base58-encoded compact address (standard Lichen format)
     #[serde(rename = "publicKeyBase58")]
     pub public_key_base58: String,
 
@@ -38,7 +37,7 @@ pub struct KeypairFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub salt: Option<Vec<u8>>,
 
-    /// Encryption version: None=plaintext, Some(1)=XOR (legacy), Some(2)=AES-256-GCM
+    /// Encryption version: None=plaintext, Some(2)=AES-256-GCM
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_version: Option<u8>,
 }
@@ -46,37 +45,19 @@ pub struct KeypairFile {
 /// T1.8 (P9-CLI-01 FIX): Derive a 32-byte encryption key from a password and salt.
 /// Uses Argon2id — memory-hard KDF resistant to GPU/ASIC brute-force attacks.
 /// Parameters: 19 MiB memory, 2 iterations, 1 parallelism (OWASP minimum recommendation).
-/// If the caller provides a salt shorter than 16 bytes (Argon2 minimum), it is
-/// stretched to 16 bytes via SHA-256 hashing — production always uses 16-byte salts.
 fn derive_encryption_key(password: &str, salt: &[u8]) -> [u8; 32] {
     use argon2::{Algorithm, Argon2, Params, Version};
-    use sha2::{Digest, Sha256};
 
-    // Argon2 requires salt ≥ 8 bytes (RFC 9106 recommends ≥16).
-    // Stretch short salts via SHA-256 so legacy callers don't panic.
-    let effective_salt: Vec<u8> = if salt.len() < 16 {
-        let h = Sha256::digest(salt);
-        h[..16].to_vec()
-    } else {
-        salt.to_vec()
-    };
+    assert!(salt.len() >= 16, "Argon2 salt must be at least 16 bytes");
 
     // OWASP recommended minimum: m=19456 (19 MiB), t=2, p=1
     let params = Params::new(19456, 2, 1, Some(32)).expect("valid Argon2 params");
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut output = [0u8; 32];
     argon2
-        .hash_password_into(password.as_bytes(), &effective_salt, &mut output)
+        .hash_password_into(password.as_bytes(), salt, &mut output)
         .expect("Argon2id key derivation failed");
     output
-}
-
-/// T1.8: XOR encrypt/decrypt — symmetric operation.
-fn xor_cipher(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .map(|(i, b)| b ^ key[i % 32])
-        .collect()
 }
 
 /// AES-256-GCM encryption: returns nonce (12) || ciphertext || tag (16).
@@ -114,11 +95,12 @@ impl KeypairFile {
     #[allow(dead_code)]
     pub fn from_keypair(keypair: &Keypair) -> Self {
         let pubkey = keypair.pubkey();
+        let public_key = keypair.public_key();
         let seed = keypair.to_seed();
 
         KeypairFile {
             private_key: seed.to_vec(),
-            public_key: pubkey.0.to_vec(),
+            public_key: public_key.bytes,
             public_key_base58: pubkey.to_base58(),
             encrypted: None,
             salt: None,
@@ -134,8 +116,14 @@ impl KeypairFile {
 
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&self.private_key);
+        let keypair = Keypair::from_seed(&seed);
+        if !self.public_key_base58.is_empty()
+            && keypair.pubkey().to_base58() != self.public_key_base58
+        {
+            bail!("Keypair file publicKeyBase58 does not match derived PQ address");
+        }
 
-        Ok(Keypair::from_seed(&seed))
+        Ok(keypair)
     }
 
     /// Save to file with secure permissions.
@@ -226,52 +214,24 @@ impl KeypairFile {
 
             let key = derive_encryption_key(&password, salt);
 
-            // Decrypt based on encryption version (v1=XOR legacy, v2=AES-256-GCM)
-            let version = keypair_file.encryption_version.unwrap_or(1);
+            // Decrypt using the canonical AES-256-GCM format.
+            let version = keypair_file.encryption_version.ok_or_else(|| {
+                anyhow::anyhow!("Encrypted keypair file missing encryption_version")
+            })?;
             keypair_file.private_key = match version {
-                1 => {
-                    // P9-CLI-02: Auto-upgrade unauthenticated XOR cipher to AES-256-GCM
-                    let decrypted = xor_cipher(&keypair_file.private_key, &key);
-                    eprintln!(
-                        "\u{26a0}\u{fe0f}  Legacy XOR encryption (v1) detected — auto-upgrading to AES-256-GCM (v2)."
-                    );
-                    // Re-encrypt with AES-GCM and overwrite the file
-                    let mut upgraded = keypair_file.clone();
-                    upgraded.private_key = decrypted.clone();
-                    upgraded.encrypted = None;
-                    upgraded.salt = None;
-                    upgraded.encryption_version = None;
-                    // Re-save encrypted with v2 — generate a fresh salt
-                    let mut new_salt = [0u8; 16];
-                    getrandom::fill(&mut new_salt).expect("Random salt gen failed");
-                    let new_key = derive_encryption_key(&password, &new_salt);
-                    if let Ok(encrypted_v2) = encrypt_aes_gcm(&decrypted, &new_key) {
-                        let v2_file = KeypairFile {
-                            private_key: encrypted_v2,
-                            public_key: upgraded.public_key.clone(),
-                            public_key_base58: upgraded.public_key_base58.clone(),
-                            encrypted: Some(true),
-                            salt: Some(new_salt.to_vec()),
-                            encryption_version: Some(2),
-                        };
-                        if let Ok(json) = serde_json::to_string_pretty(&v2_file) {
-                            let _ = fs::write(path, json);
-                            eprintln!("   \u{2705} Keypair file upgraded to v2 (AES-256-GCM).");
-                        }
-                    }
-                    decrypted
-                }
                 2 => decrypt_aes_gcm(&keypair_file.private_key, &key)?,
-                other => bail!("Unknown encryption version: {}", other),
+                other => bail!("Unsupported encryption version: {}", other),
             };
 
-            // Verify decryption by checking derived public key matches stored public key
+            // Verify decryption by checking the derived address matches the stored address.
             if keypair_file.private_key.len() == 32 {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&keypair_file.private_key);
-                let derived_pubkey = Keypair::from_seed(&seed).pubkey();
-                if derived_pubkey.0.to_vec() != keypair_file.public_key {
-                    bail!("Decryption failed \u{2014} wrong password (public key mismatch)");
+                let derived_address = Keypair::from_seed(&seed).pubkey().to_base58();
+                if !keypair_file.public_key_base58.is_empty()
+                    && derived_address != keypair_file.public_key_base58
+                {
+                    bail!("Decryption failed \u{2014} wrong password (address mismatch)");
                 }
             }
 
@@ -322,9 +282,8 @@ pub fn execute(outfile: Option<PathBuf>, force: bool, show_formats: bool) -> Res
     }
 
     // Generate new keypair
-    println!("🔑 Generating new Ed25519 keypair...");
+    println!("🔑 Generating new PQ signing keypair...");
     let keypair = Keypair::new();
-    let _pubkey = keypair.pubkey();
 
     // Create keypair file
     let keypair_file = KeypairFile::from_keypair(&keypair);
@@ -341,16 +300,15 @@ pub fn execute(outfile: Option<PathBuf>, force: bool, show_formats: bool) -> Res
 
     if show_formats {
         println!("\n🔍 Key Formats:");
-        println!("   Hex:    {}", hex::encode(&keypair_file.public_key));
-        println!("   Base58: {}", keypair_file.public_key_base58);
+        println!("   Address Hex:    {}", hex::encode(keypair.pubkey().0));
+        println!("   Address Base58: {}", keypair_file.public_key_base58);
+        println!("   PQ Public Key:  {} bytes", keypair_file.public_key.len());
 
         // Show compatibility info
         println!("\n🔗 Compatibility:");
-        println!("   ✓ Lichen native format");
-        println!("   ✓ Solana-compatible (Ed25519 + Base58)");
-        println!("   ✓ Can be imported to Phantom, Solflare");
-        println!("\n   Note: Ethereum uses secp256k1, not Ed25519");
-        println!("         Direct ETH import not supported");
+        println!("   ✓ Lichen native PQ format");
+        println!("   ✓ ML-DSA-65 signing key");
+        println!("   ✗ Not compatible with legacy pre-PQ wallet imports");
     }
 
     println!("\n⚠️  Keep your keypair file secure!");
@@ -364,14 +322,15 @@ pub fn execute(outfile: Option<PathBuf>, force: bool, show_formats: bool) -> Res
 #[allow(dead_code)]
 pub fn show_pubkey(keypair_path: PathBuf, formats: bool) -> Result<()> {
     let keypair_file = KeypairFile::load(&keypair_path)?;
+    let keypair = keypair_file.to_keypair()?;
 
     println!("📍 Public Key: {}", keypair_file.public_key_base58);
 
     if formats {
         println!("\n🔍 Formats:");
-        println!("   Base58: {}", keypair_file.public_key_base58);
-        println!("   Hex:    {}", hex::encode(&keypair_file.public_key));
-        println!("   Bytes:  {:?}", keypair_file.public_key);
+        println!("   Address Base58: {}", keypair_file.public_key_base58);
+        println!("   Address Hex:    {}", hex::encode(keypair.pubkey().0));
+        println!("   PQ Public Key:  {} bytes", keypair_file.public_key.len());
     }
 
     Ok(())
@@ -401,17 +360,18 @@ mod tests {
 
     #[test]
     fn test_derive_encryption_key_deterministic() {
-        let key1 = derive_encryption_key("password", b"salt");
-        let key2 = derive_encryption_key("password", b"salt");
+        let salt = b"0123456789abcdef";
+        let key1 = derive_encryption_key("password", salt);
+        let key2 = derive_encryption_key("password", salt);
         assert_eq!(key1, key2);
     }
 
     #[test]
     fn test_derive_encryption_key_varies_with_inputs() {
-        let key1 = derive_encryption_key("password", b"salt");
-        let key2 = derive_encryption_key("password", b"other");
+        let key1 = derive_encryption_key("password", b"0123456789abcdef");
+        let key2 = derive_encryption_key("password", b"fedcba9876543210");
         assert_ne!(key1, key2);
-        let key3 = derive_encryption_key("other", b"salt");
+        let key3 = derive_encryption_key("other", b"0123456789abcdef");
         assert_ne!(key1, key3);
     }
 
@@ -431,18 +391,8 @@ mod tests {
     }
 
     #[test]
-    fn test_xor_cipher_roundtrip() {
-        let key = derive_encryption_key("test", b"salt");
-        let data: Vec<u8> = (0..32).collect();
-        let encrypted = xor_cipher(&data, &key);
-        assert_ne!(encrypted, data);
-        let decrypted = xor_cipher(&encrypted, &key);
-        assert_eq!(decrypted, data);
-    }
-
-    #[test]
     fn test_aes_gcm_roundtrip() {
-        let key = derive_encryption_key("test", b"salt");
+        let key = derive_encryption_key("test", b"0123456789abcdef");
         let data: Vec<u8> = (0..64).collect();
         let encrypted = encrypt_aes_gcm(&data, &key).unwrap();
         assert_ne!(encrypted, data);
@@ -453,8 +403,9 @@ mod tests {
 
     #[test]
     fn test_aes_gcm_wrong_key_fails() {
-        let key1 = derive_encryption_key("password1", b"salt");
-        let key2 = derive_encryption_key("password2", b"salt");
+        let salt = b"0123456789abcdef";
+        let key1 = derive_encryption_key("password1", salt);
+        let key2 = derive_encryption_key("password2", salt);
         let data = vec![42u8; 32];
         let encrypted = encrypt_aes_gcm(&data, &key1).unwrap();
         let result = decrypt_aes_gcm(&encrypted, &key2);
@@ -466,8 +417,8 @@ mod tests {
         let keypair = Keypair::new();
         let kf = KeypairFile::from_keypair(&keypair);
         assert_eq!(kf.private_key.len(), 32);
-        assert_eq!(kf.public_key.len(), 32);
-        assert!(!kf.public_key_base58.is_empty());
+        assert_eq!(kf.public_key, keypair.public_key().bytes);
+        assert_eq!(kf.public_key_base58, keypair.pubkey().to_base58());
         assert!(kf.encrypted.is_none());
         assert!(kf.salt.is_none());
         assert!(kf.encryption_version.is_none());
@@ -481,21 +432,14 @@ mod tests {
         assert_eq!(restored.pubkey(), keypair.pubkey());
     }
 
-    /// P9-CLI-02: Verify that loading a v1 (XOR) encrypted file auto-upgrades
-    /// it to v2 (AES-256-GCM) on disk.
     #[test]
-    fn test_xor_v1_auto_upgrades_to_v2_on_load() {
+    fn test_unsupported_encryption_version_is_rejected() {
         let keypair = Keypair::new();
         let salt = [0xABu8; 16];
         let password = "test_upgrade_password";
-        let key = derive_encryption_key(password, &salt);
-
-        // Create a v1 (XOR) encrypted file
-        let seed = keypair.to_seed();
-        let encrypted_seed = xor_cipher(&seed, &key);
-        let v1_file = KeypairFile {
-            private_key: encrypted_seed,
-            public_key: keypair.pubkey().0.to_vec(),
+        let invalid_file = KeypairFile {
+            private_key: keypair.to_seed().to_vec(),
+            public_key: keypair.public_key().bytes,
             public_key_base58: keypair.pubkey().to_base58(),
             encrypted: Some(true),
             salt: Some(salt.to_vec()),
@@ -504,41 +448,15 @@ mod tests {
 
         // Write to temp file
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test_v1.json");
-        let json = serde_json::to_string_pretty(&v1_file).unwrap();
+        let path = dir.path().join("test_invalid_version.json");
+        let json = serde_json::to_string_pretty(&invalid_file).unwrap();
         fs::write(&path, &json).unwrap();
 
-        // Load — should auto-upgrade
         std::env::set_var("LICHEN_KEYPAIR_PASSWORD", password);
-        let loaded = KeypairFile::load(&path).unwrap();
-        let loaded_kp = loaded.to_keypair().unwrap();
-        assert_eq!(
-            loaded_kp.pubkey(),
-            keypair.pubkey(),
-            "decrypted key should match"
-        );
-
-        // The file on disk should now be v2
-        let reloaded_json = fs::read_to_string(&path).unwrap();
-        let on_disk: KeypairFile = serde_json::from_str(&reloaded_json).unwrap();
-        assert_eq!(
-            on_disk.encryption_version,
-            Some(2),
-            "file should be v2 on disk"
-        );
-        assert!(
-            on_disk.encrypted.unwrap_or(false),
-            "file should be encrypted"
-        );
-
-        // Verify it can still be loaded (v2 path)
-        let reloaded = KeypairFile::load(&path).unwrap();
-        let reloaded_kp = reloaded.to_keypair().unwrap();
-        assert_eq!(
-            reloaded_kp.pubkey(),
-            keypair.pubkey(),
-            "v2 re-load should work"
-        );
+        let err = KeypairFile::load(&path).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Unsupported encryption version: 1"));
         std::env::remove_var("LICHEN_KEYPAIR_PASSWORD");
     }
 }

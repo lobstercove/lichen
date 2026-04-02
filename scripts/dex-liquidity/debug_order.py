@@ -10,19 +10,18 @@ from lichen import Connection, Instruction, Keypair, PublicKey, TransactionBuild
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 
 def load_keypair(path):
-    raw = json.loads(Path(path).read_text())
-    return Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
+    return Keypair.load(Path(path))
 
 
 async def main():
     conn = Connection("http://15.204.229.189:8899")
     kp = load_keypair(ROOT / "artifacts/testnet/genesis-keys/reserve_pool-lichen-testnet-1.json")
-    print(f"Caller: {kp.public_key()}")
+    print(f"Caller: {kp.address()}")
     
     # Build a simple sell order: 1 LICN at $0.10
     buf = bytearray(75)
     buf[0] = 0x02  # opcode: place_order
-    pub_bytes = kp.public_key().to_bytes()
+    pub_bytes = kp.address().to_bytes()
     buf[1:33] = pub_bytes[:32]
     struct.pack_into("<Q", buf, 33, 1)  # pair_id=1
     buf[41] = 1  # side=sell
@@ -41,7 +40,7 @@ async def main():
     
     print(f"Envelope size: {len(data)} bytes")
     
-    ix = Instruction(CONTRACT_PROGRAM, [kp.public_key(), dex_addr], data)
+    ix = Instruction(CONTRACT_PROGRAM, [kp.address(), dex_addr], data)
     tb = TransactionBuilder()
     tb.add(ix)
     latest = await conn.get_latest_block()

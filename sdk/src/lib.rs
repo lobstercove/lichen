@@ -7,6 +7,12 @@ extern crate alloc;
 
 #[cfg(target_arch = "wasm32")]
 use core::panic::PanicInfo;
+#[cfg(not(target_arch = "wasm32"))]
+use p3_field::PrimeField64;
+#[cfg(not(target_arch = "wasm32"))]
+use p3_goldilocks::{default_goldilocks_poseidon2_8, Goldilocks, Poseidon2Goldilocks};
+#[cfg(not(target_arch = "wasm32"))]
+use p3_symmetric::{CryptographicHasher, PaddingFreeSponge};
 
 pub mod crosscall;
 pub mod dex;
@@ -452,9 +458,78 @@ pub use alloc::string::String;
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
-/// Compute Poseidon hash of two 32-byte field elements.
-/// Returns the 32-byte hash result (BN254 Fr, little-endian).
-/// Uses the same Poseidon config as the on-chain ZK circuits.
+#[cfg(not(target_arch = "wasm32"))]
+type NativePermutation = Poseidon2Goldilocks<8>;
+#[cfg(not(target_arch = "wasm32"))]
+type NativeHasher = PaddingFreeSponge<NativePermutation, 8, 4, 4>;
+
+#[cfg(not(target_arch = "wasm32"))]
+const DOMAIN_MERKLE_NODE: u64 = 0x4c49434e4d524b31;
+
+#[cfg(not(target_arch = "wasm32"))]
+const CANONICAL_SCALAR_MODULUS_LE: [u8; 32] = [
+    1, 0, 0, 240, 147, 245, 225, 67, 145, 112, 185, 121, 72, 232, 51, 40, 93, 88, 129, 129, 182,
+    69, 80, 184, 41, 160, 49, 225, 114, 78, 100, 48,
+];
+
+#[cfg(not(target_arch = "wasm32"))]
+fn bytes32_to_words(bytes: &[u8; 32]) -> [u64; 8] {
+    let mut words = [0u64; 8];
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        words[index] = u32::from_le_bytes(chunk.try_into().expect("4-byte limb")) as u64;
+    }
+    words
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn digest_to_bytes(digest: [Goldilocks; 4]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    for (index, word) in digest.into_iter().enumerate() {
+        output[index * 8..(index + 1) * 8].copy_from_slice(&word.as_canonical_u64().to_le_bytes());
+    }
+    output
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_canonical_scalar_bytes(bytes: &[u8; 32]) -> bool {
+    for (candidate, modulus) in bytes.iter().zip(CANONICAL_SCALAR_MODULUS_LE.iter()).rev() {
+        if candidate < modulus {
+            return true;
+        }
+        if candidate > modulus {
+            return false;
+        }
+    }
+
+    false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let hasher = NativeHasher::new(default_goldilocks_poseidon2_8());
+    let mut input_words = alloc::vec::Vec::with_capacity(16);
+    input_words.extend(bytes32_to_words(left));
+    input_words.extend(bytes32_to_words(right));
+
+    for counter in 0u64.. {
+        let digest = hasher.hash_iter(
+            core::iter::once(Goldilocks::new(DOMAIN_MERKLE_NODE))
+                .chain(core::iter::once(Goldilocks::new(counter)))
+                .chain(input_words.iter().copied().map(Goldilocks::new)),
+        );
+
+        let mut output = digest_to_bytes(digest);
+        output[31] &= 0x3F;
+        if is_canonical_scalar_bytes(&output) {
+            return output;
+        }
+    }
+
+    unreachable!("u64 counter exhausted while canonicalizing Poseidon2 digest")
+}
+
+/// Compute the native Poseidon2 hash of two canonical 32-byte values.
+/// This matches the contract host's `host_poseidon_hash` behavior.
 pub fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     #[cfg(target_arch = "wasm32")]
     {
@@ -476,12 +551,7 @@ pub fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Off-chain stub: return simple XOR hash for testing
-        let mut out = [0u8; 32];
-        for i in 0..32 {
-            out[i] = left[i] ^ right[i];
-        }
-        out
+        native_poseidon_hash(left, right)
     }
 }
 
@@ -495,6 +565,7 @@ pub use storage::{get as storage_get, set as storage_set};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::zk::poseidon_hash_pair;
 
     #[test]
     fn test_bytes_to_u64_exact_8_bytes() {
@@ -525,5 +596,42 @@ mod tests {
         // More than 8 bytes — only first 8 matter
         let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 0xFF, 0xFF];
         assert_eq!(bytes_to_u64(&bytes), 0x0807060504030201);
+    }
+
+    #[test]
+    fn test_poseidon_hash_is_not_xor_stub() {
+        let left = [1u8; 32];
+        let right = [2u8; 32];
+
+        let hash = poseidon_hash(&left, &right);
+
+        assert_ne!(hash, [3u8; 32]);
+        assert_eq!(hash, poseidon_hash(&left, &right));
+    }
+
+    #[test]
+    fn test_poseidon_hash_matches_core_runtime() {
+        let vectors = [
+            ([0u8; 32], [0u8; 32]),
+            ([1u8; 32], [2u8; 32]),
+            ([0x11u8; 32], [0x77u8; 32]),
+            (
+                [
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                    22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+                ],
+                [
+                    31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12,
+                    11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+                ],
+            ),
+        ];
+
+        for (left, right) in vectors {
+            assert_eq!(
+                poseidon_hash(&left, &right),
+                poseidon_hash_pair(&left, &right)
+            );
+        }
     }
 }

@@ -33,6 +33,7 @@ RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "30"))
 DEPLOYER_PATH = os.getenv("AGENT_KEYPAIR") or str(ROOT / "keypairs" / "deployer.json")
+ZK_KEY_DIR = os.getenv("ZK_KEY_DIR", str(ROOT / "zk-keys"))
 REQUIRE_FUNDED_DEPLOYER = os.getenv("REQUIRE_FUNDED_DEPLOYER", "0") == "1"
 RELAXED_MIN_DEPLOYER_SPORES = max(1, int(os.getenv("RELAXED_MIN_DEPLOYER_SPORES", "20000000000")))
 SECONDARY_FUND_TARGET_SPORES = max(1, int(os.getenv("SECONDARY_FUND_TARGET_SPORES", "10000000000")))
@@ -99,6 +100,8 @@ SYMBOL_TO_DIR = {
     "WBNB": "wbnb_token", "SHIELDED": "shielded_pool",
 }
 
+REQUIRED_DISCOVERED_CONTRACTS = {name for name in SYMBOL_TO_DIR.values() if name != "lichencoin"}
+
 DISPATCHER_CONTRACTS = {
     "dex_core", "dex_amm", "dex_analytics", "dex_governance",
     "dex_margin", "dex_rewards", "dex_router", "prediction_market",
@@ -121,20 +124,7 @@ def report(status: str, msg: str):
 
 
 def load_keypair_flexible(path: Path) -> Keypair:
-    try:
-        return Keypair.load(path)
-    except Exception:
-        pass
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        pk = raw.get("privateKey") or raw.get("secret_key")
-        if isinstance(pk, list) and len(pk) == 32:
-            return Keypair.from_seed(bytes(pk))
-        if isinstance(pk, str):
-            h = pk.strip().lower().removeprefix("0x")
-            if len(h) == 64:
-                return Keypair.from_seed(bytes.fromhex(h))
-    raise ValueError(f"unsupported keypair format: {path}")
+    return Keypair.load(path)
 
 
 def extract_spores(balance: Any) -> int:
@@ -211,7 +201,7 @@ async def call_named(
     payload = json.dumps({"Call": {"function": func, "args": list(args_bytes), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -231,7 +221,7 @@ async def call_named_binary(
     payload = json.dumps({"Call": {"function": func, "args": list(full_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -246,7 +236,7 @@ async def call_opcode(
     payload = json.dumps({"Call": {"function": "call", "args": list(opcode_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -279,7 +269,7 @@ async def send_shield_with_retry(
     proof = bytes.fromhex(proof_hex)
     for _attempt in range(attempts):
         try:
-            ix = shield_instruction(signer.public_key(), amount_spores, commitment, proof)
+            ix = shield_instruction(signer.address(), amount_spores, commitment, proof)
             blockhash = await conn.get_recent_blockhash()
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(signer)
             sig = await conn.send_transaction(tx)
@@ -375,8 +365,8 @@ async def discover_contracts(conn: Connection) -> Dict[str, PublicKey]:
 def build_named_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    dp = str(deployer.public_key())
-    sp = str(secondary.public_key())
+    dp = str(deployer.address())
+    sp = str(secondary.address())
     zero = "11111111111111111111111111111111"
     quote = str(contracts.get("lichencoin") or dp)
     base = str(contracts.get("weth_token") or dp)
@@ -851,8 +841,8 @@ def build_named_scenarios(
 def build_opcode_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    admin = deployer.public_key().to_bytes()
-    sec = secondary.public_key().to_bytes()
+    admin = deployer.address().to_bytes()
+    sec = secondary.address().to_bytes()
     zero = b'\x00' * 32
     licn = contracts.get("lichencoin", PublicKey(zero)).to_bytes()
     weth = contracts.get("weth_token", PublicKey(zero)).to_bytes()
@@ -1072,7 +1062,7 @@ async def main() -> int:
     secondary = Keypair.generate()
 
     try:
-        deployer_balance = await conn.get_balance(deployer.public_key())
+        deployer_balance = await conn.get_balance(deployer.address())
         deployer_spores = extract_spores(deployer_balance)
     except Exception:
         deployer_spores = 0
@@ -1117,7 +1107,7 @@ async def main() -> int:
     # Fund accounts
     for kp, label in [(deployer, "deployer"), (secondary, "secondary")]:
         try:
-            resp = await conn._rpc("requestAirdrop", [str(kp.public_key()), 10])
+            resp = await conn._rpc("requestAirdrop", [str(kp.address()), 10])
             report("PASS", f"{label} funded (10 LICN)")
         except Exception as e:
             report("SKIP", f"{label} airdrop skipped: {e}")
@@ -1128,19 +1118,19 @@ async def main() -> int:
     # (which was auto-funded with 10K LICN at genesis).
     secondary_funded = False
     try:
-        bal = await conn.get_balance(secondary.public_key())
+        bal = await conn.get_balance(secondary.address())
         bal_val = extract_spores(bal)
         if bal_val >= SECONDARY_FUND_MIN_SPORES:
             report("PASS", f"secondary already funded ({bal_val} spores)")
             secondary_funded = True
         else:
-            deployer_latest = await conn.get_balance(deployer.public_key())
+            deployer_latest = await conn.get_balance(deployer.address())
             deployer_spendable = extract_spores(deployer_latest)
             transfer_budget = max(0, deployer_spendable - SECONDARY_FUND_FEE_BUFFER_SPORES)
             transfer_amount = min(SECONDARY_FUND_TARGET_SPORES, transfer_budget)
             if transfer_amount >= SECONDARY_FUND_MIN_SPORES:
                 blockhash = await conn.get_recent_blockhash()
-                ix = TransactionBuilder.transfer(deployer.public_key(), secondary.public_key(), transfer_amount)
+                ix = TransactionBuilder.transfer(deployer.address(), secondary.address(), transfer_amount)
                 tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
                 sig = await conn.send_transaction(tx)
                 confirmed = await wait_tx(conn, sig)
@@ -1163,10 +1153,15 @@ async def main() -> int:
 
     # Discover contracts
     contracts = await discover_contracts(conn)
-    report("PASS" if len(contracts) == 29 else "FAIL", f"discovered {len(contracts)}/28 contracts")
+    discovered_required = REQUIRED_DISCOVERED_CONTRACTS & set(contracts.keys())
+    required_count = len(REQUIRED_DISCOVERED_CONTRACTS)
+    report(
+        "PASS" if len(discovered_required) == required_count else "FAIL",
+        f"discovered {len(discovered_required)}/{required_count} registry-backed contracts",
+    )
 
-    if len(contracts) < 29:
-        missing = set(SYMBOL_TO_DIR.values()) - set(contracts.keys())
+    if len(discovered_required) < required_count:
+        missing = REQUIRED_DISCOVERED_CONTRACTS - set(contracts.keys())
         for m in sorted(missing):
             report("FAIL", f"missing contract: {m}")
 
@@ -1179,6 +1174,9 @@ async def main() -> int:
     for contract_name, steps in named_scenarios.items():
         program = contracts.get(contract_name)
         if not program:
+            if contract_name == "lichencoin":
+                report("SKIP", "lichencoin: native LICN path has no registry-backed contract")
+                continue
             report("FAIL", f"{contract_name}: not deployed")
             continue
 
@@ -1284,12 +1282,12 @@ async def main() -> int:
         # Basic queries
         ("getBlock", [0]),
         ("getLatestBlock", []),
-        ("getAccount", [str(deployer.public_key())]),
-        ("getAccountInfo", [str(deployer.public_key())]),
-        ("getTransactionsByAddress", [str(deployer.public_key())]),
-        ("getAccountTxCount", [str(deployer.public_key())]),
+        ("getAccount", [str(deployer.address())]),
+        ("getAccountInfo", [str(deployer.address())]),
+        ("getTransactionsByAddress", [str(deployer.address())]),
+        ("getAccountTxCount", [str(deployer.address())]),
         ("getRecentTransactions", [10]),
-        ("getTokenAccounts", [str(deployer.public_key())]),
+        ("getTokenAccounts", [str(deployer.address())]),
         ("getTotalBurned", []),
         ("getValidators", []),
         ("getMetrics", []),
@@ -1307,44 +1305,44 @@ async def main() -> int:
         ("getValidatorPerformance", []),
         ("getChainStatus", []),
         # Staking
-        ("getStakingStatus", [str(deployer.public_key())]),
-        ("getStakingRewards", [str(deployer.public_key())]),
-        ("getStakingPosition", [str(deployer.public_key())]),
+        ("getStakingStatus", [str(deployer.address())]),
+        ("getStakingRewards", [str(deployer.address())]),
+        ("getStakingPosition", [str(deployer.address())]),
         ("getMossStakePoolInfo", []),
-        ("getUnstakingQueue", [str(deployer.public_key())]),
+        ("getUnstakingQueue", [str(deployer.address())]),
         ("getRewardAdjustmentInfo", []),
         # Contract introspection
         ("getAllContracts", []),
-        ("getContractInfo", [str(deployer.public_key())]),
-        ("getContractLogs", [str(deployer.public_key())]),
+        ("getContractInfo", [str(deployer.address())]),
+        ("getContractLogs", [str(deployer.address())]),
         # Program
         ("getPrograms", []),
         ("getProgramStats", []),
         # LichenID
         ("getLichenIdStats", []),
-        ("getLichenIdIdentity", [str(deployer.public_key())]),
-        ("getLichenIdReputation", [str(deployer.public_key())]),
-        ("getLichenIdSkills", [str(deployer.public_key())]),
-        ("getLichenIdProfile", [str(deployer.public_key())]),
-        ("getLichenIdAchievements", [str(deployer.public_key())]),
+        ("getLichenIdIdentity", [str(deployer.address())]),
+        ("getLichenIdReputation", [str(deployer.address())]),
+        ("getLichenIdSkills", [str(deployer.address())]),
+        ("getLichenIdProfile", [str(deployer.address())]),
+        ("getLichenIdAchievements", [str(deployer.address())]),
         ("getLichenIdAgentDirectory", []),
         ("resolveLichenName", ["test.lichen"]),
         ("searchLichenNames", ["test"]),
         # EVM registry
-        ("getEvmRegistration", [str(deployer.public_key())]),
+        ("getEvmRegistration", [str(deployer.address())]),
         # Symbol registry
         ("getSymbolRegistry", ["LICN"]),
         # NFT
         ("getCollection", ["lichenpunks"]),
-        ("getNFTsByOwner", [str(deployer.public_key())]),
+        ("getNFTsByOwner", [str(deployer.address())]),
         ("getNFTsByCollection", ["lichenpunks"]),
-        ("getNFTActivity", [str(deployer.public_key())]),
+        ("getNFTActivity", [str(deployer.address())]),
         ("getMarketListings", []),
         ("getMarketSales", []),
         # Token
-        ("getTokenBalance", [str(deployer.public_key()), "LICN"]),
+        ("getTokenBalance", [str(deployer.address()), "LICN"]),
         ("getTokenHolders", ["LICN"]),
-        ("getTokenTransfers", [str(deployer.public_key())]),
+        ("getTokenTransfers", [str(deployer.address())]),
         # Prediction Market
         ("getPredictionMarketStats", []),
         ("getPredictionMarkets", []),
@@ -1464,8 +1462,8 @@ async def main() -> int:
 
     # ─── Solana-Compatible RPC Methods ───
     sol_rpc_methods = [
-        ("getAccountInfo", [str(deployer.public_key())]),
-        ("getBalance", [str(deployer.public_key())]),
+        ("getAccountInfo", [str(deployer.address())]),
+        ("getBalance", [str(deployer.address())]),
         ("getBlockHeight", []),
         ("getBlockTime", [0]),
         ("getEpochInfo", []),
@@ -1473,7 +1471,7 @@ async def main() -> int:
         ("getVersion", []),
         ("getHealth", []),
         ("getRecentBlockhash", []),
-        ("getSignaturesForAddress", [str(deployer.public_key())]),
+        ("getSignaturesForAddress", [str(deployer.address())]),
         ("getTransaction", ["0" * 64]),
         ("getMinimumBalanceForRentExemption", [128]),
         ("getFeeForMessage", [""]),
@@ -1535,9 +1533,6 @@ async def main() -> int:
     import urllib.request as urllib_req
 
     ZK_PROVE_BIN = str(ROOT / "target" / "release" / "zk-prove")
-    # ZK keys live in the shared cache (~/.lichen/zk/) which survives
-    # blockchain resets.  Fall back to the legacy per-validator data dir.
-    ZK_KEY_DIR = str(Path.home() / ".lichen" / "zk")
 
     # ── 3.0  Check zk-prove binary exists ──
     zk_prove_exists = Path(ZK_PROVE_BIN).is_file()
@@ -1546,19 +1541,20 @@ async def main() -> int:
     else:
         report("PASS", "zk.binary zk-prove found")
 
-    zk_key_dir_exists = Path(ZK_KEY_DIR).is_dir()
+    zk_key_dir = ZK_KEY_DIR
+    zk_key_dir_exists = Path(zk_key_dir).is_dir()
     if not zk_key_dir_exists:
         # Fallback: try legacy per-validator data dirs
         for port in [8001, 8002, 8003, 30333]:
             alt = str(ROOT / "data" / f"state-{port}" / "zk")
             if Path(alt).is_dir():
-                ZK_KEY_DIR = alt
+                zk_key_dir = alt
                 zk_key_dir_exists = True
                 break
     if not zk_key_dir_exists:
         report("SKIP", "zk.keys ZK key directory not found — skipping ZK phase")
     else:
-        report("PASS", f"zk.keys found at {ZK_KEY_DIR}")
+        report("PASS", f"zk.keys found at {zk_key_dir}")
 
     if zk_prove_exists and zk_key_dir_exists:
         from lichen import shield_instruction, unshield_instruction, transfer_instruction
@@ -1599,7 +1595,7 @@ async def main() -> int:
         shield_json = None
         try:
             result = subprocess.run(
-                [ZK_PROVE_BIN, "shield", "--amount", str(shield_amount), "--pk-dir", ZK_KEY_DIR],
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_amount)],
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
@@ -1616,7 +1612,7 @@ async def main() -> int:
             try:
                 commitment = bytes.fromhex(shield_json["commitment"])
                 proof = bytes.fromhex(shield_json["proof"])
-                ix = shield_instruction(deployer.public_key(), shield_amount, commitment, proof)
+                ix = shield_instruction(deployer.address(), shield_amount, commitment, proof)
                 blockhash = await conn.get_recent_blockhash()
                 tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
                 shield_sig = await conn.send_transaction(tx)
@@ -1708,11 +1704,10 @@ async def main() -> int:
         unshield_json = None
         if shield_json and unshield_merkle_root:
             try:
-                recipient_hex = deployer.public_key().to_bytes().hex()
+                recipient_hex = deployer.address().to_bytes().hex()
                 cmd = [
                     ZK_PROVE_BIN, "unshield",
                     "--amount", str(shield_amount),
-                    "--pk-dir", ZK_KEY_DIR,
                     "--merkle-root", unshield_merkle_root,
                     "--recipient", recipient_hex,
                     "--blinding", shield_json["blinding"],
@@ -1788,7 +1783,7 @@ async def main() -> int:
                 recipient_hash_b = bytes.fromhex(unshield_json["recipient_hash"])
                 proof = bytes.fromhex(unshield_json["proof"])
                 ix = unshield_instruction(
-                    deployer.public_key(), shield_amount,
+                    deployer.address(), shield_amount,
                     nullifier, merkle_root_b, recipient_hash_b, proof,
                 )
                 blockhash = await conn.get_recent_blockhash()
@@ -1836,7 +1831,7 @@ async def main() -> int:
                 recipient_hash_b = bytes.fromhex(unshield_json["recipient_hash"])
                 proof = bytes.fromhex(unshield_json["proof"])
                 ix = unshield_instruction(
-                    deployer.public_key(), shield_amount,
+                    deployer.address(), shield_amount,
                     nullifier, merkle_root_b, recipient_hash_b, proof,
                 )
                 blockhash = await conn.get_recent_blockhash()
@@ -1856,7 +1851,7 @@ async def main() -> int:
         try:
             zero_commitment = bytes(32)
             zero_proof = bytes(128)
-            ix = shield_instruction(deployer.public_key(), 0, zero_commitment, zero_proof)
+            ix = shield_instruction(deployer.address(), 0, zero_commitment, zero_proof)
             blockhash = await conn.get_recent_blockhash()
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
             sig = await conn.send_transaction(tx)
@@ -1896,7 +1891,7 @@ async def main() -> int:
         shield_b_amount = 300_000_000  # 0.3 LICN
         try:
             result = subprocess.run(
-                [ZK_PROVE_BIN, "shield", "--amount", str(shield_b_amount), "--pk-dir", ZK_KEY_DIR],
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_b_amount)],
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
@@ -1925,7 +1920,7 @@ async def main() -> int:
         shield_c_amount = 200_000_000  # 0.2 LICN
         try:
             result = subprocess.run(
-                [ZK_PROVE_BIN, "shield", "--amount", str(shield_c_amount), "--pk-dir", ZK_KEY_DIR],
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_c_amount)],
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
@@ -2016,8 +2011,7 @@ async def main() -> int:
                 with os.fdopen(tmp_fd, "w") as f:
                     json.dump(transfer_witness, f)
                 result = subprocess.run(
-                    [ZK_PROVE_BIN, "transfer", "--pk-dir", ZK_KEY_DIR,
-                     "--transfer-json", tmp_witness_file],
+                    [ZK_PROVE_BIN, "transfer", "--transfer-json", tmp_witness_file],
                     capture_output=True, text=True, timeout=180,
                 )
                 os.unlink(tmp_witness_file)
@@ -2040,7 +2034,7 @@ async def main() -> int:
                 mr_bytes = bytes.fromhex(transfer_json["merkle_root"])
                 proof = bytes.fromhex(transfer_json["proof"])
                 ix = transfer_instruction(
-                    deployer.public_key(),
+                    deployer.address(),
                     [null_a, null_b],
                     [comm_c, comm_d],
                     mr_bytes,

@@ -17,7 +17,7 @@ async def main():
     
     print("📝 Generated 5 test keypairs:")
     for i, kp in enumerate(keypairs):
-        print(f"   {i + 1}: {kp.public_key().to_base58()}")
+        print(f"   {i + 1}: {kp.pubkey().to_base58()}")
     print()
     
     # Get recent blockhash
@@ -41,7 +41,7 @@ async def main():
         
         instruction = Instruction(
             program_id=system_program,
-            accounts=[sender.public_key(), recipient.public_key()],
+            accounts=[sender.pubkey(), recipient.pubkey()],
             data=data
         )
         

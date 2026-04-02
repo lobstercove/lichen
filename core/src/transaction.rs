@@ -1,6 +1,6 @@
 // Lichen Core - Transaction Model
 
-use crate::account::Pubkey;
+use crate::account::{PqSignature, Pubkey};
 use crate::hash::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -101,24 +101,18 @@ impl Message {
 
 /// Transaction type discriminator — replaces sentinel-based detection.
 ///
-/// - `Native`: Standard Lichen transaction (Ed25519 signed, blockhash replay protection)
+/// - `Native`: Standard Lichen transaction (PQ signed, blockhash replay protection)
 /// - `Evm`: EVM-wrapped transaction (ECDSA signed, EVM nonce replay protection)
-/// - `SolanaCompat`: DEPRECATED — wire discriminant 2 is preserved for backward
-///   compatibility but carries no distinct validation. Transactions submitted via
-///   the `/solana-compat` RPC endpoint use `Native` processing. Do not create new
-///   transactions with this type. (AUDIT-FIX MED-05)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TransactionType {
     #[default]
     Native,
     Evm,
-    /// Deprecated — same processing as `Native`. Kept for wire-format backward compat only.
-    SolanaCompat,
 }
 
 /// Wire-format magic bytes identifying a Lichen transaction envelope.
-/// "MT" = historical magic prefix (kept for wire compatibility). The pair `[0x4D, 0x54]` cannot appear as the first
-/// two bytes of a legacy bincode Transaction (that would imply 0x544D = 21,581
+/// "MT" = fixed magic prefix. The pair `[0x4D, 0x54]` cannot appear as the first
+/// two bytes of a raw-bincode Transaction (that would imply 0x544D = 21,581
 /// signatures, which is impossible).
 pub const TX_WIRE_MAGIC: [u8; 2] = [0x4D, 0x54];
 
@@ -128,141 +122,17 @@ pub const TX_WIRE_VERSION: u8 = 1;
 /// Signed transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
-    /// Transaction signatures (as hex strings for serde compatibility)
-    #[serde(
-        serialize_with = "serialize_signatures",
-        deserialize_with = "deserialize_signatures"
-    )]
-    pub signatures: Vec<[u8; 64]>,
+    /// Transaction signatures. Each signature is self-contained: it carries both
+    /// the signature bytes and the signer's PQ verifying key.
+    pub signatures: Vec<PqSignature>,
 
     /// Transaction message
     pub message: Message,
 
     /// Transaction type — determines processing path.
-    /// Defaults to `Native` for backward compatibility with existing serialized transactions.
+    /// Defaults to `Native`.
     #[serde(default)]
     pub tx_type: TransactionType,
-}
-
-// Helper functions for signature serialization.
-//
-// L2-01 fix: Use `is_human_readable()` to branch between formats:
-// - Human-readable (JSON, TOML): serialize as hex strings for readability
-// - Non-human-readable (bincode): serialize as raw bytes for efficiency
-//   and compatibility with JS/Python SDK manual bincode encoders
-//
-// Since serde doesn't impl Serialize/Deserialize for [T; 64] (only up to 32),
-// we use helper newtypes that manually encode/decode via serialize_tuple(64).
-
-/// Newtype wrapper to serialize `[u8; 64]` as a fixed-size tuple (no length prefix in bincode).
-struct Sig64Ser<'a>(&'a [u8; 64]);
-
-impl serde::Serialize for Sig64Ser<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeTuple;
-        let mut tup = serializer.serialize_tuple(64)?;
-        for b in self.0 {
-            tup.serialize_element(b)?;
-        }
-        tup.end()
-    }
-}
-
-/// DeserializeSeed for reading a single [u8; 64] from a bincode tuple.
-struct Sig64De;
-
-impl<'de> serde::de::DeserializeSeed<'de> for Sig64De {
-    type Value = [u8; 64];
-
-    fn deserialize<D: serde::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> Result<Self::Value, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = [u8; 64];
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("64 bytes")
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut arr = [0u8; 64];
-                for (i, slot) in arr.iter_mut().enumerate() {
-                    *slot = seq
-                        .next_element::<u8>()?
-                        .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
-                }
-                Ok(arr)
-            }
-        }
-        deserializer.deserialize_tuple(64, V)
-    }
-}
-
-fn serialize_signatures<S>(sigs: &[[u8; 64]], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    if serializer.is_human_readable() {
-        // JSON: hex strings for readability
-        use serde::Serialize;
-        let hex_sigs: Vec<String> = sigs.iter().map(hex::encode).collect();
-        hex_sigs.serialize(serializer)
-    } else {
-        // bincode: raw Vec<[u8; 64]> — each signature is 64 flat bytes,
-        // prefixed by a u64 vec length. Matches JS/Python SDK encoding.
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(sigs.len()))?;
-        for sig in sigs {
-            seq.serialize_element(&Sig64Ser(sig))?;
-        }
-        seq.end()
-    }
-}
-
-fn deserialize_signatures<'de, D>(deserializer: D) -> Result<Vec<[u8; 64]>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    if deserializer.is_human_readable() {
-        // JSON: parse hex strings
-        use serde::Deserialize;
-        let hex_sigs: Vec<String> = Vec::deserialize(deserializer)?;
-        hex_sigs
-            .iter()
-            .map(|s| {
-                let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
-                if bytes.len() != 64 {
-                    return Err(serde::de::Error::custom("Invalid signature length"));
-                }
-                let mut sig = [0u8; 64];
-                sig.copy_from_slice(&bytes);
-                Ok(sig)
-            })
-            .collect()
-    } else {
-        // bincode: read Vec<[u8; 64]> as sequence of 64-byte tuples
-        struct SigsVisitor;
-        impl<'de> serde::de::Visitor<'de> for SigsVisitor {
-            type Value = Vec<[u8; 64]>;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a sequence of 64-byte signatures")
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut sigs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(sig) = seq.next_element_seed(Sig64De)? {
-                    sigs.push(sig);
-                }
-                Ok(sigs)
-            }
-        }
-        deserializer.deserialize_seq(SigsVisitor)
-    }
 }
 
 /// Maximum instructions per transaction (T1.7)
@@ -285,25 +155,16 @@ impl Transaction {
     /// Create a new EVM-typed transaction.
     pub fn new_evm(message: Message) -> Self {
         Transaction {
-            signatures: vec![[0u8; 64]],
+            signatures: Vec::new(),
             message,
             tx_type: TransactionType::Evm,
         }
     }
 
-    /// Check if this is an EVM transaction (by type field or legacy sentinel).
+    /// Check if this is an EVM transaction (by type field or EVM replay sentinel).
     pub fn is_evm(&self) -> bool {
         self.tx_type == TransactionType::Evm
             || self.message.recent_blockhash == crate::Hash([0xEE; 32])
-    }
-
-    /// Check if this is a Solana-compat transaction.
-    /// AUDIT-FIX MED-05: Deprecated — SolanaCompat has no distinct validation path.
-    #[deprecated(
-        note = "SolanaCompat has no distinct validation; use is_evm() to distinguish EVM vs native"
-    )]
-    pub fn is_solana_compat(&self) -> bool {
-        self.tx_type == TransactionType::SolanaCompat
     }
 
     /// Get transaction signature (first signature's identifier)
@@ -313,7 +174,7 @@ impl Transaction {
 
     /// Get the message-only hash (signing hash).
     ///
-    /// This is the hash that signers commit to via Ed25519. It does NOT include
+    /// This is the hash that signers commit to via PQ signatures. It does NOT include
     /// signatures, so it is predictable before signing — useful for multi-sig
     /// coordination and client-side txid tracking before broadcast.
     ///
@@ -327,24 +188,16 @@ impl Transaction {
         self.message.instructions[0].accounts[0]
     }
 
-    /// Get transaction hash (includes signatures for unique deduplication).
+    /// Get transaction hash (includes the full signed envelope).
     ///
     /// This is the **canonical transaction ID** stored in `CF_TRANSACTIONS` and
-    /// returned by RPC methods. It equals `SHA-256(bincode(message) || sig_0 || sig_1 || ...)`.
+    /// returned by RPC methods. It equals `SHA-256(bincode(transaction))`.
     ///
-    /// Including signatures prevents txid-malleability: two transactions with the
-    /// same message but different signatures produce different hashes, matching
-    /// Bitcoin's post-SegWit wtxid approach and Cosmos/CometBFT's `SHA-256(tx_bytes)`.
-    ///
-    /// Determinism guarantee: for any `Transaction` value, `hash()` always returns
-    /// the same `Hash`. Bincode serialization of `Message` is deterministic (no
-    /// maps, no unordered collections), and Ed25519 signatures are fixed-size byte
-    /// arrays concatenated in order.
+    /// Using the full serialized transaction keeps the txid aligned with the
+    /// actual bytes propagated over the network, including the self-contained PQ
+    /// signatures that carry signer public keys.
     pub fn hash(&self) -> Hash {
-        let mut data = self.message.serialize();
-        for sig in &self.signatures {
-            data.extend_from_slice(sig);
-        }
+        let data = bincode::serialize(self).expect("Transaction bincode serialization failed");
         Hash::hash(&data)
     }
 
@@ -413,7 +266,7 @@ impl Transaction {
     /// Deserialize from wire bytes, supporting three formats:
     ///
     /// 1. **V1 envelope** — starts with `TX_WIRE_MAGIC` (`[0x4D, 0x54]`)
-    /// 2. **Legacy bincode** — raw `bincode::serialize(&Transaction)` output
+    /// 2. **Raw bincode** — `bincode::serialize(&Transaction)` output
     /// 3. **JSON** — `{ "signatures": [...], "message": {...} }` from browser wallets
     ///
     /// The `max_bincode_bytes` parameter caps the bincode deserialization buffer
@@ -429,7 +282,6 @@ impl Transaction {
             let tx_type = match type_byte {
                 0 => TransactionType::Native,
                 1 => TransactionType::Evm,
-                2 => TransactionType::SolanaCompat,
                 _ => return Err(format!("Unknown transaction type byte: {}", type_byte)),
             };
             let payload = &data[4..];
@@ -439,7 +291,7 @@ impl Transaction {
             return Ok(tx);
         }
 
-        // --- Legacy: JSON vs bincode ---
+        // --- JSON vs bincode ---
         if data.first() == Some(&b'{') {
             // Looks like JSON — try JSON first, fall back to bincode
             json_deser(data).or_else(|_| bounded_bincode_deser(data, max_bincode_bytes))
@@ -719,7 +571,7 @@ mod tests {
             compute_budget: None,
             compute_unit_price: None,
         };
-        let sig: [u8; 64] = [0xBB; 64];
+        let sig = crate::account::PqSignature::test_fixture(0xBB);
         let tx = Transaction {
             signatures: vec![sig],
             message: msg,
@@ -727,30 +579,17 @@ mod tests {
         };
 
         let bytes = bincode::serialize(&tx).expect("tx serialization");
-        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-
-        let sig_hex = "bb".repeat(64); // 64 bytes = 128 hex chars
-        let expected = format!(
-            "{}{}{}{}{}{}{}{}{}{}",
-            "0100000000000000", // Vec<[u8;64]> len = 1
-            sig_hex,            // sig (64 bytes)
-            // -- Message bytes (same as golden vector above) --
-            "0100000000000000", // Vec<Ix> len = 1
-            "0101010101010101010101010101010101010101010101010101010101010101", // program_id
-            "0100000000000000", // Vec<Pubkey> len = 1
-            "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
-            "040000000000000000010203", // Vec<u8> len=4 + data
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
-            "0000",             // compute_budget: None + compute_unit_price: None
-            "00000000",         // tx_type: Native (enum variant 0)
-        );
+        let tx_hash = Hash::hash(&bytes);
 
         assert_eq!(
-            hex, expected,
-            "K4-02 TX GOLDEN VECTOR MISMATCH!\n\
-             Got:      {}\n\
-             Expected: {}",
-            hex, expected
+            bytes.len(),
+            5_417,
+            "unexpected serialized PQ transaction length"
+        );
+        assert_eq!(
+            tx_hash,
+            Hash::from_hex("9d0eec7b657276b828c265995ce78b41a3e19b17ab354b11f37254bbc4ee2a91")
+                .unwrap()
         );
     }
 }

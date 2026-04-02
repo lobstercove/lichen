@@ -321,7 +321,7 @@ mod tests {
         );
 
         Transaction {
-            signatures: vec![[nonce; 64]],
+            signatures: vec![crate::PqSignature::test_fixture(nonce)],
             message,
             tx_type: Default::default(),
         }

@@ -1,12 +1,12 @@
-"""Transaction types and builder for Lichen"""
+"""Transaction types and builder for Lichen."""
 
 import json
-from typing import List, Optional
 from dataclasses import dataclass
-import binascii
+from typing import List, Optional
 
 from .bincode import EncodedInstruction, encode_message, encode_transaction
 from .keypair import Keypair
+from .pq import PqSignature
 from .publickey import PublicKey
 
 
@@ -30,7 +30,7 @@ class Message:
 @dataclass
 class Transaction:
     """Signed transaction"""
-    signatures: List[str]
+    signatures: List[PqSignature]
     message: Message
 
 
@@ -76,8 +76,7 @@ class TransactionBuilder:
             message.compute_unit_price,
         )
         signature = keypair.sign(message_bytes)
-        sig_hex = binascii.hexlify(signature).decode("ascii")
-        return Transaction(signatures=[sig_hex], message=message)
+        return Transaction(signatures=[signature], message=message)
 
     @staticmethod
     def message_to_bincode(message: Message) -> bytes:

@@ -1,8 +1,9 @@
 //! Lichen Shielded Pool Contract
 //!
 //! On-chain contract managing the shielded transaction pool.
-//! Stores the commitment Merkle tree root, spent nullifier set,
-//! and verification keys. Verifies ZK proofs and updates state.
+//! Stores the commitment Merkle tree root and spent nullifier set while
+//! trusting the native processor to verify the incoming proof envelope before
+//! applying state transitions here.
 //!
 //! Entry points:
 //! - shield(amount, commitment, proof) — deposit into shielded pool
@@ -31,9 +32,6 @@ use sha2::{Digest, Sha256};
 // merkle_root      -> [u8; 32]       Current commitment tree root
 // merkle_count     -> u64            Number of leaves inserted
 // nullifier:{hex}  -> u8             Spent nullifier set (1 = spent)
-// vk_shield        -> Vec<u8>        Shield verification key
-// vk_unshield      -> Vec<u8>        Unshield verification key
-// vk_transfer      -> Vec<u8>        Transfer verification key
 // pool_balance     -> u64            Total shielded LICN (spores)
 
 /// AUDIT-FIX MED-01: Hard cap on commitment count to prevent unbounded state growth.
@@ -53,8 +51,6 @@ pub struct ShieldedPoolState {
     pub spent_nullifiers: BTreeSet<[u8; 32]>,
     /// All commitments (for wallet sync)
     pub commitments: Vec<CommitmentEntry>,
-    /// Whether verification keys are initialized
-    pub vk_initialized: bool,
 }
 
 /// A commitment entry in the Merkle tree
@@ -137,8 +133,6 @@ pub struct PoolStats {
     pub pool_balance_licn: f64,
     /// Number of spent nullifiers
     pub nullifier_count: u64,
-    /// Whether VKs are initialized
-    pub vk_initialized: bool,
 }
 
 /// Contract error types
@@ -149,7 +143,6 @@ pub enum ShieldedPoolError {
     MerkleRootMismatch,
     InsufficientBalance,
     InvalidCommitment,
-    VKNotInitialized,
     InvalidRequest(String),
     PoolOverflow,
     /// AUDIT-FIX MED-01: Commitment vector reached its cap
@@ -164,10 +157,13 @@ impl core::fmt::Display for ShieldedPoolError {
             Self::MerkleRootMismatch => write!(f, "merkle root does not match current state"),
             Self::InsufficientBalance => write!(f, "insufficient shielded pool balance"),
             Self::InvalidCommitment => write!(f, "invalid commitment (zero or malformed)"),
-            Self::VKNotInitialized => write!(f, "verification keys not initialized"),
             Self::InvalidRequest(msg) => write!(f, "invalid request: {}", msg),
             Self::PoolOverflow => write!(f, "pool balance overflow"),
-            Self::CommitmentsFull => write!(f, "commitment pool is full ({} max) — upgrade to incremental Merkle tree required", MAX_COMMITMENTS),
+            Self::CommitmentsFull => write!(
+                f,
+                "commitment pool is full ({} max) — upgrade to incremental Merkle tree required",
+                MAX_COMMITMENTS
+            ),
         }
     }
 }
@@ -181,7 +177,6 @@ impl ShieldedPoolState {
             pool_balance: 0,
             spent_nullifiers: BTreeSet::new(),
             commitments: Vec::new(),
-            vk_initialized: false,
         }
     }
 
@@ -196,10 +191,6 @@ impl ShieldedPoolState {
             return Err(ShieldedPoolError::InvalidCommitment);
         }
 
-        // Verify ZK proof
-        if !self.vk_initialized {
-            return Err(ShieldedPoolError::VKNotInitialized);
-        }
         self.verify_shield_proof(&request.proof, request.amount, &request.commitment)?;
 
         // AUDIT-FIX MED-01: Enforce commitment cap
@@ -246,10 +237,6 @@ impl ShieldedPoolState {
             return Err(ShieldedPoolError::InsufficientBalance);
         }
 
-        // Verify ZK proof
-        if !self.vk_initialized {
-            return Err(ShieldedPoolError::VKNotInitialized);
-        }
         self.verify_unshield_proof(
             &request.proof,
             &request.merkle_root,
@@ -292,10 +279,6 @@ impl ShieldedPoolState {
             }
         }
 
-        // Verify ZK proof (value conservation + ownership)
-        if !self.vk_initialized {
-            return Err(ShieldedPoolError::VKNotInitialized);
-        }
         self.verify_transfer_proof(
             &request.proof,
             &request.merkle_root,
@@ -342,7 +325,6 @@ impl ShieldedPoolState {
             pool_balance: self.pool_balance,
             pool_balance_licn: self.pool_balance as f64 / 1_000_000_000.0,
             nullifier_count: self.spent_nullifiers.len() as u64,
-            vk_initialized: self.vk_initialized,
         }
     }
 
@@ -362,14 +344,19 @@ impl ShieldedPoolState {
 
     // --- Proof validation methods ---
     //
-    // ARCHITECTURE NOTE: Full Groth16 proof verification runs in the processor
-    // layer (TxProcessor types 23/24/25) BEFORE the contract is invoked.
-    // See core/src/processor.rs system_shield_deposit() (line ~2093):
-    //   verifier.verify(&zk_proof) — full BN254 pairing check.
-    // These contract methods only perform structural validation (correct proof
-    // length = 128 bytes for compressed BN254) and state consistency checks
-    // (merkle root match). Duplicating Groth16 in the contract would waste
-    // ~10M gas per operation with zero additional security.
+    // ARCHITECTURE NOTE: Full proof verification runs in the native processor
+    // layer (TxProcessor types 23/24/25) before the contract is invoked.
+    // These contract methods only ensure a proof payload was supplied and that
+    // the request still matches the current contract state.
+
+    fn ensure_proof_payload(&self, proof: &[u8]) -> Result<(), ShieldedPoolError> {
+        if proof.is_empty() {
+            return Err(ShieldedPoolError::InvalidProof(
+                "missing proof payload".to_string(),
+            ));
+        }
+        Ok(())
+    }
 
     fn verify_shield_proof(
         &self,
@@ -377,13 +364,7 @@ impl ShieldedPoolState {
         _amount: u64,
         _commitment: &[u8; 32],
     ) -> Result<(), ShieldedPoolError> {
-        if proof.len() != 128 {
-            return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
-            ));
-        }
-        // Proof was already cryptographically verified by the processor.
-        Ok(())
+        self.ensure_proof_payload(proof)
     }
 
     fn verify_unshield_proof(
@@ -394,15 +375,10 @@ impl ShieldedPoolState {
         _amount: u64,
         _recipient: &[u8; 32],
     ) -> Result<(), ShieldedPoolError> {
-        if proof.len() != 128 {
-            return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
-            ));
-        }
+        self.ensure_proof_payload(proof)?;
         if merkle_root != &self.merkle_root {
             return Err(ShieldedPoolError::MerkleRootMismatch);
         }
-        // Proof was already cryptographically verified by the processor.
         Ok(())
     }
 
@@ -413,15 +389,10 @@ impl ShieldedPoolState {
         _nullifiers: &[[u8; 32]],
         _output_commitments: &[[u8; 32]],
     ) -> Result<(), ShieldedPoolError> {
-        if proof.len() != 128 {
-            return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
-            ));
-        }
+        self.ensure_proof_payload(proof)?;
         if merkle_root != &self.merkle_root {
             return Err(ShieldedPoolError::MerkleRootMismatch);
         }
-        // Proof was already cryptographically verified by the processor.
         Ok(())
     }
 
@@ -494,12 +465,8 @@ fn compute_merkle_root(entries: &[CommitmentEntry]) -> [u8; 32] {
 /// Contract instruction enum (dispatched by the runtime)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ShieldedPoolInstruction {
-    /// Initialize the pool with verification keys
-    Initialize {
-        vk_shield: Vec<u8>,
-        vk_unshield: Vec<u8>,
-        vk_transfer: Vec<u8>,
-    },
+    /// Initialize the pool state
+    Initialize,
     /// Shield (deposit) LICN into the pool
     Shield(ShieldRequest),
     /// Unshield (withdraw) LICN from the pool
@@ -537,9 +504,7 @@ pub enum ShieldedPoolInstruction {
 #[cfg(target_arch = "wasm32")]
 mod wasm_abi {
     use super::*;
-    use lichen_sdk::{
-        get_caller, get_slot, log_info, set_return_data, storage_get, storage_set,
-    };
+    use lichen_sdk::{get_caller, get_slot, log_info, set_return_data, storage_get, storage_set};
 
     const STATE_KEY: &[u8] = b"pool_state";
     const OWNER_KEY: &[u8] = b"owner";
@@ -597,7 +562,7 @@ mod wasm_abi {
     }
 
     /// Initialize the shielded pool (called once at genesis).
-    /// Sets admin, creates empty pool state with VKs marked ready.
+    /// Sets admin and creates an empty pool state.
     #[no_mangle]
     pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
         // Re-initialization guard
@@ -611,9 +576,7 @@ mod wasm_abi {
         }
         storage_set(OWNER_KEY, &admin);
 
-        let mut state = ShieldedPoolState::new();
-        state.vk_initialized = true; // VK verification done at processor layer
-        save_state(&state);
+        save_state(&ShieldedPoolState::new());
 
         log_info("ShieldedPool initialized");
         0
@@ -818,9 +781,7 @@ mod tests {
     use super::*;
 
     fn test_pool() -> ShieldedPoolState {
-        let mut pool = ShieldedPoolState::new();
-        pool.vk_initialized = true; // skip VK check for tests
-        pool
+        ShieldedPoolState::new()
     }
 
     #[test]
@@ -829,7 +790,7 @@ mod tests {
         let request = ShieldRequest {
             amount: 1_000_000_000, // 1 LICN
             commitment: [1u8; 32],
-            proof: vec![0u8; 128], // proof already verified by processor
+            proof: vec![0u8; 7], // proof already verified by processor
             encrypted_note: vec![0xAA, 0xBB],
             ephemeral_pk: [2u8; 32],
         };
@@ -847,7 +808,7 @@ mod tests {
         let shield_req = ShieldRequest {
             amount: 1_000_000_000,
             commitment: [1u8; 32],
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
             encrypted_note: vec![],
             ephemeral_pk: [2u8; 32],
         };
@@ -859,7 +820,7 @@ mod tests {
             amount: 500_000_000, // 0.5 LICN
             recipient: [4u8; 32],
             merkle_root: pool.merkle_root,
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
         };
         let amount = pool.unshield(&unshield_req).unwrap();
         assert_eq!(amount, 500_000_000);
@@ -872,7 +833,7 @@ mod tests {
         let shield_req = ShieldRequest {
             amount: 1_000_000_000,
             commitment: [1u8; 32],
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
             encrypted_note: vec![],
             ephemeral_pk: [2u8; 32],
         };
@@ -884,7 +845,7 @@ mod tests {
             amount: 500_000_000,
             recipient: [4u8; 32],
             merkle_root: pool.merkle_root,
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
         };
         pool.unshield(&unshield_req).unwrap();
 
@@ -894,7 +855,7 @@ mod tests {
             amount: 500_000_000,
             recipient: [4u8; 32],
             merkle_root: pool.merkle_root,
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
         };
         assert!(pool.unshield(&unshield_req2).is_err());
     }
@@ -906,7 +867,7 @@ mod tests {
         let shield_req = ShieldRequest {
             amount: 2_000_000_000,
             commitment: [1u8; 32],
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
             encrypted_note: vec![],
             ephemeral_pk: [2u8; 32],
         };
@@ -928,7 +889,7 @@ mod tests {
                 },
             ],
             merkle_root: pool.merkle_root,
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
         };
 
         let indices = pool.transfer(&transfer_req, 200).unwrap();
@@ -951,10 +912,27 @@ mod tests {
         let request = ShieldRequest {
             amount: 1000,
             commitment: [0u8; 32], // zero commitment
-            proof: vec![0u8; 128],
+            proof: vec![0u8; 7],
             encrypted_note: vec![],
             ephemeral_pk: [2u8; 32],
         };
         assert!(pool.shield(&request, 100).is_err());
+    }
+
+    #[test]
+    fn test_empty_proof_payload_rejected() {
+        let mut pool = test_pool();
+        let request = ShieldRequest {
+            amount: 1_000,
+            commitment: [9u8; 32],
+            proof: vec![],
+            encrypted_note: vec![],
+            ephemeral_pk: [2u8; 32],
+        };
+
+        assert!(matches!(
+            pool.shield(&request, 100),
+            Err(ShieldedPoolError::InvalidProof(_))
+        ));
     }
 }

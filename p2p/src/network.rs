@@ -8,8 +8,8 @@ use crate::message::{
 use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
 use lichen_core::{
-    Block, BlockHeader, CommitSignature, Precommit, Prevote, Proposal, Pubkey, StakePool,
-    Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, CommitSignature, PqSignature, Precommit, Prevote, Proposal, Pubkey,
+    StakePool, Transaction, ValidatorSet, Vote,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -119,7 +119,7 @@ pub struct ValidatorAnnouncement {
     pub stake: u64,
     pub current_slot: u64,
     pub version: String,
-    pub signature: [u8; 64],
+    pub signature: PqSignature,
     /// SHA-256 machine fingerprint (platform UUID + MAC). [0u8;32] if not set.
     pub machine_fingerprint: [u8; 32],
 }
@@ -471,7 +471,6 @@ impl P2PNetwork {
                 | MessageType::ValidatorAnnounce { .. }
                 | MessageType::SlashingEvidence(_)
                 | MessageType::CompactBlockMsg(_)
-                | MessageType::CertRotation { .. }
         );
         if (is_relay_or_seed && is_gossip_message) || is_bft_message {
             self.peer_manager
@@ -1286,46 +1285,6 @@ impl P2PNetwork {
                         );
                     }
                 });
-            }
-
-            // M-9: Certificate rotation — a peer announces it has generated a new
-            // TLS certificate. Validate and update TOFU fingerprint store.
-            MessageType::CertRotation {
-                old_fingerprint,
-                new_fingerprint,
-                new_cert_der,
-                rotation_proof: _,
-                timestamp,
-            } => {
-                match self.peer_manager.handle_cert_rotation(
-                    &peer_addr,
-                    &old_fingerprint,
-                    &new_fingerprint,
-                    &new_cert_der,
-                    timestamp,
-                ) {
-                    Ok(()) => {
-                        info!("P2P: Certificate rotation accepted from {}", peer_addr);
-                        // Re-gossip the rotation to other peers
-                        let relay_msg = P2PMessage::new(
-                            MessageType::CertRotation {
-                                old_fingerprint,
-                                new_fingerprint,
-                                new_cert_der,
-                                rotation_proof: vec![],
-                                timestamp,
-                            },
-                            self.local_addr,
-                        );
-                        self.peer_manager.broadcast(relay_msg).await;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "P2P: Certificate rotation rejected from {}: {}",
-                            peer_addr, e
-                        );
-                    }
-                }
             }
         }
 

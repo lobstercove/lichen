@@ -25,13 +25,10 @@
  * Prerequisites:
  *   - Validator running with --dev-mode on port 8899
  *   - Contracts deployed (genesis auto-deploy)
- *   - npm install tweetnacl
  */
 'use strict';
 
-let nacl;
-try { nacl = require('tweetnacl'); }
-catch { console.error('Missing dependency: npm install tweetnacl'); process.exit(1); }
+const pq = require('./helpers/pq-node');
 const { loadFundedWallets } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
@@ -114,8 +111,7 @@ function canonicalDuplicateCount(pairs) {
 // Keypair generation
 // ═══════════════════════════════════════════════════════════════════════════════
 function genKeypair() {
-    const kp = nacl.sign.keyPair();
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -156,8 +152,8 @@ async function sendTx(keypair, instructions) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     return rpc('sendTransaction', [b64]);
 }
@@ -172,8 +168,8 @@ async function simulateTx(keypair, instructions) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     return rpc('simulateTransaction', [b64]);
 }
@@ -376,6 +372,7 @@ async function getBalance(addr) {
 // Main test runner
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runTests() {
+    await pq.init();
     console.log('╔═══════════════════════════════════════════════════════════════╗');
     console.log('║   Lichen SporePump Launchpad & Governance E2E Tests        ║');
     console.log('╚═══════════════════════════════════════════════════════════════╝');

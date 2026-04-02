@@ -66,7 +66,7 @@ print(f"Creating transaction signatures...")
 
 # In a real implementation, we'd:
 # 1. Create a proper Message with instructions
-# 2. Sign it with the private key (ed25519)
+# 2. Sign it with the PQ private key
 # 3. Serialize to binary format
 # 4. Base64 encode
 # 5. Submit via sendTransaction RPC

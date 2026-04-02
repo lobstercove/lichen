@@ -11,10 +11,14 @@ npm install @lichen/sdk
 ## Quick Start
 
 ```typescript
-import { Connection, PublicKey } from '@lichen/sdk';
+import { Connection, Keypair, PublicKey } from '@lichen/sdk';
 
 // Connect to Lichen
 const connection = new Connection('http://localhost:8899');
+
+// Generate a native PQ keypair
+const keypair = Keypair.generate();
+console.log('Address:', keypair.pubkey().toBase58());
 
 // Get account balance
 const pubkey = new PublicKey('YourPublicKeyHere...');
@@ -35,9 +39,10 @@ See the [full documentation](../../docs/SDK.md) for detailed API reference.
 
 - ✅ Complete RPC client (24 endpoints)
 - ✅ WebSocket subscriptions (real-time events)
+- ✅ Native PQ keypairs and self-contained signatures
 - ✅ Transaction builder
 - ✅ TypeScript types
-- ✅ PublicKey utilities
+- ✅ Address and PQ public-key utilities
 - ✅ Full blockchain interaction
 
 ## License

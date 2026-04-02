@@ -69,7 +69,7 @@ async def seed_pools():
         return
 
     amm_pk = PublicKey.from_base58(amm_str)
-    deployer_bytes = bytes(deployer.public_key().to_bytes())
+    deployer_bytes = bytes(deployer.address().to_bytes())
 
     token_names = {
         'LICN': 'lichencoin',

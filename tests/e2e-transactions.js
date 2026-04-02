@@ -5,7 +5,7 @@
  * Submits real signed transactions against running validators (RPC on port 8899).
  *
  * Usage:
- *   npm install tweetnacl            # one-time
+ *   node tests/e2e-transactions.js
  *   node tests/e2e-transactions.js
  *
  * Prerequisites:
@@ -17,15 +17,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Dependencies
 // ═══════════════════════════════════════════════════════════════════════════════
-let nacl;
-try {
-    nacl = require('tweetnacl');
-} catch {
-    console.error('Missing dependency: npm install tweetnacl');
-    process.exit(1);
-}
-
-const { loadFundedWallets } = require('./helpers/funded-wallets');
+const pq = require('./helpers/pq-node');
+const { loadFundedWallets, initCrypto } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
 
@@ -101,24 +94,14 @@ async function rpc(method, params = []) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Keypair generation
+// Keypair generation (ML-DSA-65)
 // ═══════════════════════════════════════════════════════════════════════════════
 function generateKeypair() {
-    const kp = nacl.sign.keyPair();
-    return {
-        publicKey: kp.publicKey,
-        secretKey: kp.secretKey,
-        address: bs58encode(kp.publicKey),
-    };
+    return pq.generateKeypair();
 }
 
 function keypairFromSeed(seed32) {
-    const kp = nacl.sign.keyPair.fromSeed(seed32);
-    return {
-        publicKey: kp.publicKey,
-        secretKey: kp.secretKey,
-        address: bs58encode(kp.publicKey),
-    };
+    return pq.keypairFromSeed(seed32);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -180,13 +163,13 @@ async function sendTransaction(keypair, instructions) {
         return { program_id: ix.program_id, accounts, data: dataBytes };
     });
 
-    // 3. Sign: bincode-compatible message bytes
+    // 3. Sign: bincode-compatible message bytes with ML-DSA-65
     const msgBytes = encodeTransactionMessage(normalizedIx, blockhash, keypair.address);
-    const sig = nacl.sign.detached(msgBytes, keypair.secretKey);
+    const pqSig = pq.sign(msgBytes, keypair);
 
-    // 4. Build wire-format JSON
+    // 4. Build wire-format JSON (PqSignature object expected by RPC)
     const txPayload = {
-        signatures: [bytesToHex(sig)],
+        signatures: [pqSig],
         message: {
             instructions: normalizedIx,
             blockhash: blockhash,
@@ -305,6 +288,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // TEST SUITE
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runTests() {
+    // Initialise ML-DSA-65 crypto (dynamic ESM import)
+    await initCrypto();
+
     console.log(`\n═══ Lichen E2E Transaction Tests ═══`);
     console.log(`RPC: ${RPC_URL}\n`);
 
@@ -331,8 +317,8 @@ async function runTests() {
     const alice = funded[0] || freshAlice;
     const bob = funded[1] || freshBob;
     // Crypto property checks use the fresh keypairs to validate generation
-    assert(freshAlice.publicKey.length === 32, 'Alice pubkey is 32 bytes');
-    assert(freshAlice.secretKey.length === 64, 'Alice secretKey is 64 bytes');
+    assert(freshAlice.publicKey.length === pq.ML_DSA_65_PUBLIC_KEY_BYTES, `Alice pubkey is ${pq.ML_DSA_65_PUBLIC_KEY_BYTES} bytes (ML-DSA-65)`);
+    assert(freshAlice.seed.length === pq.ML_DSA_65_SEED_BYTES, `Alice seed is ${pq.ML_DSA_65_SEED_BYTES} bytes`);
     assert(freshAlice.address.length > 30, `Alice address: ${freshAlice.address}`);
     assert(freshBob.address !== freshAlice.address, 'Bob address differs from Alice');
 
@@ -495,11 +481,16 @@ async function runTests() {
     // ── Test 10: Invalid transaction rejection ──
     console.log('\n── Test 10: Invalid Transaction Rejection ──');
     {
-        // Submit a transaction with zero signature — should be rejected
+        // Submit a transaction with invalid (zero) signature — should be rejected
         const bh = await rpc('getRecentBlockhash');
         const blockhashStr = typeof bh === 'string' ? bh : bh.blockhash;
+        const zeroPqSig = {
+            scheme_version: 1,
+            public_key: { scheme_version: 1, bytes: '00'.repeat(pq.ML_DSA_65_PUBLIC_KEY_BYTES) },
+            sig: '00'.repeat(pq.ML_DSA_65_SIGNATURE_BYTES),
+        };
         const txPayload = {
-            signatures: [bytesToHex(new Uint8Array(64))], // all-zero sig
+            signatures: [zeroPqSig], // all-zero PQ sig
             message: {
                 instructions: [{
                     program_id: bs58encode(new Uint8Array(32).fill(0x01)),
@@ -519,17 +510,17 @@ async function runTests() {
         }
     }
 
-    // ── Test 11: Signature verification ──
-    console.log('\n── Test 11: Ed25519 Signature Verification ──');
+    // ── Test 11: ML-DSA-65 Signature Verification ──
+    console.log('\n── Test 11: ML-DSA-65 Signature Verification ──');
     {
         const message = new TextEncoder().encode('hello lichen');
-        const sig = nacl.sign.detached(message, alice.secretKey);
-        const valid = nacl.sign.detached.verify(message, sig, alice.publicKey);
-        assert(valid, 'Ed25519 sign/verify roundtrip');
-        // Tamper 
-        const bad = new Uint8Array(sig);
-        bad[0] ^= 0xFF;
-        const invalid = nacl.sign.detached.verify(message, bad, alice.publicKey);
+        const pqSig = pq.sign(message, alice);
+        assert(pqSig.sig.length === pq.ML_DSA_65_SIGNATURE_BYTES * 2, `ML-DSA-65 signature is ${pq.ML_DSA_65_SIGNATURE_BYTES * 2} hex chars`);
+        const valid = pq.verify(message, pqSig, alice.publicKey);
+        assert(valid, 'ML-DSA-65 sign/verify roundtrip');
+        // Tamper: flip first byte of sig hex
+        const tampered = { ...pqSig, sig: ((parseInt(pqSig.sig.slice(0, 2), 16) ^ 0xFF).toString(16).padStart(2, '0')) + pqSig.sig.slice(2) };
+        const invalid = pq.verify(message, tampered, alice.publicKey);
         assert(!invalid, 'Tampered signature rejected');
     }
 

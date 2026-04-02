@@ -20,13 +20,10 @@
  * Prerequisites:
  *   - Validator running with --dev-mode on port 8899
  *   - DEX contracts deployed (genesis auto-deploy)
- *   - npm install tweetnacl ws
  */
 'use strict';
 
-let nacl;
-try { nacl = require('tweetnacl'); }
-catch { console.error('Missing dependency: npm install tweetnacl'); process.exit(1); }
+const pq = require('./helpers/pq-node');
 const { loadFundedWallets } = require('./helpers/funded-wallets');
 
 let WebSocket;
@@ -149,8 +146,7 @@ async function pollRest(path, predicate, timeoutMs = 25000, pollMs = 500) {
 // Wallet helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 function genKeypair() {
-    const kp = nacl.sign.keyPair();
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -191,8 +187,8 @@ async function sendTx(keypair, instructions) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     const txSig = await rpc('sendTransaction', [b64]);
     await waitForTx(txSig, 25000, 500);
@@ -367,6 +363,7 @@ async function fundWallet(wallet, amount, label) {
 // MAIN TEST SUITE
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runTests() {
+    await pq.init();
     console.log(`\n═══════════════════════════════════════════════════════`);
     console.log(`  Lichen Volume Simulation E2E Suite`);
     console.log(`  RPC: ${RPC_URL}  WS: ${WS_URL}`);

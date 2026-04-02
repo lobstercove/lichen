@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-const nacl = require('tweetnacl');
+const pq = require('./helpers/pq-node');
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function bs58encode(bytes) {
     let num = BigInt(0); for (const b of bytes) num = num * 256n + BigInt(b);
@@ -45,8 +45,8 @@ async function sendTx(keypair, instructions) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     return rpc('sendTransaction', [b64]);
 }
@@ -54,6 +54,7 @@ async function sendTx(keypair, instructions) {
 const CONTRACT_PID = bs58encode(new Uint8Array(32).fill(0xFF));
 
 (async () => {
+    await pq.init();
     // Discover PREDICT contract
     const reg = await rpc('getAllSymbolRegistry', [100]);
     const entries = Array.isArray(reg) ? reg : (reg.entries || []);
@@ -61,8 +62,8 @@ const CONTRACT_PID = bs58encode(new Uint8Array(32).fill(0xFF));
     console.log('PREDICT:', predict);
 
     // Create and fund test keypair
-    const kp = nacl.sign.keyPair();
-    const addr = bs58encode(kp.publicKey);
+    const kp = await pq.generateKeypair();
+    const addr = kp.address;
     await rpc('requestAirdrop', [addr, 10]);
     console.log('Funded:', addr);
     await new Promise(r => setTimeout(r, 2000));
@@ -81,7 +82,7 @@ const CONTRACT_PID = bs58encode(new Uint8Array(32).fill(0xFF));
     const ix = { program_id: CONTRACT_PID, accounts: [addr, predict], data };
 
     try {
-        const sig = await sendTx({ address: addr, publicKey: kp.publicKey, secretKey: kp.secretKey }, [ix]);
+        const sig = await sendTx({ address: addr, publicKey: kp.publicKey, seed: kp.seed }, [ix]);
         console.log('TX accepted (should have been REJECTED!):', sig);
     } catch (e) {
         console.log('TX correctly rejected:', e.message);

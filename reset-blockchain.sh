@@ -21,7 +21,6 @@ for arg in "$@"; do
 		--restart)  RESTART=true ;;
 		--no-keys)  KEEP_KEYS=true ;;
 		--dev-mode) EXTRA_FLAGS="$EXTRA_FLAGS --dev-mode" ;;
-		--zk-reset) EXTRA_FLAGS="$EXTRA_FLAGS --zk-reset" ;;
 		--vps)      VPS_MODE=true ;;
 		testnet|mainnet|all) NETWORK="$arg" ;;
 	esac
@@ -108,9 +107,6 @@ if [ "$NETWORK" = "all" ]; then
 		rm -rf "$WORKSPACE_ROOT/data/matrix-sdk-state-"* 2>/dev/null && echo "  removed workspace root legacy matrix dirs" || true
 	fi
 	rm -rf ~/.lichen/data-* ~/.lichen/state-* 2>/dev/null || true
-	if [[ "${EXTRA_FLAGS:-}" == *"--zk-reset"* ]]; then
-		rm -rf ~/.lichen/zk 2>/dev/null && echo "  removed ZK key cache (--zk-reset)"
-	fi
 	rm -rf data/custody* 2>/dev/null || true
 	rm -rf /tmp/lichen-custody* 2>/dev/null || true
 
@@ -124,9 +120,6 @@ if [ "$NETWORK" = "all" ]; then
 		sudo rm -f "$VPS_STATE_DIR"/known-peers.json 2>/dev/null || true
 		sudo rm -f "$VPS_STATE_DIR"/deploy-manifest.json 2>/dev/null || true
 		sudo rm -f "$VPS_STATE_DIR"/faucet-keypair.json 2>/dev/null || true
-		if [[ "${EXTRA_FLAGS:-}" == *"--zk-reset"* ]]; then
-			sudo rm -rf "$VPS_STATE_DIR"/zk 2>/dev/null && echo "  removed $VPS_STATE_DIR/zk (--zk-reset)"
-		fi
 		# Recreate custody-db directories with correct ownership
 		sudo mkdir -p "$VPS_STATE_DIR/custody-db" "$VPS_STATE_DIR/custody-db-mainnet"
 		sudo chown -R lichen:lichen "$VPS_STATE_DIR/custody-db" "$VPS_STATE_DIR/custody-db-mainnet" 2>/dev/null || true
@@ -252,17 +245,6 @@ if [ "$RESTART" = true ]; then
 		echo -e "${YELLOW}[7/7] VPS restart: starting validators via systemd...${NC}"
 		echo ""
 
-		# Ensure ZK keys exist
-		ZK_SETUP_BIN="/usr/local/bin/zk-setup"
-		if [ -x "$ZK_SETUP_BIN" ]; then
-			echo "   Ensuring ZK proving/verification keys exist..."
-			cd "$VPS_STATE_DIR"
-			sudo -u lichen "$ZK_SETUP_BIN" 2>&1 | sed 's/^/   /' || true
-		else
-			echo -e "   ${YELLOW}⚠  zk-setup binary not found — shielded txs unavailable${NC}"
-		fi
-		echo ""
-
 		# Start testnet validator
 		if [ "$NETWORK" = "all" ] || [ "$NETWORK" = "testnet" ]; then
 			echo "   Starting testnet validator..."
@@ -372,16 +354,6 @@ if [ "$RESTART" = true ]; then
 			echo -e "${RED}Launcher not found: $LAUNCHER${NC}"
 			exit 1
 		fi
-
-		ZK_SETUP_BIN="${REPO_ROOT}/target/release/zk-setup"
-		if [ -x "$ZK_SETUP_BIN" ]; then
-			echo "   Ensuring ZK proving/verification keys exist..."
-			"$ZK_SETUP_BIN" 2>&1 | sed 's/^/   /'
-		else
-			echo -e "   ${YELLOW}⚠  zk-setup binary not found — build with: cargo build --release --bin zk-setup${NC}"
-			echo -e "   ${YELLOW}   Shielded transactions will be unavailable until keys are generated.${NC}"
-		fi
-		echo ""
 
 		echo "   Starting V1 (primary - creates genesis)..."
 		nohup "$LAUNCHER" "$NETWORK" 1 $EXTRA_FLAGS > /tmp/lichen-v1.log 2>&1 &

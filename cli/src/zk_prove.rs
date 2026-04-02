@@ -1,15 +1,15 @@
 //! ZK Proof Generator CLI
 //!
-//! Generates Groth16/BN254 proofs for shield, unshield, and transfer
+//! Generates native Plonky3 STARK proofs for shield, unshield, and transfer
 //! transactions.  Used by the E2E test suite (Python) to create valid
 //! proofs that the validator can verify.
 //!
 //! Usage:
-//!   zk-prove shield   --amount <spores> --pk-dir <path>
-//!   zk-prove unshield --amount <spores> --pk-dir <path> --merkle-root <hex> --recipient <hex>
+//!   zk-prove shield   --amount <spores>
+//!   zk-prove unshield --amount <spores> --merkle-root <hex> --recipient <hex>
 //!                     --blinding <hex> --serial <hex> [--spending-key <hex>]
 //!                     [--merkle-path-json <file>] [--path-bits-json <file>]
-//!   zk-prove transfer --pk-dir <path> --transfer-json <file>
+//!   zk-prove transfer --transfer-json <file>
 //!
 //! The transfer subcommand reads a JSON file with the full witness:
 //!   {
@@ -31,16 +31,12 @@
 
 use lichen_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
-    circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr,
-    setup::load_verification_key, Prover, Verifier, TREE_DEPTH,
+    circuits::unshield::UnshieldCircuit, commitment_hash, nullifier_hash, random_scalar_bytes,
+    recipient_hash, recipient_preimage_from_bytes, Prover, Verifier, TREE_DEPTH,
 };
 
-use ark_bn254::Fr;
-use ark_ff::PrimeField;
-use ark_std::rand::rngs::OsRng;
-use ark_std::UniformRand;
 use serde_json::json;
-use std::{fs, path::PathBuf, process};
+use std::{fs, process};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,21 +45,30 @@ fn main() {
     }
     let cmd = &args[1];
 
-    // --pk-dir <path>  (directory containing pk_shield.bin etc.)
-    let pk_dir = find_arg(&args, "--pk-dir").unwrap_or_else(|| {
-        eprintln!("error: --pk-dir is required");
-        process::exit(1);
-    });
-
     match cmd.as_str() {
-        "shield" => cmd_shield(&args, &pk_dir),
-        "unshield" => cmd_unshield(&args, &pk_dir),
-        "transfer" => cmd_transfer(&args, &pk_dir),
+        "shield" => cmd_shield(&args),
+        "unshield" => cmd_unshield(&args),
+        "transfer" => cmd_transfer(&args),
         _ => usage(),
     }
 }
 
-fn cmd_shield(args: &[String], pk_dir: &str) {
+fn parse_hex_32_or_exit(value: &str, label: &str) -> [u8; 32] {
+    let bytes = hex::decode(value).unwrap_or_else(|e| {
+        eprintln!("error: invalid {} hex: {}", label, e);
+        process::exit(1);
+    });
+    if bytes.len() != 32 {
+        eprintln!("error: {} must be 32 bytes", label);
+        process::exit(1);
+    }
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+fn cmd_shield(args: &[String]) {
     let amount: u64 = find_arg(args, "--amount")
         .unwrap_or_else(|| {
             eprintln!("error: --amount is required");
@@ -75,46 +80,26 @@ fn cmd_shield(args: &[String], pk_dir: &str) {
             process::exit(1);
         });
 
-    let pk_bytes = fs::read(PathBuf::from(pk_dir).join("pk_shield.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read pk_shield.bin: {}", e);
-        process::exit(1);
-    });
-    let vk_bytes = fs::read(PathBuf::from(pk_dir).join("vk_shield.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read vk_shield.bin: {}", e);
-        process::exit(1);
-    });
-
-    let mut prover = Prover::new();
-    prover.load_shield_key(&pk_bytes).unwrap_or_else(|e| {
-        eprintln!("error: failed to parse pk_shield.bin: {}", e);
-        process::exit(1);
-    });
-    let vk = load_verification_key(&vk_bytes).unwrap_or_else(|e| {
-        eprintln!("error: failed to parse vk_shield.bin: {}", e);
-        process::exit(1);
-    });
+    let prover = Prover::new();
 
     // Generate random blinding / serial / spending key
-    let blinding = Fr::rand(&mut OsRng);
-    let serial = Fr::rand(&mut OsRng);
-    let spending_key = Fr::rand(&mut OsRng);
+    let blinding = random_scalar_bytes();
+    let serial = random_scalar_bytes();
+    let spending_key = random_scalar_bytes();
 
-    let amount_fr = Fr::from(amount);
-    let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
-    let commitment = fr_to_bytes(&commitment_fr);
+    let commitment = commitment_hash(amount, &blinding);
 
     // Build circuit
-    let circuit = ShieldCircuit::new(amount, amount, blinding, commitment_fr);
+    let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment);
 
     // Prove
-    let mut proof = prover.prove_shield(circuit).unwrap_or_else(|e| {
+    let proof = prover.prove_shield(circuit).unwrap_or_else(|e| {
         eprintln!("error: proof generation failed: {}", e);
         process::exit(1);
     });
-    proof.public_inputs = vec![fr_to_bytes(&amount_fr), commitment];
 
     // Verify locally
-    let verifier = Verifier::from_vk_shield(vk);
+    let verifier = Verifier::new();
     let ok = verifier.verify(&proof).unwrap_or_else(|e| {
         eprintln!("error: proof self-check failed: {}", e);
         process::exit(1);
@@ -127,14 +112,14 @@ fn cmd_shield(args: &[String], pk_dir: &str) {
         "amount": amount,
         "commitment": hex::encode(commitment),
         "proof": hex::encode(&proof.proof_bytes),
-        "blinding": hex::encode(fr_to_bytes(&blinding)),
-        "serial": hex::encode(fr_to_bytes(&serial)),
-        "spending_key": hex::encode(fr_to_bytes(&spending_key)),
+        "blinding": hex::encode(blinding),
+        "serial": hex::encode(serial),
+        "spending_key": hex::encode(spending_key),
     });
     println!("{}", serde_json::to_string(&out).unwrap());
 }
 
-fn cmd_unshield(args: &[String], pk_dir: &str) {
+fn cmd_unshield(args: &[String]) {
     let amount: u64 = find_arg(args, "--amount")
         .unwrap_or_else(|| {
             eprintln!("error: --amount is required");
@@ -150,56 +135,33 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         eprintln!("error: --merkle-root is required");
         process::exit(1);
     });
-    let merkle_root_bytes: Vec<u8> = hex::decode(&merkle_root_hex).unwrap_or_else(|e| {
-        eprintln!("error: invalid --merkle-root hex: {}", e);
-        process::exit(1);
-    });
-    if merkle_root_bytes.len() != 32 {
-        eprintln!("error: --merkle-root must be 32 bytes");
-        process::exit(1);
-    }
+    let merkle_root_bytes = parse_hex_32_or_exit(&merkle_root_hex, "--merkle-root");
 
     let recipient_hex = find_arg(args, "--recipient").unwrap_or_else(|| {
         eprintln!("error: --recipient is required");
         process::exit(1);
     });
-    let recipient_bytes: Vec<u8> = hex::decode(&recipient_hex).unwrap_or_else(|e| {
-        eprintln!("error: invalid --recipient hex: {}", e);
-        process::exit(1);
-    });
-    if recipient_bytes.len() != 32 {
-        eprintln!("error: --recipient must be 32 bytes");
-        process::exit(1);
-    }
+    let recipient_bytes = parse_hex_32_or_exit(&recipient_hex, "--recipient");
 
     // Read & parse a previously generated shield's blinding/serial.
-    // Accept via --blinding and --serial flags (hex-encoded Fr).
+    // Accept via --blinding and --serial flags (hex-encoded canonical bytes).
     let blinding_hex = find_arg(args, "--blinding").unwrap_or_else(|| {
         eprintln!("error: --blinding is required (from shield output)");
         process::exit(1);
     });
-    let blinding = Fr::from_le_bytes_mod_order(&hex::decode(&blinding_hex).unwrap_or_else(|e| {
-        eprintln!("error: invalid --blinding hex: {}", e);
-        process::exit(1);
-    }));
+    let blinding = parse_hex_32_or_exit(&blinding_hex, "--blinding");
 
     let serial_hex = find_arg(args, "--serial").unwrap_or_else(|| {
         eprintln!("error: --serial is required (from shield output)");
         process::exit(1);
     });
-    let serial = Fr::from_le_bytes_mod_order(&hex::decode(&serial_hex).unwrap_or_else(|e| {
-        eprintln!("error: invalid --serial hex: {}", e);
-        process::exit(1);
-    }));
+    let serial = parse_hex_32_or_exit(&serial_hex, "--serial");
 
     // Accept --spending-key (hex) or generate one.
     let spending_key = if let Some(sk_hex) = find_arg(args, "--spending-key") {
-        Fr::from_le_bytes_mod_order(&hex::decode(&sk_hex).unwrap_or_else(|e| {
-            eprintln!("error: invalid --spending-key hex: {}", e);
-            process::exit(1);
-        }))
+        parse_hex_32_or_exit(&sk_hex, "--spending-key")
     } else {
-        Fr::rand(&mut OsRng)
+        random_scalar_bytes()
     };
 
     // Accept --merkle-path-json (file with JSON array of TREE_DEPTH hex siblings)
@@ -231,44 +193,22 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         vec![false; TREE_DEPTH]
     };
 
-    let merkle_path: Vec<Fr> = merkle_path_hex
+    let merkle_path: Vec<[u8; 32]> = merkle_path_hex
         .iter()
-        .map(|h| {
-            let bytes = hex::decode(h).unwrap();
-            Fr::from_le_bytes_mod_order(&bytes)
-        })
+        .map(|h| parse_hex_32_or_exit(h, "merkle path sibling"))
         .collect();
 
-    let pk_bytes = fs::read(PathBuf::from(pk_dir).join("pk_unshield.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read pk_unshield.bin: {}", e);
-        process::exit(1);
-    });
-    let vk_bytes = fs::read(PathBuf::from(pk_dir).join("vk_unshield.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read vk_unshield.bin: {}", e);
-        process::exit(1);
-    });
-    let mut prover = Prover::new();
-    prover.load_unshield_key(&pk_bytes).unwrap_or_else(|e| {
-        eprintln!("error: failed to parse pk_unshield.bin: {}", e);
-        process::exit(1);
-    });
-    let vk = load_verification_key(&vk_bytes).unwrap();
+    let prover = Prover::new();
 
-    let amount_fr = Fr::from(amount);
-    let nullifier_fr = poseidon_hash_fr(serial, spending_key);
-    let nullifier = fr_to_bytes(&nullifier_fr);
+    let nullifier = nullifier_hash(&serial, &spending_key);
+    let recipient_preimage = recipient_preimage_from_bytes(recipient_bytes);
+    let recipient_hash = recipient_hash(&recipient_preimage);
 
-    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
-
-    let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_bytes);
-    let recipient_hash_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
-    let recipient_hash = fr_to_bytes(&recipient_hash_fr);
-
-    let circuit = UnshieldCircuit::new(
-        merkle_root_fr,
-        nullifier_fr,
+    let circuit = UnshieldCircuit::new_bytes(
+        merkle_root_bytes,
+        nullifier,
         amount,
-        recipient_hash_fr,
+        recipient_hash,
         amount,
         blinding,
         serial,
@@ -278,18 +218,12 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         path_bits,
     );
 
-    let mut proof = prover.prove_unshield(circuit).unwrap_or_else(|e| {
+    let proof = prover.prove_unshield(circuit).unwrap_or_else(|e| {
         eprintln!("error: proof generation failed: {}", e);
         process::exit(1);
     });
-    proof.public_inputs = vec![
-        fr_to_bytes(&merkle_root_fr),
-        nullifier,
-        fr_to_bytes(&amount_fr),
-        recipient_hash,
-    ];
 
-    let verifier = Verifier::from_vk_unshield(vk);
+    let verifier = Verifier::new();
     let ok = verifier.verify(&proof).unwrap();
     assert!(ok, "proof failed self-verification");
 
@@ -297,7 +231,7 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         "type": "unshield",
         "amount": amount,
         "nullifier": hex::encode(nullifier),
-        "merkle_root": hex::encode(&merkle_root_bytes),
+        "merkle_root": hex::encode(merkle_root_bytes),
         "recipient_hash": hex::encode(recipient_hash),
         "proof": hex::encode(&proof.proof_bytes),
     });
@@ -313,10 +247,10 @@ fn find_arg(args: &[String], flag: &str) -> Option<String> {
 fn usage() -> ! {
     eprintln!(
         "Usage:\n  \
-         zk-prove shield   --amount <spores> --pk-dir <path>\n  \
-         zk-prove unshield --amount <spores> --pk-dir <path> --merkle-root <hex> \
+         zk-prove shield   --amount <spores>\n  \
+         zk-prove unshield --amount <spores> --merkle-root <hex> \
                            --recipient <hex> --blinding <hex> --serial <hex>\n  \
-         zk-prove transfer --pk-dir <path> --transfer-json <file>"
+         zk-prove transfer --transfer-json <file>"
     );
     process::exit(1);
 }
@@ -348,7 +282,7 @@ struct TransferOutput {
     blinding: Option<String>,
 }
 
-fn cmd_transfer(args: &[String], pk_dir: &str) {
+fn cmd_transfer(args: &[String]) {
     let witness_file = find_arg(args, "--transfer-json").unwrap_or_else(|| {
         eprintln!("error: --transfer-json is required");
         process::exit(1);
@@ -378,42 +312,23 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
     }
 
     // Parse merkle root
-    let merkle_root_bytes = hex::decode(&witness.merkle_root).unwrap_or_else(|e| {
-        eprintln!("error: invalid merkle_root hex: {}", e);
-        process::exit(1);
-    });
-    if merkle_root_bytes.len() != 32 {
-        eprintln!("error: merkle_root must be 32 bytes");
-        process::exit(1);
-    }
-    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
+    let merkle_root_bytes = parse_hex_32_or_exit(&witness.merkle_root, "merkle_root");
 
     // Parse inputs
     let mut input_values = [0u64; 2];
-    let mut input_blindings_fr = [Fr::from(0u64); 2];
-    let mut input_serials_fr = [Fr::from(0u64); 2];
-    let mut spending_keys_fr = [Fr::from(0u64); 2];
-    let mut input_merkle_paths: [Vec<Fr>; 2] = [vec![], vec![]];
+    let mut input_blindings = [[0u8; 32]; 2];
+    let mut input_serials = [[0u8; 32]; 2];
+    let mut spending_keys = [[0u8; 32]; 2];
+    let mut input_merkle_paths: [Vec<[u8; 32]>; 2] = [vec![], vec![]];
     let mut input_path_bits: [Vec<bool>; 2] = [vec![], vec![]];
-    let mut nullifiers_fr = [Fr::from(0u64); 2];
+    let mut nullifiers = [[0u8; 32]; 2];
 
     for (i, inp) in witness.inputs.iter().enumerate() {
         input_values[i] = inp.amount;
-        input_blindings_fr[i] =
-            Fr::from_le_bytes_mod_order(&hex::decode(&inp.blinding).unwrap_or_else(|e| {
-                eprintln!("error: input[{}].blinding invalid hex: {}", i, e);
-                process::exit(1);
-            }));
-        input_serials_fr[i] =
-            Fr::from_le_bytes_mod_order(&hex::decode(&inp.serial).unwrap_or_else(|e| {
-                eprintln!("error: input[{}].serial invalid hex: {}", i, e);
-                process::exit(1);
-            }));
-        spending_keys_fr[i] =
-            Fr::from_le_bytes_mod_order(&hex::decode(&inp.spending_key).unwrap_or_else(|e| {
-                eprintln!("error: input[{}].spending_key invalid hex: {}", i, e);
-                process::exit(1);
-            }));
+        input_blindings[i] = parse_hex_32_or_exit(&inp.blinding, &format!("input[{}].blinding", i));
+        input_serials[i] = parse_hex_32_or_exit(&inp.serial, &format!("input[{}].serial", i));
+        spending_keys[i] =
+            parse_hex_32_or_exit(&inp.spending_key, &format!("input[{}].spending_key", i));
         if inp.merkle_path.len() != TREE_DEPTH {
             eprintln!(
                 "error: input[{}].merkle_path has {} siblings, expected {}",
@@ -426,13 +341,7 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
         input_merkle_paths[i] = inp
             .merkle_path
             .iter()
-            .map(|h| {
-                let bytes = hex::decode(h).unwrap_or_else(|e| {
-                    eprintln!("error: input[{}].merkle_path sibling hex: {}", i, e);
-                    process::exit(1);
-                });
-                Fr::from_le_bytes_mod_order(&bytes)
-            })
+            .map(|h| parse_hex_32_or_exit(h, &format!("input[{}].merkle_path sibling", i)))
             .collect();
         if inp.path_bits.len() != TREE_DEPTH {
             eprintln!(
@@ -445,26 +354,22 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
         }
         input_path_bits[i] = inp.path_bits.clone();
 
-        // Compute nullifier = Poseidon(serial, spending_key)
-        nullifiers_fr[i] = poseidon_hash_fr(input_serials_fr[i], spending_keys_fr[i]);
+        nullifiers[i] = nullifier_hash(&input_serials[i], &spending_keys[i]);
     }
 
     // Parse outputs (generate random blinding if not provided)
     let mut output_values = [0u64; 2];
-    let mut output_blindings_fr = [Fr::from(0u64); 2];
-    let mut output_serials_fr = [Fr::from(0u64); 2]; // new serial for each output note
+    let mut output_blindings = [[0u8; 32]; 2];
+    let mut output_serials = [[0u8; 32]; 2]; // new serial for each output note
 
     for (j, out) in witness.outputs.iter().enumerate() {
         output_values[j] = out.amount;
-        output_blindings_fr[j] = if let Some(ref b_hex) = out.blinding {
-            Fr::from_le_bytes_mod_order(&hex::decode(b_hex).unwrap_or_else(|e| {
-                eprintln!("error: output[{}].blinding invalid hex: {}", j, e);
-                process::exit(1);
-            }))
+        output_blindings[j] = if let Some(ref b_hex) = out.blinding {
+            parse_hex_32_or_exit(b_hex, &format!("output[{}].blinding", j))
         } else {
-            Fr::rand(&mut OsRng)
+            random_scalar_bytes()
         };
-        output_serials_fr[j] = Fr::rand(&mut OsRng);
+        output_serials[j] = random_scalar_bytes();
     }
 
     // Value conservation check (client-side, circuit enforces this too)
@@ -479,70 +384,36 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
     }
 
     // Compute output commitments
-    let mut output_commitments_fr = [Fr::from(0u64); 2];
     let mut output_commitments_bytes = [[0u8; 32]; 2];
     for j in 0..2 {
-        let val_fr = Fr::from(output_values[j]);
-        output_commitments_fr[j] = poseidon_hash_fr(val_fr, output_blindings_fr[j]);
-        output_commitments_bytes[j] = fr_to_bytes(&output_commitments_fr[j]);
+        output_commitments_bytes[j] = commitment_hash(output_values[j], &output_blindings[j]);
     }
 
     // Build circuit
-    let circuit = TransferCircuit::new(
-        merkle_root_fr,
-        nullifiers_fr,
-        output_commitments_fr,
+    let circuit = TransferCircuit::new_bytes(
+        merkle_root_bytes,
+        nullifiers,
+        output_commitments_bytes,
         input_values,
-        input_blindings_fr,
-        input_serials_fr,
-        spending_keys_fr,
+        input_blindings,
+        input_serials,
+        spending_keys,
         input_merkle_paths,
         input_path_bits,
         output_values,
-        output_blindings_fr,
+        output_blindings,
     );
 
-    // Load proving + verification keys
-    let pk_bytes = fs::read(PathBuf::from(pk_dir).join("pk_transfer.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read pk_transfer.bin: {}", e);
-        process::exit(1);
-    });
-    let vk_bytes = fs::read(PathBuf::from(pk_dir).join("vk_transfer.bin")).unwrap_or_else(|e| {
-        eprintln!("error: failed to read vk_transfer.bin: {}", e);
-        process::exit(1);
-    });
-
-    let mut prover = Prover::new();
-    prover.load_transfer_key(&pk_bytes).unwrap_or_else(|e| {
-        eprintln!("error: failed to parse pk_transfer.bin: {}", e);
-        process::exit(1);
-    });
-    let vk = load_verification_key(&vk_bytes).unwrap_or_else(|e| {
-        eprintln!("error: failed to parse vk_transfer.bin: {}", e);
-        process::exit(1);
-    });
+    let prover = Prover::new();
 
     // Generate proof
-    let mut proof = prover.prove_transfer(circuit).unwrap_or_else(|e| {
+    let proof = prover.prove_transfer(circuit).unwrap_or_else(|e| {
         eprintln!("error: proof generation failed: {}", e);
         process::exit(1);
     });
 
-    // Set public inputs: [merkle_root, null_a, null_b, comm_c, comm_d]
-    let nullifier_bytes = [
-        fr_to_bytes(&nullifiers_fr[0]),
-        fr_to_bytes(&nullifiers_fr[1]),
-    ];
-    proof.public_inputs = vec![
-        fr_to_bytes(&merkle_root_fr),
-        nullifier_bytes[0],
-        nullifier_bytes[1],
-        output_commitments_bytes[0],
-        output_commitments_bytes[1],
-    ];
-
     // Verify locally
-    let verifier = Verifier::from_vk_transfer(vk);
+    let verifier = Verifier::new();
     let ok = verifier.verify(&proof).unwrap_or_else(|e| {
         eprintln!("error: proof self-check failed: {}", e);
         process::exit(1);
@@ -552,9 +423,9 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
     // Output JSON
     let out = json!({
         "type": "transfer",
-        "merkle_root": hex::encode(&merkle_root_bytes),
-        "nullifier_a": hex::encode(nullifier_bytes[0]),
-        "nullifier_b": hex::encode(nullifier_bytes[1]),
+        "merkle_root": hex::encode(merkle_root_bytes),
+        "nullifier_a": hex::encode(nullifiers[0]),
+        "nullifier_b": hex::encode(nullifiers[1]),
         "commitment_c": hex::encode(output_commitments_bytes[0]),
         "commitment_d": hex::encode(output_commitments_bytes[1]),
         "proof": hex::encode(&proof.proof_bytes),
@@ -562,14 +433,14 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
         "outputs": [
             {
                 "amount": output_values[0],
-                "blinding": hex::encode(fr_to_bytes(&output_blindings_fr[0])),
-                "serial": hex::encode(fr_to_bytes(&output_serials_fr[0])),
+                "blinding": hex::encode(output_blindings[0]),
+                "serial": hex::encode(output_serials[0]),
                 "commitment": hex::encode(output_commitments_bytes[0]),
             },
             {
                 "amount": output_values[1],
-                "blinding": hex::encode(fr_to_bytes(&output_blindings_fr[1])),
-                "serial": hex::encode(fr_to_bytes(&output_serials_fr[1])),
+                "blinding": hex::encode(output_blindings[1]),
+                "serial": hex::encode(output_serials[1]),
                 "commitment": hex::encode(output_commitments_bytes[1]),
             },
         ],

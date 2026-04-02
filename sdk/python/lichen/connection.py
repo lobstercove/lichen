@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 RPC_NO_BLOCKS_RETRIES = max(1, int(os.getenv("LICHEN_RPC_NO_BLOCKS_RETRIES", "20")))
 RPC_NO_BLOCKS_DELAY_SECS = max(0.05, float(os.getenv("LICHEN_RPC_NO_BLOCKS_DELAY_SECS", "0.5")))
+RPC_TRANSPORT_RETRIES = max(1, int(os.getenv("LICHEN_RPC_TRANSPORT_RETRIES", "3")))
+RPC_TRANSPORT_DELAY_SECS = max(0.05, float(os.getenv("LICHEN_RPC_TRANSPORT_DELAY_SECS", "0.25")))
 
 
 class Connection:
@@ -48,28 +50,42 @@ class Connection:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
 
-    async def _rpc(self, method: str, params: List[Any] = None) -> Any:
+    async def _rpc(
+        self,
+        method: str,
+        params: List[Any] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
         """Make an RPC call"""
         if params is None:
             params = []
 
         attempts = RPC_NO_BLOCKS_RETRIES
+        transport_failures = 0
         for attempt in range(attempts):
             client = await self._get_client()
-            response = await client.post(
-                self.rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": self._next_id,
-                    "method": method,
-                    "params": params
-                },
-            )
+            request_id = self._next_id
             self._next_id += 1
-
-            # J-2: Check HTTP status before parsing JSON
-            response.raise_for_status()
-            data = response.json()
+            try:
+                response = await client.post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": method,
+                        "params": params
+                    },
+                    headers=headers,
+                )
+                # J-2: Check HTTP status before parsing JSON
+                response.raise_for_status()
+                data = response.json()
+            except httpx.TransportError as exc:
+                transport_failures += 1
+                if transport_failures < RPC_TRANSPORT_RETRIES:
+                    await asyncio.sleep(RPC_TRANSPORT_DELAY_SECS)
+                    continue
+                raise Exception(f"RPC transport error: {exc}") from exc
 
             if "error" in data:
                 message = str(data["error"].get("message", "RPC error"))
@@ -188,7 +204,7 @@ class Connection:
     async def stake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send a stake transaction"""
         blockhash = await self.get_recent_blockhash()
-        instruction = TransactionBuilder.stake(from_keypair.public_key(), validator, amount)
+        instruction = TransactionBuilder.stake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
@@ -198,7 +214,7 @@ class Connection:
     async def unstake(self, from_keypair: Keypair, validator: PublicKey, amount: int) -> str:
         """Create and send an unstake request transaction"""
         blockhash = await self.get_recent_blockhash()
-        instruction = TransactionBuilder.unstake(from_keypair.public_key(), validator, amount)
+        instruction = TransactionBuilder.unstake(from_keypair.pubkey(), validator, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
@@ -230,7 +246,7 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        instruction = TransactionBuilder.transfer(from_keypair.public_key(), to, amount)
+        instruction = TransactionBuilder.transfer(from_keypair.pubkey(), to, amount)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
@@ -255,7 +271,7 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        instruction = TransactionBuilder.deploy_contract(deployer.public_key(), code, init_data)
+        instruction = TransactionBuilder.deploy_contract(deployer.pubkey(), code, init_data)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)
@@ -285,7 +301,7 @@ class Connection:
         """
         blockhash = await self.get_recent_blockhash()
         instruction = TransactionBuilder.call_contract(
-            caller.public_key(), contract, function_name, args, value
+            caller.pubkey(), contract, function_name, args, value
         )
         transaction = (TransactionBuilder()
             .add(instruction)
@@ -311,7 +327,7 @@ class Connection:
             Transaction signature
         """
         blockhash = await self.get_recent_blockhash()
-        instruction = TransactionBuilder.upgrade_contract(owner.public_key(), contract, code)
+        instruction = TransactionBuilder.upgrade_contract(owner.pubkey(), contract, code)
         transaction = (TransactionBuilder()
             .add(instruction)
             .set_recent_blockhash(blockhash)

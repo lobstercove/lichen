@@ -24,13 +24,11 @@
  * Prerequisites:
  *   - Validator running with --dev-mode on port 8899
  *   - Contracts deployed (genesis auto-deploy)
- *   - npm install tweetnacl
+ *   - npm install ws
  */
 'use strict';
 
-let nacl;
-try { nacl = require('tweetnacl'); }
-catch { console.error('Missing dependency: npm install tweetnacl'); process.exit(1); }
+const pq = require('./helpers/pq-node');
 const crypto = require('crypto');
 const { loadFundedWallets } = require('./helpers/funded-wallets');
 
@@ -140,12 +138,10 @@ async function resolveMarketIdByQuestion(question, creator, expectedCloseSlot = 
 // Keypair
 // ═══════════════════════════════════════════════════════════════════════════════
 function genKeypair() {
-    const kp = nacl.sign.keyPair();
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 function keypairFromSeed(seed32) {
-    const kp = nacl.sign.keyPair.fromSeed(seed32);
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.keypairFromSeed(seed32);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -191,8 +187,8 @@ async function sendTx(keypair, instructions, computeBudget = null) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address, computeBudget);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh, compute_budget: computeBudget || undefined } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh, compute_budget: computeBudget || undefined } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     return rpc('sendTransaction', [b64]);
 }
@@ -207,8 +203,8 @@ async function simulateTx(keypair, instructions) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     return rpc('simulateTransaction', [b64]);
 }
@@ -399,8 +395,8 @@ function loadGenesisAdmin() {
         const files = fs.readdirSync(genesisKeysDir).filter(f => f.startsWith('genesis-primary'));
         if (files.length === 0) continue;
         const kpData = JSON.parse(fs.readFileSync(path.join(genesisKeysDir, files[0]), 'utf8'));
-        if (kpData.secret_key && kpData.pubkey) {
-            const seed = hexToBytes(kpData.secret_key); // 32 bytes
+        if (Array.isArray(kpData.privateKey) && kpData.privateKey.length === 32) {
+            const seed = new Uint8Array(kpData.privateKey);
             const kp = keypairFromSeed(seed);
             console.log(`  Loaded genesis admin: ${kp.address} (from ${dir})`);
             return kp;
@@ -410,7 +406,7 @@ function loadGenesisAdmin() {
     const deployerPath = path.join(process.cwd(), 'keypairs', 'deployer.json');
     if (fs.existsSync(deployerPath)) {
         const dp = JSON.parse(fs.readFileSync(deployerPath, 'utf8'));
-        if (dp.privateKey && dp.publicKey) {
+        if (Array.isArray(dp.privateKey) && dp.privateKey.length === 32) {
             const seed = new Uint8Array(dp.privateKey);
             const kp = keypairFromSeed(seed);
             console.log(`  Loaded deployer: ${kp.address}`);
@@ -424,6 +420,7 @@ function loadGenesisAdmin() {
 // MAIN TEST
 // ═══════════════════════════════════════════════════════════════════════════════
 async function main() {
+    await pq.init();
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('  Lichen Prediction Market — E2E Test Suite');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

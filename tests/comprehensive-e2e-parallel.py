@@ -34,6 +34,7 @@ RPC_ENDPOINTS = os.getenv("RPC_ENDPOINTS", "").split(",") if os.getenv("RPC_ENDP
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "40"))  # Higher for parallel load + 3-validator consensus
 DEPLOYER_PATH = os.getenv("AGENT_KEYPAIR") or str(ROOT / "keypairs" / "deployer.json")
+ZK_KEY_DIR = os.getenv("ZK_KEY_DIR", str(ROOT / "zk-keys"))
 REQUIRE_FUNDED_DEPLOYER = os.getenv("REQUIRE_FUNDED_DEPLOYER", "0") == "1"
 RELAXED_MIN_DEPLOYER_SPORES = max(1, int(os.getenv("RELAXED_MIN_DEPLOYER_SPORES", "20000000000")))
 SECONDARY_FUND_TARGET_SPORES = max(1, int(os.getenv("SECONDARY_FUND_TARGET_SPORES", "10000000000")))
@@ -67,6 +68,8 @@ SYMBOL_TO_DIR = {
     "PREDICT": "prediction_market", "BOUNTY": "bountyboard", "AUCTION": "lichenauction",
     "WBNB": "wbnb_token", "SHIELDED": "shielded_pool",
 }
+
+REQUIRED_DISCOVERED_CONTRACTS = {name for name in SYMBOL_TO_DIR.values() if name != "lichencoin"}
 
 # Dispatcher contracts (use opcode ABI via call())
 DISPATCHER_CONTRACTS = {
@@ -110,20 +113,7 @@ def _extract_spores(bal) -> int:
 
 
 def load_keypair_flexible(path: Path) -> Keypair:
-    try:
-        return Keypair.load(path)
-    except Exception:
-        pass
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        pk = raw.get("privateKey") or raw.get("secret_key")
-        if isinstance(pk, list) and len(pk) == 32:
-            return Keypair.from_seed(bytes(pk))
-        if isinstance(pk, str):
-            h = pk.strip().lower().removeprefix("0x")
-            if len(h) == 64:
-                return Keypair.from_seed(bytes.fromhex(h))
-    raise ValueError(f"unsupported keypair format: {path}")
+    return Keypair.load(path)
 
 
 # ─── Binary encoding helpers ───
@@ -189,7 +179,7 @@ async def call_named(
     payload = json.dumps({"Call": {"function": func, "args": list(args_bytes), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -209,7 +199,7 @@ async def call_named_binary(
     payload = json.dumps({"Call": {"function": func, "args": list(full_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -224,7 +214,7 @@ async def call_opcode(
     payload = json.dumps({"Call": {"function": "call", "args": list(opcode_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), program],
+        accounts=[caller.address(), program],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -360,8 +350,8 @@ async def discover_contracts(conn: Connection) -> Dict[str, PublicKey]:
 def build_named_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    dp = str(deployer.public_key())
-    sp = str(secondary.public_key())
+    dp = str(deployer.address())
+    sp = str(secondary.address())
     zero = "11111111111111111111111111111111"
     quote = str(contracts.get("lichencoin") or dp)
     base = str(contracts.get("weth_token") or dp)
@@ -830,8 +820,8 @@ def build_named_scenarios(
 def build_opcode_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    admin = deployer.public_key().to_bytes()
-    sec = secondary.public_key().to_bytes()
+    admin = deployer.address().to_bytes()
+    sec = secondary.address().to_bytes()
     zero = b'\x00' * 32
     licn = contracts.get("lichencoin", PublicKey(zero)).to_bytes()
     weth = contracts.get("weth_token", PublicKey(zero)).to_bytes()
@@ -1269,7 +1259,7 @@ async def main() -> int:
     secondary = Keypair.generate()
 
     try:
-        deployer_bal = await conn.get_balance(deployer.public_key())
+        deployer_bal = await conn.get_balance(deployer.address())
         deployer_spores = _extract_spores(deployer_bal)
     except Exception:
         deployer_spores = 0
@@ -1328,7 +1318,7 @@ async def main() -> int:
     # Fund accounts
     for kp, label in [(deployer, "deployer"), (secondary, "secondary")]:
         try:
-            resp = await conn._rpc("requestAirdrop", [str(kp.public_key()), 100])
+            resp = await conn._rpc("requestAirdrop", [str(kp.address()), 100])
             report("PASS", f"{label} funded (100 LICN)")
         except Exception as e:
             report("PASS", f"{label} airdrop skipped: {e}")
@@ -1339,14 +1329,14 @@ async def main() -> int:
     secondary_funded = False
     for ci, fund_conn in enumerate(conns):
         try:
-            bal = await fund_conn.get_balance(secondary.public_key())
+            bal = await fund_conn.get_balance(secondary.address())
             bal_spores = _extract_spores(bal)
             if bal_spores >= SECONDARY_FUND_MIN_SPORES:
                 if ci == 0:
                     report("PASS", f"secondary already funded ({bal_spores} spores)")
                 secondary_funded = True
                 continue
-            deployer_latest = await fund_conn.get_balance(deployer.public_key())
+            deployer_latest = await fund_conn.get_balance(deployer.address())
             deployer_spendable = _extract_spores(deployer_latest)
             transfer_budget = max(0, deployer_spendable - SECONDARY_FUND_FEE_BUFFER_SPORES)
             transfer_amount = min(SECONDARY_FUND_TARGET_SPORES, transfer_budget)
@@ -1355,7 +1345,7 @@ async def main() -> int:
                     report("SKIP", f"secondary funding skipped: deployer spendable too low ({deployer_spendable} spores)")
                 continue
             blockhash = await fund_conn.get_recent_blockhash()
-            ix = TransactionBuilder.transfer(deployer.public_key(), secondary.public_key(), transfer_amount)
+            ix = TransactionBuilder.transfer(deployer.address(), secondary.address(), transfer_amount)
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
             sig = await fund_conn.send_transaction(tx)
             confirmed = await wait_tx(fund_conn, sig)
@@ -1376,10 +1366,15 @@ async def main() -> int:
 
     # Discover contracts
     contracts = await discover_contracts(conn)
-    report("PASS" if len(contracts) == 29 else "FAIL", f"discovered {len(contracts)}/28 contracts")
+    discovered_required = REQUIRED_DISCOVERED_CONTRACTS & set(contracts.keys())
+    required_count = len(REQUIRED_DISCOVERED_CONTRACTS)
+    report(
+        "PASS" if len(discovered_required) == required_count else "FAIL",
+        f"discovered {len(discovered_required)}/{required_count} registry-backed contracts",
+    )
 
-    if len(contracts) < 29:
-        missing = set(SYMBOL_TO_DIR.values()) - set(contracts.keys())
+    if len(discovered_required) < required_count:
+        missing = REQUIRED_DISCOVERED_CONTRACTS - set(contracts.keys())
         for m in sorted(missing):
             report("FAIL", f"missing contract: {m}")
 
@@ -1392,7 +1387,7 @@ async def main() -> int:
             for kp, kp_label in [(deployer, "deployer"), (secondary, "secondary")]:
                 for attempt in range(20):
                     try:
-                        bal = await c.get_balance(kp.public_key())
+                        bal = await c.get_balance(kp.address())
                         if _extract_spores(bal) >= SECONDARY_FUND_MIN_SPORES:
                             break
                     except Exception:
@@ -1427,6 +1422,9 @@ async def main() -> int:
     for contract_name, steps in named_scenarios.items():
         program = contracts.get(contract_name)
         if not program:
+            if contract_name == "lichencoin":
+                report("SKIP", "lichencoin: native LICN path has no registry-backed contract")
+                continue
             report("FAIL", f"{contract_name}: not deployed")
             continue
         c = conns[conn_idx % len(conns)]

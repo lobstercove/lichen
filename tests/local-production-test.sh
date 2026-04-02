@@ -498,13 +498,6 @@ SEEDEOF
     export HOME="$V_HOME"
     export LICHEN_SIGNER_BIND="0.0.0.0:${V_SIGNER_PORT}"
 
-    # Point ZK keys to real home (same as run-validator.sh)
-    if [[ -d "${REAL_HOME}/.lichen/zk" ]]; then
-        export LICHEN_ZK_SHIELD_VK_PATH="${REAL_HOME}/.lichen/zk/vk_shield.bin"
-        export LICHEN_ZK_UNSHIELD_VK_PATH="${REAL_HOME}/.lichen/zk/vk_unshield.bin"
-        export LICHEN_ZK_TRANSFER_VK_PATH="${REAL_HOME}/.lichen/zk/vk_transfer.bin"
-    fi
-
     # Launch the validator binary DIRECTLY — this is how agents run in production.
     # No run-validator.sh, no systemd — just the binary with proper args.
     "$REPO_ROOT/target/release/lichen-validator" \

@@ -4,7 +4,7 @@
 //
 // Covers every JSON-RPC method across all three dispatch planes:
 //   - Native Lichen RPC (108 methods on /)
-//   - Solana-compat RPC (13 methods on /solana)
+//   - Solana-compat RPC (13 methods on /solana-compat)
 //   - EVM-compat RPC (20 methods on /evm)
 // Plus all REST API endpoints on /api/v1/*.
 //
@@ -1634,52 +1634,6 @@ async fn test_native_unstake_no_sender() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 18: MossStake liquid staking write endpoints
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[tokio::test]
-async fn test_native_stake_to_mossstake() {
-    let app = fresh_app();
-    let resp = rpc_p(
-        &app,
-        "/",
-        "stakeToMossStake",
-        json!(["11111111111111111111111111111111", 1000]),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-}
-
-#[tokio::test]
-async fn test_native_unstake_from_mossstake() {
-    let app = fresh_app();
-    let resp = rpc_p(
-        &app,
-        "/",
-        "unstakeFromMossStake",
-        json!(["11111111111111111111111111111111", 1000]),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-}
-
-#[tokio::test]
-async fn test_native_claim_unstaked_tokens() {
-    let app = fresh_app();
-    let resp = rpc_p(
-        &app,
-        "/",
-        "claimUnstakedTokens",
-        json!(["11111111111111111111111111111111"]),
-    )
-    .await
-    .unwrap();
-    assert_valid_rpc(&resp);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 //  SECTION 19: Method not found
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2343,8 +2297,9 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
         data: vec![3, 0, 0, 0, 0, 0xCA, 0x9A, 0x3B, 0, 0, 0, 0, 0, 0, 0, 0],
     };
     let msg = Message::new(vec![ix], Hash::default());
+    let tx_signer = Keypair::from_seed(&[99u8; 32]);
     let tx = Transaction {
-        signatures: vec![[99u8; 64]],
+        signatures: vec![tx_signer.sign(&msg.serialize())],
         message: msg,
         tx_type: Default::default(),
     };
@@ -4157,9 +4112,9 @@ async fn test_send_transaction_wire_envelope() {
     }
 }
 
-/// sendTransaction still accepts legacy bincode (no envelope).
+/// sendTransaction still accepts raw bincode (no envelope).
 #[tokio::test]
-async fn test_send_transaction_legacy_bincode() {
+async fn test_send_transaction_raw_bincode() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
@@ -4202,9 +4157,9 @@ async fn test_send_transaction_legacy_bincode() {
         tx_type: lichen_core::TransactionType::Native,
     };
 
-    // Encode as legacy bincode (no envelope)
-    let legacy = bincode::serialize(&tx).unwrap();
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &legacy);
+    // Encode as raw bincode (no envelope)
+    let raw_bincode = bincode::serialize(&tx).unwrap();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &raw_bincode);
 
     let resp = rpc_p(&app, "/", "sendTransaction", json!([b64]))
         .await
@@ -4214,7 +4169,7 @@ async fn test_send_transaction_legacy_bincode() {
         let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
         assert!(
             !msg.contains("Invalid transaction"),
-            "Legacy bincode decode failed: {}",
+            "Raw bincode decode failed: {}",
             msg
         );
     }

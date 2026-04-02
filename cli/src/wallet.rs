@@ -222,49 +222,11 @@ impl WalletManager {
     }
 }
 
-/// Load keypair from file — delegates to keygen module (T7.7 dedup).
-/// Falls back to hex-string format for wallets created with older formats.
+/// Load keypair from file — delegates to the canonical keygen loader.
 fn load_keypair_from_file(path: &Path) -> Result<Keypair> {
-    // Try the canonical keygen loader first (handles byte-array + encryption)
-    if let Ok(kf) = crate::keygen::KeypairFile::load(path) {
-        if let Ok(kp) = kf.to_keypair() {
-            return Ok(kp);
-        }
-    }
-
-    // Fallback: hex-string privateKey format (used by wallet create)
-    let contents = fs::read_to_string(path)
-        .context(format!("Failed to read keypair from {}", path.display()))?;
-
-    let json: serde_json::Value = serde_json::from_str(&contents)?;
-
-    if let Some(private_key_hex) = json.get("privateKey").and_then(|v| v.as_str()) {
-        let seed_bytes = hex::decode(private_key_hex)?;
-
-        if seed_bytes.len() != 32 {
-            anyhow::bail!("Invalid seed length");
-        }
-
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&seed_bytes);
-
-        Ok(Keypair::from_seed(&seed))
-    } else if let Some(bytes) = json.as_array() {
-        let byte_vec: Vec<u8> = bytes
-            .iter()
-            .filter_map(|v| v.as_u64().map(|n| n as u8))
-            .collect();
-
-        if byte_vec.len() < 32 {
-            anyhow::bail!("Invalid keypair format");
-        }
-
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&byte_vec[..32]);
-        Ok(Keypair::from_seed(&seed))
-    } else {
-        anyhow::bail!("Unsupported keypair format")
-    }
+    let keypair_file = crate::keygen::KeypairFile::load(path)
+        .with_context(|| format!("Failed to load canonical keypair from {}", path.display()))?;
+    keypair_file.to_keypair()
 }
 
 /// Get current Unix timestamp

@@ -1052,7 +1052,8 @@
                         internal nodes with <code>0x01</code>. To verify a proof, start with the leaf hash
                         <code>SHA256(0x00 || tx_hash)</code>, then for each step combine with the sibling according to
                         direction: <code>SHA256(0x01 || left || right)</code>. The final result must equal the
-                        <code>root</code>.</p>
+                        <code>root</code>.
+                    </p>
                 </div>
             </div>
 
@@ -2048,8 +2049,8 @@
                     have individual method cards on this page.</p>
 
                 <div class="callout callout-info">
-                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana-compat</code> (legacy alias:
-                        <code>/solana</code>) and <code>POST /evm</code>
+                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana-compat</code> and
+                        <code>POST /evm</code>
                         are also supported in addition to <code>POST /</code>.
                     </p>
                 </div>
@@ -2074,12 +2075,6 @@
 
                 <h3>Liquid Staking</h3>
                 <ul>
-                    <li><code>stakeToMossStake</code> — deprecated, use <code>sendTransaction</code> with system
-                        instruction type <code>13</code></li>
-                    <li><code>unstakeFromMossStake</code> — deprecated, use <code>sendTransaction</code> with system
-                        instruction type <code>14</code></li>
-                    <li><code>claimUnstakedTokens</code> — deprecated, use <code>sendTransaction</code> with system
-                        instruction type <code>15</code></li>
                     <li><code>getStakingPosition</code></li>
                     <li><code>getMossStakePoolInfo</code></li>
                     <li><code>getUnstakingQueue</code></li>

@@ -568,9 +568,8 @@ pub extern "C" fn get_value() -> u32 {
                         <span class="method-badge get">CRYPTO</span>
                     </div>
                     <div class="method-body">
-                        <p>Compute a Poseidon hash over two 32-byte field elements on the BN254 curve. This is a
-                            SNARK-friendly hash function used for Merkle trees, commitments, and nullifiers in
-                            zero-knowledge proof circuits.</p>
+                        <p>Compute the runtime's canonical Poseidon2 hash over two 32-byte values. This is the
+                            native hash used for Merkle trees, commitments, and nullifiers in the shielded runtime.</p>
                         <table class="params-table">
                             <thead>
                                 <tr>
@@ -583,17 +582,17 @@ pub extern "C" fn get_value() -> u32 {
                                 <tr>
                                     <td><code>left</code></td>
                                     <td><code>&amp;[u8; 32]</code></td>
-                                    <td>Left input (BN254 Fr element, little-endian)</td>
+                                    <td>Left 32-byte input</td>
                                 </tr>
                                 <tr>
                                     <td><code>right</code></td>
                                     <td><code>&amp;[u8; 32]</code></td>
-                                    <td>Right input (BN254 Fr element, little-endian)</td>
+                                    <td>Right 32-byte input</td>
                                 </tr>
                             </tbody>
                         </table>
-                        <p><strong>Returns:</strong> <code>[u8; 32]</code> &mdash; the Poseidon hash result as a 32-byte
-                            little-endian field element. Compute cost: 2,000 CU.</p>
+                        <p><strong>Returns:</strong> <code>[u8; 32]</code> &mdash; the 32-byte Poseidon2 digest. Compute
+                            cost: 2,000 CU.</p>
                         <pre><code>use lichen_sdk::poseidon_hash;
 
 let left = [0u8; 32];  // first field element

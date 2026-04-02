@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,9 +10,12 @@
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 </head>
+
 <body>
     <nav class="nav">
         <div class="nav-container">
@@ -37,7 +41,8 @@
                 <select id="devNetworkSelect" class="network-select">
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle"
+                aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -87,7 +92,7 @@
 
         <main class="docs-main">
             <h1>ZK Shielded Privacy Layer</h1>
-            <p class="subtitle">Groth16/BN254 zero-knowledge proofs for private value transfers on Lichen.</p>
+            <p class="subtitle">Transparent Plonky3/FRI zero-knowledge proofs for private value transfers on Lichen.</p>
 
             <!-- ── Architecture ── -->
             <section id="architecture">
@@ -95,28 +100,66 @@
                 <p>
                     Lichen's privacy layer uses a <strong>shielded UTXO pool</strong> model (similar to Zcash Sapling).
                     Value enters the pool via <em>shield</em> operations, moves privately via <em>transfers</em>,
-                    and exits via <em>unshield</em> operations. All state transitions are validated by Groth16
-                    zero-knowledge proofs over the BN254 elliptic curve.
+                    and exits via <em>unshield</em> operations. The live runtime validates scheme-versioned proof
+                    envelopes with a native Plonky3 FRI verifier over Goldilocks while commitments, nullifiers,
+                    and Merkle nodes use canonical Poseidon2-derived 32-byte values.
                 </p>
 
                 <div class="callout callout-info">
                     <p><strong>Pool model, not address model.</strong> There are no "shielded addresses."
-                    Notes live in a global Merkle tree. Only the holder of the note's spending key can spend it.</p>
+                        Notes live in a global Merkle tree. Only the holder of the note's spending key can spend it.</p>
                 </div>
 
                 <table class="reference-table">
-                    <thead><tr><th>Component</th><th>Detail</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>Detail</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>Curve</td><td>BN254 (alt_bn128)</td></tr>
-                        <tr><td>Proof system</td><td>Groth16 (<code>ark-groth16</code>)</td></tr>
-                        <tr><td>Hash function</td><td>Poseidon (2-input, BN254 scalar field)</td></tr>
-                        <tr><td>Merkle tree</td><td>Binary, depth 20 (1,048,576 leaf capacity)</td></tr>
-                        <tr><td>Note format</td><td><code>commitment = Poseidon(value, blinding)</code></td></tr>
-                        <tr><td>Nullifier</td><td><code>Poseidon(serial, spending_key)</code></td></tr>
-                        <tr><td>Key directory</td><td><code>~/.lichen/zk/</code> (pk + vk for each circuit)</td></tr>
-                        <tr><td>Proof size</td><td>128 bytes (compressed BN254 Groth16)</td></tr>
+                        <tr>
+                            <td>Field / hash domain</td>
+                            <td>Goldilocks words over canonical 32-byte values</td>
+                        </tr>
+                        <tr>
+                            <td>Proof system</td>
+                            <td>Plonky3 FRI (<code>plonky3-fri-poseidon2</code>)</td>
+                        </tr>
+                        <tr>
+                            <td>Hash function</td>
+                            <td>Poseidon2 over canonical Goldilocks limbs</td>
+                        </tr>
+                        <tr>
+                            <td>Merkle tree</td>
+                            <td>Binary, depth 20 (1,048,576 leaf capacity)</td>
+                        </tr>
+                        <tr>
+                            <td>Note format</td>
+                            <td><code>commitment = Poseidon2(value, blinding)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Nullifier</td>
+                            <td><code>nullifier = Poseidon2(serial, spending_key)</code></td>
+                        </tr>
+                        <tr>
+                            <td>Key directory</td>
+                            <td>None required in current releases; validators and <code>zk-prove</code>
+                                operate directly on native Plonky3 proof envelopes</td>
+                        </tr>
+                        <tr>
+                            <td>Proof size</td>
+                            <td>Variable-length bincode-serialized Plonky3 proof payload</td>
+                        </tr>
                     </tbody>
                 </table>
+
+                <div class="callout callout-warning">
+                    <p><strong>Current runtime.</strong> Validators and the <code>zk-prove</code> CLI no longer require
+                        bundled <code>pk_*</code>/<code>vk_*</code> files or a shared <code>~/.lichen/zk/</code>
+                        cache. Proofs are generated and verified as native Plonky3 envelopes.
+                    </p>
+                </div>
             </section>
 
             <!-- ── Key Concepts ── -->
@@ -127,44 +170,74 @@
                 <p>A <em>note</em> represents value in the shielded pool. Each note has:</p>
                 <ul>
                     <li><strong>value</strong> — amount in spores (1 LICN = 1,000,000,000 spores)</li>
-                    <li><strong>blinding</strong> — random BN254 field element for hiding the value</li>
+                    <li><strong>blinding</strong> — random canonical 32-byte scalar-compatible value for hiding the note
+                        amount</li>
                     <li><strong>serial</strong> — random unique identifier for nullifier derivation</li>
                     <li><strong>spending_key</strong> — secret key that authorizes spending</li>
                 </ul>
-                <p>The <strong>commitment</strong> <code>Poseidon(value, blinding)</code> is stored on-chain in the Merkle tree.
-                The preimage (<code>value</code>, <code>blinding</code>, <code>serial</code>, <code>spending_key</code>) must be kept secret and persisted.</p>
+                <p>The <strong>commitment</strong> <code>Poseidon2(value, blinding)</code> is stored on-chain in the
+                    Merkle tree.
+                    The preimage (<code>value</code>, <code>blinding</code>, <code>serial</code>,
+                    <code>spending_key</code>) must be kept secret and persisted.
+                </p>
 
                 <h3 id="nullifiers">Nullifiers</h3>
-                <p>To spend a note, the owner reveals the <strong>nullifier</strong> = <code>Poseidon(serial, spending_key)</code>.
-                The chain records spent nullifiers to prevent double-spending. Since the nullifier is derived deterministically
-                from the note's secrets, only the owner can produce it, and each note can only be spent once.</p>
+                <p>To spend a note, the owner reveals the <strong>nullifier</strong> =
+                    <code>Poseidon2(serial, spending_key)</code>.
+                    The chain records spent nullifiers to prevent double-spending. Since the nullifier is derived
+                    deterministically
+                    from the note's secrets, only the owner can produce it, and each note can only be spent once.
+                </p>
 
                 <h3 id="merkle">Merkle Tree</h3>
                 <p>All commitments are inserted into a binary Merkle tree of depth 20. The Merkle root is stored in
-                the pool state and updated with each shield or transfer operation. The root is a BN254 field element
-                displayed as a 64-character hex string (not base58, since it's a hash, not an address).</p>
+                    the pool state and updated with each shield or transfer operation. The root is a canonical 32-byte
+                    Poseidon2 digest displayed as a 64-character hex string (not base58, since it's a hash, not an
+                    address).</p>
             </section>
 
             <!-- ── Fee Schedule ── -->
             <section id="fee-schedule">
                 <h2>Fee Schedule</h2>
                 <table class="reference-table">
-                    <thead><tr><th>Operation</th><th>Opcode</th><th>Compute Units</th><th>Approx. Fee</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Operation</th>
+                            <th>Opcode</th>
+                            <th>Compute Units</th>
+                            <th>Approx. Fee</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>Shield</td><td>23</td><td>100,000</td><td>~0.0001 LICN</td></tr>
-                        <tr><td>Unshield</td><td>24</td><td>150,000</td><td>~0.00015 LICN</td></tr>
-                        <tr><td>Transfer</td><td>25</td><td>200,000</td><td>~0.0002 LICN</td></tr>
+                        <tr>
+                            <td>Shield</td>
+                            <td>23</td>
+                            <td>100,000</td>
+                            <td>~0.0001 LICN</td>
+                        </tr>
+                        <tr>
+                            <td>Unshield</td>
+                            <td>24</td>
+                            <td>150,000</td>
+                            <td>~0.00015 LICN</td>
+                        </tr>
+                        <tr>
+                            <td>Transfer</td>
+                            <td>25</td>
+                            <td>200,000</td>
+                            <td>~0.0002 LICN</td>
+                        </tr>
                     </tbody>
                 </table>
                 <p>The fee payer is always <code>instruction.accounts[0]</code> — a transparent account that pays
-                the transaction fee. The shielded value is separate from the fee.</p>
+                    the transaction fee. The shielded value is separate from the fee.</p>
             </section>
 
             <!-- ── Shield ── -->
             <section id="shield">
                 <h2>Shield (Deposit into Pool)</h2>
                 <p>Shields move value from a transparent account into the shielded pool.
-                The sender's on-chain balance is debited, and a new commitment is inserted into the Merkle tree.</p>
+                    The sender's on-chain balance is debited, and a new commitment is inserted into the Merkle tree.</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
@@ -172,12 +245,16 @@
                     <li>ZK proof is verified (proves commitment corresponds to declared amount)</li>
                     <li>Commitment is inserted as a new Merkle leaf</li>
                     <li>Merkle root is recalculated</li>
-                    <li>Pool state counters are updated (<code>shieldCount</code>, <code>totalShielded</code>, <code>commitmentCount</code>)</li>
+                    <li>Pool state counters are updated (<code>shieldCount</code>, <code>totalShielded</code>,
+                        <code>commitmentCount</code>)
+                    </li>
                 </ol>
 
                 <div class="callout callout-warning">
                     <p><strong>Save your note secrets!</strong> After shielding, you must persist <code>blinding</code>,
-                    <code>serial</code>, and <code>spending_key</code>. Without them, your shielded value is permanently locked.</p>
+                        <code>serial</code>, and <code>spending_key</code>. Without them, your shielded value is
+                        permanently locked.
+                    </p>
                 </div>
             </section>
 
@@ -185,7 +262,7 @@
             <section id="unshield">
                 <h2>Unshield (Withdraw from Pool)</h2>
                 <p>Unshields move value from the pool back to a transparent account. The owner proves knowledge
-                of a note in the Merkle tree and reveals the nullifier to prevent double-spending.</p>
+                    of a note in the Merkle tree and reveals the nullifier to prevent double-spending.</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
@@ -202,80 +279,100 @@
             <section id="transfer">
                 <h2>Transfer (Private Send)</h2>
                 <p>Transfers move value entirely within the shielded pool. The circuit is <strong>2-in-2-out</strong>:
-                it consumes 2 input notes and creates 2 output notes. Value conservation is enforced by the ZK circuit
-                (sum of inputs = sum of outputs).</p>
+                    it consumes 2 input notes and creates 2 output notes. Value conservation is enforced by the ZK
+                    circuit
+                    (sum of inputs = sum of outputs).</p>
 
                 <h3>What happens on-chain</h3>
                 <ol>
                     <li>Both nullifiers are checked — neither can be already spent, and they must be distinct</li>
                     <li>Merkle root is verified against current pool state</li>
-                    <li>ZK proof is verified with public inputs: <code>[merkle_root, null_a, null_b, comm_c, comm_d]</code></li>
+                    <li>ZK proof is verified with public inputs:
+                        <code>[merkle_root, null_a, null_b, comm_c, comm_d]</code>
+                    </li>
                     <li>Both nullifiers are marked as spent</li>
                     <li>Two new commitments are inserted into the Merkle tree</li>
                     <li>Merkle root is recalculated</li>
-                    <li>Pool state is updated (<code>transferCount</code>, <code>commitmentCount</code> +2, <code>nullifierCount</code> +2; <code>totalShielded</code> unchanged)</li>
+                    <li>Pool state is updated (<code>transferCount</code>, <code>commitmentCount</code> +2,
+                        <code>nullifierCount</code> +2; <code>totalShielded</code> unchanged)
+                    </li>
                 </ol>
 
                 <div class="callout callout-info">
-                    <p><strong>No on-chain balance change.</strong> Transfers don't credit or debit any transparent account.
-                    The fee payer's account is included only for transaction fee deduction.</p>
+                    <p><strong>No on-chain balance change.</strong> Transfers don't credit or debit any transparent
+                        account.
+                        The fee payer's account is included only for transaction fee deduction.</p>
                 </div>
 
                 <h3>Self-transfers and splitting</h3>
                 <p>If you only need to spend one note, you still need 2 inputs. Shield a second note (even a small one)
-                 to pair with it. Output amounts can be split arbitrarily as long as the total is conserved.</p>
+                    to pair with it. Output amounts can be split arbitrarily as long as the total is conserved.</p>
             </section>
 
             <!-- ── CLI Shield ── -->
             <section id="cli-shield">
                 <h2><code>zk-prove shield</code></h2>
-                <div class="code-block"><pre><code>./target/release/zk-prove shield --amount &lt;spores&gt; --pk-dir ~/.lichen/zk</code></pre></div>
-                <p>Generates a Groth16 proof for a shield operation.</p>
+                <div class="code-block">
+                    <pre><code>./target/release/zk-prove shield --amount &lt;spores&gt;</code></pre>
+                </div>
+                <p>Generates a native Plonky3 proof envelope for a shield operation. No shared key directory or
+                    compatibility bundle is required.
+                </p>
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><pre><code>{
+                <div class="code-block">
+                    <pre><code>{
   "type": "shield",
   "commitment": "912f53dd...",       // 32-byte hex — store on chain
   "blinding": "a1b2c3d4...",         // 32-byte hex — SAVE LOCALLY
   "serial": "e5f6a7b8...",           // 32-byte hex — SAVE LOCALLY
   "spending_key": "1234abcd...",     // 32-byte hex — SAVE LOCALLY
-  "proof": "deadbeef..."            // 128-byte hex — Groth16 proof
-}</code></pre></div>
+    "proof": "deadbeef..."            // variable-length hex — Plonky3 proof payload
+}</code></pre>
+                </div>
             </section>
 
             <!-- ── CLI Unshield ── -->
             <section id="cli-unshield">
                 <h2><code>zk-prove unshield</code></h2>
-                <div class="code-block"><pre><code>./target/release/zk-prove unshield \
+                <div class="code-block">
+                    <pre><code>./target/release/zk-prove unshield \
   --amount &lt;spores&gt; \
   --blinding &lt;hex&gt; --serial &lt;hex&gt; --spending-key &lt;hex&gt; \
-  --recipient &lt;base58_pubkey&gt; \
-  --merkle-root &lt;hex&gt; --merkle-path &lt;hex,hex,...&gt; --path-bits 0,1,0,... \
-  --pk-dir ~/.lichen/zk</code></pre></div>
-                <p>Generates a Groth16 proof for an unshield (withdrawal) operation.</p>
+    --recipient &lt;hex_32_recipient&gt; \
+    --merkle-root &lt;hex&gt; --merkle-path &lt;hex,hex,...&gt; --path-bits 0,1,0,...</code></pre>
+                </div>
+                <p>Generates a native Plonky3 proof envelope for an unshield (withdrawal) operation.</p>
                 <h3>Prerequisites</h3>
                 <ul>
-                    <li>The note secrets (<code>blinding</code>, <code>serial</code>, <code>spending_key</code>) from the original shield</li>
-                    <li>The current Merkle root and path for the note's leaf index (from <code>getShieldedMerklePath</code>)</li>
+                    <li>The note secrets (<code>blinding</code>, <code>serial</code>, <code>spending_key</code>) from
+                        the original shield</li>
+                    <li>The current Merkle root and path for the note's leaf index (from
+                        <code>getShieldedMerklePath</code>)
+                    </li>
                 </ul>
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><pre><code>{
+                <div class="code-block">
+                    <pre><code>{
   "type": "unshield",
   "nullifier": "f08d00a6...",        // 32-byte hex
   "recipient_hash": "c1d2e3f4...",   // 32-byte hex
-  "proof": "abcdef01..."            // 128-byte hex
-}</code></pre></div>
+    "proof": "abcdef01..."            // variable-length hex — Plonky3 proof payload
+}</code></pre>
+                </div>
             </section>
 
             <!-- ── CLI Transfer ── -->
             <section id="cli-transfer">
                 <h2><code>zk-prove transfer</code></h2>
-                <div class="code-block"><pre><code>./target/release/zk-prove transfer \
-  --transfer-json witness.json \
-  --pk-dir ~/.lichen/zk</code></pre></div>
-                <p>Generates a Groth16 proof for a 2-in-2-out shielded transfer.</p>
+                <div class="code-block">
+                    <pre><code>./target/release/zk-prove transfer \
+    --transfer-json witness.json</code></pre>
+                </div>
+                <p>Generates a native Plonky3 proof envelope for a 2-in-2-out shielded transfer.</p>
 
                 <h3>Witness file format (<code>witness.json</code>)</h3>
-                <div class="code-block"><pre><code>{
+                <div class="code-block">
+                    <pre><code>{
   "merkle_root": "&lt;hex 32-byte&gt;",
   "inputs": [
     {
@@ -292,7 +389,8 @@
     { "amount": 350000000 },
     { "amount": 150000000 }
   ]
-}</code></pre></div>
+}</code></pre>
+                </div>
                 <ul>
                     <li><code>merkle_path</code> — 20 sibling hashes from <code>getShieldedMerklePath</code></li>
                     <li><code>path_bits</code> — 20 booleans (left/right at each tree level)</li>
@@ -301,7 +399,8 @@
                 </ul>
 
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><pre><code>{
+                <div class="code-block">
+                    <pre><code>{
   "type": "transfer",
   "merkle_root": "7047a713...",
   "nullifier_a": "8580318a...",
@@ -319,16 +418,18 @@
       "blinding": "...", "serial": "...", "commitment": "..."
     }
   ]
-}</code></pre></div>
+}</code></pre>
+                </div>
                 <p>The <code>outputs</code> array contains the secrets for each new note. The recipient
-                needs these values to spend the note later.</p>
+                    needs these values to spend the note later.</p>
             </section>
 
             <!-- ── Python SDK ── -->
             <section id="python-sdk">
                 <h2>Python SDK</h2>
                 <p>The <code>lichen</code> Python package provides instruction builders for all three operations:</p>
-                <div class="code-block"><pre><code>from lichen import (
+                <div class="code-block">
+                    <pre><code>from lichen import (
     Connection, Keypair, TransactionBuilder,
     shield_instruction, unshield_instruction, transfer_instruction,
 )
@@ -364,14 +465,16 @@ ix = transfer_instruction(
     output_commitments=[bytes.fromhex(t["commitment_c"]), bytes.fromhex(t["commitment_d"])],
     merkle_root=bytes.fromhex(t["merkle_root"]),
     proof=bytes.fromhex(t["proof"]),
-)</code></pre></div>
+)</code></pre>
+                </div>
             </section>
 
             <!-- ── Workflow ── -->
             <section id="workflow">
                 <h2>End-to-End Workflow</h2>
-                <div class="code-block"><pre><code># 1. Shield — deposit 0.5 LICN into the pool
-zk-prove shield --amount 500000000 --pk-dir ~/.lichen/zk > shield.json
+                <div class="code-block">
+                    <pre><code># 1. Shield — deposit 0.5 LICN into the pool
+zk-prove shield --amount 500000000 > shield.json
 # → Save blinding, serial, spending_key from shield.json
 
 # 2. Build &amp; send the shield transaction (Python)
@@ -383,13 +486,14 @@ path = await conn._rpc("getShieldedMerklePath", [leaf_index])
 
 # 4. (Optional) Transfer within pool
 # Build witness.json with 2 input notes + 2 output amounts
-zk-prove transfer --transfer-json witness.json --pk-dir ~/.lichen/zk > transfer.json
+zk-prove transfer --transfer-json witness.json > transfer.json
 # → New output note secrets are in transfer.json["outputs"]
 
 # 5. Unshield — withdraw back to transparent account
-zk-prove unshield --amount 500000000 ... --pk-dir ~/.lichen/zk > unshield.json
+zk-prove unshield --amount 500000000 ... > unshield.json
 ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
-# → Spores appear in recipient's transparent balance</code></pre></div>
+# → Spores appear in recipient's transparent balance</code></pre>
+                </div>
             </section>
 
             <!-- ── RPC Methods ── -->
@@ -399,7 +503,8 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
 
                 <h3><code>getShieldedPoolState</code></h3>
                 <p>Returns the full shielded pool state.</p>
-                <div class="code-block"><pre><code>// Request
+                <div class="code-block">
+                    <pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"getShieldedPoolState"}
 
 // Response
@@ -412,38 +517,44 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "shieldCount": 2,
   "unshieldCount": 0,
   "transferCount": 1,
-  "vkShieldHash": "c0381284...",
-  "vkUnshieldHash": "9d015c5b...",
-  "vkTransferHash": "b705c04e..."
-}</code></pre></div>
+    "zkScheme": "plonky3-fri-poseidon2"
+}</code></pre>
+                </div>
 
                 <h3><code>getShieldedMerkleRoot</code></h3>
                 <p>Returns just the current Merkle root.</p>
-                <div class="code-block"><pre><code>// Response
-{ "merkleRoot": "43b19b67fc7151e1..." }</code></pre></div>
+                <div class="code-block">
+                    <pre><code>// Response
+{ "merkleRoot": "43b19b67fc7151e1..." }</code></pre>
+                </div>
 
                 <h3><code>getShieldedMerklePath</code></h3>
                 <p>Returns the authentication path for a leaf at the given index.</p>
-                <div class="code-block"><pre><code>// Request
+                <div class="code-block">
+                    <pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"getShieldedMerklePath","params":[0]}
 
 // Response
 {
   "siblings": ["a1b2c3...", "d4e5f6...", ...],  // 20 hex strings
   "pathBits": [false, true, false, ...]          // 20 booleans
-}</code></pre></div>
+}</code></pre>
+                </div>
 
                 <h3><code>isNullifierSpent</code></h3>
                 <p>Checks whether a nullifier has been revealed (note spent).</p>
-                <div class="code-block"><pre><code>// Request
+                <div class="code-block">
+                    <pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"isNullifierSpent","params":["8580318ad00a9c2a..."]}
 
 // Response
-{ "spent": true }</code></pre></div>
+{ "spent": true }</code></pre>
+                </div>
 
                 <h3><code>getShieldedCommitments</code></h3>
                 <p>Paginated list of all commitments in the Merkle tree.</p>
-                <div class="code-block"><pre><code>// Request (optional: from, limit)
+                <div class="code-block">
+                    <pre><code>// Request (optional: from, limit)
 {"jsonrpc":"2.0","id":1,"method":"getShieldedCommitments","params":[0, 100]}
 
 // Response
@@ -452,7 +563,8 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "total": 4,
   "from": 0,
   "limit": 100
-}</code></pre></div>
+}</code></pre>
+                </div>
             </section>
 
             <!-- ── REST Endpoints ── -->
@@ -460,16 +572,63 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
                 <h2>REST Endpoints</h2>
                 <p>Base URL: <code>http://localhost:8899/api/v1/shielded</code></p>
                 <table class="reference-table">
-                    <thead><tr><th>Method</th><th>Path</th><th>Body / Params</th><th>Description</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Path</th>
+                            <th>Body / Params</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>GET</td><td><code>/pool</code></td><td>—</td><td>Pool state</td></tr>
-                        <tr><td>GET</td><td><code>/merkle-root</code></td><td>—</td><td>Current Merkle root</td></tr>
-                        <tr><td>GET</td><td><code>/merkle-path/:index</code></td><td>—</td><td>Siblings + path bits</td></tr>
-                        <tr><td>GET</td><td><code>/nullifier/:hex</code></td><td>—</td><td><code>{ spent: bool }</code></td></tr>
-                        <tr><td>GET</td><td><code>/commitments?from=&amp;limit=</code></td><td>—</td><td>Paginated commitments</td></tr>
-                        <tr><td>POST</td><td><code>/shield</code></td><td><code>{ "transaction": "&lt;base64&gt;" }</code></td><td>Submit shield TX</td></tr>
-                        <tr><td>POST</td><td><code>/unshield</code></td><td><code>{ "transaction": "&lt;base64&gt;" }</code></td><td>Submit unshield TX</td></tr>
-                        <tr><td>POST</td><td><code>/transfer</code></td><td><code>{ "transaction": "&lt;base64&gt;" }</code></td><td>Submit transfer TX</td></tr>
+                        <tr>
+                            <td>GET</td>
+                            <td><code>/pool</code></td>
+                            <td>—</td>
+                            <td>Pool state</td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td><code>/merkle-root</code></td>
+                            <td>—</td>
+                            <td>Current Merkle root</td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td><code>/merkle-path/:index</code></td>
+                            <td>—</td>
+                            <td>Siblings + path bits</td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td><code>/nullifier/:hex</code></td>
+                            <td>—</td>
+                            <td><code>{ spent: bool }</code></td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td><code>/commitments?from=&amp;limit=</code></td>
+                            <td>—</td>
+                            <td>Paginated commitments</td>
+                        </tr>
+                        <tr>
+                            <td>POST</td>
+                            <td><code>/shield</code></td>
+                            <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
+                            <td>Submit shield TX</td>
+                        </tr>
+                        <tr>
+                            <td>POST</td>
+                            <td><code>/unshield</code></td>
+                            <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
+                            <td>Submit unshield TX</td>
+                        </tr>
+                        <tr>
+                            <td>POST</td>
+                            <td><code>/transfer</code></td>
+                            <td><code>{ "transaction": "&lt;base64&gt;" }</code></td>
+                            <td>Submit transfer TX</td>
+                        </tr>
                     </tbody>
                 </table>
                 <p>All responses are wrapped in <code>{ "success": true, "data": { ... } }</code>.</p>
@@ -479,43 +638,129 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
             <section id="data-layouts">
                 <h2>Instruction Data Layouts</h2>
 
-                <h3>Shield (opcode 23) — 169 bytes</h3>
+                <h3>Shield (opcode 23) — 41-byte fixed prefix + proof payload</h3>
                 <table class="reference-table">
-                    <thead><tr><th>Offset</th><th>Length</th><th>Field</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Offset</th>
+                            <th>Length</th>
+                            <th>Field</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>0</td><td>1</td><td>Type tag (23)</td></tr>
-                        <tr><td>1</td><td>8</td><td>Amount (u64 LE)</td></tr>
-                        <tr><td>9</td><td>32</td><td>Commitment</td></tr>
-                        <tr><td>41</td><td>128</td><td>Groth16 proof</td></tr>
+                        <tr>
+                            <td>0</td>
+                            <td>1</td>
+                            <td>Type tag (23)</td>
+                        </tr>
+                        <tr>
+                            <td>1</td>
+                            <td>8</td>
+                            <td>Amount (u64 LE)</td>
+                        </tr>
+                        <tr>
+                            <td>9</td>
+                            <td>32</td>
+                            <td>Commitment</td>
+                        </tr>
+                        <tr>
+                            <td>41</td>
+                            <td>variable</td>
+                            <td>Plonky3 proof payload</td>
+                        </tr>
                     </tbody>
                 </table>
                 <p>Accounts: <code>[sender]</code></p>
 
-                <h3>Unshield (opcode 24) — 233 bytes</h3>
+                <h3>Unshield (opcode 24) — 105-byte fixed prefix + proof payload</h3>
                 <table class="reference-table">
-                    <thead><tr><th>Offset</th><th>Length</th><th>Field</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Offset</th>
+                            <th>Length</th>
+                            <th>Field</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>0</td><td>1</td><td>Type tag (24)</td></tr>
-                        <tr><td>1</td><td>8</td><td>Amount (u64 LE)</td></tr>
-                        <tr><td>9</td><td>32</td><td>Nullifier</td></tr>
-                        <tr><td>41</td><td>32</td><td>Merkle root</td></tr>
-                        <tr><td>73</td><td>32</td><td>Recipient hash</td></tr>
-                        <tr><td>105</td><td>128</td><td>Groth16 proof</td></tr>
+                        <tr>
+                            <td>0</td>
+                            <td>1</td>
+                            <td>Type tag (24)</td>
+                        </tr>
+                        <tr>
+                            <td>1</td>
+                            <td>8</td>
+                            <td>Amount (u64 LE)</td>
+                        </tr>
+                        <tr>
+                            <td>9</td>
+                            <td>32</td>
+                            <td>Nullifier</td>
+                        </tr>
+                        <tr>
+                            <td>41</td>
+                            <td>32</td>
+                            <td>Merkle root</td>
+                        </tr>
+                        <tr>
+                            <td>73</td>
+                            <td>32</td>
+                            <td>Recipient hash</td>
+                        </tr>
+                        <tr>
+                            <td>105</td>
+                            <td>variable</td>
+                            <td>Plonky3 proof payload</td>
+                        </tr>
                     </tbody>
                 </table>
                 <p>Accounts: <code>[recipient]</code></p>
 
-                <h3>Transfer (opcode 25) — 289 bytes</h3>
+                <h3>Transfer (opcode 25) — 161-byte fixed prefix + proof payload</h3>
                 <table class="reference-table">
-                    <thead><tr><th>Offset</th><th>Length</th><th>Field</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Offset</th>
+                            <th>Length</th>
+                            <th>Field</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>0</td><td>1</td><td>Type tag (25)</td></tr>
-                        <tr><td>1</td><td>32</td><td>Nullifier A</td></tr>
-                        <tr><td>33</td><td>32</td><td>Nullifier B</td></tr>
-                        <tr><td>65</td><td>32</td><td>Output commitment C</td></tr>
-                        <tr><td>97</td><td>32</td><td>Output commitment D</td></tr>
-                        <tr><td>129</td><td>32</td><td>Merkle root</td></tr>
-                        <tr><td>161</td><td>128</td><td>Groth16 proof</td></tr>
+                        <tr>
+                            <td>0</td>
+                            <td>1</td>
+                            <td>Type tag (25)</td>
+                        </tr>
+                        <tr>
+                            <td>1</td>
+                            <td>32</td>
+                            <td>Nullifier A</td>
+                        </tr>
+                        <tr>
+                            <td>33</td>
+                            <td>32</td>
+                            <td>Nullifier B</td>
+                        </tr>
+                        <tr>
+                            <td>65</td>
+                            <td>32</td>
+                            <td>Output commitment C</td>
+                        </tr>
+                        <tr>
+                            <td>97</td>
+                            <td>32</td>
+                            <td>Output commitment D</td>
+                        </tr>
+                        <tr>
+                            <td>129</td>
+                            <td>32</td>
+                            <td>Merkle root</td>
+                        </tr>
+                        <tr>
+                            <td>161</td>
+                            <td>variable</td>
+                            <td>Plonky3 proof payload</td>
+                        </tr>
                     </tbody>
                 </table>
                 <p>Accounts: <code>[fee_payer]</code></p>
@@ -526,12 +771,21 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
             <section id="security">
                 <h2>Security Model</h2>
                 <ul>
-                    <li><strong>Double-spend prevention:</strong> Nullifiers are stored on-chain. Re-using a nullifier is rejected.</li>
-                    <li><strong>Value conservation:</strong> The transfer circuit constrains <code>sum(inputs) = sum(outputs)</code>; the shield circuit constrains <code>commitment = Poseidon(amount, blinding)</code> with the declared amount.</li>
-                    <li><strong>Merkle root binding:</strong> Proofs are bound to the current Merkle root. Stale roots are rejected.</li>
-                    <li><strong>64-bit range checks:</strong> All values are range-checked to 64 bits within the circuit to prevent overflow attacks.</li>
-                    <li><strong>Verification key hashes:</strong> The pool state stores hashes of all three verification keys. If keys are changed, the hashes update and old proofs become invalid.</li>
-                    <li><strong>Proof non-malleability:</strong> Groth16 proofs are verified with the exact public inputs declared in the instruction data.</li>
+                    <li><strong>Double-spend prevention:</strong> Nullifiers are stored on-chain. Re-using a nullifier
+                        is rejected.</li>
+                    <li><strong>Value conservation:</strong> The transfer circuit constrains
+                        <code>sum(inputs) = sum(outputs)</code>; the shield circuit constrains
+                        <code>commitment = Poseidon2(amount, blinding)</code> with the declared amount.
+                    </li>
+                    <li><strong>Merkle root binding:</strong> Proofs are bound to the current Merkle root. Stale roots
+                        are rejected.</li>
+                    <li><strong>64-bit range checks:</strong> All values are range-checked to 64 bits within the circuit
+                        to prevent overflow attacks.</li>
+                    <li><strong>Compatibility artifact hashes:</strong> The pool state still exposes hashes of the
+                        bundled <code>vk_*</code> files so operators can detect artifact drift while the proving helpers
+                        transition, but the live verifier itself checks the scheme-versioned Plonky3 envelope.</li>
+                    <li><strong>Proof non-malleability:</strong> Plonky3 proof envelopes are verified against canonical
+                        public inputs reconstructed directly from the instruction fields.</li>
                 </ul>
             </section>
         </main>
@@ -542,4 +796,5 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>
+
 </html>

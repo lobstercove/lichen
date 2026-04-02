@@ -26,13 +26,10 @@
  * Prerequisites:
  *   - Validator running on port 8899
  *   - Contracts deployed (genesis auto-deploy)
- *   - npm install tweetnacl
  */
 'use strict';
 
-let nacl;
-try { nacl = require('tweetnacl'); }
-catch { console.error('Missing dependency: npm install tweetnacl'); process.exit(1); }
+const pq = require('./helpers/pq-node');
 const crypto = require('crypto');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
@@ -106,6 +103,20 @@ async function rest(path) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+async function waitForTransaction(signature, timeoutMs = 15000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+        try {
+            const tx = await rpc('getTransaction', [signature]);
+            if (tx) return tx;
+        } catch {
+            // Transaction metadata is not visible immediately after submission.
+        }
+        await sleep(300);
+    }
+    throw new Error(`Transaction ${signature} not visible within ${timeoutMs}ms`);
+}
+
 async function resolveMarketIdByQuestion(question, creator, expectedCloseSlot = null, retries = 8) {
     for (let attempt = 0; attempt < retries; attempt++) {
         const resp = await rest(`/prediction-market/markets?creator=${encodeURIComponent(creator)}&limit=200`);
@@ -128,12 +139,10 @@ async function resolveMarketIdByQuestion(question, creator, expectedCloseSlot = 
 // Keypair
 // ═══════════════════════════════════════════════════════════════════════════════
 function genKeypair() {
-    const kp = nacl.sign.keyPair();
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 function keypairFromSeed(seed32) {
-    const kp = nacl.sign.keyPair.fromSeed(seed32);
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+    return pq.keypairFromSeed(seed32);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -179,10 +188,16 @@ async function sendTx(keypair, instructions, computeBudget = null) {
         data: typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data),
     }));
     const msg = encodeMsg(nix, bh, keypair.address, computeBudget);
-    const sig = nacl.sign.detached(msg, keypair.secretKey);
-    const payload = { signatures: [bytesToHex(sig)], message: { instructions: nix, blockhash: bh, compute_budget: computeBudget || undefined } };
+    const pqSig = pq.sign(msg, keypair);
+    const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh, compute_budget: computeBudget || undefined } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
-    return rpc('sendTransaction', [b64]);
+    const signature = await rpc('sendTransaction', [b64]);
+    const tx = await waitForTransaction(signature);
+    if (Object.prototype.hasOwnProperty.call(tx, 'return_code') && Number(tx.return_code) === 0) {
+        const logs = Array.isArray(tx.contract_logs) ? tx.contract_logs.join(' | ') : '';
+        throw new Error(logs || 'contract returned failure code 0');
+    }
+    return signature;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -344,8 +359,8 @@ function loadGenesisAdmin() {
         const files = fs.readdirSync(genesisKeysDir).filter(f => f.startsWith('genesis-primary'));
         if (files.length === 0) continue;
         const kpData = JSON.parse(fs.readFileSync(path.join(genesisKeysDir, files[0]), 'utf8'));
-        if (kpData.secret_key && kpData.pubkey) {
-            const seed = hexToBytes(kpData.secret_key);
+        if (Array.isArray(kpData.privateKey) && kpData.privateKey.length === 32) {
+            const seed = new Uint8Array(kpData.privateKey);
             const kp = keypairFromSeed(seed);
             return kp;
         }
@@ -355,7 +370,7 @@ function loadGenesisAdmin() {
     const deployerPath = path2.join(process.cwd(), 'keypairs', 'deployer.json');
     if (fs2.existsSync(deployerPath)) {
         const dp = JSON.parse(fs2.readFileSync(deployerPath, 'utf8'));
-        if (dp.privateKey && dp.publicKey) {
+        if (Array.isArray(dp.privateKey) && dp.privateKey.length === 32) {
             const seed = new Uint8Array(dp.privateKey);
             const kp = keypairFromSeed(seed);
             return kp;
@@ -389,6 +404,7 @@ async function fundWallet(wallet, amount = FUND_AMOUNT) {
 // MAIN TEST
 // ═══════════════════════════════════════════════════════════════════════════════
 async function main() {
+    await pq.init();
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('  Lichen Prediction Market — Multi-Outcome Deep E2E');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -888,7 +904,7 @@ async function main() {
             );
 
             // Liquidity should be non-zero
-            const liq = Number(d.total_liquidity || d.liquidity || d.pool_liquidity || 0);
+            const liq = Number(d.total_collateral || d.total_liquidity || d.liquidity || d.pool_liquidity || 0);
             assertGt(liq, 0, `${market.name} has liquidity (${liq})`);
 
             // Total volume should reflect all trades
@@ -904,7 +920,10 @@ async function main() {
     for (let i = 0; i < wallets.length; i++) {
         try {
             const bal = await rpc('getBalance', [wallets[i].address]);
-            const licn = Number(bal) / SPORES_PER_LICN;
+            const spores = typeof bal === 'number'
+                ? bal
+                : Number(bal?.spendable ?? bal?.spores ?? bal?.value ?? 0);
+            const licn = spores / SPORES_PER_LICN;
             if (licn > 0) walletsWithBalance++;
         } catch { /* ignore */ }
     }

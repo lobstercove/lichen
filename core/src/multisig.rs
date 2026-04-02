@@ -133,6 +133,33 @@ pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
     ("reserve_pool", 50_000_000, 10),
 ];
 
+fn canonical_keypair_json(
+    keypair: &Keypair,
+    role: &str,
+    chain_id: &str,
+    warning: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let public_key = keypair.public_key();
+    let mut file = serde_json::Map::new();
+    file.insert(
+        "privateKey".to_string(),
+        serde_json::json!(keypair.to_seed()),
+    );
+    file.insert("publicKey".to_string(), serde_json::json!(public_key.bytes));
+    file.insert(
+        "publicKeyBase58".to_string(),
+        serde_json::json!(keypair.pubkey().to_base58()),
+    );
+    file.insert("role".to_string(), serde_json::json!(role));
+    file.insert("chain_id".to_string(), serde_json::json!(chain_id));
+    file.insert(
+        "created_at".to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    file.insert("warning".to_string(), serde_json::json!(warning));
+    file
+}
+
 /// Genesis wallet keypair bundle (saved to disk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisWallet {
@@ -268,16 +295,12 @@ impl GenesisWallet {
             let filename = format!("genesis-{}-{}.json", role, chain_id);
             let path = base_path.as_ref().join(&filename);
 
-            // In production, encrypt with passphrase
-            // For now, save as JSON
-            let keypair_json = serde_json::json!({
-                "pubkey": keypair.pubkey().to_base58(),
-                "secret_key": hex::encode(keypair.secret()),
-                "role": role,
-                "chain_id": chain_id,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "warning": "KEEP THIS FILE SECURE - CONTROLS GENESIS TREASURY",
-            });
+            let keypair_json = serde_json::Value::Object(canonical_keypair_json(
+                keypair,
+                role,
+                chain_id,
+                "KEEP THIS FILE SECURE - CONTROLS GENESIS TREASURY",
+            ));
 
             let json_str = serde_json::to_string_pretty(&keypair_json)
                 .map_err(|e| format!("Failed to serialize keypair JSON: {}", e))?;
@@ -297,14 +320,12 @@ impl GenesisWallet {
     ) -> Result<String, String> {
         let filename = format!("treasury-{}.json", chain_id);
         let path = base_path.as_ref().join(&filename);
-        let keypair_json = serde_json::json!({
-            "pubkey": keypair.pubkey().to_base58(),
-            "secret_key": hex::encode(keypair.secret()),
-            "role": "treasury",
-            "chain_id": chain_id,
-            "created_at": chrono::Utc::now().to_rfc3339(),
-            "warning": "KEEP THIS FILE SECURE - CONTROLS TREASURY",
-        });
+        let keypair_json = serde_json::Value::Object(canonical_keypair_json(
+            keypair,
+            "treasury",
+            chain_id,
+            "KEEP THIS FILE SECURE - CONTROLS TREASURY",
+        ));
 
         let json_str = serde_json::to_string_pretty(&keypair_json)
             .map_err(|e| format!("Failed to serialize treasury JSON: {}", e))?;
@@ -327,16 +348,15 @@ impl GenesisWallet {
             let filename = format!("{}-{}.json", dw.role, chain_id);
             let path = base_path.as_ref().join(&filename);
 
-            let keypair_json = serde_json::json!({
-                "pubkey": kp.pubkey().to_base58(),
-                "secret_key": hex::encode(kp.secret()),
-                "role": dw.role,
-                "amount_licn": dw.amount_licn,
-                "percentage": dw.percentage,
-                "chain_id": chain_id,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "warning": "KEEP THIS FILE SECURE - CONTROLS DISTRIBUTION WALLET",
-            });
+            let mut keypair_json = canonical_keypair_json(
+                kp,
+                &dw.role,
+                chain_id,
+                "KEEP THIS FILE SECURE - CONTROLS DISTRIBUTION WALLET",
+            );
+            keypair_json.insert("amount_licn".to_string(), serde_json::json!(dw.amount_licn));
+            keypair_json.insert("percentage".to_string(), serde_json::json!(dw.percentage));
+            let keypair_json = serde_json::Value::Object(keypair_json);
 
             let json_str = serde_json::to_string_pretty(&keypair_json)
                 .map_err(|e| format!("Failed to serialize distribution JSON: {}", e))?;
@@ -416,5 +436,33 @@ mod tests {
         // Test unauthorized signer
         let unauthorized = Keypair::generate().pubkey();
         assert!(!multisig.verify_threshold(&[unauthorized, pubkeys[0], pubkeys[1]]));
+    }
+
+    #[test]
+    fn test_save_treasury_keypair_uses_canonical_pq_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "lichen-genesis-wallet-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let keypair = Keypair::generate();
+        let saved_path = GenesisWallet::save_treasury_keypair(&keypair, &dir, "testnet-1").unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved_path).unwrap()).unwrap();
+
+        assert_eq!(json["privateKey"].as_array().unwrap().len(), 32);
+        assert_eq!(
+            json["publicKey"].as_array().unwrap().len(),
+            keypair.public_key().bytes.len()
+        );
+        assert_eq!(
+            json["publicKeyBase58"].as_str().unwrap(),
+            keypair.pubkey().to_base58()
+        );
+
+        let _ = fs::remove_file(saved_path);
+        let _ = fs::remove_dir_all(dir);
     }
 }

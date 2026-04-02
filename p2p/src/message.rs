@@ -1,7 +1,7 @@
 // P2P Message Types
 
 use lichen_core::{
-    Block, BlockHeader, CommitSignature, Hash, Precommit, Prevote, Proposal, Pubkey,
+    Block, BlockHeader, CommitSignature, Hash, PqSignature, Precommit, Prevote, Proposal, Pubkey,
     SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
 };
 use serde::{Deserialize, Serialize};
@@ -94,34 +94,6 @@ impl CompactBlock {
             commit_round: block.commit_round,
             commit_signatures: block.commit_signatures.clone(),
         }
-    }
-}
-
-/// Serde helper for [u8; 64] signature arrays (serde only supports up to [u8; 32] natively)
-mod signature_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    /// Wrapper to serialize [u8; 64] as two [u8; 32] halves (bincode-safe)
-    #[derive(Serialize, Deserialize)]
-    struct SigHalves {
-        lo: [u8; 32],
-        hi: [u8; 32],
-    }
-
-    pub fn serialize<S: Serializer>(data: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
-        let halves = SigHalves {
-            lo: data[..32].try_into().unwrap(),
-            hi: data[32..].try_into().unwrap(),
-        };
-        halves.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
-        let halves = SigHalves::deserialize(deserializer)?;
-        let mut sig = [0u8; 64];
-        sig[..32].copy_from_slice(&halves.lo);
-        sig[32..].copy_from_slice(&halves.hi);
-        Ok(sig)
     }
 }
 
@@ -227,7 +199,7 @@ pub enum MessageType {
         stake_pool: Option<StakePool>,
     },
     /// Validator announcement — signed by the announcing validator's keypair.
-    /// T2.3 fix: Must include Ed25519 signature over (pubkey || stake || current_slot)
+    /// Must include a self-contained PQ signature over the announcement payload
     /// to prevent Sybil attacks via unsigned announcements.
     ValidatorAnnounce {
         pubkey: Pubkey,
@@ -236,9 +208,8 @@ pub enum MessageType {
         /// Semver version string of the running validator binary (e.g. "0.2.0")
         #[serde(default)]
         version: String,
-        /// Ed25519 signature over (pubkey.0 || stake.to_le_bytes() || current_slot.to_le_bytes())
-        #[serde(with = "signature_serde")]
-        signature: [u8; 64],
+        /// Self-contained PQ signature over the validator announcement payload.
+        signature: PqSignature,
         /// SHA-256 machine fingerprint (platform UUID + MAC address).
         /// [0u8; 32] if not available (dev mode or legacy).
         #[serde(default)]
@@ -358,28 +329,6 @@ pub enum MessageType {
     HolePunchNotify {
         /// The observed external address of the peer that wants to connect
         peer_observed_addr: SocketAddr,
-    },
-
-    /// M-9: Certificate rotation announcement.
-    /// A peer broadcasts this when it generates a new TLS certificate.
-    /// The message is signed by the OLD certificate's private key, proving
-    /// that the entity controlling the old cert authorized the rotation.
-    CertRotation {
-        /// SHA-256 fingerprint of the OLD certificate being retired
-        old_fingerprint: [u8; 32],
-        /// SHA-256 fingerprint of the NEW certificate replacing it
-        new_fingerprint: [u8; 32],
-        /// DER-encoded NEW certificate (peers cache it for verification)
-        new_cert_der: Vec<u8>,
-        /// Ed25519-style signature over (old_fingerprint || new_fingerprint)
-        /// produced with the OLD certificate's private key. Verification uses
-        /// the OLD certificate's public key extracted from stored cert data.
-        /// For simplicity we use SHA-256(old_fp || new_fp) signed via the
-        /// TLS private key — peers verify via `verify_self_signed_cert` on
-        /// the new cert + fingerprint chain consistency.
-        rotation_proof: Vec<u8>,
-        /// Unix timestamp of the rotation (rate-limit enforcement)
-        timestamp: u64,
     },
 }
 

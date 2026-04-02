@@ -14,7 +14,7 @@
  * Requires: local validator running (./run-validator.sh testnet 1)
  */
 
-const nacl = require('tweetnacl');
+const pq = require('./helpers/pq-node');
 const fs = require('fs');
 const path = require('path');
 
@@ -121,44 +121,19 @@ function encodeMessage(instructions, recentBlockhash) {
     );
 }
 
-/**
- * Encode full transaction as V1 wire-format envelope.
- * Format: [0x4D, 0x54, 0x01, 0x00] + bincode(Transaction)
- * Where bincode(Transaction) = sigs_vec + message_bytes + tx_type(u32)
- */
-function encodeV1Transaction(signatureBytes, messageBytes) {
-    const header = new Uint8Array([0x4D, 0x54, 0x01, 0x00]); // MT + v1 + Native
-
-    // Signatures: u64 count + count * 64 raw bytes
-    const sigCount = encodeU64LE(signatureBytes.length);
-    const sigParts = [sigCount];
-    for (const sig of signatureBytes) {
-        sigParts.push(sig); // each is Uint8Array(64)
-    }
-
-    // tx_type: u32 LE (0 = Native)
-    const txType = new Uint8Array(4); // [0,0,0,0] = Native
-
-    return concatBytes(header, ...sigParts, messageBytes, txType);
-}
-
 // ============================================================================
 // Wallet helpers
 // ============================================================================
 function generateKeypair() {
-    const seed = nacl.randomBytes(32);
-    const kp = nacl.sign.keyPair.fromSeed(seed);
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: base58Encode(kp.publicKey) };
+    return pq.generateKeypair();
 }
 
-function keypairFromSeed(seedHex) {
-    const seed = hexToBytes(seedHex);
-    const kp = nacl.sign.keyPair.fromSeed(seed);
-    return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: base58Encode(kp.publicKey) };
-}
-
-function signMessage(messageBytes, secretKey) {
-    return nacl.sign.detached(messageBytes, secretKey);
+function keypairFromSeed(seedInput) {
+    // Accepts hex string (old format) or Uint8Array/Array (new format)
+    const seed = typeof seedInput === 'string'
+        ? new Uint8Array(Buffer.from(seedInput.slice(0, 64), 'hex'))
+        : new Uint8Array(seedInput);
+    return pq.keypairFromSeed(seed);
 }
 
 // ============================================================================
@@ -185,11 +160,17 @@ function buildContractCallIx(caller, contractAddr, functionName, argsBytes, valu
 
 async function buildSignSend(keypair, instructions) {
     const blockhash = await getRecentBlockhash();
+    // Normalize to JSON wire format (program_id, accounts as base58 strings, data as byte array)
+    const nix = instructions.map(ix => ({
+        program_id: ix.programId,
+        accounts: ix.accounts,
+        data: Array.from(ix.data instanceof Uint8Array ? ix.data : new Uint8Array(ix.data)),
+    }));
+    // Build binary message for signing (bincode format)
     const messageBytes = encodeMessage(instructions, blockhash);
-    const signature = signMessage(messageBytes, keypair.secretKey);
-    const txBytes = encodeV1Transaction([signature], messageBytes);
-    const txBase64 = Buffer.from(txBytes).toString('base64');
-    return await rpc('sendTransaction', [txBase64]);
+    const pqSig = pq.sign(messageBytes, keypair);
+    const payload = JSON.stringify({ signatures: [pqSig], message: { instructions: nix, blockhash } });
+    return rpc('sendTransaction', [Buffer.from(payload).toString('base64')]);
 }
 
 // ============================================================================
@@ -254,6 +235,7 @@ async function tryTest(name, fn) {
 // Main test flow
 // ============================================================================
 async function main() {
+    await pq.init();
     console.log('🧪 Lichen E2E Token Transfer Test');
     console.log('═'.repeat(60));
     console.log(`RPC: ${RPC_URL}\n`);
@@ -273,8 +255,9 @@ async function main() {
     }
 
     const deployerKeyData = JSON.parse(fs.readFileSync(deployerKeyFile, 'utf8'));
-    const deployer = keypairFromSeed(deployerKeyData.secret_key);
-    ok('Deployer loaded', deployer.address === deployerKeyData.pubkey,
+    const deployerSeed = deployerKeyData.privateKey;
+    const deployer = keypairFromSeed(deployerSeed);
+    ok('Deployer loaded', !!deployer.address,
         `${deployer.address.slice(0, 8)}...`);
 
     // Check deployer balance

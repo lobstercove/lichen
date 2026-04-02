@@ -39,7 +39,7 @@ ProtectControlGroups=true
 # files are always found at the same path regardless of HOME, db-path, or
 # binary location changes.  This prevents accidental identity regeneration
 # (and TOFU violations) during updates or deployments.
-# HOME is also overridden for ZK keys and validator keypairs.
+# HOME is also overridden for validator keypairs and other runtime state.
 Environment=RUST_LOG=info
 Environment=HOME=/var/lib/lichen
 Environment=LICHEN_HOME=/var/lib/lichen

@@ -2,14 +2,17 @@
 //
 // Verifies that bincode-serialized transactions from the Rust SDK produce
 // the same byte layout as the JS and Python SDK manual bincode encoders.
-// Also tests JSON (serde_json) round-trip with hex-string signatures.
+// Also tests JSON (serde_json) round-trip with structured PQ signatures.
 
-use lichen_core::{Hash, Instruction, Message, Pubkey, Transaction};
+use lichen_core::{Hash, Instruction, Keypair, Message, PqSignature, Pubkey, Transaction};
+
+fn test_signature(fill: u8, message: &[u8]) -> PqSignature {
+    Keypair::from_seed(&[fill; 32]).sign(message)
+}
 
 // ─── Helper: build a reference transaction ───────────────────────────
 
 fn make_test_transaction() -> Transaction {
-    let sig = [0xABu8; 64];
     let program_id = Pubkey([1u8; 32]);
     let account1 = Pubkey([2u8; 32]);
     let account2 = Pubkey([3u8; 32]);
@@ -22,17 +25,21 @@ fn make_test_transaction() -> Transaction {
         data,
     };
 
+    let message = Message::new(vec![ix], blockhash);
+
     Transaction {
-        signatures: vec![sig],
-        message: Message::new(vec![ix], blockhash),
+        signatures: vec![test_signature(0xAB, &message.serialize())],
+        message,
         tx_type: Default::default(),
     }
 }
 
 // ─── Helper: manually build bincode bytes matching JS/Python layout ──
 //
-// Layout (matching sdk/js/src/bincode.ts and sdk/python/lichen/bincode.py):
-//   signatures: u64_le(count) + N * 64_raw_bytes
+// Layout (to be matched by updated SDK encoders):
+//   signatures: u64_le(count) + N * PqSignature
+//   PqSignature: u8(scheme) + PqPublicKey + bytes(sig)
+//   PqPublicKey: u8(scheme) + bytes(pubkey)
 //   message.instructions: u64_le(count) + N * instruction
 //   instruction: 32_bytes(program_id) + u64_le(accounts_count) + N*32 + u64_le(data_len) + data
 //   message.recent_blockhash: 32_raw_bytes
@@ -41,13 +48,24 @@ fn encode_u64_le(v: u64) -> Vec<u8> {
     v.to_le_bytes().to_vec()
 }
 
+fn encode_pq_signature(signature: &PqSignature) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(signature.scheme_version);
+    out.push(signature.public_key.scheme_version);
+    out.extend(encode_u64_le(signature.public_key.bytes.len() as u64));
+    out.extend_from_slice(&signature.public_key.bytes);
+    out.extend(encode_u64_le(signature.sig.len() as u64));
+    out.extend_from_slice(&signature.sig);
+    out
+}
+
 fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
     let mut out = Vec::new();
 
-    // Signatures: Vec<[u8; 64]> → u64 count + N * 64 raw bytes
+    // Signatures: Vec<PqSignature>
     out.extend(encode_u64_le(tx.signatures.len() as u64));
     for sig in &tx.signatures {
-        out.extend_from_slice(sig);
+        out.extend(encode_pq_signature(sig));
     }
 
     // Message.instructions: Vec<Instruction>
@@ -89,11 +107,10 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
     }
 
     // tx_type: enum variant index as u32 LE (bincode default)
-    // Native = 0, Evm = 1, SolanaCompat = 2
+    // Native = 0, Evm = 1
     let variant = match tx.tx_type {
         lichen_core::TransactionType::Native => 0u32,
         lichen_core::TransactionType::Evm => 1u32,
-        lichen_core::TransactionType::SolanaCompat => 2u32,
     };
     out.extend_from_slice(&variant.to_le_bytes());
 
@@ -153,22 +170,26 @@ fn test_bincode_round_trip() {
 }
 
 #[test]
-fn test_json_round_trip_with_hex_signatures() {
+fn test_json_round_trip_with_pq_signatures() {
     let tx = make_test_transaction();
     let json_str = serde_json::to_string(&tx).unwrap();
 
-    // Verify JSON uses hex strings for signatures
+    // Verify JSON uses structured PQ signature objects with hex-encoded blobs.
     let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     let sigs = json_val["signatures"].as_array().unwrap();
     assert_eq!(sigs.len(), 1);
-    assert!(sigs[0].is_string(), "JSON signature should be a hex string");
-    let sig_hex = sigs[0].as_str().unwrap();
+    let signature = sigs[0].as_object().unwrap();
+    let public_key = signature["public_key"].as_object().unwrap();
+    assert_eq!(signature["scheme_version"].as_u64(), Some(1));
+    assert_eq!(public_key["scheme_version"].as_u64(), Some(1));
     assert_eq!(
-        sig_hex.len(),
-        128,
-        "Hex-encoded 64-byte signature should be 128 chars"
+        public_key["bytes"].as_str().unwrap().len(),
+        lichen_core::account::ML_DSA_65_PUBLIC_KEY_BYTES * 2
     );
-    assert_eq!(sig_hex, "ab".repeat(64));
+    assert_eq!(
+        signature["sig"].as_str().unwrap().len(),
+        lichen_core::account::ML_DSA_65_SIGNATURE_BYTES * 2
+    );
 
     // Deserialize back
     let tx2: Transaction = serde_json::from_str(&json_str).unwrap();
@@ -187,7 +208,7 @@ fn test_bincode_and_json_produce_different_bytes() {
 }
 
 #[test]
-fn test_bincode_signature_encoding_is_raw_bytes() {
+fn test_bincode_signature_encoding_is_pq_structured_bytes() {
     let tx = make_test_transaction();
     let bytes = bincode::serialize(&tx).unwrap();
 
@@ -195,9 +216,30 @@ fn test_bincode_signature_encoding_is_raw_bytes() {
     let sig_count = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
     assert_eq!(sig_count, 1);
 
-    // Next 64 bytes: raw signature bytes (should be 0xAB repeated)
-    let sig_bytes = &bytes[8..72];
-    assert_eq!(sig_bytes, &[0xAB; 64]);
+    // Then the self-contained PQ signature layout.
+    assert_eq!(bytes[8], tx.signatures[0].scheme_version);
+    assert_eq!(bytes[9], tx.signatures[0].public_key.scheme_version);
+
+    let public_key_len = u64::from_le_bytes(bytes[10..18].try_into().unwrap()) as usize;
+    assert_eq!(public_key_len, tx.signatures[0].public_key.bytes.len());
+
+    let public_key_start = 18;
+    let public_key_end = public_key_start + public_key_len;
+    assert_eq!(
+        &bytes[public_key_start..public_key_end],
+        tx.signatures[0].public_key.bytes.as_slice()
+    );
+
+    let sig_len = u64::from_le_bytes(
+        bytes[public_key_end..public_key_end + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    assert_eq!(sig_len, tx.signatures[0].sig.len());
+    assert_eq!(
+        &bytes[public_key_end + 8..public_key_end + 8 + sig_len],
+        tx.signatures[0].sig.as_slice()
+    );
 }
 
 #[test]
@@ -213,16 +255,17 @@ fn test_message_serialize_for_signing_matches_bincode() {
 
 #[test]
 fn test_multiple_signatures() {
-    let sig1 = [0x11u8; 64];
-    let sig2 = [0x22u8; 64];
     let ix = Instruction {
         program_id: Pubkey([1u8; 32]),
         accounts: vec![],
         data: vec![],
     };
+    let message = Message::new(vec![ix], Hash::default());
+    let sig1 = test_signature(0x11, &message.serialize());
+    let sig2 = test_signature(0x22, &message.serialize());
     let tx = Transaction {
-        signatures: vec![sig1, sig2],
-        message: Message::new(vec![ix], Hash::default()),
+        signatures: vec![sig1.clone(), sig2.clone()],
+        message,
         tx_type: Default::default(),
     };
 
@@ -270,9 +313,10 @@ fn test_multiple_instructions() {
         accounts: vec![Pubkey([5u8; 32]), Pubkey([6u8; 32]), Pubkey([7u8; 32])],
         data: vec![100, 200],
     };
+    let message = Message::new(vec![ix1, ix2], Hash::new([0xDDu8; 32]));
     let tx = Transaction {
-        signatures: vec![[0xCCu8; 64]],
-        message: Message::new(vec![ix1, ix2], Hash::new([0xDDu8; 32])),
+        signatures: vec![test_signature(0xCC, &message.serialize())],
+        message,
         tx_type: Default::default(),
     };
 
@@ -287,19 +331,27 @@ fn test_multiple_instructions() {
 
 #[test]
 fn test_simulated_js_sdk_bytes_deserialize() {
-    // Simulate what the JS SDK would produce: manually build bincode bytes
+    // Simulate what an updated SDK encoder would produce: manually build bincode bytes
     // and verify Rust can deserialize them.
-    let sig = [0x42u8; 64];
     let program_id = Pubkey([0xAAu8; 32]);
     let account = Pubkey([0xBBu8; 32]);
     let data = vec![1, 2, 3, 4, 5];
     let blockhash = Hash::new([0xCCu8; 32]);
+    let message = Message::new(
+        vec![Instruction {
+            program_id,
+            accounts: vec![account],
+            data: data.clone(),
+        }],
+        blockhash,
+    );
+    let signature = test_signature(0x42, &message.serialize());
 
-    // Manually build what JS encodeTransaction would produce
+    // Manually build what a PQ-aware SDK encodeTransaction would produce.
     let mut js_bytes = Vec::new();
-    // signatures: Vec<[u8; 64]>
+    // signatures: Vec<PqSignature>
     js_bytes.extend(encode_u64_le(1)); // 1 signature
-    js_bytes.extend_from_slice(&sig);
+    js_bytes.extend(encode_pq_signature(&signature));
     // instructions: Vec<Instruction>
     js_bytes.extend(encode_u64_le(1)); // 1 instruction
                                        // instruction.program_id
@@ -324,7 +376,7 @@ fn test_simulated_js_sdk_bytes_deserialize() {
         bincode::deserialize(&js_bytes).expect("Failed to deserialize JS SDK bincode bytes");
 
     assert_eq!(tx.signatures.len(), 1);
-    assert_eq!(tx.signatures[0], sig);
+    assert_eq!(tx.signatures[0], signature);
     assert_eq!(tx.message.instructions.len(), 1);
     assert_eq!(tx.message.instructions[0].program_id, program_id);
     assert_eq!(tx.message.instructions[0].accounts, vec![account]);
@@ -333,29 +385,22 @@ fn test_simulated_js_sdk_bytes_deserialize() {
 }
 
 #[test]
-fn test_json_backward_compat_hex_signatures() {
-    // Verify we can still deserialize JSON with hex-string signatures
-    // (used by browser wallets)
-    // 64 bytes = 128 hex chars of "ab" repeated
-    let sig_hex = "ab".repeat(64);
-    let json = format!(
-        r#"{{
-        "signatures": ["{}"],
-        "message": {{
-            "instructions": [{{
-                "program_id": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-                "accounts": [],
-                "data": []
-            }}],
-            "recent_blockhash": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
-        }}
-    }}"#,
-        sig_hex
-    );
+fn test_json_manual_pq_signature_deserialize() {
+    let tx = make_test_transaction();
+    let signature = &tx.signatures[0];
+    let mut json_val = serde_json::to_value(&tx).unwrap();
+    json_val["signatures"] = serde_json::json!([{
+        "scheme_version": signature.scheme_version,
+        "public_key": {
+            "scheme_version": signature.public_key.scheme_version,
+            "bytes": hex::encode(&signature.public_key.bytes),
+        },
+        "sig": hex::encode(&signature.sig),
+    }]);
 
-    let tx: Transaction = serde_json::from_str(&json).unwrap();
-    assert_eq!(tx.signatures.len(), 1);
-    assert_eq!(tx.signatures[0], [0xABu8; 64]);
+    let tx2: Transaction = serde_json::from_value(json_val).unwrap();
+    assert_eq!(tx2.signatures.len(), 1);
+    assert_eq!(tx2.signatures[0], tx.signatures[0]);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -390,7 +435,7 @@ fn test_wire_envelope_round_trip_evm() {
     };
     let msg = lichen_core::Message::new(vec![ix], Hash::default());
     let tx = Transaction {
-        signatures: vec![[0x11; 64]],
+        signatures: vec![test_signature(0x11, &msg.serialize())],
         message: msg,
         tx_type: lichen_core::TransactionType::Evm,
     };
@@ -402,47 +447,25 @@ fn test_wire_envelope_round_trip_evm() {
 }
 
 #[test]
-fn test_wire_envelope_round_trip_solana_compat() {
-    let ix = lichen_core::Instruction {
-        program_id: Pubkey([1; 32]),
-        accounts: vec![],
-        data: vec![],
-    };
-    let msg = lichen_core::Message::new(vec![ix], Hash::default());
-    let tx = Transaction {
-        signatures: vec![[0xCC; 64]],
-        message: msg,
-        tx_type: lichen_core::TransactionType::SolanaCompat,
-    };
-    let wire = tx.to_wire();
-    assert_eq!(wire[3], 2); // SolanaCompat = 2
-
-    let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.tx_type, lichen_core::TransactionType::SolanaCompat);
-}
-
-#[test]
-fn test_wire_envelope_backward_compat_legacy_bincode() {
-    // Legacy format: raw bincode without envelope header
+fn test_wire_envelope_accepts_raw_bincode() {
+    // Raw bincode without the wire envelope is still accepted.
     let tx = make_test_transaction();
-    let legacy = bincode::serialize(&tx).unwrap();
+    let raw_bincode = bincode::serialize(&tx).unwrap();
 
     // First two bytes should NOT be the magic (they're the sig count u64 LE)
-    assert_ne!(&legacy[0..2], &lichen_core::TX_WIRE_MAGIC);
+    assert_ne!(&raw_bincode[0..2], &lichen_core::TX_WIRE_MAGIC);
 
-    // from_wire must still decode legacy bincode
-    let tx2 = Transaction::from_wire(&legacy, MAX_TEST_LIMIT).unwrap();
+    let tx2 = Transaction::from_wire(&raw_bincode, MAX_TEST_LIMIT).unwrap();
     assert_eq!(tx2.signatures, tx.signatures);
     assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
 }
 
 #[test]
-fn test_wire_envelope_backward_compat_json() {
-    // Legacy JSON format: serde_json serialized Transaction
+fn test_wire_envelope_accepts_json_payload() {
+    // Browser wallet JSON payload.
     let tx = make_test_transaction();
     let json_bytes = serde_json::to_vec(&tx).unwrap();
 
-    // from_wire must decode JSON too
     let tx2 = Transaction::from_wire(&json_bytes, MAX_TEST_LIMIT).unwrap();
     assert_eq!(tx2.signatures, tx.signatures);
     assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
@@ -485,7 +508,7 @@ fn test_wire_envelope_too_short() {
     // Less than 4-byte header but starts with magic
     let wire = vec![0x4D, 0x54, 1]; // only 3 bytes
     let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
-    // Should fall through to legacy path (which also fails)
+    // Should fall through to the non-envelope decoders (which also fail)
     assert!(result.is_err());
 }
 
@@ -505,12 +528,12 @@ fn test_wire_envelope_type_overrides_payload() {
 #[test]
 fn test_wire_envelope_size_matches() {
     let tx = make_test_transaction();
-    let legacy = bincode::serialize(&tx).unwrap();
+    let raw_bincode = bincode::serialize(&tx).unwrap();
     let wire = tx.to_wire();
 
-    // Wire = 4 (header) + legacy bincode
-    assert_eq!(wire.len(), 4 + legacy.len());
-    assert_eq!(&wire[4..], &legacy[..]);
+    // Wire = 4 (header) + raw bincode
+    assert_eq!(wire.len(), 4 + raw_bincode.len());
+    assert_eq!(&wire[4..], &raw_bincode[..]);
 }
 
 // ─── Task 4.1: Transaction Hash Determinism (H-7) ───────────────────
@@ -550,7 +573,7 @@ fn test_hash_determinism_reconstructed_tx() {
 fn test_hash_includes_signatures() {
     let tx1 = make_test_transaction();
     let mut tx2 = make_test_transaction();
-    tx2.signatures = vec![[0xCDu8; 64]]; // different signature
+    tx2.signatures = vec![test_signature(0xCD, &tx2.message.serialize())];
 
     assert_ne!(
         tx1.hash(),
@@ -563,7 +586,7 @@ fn test_hash_includes_signatures() {
 fn test_message_hash_excludes_signatures() {
     let tx1 = make_test_transaction();
     let mut tx2 = make_test_transaction();
-    tx2.signatures = vec![[0xCDu8; 64]]; // different signature
+    tx2.signatures = vec![test_signature(0xCD, &tx2.message.serialize())];
 
     assert_eq!(
         tx1.message_hash(),
@@ -594,23 +617,25 @@ fn test_hash_differs_with_different_message() {
 
 #[test]
 fn test_hash_signature_order_matters() {
-    let sig_a = [0xAAu8; 64];
-    let sig_b = [0xBBu8; 64];
     let blockhash = Hash::new([0xFFu8; 32]);
     let ix = Instruction {
         program_id: Pubkey([1u8; 32]),
         accounts: vec![Pubkey([2u8; 32])],
         data: vec![1],
     };
+    let message = Message::new(vec![ix.clone()], blockhash);
+    let sign_bytes = message.serialize();
+    let sig_a = test_signature(0xAA, &sign_bytes);
+    let sig_b = test_signature(0xBB, &sign_bytes);
 
     let tx1 = Transaction {
-        signatures: vec![sig_a, sig_b],
-        message: Message::new(vec![ix.clone()], blockhash),
+        signatures: vec![sig_a.clone(), sig_b.clone()],
+        message: message.clone(),
         tx_type: Default::default(),
     };
     let tx2 = Transaction {
         signatures: vec![sig_b, sig_a],
-        message: Message::new(vec![ix], blockhash),
+        message,
         tx_type: Default::default(),
     };
 

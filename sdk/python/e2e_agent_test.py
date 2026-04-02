@@ -30,8 +30,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
-import nacl.signing
-
 # ============================================================================
 # Constants
 # ============================================================================
@@ -51,6 +49,7 @@ AGENT_TOKEN_SYMBOL = "TSYMBIONT"
 AGENT_TOKEN_NAME = "TradingLobster Token"
 AGENT_TOKEN_TEMPLATE = "mt20"
 AGENT_TOKEN_DECIMALS = 9
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("LICHEN_ADMIN_TOKEN")
 
 
 # ============================================================================
@@ -109,17 +108,21 @@ def load_treasury_keypair():
         data = json.load(f)
     seed_hex = data["secret_key"]
     seed = bytes.fromhex(seed_hex)
-    signing_key = nacl.signing.SigningKey(seed)
-    kp = Keypair(signing_key)
+    kp = Keypair.from_seed(seed)
     expected_b58 = data["pubkey"]
-    actual_b58 = kp.public_key().to_base58()
+    actual_b58 = kp.pubkey().to_base58()
     assert actual_b58 == expected_b58, f"Treasury key mismatch: {actual_b58} != {expected_b58}"
     return kp
 
 
-def derive_program_address(deployer_pubkey, wasm_bytes):
-    """SHA-256(deployer_bytes + wasm_bytes) -> first 32 bytes = program address."""
-    h = hashlib.sha256(deployer_pubkey.to_bytes() + wasm_bytes).digest()
+def derive_program_address(deployer_pubkey, wasm_bytes, contract_name=None):
+    """Match RPC derivation: SHA-256(deployer_bytes + name/symbol + wasm_bytes)."""
+    hasher = hashlib.sha256()
+    hasher.update(deployer_pubkey.to_bytes())
+    if contract_name:
+        hasher.update(contract_name.encode("utf-8"))
+    hasher.update(wasm_bytes)
+    h = hasher.digest()
     return PublicKey(h[:32])
 
 
@@ -202,21 +205,21 @@ async def main():
     print_step(1, "Create Agent wallet + load Treasury")
 
     treasury = load_treasury_keypair()
-    treasury_b58 = treasury.public_key().to_base58()
+    treasury_b58 = treasury.pubkey().to_base58()
     print_ok(f"Treasury loaded: {treasury_b58}")
 
     agent = Keypair.generate()
-    agent_b58 = agent.public_key().to_base58()
+    agent_b58 = agent.pubkey().to_base58()
     print_ok(f"Agent wallet generated: {agent_b58}")
 
     # Check treasury balance
-    treasury_bal = await conn.get_balance(treasury.public_key())
+    treasury_bal = await conn.get_balance(treasury.pubkey())
     treasury_licn = float(treasury_bal.get("licn", "0"))
     print_ok(f"Treasury balance: {treasury_licn:.2f} LICN")
     assert treasury_licn > 100, f"Treasury too low: {treasury_licn}"
 
     # Agent should have 0
-    agent_bal = await conn.get_balance(agent.public_key())
+    agent_bal = await conn.get_balance(agent.pubkey())
     agent_licn = float(agent_bal.get("licn", "0"))
     print_ok(f"Agent balance: {agent_licn:.2f} LICN (should be 0)")
 
@@ -230,8 +233,8 @@ async def main():
     print_info(f"Blockhash: {blockhash[:16]}...")
 
     transfer_ix = TransactionBuilder.transfer(
-        treasury.public_key(),
-        agent.public_key(),
+        treasury.pubkey(),
+        agent.pubkey(),
         amount_spores,
     )
     tx = (
@@ -246,7 +249,7 @@ async def main():
     # Wait for confirmation then VERIFY exact balance
     await asyncio.sleep(2)
 
-    agent_bal = await conn.get_balance(agent.public_key())
+    agent_bal = await conn.get_balance(agent.pubkey())
     agent_licn = float(agent_bal.get("licn", "0"))
     if agent_licn >= 249.9:
         print_ok(f"Agent balance verified: {agent_licn:.4f} LICN")
@@ -275,9 +278,11 @@ async def main():
         wasm_bytes = WASM_PATH.read_bytes()
         print_info(f"WASM loaded: {len(wasm_bytes)} bytes ({WASM_PATH.name})")
 
-        # Derive expected program address: SHA-256(deployer + code)
-        h = hashlib.sha256(agent.public_key().to_bytes() + wasm_bytes).digest()
-        program_pubkey = PublicKey(h[:32])
+        program_pubkey = derive_program_address(
+            agent.pubkey(),
+            wasm_bytes,
+            AGENT_TOKEN_NAME,
+        )
         print_info(f"Expected program address: {program_pubkey}")
 
         # Sign SHA-256(code_bytes) with agent's key
@@ -297,14 +302,14 @@ async def main():
         print_info(f"init_data: {init_data}")
 
         # Call deployContract RPC
-        # Params: [deployer_base58, code_base64, init_data_json, signature_hex]
+        # Params: [deployer_base58, code_base64, init_data_json, signature]
         try:
             deploy_result = await conn._rpc("deployContract", [
-                agent.public_key().to_base58(),
+                agent.pubkey().to_base58(),
                 b64.b64encode(wasm_bytes).decode("ascii"),
                 init_data,
-                signature.hex(),
-            ])
+                signature.to_json(),
+            ], headers={"Authorization": f"Bearer {ADMIN_TOKEN}"} if ADMIN_TOKEN else None)
             print_ok(f"deployContract result: program_id={deploy_result.get('program_id', '?')}")
             print_ok(f"  code_size={deploy_result.get('code_size', '?')}, fee={deploy_result.get('deploy_fee_licn', '?')} LICN")
 
@@ -338,7 +343,7 @@ async def main():
                 deploy_ok = False
 
             # VERIFY 3: Deploy fee was charged (agent should have ~75 LICN now: 100 - 25)
-            agent_bal_after = await conn.get_balance(agent.public_key())
+            agent_bal_after = await conn.get_balance(agent.pubkey())
             agent_licn_after = float(agent_bal_after.get("licn", "0"))
             print_info(f"Agent balance after deploy: {agent_licn_after:.4f} LICN")
             if agent_licn_after < 230.0:
@@ -393,7 +398,7 @@ async def main():
 
     collection_name = "AgentPunks"
     collection_symbol = "APUNK"
-    collection_pubkey = derive_collection_address(agent.public_key(), collection_name)
+    collection_pubkey = derive_collection_address(agent.pubkey(), collection_name)
     print_info(f"Collection address: {collection_pubkey}")
 
     # System instruction type 6 = create_collection
@@ -409,7 +414,7 @@ async def main():
 
     collection_ix = Instruction(
         program_id=SYSTEM_PROGRAM,
-        accounts=[agent.public_key(), collection_pubkey],
+        accounts=[agent.pubkey(), collection_pubkey],
         data=ix_data,
     )
 
@@ -462,10 +467,10 @@ async def main():
     mint_ix = Instruction(
         program_id=SYSTEM_PROGRAM,
         accounts=[
-            agent.public_key(),       # minter
+            agent.pubkey(),           # minter
             collection_pubkey,        # collection
             token_pubkey,             # token account
-            agent.public_key(),       # owner (minting to self)
+            agent.pubkey(),           # owner (minting to self)
         ],
         data=ix_data,
     )
@@ -505,7 +510,7 @@ async def main():
     # ------------------------------------------------------------------
     print_step(7, "Transfer 5 LICN: Agent -> Treasury")
 
-    bal_before_send = await conn.get_balance(agent.public_key())
+    bal_before_send = await conn.get_balance(agent.pubkey())
     licn_before_send = float(bal_before_send.get("licn", "0"))
     print_info(f"Agent balance before send: {licn_before_send:.4f} LICN")
 
@@ -513,8 +518,8 @@ async def main():
     blockhash = await conn.get_recent_blockhash()
 
     transfer_ix = TransactionBuilder.transfer(
-        agent.public_key(),
-        treasury.public_key(),
+        agent.pubkey(),
+        treasury.pubkey(),
         amount_spores,
     )
     tx = (
@@ -530,7 +535,7 @@ async def main():
         await asyncio.sleep(2)
 
         # VERIFY: Balance decreased by 5 LICN
-        agent_bal_final = await conn.get_balance(agent.public_key())
+        agent_bal_final = await conn.get_balance(agent.pubkey())
         agent_licn_final = float(agent_bal_final.get("licn", "0"))
         delta = licn_before_send - agent_licn_final
         if delta >= 4.9 and delta <= 6.0:  # 5 LICN + possible tx fee
@@ -552,8 +557,8 @@ async def main():
     print_ok(f"Final slot: {final_slot} (advanced {final_slot - slot} slots)")
 
     # Final balances
-    treasury_bal_final = await conn.get_balance(treasury.public_key())
-    agent_bal_final = await conn.get_balance(agent.public_key())
+    treasury_bal_final = await conn.get_balance(treasury.pubkey())
+    agent_bal_final = await conn.get_balance(agent.pubkey())
     print_ok(f"Treasury final: {treasury_bal_final.get('licn', '?')} LICN")
     print_ok(f"Agent final:    {agent_bal_final.get('licn', '?')} LICN")
 

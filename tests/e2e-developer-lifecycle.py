@@ -40,6 +40,7 @@ from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instructi
 RPC_URL    = os.environ.get("RPC_URL",    "http://127.0.0.1:8899")
 FAUCET_URL = os.environ.get("FAUCET_URL", "http://127.0.0.1:9100")
 WASM_PATH  = REPO / "contracts" / "lichencoin" / "lichencoin.wasm"
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN") or os.environ.get("LICHEN_ADMIN_TOKEN")
 
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 
@@ -96,22 +97,46 @@ async def wait_for_balance(conn: Connection, pubkey: PublicKey, min_spores: int,
     raise TimeoutError(f"Balance did not reach {min_spores} within {timeout}s")
 
 
+def derive_program_address(
+    deployer_address: PublicKey,
+    wasm_bytes: bytes,
+    init_data: str | None = None,
+) -> PublicKey:
+    """Match the RPC-side program derivation: SHA-256(deployer + name/symbol + code)."""
+    contract_name = None
+    if init_data:
+        try:
+            parsed = json.loads(init_data)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            contract_name = parsed.get("name") or parsed.get("symbol")
+
+    hasher = hashlib.sha256()
+    hasher.update(deployer_address.to_bytes())
+    if contract_name:
+        hasher.update(contract_name.encode("utf-8"))
+    hasher.update(wasm_bytes)
+    return PublicKey(hasher.digest()[:32])
+
+
 async def deploy_contract(conn: Connection, deployer: Keypair, wasm_bytes: bytes,
                           init_data: str | None = None) -> tuple[PublicKey, dict]:
     """Deploy a WASM contract, return (program_pubkey, rpc_result)."""
     code_hash = hashlib.sha256(wasm_bytes).digest()
     sig = deployer.sign(code_hash)
 
-    # Derive deterministic program address
-    h = hashlib.sha256(deployer.public_key().to_bytes() + wasm_bytes).digest()
-    program_pubkey = PublicKey(h[:32])
+    program_pubkey = derive_program_address(deployer.address(), wasm_bytes, init_data)
+    headers = None
+    if ADMIN_TOKEN:
+        headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
 
     result = await conn._rpc("deployContract", [
-        deployer.public_key().to_base58(),
+        deployer.address().to_base58(),
         base64.b64encode(wasm_bytes).decode("ascii"),
         init_data,
-        sig.hex(),
-    ])
+        sig.to_json(),
+    ], headers=headers)
     return program_pubkey, result
 
 
@@ -136,7 +161,7 @@ async def call_contract_tx(conn: Connection, caller: Keypair,
     })
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
-        accounts=[caller.public_key(), contract],
+        accounts=[caller.address(), contract],
         data=payload.encode(),
     )
     blockhash = await conn.get_recent_blockhash()
@@ -173,12 +198,12 @@ async def main():
     # ── Phase 2: Generate fresh keypair ──
     print("\n── Phase 2: Generate keypair ──")
     dev = Keypair.generate()
-    dev_addr = dev.public_key().to_base58()
+    dev_addr = dev.address().to_base58()
     assert len(dev_addr) >= 32
     ok(f"Generated keypair: {dev_addr[:12]}...")
 
     recipient = Keypair.generate()
-    rec_addr = recipient.public_key().to_base58()
+    rec_addr = recipient.address().to_base58()
     ok(f"Generated recipient: {rec_addr[:12]}...")
 
     # ── Phase 3: Fund via faucet ──
@@ -198,7 +223,7 @@ async def main():
     print("\n── Phase 4: Verify balance ──")
     if faucet_ok:
         try:
-            bal = await wait_for_balance(conn, dev.public_key(), 1_000_000, timeout=20)
+            bal = await wait_for_balance(conn, dev.address(), 1_000_000, timeout=20)
             spores = bal.get("spendable", bal.get("spores", 0))
             ok(f"Balance confirmed: {spores:,} spores ({spores / 1_000_000_000:.4f} LICN)")
         except TimeoutError:
@@ -213,8 +238,8 @@ async def main():
         for wf in funded_files:
             try:
                 dev = Keypair.load(wf)
-                dev_addr = dev.public_key().to_base58()
-                bal = await conn.get_balance(dev.public_key())
+                dev_addr = dev.address().to_base58()
+                bal = await conn.get_balance(dev.address())
                 spores = bal.get("spendable", bal.get("spores", 0))
                 if spores > 0:
                     ok(f"Genesis wallet loaded: {dev_addr[:12]}... ({spores / 1e9:.2f} LICN)")
@@ -227,9 +252,9 @@ async def main():
             deployer_path = REPO / "keypairs" / "deployer.json"
             if deployer_path.exists():
                 dev = Keypair.load(deployer_path)
-                dev_addr = dev.public_key().to_base58()
+                dev_addr = dev.address().to_base58()
                 try:
-                    bal = await conn.get_balance(dev.public_key())
+                    bal = await conn.get_balance(dev.address())
                     spores = bal.get("spendable", bal.get("spores", 0))
                     ok(f"Deployer balance: {spores:,} spores")
                     if spores > 0:
@@ -276,6 +301,8 @@ async def main():
             emsg = str(e).lower()
             if "disabled" in emsg and ("local/dev" in emsg or "multi-validator" in emsg):
                 skip("deployContract disabled in this environment (multi-validator mode)")
+            elif "missing authorization" in emsg or "admin endpoints disabled" in emsg:
+                skip("deployContract unavailable in this environment (admin auth not configured)")
             else:
                 fail("deployContract RPC", str(e))
             program_pubkey = None
@@ -306,7 +333,7 @@ async def main():
     # Check if dev has enough balance for transfer
     dev_bal = 0
     try:
-        b = await conn.get_balance(dev.public_key())
+        b = await conn.get_balance(dev.address())
         dev_bal = b.get("spendable", b.get("spores", 0))
     except Exception:
         pass
@@ -317,7 +344,7 @@ async def main():
         try:
             blockhash = await conn.get_recent_blockhash()
             ix = TransactionBuilder.transfer(
-                dev.public_key(), recipient.public_key(), transfer_amount
+                dev.address(), recipient.address(), transfer_amount
             )
             tx = (TransactionBuilder()
                   .add(ix)
@@ -340,7 +367,7 @@ async def main():
     else:
         try:
             rec_bal = await wait_for_balance(
-                conn, recipient.public_key(), transfer_amount // 2, timeout=15
+                conn, recipient.address(), transfer_amount // 2, timeout=15
             )
             rec_spores = rec_bal.get("spendable", rec_bal.get("spores", 0))
             ok(f"Recipient balance: {rec_spores:,} spores")

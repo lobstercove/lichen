@@ -46,22 +46,7 @@ REQUIRE_FUNDED_DEPLOYER = os.getenv("REQUIRE_FUNDED_DEPLOYER", "0") == "1"
 
 
 def load_keypair_flexible(path: Path) -> Keypair:
-    try:
-        return Keypair.load(path)
-    except Exception:
-        pass
-
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        secret = raw.get("secret_key") or raw.get("privateKey")
-        if isinstance(secret, str):
-            key_hex = secret.strip().lower().removeprefix("0x")
-            if len(key_hex) == 64:
-                return Keypair.from_seed(bytes.fromhex(key_hex))
-        if isinstance(secret, list) and len(secret) == 32:
-            return Keypair.from_seed(bytes(secret))
-
-    raise ValueError(f"unsupported keypair format: {path}")
+    return Keypair.load(path)
 
 
 def is_compute_budget_error(exc: Exception) -> bool:
@@ -222,7 +207,7 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
         raise ValueError(f"Contract '{contract_dir}' not deployed")
 
     # Accounts: [caller (signer), contract]
-    ix = Instruction(CONTRACT_PROGRAM, [kp.public_key(), contract_pubkey], data)
+    ix = Instruction(CONTRACT_PROGRAM, [kp.address(), contract_pubkey], data)
     tb = TransactionBuilder()
     tb.add(ix)
 
@@ -345,10 +330,10 @@ async def load_funded_genesis_wallets(conn: Connection, limit: int = 2, exclude:
             break
         try:
             kp = load_keypair_flexible(key_file)
-            addr = str(kp.public_key())
+            addr = str(kp.address())
             if addr in excluded:
                 continue
-            bal = await conn.get_balance(kp.public_key())
+            bal = await conn.get_balance(kp.address())
             if _extract_spores(bal) >= 1_000_000_000:
                 wallets.append(kp)
                 excluded.add(addr)
@@ -459,7 +444,7 @@ async def resolve_token(conn: Connection, symbol: str) -> PublicKey:
 
 async def fund_account(conn: Connection, deployer: Keypair, target: Keypair, amount_licn: int = 10) -> bool:
     """Fund an account via airdrop (if available) or deployer transfer."""
-    addr = str(target.public_key())
+    addr = str(target.address())
     MAX_PER_AIRDROP = 10
     funded = 0
     # Try airdrop first (max 10 LICN per call)
@@ -486,7 +471,7 @@ async def fund_account(conn: Connection, deployer: Keypair, target: Keypair, amo
         with urlopen(req, timeout=6):
             pass
         await asyncio.sleep(0.5)
-        bal = await conn.get_balance(target.public_key())
+        bal = await conn.get_balance(target.address())
         if _extract_spores(bal) >= amount_licn * 1_000_000_000:
             return True
     except (URLError, Exception):
@@ -496,7 +481,7 @@ async def fund_account(conn: Connection, deployer: Keypair, target: Keypair, amo
         blockhash_result = await conn.get_latest_block()
         bh = blockhash_result.get("hash", blockhash_result.get("blockhash", "0" * 64))
         amount_spores = amount_licn * 1_000_000_000
-        ix = TransactionBuilder.transfer(deployer.public_key(), target.public_key(), amount_spores)
+        ix = TransactionBuilder.transfer(deployer.address(), target.address(), amount_spores)
         tx = TransactionBuilder().add(ix).set_recent_blockhash(bh).build_and_sign(deployer)
         sig = await conn.send_transaction(tx)
         for _ in range(TX_CONFIRM_TIMEOUT * 5):
@@ -528,7 +513,7 @@ async def test_order_lifecycle(conn: Connection, deployer: Keypair, trader_a: Ke
     musd_addr = await resolve_token(conn, "LUSD")
     try:
         await call_contract(conn, deployer, "dex_core", "create_pair", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "base_token": licn_addr,
             "quote_token": musd_addr,
             "tick_size": 1_000_000,
@@ -542,7 +527,7 @@ async def test_order_lifecycle(conn: Connection, deployer: Keypair, trader_a: Ke
     # 1b. Trader A places a limit BUY order
     try:
         await call_contract(conn, trader_a, "dex_core", "place_order", {
-            "caller": trader_a.public_key(),
+            "caller": trader_a.address(),
             "pair_id": 1,
             "side": 0,  # 0=Buy
             "order_type": 0,  # 0=Limit
@@ -557,7 +542,7 @@ async def test_order_lifecycle(conn: Connection, deployer: Keypair, trader_a: Ke
     # 1c. Trader B places a limit SELL order (should match)
     try:
         await call_contract(conn, trader_b, "dex_core", "place_order", {
-            "caller": trader_b.public_key(),
+            "caller": trader_b.address(),
             "pair_id": 1,
             "side": 1,  # 1=Sell
             "order_type": 0,  # 0=Limit
@@ -600,21 +585,21 @@ async def test_order_lifecycle(conn: Connection, deployer: Keypair, trader_a: Ke
 
     # 1f. Check user orders for both traders
     try:
-        a_orders = await call_contract(conn, trader_a, "dex_core", "get_user_orders", {"user_address": trader_a.public_key()})
+        a_orders = await call_contract(conn, trader_a, "dex_core", "get_user_orders", {"user_address": trader_a.address()})
         report("PASS", "Trader A get_user_orders")
     except Exception as e:
         report("FAIL", "Trader A get_user_orders", str(e))
 
     # 1g. Cancel remaining order for trader A
     try:
-        await call_contract(conn, trader_a, "dex_core", "cancel_all_orders", {"caller": trader_a.public_key(), "pair_id": 1})
+        await call_contract(conn, trader_a, "dex_core", "cancel_all_orders", {"caller": trader_a.address(), "pair_id": 1})
         report("PASS", "Trader A cancel_all_orders")
     except Exception as e:
         report("FAIL", "Trader A cancel_all_orders", str(e))
 
     # 1h. Verify open order count after cancel
     try:
-        open_count = await call_contract(conn, trader_a, "dex_core", "get_open_order_count", {"user_address": trader_a.public_key()})
+        open_count = await call_contract(conn, trader_a, "dex_core", "get_open_order_count", {"user_address": trader_a.address()})
         report("PASS", "get_open_order_count = 0 after cancel")
     except Exception as e:
         report("FAIL", "get_open_order_count", str(e))
@@ -644,7 +629,7 @@ async def test_candle_data(conn: Connection, deployer: Keypair, trader_a: Keypai
             "pair_id": 1,
             "price": 100_000_000,
             "volume": 5_000_000_000,
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
         })
         report("PASS", "Analytics record_trade")
     except Exception as e:
@@ -678,7 +663,7 @@ async def test_candle_data(conn: Connection, deployer: Keypair, trader_a: Keypai
     # 2e. Trader stats
     try:
         ts = await call_contract(conn, trader_a, "dex_analytics", "get_trader_stats", {
-            "addr": trader_a.public_key(),
+            "addr": trader_a.address(),
         })
         report("PASS", "Analytics get_trader_stats")
     except Exception as e:
@@ -744,7 +729,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4a. Set mark price for pair
     try:
         await call_contract(conn, deployer, "dex_margin", "set_mark_price", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "pair_id": 1,
             "price": 100_000_000,
         })
@@ -755,7 +740,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4b. Open a LONG position with 3x leverage
     try:
         await call_contract(conn, trader_a, "dex_margin", "open_position", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
             "pair_id": 1,
             "side": 0,  # 0=Long
             "size": 3_000_000_000,  # 3 LICN (collateral * leverage)
@@ -787,7 +772,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4e. Add margin to prevent liquidation
     try:
         await call_contract(conn, trader_a, "dex_margin", "add_margin", {
-            "caller": trader_a.public_key(),
+            "caller": trader_a.address(),
             "position_id": 1,
             "amount": 500_000_000,  # 0.5 LICN additional
         })
@@ -798,7 +783,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4f. Remove some margin
     try:
         await call_contract(conn, trader_a, "dex_margin", "remove_margin", {
-            "caller": trader_a.public_key(),
+            "caller": trader_a.address(),
             "position_id": 1,
             "amount": 200_000_000,  # 0.2 LICN
         })
@@ -809,7 +794,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4g. User positions list
     try:
         positions = await call_contract(conn, trader_a, "dex_margin", "get_user_positions", {
-            "user_address": trader_a.public_key(),
+            "user_address": trader_a.address(),
         })
         report("PASS", "Margin get_user_positions")
     except Exception as e:
@@ -828,7 +813,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     liquidation_target_id = 2
     try:
         await call_contract(conn, trader_a, "dex_margin", "open_position", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
             "pair_id": 1,
             "side": 0,  # Long
             "size": 8_000_000_000,
@@ -854,7 +839,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4k. Simulate liquidation by dropping price dramatically
     try:
         await call_contract(conn, deployer, "dex_margin", "set_mark_price", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "pair_id": 1,
             "price": 1_000_000,  # Drop to $0.001 — deterministic liquidation pressure
         })
@@ -865,7 +850,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4l. Liquidate dedicated target position
     try:
         await call_contract(conn, deployer, "dex_margin", "liquidate", {
-            "liquidator": deployer.public_key(),
+            "liquidator": deployer.address(),
             "position_id": liquidation_target_id,
         })
         report("PASS", "Margin liquidate position")
@@ -938,12 +923,12 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     try:
         # Reset price first
         await call_contract(conn, deployer, "dex_margin", "set_mark_price", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "pair_id": 1,
             "price": 100_000_000,
         })
         await call_contract(conn, trader_a, "dex_margin", "open_position", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
             "pair_id": 1,
             "side": 1,  # 1=Short
             "size": 2_000_000_000,  # 2 LICN (collateral * leverage)
@@ -957,7 +942,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4r. Close position voluntarily
     try:
         await call_contract(conn, trader_a, "dex_margin", "close_position", {
-            "caller": trader_a.public_key(),
+            "caller": trader_a.address(),
             "position_id": 3,  # third position opened (after liquidation target)
         })
         report("PASS", "Margin close_position (voluntary)")
@@ -1043,7 +1028,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         question = "Will LICN reach $1 by Q4?"
         q_hash = hashlib.sha256(question.encode()).digest()
         await call_contract(conn, deployer, "prediction_market", "create_market", {
-            "creator": deployer.public_key(),
+            "creator": deployer.address(),
             "category": 0,  # General
             "close_slot": 999999,  # Far future slot
             "outcome_count": 2,
@@ -1075,7 +1060,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5d. Add initial liquidity
     try:
         await call_contract(conn, deployer, "prediction_market", "add_initial_liquidity", {
-            "provider": deployer.public_key(),
+            "provider": deployer.address(),
             "market_id": 1,
             "amount_musd": 10_000_000_000,  # 10 LUSD
         })
@@ -1107,7 +1092,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5g. Trader A buys YES shares
     try:
         await call_contract(conn, trader_a, "prediction_market", "buy_shares", {
-            "buyer": trader_a.public_key(),
+            "buyer": trader_a.address(),
             "market_id": 1,
             "outcome": 0,  # YES
             "amount": 2_000_000_000,  # 2 LUSD
@@ -1120,7 +1105,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5h. Trader B buys NO shares
     try:
         await call_contract(conn, trader_b, "prediction_market", "buy_shares", {
-            "buyer": trader_b.public_key(),
+            "buyer": trader_b.address(),
             "market_id": 1,
             "outcome": 1,  # NO
             "amount": 1_000_000_000,  # 1 LUSD
@@ -1134,7 +1119,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         pos_a = await call_contract(conn, trader_a, "prediction_market", "get_position", {
             "market_id": 1,
-            "user": trader_a.public_key(),
+            "user": trader_a.address(),
             "outcome": 0,
         })
         report("PASS", "Prediction get_position Trader A")
@@ -1144,7 +1129,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         pos_b = await call_contract(conn, trader_b, "prediction_market", "get_position", {
             "market_id": 1,
-            "user": trader_b.public_key(),
+            "user": trader_b.address(),
             "outcome": 1,
         })
         report("PASS", "Prediction get_position Trader B")
@@ -1154,7 +1139,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5j. Sell shares
     try:
         await call_contract(conn, trader_b, "prediction_market", "sell_shares", {
-            "seller": trader_b.public_key(),
+            "seller": trader_b.address(),
             "market_id": 1,
             "outcome": 1,
             "amount": 500_000_000,
@@ -1183,7 +1168,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5m. User markets
     try:
         um = await call_contract(conn, trader_a, "prediction_market", "get_user_markets", {
-            "user": trader_a.public_key(),
+            "user": trader_a.address(),
         })
         report("PASS", "Prediction get_user_markets")
     except Exception as e:
@@ -1200,7 +1185,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         evidence = hashlib.sha256(b"resolution evidence").digest()
         await call_contract(conn, deployer, "prediction_market", "submit_resolution", {
-            "resolver": deployer.public_key(),
+            "resolver": deployer.address(),
             "market_id": 1,
             "winning_outcome": 0,  # YES
             "evidence_hash": PublicKey(evidence),
@@ -1213,7 +1198,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5p. Finalize resolution
     try:
         await call_contract(conn, deployer, "prediction_market", "finalize_resolution", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "market_id": 1,
         })
         report("PASS", "Prediction finalize_resolution")
@@ -1237,8 +1222,8 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("SKIP", "Prediction pre-redeem market collateral read", str(e))
 
     try:
-        pos_a_pre = _prediction_positions_for(str(trader_a.public_key()))
-        pos_b_pre = _prediction_positions_for(str(trader_b.public_key()))
+        pos_a_pre = _prediction_positions_for(str(trader_a.address()))
+        pos_b_pre = _prediction_positions_for(str(trader_b.address()))
         if pos_a_pre:
             target_market_id = int(pos_a_pre[0].get("market_id", target_market_id))
         pre_redeem_shares_a = _position_shares(pos_a_pre, target_market_id, 0)
@@ -1250,7 +1235,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5q. Trader A redeems winning shares
     try:
         result = await call_contract(conn, trader_a, "prediction_market", "redeem_shares", {
-            "user": trader_a.public_key(),
+            "user": trader_a.address(),
             "market_id": 1,
             "outcome": 0,  # YES (winner)
         })
@@ -1262,7 +1247,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5r. Trader B tries to redeem (loser)
     try:
         result = await call_contract(conn, trader_b, "prediction_market", "redeem_shares", {
-            "user": trader_b.public_key(),
+            "user": trader_b.address(),
             "market_id": 1,
             "outcome": 1,  # NO (loser)
         })
@@ -1276,7 +1261,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     # Settlement accounting verification (post-redeem)
     try:
-        pos_a_post = _prediction_positions_for(str(trader_a.public_key()))
+        pos_a_post = _prediction_positions_for(str(trader_a.address()))
         post_shares_a = _position_shares(pos_a_post, target_market_id, 0)
         if pre_redeem_shares_a > 0:
             report(
@@ -1290,7 +1275,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("SKIP", "Prediction settlement accounting: winner shares check", str(e))
 
     try:
-        pos_b_post = _prediction_positions_for(str(trader_b.public_key()))
+        pos_b_post = _prediction_positions_for(str(trader_b.address()))
         post_shares_b = _position_shares(pos_b_post, target_market_id, 1)
         if pre_redeem_shares_b > 0:
             report(
@@ -1362,8 +1347,8 @@ async def test_prediction_rpc(conn: Connection, trader_a: Keypair):
         ("getPredictionStats", []),
         ("getPredictionMarkets", [{"limit": 10, "offset": 0}]),
         ("getPredictionMarket", [0]),
-        ("getPredictionPositions", [str(trader_a.public_key())]),
-        ("getPredictionTraderStats", [str(trader_a.public_key())]),
+        ("getPredictionPositions", [str(trader_a.address())]),
+        ("getPredictionTraderStats", [str(trader_a.address())]),
         ("getPredictionLeaderboard", [{"limit": 10}]),
         ("getPredictionTrending", [{"limit": 5}]),
         ("getPredictionMarketAnalytics", [0]),
@@ -1398,7 +1383,7 @@ async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair):
     # 7a. Record trade for rewards
     try:
         await call_contract(conn, deployer, "dex_rewards", "record_trade", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
             "fee_paid": 15_000_000,
             "volume": 5_000_000_000,
         })
@@ -1409,7 +1394,7 @@ async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair):
     # 7b. Check pending rewards
     try:
         pending = await call_contract(conn, trader_a, "dex_rewards", "get_pending_rewards", {
-            "addr": trader_a.public_key(),
+            "addr": trader_a.address(),
         })
         report("PASS", "Rewards get_pending_rewards")
     except Exception as e:
@@ -1418,7 +1403,7 @@ async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair):
     # 7c. Claim trading rewards
     try:
         await call_contract(conn, trader_a, "dex_rewards", "claim_trading_rewards", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
         })
         report("PASS", "Rewards claim_trading_rewards")
     except Exception as e:
@@ -1441,7 +1426,7 @@ async def test_router(conn: Connection, deployer: Keypair, trader_a: Keypair):
     musd_addr = await resolve_token(conn, "LUSD")
     try:
         await call_contract(conn, deployer, "dex_router", "register_route", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "token_in": weth_addr,
             "token_out": musd_addr,
             "route_type": 0,    # 0=Direct
@@ -1495,7 +1480,7 @@ async def test_amm(conn: Connection, deployer: Keypair, trader_a: Keypair):
     musd_addr = await resolve_token(conn, "LUSD")
     try:
         await call_contract(conn, deployer, "dex_amm", "create_pool", {
-            "caller": deployer.public_key(),
+            "caller": deployer.address(),
             "token_a": licn_addr,
             "token_b": musd_addr,
             "fee_tier": 30,  # 0.3%
@@ -1508,7 +1493,7 @@ async def test_amm(conn: Connection, deployer: Keypair, trader_a: Keypair):
     # 9b. Add liquidity
     try:
         await call_contract(conn, trader_a, "dex_amm", "add_liquidity", {
-            "provider": trader_a.public_key(),
+            "provider": trader_a.address(),
             "pool_id": 1,
             "lower_tick": -1000,
             "upper_tick": 1000,
@@ -1540,7 +1525,7 @@ async def test_amm(conn: Connection, deployer: Keypair, trader_a: Keypair):
     # 9e. Swap
     try:
         await call_contract(conn, trader_a, "dex_amm", "swap_exact_in", {
-            "trader": trader_a.public_key(),
+            "trader": trader_a.address(),
             "pool_id": 1,
             "is_token_a_in": 1,
             "amount_in": 500_000_000,
@@ -1605,7 +1590,7 @@ async def test_protocol_stats_rpc(conn: Connection):
 async def test_mossstake_rpc(conn: Connection, deployer: Keypair):
     print(f"\n{bold(cyan('══ SECTION 11: MossStake & Staking RPC ══'))}")
 
-    addr = str(deployer.public_key())
+    addr = str(deployer.address())
 
     endpoints = [
         ("getMossStakePoolInfo", []),
@@ -1637,7 +1622,7 @@ async def test_mossstake_rpc(conn: Connection, deployer: Keypair):
 async def test_lichenid_rpc(conn: Connection, deployer: Keypair):
     print(f"\n{bold(cyan('══ SECTION 12: LichenID & Name RPC ══'))}")
 
-    addr = str(deployer.public_key())
+    addr = str(deployer.address())
 
     endpoints = [
         ("getLichenIdProfile", [addr]),
@@ -1675,7 +1660,7 @@ async def test_lichenid_rpc(conn: Connection, deployer: Keypair):
 async def test_core_rpc(conn: Connection, deployer: Keypair):
     print(f"\n{bold(cyan('══ SECTION 13: Chain Core RPC ══'))}")
 
-    addr = str(deployer.public_key())
+    addr = str(deployer.address())
 
     endpoints = [
         ("getBalance", [addr]),
@@ -1735,7 +1720,7 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
     musd_addr = await resolve_token(conn, "LUSD")
     try:
         await call_contract(conn, trader_a, "dex_governance", "propose_new_pair", {
-            "proposer": trader_a.public_key(),
+            "proposer": trader_a.address(),
             "base_token": wsol_addr,
             "quote_token": musd_addr,
         })
@@ -1753,7 +1738,7 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
     # 14c. Vote on proposal
     try:
         await call_contract(conn, deployer, "dex_governance", "vote", {
-            "voter": deployer.public_key(),
+            "voter": deployer.address(),
             "proposal_id": 1,
             "support": 1,  # 1=For
         })
@@ -1793,7 +1778,7 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
     for base_name, base_pk, quote_name, quote_pk in token_pairs:
         try:
             await call_contract(conn, deployer, "dex_core", "create_pair", {
-                "caller": deployer.public_key(),
+                "caller": deployer.address(),
                 "base_token": base_pk,
                 "quote_token": quote_pk,
                 "tick_size": 1_000_000,
@@ -1820,7 +1805,7 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
     for pid in pair_ids:
         try:
             await call_contract(conn, trader_a, "dex_core", "place_order", {
-                "caller": trader_a.public_key(),
+                "caller": trader_a.address(),
                 "pair_id": pid,
                 "side": 0,
                 "order_type": 0,
@@ -1836,7 +1821,7 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
     for pid in pair_ids:
         try:
             await call_contract(conn, trader_b, "dex_core", "place_order", {
-                "caller": trader_b.public_key(),
+                "caller": trader_b.address(),
                 "pair_id": pid,
                 "side": 1,
                 "order_type": 0,
@@ -1862,7 +1847,7 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
 async def test_evm_token_rpc(conn: Connection, deployer: Keypair):
     print(f"\n{bold(cyan('══ SECTION 16: EVM Compat & Token RPC ══'))}")
 
-    addr = str(deployer.public_key())
+    addr = str(deployer.address())
 
     endpoints = [
         ("getEvmRegistration", [addr]),
@@ -1896,14 +1881,14 @@ async def main():
     # Load deployer keypair
     try:
         deployer = load_keypair_flexible(Path(DEPLOYER_PATH))
-        print(f"  Deployer: {deployer.public_key()}")
+        print(f"  Deployer: {deployer.address()}")
     except Exception as e:
         print(red(f"  Failed to load deployer keypair: {e}"))
         print("  Falling back to random keypair")
         deployer = Keypair.generate()
 
     # Prefer funded genesis wallets to avoid airdrop-disabled environments
-    funded_wallets = await load_funded_genesis_wallets(conn, limit=2, exclude=[str(deployer.public_key())])
+    funded_wallets = await load_funded_genesis_wallets(conn, limit=2, exclude=[str(deployer.address())])
     if len(funded_wallets) >= 2:
         trader_a, trader_b = funded_wallets[0], funded_wallets[1]
         report("PASS", "Loaded funded genesis trader wallets")
@@ -1912,17 +1897,17 @@ async def main():
         trader_b = Keypair.generate()
         report("SKIP", "Funded genesis traders unavailable", "Falling back to generated keypairs")
 
-    print(f"  Trader A: {trader_a.public_key()}")
-    print(f"  Trader B: {trader_b.public_key()}")
+    print(f"  Trader A: {trader_a.address()}")
+    print(f"  Trader B: {trader_b.address()}")
 
     # Fund deployer via airdrop if needed
-    deployer_bal = await conn.get_balance(deployer.public_key())
+    deployer_bal = await conn.get_balance(deployer.address())
     deployer_spores = _extract_spores(deployer_bal)
     if deployer_spores <= 0:
         try:
-            await rpc_call(conn, "requestAirdrop", [str(deployer.public_key()), 10])
+            await rpc_call(conn, "requestAirdrop", [str(deployer.address()), 10])
             await asyncio.sleep(0.5)
-            deployer_bal = await conn.get_balance(deployer.public_key())
+            deployer_bal = await conn.get_balance(deployer.address())
             deployer_spores = _extract_spores(deployer_bal)
         except Exception:
             pass
@@ -1950,7 +1935,7 @@ async def main():
         per_trader_licn = min(10, adaptive)
 
     for label, kp in [("Trader A", trader_a), ("Trader B", trader_b)]:
-        bal = await conn.get_balance(kp.public_key())
+        bal = await conn.get_balance(kp.address())
         if _extract_spores(bal) >= 1_000_000_000:
             report("PASS", f"{label} already funded")
             continue

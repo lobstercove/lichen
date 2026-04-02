@@ -1,3 +1,8 @@
+---
+name: lichen
+description: Complete operational reference for autonomous agents working in the Lichen repository.
+---
+
 # Lichen — Agent Skill Book
 
 > Complete operational reference for autonomous agents on Lichen.
@@ -38,9 +43,9 @@
 | Consensus | Tendermint-style BFT (PoS with contributory stake) |
 | Block time | ~800ms heartbeat, ~400ms with transactions (adaptive) |
 | Native token | LICN (1 LICN = 1 000 000 000 spores) |
-| Signing | Ed25519 |
+| Signing | ML-DSA-65 (native) |
 | Smart contracts | WASM (Rust → wasm32-unknown-unknown) |
-| ZK proofs | Groth16 over BN254 (Poseidon hashing) |
+| ZK proofs | Transparent STARKs (Plonky3/FRI, Poseidon2-backed) |
 | RPC | JSON-RPC 2.0 on port 8899 |
 | Solana-format RPC | `POST /solana-compat` on port 8899 (legacy alias: `/solana`) |
 | EVM compat RPC | `POST /evm` on port 8899 |
@@ -115,10 +120,10 @@
 
 ```
 Transaction {
-    from: [u8; 32],           // Ed25519 public key
+  from: [u8; 32],           // Versioned native address digest
     recent_blockhash: [u8; 32],
     instructions: Vec<Instruction>,
-    signatures: Vec<Signature>,   // Ed25519 64-byte signatures
+  signatures: Vec<PqSignature>, // Self-contained PQ signatures
 }
 
 Instruction {
@@ -314,7 +319,7 @@ Same exports as lusd_token.
 **shielded_pool** — ZK shielded transaction pool (WASM contract):
 `initialize`, `shield`, `unshield`, `transfer`, `get_pool_stats`, `get_merkle_root`, `check_nullifier`, `get_commitments`, `pause`, `unpause`
 
-Note: Shield/unshield/transfer also operate as native instruction types 23/24/25 in the processor with full Groth16 proof verification. The WASM contract provides queryable on-chain state.
+Note: Shield/unshield/transfer also operate as native instruction types 23/24/25 in the processor with native transparent proof verification. The WASM contract provides queryable on-chain state.
 
 ### Prediction
 
@@ -453,7 +458,7 @@ Leverage up to 100x with 7 tiered parameter sets. Funding: 8h intervals (28,800 
 
 ### dex_router — Smart Order Routing (14 opcodes)
 
-Route types: DIRECT_CLOB(0), DIRECT_AMM(1), SPLIT(2), MULTI_HOP(3), LEGACY_SWAP(4). Max hops: 4. Max split legs: 3. Max slippage: 500bps (5%).
+Route types: DIRECT_CLOB(0), DIRECT_AMM(1), SPLIT(2), MULTI_HOP(3). Max hops: 4. Max split legs: 3. Max slippage: 500bps (5%).
 
 | Op | Name | Args |
 |----|------|------|
@@ -896,20 +901,15 @@ Achievements are auto-detected by `detect_and_award_achievements()` in the proce
 
 ### Architecture
 
-- **Proof system:** Groth16 over BN254 (arkworks)
-- **Hash:** Poseidon (SNARK-friendly)
-- **Commitments:** Pedersen over BN254 G1
+- **Proof system:** Transparent Plonky3 FRI (`plonky3-fri-poseidon2`)
+- **Hash / commitment domain:** Poseidon2 over canonical 32-byte values
+- **Commitments / nullifiers:** `Poseidon2(value, blinding)` and `Poseidon2(serial, spending_key)`
 - **Merkle tree depth:** 20 (supports ~1M commitments)
 - **Note encryption:** ChaCha20-Poly1305
 
-### Boot-Time Setup
+### Runtime Model
 
-Canonical Groth16 ceremony keys are committed to `zk-keys/` in the repo and shipped in every release tarball (inside `zk/`). On first boot, the validator copies bundled keys from the `zk/` directory next to the executable into `~/.lichen/zk/`:
-- `vk_shield.bin`, `pk_shield.bin`
-- `vk_unshield.bin`, `pk_unshield.bin`
-- `vk_transfer.bin`, `pk_transfer.bin`
-
-All validators must use the same verification keys for cross-verifiable shielded proofs. Keys are never generated at runtime — if missing, the validator logs a warning and disables shielded transactions but still starts. To regenerate manually: `zk-setup --output ~/.lichen/zk/`.
+The live shielded stack is fully native Plonky3/FRI. Validators, RPC endpoints, and wallet-facing pool stats do not require proving-key or verification-key bundles at boot. A fresh node only needs the standard binaries, contract artifacts, and state directories.
 
 ### Compute Costs
 
@@ -922,13 +922,13 @@ All validators must use the same verification keys for cross-verifiable shielded
 ### Type 23 — Shield Deposit (transparent → shielded)
 
 ```
-Data (169 bytes):
+Data (41-byte prefix + variable proof payload):
   [0]       = 0x17 (23)
   [1..9]    = amount (u64 LE, spores)
-  [9..41]   = commitment (32B, Poseidon hash of value‖blinding)
-  [41..169] = Groth16 proof (128B, compressed BN254)
+  [9..41]   = commitment (32B, Poseidon2 hash of value‖blinding)
+  [41..]    = Plonky3 proof payload (variable length)
 
-Public inputs: [amount_fr, commitment_fr]
+Public inputs: canonical Goldilocks words for [amount, commitment]
 Accounts: [sender]
 ```
 
@@ -937,15 +937,15 @@ Debits sender balance. Inserts commitment into Merkle tree. Increments `total_sh
 ### Type 24 — Unshield Withdraw (shielded → transparent)
 
 ```
-Data (233 bytes):
+Data (105-byte prefix + variable proof payload):
   [0]        = 0x18 (24)
   [1..9]     = amount (u64 LE, spores)
   [9..41]    = nullifier (32B)
   [41..73]   = merkle_root (32B)
-  [73..105]  = recipient_fr (32B, Poseidon(Fr(pubkey), 0))
-  [105..233] = Groth16 proof (128B)
+  [73..105]  = recipient_hash (32B, derived from recipient account bytes)
+  [105..]    = Plonky3 proof payload (variable length)
 
-Public inputs: [merkle_root, nullifier, amount, recipient]
+Public inputs: [merkle_root, nullifier, amount, recipient_hash]
 Accounts: [recipient]
 ```
 
@@ -954,14 +954,14 @@ Verifies root matches, nullifier unspent, recipient bound. Credits recipient. Ma
 ### Type 25 — Shielded Transfer (shielded → shielded)
 
 ```
-Data (289 bytes):
+Data (161-byte prefix + variable proof payload):
   [0]         = 0x19 (25)
   [1..33]     = nullifier_a (32B)
   [33..65]    = nullifier_b (32B)
   [65..97]    = commitment_c (32B, output 0)
   [97..129]   = commitment_d (32B, output 1)
   [129..161]  = merkle_root (32B)
-  [161..289]  = Groth16 proof (128B)
+  [161..]     = Plonky3 proof payload (variable length)
 
 Public inputs: [merkle_root, nullifier_a, nullifier_b, commitment_c, commitment_d]
 Accounts: (none — fully private)
@@ -1102,7 +1102,7 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `getShieldedPoolState` | none | `{merkle_root, commitment_count, total_shielded, vk_hashes}` |
+| `getShieldedPoolState` | none | `{merkle_root, commitment_count, total_shielded, zk_scheme, counters}` |
 | `getShieldedPoolStats` | none | Alias of `getShieldedPoolState` |
 | `getShieldedMerkleRoot` | none | `{merkle_root, commitment_count}` |
 | `getShieldedMerklePath` | `[index]` | `{siblings, path_bits, root}` |
@@ -1445,7 +1445,7 @@ Instruction: [programId 32B][u64 acct_count][acct₁ 32B]...[u64 data_len][data.
 
 1. BIP39 12-word mnemonic (128-bit entropy)
 2. PBKDF2-HMAC-SHA512 (mnemonic, "mnemonic" + passphrase, 2048 iterations)
-3. First 32 bytes → Ed25519 seed → keypair
+3. First 32 bytes → ML-DSA-65 seed → keypair
 4. Private key encrypted with AES-256-GCM via Web Crypto API
 
 ### Transaction Building Flow
@@ -1852,7 +1852,7 @@ Prefer domains over raw IPs in agent prompts and operational scripts. DNS lets b
 bash lichen-start.sh mainnet      # Start mainnet validator
 bash lichen-start.sh testnet      # Start testnet validator
 bash lichen-stop.sh               # Stop all
-bash reset-blockchain.sh             # Full reset (preserves ZK keys)
+bash reset-blockchain.sh          # Full reset of local chain state
 ```
 
 ### Identity & Keypair Management
@@ -1927,7 +1927,7 @@ sudo systemctl start lichen-validator
 
 ### macOS LaunchAgent
 
-Create wrapper script and LaunchAgent plist for an auto-starting background service. The wrapper downloads the latest release by semver (not GitHub "latest" publish date) and installs bundled ZK keys.
+Create wrapper script and LaunchAgent plist for an auto-starting background service. The wrapper downloads the latest release by semver (not GitHub "latest" publish date).
 
 ```bash
 # 1. Create wrapper script
@@ -1956,7 +1956,6 @@ print(releases[0]['tag_name'])")
     /usr/bin/curl -fSL -o "$TMPDIR/SHA256SUMS" "https://github.com/$REPO/releases/download/${VERSION}/SHA256SUMS"
     cd "$TMPDIR"; grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
     tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; chmod +x "$BINARY"
-    if [ -d "zk" ]; then mkdir -p "$HOME/.lichen/zk"; cp zk/*.bin "$HOME/.lichen/zk/"; fi
     trap - EXIT; rm -rf "$TMPDIR"
 fi
 exec "$BINARY" --network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 \
@@ -2006,7 +2005,6 @@ macOS file layout:
 | `~/.lichen/bin/lichen-validator` | Binary |
 | `~/.lichen/bin/lichen-service.sh` | Wrapper script |
 | `~/.lichen/state-mainnet/` | Blockchain state DB |
-| `~/.lichen/zk/` | ZK verification & proving keys |
 | `~/.lichen/logs/validator.log` | Log file |
 | `~/Library/LaunchAgents/network.lichen.validator.plist` | LaunchAgent plist |
 
@@ -2016,11 +2014,10 @@ macOS file layout:
 # 1. Download and extract
 $Version = "v0.2.14"
 $InstallDir = "$env:LOCALAPPDATA\Lichen"
-New-Item -ItemType Directory -Force -Path "$InstallDir\bin","$InstallDir\state-mainnet","$InstallDir\logs","$InstallDir\zk"
+New-Item -ItemType Directory -Force -Path "$InstallDir\bin","$InstallDir\state-mainnet","$InstallDir\logs"
 $Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"
 Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\lichen.tar.gz"
 tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
-if (Test-Path "$InstallDir\bin\zk") { Copy-Item "$InstallDir\bin\zk\*" "$InstallDir\zk\" }
 
 # 2. Install NSSM (https://nssm.cc/download) and create service
 nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
@@ -2046,24 +2043,9 @@ nssm remove LichenValidator confirm     # Uninstall
 Get-Content "$env:LOCALAPPDATA\Lichen\logs\validator.log" -Tail 50 -Wait
 ```
 
-### ZK Verification Keys
+### Shielded Runtime
 
-All validators must use identical ceremony ZK keys. Keys are shipped in the release tarball under `zk/`. The validator loads them from (priority order):
-1. Env vars: `LICHEN_ZK_SHIELD_VK_PATH`, `LICHEN_ZK_UNSHIELD_VK_PATH`, `LICHEN_ZK_TRANSFER_VK_PATH`
-2. Shared cache: `~/.lichen/zk/` (Linux/macOS) or `%LOCALAPPDATA%\Lichen\zk\` (Windows)
-3. Bundled `zk/` next to binary (auto-copied to shared cache)
-
-If missing, shielded transactions are unavailable but the validator still functions.
-
-Manual install:
-```bash
-mkdir -p ~/.lichen/zk
-cp /path/to/release/zk/*.bin ~/.lichen/zk/
-sha256sum ~/.lichen/zk/vk_*.bin
-# af980fb4...  vk_shield.bin
-# e368eeaf...  vk_transfer.bin
-# f39b6e2e...  vk_unshield.bin
-```
+Shielded verification is self-contained in the native Plonky3 proof envelope. Validators do not load external `pk_*` or `vk_*` files, and `getShieldedPoolState` now reports the active scheme directly via `zkScheme` / `zk_scheme`.
 
 ### Health Check
 
@@ -2165,7 +2147,7 @@ This means user-deployed contracts get the same name, category, and metadata in 
 | `nft` | `NFT::new(name, symbol)` — MT-721 |
 | `crosscall` | `CrossCall::new(target, fn, args)`, `call_contract(call)` |
 | `dex` | `Pool::new(token_a, token_b)` — AMM |
-| `crypto` | `poseidon_hash(left: &[u8;32], right: &[u8;32]) -> [u8;32]` — BN254 Poseidon |
+| `crypto` | `poseidon_hash(left: &[u8;32], right: &[u8;32]) -> [u8;32]` — Poseidon2 runtime hash |
 | `test_mock` | Thread-local mocks for native testing |
 
 ### Quick Start

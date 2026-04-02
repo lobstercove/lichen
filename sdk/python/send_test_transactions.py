@@ -40,7 +40,7 @@ async def send_test_txs():
                     recipient = PublicKey(validators[1]["pubkey"] if len(validators) > 1 else validators[0]["pubkey"])
                     
                     instruction = TransactionBuilder.transfer(
-                        sender_keypair.public_key(),
+                        sender_keypair.pubkey(),
                         recipient,
                         1_000_000,
                     )

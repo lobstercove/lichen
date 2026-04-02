@@ -1,18 +1,16 @@
-//! Shielded Note Structure
+//! Shielded note structure.
 //!
-//! A note represents a hidden value in the shielded pool.
-//! Notes are committed to the Merkle tree and encrypted for the recipient.
+//! A note represents a hidden value in the shielded pool. Notes are committed
+//! to the Merkle tree and encrypted for the recipient.
 //!
 //! note = { owner, value, blinding, serial }
-//! commitment = Pedersen(value, blinding)
-//! nullifier = Poseidon(serial, spending_key)
+//! commitment = Poseidon2(value, blinding)
+//! nullifier = Poseidon2(serial, spending_key)
 //! encrypted_note = ChaCha20-Poly1305(note, shared_secret)
 
 use super::keys::SpendingKey;
-use super::merkle::{fr_to_bytes, poseidon_hash_fr};
-use super::pedersen::PedersenCommitment;
-use ark_bn254::Fr;
-use ark_ff::PrimeField;
+use super::merkle::nullifier_hash;
+use super::pedersen::ValueCommitment;
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng as AeadOsRng},
     ChaCha20Poly1305, Nonce,
@@ -20,38 +18,29 @@ use chacha20poly1305::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// A shielded note (plaintext, only known to owner)
+/// A shielded note (plaintext, only known to owner).
 #[derive(Clone, Debug)]
 pub struct Note {
-    /// Recipient's shielded public key (viewing key)
     pub owner: [u8; 32],
-    /// Amount in spores
     pub value: u64,
-    /// Blinding factor for Pedersen commitment
-    pub blinding: Fr,
-    /// Unique serial number for nullifier derivation
-    pub serial: Fr,
+    pub blinding: [u8; 32],
+    pub serial: [u8; 32],
 }
 
-/// Nullifier: unique tag that marks a note as spent
-/// nullifier = Poseidon(serial, spending_key)
+/// Nullifier: unique tag that marks a note as spent.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Nullifier(pub [u8; 32]);
 
-/// Encrypted note (stored on-chain, only recipient can decrypt)
+/// Encrypted note (stored on-chain, only recipient can decrypt).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EncryptedNote {
-    /// Encrypted note data (ChaCha20-Poly1305)
     pub ciphertext: Vec<u8>,
-    /// Ephemeral public key for ECDH key agreement
     pub ephemeral_pk: [u8; 32],
-    /// Commitment to the note value
     pub commitment: [u8; 32],
 }
 
 impl Note {
-    /// Create a new note
-    pub fn new(owner: [u8; 32], value: u64, blinding: Fr, serial: Fr) -> Self {
+    pub fn new(owner: [u8; 32], value: u64, blinding: [u8; 32], serial: [u8; 32]) -> Self {
         Self {
             owner,
             value,
@@ -60,58 +49,33 @@ impl Note {
         }
     }
 
-    /// Compute the Pedersen commitment for this note
-    pub fn commitment(&self) -> PedersenCommitment {
-        PedersenCommitment::commit(self.value, self.blinding)
+    pub fn commitment(&self) -> ValueCommitment {
+        ValueCommitment::commit(self.value, self.blinding)
     }
 
-    /// Compute the commitment hash (32 bytes, for Merkle tree leaf)
-    ///
-    /// Uses SHA-256 of the compressed Pedersen point. For the SNARK-friendly
-    /// version used in circuits and the Merkle tree, use `commitment_leaf()`.
     pub fn commitment_hash(&self) -> [u8; 32] {
         self.commitment().to_hash()
     }
 
-    /// Compute the SNARK-friendly commitment leaf: Poseidon(value, blinding)
-    ///
-    /// This is the canonical leaf value inserted into the Merkle tree and
-    /// verified inside ZK circuits. Returns the Fr element directly.
-    pub fn commitment_leaf_fr(&self) -> Fr {
-        poseidon_hash_fr(Fr::from(self.value), self.blinding)
-    }
-
-    /// Compute the SNARK-friendly commitment as 32 bytes (for Merkle tree leaf)
     pub fn commitment_leaf(&self) -> [u8; 32] {
-        fr_to_bytes(&self.commitment_leaf_fr())
+        self.commitment_hash()
     }
 
-    /// Compute the nullifier as Fr (for in-circuit use)
-    /// nullifier = Poseidon(serial, spending_key)
-    pub fn nullifier_fr(&self, spending_key: &SpendingKey) -> Fr {
-        poseidon_hash_fr(self.serial, spending_key.0)
-    }
-
-    /// Compute the nullifier for this note using the spending key
-    /// nullifier = Poseidon(serial, spending_key)
     pub fn nullifier(&self, spending_key: &SpendingKey) -> Nullifier {
-        Nullifier(fr_to_bytes(&self.nullifier_fr(spending_key)))
+        Nullifier(nullifier_hash(&self.serial, &spending_key.to_bytes()))
     }
 
-    /// Serialize note to bytes for encryption
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(32 + 8 + 32 + 32);
         bytes.extend_from_slice(&self.owner);
         bytes.extend_from_slice(&self.value.to_le_bytes());
-        bytes.extend_from_slice(&fr_to_bytes(&self.blinding));
-        bytes.extend_from_slice(&fr_to_bytes(&self.serial));
+        bytes.extend_from_slice(&self.blinding);
+        bytes.extend_from_slice(&self.serial);
         bytes
     }
 
-    /// Deserialize note from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() < 104 {
-            // 32 + 8 + 32 + 32
             return Err("note bytes too short");
         }
 
@@ -122,8 +86,11 @@ impl Note {
         value_bytes.copy_from_slice(&bytes[32..40]);
         let value = u64::from_le_bytes(value_bytes);
 
-        let blinding = Fr::from_le_bytes_mod_order(&bytes[40..72]);
-        let serial = Fr::from_le_bytes_mod_order(&bytes[72..104]);
+        let mut blinding = [0u8; 32];
+        blinding.copy_from_slice(&bytes[40..72]);
+
+        let mut serial = [0u8; 32];
+        serial.copy_from_slice(&bytes[72..104]);
 
         Ok(Self {
             owner,
@@ -133,34 +100,25 @@ impl Note {
         })
     }
 
-    /// Encrypt this note for the recipient using ECDH + ChaCha20-Poly1305
-    ///
-    /// The sender generates an ephemeral keypair, derives a shared secret
-    /// with the recipient's viewing key, and encrypts the note with
-    /// authenticated encryption (ChaCha20-Poly1305 AEAD).
     pub fn encrypt(&self, recipient_viewing_key: &[u8; 32]) -> EncryptedNote {
         let note_bytes = self.to_bytes();
         let commitment_hash = self.commitment_hash();
 
-        // Generate random ephemeral key
         use chacha20poly1305::aead::rand_core::RngCore;
         let mut ephemeral_pk = [0u8; 32];
         AeadOsRng.fill_bytes(&mut ephemeral_pk);
 
-        // Derive symmetric key: SHA-256(ephemeral_pk || recipient_vk)
         let mut key_hasher = Sha256::new();
         key_hasher.update(ephemeral_pk);
         key_hasher.update(recipient_viewing_key);
         let encryption_key: [u8; 32] = key_hasher.finalize().into();
 
-        // Derive nonce: first 12 bytes of SHA-256(encryption_key || "nonce")
         let mut nonce_hasher = Sha256::new();
         nonce_hasher.update(encryption_key);
         nonce_hasher.update(b"nonce");
         let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
         let nonce = Nonce::from_slice(&nonce_material[..12]);
 
-        // ChaCha20-Poly1305 authenticated encryption
         let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)
             .unwrap_or_else(|e| panic!("FATAL: ChaCha20 key init with 32-byte key failed: {}", e));
         let ciphertext = cipher
@@ -175,28 +133,21 @@ impl Note {
         }
     }
 
-    /// Attempt to decrypt a note using the recipient's viewing key
-    ///
-    /// Uses ChaCha20-Poly1305 AEAD — decryption will fail (authenticity
-    /// check) if the wrong key is supplied or the ciphertext was tampered with.
     pub fn decrypt(
         encrypted: &EncryptedNote,
         viewing_key: &[u8; 32],
     ) -> Result<Self, &'static str> {
-        // Derive symmetric key: SHA-256(ephemeral_pk || viewing_key)
         let mut key_hasher = Sha256::new();
         key_hasher.update(encrypted.ephemeral_pk);
         key_hasher.update(viewing_key);
         let decryption_key: [u8; 32] = key_hasher.finalize().into();
 
-        // Derive nonce (same as encrypt)
         let mut nonce_hasher = Sha256::new();
         nonce_hasher.update(decryption_key);
         nonce_hasher.update(b"nonce");
         let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
         let nonce = Nonce::from_slice(&nonce_material[..12]);
 
-        // ChaCha20-Poly1305 authenticated decryption
         let cipher =
             ChaCha20Poly1305::new_from_slice(&decryption_key).map_err(|_| "invalid key length")?;
         let plaintext = cipher
@@ -205,7 +156,6 @@ impl Note {
 
         let note = Self::from_bytes(&plaintext)?;
 
-        // Verify commitment matches
         let expected_commitment = note.commitment_hash();
         if expected_commitment != encrypted.commitment {
             return Err("commitment mismatch — wrong key or corrupted note");
@@ -216,17 +166,14 @@ impl Note {
 }
 
 impl Nullifier {
-    /// Check if this nullifier is the zero nullifier (invalid)
     pub fn is_zero(&self) -> bool {
         self.0 == [0u8; 32]
     }
 
-    /// Convert to hex string
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
 
-    /// Parse from hex string
     pub fn from_hex(s: &str) -> Result<Self, String> {
         let bytes = hex::decode(s).map_err(|e| format!("invalid hex: {}", e))?;
         if bytes.len() != 32 {
@@ -238,24 +185,13 @@ impl Nullifier {
     }
 }
 
-/// Convert 32 bytes to a field element
-pub fn bytes_to_fr(bytes: &[u8; 32]) -> Fr {
-    Fr::from_le_bytes_mod_order(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ff::UniformRand;
-    use ark_std::rand::rngs::OsRng;
+    use crate::zk::merkle::random_scalar_bytes;
 
     fn test_note() -> Note {
-        Note::new(
-            [1u8; 32],
-            1_000_000_000, // 1 LICN
-            Fr::rand(&mut OsRng),
-            Fr::rand(&mut OsRng),
-        )
+        Note::new([1u8; 32], 1_000_000_000, random_scalar_bytes(), random_scalar_bytes())
     }
 
     #[test]
@@ -263,14 +199,14 @@ mod tests {
         let note = test_note();
         let c1 = note.commitment_hash();
         let c2 = note.commitment_hash();
-        assert_eq!(c1, c2); // deterministic
-        assert_ne!(c1, [0u8; 32]); // non-trivial
+        assert_eq!(c1, c2);
+        assert_ne!(c1, [0u8; 32]);
     }
 
     #[test]
     fn test_nullifier_deterministic() {
         let note = test_note();
-        let sk = SpendingKey(Fr::rand(&mut OsRng));
+        let sk = SpendingKey(random_scalar_bytes());
         let n1 = note.nullifier(&sk);
         let n2 = note.nullifier(&sk);
         assert_eq!(n1, n2);
@@ -279,8 +215,8 @@ mod tests {
     #[test]
     fn test_nullifier_different_keys() {
         let note = test_note();
-        let sk1 = SpendingKey(Fr::rand(&mut OsRng));
-        let sk2 = SpendingKey(Fr::rand(&mut OsRng));
+        let sk1 = SpendingKey(random_scalar_bytes());
+        let sk2 = SpendingKey(random_scalar_bytes());
         assert_ne!(note.nullifier(&sk1), note.nullifier(&sk2));
     }
 
@@ -291,6 +227,8 @@ mod tests {
         let restored = Note::from_bytes(&bytes).unwrap();
         assert_eq!(note.owner, restored.owner);
         assert_eq!(note.value, restored.value);
+        assert_eq!(note.blinding, restored.blinding);
+        assert_eq!(note.serial, restored.serial);
     }
 
     #[test]
@@ -301,6 +239,8 @@ mod tests {
         let decrypted = Note::decrypt(&encrypted, &viewing_key).unwrap();
         assert_eq!(note.owner, decrypted.owner);
         assert_eq!(note.value, decrypted.value);
+        assert_eq!(note.blinding, decrypted.blinding);
+        assert_eq!(note.serial, decrypted.serial);
     }
 
     #[test]
@@ -309,7 +249,6 @@ mod tests {
         let wrong_key = [99u8; 32];
         let note = test_note();
         let encrypted = note.encrypt(&viewing_key);
-        // Wrong key should fail (commitment mismatch or garbage)
         let result = Note::decrypt(&encrypted, &wrong_key);
         assert!(result.is_err());
     }
@@ -323,34 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn test_poseidon_commitment_deterministic() {
-        let note = test_note();
-        let c1 = note.commitment_leaf();
-        let c2 = note.commitment_leaf();
-        assert_eq!(c1, c2);
-        assert_ne!(c1, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_poseidon_commitment_different_values() {
-        let note1 = Note::new([1u8; 32], 100, Fr::from(42u64), Fr::from(99u64));
-        let note2 = Note::new([1u8; 32], 200, Fr::from(42u64), Fr::from(99u64));
+    fn test_commitment_different_values() {
+        let note1 = Note::new([1u8; 32], 100, [42u8; 32], [99u8; 32]);
+        let note2 = Note::new([1u8; 32], 200, [42u8; 32], [99u8; 32]);
         assert_ne!(note1.commitment_leaf(), note2.commitment_leaf());
     }
 
     #[test]
-    fn test_poseidon_commitment_different_blindings() {
-        let note1 = Note::new([1u8; 32], 100, Fr::from(42u64), Fr::from(99u64));
-        let note2 = Note::new([1u8; 32], 100, Fr::from(43u64), Fr::from(99u64));
-        assert_ne!(note1.commitment_leaf(), note2.commitment_leaf());
-    }
-
-    #[test]
-    fn test_nullifier_fr_matches_bytes() {
+    fn test_commitment_hash_matches_native_commitment() {
         let note = test_note();
-        let sk = SpendingKey(Fr::rand(&mut OsRng));
-        let nullifier_bytes = note.nullifier(&sk);
-        let nullifier_fr = note.nullifier_fr(&sk);
-        assert_eq!(nullifier_bytes.0, fr_to_bytes(&nullifier_fr));
+        assert_eq!(note.commitment_hash(), note.commitment().to_bytes());
     }
 }

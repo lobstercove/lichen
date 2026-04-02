@@ -1,4 +1,4 @@
-//! Shared circuit gadgets used by shield, unshield, and transfer circuits.
+//! Shared gadgets used by the private shielded witness-adapter circuits.
 
 use ark_bn254::Fr;
 use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
@@ -9,9 +9,8 @@ use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
 /// Compute Poseidon(left, right) in-circuit using the given sponge config.
 ///
-/// Mirrors the native `poseidon_hash_fr(left, right)` exactly: absorb left,
-/// absorb right, squeeze 1 field element. Uses the same `poseidon_config()`
-/// so that in-circuit and native hashes always match.
+/// This mirrors the private two-input Poseidon helper used by the internal
+/// witness-adapter circuits.
 pub fn poseidon_hash_var(
     cs: ConstraintSystemRef<Fr>,
     config: &PoseidonConfig<Fr>,

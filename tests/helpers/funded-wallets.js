@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const nacl = require('tweetnacl');
+const pq = require('./pq-node');
 
 const BS58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -31,8 +31,19 @@ function bs58decode(str) {
 function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
 
 function genKeypair() {
-  const kp = nacl.sign.keyPair();
-  return { publicKey: kp.publicKey, secretKey: kp.secretKey, address: bs58encode(kp.publicKey) };
+  return pq.generateKeypair();
+}
+
+function walletFromStoredKeypair(raw) {
+  if (!Array.isArray(raw.privateKey) || raw.privateKey.length !== 32 || !Array.isArray(raw.publicKey)) {
+    return null;
+  }
+  const seed = new Uint8Array(raw.privateKey);
+  const publicKey = new Uint8Array(raw.publicKey);
+  const address = raw.address
+    || raw.publicKeyBase58
+    || pq.bs58encode(pq.publicKeyToAddressBytes(publicKey));
+  return { seed, publicKey, address };
 }
 
 function loadKeysFromDir(keysDir, wallets, seen, limit) {
@@ -59,14 +70,14 @@ function loadKeysFromDir(keysDir, wallets, seen, limit) {
     if (wallets.length >= limit) return;
     try {
       const raw = JSON.parse(fs.readFileSync(path.join(keysDir, file), 'utf8'));
-      const hex = raw.secret_key;
-      if (typeof hex !== 'string' || hex.length !== 64) continue;
-      const seed = Uint8Array.from(Buffer.from(hex, 'hex'));
-      const kp = nacl.sign.keyPair.fromSeed(seed);
-      const addr = bs58encode(kp.publicKey);
-      if (seen.has(addr)) continue;
-      seen.add(addr);
-      wallets.push({ publicKey: kp.publicKey, secretKey: kp.secretKey, address: addr, source: path.join(keysDir, file) });
+      // New ML-DSA-65 key format: { privateKey: number[], publicKey: number[], publicKeyBase58: string, ... }
+      const kp = walletFromStoredKeypair(raw);
+      if (kp) {
+        if (seen.has(kp.address)) continue;
+        seen.add(kp.address);
+        wallets.push({ ...kp, source: path.join(keysDir, file) });
+        continue;
+      }
     } catch (_) { }
   }
 }
@@ -178,4 +189,4 @@ async function fundAccount(address, amountLicn = 10, rpcUrl = 'http://127.0.0.1:
   return funded > 0;
 }
 
-module.exports = { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, bytesToHex };
+module.exports = { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, bytesToHex, initCrypto: pq.init.bind(pq) };

@@ -1,6 +1,6 @@
 // Lichen Core - Transaction Processor
 
-use crate::account::{Account, Pubkey};
+use crate::account::{Account, Keypair, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
     ContractAbi, ContractAccount, ContractContext, ContractRuntime, NativeAccountOp,
@@ -133,7 +133,7 @@ pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
 // These sentinel Pubkeys force transactions that touch the same singleton
 // state (stake pool, MossStake pool, governance counter) into the same
 // scheduling group, preventing lost-update races in parallel execution.
-// Values are chosen to never collide with real Ed25519 public keys.
+// Values are chosen to never collide with real versioned Lichen addresses.
 
 /// Virtual key: any TX that reads/writes the stake pool (opcodes 9, 10, 11, 26, 27, 31).
 pub const CONFLICT_KEY_STAKE_POOL: Pubkey = Pubkey([0xFE; 32]);
@@ -407,6 +407,63 @@ impl TxProcessor {
         }
     }
 
+    fn collect_required_signers(tx: &Transaction) -> Result<HashSet<Pubkey>, String> {
+        let mut required_signers = HashSet::new();
+        for ix in &tx.message.instructions {
+            if let Some(first_acc) = ix.accounts.first() {
+                required_signers.insert(*first_acc);
+            } else {
+                return Err("Instruction has no accounts".to_string());
+            }
+        }
+        Ok(required_signers)
+    }
+
+    fn verify_transaction_signatures(tx: &Transaction) -> Result<HashSet<Pubkey>, String> {
+        if tx.signatures.is_empty() {
+            return Err("No signatures".to_string());
+        }
+
+        if tx.message.instructions.is_empty() {
+            return Err("No instructions".to_string());
+        }
+
+        let required_signers = Self::collect_required_signers(tx)?;
+
+        if tx.signatures.len() < required_signers.len() {
+            return Err(format!(
+                "Insufficient signatures: got {}, need {}",
+                tx.signatures.len(),
+                required_signers.len()
+            ));
+        }
+
+        let message_bytes = tx.message.serialize();
+        let mut verified_signers = HashSet::with_capacity(required_signers.len());
+
+        for signature in &tx.signatures {
+            let signer = signature.signer_address();
+            if !required_signers.contains(&signer) || verified_signers.contains(&signer) {
+                continue;
+            }
+
+            if Keypair::verify(&signer, &message_bytes, signature) {
+                verified_signers.insert(signer);
+            }
+        }
+
+        for signer in &required_signers {
+            if !verified_signers.contains(signer) {
+                return Err(format!(
+                    "Missing or invalid signature for account {}",
+                    signer
+                ));
+            }
+        }
+
+        Ok(verified_signers)
+    }
+
     /// Drain accumulated contract execution metadata (return_code, logs, return_data).
     /// Called when building a TxResult to capture the contract's diagnostics.
     fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>, u64, Vec<u8>) {
@@ -647,46 +704,6 @@ impl TxProcessor {
             Ok(ns) => ns.blockhash == tx.message.recent_blockhash,
             Err(_) => false,
         }
-    }
-
-    // ─── ZK verifier management ─────────────────────────────────────
-
-    /// Load verification keys for the shielded pool circuits.
-    /// Must be called at validator startup before processing shielded transactions.
-    #[cfg(feature = "zk")]
-    pub fn load_zk_verification_keys(
-        &self,
-        shield_vk: &[u8],
-        unshield_vk: &[u8],
-        transfer_vk: &[u8],
-    ) -> Result<(), String> {
-        let mut verifier = self
-            .zk_verifier
-            .lock()
-            .map_err(|e| format!("zk_verifier lock poisoned: {}", e))?;
-        verifier.load_shield_vk(shield_vk)?;
-        verifier.load_unshield_vk(unshield_vk)?;
-        verifier.load_transfer_vk(transfer_vk)?;
-        Ok(())
-    }
-
-    /// Persist VK hashes (SHA-256 of each VK file) into the shielded pool
-    /// state so the explorer and RPC can confirm keys are initialised.
-    /// Safe to call at startup after `load_zk_verification_keys`.
-    #[cfg(feature = "zk")]
-    pub fn persist_vk_hashes_to_pool_state(
-        &self,
-        shield_vk: &[u8],
-        unshield_vk: &[u8],
-        transfer_vk: &[u8],
-    ) -> Result<(), String> {
-        use crate::zk::verifier::hash_verification_key;
-        let mut pool = self.state.get_shielded_pool_state()?;
-        pool.vk_shield_hash = hash_verification_key(shield_vk);
-        pool.vk_unshield_hash = hash_verification_key(unshield_vk);
-        pool.vk_transfer_hash = hash_verification_key(transfer_vk);
-        self.state.put_shielded_pool_state(&pool)?;
-        Ok(())
     }
 
     // ─── Batch-aware state accessors (T1.4/T3.1) ───────────────────
@@ -1226,98 +1243,8 @@ impl TxProcessor {
         }
 
         // 1. Verify signatures
-        if tx.signatures.is_empty() {
-            return self.make_result(false, 0, Some("No signatures".to_string()), 0);
-        }
-
-        if tx.message.instructions.is_empty() {
-            return self.make_result(false, 0, Some("No instructions".to_string()), 0);
-        }
-
-        // Collect all unique signer accounts (first account of each instruction)
-        let mut required_signers = HashSet::new();
-        for ix in &tx.message.instructions {
-            if let Some(first_acc) = ix.accounts.first() {
-                required_signers.insert(*first_acc);
-            } else {
-                return self.make_result(
-                    false,
-                    0,
-                    Some("Instruction has no accounts".to_string()),
-                    0,
-                );
-            }
-        }
-
-        // We need at least as many signatures as unique signers
-        if tx.signatures.len() < required_signers.len() {
-            return self.make_result(
-                false,
-                0,
-                Some(format!(
-                    "Insufficient signatures: got {}, need {}",
-                    tx.signatures.len(),
-                    required_signers.len()
-                )),
-                0,
-            );
-        }
-
-        // Verify all signatures against the transaction message and build verified set
-        let message_bytes = tx.message.serialize();
-        use ed25519_dalek::{Signature as EdSignature, Verifier, VerifyingKey};
-        let mut verified_signers: HashSet<Pubkey> = HashSet::new();
-
-        // PERF-FIX 3: Pre-decompress all verifying keys once to avoid redundant
-        // curve point decompression (VerifyingKey::from_bytes) per sig check.
-        // Each decompression costs ~30µs; for N signers × M signatures this
-        // reduces from N×M to just N decompressions.
-        let mut vkeys: Vec<(Pubkey, VerifyingKey)> = Vec::with_capacity(required_signers.len());
-        for signer in &required_signers {
-            if let Ok(vk) = VerifyingKey::from_bytes(&signer.0) {
-                vkeys.push((*signer, vk));
-            }
-        }
-
-        // Fast path: single-sig TX (most common case) — skip inner loop entirely
-        if tx.signatures.len() == 1 && vkeys.len() == 1 {
-            let sig = EdSignature::from_bytes(&tx.signatures[0]);
-            if vkeys[0].1.verify(&message_bytes, &sig).is_ok() {
-                verified_signers.insert(vkeys[0].0);
-            }
-        } else {
-            // Multi-sig: match signatures to pre-decompressed signers.
-            // Each successful verify removes the signer, reducing work.
-            let mut unmatched = vkeys;
-            for sig_bytes in &tx.signatures {
-                let sig = EdSignature::from_bytes(sig_bytes);
-                let mut matched_idx = None;
-                for (i, (pk, vk)) in unmatched.iter().enumerate() {
-                    if vk.verify(&message_bytes, &sig).is_ok() {
-                        verified_signers.insert(*pk);
-                        matched_idx = Some(i);
-                        break;
-                    }
-                }
-                if let Some(idx) = matched_idx {
-                    unmatched.swap_remove(idx);
-                }
-            }
-        }
-
-        // Ensure all required signers have a valid signature
-        for signer in &required_signers {
-            if !verified_signers.contains(signer) {
-                return self.make_result(
-                    false,
-                    0,
-                    Some(format!(
-                        "Missing or invalid signature for account {}",
-                        signer
-                    )),
-                    0,
-                );
-            }
+        if let Err(error) = Self::verify_transaction_signatures(tx) {
+            return self.make_result(false, 0, Some(error), 0);
         }
 
         // Fee payer is the first account of the first instruction (must be verified)
@@ -1743,40 +1670,17 @@ impl TxProcessor {
             };
         }
 
-        // Verify signatures
-        let mut required_signers = HashSet::new();
-        for ix in &tx.message.instructions {
-            if let Some(first_acc) = ix.accounts.first() {
-                required_signers.insert(*first_acc);
-            }
-        }
-
-        let message_bytes = tx.message.serialize();
-        use crate::account::Keypair;
-        let mut verified_signers: HashSet<Pubkey> = HashSet::new();
-        for sig in &tx.signatures {
-            for signer in &required_signers {
-                if !verified_signers.contains(signer)
-                    && Keypair::verify(signer, &message_bytes, sig)
-                {
-                    verified_signers.insert(*signer);
-                    break;
-                }
-            }
-        }
-        for signer in &required_signers {
-            if !verified_signers.contains(signer) {
-                return SimulationResult {
-                    success: false,
-                    fee: 0,
-                    logs,
-                    error: Some(format!("Missing or invalid signature for {}", signer)),
-                    compute_used: 0,
-                    return_data: None,
-                    return_code: None,
-                    state_changes: 0,
-                };
-            }
+        if let Err(error) = Self::verify_transaction_signatures(tx) {
+            return SimulationResult {
+                success: false,
+                fee: 0,
+                logs,
+                error: Some(error),
+                compute_used: 0,
+                return_data: None,
+                return_code: None,
+                state_changes: 0,
+            };
         }
 
         let compute_budget = tx.message.effective_compute_budget();
@@ -2898,21 +2802,23 @@ impl TxProcessor {
     ///   [0]       = 23 (type tag)
     ///   [1..9]    = amount (u64 LE, spores)
     ///   [9..41]   = commitment (32 bytes, Poseidon hash of value||blinding)
-    ///   [41..169] = Groth16 proof (128 bytes, compressed BN254)
+    ///   [41..]    = Plonky3 STARK proof bytes
     /// ```
-    /// Public inputs (derived from data): [amount_fr, commitment_fr]
+    /// Public inputs (derived from data): canonical Goldilocks words for
+    /// [amount, commitment]
     /// accounts[0] = sender (debited)
     #[cfg(feature = "zk")]
     fn system_shield_deposit(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
-        use ark_bn254::Fr;
-        use ark_ff::PrimeField;
+        use crate::zk::{ProofType, ShieldAirPublicValues, ZkProof};
 
-        // Validate data length: 1 + 8 + 32 + 128 = 169
-        if ix.data.len() < 169 {
+        let required_len = 42;
+
+        // Validate data length: 1 + 8 + 32 + at least 1 proof byte
+        if ix.data.len() < required_len {
             return Err(format!(
-                "Shield: insufficient data length {} (expected >=169)",
-                ix.data.len()
+                "Shield: insufficient data length {} (expected >={})",
+                ix.data.len(),
+                required_len
             ));
         }
         if ix.accounts.is_empty() {
@@ -2934,17 +2840,15 @@ impl TxProcessor {
         let mut commitment = [0u8; 32];
         commitment.copy_from_slice(&ix.data[9..41]);
 
-        let proof_bytes = ix.data[41..169].to_vec();
-
-        // Build public inputs: [amount_as_field, commitment_as_field]
-        let amount_fr = Fr::from(amount);
-        let commitment_fr = Fr::from_le_bytes_mod_order(&commitment);
-
-        let zk_proof = ZkProof {
+        let proof_bytes = ix.data[41..].to_vec();
+        let zk_proof = ZkProof::plonky3(
+            ProofType::Shield,
             proof_bytes,
-            proof_type: ProofType::Shield,
-            public_inputs: vec![fr_to_bytes(&amount_fr), fr_to_bytes(&commitment_fr)],
-        };
+            ShieldAirPublicValues::new(amount, commitment)
+                .to_stark_public_inputs()
+                .into_iter()
+                .collect(),
+        );
 
         // Verify the ZK proof
         {
@@ -3038,22 +2942,28 @@ impl TxProcessor {
     ///   [1..9]     = amount (u64 LE, spores)
     ///   [9..41]    = nullifier (32 bytes)
     ///   [41..73]   = merkle_root (32 bytes)
-    ///   [73..105]  = recipient_fr (32 bytes, field element for circuit binding)
-    ///   [105..233] = Groth16 proof (128 bytes, compressed BN254)
+    ///   [73..105]  = recipient hash (32 bytes, binding for the credited account)
+    ///   [105..]    = Plonky3 STARK proof bytes
     /// ```
-    /// Public inputs: [merkle_root, nullifier, amount, recipient]
+    /// Public inputs: canonical Goldilocks words for
+    /// [merkle_root, nullifier, amount, recipient]
     /// accounts[0] = recipient (credited)
     #[cfg(feature = "zk")]
     fn system_unshield_withdraw(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::{fr_to_bytes, poseidon_hash_fr, ProofType, ZkProof};
-        use ark_bn254::Fr;
-        use ark_ff::PrimeField;
+        use crate::zk::merkle::is_canonical_scalar_bytes;
+        use crate::zk::{
+            recipient_hash, recipient_preimage_from_bytes, ProofType, UnshieldAirPublicValues,
+            ZkProof,
+        };
 
-        // Validate data length: 1 + 8 + 32 + 32 + 32 + 128 = 233
-        if ix.data.len() < 233 {
+        let required_len = 106;
+
+        // Validate data length: 1 + 8 + 32 + 32 + 32 + at least 1 proof byte
+        if ix.data.len() < required_len {
             return Err(format!(
-                "Unshield: insufficient data length {} (expected >=233)",
-                ix.data.len()
+                "Unshield: insufficient data length {} (expected >={})",
+                ix.data.len(),
+                required_len
             ));
         }
         if ix.accounts.is_empty() {
@@ -3075,37 +2985,27 @@ impl TxProcessor {
         let mut nullifier = [0u8; 32];
         nullifier.copy_from_slice(&ix.data[9..41]);
 
-        // AUDIT-FIX C-1: Reject non-canonical nullifier encodings.
-        // Fr::from_le_bytes_mod_order reduces bytes >= field modulus, so
-        // different byte arrays can map to the same Fr. Without this check,
-        // an attacker could double-spend a shielded note by submitting
-        // nullifier N (canonical) and N+r (non-canonical but same Fr).
-        {
-            let fr = Fr::from_le_bytes_mod_order(&nullifier);
-            let canonical = fr_to_bytes(&fr);
-            if canonical != nullifier {
-                return Err(format!(
-                    "Unshield: non-canonical nullifier encoding (got {}, canonical {})",
-                    hex::encode(nullifier),
-                    hex::encode(canonical)
-                ));
-            }
+        // Reject non-canonical 32-byte scalars up front so state keys remain
+        // in the same canonical domain used by the native Poseidon2 runtime.
+        if !is_canonical_scalar_bytes(&nullifier) {
+            return Err(format!(
+                "Unshield: non-canonical nullifier encoding: {}",
+                hex::encode(nullifier)
+            ));
         }
 
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&ix.data[41..73]);
 
-        let mut recipient_fr_bytes = [0u8; 32];
-        recipient_fr_bytes.copy_from_slice(&ix.data[73..105]);
+        let mut recipient_bytes = [0u8; 32];
+        recipient_bytes.copy_from_slice(&ix.data[73..105]);
 
-        let proof_bytes = ix.data[105..233].to_vec();
+        let proof_bytes = ix.data[105..].to_vec();
 
         // Bind public recipient input to the credited account.
-        // recipient_public must be Poseidon(Fr(recipient_pubkey)).
-        let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_pubkey.0);
-        let expected_recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
-        let expected_recipient_bytes = fr_to_bytes(&expected_recipient);
-        if recipient_fr_bytes != expected_recipient_bytes {
+        let recipient_preimage = recipient_preimage_from_bytes(recipient_pubkey.0);
+        let expected_recipient_bytes = recipient_hash(&recipient_preimage);
+        if recipient_bytes != expected_recipient_bytes {
             return Err(
                 "Unshield: recipient public input does not match recipient account".to_string(),
             );
@@ -3146,22 +3046,14 @@ impl TxProcessor {
             }
         }
 
-        // Build public inputs: [merkle_root, nullifier, amount, recipient]
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root);
-        let nullifier_fr = Fr::from_le_bytes_mod_order(&nullifier);
-        let amount_fr = Fr::from(amount);
-        let recipient_fr = Fr::from_le_bytes_mod_order(&recipient_fr_bytes);
-
-        let zk_proof = ZkProof {
+        let zk_proof = ZkProof::plonky3(
+            ProofType::Unshield,
             proof_bytes,
-            proof_type: ProofType::Unshield,
-            public_inputs: vec![
-                fr_to_bytes(&merkle_root_fr),
-                fr_to_bytes(&nullifier_fr),
-                fr_to_bytes(&amount_fr),
-                fr_to_bytes(&recipient_fr),
-            ],
-        };
+            UnshieldAirPublicValues::new(merkle_root, nullifier, amount, recipient_bytes)
+                .to_stark_public_inputs()
+                .into_iter()
+                .collect(),
+        );
 
         // Verify ZK proof
         {
@@ -3231,21 +3123,24 @@ impl TxProcessor {
     ///   [65..97]    = commitment_c (32 bytes, output 0)
     ///   [97..129]   = commitment_d (32 bytes, output 1)
     ///   [129..161]  = merkle_root (32 bytes)
-    ///   [161..289]  = Groth16 proof (128 bytes, compressed BN254)
+    ///   [161..]     = Plonky3 STARK proof bytes
     /// ```
-    /// Public inputs: [merkle_root, nullifier_a, nullifier_b, commitment_c, commitment_d]
+    /// Public inputs: canonical Goldilocks words for
+    /// [merkle_root, nullifier_a, nullifier_b, commitment_c, commitment_d]
     /// No accounts required (fully private).
     #[cfg(feature = "zk")]
     fn system_shielded_transfer(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
-        use ark_bn254::Fr;
-        use ark_ff::PrimeField;
+        use crate::zk::merkle::is_canonical_scalar_bytes;
+        use crate::zk::{ProofType, TransferAirPublicValues, ZkProof};
 
-        // Validate data length: 1 + 32*4 + 32 + 128 = 289
-        if ix.data.len() < 289 {
+        let required_len = 162;
+
+        // Validate data length: 1 + 32*4 + 32 + at least 1 proof byte
+        if ix.data.len() < required_len {
             return Err(format!(
-                "ShieldedTransfer: insufficient data length {} (expected >=289)",
-                ix.data.len()
+                "ShieldedTransfer: insufficient data length {} (expected >={})",
+                ix.data.len(),
+                required_len
             ));
         }
 
@@ -3256,15 +3151,14 @@ impl TxProcessor {
         let mut nullifier_b = [0u8; 32];
         nullifier_b.copy_from_slice(&ix.data[33..65]);
 
-        // AUDIT-FIX C-1: Reject non-canonical nullifier encodings to prevent
-        // double-spend via Fr reduction (N and N+r map to same field element).
+        // Reject non-canonical 32-byte scalars so the nullifier set stays in
+        // the same canonical domain used by the native Poseidon2 runtime.
         for (label, nul) in [("A", &nullifier_a), ("B", &nullifier_b)] {
-            let fr = Fr::from_le_bytes_mod_order(nul);
-            let canonical = fr_to_bytes(&fr);
-            if canonical != *nul {
+            if !is_canonical_scalar_bytes(nul) {
                 return Err(format!(
-                    "ShieldedTransfer: non-canonical nullifier {} encoding",
-                    label
+                    "ShieldedTransfer: non-canonical nullifier {} encoding: {}",
+                    label,
+                    hex::encode(nul)
                 ));
             }
         }
@@ -3278,7 +3172,7 @@ impl TxProcessor {
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&ix.data[129..161]);
 
-        let proof_bytes = ix.data[161..289].to_vec();
+        let proof_bytes = ix.data[161..].to_vec();
 
         // Verify merkle root
         {
@@ -3318,24 +3212,20 @@ impl TxProcessor {
             }
         }
 
-        // Build public inputs: [merkle_root, null_a, null_b, comm_c, comm_d]
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root);
-        let null_a_fr = Fr::from_le_bytes_mod_order(&nullifier_a);
-        let null_b_fr = Fr::from_le_bytes_mod_order(&nullifier_b);
-        let comm_c_fr = Fr::from_le_bytes_mod_order(&commitment_c);
-        let comm_d_fr = Fr::from_le_bytes_mod_order(&commitment_d);
-
-        let zk_proof = ZkProof {
+        let zk_proof = ZkProof::plonky3(
+            ProofType::Transfer,
             proof_bytes,
-            proof_type: ProofType::Transfer,
-            public_inputs: vec![
-                fr_to_bytes(&merkle_root_fr),
-                fr_to_bytes(&null_a_fr),
-                fr_to_bytes(&null_b_fr),
-                fr_to_bytes(&comm_c_fr),
-                fr_to_bytes(&comm_d_fr),
-            ],
-        };
+            TransferAirPublicValues::new(
+                merkle_root,
+                nullifier_a,
+                nullifier_b,
+                commitment_c,
+                commitment_d,
+            )
+            .to_stark_public_inputs()
+            .into_iter()
+            .collect(),
+        );
 
         // Verify ZK proof
         {
@@ -4119,6 +4009,7 @@ impl TxProcessor {
                 staked: 0,
                 locked: 0,
                 data: Vec::new(),
+                public_key: None,
                 owner: Pubkey([0x01; 32]), // SYSTEM_ACCOUNT_OWNER
                 executable: false,
                 rent_epoch: 0,
@@ -7747,7 +7638,7 @@ mod tests {
             compute_unit_price: None,
         };
         let tx = Transaction {
-            signatures: vec![[0u8; 64]],
+            signatures: vec![crate::PqSignature::test_fixture(0)],
             message: msg,
             tx_type: Default::default(),
         };
@@ -9246,9 +9137,9 @@ mod tests {
     fn test_shield_rejects_short_data() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
-        // Only 100 bytes provided (need 169)
+        // Only 21 bytes provided (need at least 42)
         let mut data = vec![23u8];
-        data.extend_from_slice(&[0u8; 99]);
+        data.extend_from_slice(&[0u8; 20]);
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -9329,20 +9220,10 @@ mod tests {
     fn test_shield_rejects_invalid_proof_bytes() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
-        // Load VKs so the verifier is ready (but the proof is garbage)
-        let ceremony = crate::zk::setup::setup_shield().unwrap();
-        processor
-            .load_zk_verification_keys(
-                &ceremony.verification_key_bytes,
-                &ceremony.verification_key_bytes, // reuse for unshield (doesn't matter here)
-                &ceremony.verification_key_bytes, // reuse for transfer
-            )
-            .unwrap();
-
         let mut data = vec![23u8];
         data.extend_from_slice(&100u64.to_le_bytes());
         data.extend_from_slice(&[0xAA; 32]); // bogus commitment
-        data.extend_from_slice(&[0xFF; 128]); // invalid proof bytes
+        data.extend_from_slice(&[0xFF; 7]); // invalid proof bytes
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -9364,17 +9245,22 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
-    fn test_shield_rejects_no_verifier_keys() {
+    fn test_shield_accepts_native_proof_without_verifier_keys() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
-        // Do NOT load VKs — verifier has no keys
+        use crate::zk::{
+            circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
+        };
+
+        let amount = 100u64;
+        let blinding = random_scalar_bytes();
+        let commitment = commitment_hash(amount, &blinding);
+        let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment);
+        let proof = Prover::new().prove_shield(circuit).expect("prove shield");
 
         let mut data = vec![23u8];
-        let amount = 100u64;
         data.extend_from_slice(&amount.to_le_bytes());
-        data.extend_from_slice(&[0xAA; 32]);
-
-        // Build a technically-valid-length proof (128 bytes of zeros won't deserialize)
-        data.extend_from_slice(&[0u8; 128]);
+        data.extend_from_slice(&commitment);
+        data.extend_from_slice(&proof.proof_bytes);
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -9386,55 +9272,32 @@ mod tests {
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(!result.success);
-        // Should fail because VK is not loaded
-        assert!(result.error.is_some());
+        assert!(result.success, "native STARK verifier should not need VKs");
     }
 
     #[cfg(feature = "zk")]
     #[test]
     fn test_shield_full_e2e_with_processor() {
         use crate::zk::{
-            circuits::shield::ShieldCircuit, fr_to_bytes, poseidon_hash_fr, setup, Prover,
+            circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
         };
-        use ark_bn254::Fr;
-        use ark_std::rand::rngs::OsRng;
-        use ark_std::UniformRand;
 
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
 
-        // 1. Run trusted setup for shield circuit
-        let ceremony = setup::setup_shield().unwrap();
-
-        // 2. Load VK into processor
-        // For this test we only need shield VK; use same bytes for all (only shield will be called)
-        let unshield_ceremony = setup::setup_unshield().unwrap();
-        let transfer_ceremony = setup::setup_transfer().unwrap();
-        processor
-            .load_zk_verification_keys(
-                &ceremony.verification_key_bytes,
-                &unshield_ceremony.verification_key_bytes,
-                &transfer_ceremony.verification_key_bytes,
-            )
-            .unwrap();
-
-        // 3. Build shield witness
+        // 1. Build shield witness
         let amount = 500_000_000u64; // 0.5 LICN in spores
-        let blinding = Fr::rand(&mut OsRng);
-        let amount_fr = Fr::from(amount);
-        let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
+        let blinding = random_scalar_bytes();
+        let commitment = commitment_hash(amount, &blinding);
 
-        let circuit = ShieldCircuit::new(amount, amount, blinding, commitment_fr);
+        let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment);
 
-        // 4. Generate proof
-        let mut prover = Prover::new();
-        prover.load_shield_key(&ceremony.proving_key_bytes).unwrap();
-        let zk_proof = prover.prove_shield(circuit).unwrap();
+        // 2. Generate proof
+        let zk_proof = Prover::new().prove_shield(circuit).unwrap();
 
-        // 5. Build instruction data
+        // 3. Build instruction data
         let mut data = vec![23u8];
         data.extend_from_slice(&amount.to_le_bytes());
-        data.extend_from_slice(&fr_to_bytes(&commitment_fr));
+        data.extend_from_slice(&commitment);
         data.extend_from_slice(&zk_proof.proof_bytes);
 
         let ix = Instruction {
@@ -9446,12 +9309,12 @@ mod tests {
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
-        // 6. Process transaction
+        // 4. Process transaction
         let alice_balance_before = state.get_balance(&alice).unwrap();
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(result.success, "Shield should succeed: {:?}", result.error);
 
-        // 7. Verify state changes
+        // 5. Verify state changes
         let alice_balance_after = state.get_balance(&alice).unwrap();
         // Alice should have less balance (amount + fee deducted)
         assert!(
@@ -9471,11 +9334,11 @@ mod tests {
 
         // Commitment should be stored
         let stored_commitment = state.get_shielded_commitment(0).unwrap();
-        assert_eq!(stored_commitment, Some(fr_to_bytes(&commitment_fr)));
+        assert_eq!(stored_commitment, Some(commitment));
 
         // Merkle root should be updated to reflect the single leaf
         let mut expected_tree = crate::zk::MerkleTree::new();
-        expected_tree.insert(fr_to_bytes(&commitment_fr));
+        expected_tree.insert(commitment);
         assert_eq!(pool.merkle_root, expected_tree.root());
     }
 
@@ -9491,7 +9354,7 @@ mod tests {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
         let mut data = vec![24u8];
-        data.extend_from_slice(&[0u8; 50]); // too short (need 232 more bytes)
+        data.extend_from_slice(&[0u8; 50]); // too short (need at least 106 bytes total)
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -9510,9 +9373,7 @@ mod tests {
     #[cfg(feature = "zk")]
     #[test]
     fn test_unshield_rejects_recipient_mismatch() {
-        use crate::zk::{fr_to_bytes, poseidon_hash_fr};
-        use ark_bn254::Fr;
-        use ark_ff::PrimeField;
+        use crate::zk::{recipient_hash, recipient_preimage_from_bytes};
 
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
@@ -9523,14 +9384,13 @@ mod tests {
 
         // Deliberately mismatch by hashing a different pubkey than `alice`.
         let other_pubkey = Pubkey([0x22u8; 32]);
-        let other_preimage = Fr::from_le_bytes_mod_order(&other_pubkey.0);
-        let other_recipient = poseidon_hash_fr(other_preimage, Fr::from(0u64));
+        let other_recipient = recipient_hash(&recipient_preimage_from_bytes(other_pubkey.0));
 
         let mut data = vec![24u8];
         data.extend_from_slice(&amount.to_le_bytes());
         data.extend_from_slice(&nullifier);
         data.extend_from_slice(&merkle_root);
-        data.extend_from_slice(&fr_to_bytes(&other_recipient));
+        data.extend_from_slice(&other_recipient);
         data.extend_from_slice(&[0u8; 128]);
 
         let ix = Instruction {
@@ -9561,7 +9421,7 @@ mod tests {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
         let mut data = vec![25u8];
-        data.extend_from_slice(&[0u8; 100]); // too short (need 288 more bytes)
+        data.extend_from_slice(&[0u8; 100]); // too short (need at least 162 bytes total)
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,

@@ -65,7 +65,7 @@ def report(status, msg, detail=""):
 
 # ── Helpers ──
 
-async def rpc_call(method, params=None):
+async def rpc_call(method, params=None, auth_token=None):
     """Direct JSON-RPC call."""
     import urllib.request
     payload = json.dumps({
@@ -74,7 +74,10 @@ async def rpc_call(method, params=None):
         "method": method,
         "params": params or [],
     }).encode()
-    req = urllib.request.Request(RPC_URL, data=payload, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    req = urllib.request.Request(RPC_URL, data=payload, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
@@ -131,11 +134,6 @@ def load_deployer():
             return None
         return Keypair.load(path)
     except Exception:
-        raw = json.loads(Path(DEPLOYER_PATH).read_text())
-        if isinstance(raw, dict):
-            pk = raw.get("privateKey") or raw.get("secret_key")
-            if isinstance(pk, list) and len(pk) == 32:
-                return Keypair.from_seed(bytes(pk))
         return None
 
 
@@ -739,9 +737,7 @@ async def test_section_4_upgrade_contract():
         report("SKIP", "upgradeContract — deployer keypair not found")
         return
 
-    deployer_b58 = deployer.public_key().to_base58()
-    admin_obj = {"admin_token": ADMIN_TOKEN}
-
+    deployer_b58 = deployer.address().to_base58()
     # 4a. First fund the deployer
     resp = await rpc_call("requestAirdrop", [deployer_b58, 10])
     if "result" in resp:
@@ -763,11 +759,11 @@ async def test_section_4_upgrade_contract():
     code_b64_v1 = base64.b64encode(wasm_v1).decode()
     code_hash_v1 = hashlib.sha256(wasm_v1).digest()
     sig_v1 = deployer.sign(code_hash_v1)
-    sig_hex_v1 = sig_v1.hex() if isinstance(sig_v1, bytes) else bytes(sig_v1).hex()
+    sig_payload_v1 = sig_v1.to_json()
 
     resp = await rpc_call("deployContract", [
-        deployer_b58, code_b64_v1, None, sig_hex_v1, admin_obj
-    ])
+        deployer_b58, code_b64_v1, None, sig_payload_v1
+    ], auth_token=ADMIN_TOKEN)
     contract_addr = None
     if "result" in resp:
         contract_addr = resp["result"].get("program_id", "")
@@ -789,6 +785,9 @@ async def test_section_4_upgrade_contract():
         elif "disabled" in msg.lower() and ("multi-validator" in msg.lower() or "local/dev" in msg.lower()):
             report("SKIP", "deployContract disabled in this environment")
             return
+        elif "missing authorization" in msg.lower() or "admin endpoints disabled" in msg.lower():
+            report("SKIP", "deployContract unavailable in this environment (admin auth not configured)")
+            return
         else:
             report("FAIL", "deployContract", msg[:80])
             return
@@ -808,11 +807,11 @@ async def test_section_4_upgrade_contract():
     code_b64_v2 = base64.b64encode(wasm_v2).decode()
     code_hash_v2 = hashlib.sha256(wasm_v2).digest()
     sig_v2 = deployer.sign(code_hash_v2)
-    sig_hex_v2 = sig_v2.hex() if isinstance(sig_v2, bytes) else bytes(sig_v2).hex()
+    sig_payload_v2 = sig_v2.to_json()
 
     resp = await rpc_call("upgradeContract", [
-        deployer_b58, contract_addr, code_b64_v2, sig_hex_v2, admin_obj
-    ])
+        deployer_b58, contract_addr, code_b64_v2, sig_payload_v2
+    ], auth_token=ADMIN_TOKEN)
     if "result" in resp:
         result = resp["result"]
         version = result.get("version", "?")
@@ -842,11 +841,11 @@ async def test_section_4_upgrade_contract():
     code_b64_v3 = base64.b64encode(wasm_v3).decode()
     code_hash_v3 = hashlib.sha256(wasm_v3).digest()
     sig_v3 = deployer.sign(code_hash_v3)
-    sig_hex_v3 = sig_v3.hex() if isinstance(sig_v3, bytes) else bytes(sig_v3).hex()
+    sig_payload_v3 = sig_v3.to_json()
 
     resp = await rpc_call("upgradeContract", [
-        deployer_b58, contract_addr, code_b64_v3, sig_hex_v3, admin_obj
-    ])
+        deployer_b58, contract_addr, code_b64_v3, sig_payload_v3
+    ], auth_token=ADMIN_TOKEN)
     if "result" in resp:
         result = resp["result"]
         version = result.get("version", "?")
@@ -858,13 +857,13 @@ async def test_section_4_upgrade_contract():
 
     # 4h. Test non-owner rejection
     random_kp = Keypair.generate()
-    random_b58 = random_kp.public_key().to_base58()
+    random_b58 = random_kp.address().to_base58()
     sig_fake = random_kp.sign(code_hash_v3)
-    sig_hex_fake = sig_fake.hex() if isinstance(sig_fake, bytes) else bytes(sig_fake).hex()
+    sig_payload_fake = sig_fake.to_json()
 
     resp = await rpc_call("upgradeContract", [
-        random_b58, contract_addr, code_b64_v3, sig_hex_fake, admin_obj
-    ])
+        random_b58, contract_addr, code_b64_v3, sig_payload_fake
+    ], auth_token=ADMIN_TOKEN)
     if "error" in resp:
         err_msg = resp["error"].get("message", str(resp["error"])) if isinstance(resp["error"], dict) else str(resp["error"])
         if "owner" in err_msg.lower() or "not the owner" in err_msg.lower() or "unauthorized" in err_msg.lower():

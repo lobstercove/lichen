@@ -1,0 +1,79 @@
+//! Internal field-bridge helpers kept only for the private witness-adapter path.
+//!
+//! The native shielded runtime no longer uses these functions directly. They
+//! remain solely because the dormant arkworks circuits still encode witness
+//! values as field elements.
+
+use ark_bn254::Fr;
+use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
+use ark_crypto_primitives::sponge::CryptographicSponge;
+use ark_ff::{BigInteger, Field, PrimeField};
+use sha2::{Digest, Sha256};
+
+#[allow(dead_code)]
+pub(crate) fn poseidon_hash_fr(left: Fr, right: Fr) -> Fr {
+    let config = poseidon_config();
+    let mut sponge = PoseidonSponge::<Fr>::new(&config);
+    sponge.absorb(&left);
+    sponge.absorb(&right);
+    let result: Vec<Fr> = sponge.squeeze_field_elements(1);
+    result[0]
+}
+
+pub(crate) fn fr_to_bytes(fr: &Fr) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    let bytes = fr.into_bigint().to_bytes_le();
+    let len = std::cmp::min(bytes.len(), 32);
+    output[..len].copy_from_slice(&bytes[..len]);
+    output
+}
+
+#[allow(dead_code)]
+pub(crate) fn bytes_to_fr(bytes: &[u8; 32]) -> Fr {
+    Fr::from_le_bytes_mod_order(bytes)
+}
+
+pub(crate) fn poseidon_config() -> PoseidonConfig<Fr> {
+    let full_rounds = 8;
+    let partial_rounds = 57;
+    let alpha = 5;
+
+    let width = 3;
+    let total_rounds = full_rounds + partial_rounds;
+
+    let mut round_constants: Vec<Vec<Fr>> = Vec::new();
+    for r in 0..total_rounds {
+        let mut round_rc = Vec::new();
+        for w in 0..width {
+            let i: u64 = (r * width + w) as u64;
+            let mut hasher = Sha256::new();
+            hasher.update(b"Lichen-Poseidon-RC-");
+            hasher.update(i.to_le_bytes());
+            let hash = hasher.finalize();
+            round_rc.push(Fr::from_le_bytes_mod_order(&hash));
+        }
+        round_constants.push(round_rc);
+    }
+
+    let mut mds = Vec::new();
+    for i in 0..width {
+        let mut row = Vec::new();
+        for j in 0..width {
+            let x = Fr::from((i + 1) as u64);
+            let y = Fr::from((width + j + 1) as u64);
+            let entry = (x + y).inverse().unwrap_or(Fr::from(1u64));
+            row.push(entry);
+        }
+        mds.push(row);
+    }
+
+    PoseidonConfig {
+        full_rounds: full_rounds as usize,
+        partial_rounds: partial_rounds as usize,
+        alpha: alpha as u64,
+        ark: round_constants,
+        mds,
+        rate: 2,
+        capacity: 1,
+    }
+}

@@ -19,14 +19,13 @@
 //! Total: ~370 constraints
 
 use ark_bn254::Fr;
-use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
-use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
-use crate::zk::merkle::poseidon_config;
+use crate::zk::circuits::utils::poseidon_hash_var;
+use crate::zk::r1cs_bn254::{bytes_to_fr, poseidon_config};
 
 /// Shield circuit: proves correct deposit into shielded pool
 #[derive(Clone, Debug)]
@@ -60,6 +59,16 @@ impl ShieldCircuit {
             value: Some(Fr::from(value)),
             blinding: Some(blinding),
         }
+    }
+
+    /// Create a new shield circuit from canonical 32-byte witness values.
+    pub fn new_bytes(amount: u64, value: u64, blinding: [u8; 32], commitment: [u8; 32]) -> Self {
+        Self::new(
+            amount,
+            value,
+            bytes_to_fr(&blinding),
+            bytes_to_fr(&commitment),
+        )
     }
 
     /// Empty circuit for key generation (setup/ceremony phase).
@@ -104,13 +113,11 @@ impl ConstraintSynthesizer<Fr> for ShieldCircuit {
         // ── Constraint 2: Poseidon(value, blinding) == commitment ──────
         // Compute the Poseidon hash in-circuit using the same config and
         // absorb order as the native `poseidon_hash_fr(value, blinding)`.
-        let mut sponge = PoseidonSpongeVar::new(cs.clone(), &self.poseidon_config);
-        sponge.absorb(&value_var)?;
-        sponge.absorb(&blinding_var)?;
-        let computed_commitment = sponge.squeeze_field_elements(1)?;
+        let computed_commitment =
+            poseidon_hash_var(cs.clone(), &self.poseidon_config, &value_var, &blinding_var)?;
 
         // The in-circuit Poseidon output must equal the public commitment.
-        computed_commitment[0].enforce_equal(&commitment_var)?;
+        computed_commitment.enforce_equal(&commitment_var)?;
 
         // ── Constraint 3: 64-bit range check on value ──────────────────
         // Decompose `value` into 64 bits and enforce the decomposition is
@@ -119,7 +126,8 @@ impl ConstraintSynthesizer<Fr> for ShieldCircuit {
         // (boolean constraint) and Σ b_i * 2^i == value.
         let value_bits = value_var.to_bits_le()?;
         // Enforce bits [64..] are all zero → value < 2^64.
-        // BN254 scalar field is ~254 bits, so to_bits_le() returns ~254 bits.
+        // The backing field element decomposes into more than 64 bits, so the
+        // higher limbs must be forced to zero.
         for bit in value_bits.iter().skip(64) {
             bit.enforce_equal(&Boolean::FALSE)?;
         }
@@ -131,7 +139,7 @@ impl ConstraintSynthesizer<Fr> for ShieldCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::merkle::poseidon_hash_fr;
+    use crate::zk::r1cs_bn254::poseidon_hash_fr;
     use ark_ff::UniformRand;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;
@@ -188,9 +196,8 @@ mod tests {
 
     #[test]
     fn test_shield_circuit_empty_for_setup() {
-        // Empty circuit (for trusted setup) must define the same constraint
-        // structure without panicking. arkworks setup mode sets the optimization
-        // goal which suppresses AssignmentMissing during key generation.
+        // Empty circuit instances must preserve the same constraint structure
+        // without panicking when synthesized in setup mode.
         use ark_relations::r1cs::{ConstraintSystem, OptimizationGoal};
 
         let cs = ConstraintSystem::<Fr>::new_ref();

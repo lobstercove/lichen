@@ -10,7 +10,8 @@
 const http = require('http');
 const https = require('https');
 const { webcrypto } = require('crypto');
-const { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, bytesToHex } = require('./helpers/funded-wallets');
+const pq = require('./helpers/pq-node');
+const { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, bytesToHex, initCrypto } = require('./helpers/funded-wallets');
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:8899';
 const FAUCET = process.env.FAUCET_URL || 'http://127.0.0.1:9100';
@@ -52,52 +53,70 @@ async function rpc(method, params) {
     });
 }
 
-// Build + sign + send a native transfer transaction
+// Build + sign + send a native transfer transaction using ML-DSA-65 + JSON wire format
 async function sendTransfer(fromKp, toAddr, amountSpores) {
     const blockhash = await rpc('getRecentBlockhash', []);
     const bh = typeof blockhash === 'string' ? blockhash : blockhash.blockhash;
 
-    // Build transfer instruction
-    const toPubkey = bs58decode(toAddr);
-    const amountBuf = Buffer.alloc(8);
-    amountBuf.writeBigUInt64LE(BigInt(amountSpores));
+    const SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
+    // SystemProgram::Transfer: opcode=0x00, amount as little-endian u64
+    const data = new Uint8Array(9);
+    data[0] = 0x00;
+    new DataView(data.buffer).setBigUint64(1, BigInt(amountSpores), true);
 
-    // SystemProgram::Transfer = type 0x03
-    const ixData = Buffer.concat([Buffer.from([0x03]), toPubkey, amountBuf]);
-    const systemProgram = Buffer.alloc(32); // [0x00; 32]
+    const instructions = [{
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: [fromKp.address, toAddr],
+        data: Array.from(data),
+    }];
 
-    // Transaction format: [num_instructions(1), program_id(32), data_len(2), data(...)]
-    const ixDataLen = Buffer.alloc(2);
-    ixDataLen.writeUInt16LE(ixData.length);
+    // Bincode-encode the message for signing
+    const msgBytes = encodeMessageBincode(instructions, bh);
+    const pqSig = pq.sign(msgBytes, fromKp);
 
-    const payload = Buffer.concat([
-        Buffer.from([1]), // 1 instruction
-        systemProgram,    // program_id
-        ixDataLen,
-        ixData,
-    ]);
-
-    // Build message: recent_blockhash(32) + payload
-    const bhBytes = bs58decode(bh);
-    const message = Buffer.concat([bhBytes, payload]);
-
-    // Sign
-    const nacl = require('tweetnacl');
-    const sig = nacl.sign.detached(message, fromKp.secretKey);
-
-    // Assemble: [num_sigs(1), pubkey(32), sig(64), message...]
-    const tx = Buffer.concat([
-        Buffer.from([1]),
-        Buffer.from(fromKp.publicKey),
-        Buffer.from(sig),
-        message,
-    ]);
-
-    const txBase64 = tx.toString('base64');
+    const txPayload = {
+        signatures: [pqSig],
+        message: { instructions, blockhash: bh },
+    };
+    const txBase64 = Buffer.from(JSON.stringify(txPayload)).toString('base64');
     return rpc('sendTransaction', [txBase64]);
 }
 
+// Bincode-encode a transaction message (matches Rust serializer)
+function encodeMessageBincode(instructions, blockhashHex) {
+    const parts = [];
+    function pushU64LE(n) {
+        const buf = new ArrayBuffer(8);
+        const view = new DataView(buf);
+        view.setUint32(0, n & 0xFFFFFFFF, true);
+        view.setUint32(4, Math.floor(n / 0x100000000) & 0xFFFFFFFF, true);
+        parts.push(new Uint8Array(buf));
+    }
+    pushU64LE(instructions.length);
+    for (const ix of instructions) {
+        parts.push(bs58decode(ix.program_id));
+        pushU64LE(ix.accounts.length);
+        for (const acct of ix.accounts) parts.push(bs58decode(acct));
+        const dataBytes = new Uint8Array(ix.data);
+        pushU64LE(dataBytes.length);
+        parts.push(dataBytes);
+    }
+    const bhHex = blockhashHex.startsWith('0x') ? blockhashHex.slice(2) : blockhashHex;
+    const bhBytes = new Uint8Array(bhHex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    parts.push(bhBytes);
+    parts.push(new Uint8Array([0x00])); // compute_budget = None
+    parts.push(new Uint8Array([0x00])); // compute_unit_price = None
+    const total = parts.reduce((s, a) => s + a.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const a of parts) { out.set(a, off); off += a.length; }
+    return out;
+}
+
 async function runTests() {
+    // Initialise ML-DSA-65 crypto
+    await initCrypto();
+
     console.log('═══════════════════════════════════════════════');
     console.log('  Lichen Wallet E2E Flow Tests');
     console.log('═══════════════════════════════════════════════');
@@ -107,7 +126,7 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     section('W1: Wallet Creation');
 
-    // Generate fresh keypairs using Ed25519
+    // Generate fresh ML-DSA-65 keypairs
     const alice = genKeypair();
     const bob = genKeypair();
     assert(alice.address.length >= 32 && alice.address.length <= 44, `Alice keypair generated: ${alice.address.slice(0, 12)}...`);

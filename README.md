@@ -177,15 +177,15 @@ Important runtime files in the chosen `--db-path`:
 - `signer-keypair.json`
 - RocksDB / chain state files (`CURRENT`, `MANIFEST-*`, `*.sst`, `*.log`)
 - `known-peers.json`
-- `home/.lichen/node_cert.der` and `home/.lichen/node_key.der`
-- `home/.lichen/peer_fingerprints.json`
+- `home/.lichen/node_identity.json`
+- `home/.lichen/peer_identities.json`
 
 If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
 
 For P2P identity and trust-state files, the validator prefers `--db-path/home`
 for new or state-scoped installs. If an existing deployment already has
-`node_cert.der` and `node_key.der` under the current process `HOME`, it keeps
-using that identity to avoid breaking established peers.
+`node_identity.json` under the current process `HOME`, it keeps
+using that identity instead of generating a new node address.
 
 For unattended updates, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper. `--auto-update=apply` downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
 
@@ -447,7 +447,7 @@ Canonical developer-facing API docs:
 
 | Phase | Timeline | Milestones |
 |---|---|---|
-| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, LichenVM, LichenID, shielded pool + Groth16 privacy, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB wrapped asset support |
+| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, LichenVM, LichenID, shielded pool + transparent STARK privacy, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB wrapped asset support |
 | **Phase 2: Network Expansion** | Current buildout | Validator growth and hardening, better bridge + custody UX, deeper SporeSwap and wrapped-asset liquidity, faster SDK and validator onboarding, broader app launches across payments, AI agents, identity, and compute |
 | **Phase 3: Ecosystem Scale** | Next | Larger validator footprint, deeper cross-chain liquidity and routing, stronger privacy and coordination tooling, full-stack agent economy across DeFi/payments/compute/marketplaces, institutional-grade reliability |
 

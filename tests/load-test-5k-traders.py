@@ -29,21 +29,8 @@ from lichen import Connection, Instruction, Keypair, PublicKey, TransactionBuild
 
 
 def load_keypair_flexible(path: Path) -> Keypair:
-    """Load keypair handling all genesis key formats."""
-    try:
-        return Keypair.load(path)
-    except Exception:
-        pass
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        sk = raw.get("secret_key") or raw.get("privateKey") or raw.get("seed")
-        if isinstance(sk, str):
-            h = sk.strip().lower().removeprefix("0x")
-            if len(h) == 64:
-                return Keypair.from_seed(bytes.fromhex(h))
-        if isinstance(sk, list) and len(sk) == 32:
-            return Keypair.from_seed(bytes(sk))
-    raise ValueError(f"unsupported keypair format: {path}")
+    """Load keypair using the current SDK-supported key formats."""
+    return Keypair.load(path)
 
 RPC_ENDPOINTS = [
     "http://127.0.0.1:8899",
@@ -86,7 +73,7 @@ async def fund_trader(deployer: Keypair, trader: Keypair, conn: Connection, amou
     try:
         blockhash = await conn.get_recent_blockhash()
         ix = TransactionBuilder.transfer(
-            deployer.public_key(), trader.public_key(), amount
+            deployer.address(), trader.address(), amount
         )
         tx = (
             TransactionBuilder()
@@ -117,19 +104,19 @@ async def trader_session(trader_id: int, trader_kp: Keypair, deployer_pubkey: Pu
             if action == 0:
                 # Transfer back to deployer (small amount)
                 ix = TransactionBuilder.transfer(
-                    trader_kp.public_key(), deployer_pubkey, 1_000_000  # 0.001 LICN
+                    trader_kp.address(), deployer_pubkey, 1_000_000  # 0.001 LICN
                 )
             elif action == 1:
                 # Contract call (DEX-like swap instruction)
                 data = struct.pack("<B", 7)  # opcode 7 = swap
                 data += struct.pack("<Q", random.randint(100, 10000))  # amount
                 data += struct.pack("<Q", random.randint(1, 100))  # min_out
-                ix = Instruction(CONTRACT_PROGRAM, [trader_kp.public_key()], data)
+                ix = Instruction(CONTRACT_PROGRAM, [trader_kp.address()], data)
             else:
                 # Another transfer (peer-to-peer)
                 peer_pubkey = PublicKey(random.randbytes(32))
                 ix = TransactionBuilder.transfer(
-                    trader_kp.public_key(), peer_pubkey, 100_000  # 0.0001 LICN
+                    trader_kp.address(), peer_pubkey, 100_000  # 0.0001 LICN
                 )
 
             tx = (
@@ -166,11 +153,11 @@ async def main():
     conn = get_conn(0)
 
     # Check deployer balance
-    bal = await conn.get_balance(str(deployer.public_key()))
+    bal = await conn.get_balance(str(deployer.address()))
     deployer_spores = bal.get("spores", 0) if isinstance(bal, dict) else int(bal)
     deployer_licn = deployer_spores / 1_000_000_000
     needed_licn = (NUM_TRADERS * FUND_AMOUNT_SPORES) / 1_000_000_000
-    print(f"  Deployer: {deployer.public_key()}")
+    print(f"  Deployer: {deployer.address()}")
     print(f"  Balance: {deployer_licn:.2f} LICN  |  Need: {needed_licn:.2f} LICN")
 
     if deployer_spores < NUM_TRADERS * FUND_AMOUNT_SPORES:
@@ -232,7 +219,7 @@ async def main():
         batch = traders[batch_start:batch_end]
 
         tasks = [
-            trader_session(batch_start + i, kp, deployer.public_key())
+            trader_session(batch_start + i, kp, deployer.address())
             for i, kp in enumerate(batch)
         ]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)

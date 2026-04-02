@@ -110,7 +110,8 @@
                             transaction detail shows full inclusion proof with path visualization</li>
                         <li><strong>SDK proof methods</strong> &mdash; <code>getTransactionProof()</code> and
                             <code>verifyTransactionProof()</code> on JS SDK; <code>get_transaction_proof()</code> on
-                            Python SDK</li>
+                            Python SDK
+                        </li>
                     </ul>
                 </div>
 
@@ -223,7 +224,7 @@
                         </li>
                         <li><strong>Wire Envelope Format (Payload Type Envelope)</strong> &mdash; transactions now use a
                             4-byte header (<code>[0x4D, 0x54, version, type]</code>) followed by bincode payload.
-                            Three-format decoder supports V1 envelope, legacy bincode, and JSON for full backward
+                            Three-format decoder supports V1 envelope, raw bincode, and JSON for active client
                             compatibility. Centralized <code>decode_transaction_bytes()</code> replaces 7+ first-byte
                             heuristic decode sites across RPC (Task 3.10, M-6)</li>
                         <li><strong>TOFU Certificate Rotation</strong> &mdash; new <code>CertRotation</code> P2P gossip
@@ -367,7 +368,7 @@
                             registry entry</li>
                         <li>CLI: On-chain verification after deploy &mdash; polls <code>getAccountInfo</code> to confirm
                             contract is live</li>
-                        <li>WASM runtime: <code>host_poseidon_hash</code> host function &mdash; BN254 Poseidon hash for
+                        <li>WASM runtime: <code>host_poseidon_hash</code> host function &mdash; Poseidon2 hash for
                             Merkle trees and ZK circuits (2,000 CU)</li>
                         <li>Contract SDK: <code>poseidon_hash(left, right) &rarr; [u8; 32]</code> wrapper in
                             <code>lichen-contract-sdk</code>

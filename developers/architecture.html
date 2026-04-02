@@ -322,7 +322,8 @@ contribution_score = (
                         <td>Address (32) + Slot (8, BE)</td>
                         <td>Account struct</td>
                         <td>Historical account snapshots (archive mode). Enable with
-                            <code>set_archive_mode(true)</code>. Query via <code>getAccountAtSlot</code> RPC.</td>
+                            <code>set_archive_mode(true)</code>. Query via <code>getAccountAtSlot</code> RPC.
+                        </td>
                     </tr>
                 </tbody>
             </table>
@@ -572,8 +573,8 @@ contribution_score = (
             <h2 id="privacy">Privacy &amp; Security</h2>
 
             <p>Lichen's privacy architecture is centered on shielded transactions, nullifier-based double-spend
-                prevention, and ZK proofs for note validity. The current implementation uses Groth16-based verification
-                for shielded flows in production deployments.</p>
+                prevention, and transparent STARK proofs for note validity. The current implementation uses a
+                Poseidon2- and Plonky3-backed shielded flow in production deployments.</p>
 
             <h3>Implementation Status (Current)</h3>
             <table class="arch-table">
@@ -587,13 +588,14 @@ contribution_score = (
                 <tbody>
                     <tr>
                         <td>Core ZK modules (<code>core/src/zk/*</code>)</td>
-                        <td>Scaffolded</td>
-                        <td>Pedersen, Merkle, note/key types, circuits, prover/verifier plumbing</td>
+                        <td>Production</td>
+                        <td>Poseidon2 commitments, byte-first note/key types, and native STARK prover/verifier plumbing
+                        </td>
                     </tr>
                     <tr>
                         <td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td>
                         <td>Production</td>
-                        <td>Shielded state and transaction flows run with Groth16 proof verification</td>
+                        <td>Shielded state and transaction flows run with transparent STARK proof verification</td>
                     </tr>
                     <tr>
                         <td>Runtime/RPC wiring</td>
@@ -611,10 +613,10 @@ contribution_score = (
 
             <h3>Target ZK Architecture</h3>
             <ul>
-                <li><strong>Proving system:</strong> Groth16 with trusted setup and succinct on-chain verification</li>
-                <li><strong>Curve:</strong> BN254 for broad tooling compatibility and efficient pairing checks</li>
-                <li><strong>Commitments:</strong> Pedersen commitments for note value hiding + binding</li>
-                <li><strong>Merkle tree:</strong> Poseidon-based tree and inclusion paths for shielded notes</li>
+                <li><strong>Proving system:</strong> Transparent STARKs (Plonky3/FRI) with no trusted setup</li>
+                <li><strong>Field / hash layer:</strong> Goldilocks arithmetic plus Poseidon2 hashing</li>
+                <li><strong>Commitments:</strong> Poseidon2 hash commitments for note value hiding + binding</li>
+                <li><strong>Merkle tree:</strong> Poseidon2-based tree and inclusion paths for shielded notes</li>
                 <li><strong>Nullifiers:</strong> Deterministic nullifier derivation to prevent double spends without
                     revealing note contents</li>
             </ul>
@@ -645,9 +647,8 @@ contribution_score = (
 
             <h3>Keypair Encryption at Rest</h3>
             <p>CLI-managed keypairs are encrypted with <strong>AES-256-GCM</strong> (authenticated encryption with
-                12-byte random nonce). An <code>encryption_version</code> field in the keypair JSON enables backwards
-                compatibility: <code>v1</code> = legacy XOR cipher, <code>v2</code> = AES-GCM. Legacy keypairs are
-                auto-upgraded on next use.</p>
+                12-byte random nonce). Encrypted keypair JSON uses <code>encryption_version = 2</code> for the
+                canonical AES-GCM format.</p>
 
             <h3>Faucet CORS Policy</h3>
             <p>The testnet faucet enforces an explicit origin allowlist (localhost dev ports + production domains) with
@@ -671,45 +672,61 @@ contribution_score = (
                 <tbody>
                     <tr>
                         <td>Single transaction processing</td>
-                        <td>~28 µs</td>
-                        <td>~35,000 tx/s single-threaded</td>
+                        <td>~142 µs</td>
+                        <td>~7,000 tx/s single-threaded</td>
                     </tr>
                     <tr>
                         <td>10-tx batch</td>
-                        <td>~280 µs</td>
-                        <td>Linear scaling</td>
+                        <td>~1.34 ms</td>
+                        <td>~7,400 tx/s effective throughput</td>
                     </tr>
                     <tr>
                         <td>50-tx batch</td>
-                        <td>~1.4 ms</td>
-                        <td>No contention overhead</td>
+                        <td>~6.62 ms</td>
+                        <td>~7,500 tx/s effective throughput</td>
                     </tr>
                     <tr>
                         <td>Block creation (100 tx)</td>
-                        <td>~3 ms</td>
+                        <td>~1.07 ms</td>
                         <td>Includes Merkle root computation</td>
                     </tr>
                     <tr>
                         <td>Block creation (500 tx)</td>
-                        <td>~15 ms</td>
+                        <td>~5.57 ms</td>
                         <td>Well within block time budget</td>
                     </tr>
                     <tr>
-                        <td>Ed25519 signature verify</td>
-                        <td>~21 µs</td>
-                        <td>~47,000 verifies/s</td>
+                        <td>ML-DSA-65 signature verify</td>
+                        <td>~115 µs</td>
+                        <td>~8,700 verifies/s</td>
                     </tr>
                     <tr>
                         <td>Batch verify (100 sigs)</td>
-                        <td>~2.1 ms</td>
-                        <td>Linear, no batching optimization yet</td>
+                        <td>~11.1 ms</td>
+                        <td>~9,000 verifies/s; linear, no aggregation yet</td>
+                    </tr>
+                    <tr>
+                        <td>Plonky3 shield prove</td>
+                        <td>~120 µs</td>
+                        <td>Current native shield circuit in `processor_bench`</td>
+                    </tr>
+                    <tr>
+                        <td>Plonky3 shield verify</td>
+                        <td>~157 µs</td>
+                        <td>Verifier-side native STARK path</td>
                     </tr>
                 </tbody>
             </table>
 
+            <p><strong>Shared PQ runtime bundle:</strong> the shipped browser runtime is 44,333 bytes in both
+                <code>monitoring/shared/pq.js</code> and <code>wallet/shared/pq.js</code>, which remains well below
+                the 300-500 KB browser budget tracked in the PQ launch plan.
+            </p>
+
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Running Benchmarks</div>
-                Run <code>cargo bench --bench processor_bench</code> from the workspace root. Results are saved to
+                Run <code>cargo bench -p lichen-core --bench processor_bench</code> from the workspace root. Results are
+                saved to
                 <code>target/criterion/</code> with HTML reports.
             </div>
 

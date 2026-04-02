@@ -1,7 +1,14 @@
 // Minimal bincode encoder for Lichen transactions
 
 import { PublicKey } from './publickey';
-import { Instruction, Message, Transaction } from './transaction';
+import {
+  bytesToHex as pqBytesToHex,
+  hexToBytes as pqHexToBytes,
+  PqPublicKey,
+  PqSignature,
+  toPqSignature,
+} from './pq';
+import type { Instruction, Message, Transaction } from './transaction';
 
 const textEncoder = new TextEncoder();
 
@@ -51,21 +58,15 @@ function encodeVec(items: Uint8Array[]): Uint8Array {
 }
 
 export function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  if (clean.length % 2 !== 0) {
-    throw new Error('Invalid hex string');
-  }
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
+  return pqHexToBytes(hex);
 }
 
 export function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  return pqBytesToHex(bytes);
+}
+
+function encodeU8(value: number): Uint8Array {
+  return Uint8Array.of(value & 0xff);
 }
 
 function encodePubkey(pubkey: PublicKey): Uint8Array {
@@ -83,6 +84,18 @@ function encodeInstruction(ix: Instruction): Uint8Array {
   return concat([programId, accounts, data]);
 }
 
+function encodePqPublicKey(publicKey: PqPublicKey): Uint8Array {
+  return concat([encodeU8(publicKey.schemeVersion), encodeBytes(publicKey.toBytes())]);
+}
+
+function encodePqSignature(signature: PqSignature): Uint8Array {
+  return concat([
+    encodeU8(signature.schemeVersion),
+    encodePqPublicKey(signature.publicKey),
+    encodeBytes(signature.toBytes()),
+  ]);
+}
+
 export function encodeMessage(message: Message): Uint8Array {
   const instructions = encodeVec(message.instructions.map(encodeInstruction));
   const blockhash = hexToBytes(message.recentBlockhash);
@@ -95,16 +108,7 @@ export function encodeMessage(message: Message): Uint8Array {
 }
 
 export function encodeTransaction(transaction: Transaction): Uint8Array {
-  // Encode signatures as Vec<[u8; 64]> matching Rust bincode format.
-  // Each signature is a hex string → 64 raw bytes. Fixed-size arrays in
-  // bincode have no per-element length prefix.
-  const sigBytes = transaction.signatures.map(hexSig => {
-    const raw = hexToBytes(hexSig);
-    if (raw.length !== 64) {
-      throw new Error(`Signature must be 64 bytes, got ${raw.length}`);
-    }
-    return raw;
-  });
+  const sigBytes = transaction.signatures.map((signature) => encodePqSignature(toPqSignature(signature)));
   const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
   const messageBytes = encodeMessage(transaction.message);
   // tx_type: Native=0 (u32 LE)

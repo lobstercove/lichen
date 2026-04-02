@@ -285,16 +285,17 @@
                     WASM export (<code>#[no_mangle] pub extern "C" fn</code>). The runtime calls the function by name
                     with JSON-encoded arguments. This is simpler to develop, test, and audit — each function is
                     independently callable and discoverable.</p>
-                <p><strong>Opcode dispatch (legacy DEX pattern):</strong> A single <code>call()</code> export reads a
+                <p><strong>Opcode dispatch (DEX and prediction contracts):</strong> A single <code>call()</code> export
+                    reads a
                     leading opcode byte from <code>get_args()</code> and dispatches internally via
                     <code>match opcode { ... }</code>. This pattern was used for the 7 DEX contracts and the Prediction
-                    Market for historical reasons (batched operations, shared initialization).
+                    Market to support batched operations and shared initialization.
                     <strong>New contracts should use named exports.</strong>
                 </p>
                 <p><strong>Rationale:</strong> Named exports provide better tooling support (function discovery via
                     WASM introspection), clearer error messages (unknown function vs. unknown opcode), and simpler SDK
-                    integration. The opcode pattern will be migrated to named exports in a future release with a
-                    backward-compatible shim.</p>
+                    integration. The opcode pattern remains a supported runtime contract shape for these deployed
+                    modules.</p>
                 <p><strong>Runtime resolution:</strong> Callers do not need to know which pattern a contract uses.
                     The WASM runtime first tries to resolve the function by name as a WASM export. If that fails, it
                     looks up the function in the contract's ABI — if the ABI entry has an <code>opcode</code> field,
@@ -1625,7 +1626,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             fns</span><span class="meta-chip">28 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Aggregates liquidity across <strong>CLOB, concentrated AMM, and legacy LichenSwap</strong> pools
+                    <p>Aggregates liquidity across <strong>CLOB and concentrated AMM</strong> pools
                         for optimal execution. Supports direct fills, split CLOB+AMM orders, multi-hop routing
                         (A&rarr;B&rarr;C through intermediaries), and cross-pool sequencing. Finds the best price path
                         automatically.</p>
@@ -2253,12 +2254,11 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             fns</span><span class="meta-chip">18 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>On-chain contract managing the <strong>shielded transaction pool</strong> for ZK-private
-                        transfers. Stores the commitment Merkle tree root, spent nullifier set, and verification keys.
-                        Verifies Groth16/BN254 ZK proofs (128-byte) and updates state. Three core operations:
-                        <strong>shield</strong> (deposit into pool), <strong>unshield</strong> (withdraw from pool), and
-                        <strong>transfer</strong> (private transfer within pool). Uses reentrancy guard and admin pause
-                        control.
+                    <p>On-chain contract managing the <strong>shielded transaction pool</strong> for private value
+                        flows. Stores the commitment Merkle tree root, spent nullifier set, and pool statistics.
+                        Native <strong>shield</strong>, <strong>unshield</strong>, and <strong>transfer</strong>
+                        instructions validate transparent proofs in the runtime and update this contract-backed state.
+                        The contract exposes admin pause controls plus query helpers for shielded state.
                     </p>
                     <div class="sub-heading">Functions (10)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">shield</span><span

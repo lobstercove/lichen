@@ -58,30 +58,8 @@ const lichenidAbi = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'contr
 const walletHtml = fs.readFileSync(path.join(__dirname, '..', 'wallet', 'index.html'), 'utf8');
 const explorerAddressSrc = fs.readFileSync(path.join(__dirname, '..', 'explorer', 'js', 'address.js'), 'utf8');
 
-// ---- Minimal nacl polyfill for Node.js ----
-let nacl;
-try {
-    nacl = require('tweetnacl');
-} catch (_) {
-    // If tweetnacl is not installed, provide a minimal mock
-    nacl = {
-        sign: {
-            keyPair: {
-                fromSeed: (seed) => {
-                    // Minimal mock: just return plausible data
-                    const pk = new Uint8Array(32);
-                    const sk = new Uint8Array(64);
-                    pk.set(seed.slice(0, 32));
-                    sk.set(seed, 0);
-                    sk.set(pk, 32);
-                    return { publicKey: pk, secretKey: sk };
-                }
-            },
-            detached: (msg, sk) => new Uint8Array(64),
-            detached: { verify: () => true }
-        }
-    };
-}
+// crypto.js no longer depends on the legacy JS signer, but keep the binding slot for the eval wrapper.
+const nacl = null;
 global.nacl = nacl;
 
 // ---- Extract BIP39_WORDLIST ----
@@ -94,7 +72,7 @@ if (wordlistMatch) {
 // ---- Minimal bs58 for tests ----
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const bs58 = {
-    encode: function(buffer) {
+    encode: function (buffer) {
         if (!buffer || buffer.length === 0) return '';
         const digits = [0];
         for (let i = 0; i < buffer.length; i++) {
@@ -111,7 +89,7 @@ const bs58 = {
         for (let i = digits.length - 1; i >= 0; i--) output += BASE58_ALPHABET[digits[i]];
         return output;
     },
-    decode: function(string) {
+    decode: function (string) {
         if (!string || string.length === 0) return new Uint8Array(0);
         const bytes = [0];
         for (let i = 0; i < string.length; i++) {
@@ -129,6 +107,28 @@ const bs58 = {
 };
 global.bs58 = bs58;
 
+// ---- Set up window global for Node.js (crypto.js accesses window.LichenPQ) ----
+global.window = global;
+const { createHash: _sha256Hash } = require('crypto');
+global.LichenPQ = {
+    isValidAddress(address) {
+        if (typeof address !== 'string' || address.length < 8) return false;
+        try { const d = bs58.decode(address); return d.length === 32; } catch (e) { return false; }
+    },
+    publicKeyToAddress(publicKey) {
+        const pk = publicKey instanceof Uint8Array ? publicKey : new Uint8Array(publicKey);
+        const hash = _sha256Hash('sha256').update(pk).digest();
+        const addrBytes = new Uint8Array(32);
+        addrBytes[0] = 0x01;
+        addrBytes.set(hash.slice(0, 31), 1);
+        return bs58.encode(addrBytes);
+    },
+    addressToBytes(address) { return bs58.decode(address); },
+    normalizeSignature(sig) { return sig; },
+    keypairFromSeed() { return { privateKey: '00'.repeat(32), publicKeyHex: '00'.repeat(1952), address: bs58.encode(new Uint8Array(32)) }; },
+    signMessage() { return { scheme_version: 1, public_key: { scheme_version: 1, bytes: '00'.repeat(1952) }, sig: '00'.repeat(3309) }; },
+};
+
 // ---- Recreate LichenCrypto class from source ----
 // We need to eval the crypto.js content, but it redeclares BIP39_WORDLIST.
 // Wrap the entire script in a function scope to avoid conflicts.
@@ -138,7 +138,7 @@ const LichenCrypto = (() => {
         .replace('const BIP39_WORDLIST =', 'const _BIP39_WORDLIST =')
         .replace(/\bBIP39_WORDLIST\b/g, '_BIP39_WORDLIST')
         .replace('window.LichenCrypto = LichenCrypto;', '');
-    
+
     const fn = new Function('nacl', 'bs58', 'crypto',
         modifiedSrc + '\nreturn LichenCrypto;'
     );
@@ -253,8 +253,12 @@ test('zeroBytes helper exists in wallet.js', () => {
 });
 
 test('signTransaction zeros seed and secretKey after use', () => {
-    assert(cryptoSrc.includes('seed.fill(0)'), 'Must zero seed');
-    assert(cryptoSrc.includes('keypair.secretKey.fill(0)'), 'Must zero secretKey');
+    // ML-DSA-65: key zeroing happens inside the shared PQ runtime signMessage.
+    // Verify signTransaction delegates to pq().signMessage (which zeros key material).
+    assert(
+        cryptoSrc.includes('pq().signMessage('),
+        'signTransaction must delegate to PQ runtime signMessage (which zeros key material)'
+    );
 });
 
 test('signTransaction returns signature before zeroing', async () => {
@@ -262,8 +266,10 @@ test('signTransaction returns signature before zeroing', async () => {
     const seedHex = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
     const message = new Uint8Array([1, 2, 3, 4]);
     const sig = await LichenCrypto.signTransaction(seedHex, message);
-    assert(sig instanceof Uint8Array, 'Signature must be Uint8Array');
-    assert.strictEqual(sig.length, 64, 'Ed25519 signature must be 64 bytes');
+    assert(sig && typeof sig === 'object', 'Signature must be a PQ signature object');
+    assert.strictEqual(sig.scheme_version, 1, 'PQ signature must carry scheme version 1');
+    assert(sig.public_key && typeof sig.public_key.bytes === 'string', 'PQ signature must carry verifying key bytes');
+    assert(typeof sig.sig === 'string' && sig.sig.length > 1000, 'PQ signature payload must be present');
 });
 
 // ---- W-6: Address validation in identity.js ----
@@ -477,7 +483,7 @@ test('mnemonicToKeypair uses PBKDF2 per BIP39 spec (test vector)', async () => {
     // BIP39 test vector: "abandon" x11 + "about", passphrase ""
     // Expected BIP39 seed (PBKDF2-HMAC-SHA512, 2048 iterations):
     // 5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1...
-    // Ed25519 seed = first 32 bytes of BIP39 seed
+    // ML-DSA-65 wallet seed = first 32 bytes of the BIP39 seed
     const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
     const keypair = await LichenCrypto.mnemonicToKeypair(testMnemonic);
 
@@ -590,16 +596,16 @@ test('serializeMessageBincode validates blockhash format', () => {
     // Extract serializeMessageBincode from shared utils (single source of truth)
     const fnMatch = walletSharedUtilsSrc.match(/function serializeMessageBincode\(message\)[\s\S]*?^}/m);
     assert(fnMatch, 'serializeMessageBincode must exist in shared/utils.js');
-    
+
     // Create the function by eval'ing the full declaration and returning a reference
     const serializeMessageBincode = (new Function(fnMatch[0] + '\nreturn serializeMessageBincode;'))();
-    
+
     // Valid blockhash
     const validHash = 'a'.repeat(64);
     const msg = { instructions: [], blockhash: validHash };
     const result = serializeMessageBincode(msg);
     assert(result instanceof Uint8Array, 'Must return Uint8Array');
-    
+
     // Invalid blockhash — too short
     try {
         serializeMessageBincode({ instructions: [], blockhash: 'abc' });
@@ -607,7 +613,7 @@ test('serializeMessageBincode validates blockhash format', () => {
     } catch (e) {
         assert(e.message.includes('Invalid'), 'Error must mention validation');
     }
-    
+
     // Missing blockhash
     try {
         serializeMessageBincode({ instructions: [] });
@@ -791,15 +797,15 @@ test('H1-01: toString() does not contain secret key bytes', () => {
     const { Keypair } = require('../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const str = kp.toString();
-    
-    // toString must contain "publicKey" but never secret key
-    assert(str.includes('publicKey'), 'toString must mention publicKey');
+
+    // toString must contain "address" but never secret key
+    assert(str.includes('address'), 'toString must mention address');
     assert(str.startsWith('Keypair('), 'toString must start with Keypair(');
-    
+
     // Get the secret key hex to make sure it's NOT in the string
     const secretHex = Buffer.from(kp.getSecretKey()).toString('hex');
     assert(!str.includes(secretHex), 'toString must NOT contain secret key hex');
-    
+
     // Ensure the full 64-byte secret key content is absent
     assert(str.length < 200, 'toString should be concise (only pubkey)');
 });
@@ -809,44 +815,46 @@ test('H1-01: toJSON() excludes secret key', () => {
     const kp = Keypair.generate();
     const json = JSON.stringify(kp);
     const parsed = JSON.parse(json);
-    
+
     // JSON must have publicKey
     assert(parsed.publicKey, 'JSON must include publicKey');
-    
+
     // JSON must NOT have secretKey or _secretKey
     assert(!parsed.secretKey, 'JSON must NOT include secretKey');
     assert(!parsed._secretKey, 'JSON must NOT include _secretKey');
-    
+
     // Double-check: the secret key hex must not appear in stringified output
     const secretHex = Buffer.from(kp.getSecretKey()).toString('hex');
     assert(!json.includes(secretHex), 'JSON.stringify must NOT contain secret key hex');
 });
 
-test('H1-01: getSecretKey() returns valid 64-byte key', () => {
+test('H1-01: getSecretKey() returns valid 32-byte seed', () => {
     const { Keypair } = require('../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const sk = kp.getSecretKey();
     assert(sk instanceof Uint8Array, 'getSecretKey must return Uint8Array');
-    assert(sk.length === 64, 'Secret key must be 64 bytes');
+    // ML-DSA-65: getSecretKey() returns the 32-byte seed, not expanded secret key material
+    assert(sk.length === 32, 'ML-DSA-65 seed (from getSecretKey) must be 32 bytes');
 });
 
 test('H1-01: sign() still works with private _secretKey', () => {
     const { Keypair } = require('../sdk/js/dist/keypair');
-    const nacl = require('tweetnacl');
     const kp = Keypair.generate();
     const msg = new Uint8Array([1, 2, 3, 4]);
     const sig = kp.sign(msg);
-    assert(sig.length === 64, 'Signature must be 64 bytes');
-    
+    // ML-DSA-65: sign() returns a PqSignature object, not a raw 64-byte Uint8Array
+    assert(sig && typeof sig === 'object', 'ML-DSA-65 sign() must return a PqSignature object');
+    assert(typeof sig.verify === 'function', 'PqSignature must have a verify method');
+
     // Verify signature is valid
-    const valid = nacl.sign.detached.verify(msg, sig, kp.publicKey);
-    assert(valid, 'Signature must verify with public key');
+    const valid = sig.verify(msg);
+    assert(valid, 'ML-DSA-65 signature must verify');
 });
 
 test('H1-01: secretKey field is not directly accessible', () => {
     const { Keypair } = require('../sdk/js/dist/keypair');
     const kp = Keypair.generate();
-    
+
     // The old public 'secretKey' field should no longer exist
     assert(kp.secretKey === undefined, 'secretKey field must not be publicly accessible');
 });

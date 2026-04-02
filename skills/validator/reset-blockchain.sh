@@ -43,7 +43,6 @@ for arg in "$@"; do
         --restart)  RESTART=true ;;
         --no-keys)  KEEP_KEYS=true ;;
         --dev-mode) EXTRA_FLAGS="$EXTRA_FLAGS --dev-mode" ;;
-        --zk-reset) EXTRA_FLAGS="$EXTRA_FLAGS --zk-reset" ;;
         testnet|mainnet|all) NETWORK="$arg" ;;
     esac
 done
@@ -116,15 +115,6 @@ if [ "$NETWORK" = "all" ]; then
 
     # Home directory state
     rm -rf ~/.lichen/data-* ~/.lichen/state-* 2>/dev/null || true
-
-    # NOTE: ~/.lichen/zk/ is intentionally NOT wiped.
-    # ZK verification/proving keys are deterministic Groth16 parameters — they
-    # contain no blockchain state.  Regenerating them takes ~10s (standalone
-    # zk-setup binary) but gains nothing security-wise.  Add --zk-reset to
-    # explicitly force regeneration (useful after changing circuit parameters).
-    if [[ "${EXTRA_FLAGS:-}" == *"--zk-reset"* ]]; then
-        rm -rf ~/.lichen/zk 2>/dev/null && echo "  removed ZK key cache (--zk-reset)"
-    fi
 
     # Custody state
     rm -rf data/custody* 2>/dev/null || true
@@ -309,20 +299,6 @@ if [ "$RESTART" = true ]; then
         echo -e "${RED}Launcher not found: $LAUNCHER${NC}"
         exit 1
     fi
-
-    # ── Generate ZK keys (if not cached) ──
-    # The Groth16 trusted setup is memory-intensive, so it runs as a
-    # standalone binary before validators start.  Keys are cached at
-    # ~/.lichen/zk/ and persist across resets.
-    ZK_SETUP_BIN="${REPO_ROOT}/target/release/zk-setup"
-    if [ -x "$ZK_SETUP_BIN" ]; then
-        echo "   Ensuring ZK proving/verification keys exist..."
-        "$ZK_SETUP_BIN" 2>&1 | sed 's/^/   /'
-    else
-        echo -e "   ${YELLOW}⚠  zk-setup binary not found — build with: cargo build --release --bin zk-setup${NC}"
-        echo -e "   ${YELLOW}   Shielded transactions will be unavailable until keys are generated.${NC}"
-    fi
-    echo ""
 
     echo "   Starting V1 (primary - creates genesis)..."
     nohup "$LAUNCHER" "$NETWORK" 1 $EXTRA_FLAGS > /tmp/lichen-v1.log 2>&1 &

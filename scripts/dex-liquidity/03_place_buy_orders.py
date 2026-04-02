@@ -78,9 +78,6 @@ BUY_LEVELS: List[Tuple[float, float]] = [
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_keypair(path: Path) -> Keypair:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if "secret_key" in raw:
-        return Keypair.from_seed(bytes.fromhex(raw["secret_key"]))
     return Keypair.load(path)
 
 
@@ -139,7 +136,7 @@ async def send_dex_order(conn, signer, dex_addr, order_bytes):
         }
     })
     data = envelope.encode("utf-8")
-    ix = Instruction(CONTRACT_PROGRAM, [signer.public_key(), dex_addr], data)
+    ix = Instruction(CONTRACT_PROGRAM, [signer.address(), dex_addr], data)
     tb = TransactionBuilder()
     tb.add(ix)
     latest = await conn.get_latest_block()
@@ -169,7 +166,7 @@ async def approve_token(
     amount: int,
 ) -> str:
     """Approve a spender (DEX) to transfer tokens on behalf of the signer."""
-    owner_bytes = signer.public_key().to_bytes()
+    owner_bytes = signer.address().to_bytes()
     spender_bytes = spender.to_bytes()
     args_bytes = list(owner_bytes) + list(spender_bytes) + list(struct.pack("<Q", amount))
     envelope = json.dumps({
@@ -180,7 +177,7 @@ async def approve_token(
         }
     })
     data = envelope.encode("utf-8")
-    ix = Instruction(CONTRACT_PROGRAM, [signer.public_key(), token_addr], data)
+    ix = Instruction(CONTRACT_PROGRAM, [signer.address(), token_addr], data)
     tb = TransactionBuilder()
     tb.add(ix)
     latest = await conn.get_latest_block()
@@ -222,11 +219,11 @@ async def main():
 
     reserve_path = Path(args.reserve_key) if args.reserve_key else find_keypair(args.network, "reserve_pool")
     reserve_kp = load_keypair(reserve_path)
-    caller_bytes = reserve_kp.public_key().to_bytes()
+    caller_bytes = reserve_kp.address().to_bytes()
 
-    print(f"  Reserve pool: {reserve_kp.public_key()}")
+    print(f"  Reserve pool: {reserve_kp.address()}")
 
-    bal = await conn.get_balance(reserve_kp.public_key())
+    bal = await conn.get_balance(reserve_kp.address())
     available = bal.get("spendable", bal.get("spores", 0))
     print(f"  LICN balance: {available / SPORES_PER_LICN:,.4f}")
 

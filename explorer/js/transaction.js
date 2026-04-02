@@ -11,6 +11,43 @@ function bytesToHex(bytes) {
     return bytes.map(b => Number(b).toString(16).padStart(2, '0')).join('');
 }
 
+function normalizeHexString(value) {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return value.startsWith('0x') ? value : `0x${value}`;
+}
+
+function describeSignature(signature) {
+    if (!signature) {
+        return { signatureText: 'N/A', copyText: 'N/A', schemeVersion: null, publicKeyText: null };
+    }
+
+    if (typeof signature === 'string') {
+        return { signatureText: signature, copyText: signature, schemeVersion: null, publicKeyText: null };
+    }
+
+    if (Array.isArray(signature)) {
+        const hex = '0x' + bytesToHex(signature);
+        return { signatureText: hex, copyText: hex, schemeVersion: null, publicKeyText: null };
+    }
+
+    if (typeof signature === 'object') {
+        return {
+            signatureText: normalizeHexString(signature.sig || signature.signature) || formatHash(signature),
+            copyText: JSON.stringify(signature),
+            schemeVersion: signature.scheme_version ?? signature.schemeVersion ?? signature.public_key?.scheme_version ?? signature.publicKey?.schemeVersion ?? null,
+            publicKeyText: normalizeHexString(
+                signature.public_key?.bytes
+                || signature.publicKey?.bytes
+                || signature.public_key_bytes
+                || signature.publicKeyBytes
+            ),
+        };
+    }
+
+    const fallback = String(signature);
+    return { signatureText: fallback, copyText: fallback, schemeVersion: null, publicKeyText: null };
+}
+
 function readU64LE(bytes, offset) {
     if (!Array.isArray(bytes) || bytes.length < offset + 8) return null;
     let out = 0n;
@@ -345,7 +382,7 @@ async function displayAirdrop(txHash) {
 async function displayTransaction(tx) {
     const hash = tx.signature;
     const status = tx.status || 'Success';
-    const typeRaw = tx.type === 'DebtRepay' ? 'GrantRepay' : (tx.type || 'Unknown');
+    const typeRaw = tx.type || 'Unknown';
     // Display-friendly type names
     const typeDisplayMap = {
         'MossStakeDeposit': 'MossStake Deposit',
@@ -384,7 +421,7 @@ async function displayTransaction(tx) {
             : amountSpores > 0
                 ? formatLicn(amountSpores)
                 : '-';
-    const recentBlockhash = tx.message.recent_blockhash;
+    const recentBlockhash = tx.message.recent_blockhash || tx.message.blockhash;
     const instructions = tx.message.instructions || [];
     const signatures = tx.signatures || [];
     const isFeeFree = fee === 0;
@@ -593,20 +630,39 @@ async function displayTransaction(tx) {
         signaturesList.innerHTML = '<div class="empty-state"><i class="fas fa-inbox"></i> No signatures</div>';
     } else {
         signaturesList.innerHTML = signatures.map((sig, idx) => {
-            const sigHex = Array.isArray(sig) ?
-                '0x' + sig.map(b => b.toString(16).padStart(2, '0')).join('') :
-                sig;
-            const safeHex = typeof escapeHtml === 'function' ? escapeHtml(sigHex) : sigHex;
+            const signatureInfo = describeSignature(sig);
+            const safeSignature = typeof escapeHtml === 'function'
+                ? escapeHtml(signatureInfo.signatureText)
+                : signatureInfo.signatureText;
+            const safeCopy = typeof escapeHtml === 'function'
+                ? escapeHtml(signatureInfo.copyText)
+                : signatureInfo.copyText;
+            const schemeRow = signatureInfo.schemeVersion != null ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Scheme</div>
+                        <div class="detail-value">ML-DSA-65 v${signatureInfo.schemeVersion}</div>
+                    </div>
+                ` : '';
+            const publicKeyRow = signatureInfo.publicKeyText ? `
+                    <div class="detail-row">
+                        <div class="detail-label">Verifying Key</div>
+                        <div class="detail-value"><code title="${signatureInfo.publicKeyText}">${formatHash(signatureInfo.publicKeyText)}</code></div>
+                    </div>
+                ` : '';
             return `
                 <div class="signature-item">
-                    <div class="detail-row">
-                        <div class="detail-label">Signature #${idx + 1}</div>
-                        <div class="detail-value">
-                            <code title="${safeHex}">${formatHash(sigHex)}</code>
-                            <button class="copy-icon" data-copy="${safeHex}" onclick="safeCopy(this)">
-                                <i class="fas fa-copy"></i>
-                            </button>
+                    <div class="detail-grid">
+                        <div class="detail-row">
+                            <div class="detail-label">Signature #${idx + 1}</div>
+                            <div class="detail-value">
+                                <code title="${safeSignature}">${formatHash(signatureInfo.signatureText)}</code>
+                                <button class="copy-icon" data-copy="${safeCopy}" onclick="safeCopy(this)">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
                         </div>
+                        ${schemeRow}
+                        ${publicKeyRow}
                     </div>
                 </div>
             `;
