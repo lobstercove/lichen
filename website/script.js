@@ -328,6 +328,8 @@ document.querySelectorAll('a[href^="#"]:not([data-lichen-app])').forEach(anchor 
             if (navActions) navActions.classList.remove('active');
             updateMobileNavOffsets();
         }
+
+        closeAllNavDropdowns();
     });
 });
 
@@ -336,6 +338,15 @@ const navToggle = document.getElementById('navToggle');
 const navMenu = document.querySelector('.nav-menu');
 const navActions = document.querySelector('.nav-actions');
 const navContainer = document.querySelector('.nav-container');
+const navDropdowns = document.querySelectorAll('.nav-dropdown');
+
+function closeAllNavDropdowns() {
+    navDropdowns.forEach(dropdown => {
+        dropdown.classList.remove('open');
+        const toggle = dropdown.querySelector('.nav-dropdown-toggle');
+        if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    });
+}
 
 function updateMobileNavOffsets() {
     if (!navContainer || !navMenu) return;
@@ -348,11 +359,52 @@ if (navToggle && navMenu) {
         navMenu.classList.toggle('active');
         navToggle.classList.toggle('active');
         if (navActions) navActions.classList.toggle('active');
+        if (!navMenu.classList.contains('active')) {
+            closeAllNavDropdowns();
+        }
         updateMobileNavOffsets();
     });
 
-    window.addEventListener('resize', updateMobileNavOffsets);
+    window.addEventListener('resize', () => {
+        if (window.innerWidth > 1180) {
+            navMenu.classList.remove('active');
+            navToggle.classList.remove('active');
+            if (navActions) navActions.classList.remove('active');
+        }
+        closeAllNavDropdowns();
+        updateMobileNavOffsets();
+    });
 }
+
+navDropdowns.forEach(dropdown => {
+    const toggle = dropdown.querySelector('.nav-dropdown-toggle');
+    if (!toggle) return;
+
+    toggle.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const willOpen = !dropdown.classList.contains('open');
+        closeAllNavDropdowns();
+
+        if (willOpen) {
+            dropdown.classList.add('open');
+            toggle.setAttribute('aria-expanded', 'true');
+        }
+    });
+});
+
+document.addEventListener('click', (event) => {
+    if (!event.target.closest('.nav-dropdown')) {
+        closeAllNavDropdowns();
+    }
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        closeAllNavDropdowns();
+    }
+});
 
 // Intersection Observer for animations
 const observerOptions = {
@@ -369,7 +421,7 @@ const observer = new IntersectionObserver((entries) => {
 }, observerOptions);
 
 // Observe all sections and cards
-document.querySelectorAll('.section, .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts').forEach(el => {
+document.querySelectorAll('.section, .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case').forEach(el => {
     observer.observe(el);
 });
 
@@ -503,13 +555,13 @@ window.addEventListener('scroll', () => {
 // Add animation classes for visibility
 const style = document.createElement('style');
 style.textContent = `
-    .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts {
+    .feature-card, .vision-card, .comparison-card, .spec-card, .token-card, .chain-card, .contract-card, .roadmap-phase, .discount-tier, .community-card, .reputation-discounts, .agent-overview, .agent-use-case {
         opacity: 0;
         transform: translateY(30px);
         transition: opacity 0.6s ease, transform 0.6s ease;
     }
     
-    .feature-card.visible, .vision-card.visible, .comparison-card.visible, .spec-card.visible, .token-card.visible, .chain-card.visible, .contract-card.visible, .roadmap-phase.visible, .discount-tier.visible, .community-card.visible, .reputation-discounts.visible {
+    .feature-card.visible, .vision-card.visible, .comparison-card.visible, .spec-card.visible, .token-card.visible, .chain-card.visible, .contract-card.visible, .roadmap-phase.visible, .discount-tier.visible, .community-card.visible, .reputation-discounts.visible, .agent-overview.visible, .agent-use-case.visible {
         opacity: 1;
         transform: translateY(0);
     }
@@ -551,7 +603,7 @@ style.textContent = `
         transform: rotate(-45deg) translate(7px, -7px);
     }
     
-    @media (max-width: 768px) {
+    @media (max-width: 1180px) {
         .nav-menu {
             display: none;
         }
