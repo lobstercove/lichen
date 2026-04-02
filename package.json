@@ -1,9 +1,13 @@
 {
+  "scripts": {
+    "build-wallet-pq": "node scripts/build-wallet-pq-bundle.mjs"
+  },
   "dependencies": {
     "ws": "^8.19.0"
   },
   "devDependencies": {
-    "tweetnacl": "^1.0.3",
+    "@noble/post-quantum": "^0.6.0",
+    "esbuild": "^0.25.11",
     "wrangler": "^4.70.0"
   }
 }
