@@ -524,14 +524,14 @@
                                     trade</span>
                             </div>
 
-                            <div class="predict-outcome-toggle">
-                                <button class="predict-toggle-btn yes-toggle active" id="predictYesBtn">
+                            <div class="predict-outcome-toggle" id="predictOutcomeToggle">
+                                <button class="predict-toggle-btn yes-toggle active" type="button" data-outcome="0">
                                     <span class="toggle-label">YES</span>
-                                    <span class="toggle-price" id="predictYesPrice">—</span>
+                                    <span class="toggle-price">—</span>
                                 </button>
-                                <button class="predict-toggle-btn no-toggle" id="predictNoBtn">
+                                <button class="predict-toggle-btn no-toggle" type="button" data-outcome="1">
                                     <span class="toggle-label">NO</span>
-                                    <span class="toggle-price" id="predictNoPrice">—</span>
+                                    <span class="toggle-price">—</span>
                                 </button>
                             </div>
 
@@ -576,6 +576,7 @@
                             <div class="form-group">
                                 <label>Question</label>
                                 <textarea id="predictQuestion" class="form-textarea"
+                                    maxlength="200"
                                     placeholder="Will [event] happen by [date]?" rows="2"></textarea>
                             </div>
 
@@ -609,11 +610,11 @@
                                         style="font-weight:400;color:var(--text-muted);font-size:0.8rem;">(2-8
                                         choices)</span></label>
                                 <div id="outcomeInputs">
-                                    <div class="outcome-input-row"><span class="outcome-dot multi-1"></span><input
-                                            type="text" class="form-input outcome-name" placeholder="Outcome 1"
+                                    <div class="outcome-input-row outcome-theme-1"><span class="outcome-dot multi-dot"></span><input
+                                        type="text" class="form-input outcome-name" placeholder="Outcome 1"
                                             maxlength="64"></div>
-                                    <div class="outcome-input-row"><span class="outcome-dot multi-2"></span><input
-                                            type="text" class="form-input outcome-name" placeholder="Outcome 2"
+                                    <div class="outcome-input-row outcome-theme-2"><span class="outcome-dot multi-dot"></span><input
+                                        type="text" class="form-input outcome-name" placeholder="Outcome 2"
                                             maxlength="64"></div>
                                 </div>
                                 <button type="button" class="btn btn-small btn-secondary" id="addOutcomeBtn"

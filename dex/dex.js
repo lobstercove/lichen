@@ -3300,22 +3300,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (predictCreatePanel) predictCreatePanel.classList.toggle('wallet-gated-disabled', !connected);
 
         const predictSubmit = document.getElementById('predictSubmitBtn');
-        const predictYesToggle = document.getElementById('predictYesBtn');
-        const predictNoToggle = document.getElementById('predictNoBtn');
-        if (predictYesToggle) {
-            predictYesToggle.disabled = !canSign;
-            predictYesToggle.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
-        }
-        if (predictNoToggle) {
-            predictNoToggle.disabled = !canSign;
-            predictNoToggle.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
-        }
+        document.querySelectorAll('#predictOutcomeToggle .predict-toggle-btn').forEach((toggleButton) => {
+            toggleButton.disabled = !canSign;
+            toggleButton.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
+        });
         if (predictSubmit) {
             if (canSign) {
                 predictSubmit.disabled = false;
                 predictSubmit.classList.remove('btn-wallet-gate');
-                const side = (typeof predictState !== 'undefined' && predictState.selectedOutcome === 'no') ? 'NO' : 'YES';
-                predictSubmit.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
+                updatePredictSubmitButton();
             } else {
                 predictSubmit.disabled = true;
                 predictSubmit.className = 'btn-full btn-wallet-gate';
@@ -5123,8 +5116,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const PREDICT_DISPUTE_BOND = 100_000_000; // 100 lUSD
 
     const predictState = {
-        selectedMarket: 1,
-        selectedOutcome: 'yes',
+        selectedMarket: null,
+        selectedOutcome: 0,
+        selectedOutcomeLabel: 'YES',
         activeCategory: 'all',
         markets: [...INITIAL_MARKETS],
         positions: [],
@@ -5132,6 +5126,332 @@ document.addEventListener('DOMContentLoaded', () => {
         live: false,
         lastMarketsError: null,
     };
+
+    const PREDICT_OUTCOME_THEME_COUNT = 8;
+    const DEX_NEGATIVE_ALLOWED_INPUT_IDS = new Set(['propMakerFee']);
+    const DEX_STRICT_POSITIVE_INPUT_IDS = new Set([
+        'orderPrice',
+        'stopPrice',
+        'orderAmount',
+        'slippageCustom',
+        'predictAmount',
+        'predictInitLiq',
+        'liqMinPrice',
+        'liqMaxPrice',
+        'liqAmountA',
+        'liqAmountB',
+        'launchAmountInput',
+    ]);
+
+    function getPredictOutcomeThemeClass(index) {
+        const numericIndex = Number.isFinite(Number(index)) ? Number(index) : 0;
+        const normalized = ((numericIndex % PREDICT_OUTCOME_THEME_COUNT) + PREDICT_OUTCOME_THEME_COUNT) % PREDICT_OUTCOME_THEME_COUNT;
+        return `outcome-theme-${normalized + 1}`;
+    }
+
+    function getPredictSelectedMarket() {
+        return predictState.markets.find((market) => market.id === predictState.selectedMarket) || null;
+    }
+
+    function getPredictOutcomeCount(market) {
+        if (!market) return 2;
+        const outcomeCount = Array.isArray(market.outcomes) ? market.outcomes.length : 0;
+        return Math.max(outcomeCount, market.multi ? 2 : 2);
+    }
+
+    function normalizePredictOutcomeSelection(market, preferredOutcome = predictState.selectedOutcome) {
+        const outcomeCount = getPredictOutcomeCount(market);
+        const numericOutcome = Number.parseInt(preferredOutcome, 10);
+        if (Number.isInteger(numericOutcome) && numericOutcome >= 0 && numericOutcome < outcomeCount) {
+            return numericOutcome;
+        }
+        if (preferredOutcome === 'no' && outcomeCount > 1) {
+            return 1;
+        }
+        return 0;
+    }
+
+    function getPredictOutcomeLabel(market, outcomeIndex = normalizePredictOutcomeSelection(market)) {
+        if (market?.multi) {
+            const name = market.outcomes?.[outcomeIndex]?.name;
+            return String(name || `Outcome ${outcomeIndex + 1}`);
+        }
+        return outcomeIndex === 1 ? 'NO' : 'YES';
+    }
+
+    function getPredictOutcomePrice(market, outcomeIndex = normalizePredictOutcomeSelection(market)) {
+        if (!market) return 0;
+        const directPrice = Number(market.outcomes?.[outcomeIndex]?.price);
+        if (Number.isFinite(directPrice) && directPrice >= 0) {
+            return directPrice;
+        }
+        return outcomeIndex === 1 ? (1 - Number(market.yes || 0.5)) : Number(market.yes || 0.5);
+    }
+
+    function updatePredictSubmitButton() {
+        const submitButton = document.getElementById('predictSubmitBtn');
+        if (!submitButton) return;
+        const market = getPredictSelectedMarket();
+        const outcomeIndex = normalizePredictOutcomeSelection(market);
+        predictState.selectedOutcome = outcomeIndex;
+        const outcomeLabel = market ? getPredictOutcomeLabel(market, outcomeIndex).toUpperCase() : 'YES';
+        predictState.selectedOutcomeLabel = outcomeLabel;
+        if (market?.multi) {
+            submitButton.className = `btn btn-full predict-submit-outcome ${getPredictOutcomeThemeClass(outcomeIndex)}`;
+        } else {
+            submitButton.className = `btn btn-full ${outcomeIndex === 1 ? 'btn-sell' : 'btn-buy'}`;
+        }
+        submitButton.innerHTML = `<i class="fas fa-bolt"></i> Buy ${escapeHtml(outcomeLabel)} Shares`;
+    }
+
+    function renderPredictOutcomeToggle(market = getPredictSelectedMarket()) {
+        const toggle = document.getElementById('predictOutcomeToggle') || document.querySelector('.predict-outcome-toggle');
+        if (!toggle) return;
+
+        if (!market) {
+            toggle.innerHTML = `
+                <button class="predict-toggle-btn yes-toggle active" type="button" data-outcome="0" disabled>
+                    <span class="toggle-label">YES</span>
+                    <span class="toggle-price">—</span>
+                </button>
+                <button class="predict-toggle-btn no-toggle" type="button" data-outcome="1" disabled>
+                    <span class="toggle-label">NO</span>
+                    <span class="toggle-price">—</span>
+                </button>`;
+            return;
+        }
+
+        const selectedOutcome = normalizePredictOutcomeSelection(market);
+        predictState.selectedOutcome = selectedOutcome;
+        const outcomeCount = getPredictOutcomeCount(market);
+        toggle.innerHTML = Array.from({ length: outcomeCount }, (_, index) => {
+            const label = escapeHtml(getPredictOutcomeLabel(market, index).toUpperCase());
+            const price = getPredictOutcomePrice(market, index).toFixed(2);
+            const themeClass = market.multi
+                ? ` multi-toggle ${getPredictOutcomeThemeClass(index)}`
+                : (index === 1 ? ' no-toggle' : ' yes-toggle');
+            const activeClass = index === selectedOutcome ? ' active' : '';
+            return `<button class="predict-toggle-btn${themeClass}${activeClass}" type="button" data-outcome="${index}">
+                <span class="toggle-label">${label}</span>
+                <span class="toggle-price">$${price}</span>
+            </button>`;
+        }).join('');
+
+        toggle.querySelectorAll('.predict-toggle-btn').forEach((button) => {
+            button.addEventListener('click', () => {
+                predictState.selectedOutcome = Number.parseInt(button.dataset.outcome, 10) || 0;
+                renderPredictOutcomeToggle(market);
+                updatePredictCalc();
+                updatePredictSubmitButton();
+                applyWalletGateAll();
+            });
+        });
+    }
+
+    function syncPredictTradePanel(market = getPredictSelectedMarket()) {
+        const questionEl = document.getElementById('predictSelectedQ');
+        if (questionEl) {
+            questionEl.textContent = market?.question || 'Select a market to trade';
+        }
+        renderPredictOutcomeToggle(market);
+        updatePredictSubmitButton();
+        updatePredictCalc();
+    }
+
+    function setPredictSelectedMarket(marketId, preferredOutcome) {
+        const market = predictState.markets.find((entry) => entry.id === marketId);
+        if (!market) return null;
+
+        predictState.selectedMarket = market.id;
+        if (preferredOutcome !== undefined && preferredOutcome !== null) {
+            predictState.selectedOutcome = preferredOutcome;
+        }
+        predictState.selectedOutcome = normalizePredictOutcomeSelection(market);
+
+        document.querySelectorAll('.market-card').forEach((card) => {
+            card.classList.toggle('selected', Number(card.dataset.marketId) === market.id);
+        });
+
+        syncPredictTradePanel(market);
+        return market;
+    }
+
+    function sanitizePredictTextValue(value, maxLength) {
+        return String(value || '')
+            .replace(/[\u0000-\u001F\u007F]/g, ' ')
+            .replace(/[<>\[\]{}|\\^`]/g, '')
+            .replace(/\s+/g, ' ')
+            .slice(0, maxLength);
+    }
+
+    function applyPredictTextInputGuards(root = document) {
+        root.querySelectorAll('#predictQuestion, .outcome-name').forEach((input) => {
+            if (input.dataset.predictGuarded === '1') return;
+            input.dataset.predictGuarded = '1';
+            const maxLength = Number(input.getAttribute('maxlength') || (input.id === 'predictQuestion' ? 200 : 64));
+            input.addEventListener('input', () => {
+                const sanitized = sanitizePredictTextValue(input.value, maxLength);
+                if (sanitized !== input.value) {
+                    input.value = sanitized;
+                }
+            });
+            input.addEventListener('blur', () => {
+                input.value = sanitizePredictTextValue(input.value, maxLength).trim();
+            });
+        });
+    }
+
+    function dexInputAllowsNegative(input) {
+        const minValue = Number(input.min);
+        return DEX_NEGATIVE_ALLOWED_INPUT_IDS.has(input.id) || (Number.isFinite(minValue) && minValue < 0);
+    }
+
+    function dexInputAllowsDecimal(input) {
+        const stepValue = String(input.step || '').trim().toLowerCase();
+        if (!stepValue || stepValue === 'any') {
+            return true;
+        }
+        const numericStep = Number(stepValue);
+        return !Number.isFinite(numericStep) || !Number.isInteger(numericStep);
+    }
+
+    function sanitizeDexNumberInput(input, finalize = false) {
+        if (!input) return;
+        const allowNegative = dexInputAllowsNegative(input);
+        const allowDecimal = dexInputAllowsDecimal(input);
+        const rawValue = String(input.value || '');
+        let normalized = '';
+        let sawDot = false;
+        let sawSign = false;
+
+        for (const char of rawValue) {
+            if (char >= '0' && char <= '9') {
+                normalized += char;
+                continue;
+            }
+            if (char === '.' && allowDecimal && !sawDot) {
+                normalized += char;
+                sawDot = true;
+                continue;
+            }
+            if (char === '-' && allowNegative && !sawSign && normalized.length === 0) {
+                normalized += char;
+                sawSign = true;
+            }
+        }
+
+        if (normalized.startsWith('.')) {
+            normalized = `0${normalized}`;
+        } else if (normalized.startsWith('-.')) {
+            normalized = normalized.replace('-.', '-0.');
+        }
+
+        if (!finalize) {
+            if (normalized !== input.value) {
+                input.value = normalized;
+            }
+            return;
+        }
+
+        if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+            input.value = '';
+            return;
+        }
+
+        let numericValue = Number(normalized);
+        if (!Number.isFinite(numericValue)) {
+            input.value = '';
+            return;
+        }
+
+        const minValue = Number(input.min);
+        const maxValue = Number(input.max);
+        if (Number.isFinite(minValue) && numericValue < minValue) {
+            numericValue = minValue;
+        }
+        if (Number.isFinite(maxValue) && numericValue > maxValue) {
+            numericValue = maxValue;
+        }
+        if (DEX_STRICT_POSITIVE_INPUT_IDS.has(input.id) && numericValue <= 0) {
+            input.value = '';
+            return;
+        }
+        if (!allowDecimal) {
+            numericValue = Math.trunc(numericValue);
+        }
+
+        input.value = String(numericValue);
+    }
+
+    function applyDexNumericInputGuards(root = document) {
+        root.querySelectorAll('input[type="number"]').forEach((input) => {
+            if (input.dataset.dexNumericGuarded === '1') return;
+            input.dataset.dexNumericGuarded = '1';
+            input.addEventListener('keydown', (event) => {
+                if (event.ctrlKey || event.metaKey || event.altKey) return;
+                if (event.key === 'e' || event.key === 'E' || event.key === '+') {
+                    event.preventDefault();
+                    return;
+                }
+                if (event.key === '-' && !dexInputAllowsNegative(input)) {
+                    event.preventDefault();
+                    return;
+                }
+                if (event.key === '.' && !dexInputAllowsDecimal(input)) {
+                    event.preventDefault();
+                }
+            });
+            input.addEventListener('input', () => sanitizeDexNumberInput(input, false));
+            input.addEventListener('blur', () => sanitizeDexNumberInput(input, true));
+            input.addEventListener('paste', () => {
+                requestAnimationFrame(() => sanitizeDexNumberInput(input, false));
+            });
+        });
+    }
+
+    function refreshPredictOutcomeInputs() {
+        const container = document.getElementById('outcomeInputs');
+        if (!container) return;
+        const rows = Array.from(container.querySelectorAll('.outcome-input-row'));
+        rows.forEach((row, index) => {
+            row.className = `outcome-input-row ${getPredictOutcomeThemeClass(index)}`;
+            const dot = row.querySelector('.outcome-dot');
+            if (dot) {
+                dot.className = 'outcome-dot multi-dot';
+            }
+            const input = row.querySelector('.outcome-name');
+            if (input && !String(input.value || '').trim()) {
+                input.placeholder = `Outcome ${index + 1}`;
+            }
+        });
+        applyPredictTextInputGuards(container);
+    }
+
+    function resetPredictCreateForm() {
+        const questionInput = document.getElementById('predictQuestion');
+        const liquidityInput = document.getElementById('predictInitLiq');
+        const closeDateInput = document.getElementById('predictCloseDate');
+        if (questionInput) questionInput.value = '';
+        if (liquidityInput) liquidityInput.value = '';
+        if (closeDateInput) closeDateInput.value = '';
+
+        const container = document.getElementById('outcomeInputs');
+        if (container) {
+            container.innerHTML = `
+                <div class="outcome-input-row outcome-theme-1"><span class="outcome-dot multi-dot"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 1" maxlength="64"></div>
+                <div class="outcome-input-row outcome-theme-2"><span class="outcome-dot multi-dot"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 2" maxlength="64"></div>`;
+            refreshPredictOutcomeInputs();
+        }
+
+        predictMarketType = 'binary';
+        document.querySelectorAll('.predict-type-btn').forEach((button) => {
+            button.classList.toggle('active', button.dataset.type === 'binary');
+        });
+        const multiSection = document.getElementById('multiOutcomeSection');
+        if (multiSection) {
+            multiSection.classList.add('hidden');
+        }
+    }
 
     // ─── Load prediction stats from API ─────────────────────────
     async function loadPredictionStats() {
@@ -5364,6 +5684,8 @@ document.addEventListener('DOMContentLoaded', () => {
         grid.querySelectorAll('.market-card, .predict-empty-state').forEach(c => c.remove());
 
         if (!predictState.markets.length) {
+            predictState.selectedMarket = null;
+            predictState.selectedOutcome = 0;
             const emptyEl = document.createElement('div');
             emptyEl.className = 'predict-empty-state';
             emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;';
@@ -5372,6 +5694,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? '<i class="fas fa-circle-exclamation" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>Unable to load prediction markets</p><p style="font-size:0.8rem;margin-top:8px;">Retrying automatically...</p>'
                 : '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
             grid.appendChild(emptyEl);
+            syncPredictTradePanel(null);
             return;
         }
 
@@ -5385,8 +5708,13 @@ document.addEventListener('DOMContentLoaded', () => {
             economics: '<i class="fas fa-chart-bar"></i> Economics',
             custom: '<i class="fas fa-puzzle-piece"></i> Custom'
         };
-        const multiDotClasses = ['multi-1', 'multi-2', 'multi-3', 'multi-4'];
-        const multiBarClasses = ['multi-bar-1', 'multi-bar-2', 'multi-bar-3', 'multi-bar-4'];
+        if (!predictState.markets.some((market) => market.id === predictState.selectedMarket)) {
+            const fallbackMarket = predictState.markets.find((market) => market.status === 'active') || predictState.markets[0];
+            predictState.selectedMarket = fallbackMarket?.id ?? null;
+            predictState.selectedOutcome = 0;
+        } else {
+            predictState.selectedOutcome = normalizePredictOutcomeSelection(getPredictSelectedMarket());
+        }
 
         predictState.markets.forEach(m => {
             const isResolved = m.status === 'resolved';
@@ -5400,9 +5728,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isMulti && m.outcomes?.length) {
                 outcomesHtml = m.outcomes.map((o, i) => {
                     const pct = Math.round((o.price || 0) * 100);
-                    return `<div class="outcome-row multi-outcome">
-                        <div class="outcome-label"><span class="outcome-dot ${multiDotClasses[i % 4]}"></span><span>${escapeHtml(o.name)}</span></div>
-                        <div class="outcome-bar-wrap"><div class="outcome-bar ${multiBarClasses[i % 4]}" style="width:${pct}%"></div></div>
+                    const themeClass = getPredictOutcomeThemeClass(i);
+                    return `<div class="outcome-row multi-outcome ${themeClass}">
+                        <div class="outcome-label"><span class="outcome-dot multi-dot"></span><span>${escapeHtml(o.name)}</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar" style="width:${pct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val">$${(o.price || 0).toFixed(2)}</span></div>
                         <button class="btn btn-small btn-predict-buy" data-outcome="${i}" data-market="${m.id}">Buy</button>
                     </div>`;
@@ -5542,9 +5871,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Re-apply active category filter so websocket refreshes don't reset it
         applyPredictCategoryFilter();
 
-        // Apply default selection highlight
-        const selCard = document.querySelector(`.market-card[data-market-id="${predictState.selectedMarket}"]`);
-        if (selCard) selCard.classList.add('selected');
+        const selectedMarket = getPredictSelectedMarket();
+        if (selectedMarket) {
+            setPredictSelectedMarket(selectedMarket.id, normalizePredictOutcomeSelection(selectedMarket));
+        } else {
+            syncPredictTradePanel(null);
+        }
     }
 
     // ─── Render user positions in bottom panel ──────────────────
@@ -5612,15 +5944,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const mid = parseInt(card.dataset.marketId);
                 const m = predictState.markets.find(x => x.id === mid);
                 if (!m || m.status !== 'active') return;
-                predictState.selectedMarket = mid;
-                const qEl = document.getElementById('predictSelectedQ');
-                if (qEl) qEl.textContent = m.question;
-                const yp = document.getElementById('predictYesPrice'), np = document.getElementById('predictNoPrice');
-                if (yp) yp.textContent = `$${(m.yes || 0.5).toFixed(2)}`;
-                if (np) np.textContent = `$${(1 - (m.yes || 0.5)).toFixed(2)}`;
-                document.querySelectorAll('.market-card').forEach(c => c.classList.remove('selected'));
-                card.classList.add('selected');
-                updatePredictCalc();
+                setPredictSelectedMarket(mid);
+                applyWalletGateAll();
             });
         });
 
@@ -5628,21 +5953,13 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => btn.addEventListener('click', () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
-            const outcome = btn.dataset.outcome;
+            const outcome = Number.parseInt(btn.dataset.outcome, 10);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
-            predictState.selectedMarket = mid;
-            predictState.selectedOutcome = outcome === 'no' ? 'no' : 'yes';
-            const qEl = document.getElementById('predictSelectedQ');
-            if (qEl) qEl.textContent = m.question;
-            const yp = document.getElementById('predictYesPrice'), np = document.getElementById('predictNoPrice');
-            if (yp) yp.textContent = `$${(m.yes || 0.5).toFixed(2)}`;
-            if (np) np.textContent = `$${(1 - (m.yes || 0.5)).toFixed(2)}`;
-            const yBtn = document.getElementById('predictYesBtn'), nBtn = document.getElementById('predictNoBtn');
-            if (yBtn) yBtn.classList.toggle('active', predictState.selectedOutcome === 'yes');
-            if (nBtn) nBtn.classList.toggle('active', predictState.selectedOutcome === 'no');
-            updatePredictCalc();
-            showNotification(`Selected: ${m.question.slice(0, 50)}... → ${outcome.toUpperCase()}`, 'info');
+            const outcomeIndex = Number.isInteger(outcome) ? outcome : (btn.dataset.outcome === 'no' ? 1 : 0);
+            setPredictSelectedMarket(mid, outcomeIndex);
+            applyWalletGateAll();
+            showNotification(`Selected: ${m.question.slice(0, 50)}... → ${getPredictOutcomeLabel(m, outcomeIndex).toUpperCase()}`, 'info');
         }));
 
         // Chart buttons on cards
@@ -5937,24 +6254,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Bind initial static cards
     bindPredictionCardEvents();
 
-    // YES/NO toggle
-    const predictYesBtn = document.getElementById('predictYesBtn'), predictNoBtn = document.getElementById('predictNoBtn');
-    if (predictYesBtn) predictYesBtn.addEventListener('click', () => {
-        predictState.selectedOutcome = 'yes';
-        predictYesBtn.classList.add('active'); if (predictNoBtn) predictNoBtn.classList.remove('active');
-        updatePredictCalc();
-        const sub = document.getElementById('predictSubmitBtn');
-        if (sub) sub.innerHTML = '<i class="fas fa-bolt"></i> Buy YES Shares';
-        if (sub) sub.className = 'btn-full btn-buy';
-    });
-    if (predictNoBtn) predictNoBtn.addEventListener('click', () => {
-        predictState.selectedOutcome = 'no';
-        predictNoBtn.classList.add('active'); if (predictYesBtn) predictYesBtn.classList.remove('active');
-        updatePredictCalc();
-        const sub = document.getElementById('predictSubmitBtn');
-        if (sub) sub.innerHTML = '<i class="fas fa-bolt"></i> Buy NO Shares';
-        if (sub) sub.className = 'btn-full btn-sell';
-    });
+    applyDexNumericInputGuards();
+    applyPredictTextInputGuards();
+    refreshPredictOutcomeInputs();
+    syncPredictTradePanel(getPredictSelectedMarket());
 
     // Amount presets
     document.querySelectorAll('.predict-preset-row .preset-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -5970,8 +6273,19 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePredictCalc() {
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
-        if (!m) return;
-        const outcomeIdx = predictState.selectedOutcome === 'yes' ? 0 : 1;
+        const sharesEl = document.getElementById('predictShares');
+        const avgPriceEl = document.getElementById('predictAvgPrice');
+        const payoutEl = document.getElementById('predictPayout');
+        const feeEl = document.getElementById('predictFee');
+        if (!m) {
+            if (sharesEl) sharesEl.textContent = '0.00';
+            if (avgPriceEl) avgPriceEl.textContent = '—';
+            if (payoutEl) payoutEl.textContent = '$0.00';
+            if (feeEl) feeEl.textContent = '$0.00';
+            return;
+        }
+        const outcomeIdx = normalizePredictOutcomeSelection(m);
+        predictState.selectedOutcome = outcomeIdx;
 
         // Contract CPMM: mint complete sets (1:1) + swap non-desired shares into pool
         // For binary: shares_per_set = amount, a_received = reserve_a * b_sold / (reserve_b + b_sold)
@@ -5989,7 +6303,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 fee = feeShares;
             } else {
                 // No liquidity — estimate linearly
-                const price = predictState.selectedOutcome === 'yes' ? m.yes : (1 - m.yes);
+                const price = getPredictOutcomePrice(m, outcomeIdx);
                 fee = amt * 0.02;
                 shares = price > 0 ? (amt - fee) / price : 0;
             }
@@ -6001,11 +6315,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const payout = shares; // each share worth $1.00 if winner
 
-        const se = document.getElementById('predictShares'), ae = document.getElementById('predictAvgPrice'), pe = document.getElementById('predictPayout'), fe = document.getElementById('predictFee');
-        if (se) se.textContent = shares.toFixed(2);
-        if (ae) ae.textContent = shares > 0 ? `$${(amt / shares).toFixed(4)}` : '$0.00';
-        if (pe) pe.textContent = `$${payout.toFixed(2)}`;
-        if (fe) fe.textContent = `$${fee.toFixed(2)}`;
+        if (sharesEl) sharesEl.textContent = shares.toFixed(2);
+        if (avgPriceEl) avgPriceEl.textContent = shares > 0 ? `$${(amt / shares).toFixed(4)}` : '$0.00';
+        if (payoutEl) payoutEl.textContent = `$${payout.toFixed(2)}`;
+        if (feeEl) feeEl.textContent = `$${fee.toFixed(2)}`;
     }
 
     // Submit trade
@@ -6023,17 +6336,18 @@ document.addEventListener('DOMContentLoaded', () => {
         predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
         try {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
-            const outcomeVal = predictState.selectedOutcome === 'yes' ? 0 : 1;
+            const outcomeVal = normalizePredictOutcomeSelection(m);
+            predictState.selectedOutcomeLabel = getPredictOutcomeLabel(m, outcomeVal).toUpperCase();
             // F12.1 FIX: Contract uses LUSD_UNIT (1e6), not PRICE_SCALE (1e9)
             const tradeAmountMicros = Math.round(amt * 1e6);
             await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, tradeAmountMicros), tradeAmountMicros)]);
-            showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
+            showNotification(`Bought ${predictState.selectedOutcomeLabel} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
             // F24.7 FIX: Refresh prediction data after buy
             loadPredictionMarkets().catch(() => { }); loadPredictionPositions().catch(() => { });
         } catch (e) { showNotification(`Trade failed: ${e.message}`, 'error'); }
         predictSubmitBtn.disabled = false;
-        const side = predictState.selectedOutcome === 'yes' ? 'YES' : 'NO';
-        predictSubmitBtn.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
+        updatePredictSubmitButton();
+        applyWalletGateAll();
         if (document.getElementById('predictAmount')) document.getElementById('predictAmount').value = '';
         updatePredictCalc();
     });
@@ -6050,7 +6364,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        const q = document.getElementById('predictQuestion')?.value?.trim();
+        const questionInput = document.getElementById('predictQuestion');
+        const q = sanitizePredictTextValue(questionInput?.value, 200).trim();
+        if (questionInput && questionInput.value !== q) questionInput.value = q;
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
         if (liq < 100) { showNotification('Min 100 lUSD initial liquidity', 'warning'); return; }
@@ -6059,9 +6375,16 @@ document.addEventListener('DOMContentLoaded', () => {
         let outcomes = [];
         if (predictMarketType === 'multi') {
             const inputs = document.querySelectorAll('#outcomeInputs .outcome-name');
-            inputs.forEach(inp => { const v = inp.value.trim(); if (v) outcomes.push(v); });
+            inputs.forEach(inp => {
+                const value = sanitizePredictTextValue(inp.value, 64).trim();
+                if (inp.value !== value) inp.value = value;
+                if (value) outcomes.push(value);
+            });
             if (outcomes.length < 2) { showNotification('Enter at least 2 outcome names', 'warning'); return; }
             if (outcomes.length > 8) { showNotification('Maximum 8 outcomes', 'warning'); return; }
+            if (new Set(outcomes.map((outcome) => outcome.toLowerCase())).size !== outcomes.length) {
+                showNotification('Outcome names must be unique', 'warning'); return;
+            }
         }
 
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
@@ -6127,9 +6450,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification('Market created, but liquidity step is pending (could not resolve market id yet)', 'warning');
             }
             await loadPredictionMarkets();
+            resetPredictCreateForm();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
-        if (document.getElementById('predictQuestion')) document.getElementById('predictQuestion').value = '';
     });
 
     // Market type toggle — show/hide multi-outcome inputs
@@ -6150,13 +6473,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const count = container.querySelectorAll('.outcome-input-row').length;
         if (count >= 8) { showNotification('Maximum 8 outcomes', 'warning'); return; }
         const row = document.createElement('div');
-        row.className = 'outcome-input-row';
-        row.innerHTML = `<span class="outcome-dot multi-${count + 1}"></span><input type="text" class="form-input outcome-name" placeholder="Outcome ${count + 1}" maxlength="64"><button type="button" class="btn-remove-outcome"><i class="fas fa-times"></i></button>`;
+        row.className = `outcome-input-row ${getPredictOutcomeThemeClass(count)}`;
+        row.innerHTML = `<span class="outcome-dot multi-dot"></span><input type="text" class="form-input outcome-name" placeholder="Outcome ${count + 1}" maxlength="64"><button type="button" class="btn-remove-outcome"><i class="fas fa-times"></i></button>`;
         row.querySelector('.btn-remove-outcome').addEventListener('click', () => {
             if (container.querySelectorAll('.outcome-input-row').length <= 2) { showNotification('Minimum 2 outcomes', 'warning'); return; }
             row.remove();
+            refreshPredictOutcomeInputs();
         });
         container.appendChild(row);
+        refreshPredictOutcomeInputs();
     });
 
     // Sort selector

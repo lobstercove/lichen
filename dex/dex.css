@@ -1429,6 +1429,12 @@
     padding: 0;
 }
 
+.predict-layout {
+    max-width: none;
+    width: 100%;
+    box-sizing: border-box;
+}
+
 /* ===== Shared Page Header Bar ===== */
 .page-top-bar {
     padding: 12px 20px 0;
@@ -3162,9 +3168,12 @@
 
 .predict-grid {
     display: grid;
-    grid-template-columns: 1fr 380px;
+    grid-template-columns: minmax(0, 1fr) 380px;
     gap: 12px;
     padding: 0 20px 12px;
+    width: 100%;
+    box-sizing: border-box;
+    align-items: start;
 }
 
 .predict-markets-section {
@@ -3181,6 +3190,8 @@
     padding: 12px;
     max-height: none;
     overflow-y: auto;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .predict-side-panel {
@@ -3311,6 +3322,46 @@
     padding: 6px 0;
 }
 
+.outcome-theme-1 {
+    --predict-accent: #4ea8de;
+    --predict-accent-rgb: 78, 168, 222;
+}
+
+.outcome-theme-2 {
+    --predict-accent: #06d6a0;
+    --predict-accent-rgb: 6, 214, 160;
+}
+
+.outcome-theme-3 {
+    --predict-accent: #ffd166;
+    --predict-accent-rgb: 255, 209, 102;
+}
+
+.outcome-theme-4 {
+    --predict-accent: #ef476f;
+    --predict-accent-rgb: 239, 71, 111;
+}
+
+.outcome-theme-5 {
+    --predict-accent: #8f6fff;
+    --predict-accent-rgb: 143, 111, 255;
+}
+
+.outcome-theme-6 {
+    --predict-accent: #ff8fab;
+    --predict-accent-rgb: 255, 143, 171;
+}
+
+.outcome-theme-7 {
+    --predict-accent: #64dfdf;
+    --predict-accent-rgb: 100, 223, 223;
+}
+
+.outcome-theme-8 {
+    --predict-accent: #f77f00;
+    --predict-accent-rgb: 247, 127, 0;
+}
+
 .outcome-row .btn {
     flex-shrink: 0;
 }
@@ -3329,6 +3380,10 @@
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
+}
+
+.outcome-dot.multi-dot {
+    background: var(--predict-accent, var(--teal-primary));
 }
 
 .outcome-dot.yes {
@@ -3367,6 +3422,10 @@
     height: 100%;
     border-radius: 4px;
     transition: width 0.3s ease;
+}
+
+.outcome-bar.multi-bar {
+    background: var(--predict-accent, var(--teal-primary));
 }
 
 .outcome-bar.yes-bar {
@@ -3434,9 +3493,20 @@
     border: 1px solid rgba(6, 214, 160, 0.25);
 }
 
+.outcome-row.multi-outcome .btn-predict-buy {
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.12);
+    color: var(--predict-accent, var(--teal-primary));
+    border-color: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.28);
+}
+
 .btn-predict-buy:hover {
     background: rgba(6, 214, 160, 0.2);
     border-color: var(--green-success);
+}
+
+.outcome-row.multi-outcome .btn-predict-buy:hover {
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.2);
+    border-color: var(--predict-accent, var(--teal-primary));
 }
 
 .btn-predict-buy-no {
@@ -3594,7 +3664,7 @@
 
 .predict-outcome-toggle {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
     gap: 6px;
     margin-bottom: 14px;
 }
@@ -3610,6 +3680,34 @@
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all 0.15s;
+    min-height: 66px;
+}
+
+.predict-toggle-btn.multi-toggle {
+    align-items: flex-start;
+    justify-content: center;
+    text-align: left;
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.06);
+    border-color: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.24);
+}
+
+.predict-toggle-btn.multi-toggle .toggle-label,
+.predict-toggle-btn.multi-toggle .toggle-price {
+    color: var(--predict-accent, var(--teal-primary));
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.predict-toggle-btn.multi-toggle.active {
+    border-color: var(--predict-accent, var(--teal-primary));
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.16);
+    box-shadow: inset 0 0 0 1px rgba(var(--predict-accent-rgb, 0, 201, 219), 0.14);
+}
+
+.predict-toggle-btn.multi-toggle:not(.active) {
+    opacity: 0.82;
 }
 
 .predict-toggle-btn .toggle-label {
@@ -3671,6 +3769,17 @@
 .predict-toggle-btn:disabled.active {
     background: var(--bg-surface);
     border-color: var(--border);
+}
+
+.predict-submit-outcome {
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.14);
+    color: var(--predict-accent, var(--teal-primary));
+    border: 1px solid rgba(var(--predict-accent-rgb, 0, 201, 219), 0.32);
+}
+
+.predict-submit-outcome:hover {
+    background: rgba(var(--predict-accent-rgb, 0, 201, 219), 0.22);
+    border-color: var(--predict-accent, var(--teal-primary));
 }
 
 .predict-preset-row {
@@ -3780,6 +3889,7 @@
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
+    background: var(--predict-accent, var(--teal-primary));
 }
 
 .outcome-input-row .form-input {
