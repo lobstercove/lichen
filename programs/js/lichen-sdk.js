@@ -5,7 +5,7 @@
  * Features:
  * - JSON-RPC client with retry logic
  * - WebSocket subscriptions
- * - Ed25519 wallet management
+ * - ML-DSA-65 wallet management
  * - Transaction building and signing
  * - Program deployment
  * - Account management
@@ -134,15 +134,63 @@ function encodeVec(items, encoder) {
     return concatBytes(...parts);
 }
 
-function encodePubkey(pubkey) {
+function requireLichenPQ() {
+    if (!window.LichenPQ) {
+        throw new Error('Shared PQ runtime not loaded');
+    }
+    return window.LichenPQ;
+}
+
+function normalizeSeedInput(seed) {
+    if (seed instanceof Uint8Array) {
+        return new Uint8Array(seed);
+    }
+    if (Array.isArray(seed)) {
+        return new Uint8Array(seed);
+    }
+    if (typeof seed === 'string') {
+        return /^(0x)?[0-9a-fA-F]+$/.test(seed)
+            ? hexToBytes(seed)
+            : base58Decode(seed);
+    }
+    throw new Error('Invalid wallet seed');
+}
+
+function normalizePubkeyBytes(pubkey) {
+    if (pubkey instanceof Uint8Array) {
+        return new Uint8Array(pubkey);
+    }
+    if (Array.isArray(pubkey)) {
+        return new Uint8Array(pubkey);
+    }
     return base58Decode(pubkey);
 }
 
+function normalizeDataBytes(data) {
+    if (data instanceof Uint8Array) {
+        return new Uint8Array(data);
+    }
+    if (Array.isArray(data)) {
+        return new Uint8Array(data);
+    }
+    if (typeof data === 'string') {
+        return textEncoder.encode(data);
+    }
+    return new Uint8Array(0);
+}
+
+function encodePubkey(pubkey) {
+    return normalizePubkeyBytes(pubkey);
+}
+
 function encodeInstruction(ix) {
+    const programId = ix.programId || ix.program_id;
+    const accounts = ix.accounts || [];
+    const data = normalizeDataBytes(ix.data);
     return concatBytes(
-        encodePubkey(ix.programId),
-        encodeVec(ix.accounts, encodePubkey),
-        encodeBytes(ix.data)
+        encodePubkey(programId),
+        encodeVec(accounts, encodePubkey),
+        encodeBytes(data)
     );
 }
 
@@ -157,11 +205,7 @@ function encodeMessage(instructions, recentBlockhash) {
 }
 
 function encodeTransaction(signatures, messageBytes) {
-    const signatureHex = signatures.map(sig => bytesToHex(sig));
-    return concatBytes(
-        encodeVec(signatureHex, encodeString),
-        messageBytes
-    );
+    return textEncoder.encode(JSON.stringify({ signatures, message: messageBytes }));
 }
 
 function base64Encode(bytes) {
@@ -170,6 +214,37 @@ function base64Encode(bytes) {
         binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
+}
+
+async function resolveInjectedLichenProvider(wallet, timeoutMs = 0) {
+    let provider = null;
+
+    if (typeof getInjectedLichenProvider === 'function') {
+        provider = getInjectedLichenProvider();
+    } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+        provider = window.licnwallet;
+    }
+
+    if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+        provider = await waitForInjectedLichenProvider(timeoutMs);
+    }
+
+    if (!provider) {
+        return null;
+    }
+
+    if (wallet && wallet.address && typeof provider.getProviderState === 'function') {
+        const state = await provider.getProviderState().catch(() => null);
+        if (state && Array.isArray(state.accounts) && state.accounts.length && !state.accounts.includes(wallet.address)) {
+            return null;
+        }
+    }
+
+    return provider;
+}
+
+function unwrapSendTransactionResult(result) {
+    return result && typeof result === 'object' && result.txHash ? result.txHash : result;
 }
 
 function base58Encode(bytes) {
@@ -621,21 +696,6 @@ class LichenRPC {
     // MOSSSTAKE (LIQUID STAKING)
     // ========================================================================
 
-    /** @deprecated Use sendTransaction with system instruction type 13 instead */
-    async stakeToMossStake(params) {
-        return await this.call('stakeToMossStake', [params]);
-    }
-
-    /** @deprecated Use sendTransaction with system instruction type 14 instead */
-    async unstakeFromMossStake(params) {
-        return await this.call('unstakeFromMossStake', [params]);
-    }
-
-    /** @deprecated Use sendTransaction with system instruction type 15 instead */
-    async claimUnstakedTokens(params) {
-        return await this.call('claimUnstakedTokens', [params]);
-    }
-
     async getStakingPosition(pubkey) {
         return await this.call('getStakingPosition', [pubkey]);
     }
@@ -927,71 +987,48 @@ class LichenWS {
 }
 
 // ============================================================================
-// WALLET (Ed25519)
+// WALLET (ML-DSA-65)
 // ============================================================================
 
 class LichenWallet {
-    constructor(seed = null) {
-        const keypair = seed
-            ? this.generateKeypairFromSeed(seed)
-            : this.generateKeypair();
-
-        this.secretKey = keypair.secretKey;
-        this.publicKey = keypair.publicKey;
-        this.seed = keypair.seed;
-        this.address = this.publicKeyToAddress(this.publicKey);
+    constructor({ privateKey, publicKey, publicKeyHex, seed, address }) {
+        this.privateKey = privateKey;
+        this.publicKey = publicKey;
+        this.publicKeyHex = publicKeyHex;
+        this.seed = seed;
+        this.address = address;
     }
 
-    /**
-     * Generate new Ed25519 keypair
-     */
-    generateKeypair() {
-        if (!window.nacl || !window.nacl.sign) {
-            throw new Error('Ed25519 library not loaded');
+    static async create(seed = null) {
+        if (seed) {
+            return this.fromSeed(seed);
         }
 
-        const seed = new Uint8Array(32);
-        crypto.getRandomValues(seed);
-        const keypair = window.nacl.sign.keyPair.fromSeed(seed);
-        return {
-            secretKey: keypair.secretKey,
-            publicKey: keypair.publicKey,
-            seed
-        };
+        const keypair = await requireLichenPQ().generateKeypair();
+        return new LichenWallet({
+            privateKey: keypair.privateKey,
+            publicKey: new Uint8Array(keypair.publicKey),
+            publicKeyHex: keypair.publicKeyHex,
+            seed: hexToBytes(keypair.privateKey),
+            address: keypair.address,
+        });
     }
 
-    /**
-     * Derive public key from secret key
-     */
-    generateKeypairFromSeed(seed) {
-        if (!window.nacl || !window.nacl.sign) {
-            throw new Error('Ed25519 library not loaded');
-        }
-
-        const keypair = window.nacl.sign.keyPair.fromSeed(seed);
-        return {
-            secretKey: keypair.secretKey,
-            publicKey: keypair.publicKey,
-            seed
-        };
+    static async fromSeed(seed) {
+        const seedBytes = normalizeSeedInput(seed);
+        const keypair = await requireLichenPQ().keypairFromSeed(seedBytes);
+        return new LichenWallet({
+            privateKey: keypair.privateKey,
+            publicKey: new Uint8Array(keypair.publicKey),
+            publicKeyHex: keypair.publicKeyHex,
+            seed: seedBytes,
+            address: keypair.address,
+        });
     }
 
-    /**
-     * Convert public key to base58 address
-     */
-    publicKeyToAddress(publicKey) {
-        return base58Encode(publicKey);
-    }
-
-    /**
-     * Sign message with Ed25519
-     */
-    sign(message) {
-        if (!window.nacl || !window.nacl.sign) {
-            throw new Error('Ed25519 library not loaded');
-        }
-
-        return window.nacl.sign.detached(message, this.secretKey);
+    async sign(message) {
+        const payload = message instanceof Uint8Array ? message : new Uint8Array(message || []);
+        return requireLichenPQ().signMessage(this.privateKey, payload);
     }
 
     /**
@@ -999,8 +1036,12 @@ class LichenWallet {
      */
     export(password) {
         return {
-            version: 1,
-            publicKey: base58Encode(this.publicKey),
+            version: 2,
+            address: this.address,
+            publicKey: {
+                scheme_version: requireLichenPQ().PQ_SCHEME_ML_DSA_65,
+                bytes: this.publicKeyHex,
+            },
             seed: base58Encode(this.seed)
         };
     }
@@ -1008,12 +1049,11 @@ class LichenWallet {
     /**
      * Import wallet from JSON
      */
-    static import(json, password) {
+    static async import(json, password) {
         if (!json.seed) {
             throw new Error('Invalid wallet export: missing seed');
         }
-        const seed = base58Decode(json.seed);
-        return new LichenWallet(seed);
+        return this.fromSeed(base58Decode(json.seed));
     }
 
     /**
@@ -1041,6 +1081,7 @@ class TransactionBuilder {
         this.instructions = [];
         this.recentBlockhash = null;
         this.signatures = [];
+        this.extensionWallet = null;
     }
 
     /**
@@ -1056,42 +1097,66 @@ class TransactionBuilder {
      */
     async setRecentBlockhash() {
         const result = await this.rpc.getRecentBlockhash();
-        this.recentBlockhash = result.blockhash;
+        this.recentBlockhash = typeof result === 'string' ? result : result.blockhash;
         return this;
     }
 
     /**
      * Sign transaction
      */
-    sign(wallet) {
+    async sign(wallet) {
         if (!this.recentBlockhash) {
             throw new Error('Must set recent blockhash first');
         }
 
-        const messageBytes = encodeMessage(this.instructions, this.recentBlockhash);
-        const signature = wallet.sign(messageBytes);
-        this.signatures.push(signature);
+        this.extensionWallet = null;
 
-        return this;
+        if (wallet && typeof wallet.sign === 'function') {
+            const messageBytes = encodeMessage(this.instructions, this.recentBlockhash);
+            const signature = await wallet.sign(messageBytes);
+            this.signatures.push(signature);
+            return this;
+        }
+
+        const provider = await resolveInjectedLichenProvider(wallet, 800);
+        if (wallet && wallet.address && provider && typeof provider.sendTransaction === 'function') {
+            this.extensionWallet = wallet;
+            return this;
+        }
+
+        throw new Error('Wallet cannot sign transactions. Reconnect the extension or import a local wallet.');
+    }
+
+    buildRpcMessage() {
+        return {
+            instructions: this.instructions.map((instruction) => ({
+                program_id: Array.from(normalizePubkeyBytes(instruction.programId || instruction.program_id)),
+                accounts: (instruction.accounts || []).map((account) => Array.from(normalizePubkeyBytes(account))),
+                data: Array.from(normalizeDataBytes(instruction.data)),
+            })),
+            blockhash: this.recentBlockhash,
+        };
     }
 
     /**
      * Serialize transaction to bytes
      */
-    serialize() {
+    async serialize() {
         if (!this.recentBlockhash) {
             throw new Error('Must set recent blockhash first');
         }
 
-        const messageBytes = encodeMessage(this.instructions, this.recentBlockhash);
-        return encodeTransaction(this.signatures, messageBytes);
+        return textEncoder.encode(JSON.stringify({
+            signatures: this.signatures,
+            message: this.buildRpcMessage(),
+        }));
     }
 
     /**
      * Encode transaction as base64 for RPC
      */
-    toBase64() {
-        const bytes = this.serialize();
+    async toBase64() {
+        const bytes = await this.serialize();
         return base64Encode(bytes);
     }
 
@@ -1099,7 +1164,19 @@ class TransactionBuilder {
      * Send transaction
      */
     async send() {
-        const base64 = this.toBase64();
+        if (this.extensionWallet) {
+            const provider = await resolveInjectedLichenProvider(this.extensionWallet, 800);
+            if (!provider || typeof provider.sendTransaction !== 'function') {
+                throw new Error('Lichen wallet extension not available for transaction approval');
+            }
+
+            return unwrapSendTransactionResult(await provider.sendTransaction({
+                signatures: [],
+                message: this.buildRpcMessage(),
+            }));
+        }
+
+        const base64 = await this.toBase64();
         return await this.rpc.sendTransaction(base64);
     }
 
@@ -1226,7 +1303,7 @@ class ProgramDeployer {
         if (initialFunding > 0) {
             tx.addInstruction(TransactionBuilder.transfer(this.wallet.address, programId, initialFunding));
         }
-        tx.sign(this.wallet);
+        await tx.sign(this.wallet);
 
         // Send transaction
         const signature = await tx.send();
@@ -1271,7 +1348,7 @@ class ProgramDeployer {
         await tx.setRecentBlockhash();
 
         tx.addInstruction(TransactionBuilder.upgrade(this.wallet.address, programId, wasmBytes));
-        tx.sign(this.wallet);
+        await tx.sign(this.wallet);
 
         const signature = await tx.send();
         console.log(`✅ Upgrade transaction sent: ${signature}`);

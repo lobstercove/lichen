@@ -516,25 +516,29 @@ function initHeroTypewriter() {
     let deleting = false;
 
     const tick = () => {
-        const currentWord = words[wordIndex];
-
-        if (deleting) {
-            charIndex = Math.max(0, charIndex - 1);
-        } else {
-            charIndex = Math.min(currentWord.length, charIndex + 1);
-        }
-
-        wordEl.textContent = currentWord.slice(0, charIndex);
-
+        let currentWord = words[wordIndex];
         let delay = deleting ? 55 : 95;
 
-        if (!deleting && charIndex === currentWord.length) {
-            delay = 1300;
-            deleting = true;
-        } else if (deleting && charIndex === 0) {
-            deleting = false;
-            wordIndex = (wordIndex + 1) % words.length;
-            delay = 240;
+        if (deleting) {
+            if (charIndex > 1) {
+                charIndex -= 1;
+                wordEl.textContent = currentWord.slice(0, charIndex);
+            } else {
+                wordIndex = (wordIndex + 1) % words.length;
+                currentWord = words[wordIndex];
+                deleting = false;
+                charIndex = 1;
+                wordEl.textContent = currentWord.slice(0, charIndex);
+                delay = 140;
+            }
+        } else {
+            charIndex = Math.min(currentWord.length, charIndex + 1);
+            wordEl.textContent = currentWord.slice(0, charIndex);
+
+            if (charIndex === currentWord.length) {
+                delay = 1300;
+                deleting = true;
+            }
         }
 
         window.setTimeout(tick, delay);
