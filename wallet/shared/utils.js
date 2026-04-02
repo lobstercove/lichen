@@ -240,10 +240,10 @@ function formatAddress(addr) {
     return formatHash(addr, 6);
 }
 
-// Preserve the canonical transaction type label.
+// Normalize legacy transaction type names to current terminology
 function normalizeTxType(type) {
     if (!type) return type;
-    return type;
+    return type === 'DebtRepay' ? 'GrantRepay' : type;
 }
 
 function formatLicn(spores) {

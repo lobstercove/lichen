@@ -258,17 +258,19 @@ production-gate: check-expected-contracts
 
 sync-shared:
 	@echo "📦 Syncing canonical shared/ from monitoring/shared/ to all frontends..."
-	@for dir in explorer dex wallet marketplace faucet programs; do \
+	@for dir in explorer dex wallet marketplace faucet programs developers; do \
 		cp monitoring/shared/utils.js $$dir/shared/utils.js; \
 		echo "  ✓ $$dir/shared/utils.js"; \
 	done
+	@cp monitoring/shared/utils.js wallet/extension/shared/utils.js
+	@echo "  ✓ wallet/extension/shared/utils.js"
 	@for dir in explorer dex wallet marketplace faucet programs; do \
 		cp monitoring/shared/pq.js $$dir/shared/pq.js; \
 		echo "  ✓ $$dir/shared/pq.js"; \
 	done
 	@cp monitoring/shared/pq.js wallet/extension/shared/pq.js
 	@echo "  ✓ wallet/extension/shared/pq.js"
-	@for dir in explorer dex wallet faucet programs; do \
+	@for dir in explorer dex wallet faucet programs developers; do \
 		cp monitoring/shared/wallet-connect.js $$dir/shared/wallet-connect.js; \
 		echo "  ✓ $$dir/shared/wallet-connect.js"; \
 	done

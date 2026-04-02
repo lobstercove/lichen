@@ -68,6 +68,52 @@ async function lichenRpcCall(method, params, rpcUrl) {
     return data.result;
 }
 
+function getInjectedLichenProvider() {
+    if (window.licnwallet && window.licnwallet.isLichenWallet) {
+        return window.licnwallet;
+    }
+    return null;
+}
+
+function waitForInjectedLichenProvider(timeoutMs) {
+    var existing = getInjectedLichenProvider();
+    if (existing) return Promise.resolve(existing);
+
+    timeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 400;
+
+    return new Promise(function (resolve) {
+        var settled = false;
+        var pollTimer = null;
+        var timeoutTimer = null;
+
+        function cleanup() {
+            window.removeEventListener('lichenwallet#initialized', onReady);
+            if (pollTimer) clearInterval(pollTimer);
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+        }
+
+        function finish(provider) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(provider || null);
+        }
+
+        function onReady() {
+            finish(getInjectedLichenProvider());
+        }
+
+        window.addEventListener('lichenwallet#initialized', onReady);
+        pollTimer = setInterval(function () {
+            var provider = getInjectedLichenProvider();
+            if (provider) finish(provider);
+        }, 50);
+        timeoutTimer = setTimeout(function () {
+            finish(null);
+        }, timeoutMs);
+    });
+}
+
 // ─── Wallet Manager ──────────────────────────────────────
 
 /**
@@ -92,6 +138,8 @@ function LichenWallet(options) {
     this._balanceCallbacks = [];
     this._buttonEl = null;
     this._balanceInterval = null;
+    this._provider = null;
+    this._providerListenersBound = false;
 
     // Try to restore from localStorage
     if (this.persist) {
@@ -104,6 +152,106 @@ LichenWallet.prototype.isConnected = function () {
     return this.address !== null;
 };
 
+LichenWallet.prototype._clearConnectionState = function (notifyDisconnect, oldAddr) {
+    var previousAddress = oldAddr !== undefined ? oldAddr : this.address;
+
+    this.address = null;
+    this.balance = 0;
+    this._walletData = null;
+
+    if (this.persist) {
+        try { localStorage.removeItem(this.storageKey); } catch (e) { }
+    }
+
+    this._stopBalancePolling();
+
+    if (notifyDisconnect && previousAddress) {
+        for (var i = 0; i < this._disconnectCallbacks.length; i++) {
+            try { this._disconnectCallbacks[i]({ address: previousAddress }); } catch (e) { console.error(e); }
+        }
+    }
+
+    this._updateButton();
+};
+
+LichenWallet.prototype._bindInjectedProvider = function (provider) {
+    if (!provider) return;
+    this._provider = provider;
+
+    if (this._providerListenersBound || typeof provider.on !== 'function') {
+        return;
+    }
+
+    this._providerListenersBound = true;
+    var self = this;
+
+    provider.on('accountsChanged', function (accounts) {
+        var nextAddress = Array.isArray(accounts) && accounts.length ? accounts[0] : null;
+        if (!nextAddress) {
+            self._clearConnectionState(false);
+            return;
+        }
+
+        self.address = nextAddress;
+        self._walletData = {
+            address: nextAddress,
+            hasKeys: false,
+            provider: 'extension',
+            created: (self._walletData && self._walletData.created) || Date.now()
+        };
+
+        if (self.persist) {
+            try { localStorage.setItem(self.storageKey, JSON.stringify(self._walletData)); } catch (e) { }
+        }
+
+        self.refreshBalance();
+        self._updateButton();
+    });
+
+    provider.on('disconnect', function () {
+        self._clearConnectionState(false);
+    });
+};
+
+LichenWallet.prototype._connectInjectedProvider = async function (provider) {
+    this._bindInjectedProvider(provider);
+
+    var accounts = [];
+    if (typeof provider.getProviderState === 'function') {
+        var state = await provider.getProviderState().catch(function () { return null; });
+        if (state && state.connected && Array.isArray(state.accounts)) {
+            accounts = state.accounts;
+        }
+    }
+
+    if (!accounts.length) {
+        if (typeof provider.requestAccounts === 'function') {
+            accounts = await provider.requestAccounts();
+        } else if (typeof provider.connect === 'function') {
+            var result = await provider.connect();
+            if (Array.isArray(result)) {
+                accounts = result;
+            } else if (result && Array.isArray(result.accounts)) {
+                accounts = result.accounts;
+            }
+        } else if (typeof provider.accounts === 'function') {
+            accounts = await provider.accounts();
+        }
+    }
+
+    if (!Array.isArray(accounts) || !accounts.length) {
+        throw new Error('Lichen wallet extension returned no accounts');
+    }
+
+    this.address = accounts[0];
+    this._walletData = {
+        address: this.address,
+        hasKeys: false,
+        provider: 'extension',
+        created: Date.now()
+    };
+};
+
 /**
  * Connect wallet - creates or imports a wallet
  * If Lichen SDK is available, uses real keypair generation
@@ -112,14 +260,20 @@ LichenWallet.prototype.isConnected = function () {
  * @returns {Promise<Object>} - { address, balance }
  */
 LichenWallet.prototype.connect = async function (importData) {
-    // Try Lichen SDK first (real wallet)
-    if (window.Lichen && window.Lichen.Wallet) {
+    var injectedProvider = !importData ? await waitForInjectedLichenProvider() : null;
+
+    if (injectedProvider) {
+        await this._connectInjectedProvider(injectedProvider);
+    } else if (window.Lichen && window.Lichen.Wallet) {
+        // Try Lichen SDK next (real local wallet)
         try {
             var wallet;
             if (importData && importData.seed) {
-                wallet = Lichen.Wallet.import({ seed: importData.seed }, '');
+                wallet = await Promise.resolve(Lichen.Wallet.import({ seed: importData.seed }, ''));
             } else if (importData && importData.json) {
-                wallet = Lichen.Wallet.import(importData.json, importData.password || '');
+                wallet = await Promise.resolve(Lichen.Wallet.import(importData.json, importData.password || ''));
+            } else if (typeof Lichen.Wallet.create === 'function') {
+                wallet = await Lichen.Wallet.create();
             } else {
                 wallet = new Lichen.Wallet();
             }
@@ -131,7 +285,7 @@ LichenWallet.prototype.connect = async function (importData) {
             };
         } catch (err) {
             console.warn('Lichen SDK wallet creation failed, using RPC wallet:', err);
-            this._createRpcWallet();
+            await this._createRpcWallet();
         }
     } else {
         // No SDK available - create via RPC
@@ -195,21 +349,10 @@ LichenWallet.prototype._createRpcWallet = async function () {
 /** Disconnect wallet and clear state */
 LichenWallet.prototype.disconnect = function () {
     var oldAddr = this.address;
-    this.address = null;
-    this.balance = 0;
-    this._walletData = null;
-
-    if (this.persist) {
-        try { localStorage.removeItem(this.storageKey); } catch (e) { }
+    if (this._provider && this._walletData && this._walletData.provider === 'extension' && typeof this._provider.disconnect === 'function') {
+        this._provider.disconnect().catch(function () { });
     }
-
-    this._stopBalancePolling();
-
-    for (var i = 0; i < this._disconnectCallbacks.length; i++) {
-        try { this._disconnectCallbacks[i]({ address: oldAddr }); } catch (e) { console.error(e); }
-    }
-
-    this._updateButton();
+    this._clearConnectionState(true, oldAddr);
 };
 
 /** Toggle connect/disconnect */
@@ -257,6 +400,7 @@ LichenWallet.prototype._stopBalancePolling = function () {
 
 /** Restore wallet from localStorage */
 LichenWallet.prototype._restore = function () {
+    var self = this;
     try {
         var stored = localStorage.getItem(this.storageKey);
         if (stored) {
@@ -266,6 +410,13 @@ LichenWallet.prototype._restore = function () {
                 this._walletData = data;
                 this._startBalancePolling();
                 this.refreshBalance();
+
+                if (data.provider === 'extension') {
+                    waitForInjectedLichenProvider(1000).then(function (provider) {
+                        if (!provider) return;
+                        self._bindInjectedProvider(provider);
+                    });
+                }
             }
         }
     } catch (e) { /* invalid stored data */ }
@@ -338,6 +489,8 @@ LichenWallet.prototype._updateButton = function () {
 
 // Make available globally
 window.LichenWallet = LichenWallet;
+window.getInjectedLichenProvider = window.getInjectedLichenProvider || getInjectedLichenProvider;
+window.waitForInjectedLichenProvider = window.waitForInjectedLichenProvider || waitForInjectedLichenProvider;
 window.formatHash = window.formatHash || formatHash;
 window.getLichenRpcUrl = window.getLichenRpcUrl || getLichenRpcUrl;
 window.lichenRpcCall = window.lichenRpcCall || lichenRpcCall;

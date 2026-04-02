@@ -205,11 +205,34 @@ function formatNumber(num) {
     return Number(num).toLocaleString();
 }
 
+function normalizeHashValue(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+        return '0x' + value.map((b) => Number(b).toString(16).padStart(2, '0')).join('');
+    }
+    if (value instanceof Uint8Array) {
+        return '0x' + Array.from(value).map((b) => Number(b).toString(16).padStart(2, '0')).join('');
+    }
+    if (typeof value === 'object') {
+        if (typeof value.sig === 'string') return value.sig.startsWith('0x') ? value.sig : `0x${value.sig}`;
+        if (typeof value.bytes === 'string') return value.bytes.startsWith('0x') ? value.bytes : `0x${value.bytes}`;
+        if (typeof value.hash === 'string') return value.hash;
+        try {
+            return JSON.stringify(value);
+        } catch (_) {
+            return String(value);
+        }
+    }
+    return String(value);
+}
+
 function formatHash(hash, length) {
     length = length || 6;
-    if (!hash) return 'N/A';
-    if (hash.length <= length * 2 + 3) return hash;
-    return hash.substring(0, length) + '...' + hash.substring(hash.length - length);
+    const normalized = normalizeHashValue(hash);
+    if (!normalized) return 'N/A';
+    if (normalized.length <= length * 2 + 3) return normalized;
+    return normalized.substring(0, length) + '...' + normalized.substring(normalized.length - length);
 }
 
 function formatAddress(addr) {
