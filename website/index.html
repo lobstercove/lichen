@@ -4,19 +4,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lichen — Agent-Native Post-Quantum Layer 1 for Markets, Payments, and Programs</title>
+    <title>Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage</title>
     <meta name="description"
-        content="Lichen is an agent-native post-quantum Layer 1 for markets, payments, programs, and storage. ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost finality.">
+        content="Lichen is a post-quantum Layer 1 for agents, payments, commerce, communication, programs, storage, and markets. ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost finality.">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="Lichen — Agent-Native Post-Quantum Layer 1 for Markets, Payments, and Programs">
+    <meta property="og:title" content="Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage">
     <meta property="og:description"
-        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, markets, payments, programs, and storage.">
+        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta property="og:image" content="Lichen_Logo_256.png">
     <meta property="og:url" content="https://lichen.network">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Lichen — Agent-Native Post-Quantum Layer 1 for Markets, Payments, and Programs">
+    <meta name="twitter:title" content="Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage">
     <meta name="twitter:description"
-        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, markets, payments, programs, and storage.">
+        content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta name="twitter:image" content="Lichen_Logo_256.png">
     <link rel="canonical" href="https://lichen.network/">
     <link rel="icon" href="favicon.ico">
@@ -41,11 +41,12 @@
                 <span class="logo-text">Lichen</span>
             </div>
             <ul class="nav-menu">
-                <li><a href="#services">Showroom</a></li>
+                <li><a href="#services">Categories</a></li>
+                <li><a href="#payments">Payments</a></li>
+                <li><a href="#commerce">Commerce</a></li>
+                <li><a href="#programs">Programs</a></li>
                 <li><a href="#agents">Agents</a></li>
                 <li><a href="#architecture">Architecture</a></li>
-                <li><a href="#identity">LichenID</a></li>
-                <li><a href="#ecosystem">Ecosystem</a></li>
                 <li><a href="#deploy">Build</a></li>
                 <li class="nav-dropdown">
                     <button class="nav-dropdown-toggle" id="navMoreToggle" type="button" aria-expanded="false"
@@ -53,6 +54,12 @@
                         More <i class="fas fa-chevron-down"></i>
                     </button>
                     <ul class="nav-dropdown-menu" id="navMoreMenu">
+                        <li><a href="#communication">Communication</a></li>
+                        <li><a href="#service-networks">Services</a></li>
+                        <li><a href="#storage">Storage</a></li>
+                        <li><a href="#gaming">Gaming</a></li>
+                        <li><a href="#identity">LichenID</a></li>
+                        <li><a href="#ecosystem">Ecosystem</a></li>
                         <li><a href="#vision">Why Lichen</a></li>
                         <li><a href="#validators">Validators</a></li>
                         <li><a href="#tokenomics">Tokenomics</a></li>
@@ -86,42 +93,29 @@
             <div class="container">
                 <div class="hero-content">
                     <div class="hero-badge">
-                        <i class="fas fa-robot"></i> Agent-Native Layer 1 · Post-Quantum Security · Payments · Liquidity
+                        <i class="fas fa-layer-group"></i> Post-Quantum Security · WASM + EVM · Payments · Storage
                     </div>
                     <h1 class="hero-title">
-                        The Layer 1 where agents<br>
-                        <span class="gradient-text">trade, pay, store, and coordinate</span>
+                        Post-quantum Layer 1 for<br>
+                        <span class="hero-rotating-text"
+                            aria-label="agents, payments, programs, commerce, storage, markets, communication">
+                            <span id="heroRotatingWord" class="gradient-text hero-rotating-word">agents</span><span
+                                class="typing-cursor" aria-hidden="true"></span>
+                        </span>
                     </h1>
                     <p class="hero-subtitle">
                         Lichen combines ML-DSA-65 accounts, transparent STARK privacy, dual WASM + EVM execution,
-                        and low-cost finality so agents and teams can ship markets, programs, storage workflows,
-                        payment rails, commerce flows, gaming economies, and user-facing applications on one chain.
+                        and low-cost finality so teams can ship agent systems, payment rails, commerce flows,
+                        application logic, communication layers, storage workflows, and market infrastructure on one
+                        settlement layer.
                     </p>
-                    <div class="hero-highlights">
-                        <div class="hero-highlight">
-                            <span class="hero-highlight-label">Agent Identity</span>
-                            <p>Register identities, reputation, attestations, and names for autonomous actors.</p>
-                        </div>
-                        <div class="hero-highlight">
-                            <span class="hero-highlight-label">Programs</span>
-                            <p>Use WASM or EVM-compatible flows against the same assets, RPC surface, and wallets.</p>
-                        </div>
-                        <div class="hero-highlight">
-                            <span class="hero-highlight-label">Settlement</span>
-                            <p>Move LICN, lUSD, and bridged assets through streams, payouts, treasury routes, and checkout.</p>
-                        </div>
-                        <div class="hero-highlight">
-                            <span class="hero-highlight-label">Liquidity &amp; Data</span>
-                            <p>Run AMMs, order books, prediction markets, storage commitments, and compute matching.</p>
-                        </div>
-                    </div>
                     <div id="networkIndicator" class="network-indicator status-connecting">Connecting to network…</div>
                     <div class="hero-cta">
                         <a href="#deploy" class="btn btn-primary btn-large">
                             <i class="fas fa-code"></i> Build on Lichen
                         </a>
                         <a href="#services" class="btn btn-secondary btn-large">
-                            <i class="fas fa-compass"></i> Explore the Showroom
+                            <i class="fas fa-compass"></i> Browse Categories
                         </a>
                     </div>
                     <div class="hero-stats">
@@ -156,177 +150,664 @@
         <section class="section section-alt" id="services">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">Capability Showroom</h2>
+                    <h2 class="section-title">Category Showroom</h2>
                     <p class="section-subtitle">
-                        Each protocol surface answers three questions: what it is, how it works, and what it is good
-                        for. Lichen keeps agents, programs, storage, payments, and liquidity on the same economic rail.
+                        Start with the industry surface you care about. Each track below explains utility,
+                        architectural fit, and the protocol surfaces that make it work on Lichen.
                     </p>
                 </div>
 
-                <div class="surface-grid services-grid">
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
-                            <div class="feature-icon"><i class="fas fa-robot"></i></div>
-                            <div>
-                                <span class="surface-kicker">Agents</span>
-                                <h3>Agents &amp; Coordination</h3>
-                            </div>
-                        </div>
-                        <p class="surface-summary">Economic rails for autonomous software: identity, reputation,
-                            attestations, task routing, and payout logic.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>On-chain identities, endorsements, reputational gating, and programmable work
-                                    settlement.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>LichenID, BountyBoard, SporePay, and compute or storage primitives share one account
-                                    model and fee market.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Trading copilots, analyst swarms, autonomous vendors, and AI-to-AI service
-                                    networks.</p>
-                            </div>
-                        </div>
+                <div class="showroom-lead animate-on-scroll">
+                    <p class="showroom-copy">
+                        Lichen is a shared identity, execution, settlement, and data layer. The categories below make
+                        that stack easier to read by product surface so specialists can jump straight to the part that
+                        matches their architecture.
+                    </p>
+                    <div class="category-nav" aria-label="Category navigation">
+                        <a class="category-jump" href="#payments">Payments</a>
+                        <a class="category-jump" href="#commerce">Commerce</a>
+                        <a class="category-jump" href="#agents">Agents</a>
+                        <a class="category-jump" href="#programs">Programs</a>
+                        <a class="category-jump" href="#communication">Communication</a>
+                        <a class="category-jump" href="#gaming">Gaming</a>
+                        <a class="category-jump" href="#service-networks">Services</a>
+                        <a class="category-jump" href="#storage">Storage</a>
                     </div>
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
-                            <div class="feature-icon"><i class="fas fa-cubes"></i></div>
-                            <div>
-                                <span class="surface-kicker">Programs</span>
-                                <h3>Programs &amp; Applications</h3>
-                            </div>
-                        </div>
-                        <p class="surface-summary">A single chain for Rust-to-WASM contracts, EVM-compatible flows,
-                            and browser-native application tooling.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>Composable contract execution with shared assets, RPC methods, and wallet UX.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>Dual execution surfaces expose the same balances, accounts, and transport layer via
-                                    JSON-RPC and WebSockets.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Consumer dApps, protocol extensions, ops dashboards, and application-specific
-                                    automation.</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
-                            <div class="feature-icon"><i class="fas fa-database"></i></div>
-                            <div>
-                                <span class="surface-kicker">Storage</span>
-                                <h3>Storage &amp; Compute</h3>
-                            </div>
-                        </div>
-                        <p class="surface-summary">A coordination layer for persisted data, replicated artifacts, and
-                            off-chain job execution.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>Storage commitments, provider matching, job execution, and reusable work products.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>Moss Storage tracks replicated storage requests while Compute Market matches
-                                    requesters and providers on-chain.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Agent memory, report archives, inference jobs, content pipelines, and AI artifact
-                                    settlement.</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
+                </div>
+
+                <div class="showroom-overview-grid">
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
                             <div class="feature-icon"><i class="fas fa-credit-card"></i></div>
                             <div>
                                 <span class="surface-kicker">Payments</span>
-                                <h3>Payments &amp; Commerce</h3>
+                                <h3>Subscriptions, payroll, checkout, treasury routing</h3>
                             </div>
                         </div>
-                        <p class="surface-summary">Low-cost settlement for subscriptions, payroll, treasury routing,
-                            checkout, and revenue sharing.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>Streaming payouts, recurring transfers, stablecoin settlement, and merchant-facing
-                                    rails.</p>
+                        <p>Use one settlement layer for consumer payments, business flows, stable rails, and recurring
+                            movement of value.</p>
+                        <span class="showroom-card-meta">LICN · lUSD · Bridge · SporePay</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-store"></i></div>
+                            <div>
+                                <span class="surface-kicker">Commerce</span>
+                                <h3>Storefronts, listings, auctions, royalties, sales rails</h3>
                             </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>LICN, lUSD, bridge assets, and SporePay handle scheduled, recurring, and real-time
-                                    transfers without leaving the chain.</p>
+                        </div>
+                        <p>Compose listings, any-token checkout, creator payouts, and sale settlement into one atomic
+                            commerce surface.</p>
+                        <span class="showroom-card-meta">Marketplace · Auctions · Royalties · Sales events</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-robot"></i></div>
+                            <div>
+                                <span class="surface-kicker">Agents</span>
+                                <h3>Identity, attestations, coordination, payout logic</h3>
                             </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Agent subscriptions, marketplace settlement, treasury ops, payroll, and multi-party
-                                    revenue splits.</p>
+                        </div>
+                        <p>Give autonomous actors discoverable identities and direct access to money, storage, and
+                            application workflows.</p>
+                        <span class="showroom-card-meta">LichenID · BountyBoard · SporePay</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-cubes"></i></div>
+                            <div>
+                                <span class="surface-kicker">Programs</span>
+                                <h3>WASM contracts, EVM-compatible flows, open APIs</h3>
+                            </div>
+                        </div>
+                        <p>Build consumer apps, protocol extensions, dashboards, and backend automation on the same
+                            asset and wallet layer.</p>
+                        <span class="showroom-card-meta">WASM · EVM · RPC · WebSocket · SDKs</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-comments"></i></div>
+                            <div>
+                                <span class="surface-kicker">Communication</span>
+                                <h3>Endpoints, presence, subscriptions, event-driven coordination</h3>
+                            </div>
+                        </div>
+                        <p>Expose machine-readable endpoints and real-time event streams so apps, agents, and services
+                            can coordinate from live chain state.</p>
+                        <span class="showroom-card-meta">LichenID · WebSocket · Logs · Market events</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-gamepad"></i></div>
+                            <div>
+                                <span class="surface-kicker">Gaming</span>
+                                <h3>Items, economies, storefronts, tournaments</h3>
+                            </div>
+                        </div>
+                        <p>Unify player ownership, identity, rewards, secondary markets, and creator payouts without
+                            leaving the chain context.</p>
+                        <span class="showroom-card-meta">NFTs · Auctions · Marketplaces · Rewards</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-briefcase"></i></div>
+                            <div>
+                                <span class="surface-kicker">Services</span>
+                                <h3>Provider networks, quoting, delivery, and settlement</h3>
+                            </div>
+                        </div>
+                        <p>Coordinate service discovery, execution, deliverables, and payout with auditable state from
+                            request to completion.</p>
+                        <span class="showroom-card-meta">Profiles · Tasks · Storage refs · Settlement</span>
+                    </article>
+                    <article class="showroom-card animate-on-scroll">
+                        <div class="showroom-card-head">
+                            <div class="feature-icon"><i class="fas fa-database"></i></div>
+                            <div>
+                                <span class="surface-kicker">Storage</span>
+                                <h3>Artifact retention, compute coordination, reusable outputs</h3>
+                            </div>
+                        </div>
+                        <p>Anchor data, match providers, pay for execution, and keep references reusable across later
+                            workflows.</p>
+                        <span class="showroom-card-meta">Moss Storage · Compute Market · Event feeds</span>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section class="section category-section" id="payments">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Payments</span>
+                            <h2 class="category-title">Settlement rails that stay programmable at product scale.</h2>
+                            <p class="category-description">
+                                Use one account model for merchant checkout, recurring billing, payroll, treasury
+                                movement, and multi-party revenue routing without splitting value across separate
+                                systems.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Subscriptions, stable settlement, treasury automation, payroll, and automated payout
+                                policies.</p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Checkout and settlement in LICN, lUSD, or bridged assets.</li>
+                                <li>Recurring transfers, usage-based billing, and payout schedules.</li>
+                                <li>Treasury flows for vendors, grants, payroll, and revenue sharing.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Predictable low fees make frequent or low-ticket settlement viable.</li>
+                                <li>ML-DSA-65 accounts and custody paths suit long-lived financial infrastructure.</li>
+                                <li>The same wallet surface works for users, operators, and autonomous systems.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>Use SporePay and contract logic for recurring or rule-based settlement.</li>
+                                <li>Route treasury or bridge flows without leaving the native account layer.</li>
+                                <li>Integrate through wallet, SDKs, JSON-RPC, and WebSocket events.</li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">LICN</span>
+                                <span class="category-tag">lUSD</span>
+                                <span class="category-tag">SporePay</span>
+                                <span class="category-tag">Custody</span>
+                                <span class="category-tag">Bridge</span>
+                                <span class="category-tag">Wallet</span>
+                            </div>
+                        </div>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Merchant checkout</span>
+                                <span class="category-tag">Subscriptions</span>
+                                <span class="category-tag">Payroll</span>
+                                <span class="category-tag">Treasury ops</span>
                             </div>
                         </div>
                     </div>
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
-                            <div class="feature-icon"><i class="fas fa-chart-line"></i></div>
-                            <div>
-                                <span class="surface-kicker">Liquidity</span>
-                                <h3>Liquidity &amp; Markets</h3>
+                </div>
+            </div>
+        </section>
+
+        <section class="section section-alt category-section" id="commerce">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Commerce</span>
+                            <h2 class="category-title">Commerce flows with listings, checkout, and payout logic in one
+                                stack.</h2>
+                            <p class="category-description">
+                                Treat storefronts, listings, auctions, royalties, and sale settlement as one atomic
+                                commerce surface instead of stitching catalog logic, payment logic, and payout logic
+                                together off-chain.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Marketplaces, creator sales, merchant catalogs, auction venues, and revenue-sharing
+                                storefronts.</p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Fixed-price listings and any-token checkout for on-chain goods.</li>
+                                <li>Auction flows, direct offers, and collection-level sales logic.</li>
+                                <li>Creator royalties, marketplace fees, and seller payouts in one transaction path.
+                                </li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Payment routing and asset transfer can settle atomically instead of asynchronously.
+                                </li>
+                                <li>Wallet, explorer, and event surfaces stay shared across buyer and seller flows.</li>
+                                <li>Low fees let marketplaces support frequent listings, updates, and sales events.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>LichenMarket supports fixed-price listings with atomic token and NFT transfer.</li>
+                                <li>LichenAuction handles bids, settlement, royalties, and marketplace fee deduction.
+                                </li>
+                                <li>WebSocket market subscriptions let storefronts react to listings and completed
+                                    sales.</li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">LichenMarket</span>
+                                <span class="category-tag">LichenAuction</span>
+                                <span class="category-tag">SporePay</span>
+                                <span class="category-tag">Market subscriptions</span>
+                                <span class="category-tag">Wallet</span>
                             </div>
                         </div>
-                        <p class="surface-summary">Spot markets, AMMs, routing, prediction venues, leverage, and
-                            analytics on one shared asset layer.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>Order books, concentrated liquidity, rewards, launch flows, and automated market
-                                    structure.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>LichenSwap and the DEX suite coordinate routing, governance, fee schedules, and
-                                    trading telemetry.</p>
-                            </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Exchange fronts, market makers, treasury execution, event pricing, and on-chain
-                                    liquidity programs.</p>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Creator storefronts</span>
+                                <span class="category-tag">NFT commerce</span>
+                                <span class="category-tag">Auction venues</span>
+                                <span class="category-tag">Merchant catalogs</span>
                             </div>
                         </div>
                     </div>
-                    <div class="feature-card surface-card animate-on-scroll">
-                        <div class="surface-head">
-                            <div class="feature-icon"><i class="fas fa-shield-alt"></i></div>
-                            <div>
-                                <span class="surface-kicker">Ownership</span>
-                                <h3>Privacy, Assets &amp; Communities</h3>
+                </div>
+            </div>
+        </section>
+
+        <section class="section category-section" id="programs">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Programs</span>
+                            <h2 class="category-title">Applications and protocol logic on one shared execution surface.
+                            </h2>
+                            <p class="category-description">
+                                Build consumer apps, admin tooling, protocol extensions, and automated backends without
+                                splitting user funds, APIs, or wallet behavior across incompatible execution surfaces.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Rust-to-WASM contracts, EVM-compatible flows, dashboards, backoffice tooling, and dApps.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Composable contracts with shared balances, identity, and payment rails.</li>
+                                <li>Browser apps, operator consoles, and automation against one RPC surface.</li>
+                                <li>Protocol modules that can still interoperate with wallets and existing assets.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>WASM and EVM-compatible execution reduce ecosystem fragmentation.</li>
+                                <li>One wallet and account model lowers integration and support cost.</li>
+                                <li>Open transports keep frontend, backend, and agent clients consistent.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>Deploy Rust contracts to WASM or target the EVM-compatible surface.</li>
+                                <li>Use JSON-RPC, WebSocket subscriptions, and compat routes for integration.</li>
+                                <li>Ship with JS, Python, or Rust SDKs and shared browser wallet tooling.</li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">WASM VM</span>
+                                <span class="category-tag">EVM Compat</span>
+                                <span class="category-tag">JSON-RPC</span>
+                                <span class="category-tag">WebSocket</span>
+                                <span class="category-tag">JS SDK</span>
+                                <span class="category-tag">Python SDK</span>
                             </div>
                         </div>
-                        <p class="surface-summary">Asset ownership, auctions, identity-bound access, and shielded
-                            transfers for user-facing ecosystems.</p>
-                        <div class="surface-points">
-                            <div class="surface-point">
-                                <span class="surface-point-label">What</span>
-                                <p>NFT issuance, marketplaces, royalties, auctions, and privacy-preserving value
-                                    transfer.</p>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Consumer dApps</span>
+                                <span class="category-tag">Operator dashboards</span>
+                                <span class="category-tag">Protocol extensions</span>
+                                <span class="category-tag">Backend automation</span>
                             </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">How</span>
-                                <p>LichenPunks, LichenMarket, LichenAuction, and Shielded Pool all settle against the
-                                    same wallet and account model.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section section-alt category-section" id="communication">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Communication</span>
+                            <h2 class="category-title">Machine-readable communication built from endpoints and live
+                                events.</h2>
+                            <p class="category-description">
+                                Communication on Lichen is not a generic chat layer. It is a protocol surface for
+                                discoverable endpoints, availability, machine-readable metadata, and real-time event
+                                subscriptions that let services and agents coordinate from chain state.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Event-driven apps, service discovery, agent coordination, operator alerts, and live
+                                market experiences.</p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Endpoint directories with identity-linked metadata, availability, and rates.</li>
+                                <li>Real-time account, log, block, transaction, and marketplace event feeds.</li>
+                                <li>Workflow coordination between apps, agents, and service providers.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Identity and live events stay tied to the same account and settlement model.</li>
+                                <li>Real-time coordination does not need a separate off-chain truth source.</li>
+                                <li>Apps can react directly to state changes that matter for users or automation.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>LichenID exposes endpoints, metadata, availability, and delegated profile control.
+                                </li>
+                                <li>WebSocket subscriptions stream slots, blocks, transactions, accounts, logs, and
+                                    market activity.</li>
+                                <li>Operational services can expose authenticated event streams for downstream systems.
+                                </li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">LichenID endpoints</span>
+                                <span class="category-tag">WebSocket</span>
+                                <span class="category-tag">Account subscriptions</span>
+                                <span class="category-tag">Log subscriptions</span>
+                                <span class="category-tag">Market subscriptions</span>
                             </div>
-                            <div class="surface-point">
-                                <span class="surface-point-label">Use cases</span>
-                                <p>Gaming inventories, memberships, creator economies, private transfers, and community
-                                    coordination.</p>
+                        </div>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Agent directories</span>
+                                <span class="category-tag">Realtime dashboards</span>
+                                <span class="category-tag">Operational alerts</span>
+                                <span class="category-tag">Live storefront updates</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section category-section" id="gaming">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Gaming</span>
+                            <h2 class="category-title">Digital ownership and game economies without fragmented rails.
+                            </h2>
+                            <p class="category-description">
+                                Combine inventories, storefronts, tournaments, memberships, creator payouts, and player
+                                identity on the same chain instead of splitting those concerns across separate systems.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Items, drops, memberships, tournament rewards, creator economies, and secondary markets.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Player inventories, item issuance, and collection launches.</li>
+                                <li>Reward distribution, royalties, auctions, and gated experiences.</li>
+                                <li>Guild or community layers tied to ownership and identity.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Frequent player interactions need fees that stay operationally small.</li>
+                                <li>Ownership, payments, and identity share one wallet experience.</li>
+                                <li>Privacy and public settlement can coexist depending on the game flow.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>Use NFT, marketplace, and auction contracts for asset lifecycle management.</li>
+                                <li>Route rewards and royalties through the same payment rails as the app.</li>
+                                <li>Connect storefronts, game services, and wallets through shared APIs.</li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">LichenPunks</span>
+                                <span class="category-tag">LichenMarket</span>
+                                <span class="category-tag">LichenAuction</span>
+                                <span class="category-tag">Shielded Pool</span>
+                                <span class="category-tag">Wallet</span>
+                            </div>
+                        </div>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Player inventories</span>
+                                <span class="category-tag">Creator drops</span>
+                                <span class="category-tag">Membership passes</span>
+                                <span class="category-tag">Tournament rewards</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section section-alt category-section" id="service-networks">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Services</span>
+                            <h2 class="category-title">Service networks with discovery, delivery, and settlement
+                                attached.</h2>
+                            <p class="category-description">
+                                Turn provider identity, quoting, task routing, deliverables, and payout into one
+                                auditable
+                                lifecycle for human teams, software services, and mixed operating models.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Provider directories, AI service desks, expert networks, ops vendors, and research
+                                marketplaces.</p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Service catalogs and provider profiles with public reputational context.</li>
+                                <li>Quoted work, milestones, or subscriptions with programmable payout logic.</li>
+                                <li>Deliverable-based flows that keep artifacts linked to completion state.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Identity, attestations, and money live on the same protocol surface.</li>
+                                <li>Deliverables can remain referenceable instead of disappearing inside app silos.</li>
+                                <li>Every step from request to payout can stay machine-readable and auditable.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>Use LichenID for discovery and identity-bound trust signals.</li>
+                                <li>Route work through task, marketplace, or contract-based logic.</li>
+                                <li>Attach storage or compute outputs to completion and payout events.</li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">LichenID</span>
+                                <span class="category-tag">BountyBoard</span>
+                                <span class="category-tag">SporePay</span>
+                                <span class="category-tag">Storage refs</span>
+                                <span class="category-tag">Wallet Connect</span>
+                            </div>
+                        </div>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">AI service desks</span>
+                                <span class="category-tag">Expert networks</span>
+                                <span class="category-tag">Ops vendors</span>
+                                <span class="category-tag">Research marketplaces</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section category-section" id="storage">
+            <div class="container">
+                <div class="category-shell animate-on-scroll">
+                    <div class="category-heading">
+                        <div class="category-heading-copy">
+                            <span class="surface-kicker">Storage</span>
+                            <h2 class="category-title">Storage and compute coordination with settlement built in.</h2>
+                            <p class="category-description">
+                                Keep commitments, provider matching, reusable artifacts, and execution payouts inside
+                                the
+                                same economic system used by the applications or agents consuming the results.
+                            </p>
+                        </div>
+                        <div class="category-focus">
+                            <span class="category-focus-label">Best for</span>
+                            <p>Agent memory, content pipelines, report vaults, replicated archives, and inference jobs.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="category-grid">
+                        <article class="category-card">
+                            <span class="category-card-label">Utility</span>
+                            <h3>What teams can build</h3>
+                            <ul class="category-list">
+                                <li>Persistent references for documents, datasets, model outputs, and reports.</li>
+                                <li>Provider payment flows for replicated storage or off-chain execution.</li>
+                                <li>Reusable artifact libraries that later applications or agents can consume.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">Why</span>
+                            <h3>Why Lichen fits</h3>
+                            <ul class="category-list">
+                                <li>Data coordination and money stay on the same rail instead of separate platforms.
+                                </li>
+                                <li>Artifacts receive verifiable references rather than opaque app-only storage.</li>
+                                <li>Storage and compute become composable inputs for users, apps, and agents.</li>
+                            </ul>
+                        </article>
+                        <article class="category-card">
+                            <span class="category-card-label">How</span>
+                            <h3>How it lands on-chain</h3>
+                            <ul class="category-list">
+                                <li>Moss Storage manages commitments and provider-side retention flows.</li>
+                                <li>Compute Market coordinates requester and provider matching.</li>
+                                <li>Applications subscribe to events, verify references, and settle provider payouts.
+                                </li>
+                            </ul>
+                        </article>
+                    </div>
+
+                    <div class="category-meta">
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Protocol surfaces</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Moss Storage</span>
+                                <span class="category-tag">Compute Market</span>
+                                <span class="category-tag">WebSocket</span>
+                                <span class="category-tag">Explorer</span>
+                                <span class="category-tag">SDKs</span>
+                            </div>
+                        </div>
+                        <div class="category-meta-group">
+                            <span class="category-meta-label">Typical deployments</span>
+                            <div class="category-tags">
+                                <span class="category-tag">Agent memory</span>
+                                <span class="category-tag">Report archives</span>
+                                <span class="category-tag">Inference jobs</span>
+                                <span class="category-tag">Content pipelines</span>
                             </div>
                         </div>
                     </div>
@@ -337,10 +818,10 @@
         <section class="section agents-section" id="agents">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">Agent-Native by Design</h2>
+                    <h2 class="section-title">Agents as First-Class Economic Actors</h2>
                     <p class="section-subtitle">
-                        Identity, money, storage, and execution all live on the same protocol surface, so autonomous
-                        software can act without a pile of off-chain glue.
+                        Identity, money, storage, and execution live on the same protocol surface, so autonomous
+                        software can operate with verifiable state instead of a pile of off-chain glue.
                     </p>
                 </div>
 
