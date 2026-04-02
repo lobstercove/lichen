@@ -2,7 +2,8 @@
  * Lichen Shared Wallet Connect Utility
  * 
  * Provides a unified wallet connection experience across all Lichen frontends.
- * Uses the Lichen SDK for real keypair generation and signing.
+ * Uses the shared PQ runtime for local key generation when RPC-side wallet
+ * creation is unavailable.
  * 
  * Usage:
  *   <script src="../shared/wallet-connect.js"></script>
@@ -82,7 +83,7 @@ function LichenWallet(options) {
     this.rpcUrl = options.rpcUrl || getLichenRpcUrl();
     this.storageKey = options.storageKey || 'lichen_wallet';
     this.persist = options.persist !== false;
-    
+
     this.address = null;
     this.balance = 0;
     this._walletData = null;
@@ -91,7 +92,7 @@ function LichenWallet(options) {
     this._balanceCallbacks = [];
     this._buttonEl = null;
     this._balanceInterval = null;
-    
+
     // Try to restore from localStorage
     if (this.persist) {
         this._restore();
@@ -99,7 +100,7 @@ function LichenWallet(options) {
 }
 
 /** Check if a wallet is currently connected */
-LichenWallet.prototype.isConnected = function() {
+LichenWallet.prototype.isConnected = function () {
     return this.address !== null;
 };
 
@@ -110,7 +111,7 @@ LichenWallet.prototype.isConnected = function() {
  * @param {Object} [importData] - Import data { seed, hex, json }
  * @returns {Promise<Object>} - { address, balance }
  */
-LichenWallet.prototype.connect = async function(importData) {
+LichenWallet.prototype.connect = async function (importData) {
     // Try Lichen SDK first (real wallet)
     if (window.Lichen && window.Lichen.Wallet) {
         try {
@@ -136,31 +137,31 @@ LichenWallet.prototype.connect = async function(importData) {
         // No SDK available - create via RPC
         await this._createRpcWallet();
     }
-    
+
     // Fetch balance
     await this.refreshBalance();
-    
+
     // Persist
     if (this.persist && this._walletData) {
         try {
             localStorage.setItem(this.storageKey, JSON.stringify(this._walletData));
         } catch (e) { /* storage full or unavailable */ }
     }
-    
+
     // Notify
     var info = { address: this.address, balance: this.balance };
     for (var i = 0; i < this._connectCallbacks.length; i++) {
         try { this._connectCallbacks[i](info); } catch (e) { console.error(e); }
     }
-    
+
     this._updateButton();
     this._startBalancePolling();
-    
+
     return info;
 };
 
 /** Create wallet via RPC (address-only, no local keys) */
-LichenWallet.prototype._createRpcWallet = async function() {
+LichenWallet.prototype._createRpcWallet = async function () {
     try {
         var result = await lichenRpcCall('createWallet', [], this.rpcUrl);
         this.address = result.address || result.pubkey || result;
@@ -170,21 +171,20 @@ LichenWallet.prototype._createRpcWallet = async function() {
             created: Date.now()
         };
     } catch (err) {
-        // Fallback - generate Ed25519 keypair locally if nacl is available
-        if (window.nacl && window.nacl.sign) {
-            var kp = nacl.sign.keyPair();
-            this.address = (window.bs58 && bs58.encode)
-                ? bs58.encode(kp.publicKey)
-                : Array.from(kp.publicKey).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+        // Fallback - generate a native PQ keypair locally if the shared runtime is available
+        if (window.LichenPQ && typeof window.LichenPQ.generateKeypair === 'function') {
+            var kp = await window.LichenPQ.generateKeypair();
+            this.address = kp.address;
             this._walletData = {
                 address: this.address,
+                publicKey: kp.publicKeyHex,
                 hasKeys: true,
                 created: Date.now()
             };
         } else {
             // No crypto library available — prompt user to install extension
             this.address = null;
-            var errorMsg = 'Wallet creation failed: no wallet extension or cryptographic library available. ' +
+            var errorMsg = 'Wallet creation failed: no wallet extension or PQ runtime available. ' +
                 'Please install the Lichen wallet extension or import a private key directly.';
             console.error(errorMsg);
             throw new Error(errorMsg);
@@ -193,27 +193,27 @@ LichenWallet.prototype._createRpcWallet = async function() {
 };
 
 /** Disconnect wallet and clear state */
-LichenWallet.prototype.disconnect = function() {
+LichenWallet.prototype.disconnect = function () {
     var oldAddr = this.address;
     this.address = null;
     this.balance = 0;
     this._walletData = null;
-    
+
     if (this.persist) {
-        try { localStorage.removeItem(this.storageKey); } catch (e) {}
+        try { localStorage.removeItem(this.storageKey); } catch (e) { }
     }
-    
+
     this._stopBalancePolling();
-    
+
     for (var i = 0; i < this._disconnectCallbacks.length; i++) {
         try { this._disconnectCallbacks[i]({ address: oldAddr }); } catch (e) { console.error(e); }
     }
-    
+
     this._updateButton();
 };
 
 /** Toggle connect/disconnect */
-LichenWallet.prototype.toggle = async function() {
+LichenWallet.prototype.toggle = async function () {
     if (this.isConnected()) {
         this.disconnect();
     } else {
@@ -222,7 +222,7 @@ LichenWallet.prototype.toggle = async function() {
 };
 
 /** Refresh wallet balance from RPC */
-LichenWallet.prototype.refreshBalance = async function() {
+LichenWallet.prototype.refreshBalance = async function () {
     if (!this.address) return 0;
     try {
         var result = await lichenRpcCall('getBalance', [this.address], this.rpcUrl);
@@ -230,25 +230,25 @@ LichenWallet.prototype.refreshBalance = async function() {
     } catch (err) {
         // Balance fetch failed, keep existing
     }
-    
+
     for (var i = 0; i < this._balanceCallbacks.length; i++) {
         try { this._balanceCallbacks[i](this.balance, this.address); } catch (e) { console.error(e); }
     }
-    
+
     return this.balance;
 };
 
 /** Start polling for balance updates */
-LichenWallet.prototype._startBalancePolling = function() {
+LichenWallet.prototype._startBalancePolling = function () {
     this._stopBalancePolling();
     var self = this;
-    this._balanceInterval = setInterval(function() {
+    this._balanceInterval = setInterval(function () {
         self.refreshBalance();
     }, 15000); // Every 15s
 };
 
 /** Stop balance polling */
-LichenWallet.prototype._stopBalancePolling = function() {
+LichenWallet.prototype._stopBalancePolling = function () {
     if (this._balanceInterval) {
         clearInterval(this._balanceInterval);
         this._balanceInterval = null;
@@ -256,7 +256,7 @@ LichenWallet.prototype._stopBalancePolling = function() {
 };
 
 /** Restore wallet from localStorage */
-LichenWallet.prototype._restore = function() {
+LichenWallet.prototype._restore = function () {
     try {
         var stored = localStorage.getItem(this.storageKey);
         if (stored) {
@@ -274,7 +274,7 @@ LichenWallet.prototype._restore = function() {
 // ─── Event Callbacks ─────────────────────────────────────
 
 /** Register callback for wallet connect events */
-LichenWallet.prototype.onConnect = function(cb) {
+LichenWallet.prototype.onConnect = function (cb) {
     this._connectCallbacks.push(cb);
     // Fire immediately if already connected
     if (this.isConnected()) {
@@ -283,12 +283,12 @@ LichenWallet.prototype.onConnect = function(cb) {
 };
 
 /** Register callback for wallet disconnect events */
-LichenWallet.prototype.onDisconnect = function(cb) {
+LichenWallet.prototype.onDisconnect = function (cb) {
     this._disconnectCallbacks.push(cb);
 };
 
 /** Register callback for balance update events */
-LichenWallet.prototype.onBalanceUpdate = function(cb) {
+LichenWallet.prototype.onBalanceUpdate = function (cb) {
     this._balanceCallbacks.push(cb);
 };
 
@@ -298,29 +298,29 @@ LichenWallet.prototype.onBalanceUpdate = function(cb) {
  * Bind to a connect/disconnect button element
  * @param {string|Element} selector - CSS selector or DOM element
  */
-LichenWallet.prototype.bindConnectButton = function(selector) {
+LichenWallet.prototype.bindConnectButton = function (selector) {
     var el = (typeof selector === 'string') ? document.querySelector(selector) : selector;
     if (!el) {
         console.warn('LichenWallet: Connect button not found:', selector);
         return;
     }
-    
+
     this._buttonEl = el;
     var self = this;
-    
-    el.addEventListener('click', function(e) {
+
+    el.addEventListener('click', function (e) {
         e.preventDefault();
         self.toggle();
     });
-    
+
     // Set initial state
     this._updateButton();
 };
 
 /** Update the connect button display */
-LichenWallet.prototype._updateButton = function() {
+LichenWallet.prototype._updateButton = function () {
     if (!this._buttonEl) return;
-    
+
     if (this.isConnected()) {
         this._buttonEl.innerHTML = '<i class="fas fa-wallet"></i> ' + formatHash(this.address, 6);
         this._buttonEl.classList.add('wallet-connected');

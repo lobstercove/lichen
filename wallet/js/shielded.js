@@ -7,7 +7,7 @@
 // - Unshield (withdraw): shielded pool → transparent
 // - Shielded transfer: private send between shielded addresses
 // - Note management: scanning commitments, tracking owned notes
-// - Client-side proof generation (Groth16/BN254 via WASM)
+// - RPC-backed transparent STARK proof generation
 
 // ===== Constants =====
 // SPORES_PER_LICN provided by shared/utils.js (loaded before this file)
@@ -189,13 +189,7 @@ async function tryDecryptNote(entry) {
             );
             plaintext = new Uint8Array(decrypted);
         } else {
-            // Legacy compatibility: decrypt historical XOR-encrypted notes.
-            const ciphertext = hexToBytes(entry.encrypted_note);
-            const legacyPlaintext = new Uint8Array(ciphertext.length);
-            for (let i = 0; i < ciphertext.length; i++) {
-                legacyPlaintext[i] = ciphertext[i] ^ decKey[i % 32];
-            }
-            plaintext = legacyPlaintext;
+            return null;
         }
 
         // Parse note: 32 bytes owner + 8 bytes value + 32 bytes blinding + 32 bytes serial = 104 bytes
@@ -249,7 +243,7 @@ async function shieldLicn(amountLicn) {
         const blindingHex = bytesToHex(blinding);
         const serial = crypto.getRandomValues(new Uint8Array(32));
 
-        // Generate a real Groth16 shield proof and circuit-aligned commitment.
+        // Generate a real shield proof and circuit-aligned commitment.
         const shieldProof = await generateShieldProof(amountSpores, null, blindingHex);
         const commitment = shieldProof.commitment;
 
@@ -521,7 +515,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
 // ===== Proof Generation (Client-Side) =====
 
 /**
- * Generate a real shield proof via RPC-backed Groth16 prover.
+ * Generate a real shield proof via the RPC-backed Plonky3 prover.
  */
 async function generateShieldProof(amount, commitment, blinding) {
     const blindingHex = typeof blinding === 'string' ? blinding : bytesToHex(blinding || new Uint8Array(32));
@@ -533,7 +527,7 @@ async function generateShieldProof(amount, commitment, blinding) {
 }
 
 /**
- * Generate a real unshield proof via RPC-backed Groth16 prover.
+ * Generate a real unshield proof via the RPC-backed Plonky3 prover.
  */
 async function generateUnshieldProof({ amount, merkleRoot, recipient, blinding, serial, spendingKey, merklePath, pathBits }) {
     return rpc.call('generateUnshieldProof', [{
@@ -549,7 +543,7 @@ async function generateUnshieldProof({ amount, merkleRoot, recipient, blinding, 
 }
 
 /**
- * Generate a transfer proof via RPC-backed Groth16 prover.
+ * Generate a transfer proof via the RPC-backed Plonky3 prover.
  */
 async function generateTransferProof(witness) {
     return rpc.call('generateTransferProof', [{
@@ -724,11 +718,7 @@ async function loadNotesFromStorage() {
             return;
         }
 
-        // Legacy migration path: previous plaintext object format.
-        shieldedState.ownedNotes = parsed.ownedNotes || [];
-        shieldedState.lastSyncedIndex = parsed.lastSyncedIndex || 0;
-        shieldedState.shieldedBalance = parsed.shieldedBalance || 0;
-        await saveNotesToStorage();
+        console.warn('Ignoring unsupported shielded notes storage format');
     } catch (e) {
         console.error('Failed to load shielded notes:', e);
     }
@@ -1077,7 +1067,7 @@ async function toggleViewingKey(btnEl) {
             if (wallet && wallet.encryptedKey) {
                 const kp = await LichenCrypto.decryptKeypair(wallet.encryptedKey, values.password);
                 if (!kp) { showToast('Invalid password', 'error'); return; }
-                if (kp.secretKey) zeroBytes(kp.secretKey);
+                if (kp.seed) zeroBytes(kp.seed);
             }
         }
         display.textContent = bytesToHex(shieldedState.viewingKey);

@@ -937,7 +937,7 @@ async function finishCreateWallet() {
     showDashboard();
 
     // AUDIT-FIX W-9: Zero sensitive globals immediately after use
-    if (createdKeypair && createdKeypair.secretKey) zeroBytes(createdKeypair.secretKey);
+    if (createdKeypair && createdKeypair.seed) zeroBytes(createdKeypair.seed);
     createdKeypair = null;
     createdMnemonic = '';
 
@@ -1064,16 +1064,13 @@ async function importWalletPrivateKey() {
     const privateKey = document.getElementById('importPrivateKey').value.trim();
     const password = document.getElementById('importPasswordPrivate').value;
 
-    // Accept 64 hex (32-byte seed) or 128 hex (64-byte secret key, take first 32 bytes)
     let normalizedKey = privateKey.replace(/^0x/, '');
     if (!normalizedKey || !/^[0-9a-fA-F]+$/.test(normalizedKey)) {
         showToast('Invalid private key format (must be hex characters)', 'error');
         return;
     }
-    if (normalizedKey.length === 128) {
-        normalizedKey = normalizedKey.slice(0, 64); // Take 32-byte seed from 64-byte secret key
-    } else if (normalizedKey.length !== 64) {
-        showToast('Invalid private key length (must be 64 or 128 hex characters)', 'error');
+    if (normalizedKey.length !== 64) {
+        showToast('Invalid private key length (must be 64 hex characters)', 'error');
         return;
     }
 
@@ -1083,7 +1080,7 @@ async function importWalletPrivateKey() {
     }
 
     const publicKey = await LichenCrypto.derivePublicKey(LichenCrypto.hexToBytes(normalizedKey));
-    const address = LichenCrypto.publicKeyToAddress(publicKey);
+    const address = await LichenCrypto.publicKeyToAddress(publicKey);
     const encrypted = await LichenCrypto.encryptPrivateKey(normalizedKey, password);
 
     const wallet = {
@@ -1121,38 +1118,40 @@ async function importWalletJson() {
         try {
             const keystore = JSON.parse(e.target.result);
 
-            if (!keystore.secretKey && !keystore.privateKey && !keystore.encryptedSecretKey) {
+            if (!keystore.privateKey && !keystore.encryptedSeed && !keystore.seed) {
                 showToast('Invalid keystore format: no key data found', 'error');
                 return;
             }
 
             // Extract private key (seed) from keystore
             let seedHex;
-            if (keystore.encryptedSecretKey) {
-                // AUDIT-FIX K-1b: Handle v2 encrypted export format
+            if (keystore.encryptedSeed) {
                 const importPw = document.getElementById('importPasswordJson').value;
-                const decryptedHex = await LichenCrypto.decryptPrivateKey(keystore.encryptedSecretKey, importPw);
-                if (!decryptedHex) {
-                    showToast('Invalid password for this keystore', 'error');
+                seedHex = await LichenCrypto.decryptPrivateKey(keystore.encryptedSeed, importPw);
+            } else if (typeof keystore.seed === 'string') {
+                seedHex = keystore.seed;
+            } else if (Array.isArray(keystore.seed)) {
+                const seedBytes = new Uint8Array(keystore.seed);
+                if (seedBytes.length !== 32) {
+                    showToast('Invalid keystore seed length (must be 32 bytes)', 'error');
                     return;
                 }
-                // decryptedHex is the full 64-byte secretKey hex — take first 32 bytes (seed)
-                seedHex = decryptedHex.slice(0, 64);
-            } else if (keystore.secretKey) {
-                // Full 64-byte secretKey — first 32 bytes are the seed
-                const secretBytes = new Uint8Array(keystore.secretKey);
-                seedHex = LichenCrypto.bytesToHex(secretBytes.slice(0, 32));
+                seedHex = LichenCrypto.bytesToHex(seedBytes);
             } else if (typeof keystore.privateKey === 'string') {
                 seedHex = keystore.privateKey;
             } else {
                 const privBytes = new Uint8Array(keystore.privateKey);
-                seedHex = LichenCrypto.bytesToHex(privBytes.slice(0, 32));
+                if (privBytes.length !== 32) {
+                    showToast('Invalid keystore privateKey length (must be 32 bytes)', 'error');
+                    return;
+                }
+                seedHex = LichenCrypto.bytesToHex(privBytes);
             }
 
             // Reconstruct keypair
             const seed = LichenCrypto.hexToBytes(seedHex);
-            const keypair = nacl.sign.keyPair.fromSeed(seed);
-            const address = LichenCrypto.publicKeyToAddress(keypair.publicKey);
+            const publicKey = await LichenCrypto.derivePublicKey(seed);
+            const address = await LichenCrypto.publicKeyToAddress(publicKey);
 
             if (!password || password.length < 8) {
                 showToast('Password must be at least 8 characters', 'error');
@@ -1165,7 +1164,7 @@ async function importWalletJson() {
                 id: LichenCrypto.generateId(),
                 name: keystore.name || `Imported ${walletState.wallets.length + 1}`,
                 address: address,
-                publicKey: LichenCrypto.bytesToHex(keypair.publicKey),
+                publicKey: LichenCrypto.bytesToHex(publicKey),
                 encryptedKey: encrypted,
                 createdAt: Date.now()
             };
@@ -1231,7 +1230,7 @@ async function initShieldedForActiveWallet() {
                 if (mnemonic && LichenCrypto.isValidMnemonic && LichenCrypto.isValidMnemonic(mnemonic)) {
                     const keypair = await LichenCrypto.mnemonicToKeypair(mnemonic);
                     decryptedSeedHex = keypair.privateKey;
-                    zeroBytes(keypair.secretKey);
+                    zeroBytes(keypair.seed);
                 }
             } catch (_) {
                 // Fall back to encrypted private key path.
@@ -2178,7 +2177,7 @@ async function showMossStakeModal() {
         const spores = Math.floor(amount * SPORES_PER_LICN);
         const tierByte = parseInt(values.lockTier || '0');
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 13 = MossStake deposit, then amount(8), then tier(1)
         const instructionData = new Uint8Array(10);
@@ -2200,7 +2199,7 @@ async function showMossStakeModal() {
         const messageBytes = serializeMessageBincode(message);
         const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
-        const transaction = { signatures: [Array.from(signature)], message };
+        const transaction = { signatures: [signature], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
@@ -2269,7 +2268,7 @@ async function showMossUnstakeModal() {
     try {
         const spores = Math.floor(amount * SPORES_PER_LICN);
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 14 = MossStake unstake
         const instructionData = new Uint8Array(9);
@@ -2290,7 +2289,7 @@ async function showMossUnstakeModal() {
         const messageBytes = serializeMessageBincode(message);
         const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
-        const transaction = { signatures: [Array.from(signature)], message };
+        const transaction = { signatures: [signature], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
@@ -2348,7 +2347,7 @@ async function claimMossStake() {
 
     try {
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
 
         // Instruction type 15 = MossStake claim (data: [15], accounts: [user])
         const instructionData = new Uint8Array([15]);
@@ -2366,7 +2365,7 @@ async function claimMossStake() {
         const messageBytes = serializeMessageBincode(message);
         const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
-        const transaction = { signatures: [Array.from(signature)], message };
+        const transaction = { signatures: [signature], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
@@ -2872,7 +2871,7 @@ function wipeSensitiveWalletData(wallet) {
     const wipeString = (value) => (typeof value === 'string' ? '0'.repeat(value.length) : value);
 
     wallet.encryptedKey = wipeString(wallet.encryptedKey) || null;
-    for (const field of ['encryptedMnemonic', 'encryptedSeed', 'mnemonic', 'privateKey']) {
+    for (const field of ['encryptedMnemonic', 'encryptedSeed', 'privateKey']) {
         wallet[field] = wipeString(wallet[field]) || null;
     }
     wallet.cachedTransactions = [];
@@ -3024,7 +3023,7 @@ async function registerEvmAddress(wallet, password) {
         instructionData.set(evmBytes, 1);
 
         const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
-        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
         const latestBlock = await rpc.getLatestBlock();
 
         const message = {
@@ -3040,7 +3039,7 @@ async function registerEvmAddress(wallet, password) {
         const messageBytes = serializeMessageBincode(message);
         const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
-        const transaction = { signatures: [Array.from(signature)], message };
+        const transaction = { signatures: [signature], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
@@ -3177,8 +3176,8 @@ async function confirmSend() {
         const latestBlock = await rpc.getLatestBlock();
         const blockhash = latestBlock.hash;
 
-        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
-        const toPubkey = bs58.decode(to);
+        const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
+        const toPubkey = LichenCrypto.addressToBytes(to);
         let message;
 
         if (selectedToken === 'LICN') {
@@ -3252,7 +3251,7 @@ async function confirmSend() {
             };
         }
 
-        // Sign transaction with Ed25519
+        // Sign the transaction with the native PQ wallet key
         const passwordValues = await showPasswordModal({
             title: 'Sign Transaction',
             message: `Send ${amount} ${selectedToken} to ${to}`,
@@ -3276,7 +3275,7 @@ async function confirmSend() {
 
         // Build signed transaction
         const transaction = {
-            signatures: [Array.from(signature)],
+            signatures: [signature],
             message: message
         };
 
@@ -3780,27 +3779,22 @@ async function exportJSONWithPassword(password) {
             return;
         }
 
-        // Verify password
-        const keypair = await LichenCrypto.decryptKeypair(wallet.encryptedKey, password);
-        if (!keypair) {
-            showToast('❌ Invalid password');
-            return;
-        }
+        const privateKeyHex = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+        const encryptedSeed = await LichenCrypto.encryptPrivateKey(privateKeyHex, password);
 
-        // AUDIT-FIX K-1: Encrypt secret key with password using AES-256-GCM (via LichenCrypto)
-        // Never export raw secret key in plaintext
-        const secretKeyHex = Array.from(keypair.secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
-        const encryptedSecret = await LichenCrypto.encryptPrivateKey(secretKeyHex, password);
-
-        // Create JSON keystore with encrypted secret key
+        // Create JSON keystore with encrypted seed and canonical PQ verifying key
         const keystore = {
             name: wallet.name,
             address: wallet.address,
-            publicKey: Array.from(keypair.publicKey),
-            encryptedSecretKey: encryptedSecret,
-            created: wallet.created,
+            publicKey: {
+                scheme_version: 1,
+                bytes: wallet.publicKey
+            },
+            encryptedSeed: encryptedSeed,
+            created: wallet.createdAt || wallet.created,
             exported: new Date().toISOString(),
-            version: '2.0',
+            version: '3.0',
+            keyType: 'ML-DSA-65',
             encryption: 'AES-256-GCM-PBKDF2'
         };
 
@@ -3822,7 +3816,7 @@ async function exportJSONWithPassword(password) {
 
 function showExportMnemonic() {
     const wallet = getActiveWallet();
-    if (!wallet || (!wallet.encryptedMnemonic && !wallet.mnemonic && !wallet.hasMnemonic)) {
+    if (!wallet || (!wallet.encryptedMnemonic && !wallet.hasMnemonic)) {
         showToast('❌ No seed phrase available (imported wallet?)');
         return;
     }
@@ -3857,13 +3851,6 @@ async function exportMnemonicWithPassword(password) {
         let mnemonic;
         if (wallet.encryptedMnemonic) {
             mnemonic = await LichenCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
-        } else if (wallet.mnemonic) {
-            // Legacy: migrate plaintext mnemonic to encrypted
-            mnemonic = wallet.mnemonic;
-            wallet.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(mnemonic, password);
-            wallet.hasMnemonic = true;
-            delete wallet.mnemonic;
-            saveWalletState();
         } else {
             showToast('❌ No seed phrase available');
             return;
@@ -4185,15 +4172,11 @@ async function changePasswordStep2(oldPassword) {
                 const wKeypair = await LichenCrypto.decryptKeypair(w.encryptedKey, oldPassword);
                 if (wKeypair) {
                     w.encryptedKey = await LichenCrypto.encryptKeypair(wKeypair, values.newPassword);
-                    zeroBytes(wKeypair.secretKey);
+                    zeroBytes(wKeypair.seed);
                 }
                 if (w.encryptedMnemonic) {
                     const wMnemonic = await LichenCrypto.decryptPrivateKey(w.encryptedMnemonic, oldPassword);
                     if (wMnemonic) w.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(wMnemonic, values.newPassword);
-                } else if (w.mnemonic) {
-                    w.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(w.mnemonic, values.newPassword);
-                    w.hasMnemonic = true;
-                    delete w.mnemonic;
                 }
             } catch (reEncryptErr) {
                 console.error(`Failed to re-encrypt wallet ${w.id}:`, reEncryptErr);

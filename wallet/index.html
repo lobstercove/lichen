@@ -29,7 +29,6 @@
     <script src="shared/utils.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
     <script>
         // Native Base58 implementation (Bitcoin alphabet, compatible with Rust bs58 crate)
         const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -116,7 +115,7 @@
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-shield-alt"></i></div>
                             <h3>Secure &amp; Open Source</h3>
-                            <p>AES-256-GCM encrypted keys, Ed25519 signatures, fully auditable code</p>
+                            <p>AES-256-GCM encrypted keys, ML-DSA-65 signatures, fully auditable code</p>
                         </div>
                     </div>
                     <div class="carousel-slide">
@@ -508,9 +507,9 @@
                     <div class="tab-banner shield">
                         <div class="tab-banner-icon"><i class="fas fa-user-shield"></i></div>
                         <div class="tab-banner-text">
-                            <h3>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></h3>
-                            <p>Shield LICN to make transactions fully private. Amounts, senders and recipients are
-                                hidden using zero-knowledge proofs.</p>
+                            <h3>Shielded Privacy <span class="shield-badge">Plonky3 STARK</span></h3>
+                            <p>Shield LICN with transparent STARK proofs. Public balances stay separate while shielded
+                                notes hide amounts and transfer links on-chain.</p>
                         </div>
                     </div>
 
@@ -1164,6 +1163,7 @@
 
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
+    <script type="module" src="shared/pq.js?v=20260401"></script>
     <script src="js/wallet.js?v=20260306"></script>
     <script src="js/identity.js?v=20260306"></script>
     <script src="js/crypto.js?v=20260306"></script>

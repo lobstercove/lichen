@@ -347,7 +347,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
     if (!lichenidAddr) throw new Error('LichenID contract not found on network');
 
     const latestBlock = await rpc.getLatestBlock();
-    const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
+    const fromPubkey = LichenCrypto.addressToBytes(wallet.address);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
     const lichenidPubkey = bs58.decode(lichenidAddr);
 
@@ -375,7 +375,7 @@ async function buildContractCall(functionName, args, password, valueLicn = 0) {
     const messageBytes = serializeMessageBincode(message);
     const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
-    const transaction = { signatures: [Array.from(signature)], message };
+    const transaction = { signatures: [signature], message };
     const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
     return btoa(String.fromCharCode(...txBytes));
 }
