@@ -6,8 +6,10 @@
 # Run ONCE after the validator creates genesis on a VPS.
 # Copies genesis-generated keypairs to the paths expected by custody/faucet.
 #
-# Genesis creates all contracts, initializes them, and funds the deployer —
-# no deploy_dex.py or first-boot-deploy.sh needed.
+# Genesis creates the contract catalog. This script only copies the resulting
+# key material into the system paths expected by custody and faucet.
+# Run scripts/first-boot-deploy.sh separately if you need deploy-manifest.json
+# and signed metadata rebuilt from the live symbol registry.
 #
 # What this script does:
 #   1. Copies genesis primary keypair → /etc/lichen/custody-treasury-<network>.json
@@ -121,6 +123,6 @@ fi
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Post-genesis setup complete.${NC}"
-echo -e "${GREEN}  All contracts deployed + initialized at genesis.${NC}"
-echo -e "${GREEN}  No deploy_dex.py or first-boot-deploy.sh needed.${NC}"
+echo -e "${GREEN}  Genesis already deployed the contract catalog.${NC}"
+echo -e "${GREEN}  Run scripts/first-boot-deploy.sh next if you need deploy-manifest.json and signed metadata.${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"

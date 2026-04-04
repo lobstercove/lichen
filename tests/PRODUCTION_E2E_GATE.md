@@ -28,7 +28,7 @@
 ## Usage
 
 ```bash
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd /Users/johnrobin/.openclaw/workspace/lichen
 bash tests/production-e2e-gate.sh
 ```
 
@@ -85,7 +85,7 @@ REQUIRE_MULTI_VALIDATOR=0 STRICT_NO_SKIPS=0 bash tests/production-e2e-gate.sh
 - This gate validates real actor lifecycle for wallet + treasury funding + transfer.
 - Deep services coverage now includes token lifecycle writes, launchpad contract discoverability/stats checks, DEX API, faucet, custody, contract/program event surfaces.
 - User services coverage now includes faucet, explorer, bridge deposit, marketplace browse, custody withdrawal burn verification, and explorer/developers/programs portal runtime flows.
-- Contract-by-contract enforcement is enabled: every contract directory under `contracts/` must be discoverable in deployed contract inventory and pass generic program/contract endpoint checks.
+- Contract-by-contract enforcement is enabled against the genesis contract catalog: every genesis-deployed contract must be discoverable in deployed contract inventory and pass generic program/contract endpoint checks.
 - DEX bootstrap pair assertion is included (`LICN/lUSD` by default, configurable via env vars).
 - Contract write-scenario coverage is included via `tests/contracts-write-e2e.py` for real state-changing actions across protocol contracts, including DEX modules and non-DEX domains (`lichenid`, `bountyboard`, `lichenpunks`, `lichenoracle`, `lichenswap`, `lusd_token`, `weth_token`, `wsol_token`).
 - Write scenarios now enforce transaction confirmation and post-write observability deltas (`getProgramCalls`/`getContractEvents`) for mutating actions when `STRICT_WRITE_ASSERTIONS=1`.
@@ -98,7 +98,7 @@ REQUIRE_MULTI_VALIDATOR=0 STRICT_NO_SKIPS=0 bash tests/production-e2e-gate.sh
 - Scenario coverage can be enforced against discovered contracts with `REQUIRE_SCENARIO_FOR_DISCOVERED=1`.
 - A minimum adversarial depth can be enforced with `MIN_NEGATIVE_ASSERTIONS_EXECUTED`.
 - Expected deployed contract set can be lockfile-enforced with `REQUIRE_EXPECTED_CONTRACT_SET=1` and `EXPECTED_CONTRACTS_FILE`.
-- Regenerate lockfile deterministically with `python3 tests/update-expected-contracts.py --write` (preview-only mode without `--write`).
+- Regenerate lockfile deterministically from `genesis/src/lib.rs` with `python3 tests/update-expected-contracts.py --write` (preview-only mode without `--write`).
 - Validate lockfile parity locally with `make check-expected-contracts` (or `python3 tests/update-expected-contracts.py --check`).
 - CI now enforces this lockfile parity on every push/PR via `.github/workflows/ci.yml`.
 - Contract write runner emits a machine-readable JSON artifact with per-step outcomes and diagnostics for live triage.

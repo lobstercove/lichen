@@ -15,6 +15,7 @@
  */
 
 const pq = require('./helpers/pq-node');
+const { fundAccount } = require('./helpers/funded-wallets');
 const fs = require('fs');
 const path = require('path');
 
@@ -207,6 +208,21 @@ async function getTokenBalance(address, symbol) {
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function waitForBalance(address, predicate, timeoutMs = 10000, intervalMs = 250) {
+    const deadline = Date.now() + timeoutMs;
+    let lastBalance = await getBalance(address);
+
+    while (Date.now() < deadline) {
+        if (predicate(lastBalance)) {
+            return lastBalance;
+        }
+        await sleep(intervalMs);
+        lastBalance = await getBalance(address);
+    }
+
+    return lastBalance;
+}
+
 // ============================================================================
 // Test runner
 // ============================================================================
@@ -261,7 +277,15 @@ async function main() {
         `${deployer.address.slice(0, 8)}...`);
 
     // Check deployer balance
-    const deployerBal = await getBalance(deployer.address);
+    let deployerBal = await getBalance(deployer.address);
+    if (deployerBal.spores === 0) {
+        await tryTest('Fund deployer', async () => {
+            const funded = await fundAccount(deployer.address, 20, RPC_URL);
+            ok('Deployer funding requested', funded, '20 LICN via airdrop/faucet');
+        });
+        await sleep(2000);
+        deployerBal = await getBalance(deployer.address);
+    }
     ok('Deployer has funds', deployerBal.spores > 0,
         `${deployerBal.licn} LICN`);
 
@@ -303,10 +327,8 @@ async function main() {
             `sig: ${(result.signature || result).toString().slice(0, 16)}...`);
     });
 
-    await sleep(1500);
-
-    const balA2 = await getBalance(walletA.address);
-    const balB2 = await getBalance(walletB.address);
+    const balA2 = await waitForBalance(walletA.address, balance => balance.spores < balA.spores);
+    const balB2 = await waitForBalance(walletB.address, balance => balance.spores > balB.spores);
     ok('A balance decreased', balA2.spores < balA.spores,
         `${balA.licn} → ${balA2.licn} LICN`);
     ok('B balance increased', balB2.spores > balB.spores,
@@ -363,10 +385,8 @@ async function main() {
     });
 
     await tryTest('LICN token balance', async () => {
-        // getTokenBalance params: [token_program_address, holder_address]
-        // Look up LICN contract address dynamically from registry
-        const licnReg = await rpc('getSymbolRegistry', ['LICN']);
-        const LICN_ADDR = licnReg?.program || licnReg?.address;
+        // LICN is native, so query via the zero-address sentinel.
+        const LICN_ADDR = base58Encode(new Uint8Array(32));
         const balance = await getTokenBalance(LICN_ADDR, deployer.address);
         ok('getTokenBalance(LICN)', balance !== null && balance !== undefined,
             JSON.stringify(balance).slice(0, 80));
@@ -398,10 +418,8 @@ async function main() {
         ok('Transfer sent', result, 'deployer → A');
     });
 
-    await sleep(1500);
-
     // Check A received it
-    const balA3 = await getBalance(walletA.address);
+    const balA3 = await waitForBalance(walletA.address, balance => balance.spores > balA2.spores);
     ok('A balance updated', balA3.spores > balA2.spores,
         `${balA2.licn} → ${balA3.licn} LICN`);
 

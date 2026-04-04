@@ -247,7 +247,7 @@ async def test_moss_storage_wiring(conn):
 
 
 async def test_thalllend_wiring(conn):
-    """Verify thalllend has lichencoin address set."""
+    """Verify thalllend has its LICN transfer asset configured."""
     print("\n── ThallLend Wiring ──")
 
     lend_addr = await get_contract_address(conn, "LEND")
@@ -258,12 +258,12 @@ async def test_thalllend_wiring(conn):
     storage = await get_program_storage(conn, lend_addr, 50)
     licn_found = any("licn" in k.lower() or "token" in k.lower() for k in storage)
     if licn_found:
-        report("PASS", "ThallLend has LICN token address configured")
+        report("PASS", "ThallLend has LICN transfer asset configured")
     else:
         if len(storage) >= 2:
             report("PASS", f"ThallLend has {len(storage)} storage entries (initialization confirmed)")
         else:
-            report("FAIL", "ThallLend LICN token address not found in storage")
+            report("FAIL", "ThallLend LICN transfer asset not found in storage")
 
     stats = await rpc_call(conn, "getThallLendStats")
     if stats:

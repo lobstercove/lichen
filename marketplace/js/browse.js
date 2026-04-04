@@ -215,17 +215,21 @@
     }
 
     function getListingHref(nft) {
-        return 'item.html?id=' + encodeURIComponent(nft.id || '') +
+        return 'item.html?id=' + (nft.id ? encodeURIComponent(nft.id) : encodeURIComponent(nft.token || '')) +
             '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') +
             '&token=' + encodeURIComponent(nft.token_id || '');
     }
 
-    function buyNFT(id) {
+    function buyNFT(href) {
         if (!currentWallet) {
             showToast('Connect wallet to buy', 'error');
             return;
         }
-        window.location.href = 'item.html?id=' + encodeURIComponent(id);
+        if (!href) {
+            showToast('Listing unavailable', 'error');
+            return;
+        }
+        window.location.href = href;
     }
 
     function connectWallet() {
@@ -243,7 +247,7 @@
         loadListings();
     }
 
-    function clearFilters() {
+    window.clearFilters = function () {
         currentFilter = '';
         currentSort = 'recent';
         searchQuery = '';
@@ -275,7 +279,7 @@
         if (allCollectionsRadio) allCollectionsRadio.checked = true;
 
         loadListings();
-    }
+    };
 
     // ===== View Toggle =====
     function setView(view) {
@@ -318,18 +322,20 @@
             grid.innerHTML = pageItems.map(function (nft) {
                 var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
                 var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
+                var escapedNftId = escapeHtml(nft.id);
+                var listingHref = getListingHref(nft);
                 var imgHtml = normalizedImage && normalizedImage.indexOf('http') === 0
                     ? '<img src="' + escapeHtml(normalizedImage) + '" style="width:100%;height:100%;object-fit:cover;" alt="' + escapeHtml(nft.name || '') + '">'
                     : '<div style="width:100%;height:100%;background:' + gradientFromHash(nft.id || nft.name || '') + ';display:flex;align-items:center;justify-content:center;font-size:48px;opacity:0.5;">\uD83D\uDDBC\uFE0F</div>';
 
                 var actionHtml = '';
                 if (currentWallet) {
-                    actionHtml = '<button class="nft-action" data-browse-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy Now</button>';
+                    actionHtml = '<button class="nft-action" data-browse-action="buy" data-browse-href="' + escapeHtml(listingHref) + '" data-nft-id="' + escapedNftId + '">Buy Now</button>';
                 } else {
                     actionHtml = '<button class="nft-action" data-browse-action="connect" style="opacity:0.7;">Connect to Buy</button>';
                 }
 
-                return '<div class="nft-card" data-browse-href="' + escapeHtml(getListingHref(nft)) + '">' +
+                return '<div class="nft-card" data-browse-href="' + escapeHtml(listingHref) + '">' +
                     '<div class="nft-image">' + imgHtml + '</div>' +
                     '<div class="nft-info">' +
                     '<div class="nft-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
@@ -352,6 +358,7 @@
                 pageItems.map(function (nft) {
                     var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
                     var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
+                    var listHref = getListingHref(nft);
                     var imgStyle = normalizedImage && normalizedImage.indexOf('http') === 0
                         ? 'background-image:url(' + encodeURI(normalizedImage) + ');background-size:cover;background-position:center;'
                         : 'background:' + gradientFromHash(nft.id || nft.name || '') + ';';
@@ -361,12 +368,12 @@
 
                     var actionHtml = '';
                     if (currentWallet) {
-                        actionHtml = '<button class="btn btn-primary btn-small" data-browse-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy</button>';
+                        actionHtml = '<button class="btn btn-primary btn-small" data-browse-action="buy" data-browse-href="' + escapeHtml(listHref) + '" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy</button>';
                     } else {
                         actionHtml = '<button class="btn btn-secondary btn-small" data-browse-action="connect">Connect</button>';
                     }
 
-                    return '<div class="nft-list-item" data-browse-href="' + escapeHtml(getListingHref(nft)) + '">' +
+                    return '<div class="nft-list-item" data-browse-href="' + escapeHtml(listHref) + '">' +
                         '<div class="nft-list-col nft-list-col-image"><div class="nft-list-thumb" style="' + imgStyle + '"></div></div>' +
                         '<div class="nft-list-col nft-list-col-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
                         '<div class="nft-list-col nft-list-col-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
@@ -482,7 +489,7 @@
 
         var clearFiltersBtn = document.getElementById('clearFiltersBtn');
         if (clearFiltersBtn) {
-            clearFiltersBtn.addEventListener('click', clearFilters);
+            clearFiltersBtn.addEventListener('click', window.clearFilters);
         }
 
         // Sort
@@ -590,7 +597,7 @@
 
                     var action = actionButton.getAttribute('data-browse-action');
                     if (action === 'buy') {
-                        buyNFT(actionButton.getAttribute('data-nft-id') || '');
+                        buyNFT(actionButton.getAttribute('data-browse-href') || '');
                     } else if (action === 'connect') {
                         connectWallet();
                     }

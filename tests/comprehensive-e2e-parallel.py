@@ -58,7 +58,7 @@ TX_COUNT = 0  # Total transactions sent
 
 # ─── Symbol → dir name mapping ───
 SYMBOL_TO_DIR = {
-    "LICN": "lichencoin", "LUSD": "lusd_token", "WSOL": "wsol_token", "WETH": "weth_token",
+    "LUSD": "lusd_token", "WSOL": "wsol_token", "WETH": "weth_token",
     "YID": "lichenid", "DEX": "dex_core", "DEXAMM": "dex_amm", "DEXROUTER": "dex_router",
     "DEXMARGIN": "dex_margin", "DEXREWARDS": "dex_rewards", "DEXGOV": "dex_governance",
     "ANALYTICS": "dex_analytics", "LICHENSWAP": "lichenswap", "BRIDGE": "lichenbridge",
@@ -69,7 +69,7 @@ SYMBOL_TO_DIR = {
     "WBNB": "wbnb_token", "SHIELDED": "shielded_pool",
 }
 
-REQUIRED_DISCOVERED_CONTRACTS = {name for name in SYMBOL_TO_DIR.values() if name != "lichencoin"}
+REQUIRED_DISCOVERED_CONTRACTS = set(SYMBOL_TO_DIR.values())
 
 # Dispatcher contracts (use opcode ABI via call())
 DISPATCHER_CONTRACTS = {
@@ -353,21 +353,12 @@ def build_named_scenarios(
     dp = str(deployer.address())
     sp = str(secondary.address())
     zero = "11111111111111111111111111111111"
-    quote = str(contracts.get("lichencoin") or dp)
+    quote = zero
     base = str(contracts.get("weth_token") or dp)
     now = int(time.time())
     rid = random.randint(1000, 99999)
 
     return {
-        "lichencoin": [
-            {"fn": "initialize", "args": {"owner": dp}},
-            {"fn": "mint", "args": {"to": dp, "amount": 1_000_000}},
-            {"fn": "transfer", "args": {"from": dp, "to": sp, "amount": 1000}},
-            {"fn": "burn", "args": {"from": dp, "amount": 100}},
-            {"fn": "approve", "args": {"owner": dp, "spender": sp, "amount": 500}},
-            {"fn": "balance_of", "args": {"account": dp}},
-            {"fn": "total_supply", "args": {}},
-        ],
         "lusd_token": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "mint", "args": {"caller": dp, "to": dp, "amount": 1_000_000}},
@@ -823,7 +814,7 @@ def build_opcode_scenarios(
     admin = deployer.address().to_bytes()
     sec = secondary.address().to_bytes()
     zero = b'\x00' * 32
-    licn = contracts.get("lichencoin", PublicKey(zero)).to_bytes()
+    licn = PublicKey(zero).to_bytes()
     weth = contracts.get("weth_token", PublicKey(zero)).to_bytes()
     musd = contracts.get("lusd_token", PublicKey(zero)).to_bytes()
     yid = contracts.get("lichenid", PublicKey(zero)).to_bytes()
@@ -1422,9 +1413,6 @@ async def main() -> int:
     for contract_name, steps in named_scenarios.items():
         program = contracts.get(contract_name)
         if not program:
-            if contract_name == "lichencoin":
-                report("SKIP", "lichencoin: native LICN path has no registry-backed contract")
-                continue
             report("FAIL", f"{contract_name}: not deployed")
             continue
         c = conns[conn_idx % len(conns)]

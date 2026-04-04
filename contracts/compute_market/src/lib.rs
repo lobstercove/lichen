@@ -154,8 +154,17 @@ fn is_admin(caller: &[u8]) -> bool {
 }
 
 /// Load the configured payment token address, or None if not set.
+/// The zero address is a valid stored value and represents native LICN.
 fn load_token_address() -> Option<[u8; 32]> {
-    load_configured_address(CM_TOKEN_ADDRESS_KEY)
+    storage_get(CM_TOKEN_ADDRESS_KEY).and_then(|bytes| {
+        if bytes.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&bytes);
+            Some(addr)
+        } else {
+            None
+        }
+    })
 }
 
 fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
@@ -876,6 +885,7 @@ pub extern "C" fn remove_arbitrator(caller_ptr: *const u8, arbitrator_ptr: *cons
 // ============================================================================
 
 /// Admin sets the payment token address used for escrow transfers.
+/// Zero address = native LICN.
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
     let caller = match read_address32(caller_ptr) {
@@ -899,10 +909,6 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8)
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
-    }
-    if token.iter().all(|&b| b == 0) {
-        log_info("Cannot set zero payment token address");
-        return 2;
     }
     if load_token_address().is_some() {
         log_info("Payment token address already configured");
@@ -2550,7 +2556,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_token_address_rejects_zero_and_reconfiguration() {
+    fn test_set_token_address_accepts_native_licn_and_rejects_reconfiguration() {
         test_mock::reset();
         let admin = [0xAD; 32];
         initialize_as(&admin);
@@ -2559,12 +2565,12 @@ mod tests {
         let second = [0xCC; 32];
 
         test_mock::set_caller(admin);
-        assert_eq!(set_token_address(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
-        assert!(load_token_address().is_none());
+        assert_eq!(set_token_address(admin.as_ptr(), [0u8; 32].as_ptr()), 0);
+        assert_eq!(load_token_address(), Some([0u8; 32]));
 
-        assert_eq!(set_token_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_token_address(admin.as_ptr(), first.as_ptr()), 3);
         assert_eq!(set_token_address(admin.as_ptr(), second.as_ptr()), 3);
-        assert_eq!(load_token_address(), Some(first));
+        assert_eq!(load_token_address(), Some([0u8; 32]));
     }
 
     #[test]

@@ -1182,6 +1182,8 @@
         }
     }
 
+    window._itemAcceptOffer = acceptOffer;
+
     // ===== Activity =====
     async function loadActivity() {
         var activityList = document.getElementById('activityList');

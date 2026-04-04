@@ -4,7 +4,7 @@
 //
 // Exercises every exported function across all contracts with known coverage
 // gaps: lichendao, weth_token, wsol_token, lichenoracle, compute_market,
-// dex_governance, plus batch validation of all 28 contracts' basic operations.
+// dex_governance, plus batch validation of the active contract WASM set.
 //
 // Pattern:
 //   1. Load pre-compiled .wasm from contracts/<name>/<name>.wasm
@@ -112,7 +112,7 @@ fn admin_storage() -> HashMap<Vec<u8>, Vec<u8>> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 0: Verify all 28 contracts load and instantiate
+//  SECTION 0: Verify the active contract set loads and instantiates
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const ALL_CONTRACTS: &[&str] = &[
@@ -131,7 +131,6 @@ const ALL_CONTRACTS: &[&str] = &[
     "thalllend",
     "lichenauction",
     "lichenbridge",
-    "lichencoin",
     "lichendao",
     "lichenmarket",
     "lichenoracle",

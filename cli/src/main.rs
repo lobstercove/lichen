@@ -3541,7 +3541,7 @@ mod tests {
 
     #[test]
     fn test_to_pascal_case() {
-        assert_eq!(to_pascal_case("lichencoin"), "Lichencoin");
+        assert_eq!(to_pascal_case("lusd_token"), "LusdToken");
         assert_eq!(to_pascal_case("dex_core"), "DexCore");
         assert_eq!(to_pascal_case("moss_storage"), "MossStorage");
     }
@@ -3554,11 +3554,11 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_typescript_lichencoin() {
-        let abi_json = include_str!("../../contracts/lichencoin/abi.json");
+    fn test_generate_typescript_lusd_token() {
+        let abi_json = include_str!("../../contracts/lusd_token/abi.json");
         let abi: lichen_core::ContractAbi = serde_json::from_str(abi_json).unwrap();
         let code = generate_typescript(&abi);
-        assert!(code.contains("class LichencoinClient"));
+        assert!(code.contains("class LusdTokenClient"));
         assert!(code.contains("async balanceOf("));
         assert!(code.contains("async transfer(signer: Keypair"));
         assert!(code.contains("async totalSupply("));
@@ -3568,11 +3568,11 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_python_lichencoin() {
-        let abi_json = include_str!("../../contracts/lichencoin/abi.json");
+    fn test_generate_python_lusd_token() {
+        let abi_json = include_str!("../../contracts/lusd_token/abi.json");
         let abi: lichen_core::ContractAbi = serde_json::from_str(abi_json).unwrap();
         let code = generate_python(&abi);
-        assert!(code.contains("class LichencoinClient:"));
+        assert!(code.contains("class LusdTokenClient:"));
         assert!(code.contains("def balance_of(self"));
         assert!(code.contains("def transfer(self, signer: Keypair"));
         assert!(code.contains("def total_supply(self"));

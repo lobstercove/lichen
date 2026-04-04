@@ -184,6 +184,12 @@ fn load_licn_addr() -> [u8; 32] {
         .unwrap_or([0u8; 32])
 }
 
+fn licn_address_configured() -> bool {
+    storage_get(LICHENCOIN_ADDRESS_KEY)
+        .map(|bytes| bytes.len() >= 32)
+        .unwrap_or(false)
+}
+
 fn oracle_feed_configured() -> bool {
     storage_get(ORACLE_ADDR_KEY)
         .map(|bytes| {
@@ -247,7 +253,7 @@ fn quote_accrued_interest(principal: u64, elapsed_slots: u64) -> u64 {
 /// Returns 0 on success, non-zero on failure.
 fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     let licn_addr = load_licn_addr();
-    if is_zero_addr(&licn_addr) {
+    if !licn_address_configured() {
         log_info("Lichencoin address not configured");
         return 30;
     }
@@ -1197,10 +1203,7 @@ pub extern "C" fn set_lichencoin_address(caller_ptr: *const u8, addr_ptr: *const
         core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
     }
 
-    if is_zero_addr(&addr) {
-        return 2;
-    }
-    if !is_zero_addr(&load_licn_addr()) {
+    if licn_address_configured() {
         log_info("LichenCoin address already configured");
         return 3;
     }
@@ -2115,14 +2118,15 @@ mod tests {
     }
 
     #[test]
-    fn test_set_lichencoin_address_zero_rejected() {
+    fn test_set_lichencoin_address_accepts_native_licn() {
         setup_no_licn();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let zero = [0u8; 32];
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(load_licn_addr(), zero);
     }
 
     #[test]
@@ -2168,8 +2172,14 @@ mod tests {
             ),
             4
         );
-        assert_eq!(test_mock::get_storage(ORACLE_ADDR_KEY).unwrap().as_slice(), &first_oracle);
-        assert_eq!(test_mock::get_storage(ORACLE_ASSET_KEY).unwrap().as_slice(), first_asset);
+        assert_eq!(
+            test_mock::get_storage(ORACLE_ADDR_KEY).unwrap().as_slice(),
+            &first_oracle
+        );
+        assert_eq!(
+            test_mock::get_storage(ORACLE_ASSET_KEY).unwrap().as_slice(),
+            first_asset
+        );
     }
 
     #[test]

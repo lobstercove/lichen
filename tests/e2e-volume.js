@@ -310,7 +310,7 @@ async function discoverContracts() {
         'DEX': 'dex_core', 'DEXAMM': 'dex_amm', 'DEXROUTER': 'dex_router',
         'DEXMARGIN': 'dex_margin', 'DEXREWARDS': 'dex_rewards', 'DEXGOV': 'dex_governance',
         'ANALYTICS': 'dex_analytics', 'PREDICT': 'prediction_market',
-        'LICN': 'lichencoin', 'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
+        'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
         'ORACLE': 'lichenoracle',
     };
     for (const e of entries) {

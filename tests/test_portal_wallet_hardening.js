@@ -42,7 +42,6 @@ console.log('\n── Shared Helper Hardening ──');
 [
     ['Explorer', explorerHelperSrc],
     ['Faucet', faucetHelperSrc],
-    ['Developers', developersHelperSrc],
     ['Monitoring', monitoringHelperSrc],
 ].forEach(([label, source]) => {
     const prefix = label.toUpperCase();
@@ -54,6 +53,14 @@ console.log('\n── Shared Helper Hardening ──');
     assert(source.includes("data.provider !== 'extension'"), `${prefix}-6 ${label} helper purges persisted non-extension wallet state`);
     assert(source.includes('toggle().catch('), `${prefix}-7 ${label} helper catches failed extension connect actions`);
 });
+
+assert(developersHelperSrc.includes('extensionOnlyWalletError'), 'DEVELOPERS-1 Developers helper exposes extension-only error helper');
+assert(!developersHelperSrc.includes('Lichen.Wallet.import('), 'DEVELOPERS-2 Developers helper no longer imports local SDK wallets');
+assert(!developersHelperSrc.includes('Lichen.Wallet.create('), 'DEVELOPERS-3 Developers helper no longer creates local SDK wallets');
+assert(!developersHelperSrc.includes("lichenRpcCall('createWallet'"), 'DEVELOPERS-4 Developers helper no longer attempts RPC wallet creation');
+assert(!developersHelperSrc.includes('window.LichenPQ.generateKeypair'), 'DEVELOPERS-5 Developers helper no longer falls back to the PQ runtime');
+assert(developersHelperSrc.includes("data.provider && data.provider !== 'extension'"), 'DEVELOPERS-6 Developers helper purges persisted non-extension wallet providers');
+assert(developersHelperSrc.includes('toggle().catch('), 'DEVELOPERS-7 Developers helper catches failed extension connect actions');
 
 console.log(`\n${'═'.repeat(50)}`);
 console.log(`Portal Wallet Hardening: ${passed} passed, ${failed} failed (${passed + failed} total)`);

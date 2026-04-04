@@ -216,11 +216,11 @@ echo "┌─ Global Fixes (GX-02, GX-03, GX-04)"
 check "GX-02: tx_to_rpc_json status documented" \
   "grep -q 'AUDIT-FIX GX-02' '$ROOT/rpc/src/lib.rs'"
 
-check "GX-03: LichenCoin initial supply = 500M" \
-  "grep -q '500_000_000_000_000_000.*500M' '$ROOT/contracts/lichencoin/src/lib.rs'"
+check "GX-03: LICN uses native zero-address sentinel" \
+  "grep -q 'let licn_addr: \[u8; 32\] = \[0u8; 32\]' '$ROOT/genesis/src/lib.rs'"
 
-check "GX-04: mint() documented re: native vs wrapper" \
-  "grep -q 'AUDIT-FIX GX-04' '$ROOT/contracts/lichencoin/src/lib.rs'"
+check "GX-04: RPC maps native LICN without a registry-backed contract" \
+  "grep -q 'symbol_for_addr.insert(zero_pubkey.to_string(), "\''LICN"\''.to_string())' '$ROOT/rpc/src/lib.rs'"
 echo ""
 
 # ── DEX-02: Router→AMM serialization ───────────────────────────────────────

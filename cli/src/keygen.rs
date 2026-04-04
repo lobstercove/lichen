@@ -379,12 +379,12 @@ mod tests {
     /// different from a naive SHA-256 hash).
     #[test]
     fn test_kdf_is_argon2id_not_sha256() {
-        let key = derive_encryption_key("test_password", b"test_salt_16!!");
+        let key = derive_encryption_key("test_password", b"test_salt_16!!!!");
         // Argon2id output for this input is fixed — verify it's not a raw SHA-256 hash
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(b"test_password");
-        h.update(b"test_salt_16!!");
+        h.update(b"test_salt_16!!!!");
         let sha_hash: [u8; 32] = h.finalize().into();
         assert_ne!(key, sha_hash, "KDF output should differ from raw SHA-256");
         assert_eq!(key.len(), 32);

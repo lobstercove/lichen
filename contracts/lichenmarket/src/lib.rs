@@ -16,8 +16,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_nft_owner, call_nft_transfer, get_caller, log_info, receive_token_or_native,
-    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer, get_caller,
+    is_native_token, log_info, receive_token_or_native, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address,
 };
 
 const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
@@ -1351,12 +1352,17 @@ pub extern "C" fn settle_auction(
                 }
                 _ => {
                     log_info("Auction royalty transfer failed; paying fallback to seller");
-                    let _ = transfer_token_or_native(
-                        payment_token,
-                        marketplace_addr,
-                        seller,
-                        royalty_amount,
-                    );
+                    let fallback_result = if !is_native_token(&payment_token) {
+                        call_token_transfer(payment_token, marketplace_addr, seller, royalty_amount)
+                    } else {
+                        transfer_token_or_native(
+                            payment_token,
+                            marketplace_addr,
+                            seller,
+                            royalty_amount,
+                        )
+                    };
+                    let _ = fallback_result;
                 }
             }
         }
@@ -1588,7 +1594,12 @@ pub extern "C" fn accept_collection_offer(
         let seller_amount = price - fee_amount;
 
         // Escrow payment in marketplace first to prevent double-pull from offerer.
-        match receive_token_or_native(payment_token, offerer, marketplace_addr, price) {
+        let escrow_result = if is_native_token(&payment_token) {
+            receive_token_or_native(payment_token, offerer, marketplace_addr, price)
+        } else {
+            call_token_transfer(payment_token, offerer, marketplace_addr, price)
+        };
+        match escrow_result {
             Ok(true) => {}
             _ => {
                 reentrancy_exit();
@@ -1628,7 +1639,12 @@ pub extern "C" fn accept_collection_offer(
                 1
             }
             _ => {
-                let _ = transfer_token_or_native(payment_token, marketplace_addr, offerer, price);
+                let refund_result = if is_native_token(&payment_token) {
+                    transfer_token_or_native(payment_token, marketplace_addr, offerer, price)
+                } else {
+                    call_token_transfer(payment_token, marketplace_addr, offerer, price)
+                };
+                let _ = refund_result;
                 reentrancy_exit();
                 0
             }

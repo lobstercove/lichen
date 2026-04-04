@@ -51,6 +51,15 @@ function assert(cond, msg) {
 function assertEq(a, b, msg) { assert(a === b, `${msg} (expected ${b}, got ${a})`); }
 function assertGt(a, b, msg) { assert(a > b, `${msg} (expected > ${b}, got ${a})`); }
 function assertGte(a, b, msg) { assert(a >= b, `${msg} (expected >= ${b}, got ${a})`); }
+function assertOutcomeNames(outcomes, expectedNames, msg) {
+    const actualNames = Array.isArray(outcomes)
+        ? outcomes.map((outcome) => String(outcome?.name || '').trim())
+        : [];
+    assertEq(actualNames.length, expectedNames.length, `${msg} outcome label count`);
+    for (let i = 0; i < expectedNames.length; i++) {
+        assertEq(actualNames[i], expectedNames[i], `${msg} outcome ${i} label`);
+    }
+}
 function skip(msg) { skipped++; console.log(`  ⊘ ${msg}`); }
 function section(name) { console.log(`\n── ${name} ──`); }
 
@@ -237,10 +246,22 @@ function writePubkey(arr, off, addrB58) { const b = bs58decode(addrB58); arr.set
 // Prediction Market: Binary arg builders (match WASM dispatch opcodes)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Opcode 1: create_market — [1][creator 32B][category 1B][close_slot 8B][outcome_count 1B][question_hash 32B][question_len 4B][question_bytes...]
-function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionText) {
-    const qBytes = new TextEncoder().encode(questionText);
-    const total = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length;
+// Opcode 1: create_market — [1][creator 32B][category 1B][close_slot 8B][outcome_count 1B][question_hash 32B][question_len 4B][question_bytes...][optional outcome names]
+function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionText, outcomeNames = []) {
+    const encoder = new TextEncoder();
+    const qBytes = encoder.encode(questionText);
+    const normalizedNames = Array.isArray(outcomeNames)
+        ? outcomeNames.map((name) => String(name || '').trim()).filter((name) => name.length > 0)
+        : [];
+    const encodedNames = normalizedNames.length === outcomeCount
+        ? normalizedNames
+            .map((name) => encoder.encode(name))
+            .filter((nameBytes) => nameBytes.length > 0 && nameBytes.length <= 64)
+        : [];
+    const namesLen = encodedNames.length === outcomeCount
+        ? 1 + encodedNames.reduce((sum, nameBytes) => sum + 1 + nameBytes.length, 0)
+        : 0;
+    const total = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length + namesLen;
     const buf = new ArrayBuffer(total);
     const a = new Uint8Array(buf);
     const v = new DataView(buf);
@@ -254,6 +275,17 @@ function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionT
     a.set(qHash, 43);
     writeU32LE(v, 75, qBytes.length);           // question_len
     a.set(qBytes, 79);                          // question text
+    let offset = 79 + qBytes.length;
+    if (namesLen > 0) {
+        writeU8(a, offset, encodedNames.length);
+        offset += 1;
+        encodedNames.forEach((nameBytes) => {
+            writeU8(a, offset, nameBytes.length);
+            offset += 1;
+            a.set(nameBytes, offset);
+            offset += nameBytes.length;
+        });
+    }
     return a;
 }
 
@@ -592,7 +624,8 @@ async function main() {
                 1,                // category: sports
                 closeSlot + 5000,
                 3,                // 3 outcomes
-                market2Question
+                market2Question,
+                ['US', 'France', 'Brazil']
             );
             const sig = await sendTx(bob, [contractIx(bob.address, CONTRACTS.predict, args, PREDICT_CREATE_FEE)], 400_000);
             assert(typeof sig === 'string', `Market 2 created (sports/3-way): ${sig?.slice(0, 16)}...`);
@@ -763,6 +796,15 @@ async function main() {
             }
         }
 
+        if (market2Active) {
+            const market2Detail = await rest(`/prediction-market/markets/${market2Id}`);
+            if (market2Detail?.data) {
+                assertOutcomeNames(market2Detail.data.outcomes, ['US', 'France', 'Brazil'], 'Market 2 detail');
+            } else {
+                skip('Market 2 detail not available via REST');
+            }
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         // P8. Share Selling (Partial Exits)
         // ══════════════════════════════════════════════════════════════════════
@@ -838,6 +880,14 @@ async function main() {
             assertGte(mList.length, 0, `Markets list has ${mList.length} entries`);
             for (const m of mList.slice(0, 3)) {
                 console.log(`    Market ${m.id}: "${(m.question || '').slice(0, 40)}..." [${m.status}]`);
+            }
+            if (market2Id > 0) {
+                const market2ListEntry = mList.find((market) => Number(market.id) === market2Id);
+                if (market2ListEntry) {
+                    assertOutcomeNames(market2ListEntry.outcomes, ['US', 'France', 'Brazil'], 'Market 2 list');
+                } else {
+                    skip('Market 2 missing from markets list');
+                }
             }
         }
 
@@ -1076,6 +1126,7 @@ async function main() {
             category: 7,
             outcomeCount: 4,
             question: `Matrix Custom ${Date.now()}: Which chain leads weekly agent txs? Lichen/Solana/Base/Other`,
+            outcomeNames: ['Lichen', 'Solana', 'Base', 'Other'],
             closeSlot: currentSlot + 16_000,
             initialLiquidity: 150 * PM_SCALE,
             oddsBps: [3500, 2500, 2500, 1500],
@@ -1105,6 +1156,7 @@ async function main() {
                 scenario.closeSlot,
                 scenario.outcomeCount,
                 scenario.question,
+                scenario.outcomeNames || [],
             );
             const cuBudget = scenario.outcomeCount > 2 ? 400_000 : null;
             const createSig = await sendTx(
@@ -1167,6 +1219,9 @@ async function main() {
             const md = matrixDetail.data;
             assert((md.outcome_count || md.outcomes?.length || 0) === scenario.outcomeCount, `${scenario.name} outcome count matches`);
             assertGt(md.total_volume || 0, 0, `${scenario.name} has non-zero volume`);
+            if (Array.isArray(scenario.outcomeNames) && scenario.outcomeNames.length > 0) {
+                assertOutcomeNames(md.outcomes, scenario.outcomeNames, `${scenario.name} detail`);
+            }
             if (scenario.outcomeCount === 2 && Array.isArray(md.outcomes) && md.outcomes.length >= 2) {
                 const p0 = Number(md.outcomes[0]?.price || 0);
                 const p1 = Number(md.outcomes[1]?.price || 0);

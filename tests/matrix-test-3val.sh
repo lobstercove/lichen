@@ -302,7 +302,7 @@ phase 4 "Contract Deployment & Execution"
 # ═══════════════════════════════════════════════════════════════
 
 # Test: Contracts are deployed (from genesis)
-for contract in lichencoin lichenswap thalllend lichenoracle lichenid; do
+for contract in lichenswap thalllend lichenoracle lichenid; do
     ADDR=$(echo "$SYMBOL_RESP" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -324,12 +324,12 @@ if isinstance(d, dict):
     fi
 done
 
-# Test: Contract state read (lichencoin total_supply)
+# Test: LICN is native, not a registry-backed contract
 LICHENCOIN_STATE=$(rpc_result $RPC_V1 "getContractState" '["lichencoin","total_supply"]' 2>/dev/null || echo "null")
-if [ "$LICHENCOIN_STATE" != "null" ] && [ -n "$LICHENCOIN_STATE" ]; then
-    pass "Contract state read: lichencoin/total_supply"
+if [ "$LICHENCOIN_STATE" = "null" ] || [ -z "$LICHENCOIN_STATE" ]; then
+    pass "Native LICN is not exposed via a lichencoin contract state entry"
 else
-    skip "Contract state read: lichencoin/total_supply (may not be queryable)"
+    fail "Unexpected lichencoin contract state entry is present"
 fi
 
 # ═══════════════════════════════════════════════════════════════

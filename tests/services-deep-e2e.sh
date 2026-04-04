@@ -377,16 +377,16 @@ for item in contracts:
     print(item.strip())
 PY
 )
-elif [[ -d "$ROOT_DIR/contracts" ]]; then
-  while IFS= read -r d; do
-    EXPECTED_CONTRACTS+=("$(basename "$d")")
-  done < <(find "$ROOT_DIR/contracts" -mindepth 1 -maxdepth 1 -type d | sort)
+elif [[ -f "$ROOT_DIR/tests/update-expected-contracts.py" ]]; then
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && EXPECTED_CONTRACTS+=("$name")
+  done < <(python3 "$ROOT_DIR/tests/update-expected-contracts.py" --names-only)
 fi
 
 if (( ${#EXPECTED_CONTRACTS[@]} > 0 )); then
   pass "loaded expected contract catalog (${#EXPECTED_CONTRACTS[@]} entries)"
 else
-  fail "could not load expected contracts from $ROOT_DIR/contracts"
+  fail "could not load expected contracts from genesis contract catalog"
 fi
 
 HAS_CONTRACT_NAMES="$(python3 - "$CONTRACTS_RESULT" <<'PY'
@@ -490,11 +490,11 @@ if [[ "$REQUIRE_TOKEN_WRITE" == "1" ]]; then
     TOKEN_NAME="E2E$(date +%s)"
     TOKEN_SYMBOL="E$((RANDOM%9))$((RANDOM%9))$((RANDOM%9))"
 
-    # Locate a WASM file for token deployment; try compiled contract, fall back to mock
+    # Locate a WASM file for token deployment from the wrapped-token template.
     TOKEN_WASM=""
     for candidate in \
-      "$ROOT_DIR/contracts/lichencoin/target/wasm32-unknown-unknown/release/lichencoin.wasm" \
-      "$ROOT_DIR/contracts/lichencoin/lichencoin.wasm"; do
+      "$ROOT_DIR/contracts/lusd_token/target/wasm32-unknown-unknown/release/lusd_token.wasm" \
+      "$ROOT_DIR/contracts/lusd_token/lusd_token.wasm"; do
       if [[ -f "$candidate" ]]; then TOKEN_WASM="$candidate"; break; fi
     done
     if [[ -z "$TOKEN_WASM" ]]; then

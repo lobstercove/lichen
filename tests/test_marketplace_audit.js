@@ -68,6 +68,7 @@ const createJs = fs.readFileSync(path.join(__dirname, '..', 'marketplace', 'js',
 const profileJs = fs.readFileSync(path.join(__dirname, '..', 'marketplace', 'js', 'profile.js'), 'utf8');
 const rpcRs = fs.readFileSync(path.join(__dirname, '..', 'rpc', 'src', 'lib.rs'), 'utf8');
 const marketplaceConfigJs = fs.readFileSync(path.join(__dirname, '..', 'marketplace', 'js', 'marketplace-config.js'), 'utf8');
+const marketplaceSharedConfigJs = fs.readFileSync(path.join(__dirname, '..', 'marketplace', 'shared-config.js'), 'utf8');
 
 // ════════════════════════════════════════════════════════════
 // M-1: XSS in marketplace.js — loadFeaturedCollections, loadTopCreators, loadRecentSales
@@ -166,9 +167,15 @@ assert(browseJs.includes("escapeHtml((nft.rarity || 'Common').toLowerCase())"), 
 // loadCollections escaping
 assert(browseJs.includes("escapeHtml(c.name || c.symbol"), 'M-3.8  collection name escaped in filter');
 assert(browseJs.includes("escapeHtml(c.id || c.program_id"), 'M-3.9  collection id escaped in filter value');
+assert(browseJs.includes('data-browse-action="buy" data-browse-href="'), 'M-3.10 buy actions carry the same listing href as card navigation');
+assert(browseJs.includes("buyNFT(actionButton.getAttribute('data-browse-href') || '')"), 'M-3.11 buy button navigation uses the card href instead of raw listing ids');
 
 // normalizeImage rejects non-standard protocols
 assert(browseJs.includes("uri.startsWith('linear-gradient')"), 'M-3.10 normalizeImage allows linear-gradient');
+
+// Marketplace shared-config uses the same RPC-hosted WS ingress as other portals
+assert(marketplaceSharedConfigJs.includes("ws: 'wss://rpc.lichen.network/ws'"), 'M-3.12 marketplace mainnet WS uses rpc-hosted ingress');
+assert(marketplaceSharedConfigJs.includes("ws: 'wss://testnet-rpc.lichen.network/ws'"), 'M-3.13 marketplace testnet WS uses rpc-hosted ingress');
 
 // ════════════════════════════════════════════════════════════
 // M-4: XSS in item.js — loadMoreFromCollection, loadActivity
@@ -773,9 +780,8 @@ assert(profileHtml.includes('id="chainBlockHeight"'), 'M-32.4  profile.html has 
 // ════════════════════════════════════════════════════════════
 console.log('\n── M-33: Marketplace ws config ──');
 
-const marketplaceSharedConfigJs = fs.readFileSync(path.join(__dirname, '..', 'marketplace', 'shared-config.js'), 'utf8');
-assert(marketplaceSharedConfigJs.includes("ws: 'wss://ws.lichen.network'"), 'M-33.1  mainnet wsUrl is configured');
-assert(marketplaceSharedConfigJs.includes("ws: 'wss://testnet-ws.lichen.network'"), 'M-33.2  testnet wsUrl is configured');
+assert(marketplaceSharedConfigJs.includes("ws: 'wss://rpc.lichen.network/ws'"), 'M-33.1  mainnet wsUrl is configured through rpc ingress');
+assert(marketplaceSharedConfigJs.includes("ws: 'wss://testnet-rpc.lichen.network/ws'"), 'M-33.2  testnet wsUrl is configured through rpc ingress');
 
 // ════════════════════════════════════════════════════════════
 // M-34: Backend aggregated marketplace stats

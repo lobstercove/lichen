@@ -97,8 +97,11 @@ impl CompactBlock {
     }
 }
 
-/// Current P2P protocol version. Bump when message format changes.
-pub const P2P_PROTOCOL_VERSION: u32 = 1;
+/// Current P2P protocol version.
+///
+/// Version 2 adds `current_slot` to `ConsistencyReport`, which changes the
+/// bincode layout and must not be mixed with version 1 peers.
+pub const P2P_PROTOCOL_VERSION: u32 = 2;
 
 /// P2P message envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +188,7 @@ pub enum MessageType {
 
     /// Consistency report for validator set + stake pool
     ConsistencyReport {
+        current_slot: u64,
         validator_set_hash: Hash,
         stake_pool_hash: Hash,
     },
@@ -535,6 +539,35 @@ mod tests {
         let msg = P2PMessage::new(MessageType::Pong, addr);
         let bytes = msg.serialize().unwrap();
         assert!(bytes.len() < 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_consistency_report_roundtrip_preserves_current_slot() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(
+            MessageType::ConsistencyReport {
+                current_slot: 42,
+                validator_set_hash: Hash::hash(b"validator-set"),
+                stake_pool_hash: Hash::hash(b"stake-pool"),
+            },
+            addr,
+        );
+
+        let bytes = msg.serialize().unwrap();
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+
+        match decoded.msg_type {
+            MessageType::ConsistencyReport {
+                current_slot,
+                validator_set_hash,
+                stake_pool_hash,
+            } => {
+                assert_eq!(current_slot, 42);
+                assert_eq!(validator_set_hash, Hash::hash(b"validator-set"));
+                assert_eq!(stake_pool_hash, Hash::hash(b"stake-pool"));
+            }
+            other => panic!("unexpected message type: {:?}", other),
+        }
     }
 
     // ----------------------------------------------------------------

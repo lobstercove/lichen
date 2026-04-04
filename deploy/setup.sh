@@ -65,6 +65,36 @@ delete_env_value() {
     sed -i "/^${key}=/d" "$env_file"
 }
 
+hash_contract_bundle() {
+    local contracts_root="$1"
+    local hash_tool=""
+    local files=()
+    local file=""
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        hash_tool="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        hash_tool="shasum -a 256"
+    else
+        return 1
+    fi
+
+    while IFS= read -r file; do
+        files+=("$file")
+    done < <(command find "$contracts_root" -maxdepth 2 -type f -name '*.wasm' | sort)
+
+    if [ ${#files[@]} -eq 0 ]; then
+        return 2
+    fi
+
+    if [ "$hash_tool" = "sha256sum" ]; then
+        printf '%s\0' "${files[@]}" | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+        return 0
+    fi
+
+    printf '%s\0' "${files[@]}" | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}'
+}
+
 migrate_inline_secret_to_file() {
     local env_file="$1"
     local inline_key="$2"
@@ -75,8 +105,8 @@ migrate_inline_secret_to_file() {
     inline_value="$(read_env_value "$env_file" "$inline_key" || true)"
     if [ -n "$inline_value" ] && [ ! -f "$secret_path" ]; then
         printf '%s\n' "$inline_value" > "$secret_path"
-        chmod 600 "$secret_path"
-        chown root:root "$secret_path"
+        chmod 640 "$secret_path"
+        chown root:"$GROUP" "$secret_path"
         echo "   ✅ Migrated $inline_key into $secret_path"
     fi
 
@@ -235,8 +265,8 @@ fi
 # ── 2. Create directories ──
 mkdir -p "$CONFIG_DIR" "$SECRETS_DIR" "$DATA_DIR" "$LOG_DIR" "$SHARE_DIR"
 chown "$USER":"$GROUP" "$DATA_DIR" "$LOG_DIR"
-chmod 700 "$SECRETS_DIR"
-chown root:root "$SECRETS_DIR"
+chmod 750 "$SECRETS_DIR"
+chown root:"$GROUP" "$SECRETS_DIR"
 write_key_hierarchy_template
 write_drill_register_template
 echo "✅ Directories created"
@@ -277,6 +307,20 @@ if [ -d "contracts" ]; then
     cp -R contracts/. "$DATA_DIR/contracts/"
     chown -R "$USER":"$GROUP" "$DATA_DIR/contracts"
     echo "✅ Installed contract artifacts → $DATA_DIR/contracts"
+
+    CONTRACT_WASM_COUNT=$(command find "$DATA_DIR/contracts" -maxdepth 2 -type f -name '*.wasm' | wc -l | tr -d ' ')
+    if [ "$CONTRACT_WASM_COUNT" = "0" ]; then
+        echo "   ❌ No top-level contract WASM artifacts were installed under $DATA_DIR/contracts"
+        echo "      Genesis replay uses contracts/<name>/<name>.wasm on every validator."
+        exit 1
+    fi
+
+    if CONTRACT_BUNDLE_HASH=$(hash_contract_bundle "$DATA_DIR/contracts"); then
+        echo "   Contract bundle hash: $CONTRACT_BUNDLE_HASH (${CONTRACT_WASM_COUNT} top-level .wasm files)"
+        echo "   Every validator must use the same bundle hash before genesis creation or join."
+    else
+        echo "   ⚠  Could not compute a contract bundle hash for $DATA_DIR/contracts"
+    fi
 else
     echo "   ⚠  contracts/ directory not found (genesis bootstrap may skip contract deployment)"
 fi
@@ -499,9 +543,19 @@ echo "   5. On joining VPSes, set bootstrap peers in /etc/lichen/env-<net>:"
 echo "      LICHEN_BOOTSTRAP_PEERS=<genesis-ip>:<p2p-port>"
 echo "      Then start:  sudo systemctl start lichen-validator-<net>"
 echo ""
-echo "   6. Fund faucet (testnet only):"
-echo "      sudo lichen-cli transfer --keypair $DATA_DIR/genesis-keys-testnet/genesis-keys/treasury-lichen-testnet-1.json \\"
-echo "        --rpc-url http://127.0.0.1:8899 <FAUCET_ADDRESS> 1000000"
+echo "   6. Install post-genesis key material from the live state:"
+echo "      cd ~/lichen && bash scripts/vps-post-genesis.sh <net>"
+echo ""
+echo "   7. Run post-genesis bootstrap from the repo checkout (auto-bootstraps Python deps if needed):"
+echo "      cd ~/lichen && DEPLOY_NETWORK=<net> ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:<rpc-port> --skip-build"
+echo "      testnet rpc-port=8899, mainnet rpc-port=9899"
+echo ""
+echo "   8. If signed metadata was generated into the repo checkout, install it into /etc/lichen:"
+echo "      sudo install -m 640 -o root -g lichen ~/lichen/signed-metadata-manifest-<net>.json /etc/lichen/signed-metadata-manifest-<net>.json"
+echo ""
+echo "   9. Start custody and faucet after post-genesis key setup + first-boot deploy complete:"
+echo "      testnet: sudo systemctl start lichen-custody && sudo systemctl start lichen-faucet"
+echo "      mainnet: sudo systemctl start lichen-custody-mainnet"
 echo ""
 echo "   Genesis keys (treasury) will be in: $DATA_DIR/genesis-keys-<net>/genesis-keys/"
 echo "   Keep those keys secure — they control the 1B LICN treasury."

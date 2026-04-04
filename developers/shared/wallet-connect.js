@@ -70,6 +70,10 @@ function waitForInjectedLichenProvider(timeoutMs) {
     var existing = getInjectedLichenProvider();
     if (existing) return Promise.resolve(existing);
 
+    if (typeof window.addEventListener !== 'function' || typeof setTimeout !== 'function' || typeof clearTimeout !== 'function') {
+        return Promise.resolve(null);
+    }
+
     timeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 400;
 
     return new Promise(function (resolve) {
@@ -350,7 +354,7 @@ LichenWallet.prototype._restore = function () {
         if (stored) {
             var data = JSON.parse(stored);
             if (data && data.address) {
-                if (data.provider !== 'extension') {
+                if (data.provider && data.provider !== 'extension') {
                     localStorage.removeItem(this.storageKey);
                     return;
                 }

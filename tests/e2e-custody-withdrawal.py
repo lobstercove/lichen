@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import struct
 import sys
 import time
@@ -37,12 +38,9 @@ from lichen import Connection, Keypair, PublicKey  # type: ignore
 
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
 CUSTODY_URL = os.getenv("CUSTODY_URL", "http://127.0.0.1:9105")
-CUSTODY_API_AUTH_TOKEN = os.getenv("CUSTODY_API_AUTH_TOKEN")
-GENESIS_KEYS_DIR = Path(
-    os.getenv(
-        "GENESIS_KEYS_DIR",
-        str(ROOT / "data" / "state-7001" / "genesis-keys"),
-    )
+EXPLICIT_GENESIS_KEYS_DIR = os.getenv("GENESIS_KEYS_DIR")
+DEFAULT_GENESIS_KEYS_DIR = Path(
+    EXPLICIT_GENESIS_KEYS_DIR or str(ROOT / "data" / "state-7001" / "genesis-keys")
 )
 WITHDRAWAL_TOKEN_SYMBOL = os.getenv("WITHDRAWAL_TOKEN_SYMBOL", "WSOL")
 WITHDRAWAL_ASSET = os.getenv("WITHDRAWAL_ASSET", "wSOL")
@@ -53,6 +51,47 @@ USER_FEE_FUNDING_SPORES = int(os.getenv("USER_FEE_FUNDING_SPORES", "1000000000")
 
 PASS = 0
 FAIL = 0
+
+
+def _resolve_fixture_defaults() -> tuple[str, Path, str]:
+    token = (os.getenv("CUSTODY_API_AUTH_TOKEN") or "").strip()
+    token_source = "env" if token else ""
+    genesis_keys_dir = DEFAULT_GENESIS_KEYS_DIR
+    helper = ROOT / "tests" / "resolve-custody-withdrawal-fixtures.py"
+
+    if not helper.exists():
+        return token, genesis_keys_dir, token_source
+
+    if token and EXPLICIT_GENESIS_KEYS_DIR:
+        return token, genesis_keys_dir, token_source
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        payload = json.loads(result.stdout)
+    except Exception:
+        return token, genesis_keys_dir, token_source
+
+    if not token:
+        discovered_token = str(payload.get("custody_api_auth_token") or "").strip()
+        if discovered_token:
+            token = discovered_token
+            token_source = str(payload.get("custody_api_auth_token_source") or "discovered")
+
+    if not EXPLICIT_GENESIS_KEYS_DIR:
+        discovered_genesis_dir = str(payload.get("genesis_keys_dir") or "").strip()
+        if discovered_genesis_dir:
+            genesis_keys_dir = Path(discovered_genesis_dir)
+
+    return token, genesis_keys_dir, token_source
+
+
+CUSTODY_API_AUTH_TOKEN, GENESIS_KEYS_DIR, CUSTODY_API_AUTH_TOKEN_SOURCE = _resolve_fixture_defaults()
 
 
 def report(status: str, message: str, detail: str = "") -> None:

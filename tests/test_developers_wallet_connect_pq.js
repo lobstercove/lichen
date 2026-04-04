@@ -2,7 +2,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { pathToFileURL } = require('node:url');
 
 (async function main() {
     const root = path.join(__dirname, '..');
@@ -10,15 +9,13 @@ const { pathToFileURL } = require('node:url');
     const walletConnectSource = fs.readFileSync(walletConnectPath, 'utf8');
 
     assert(
-        walletConnectSource.includes('window.LichenPQ.generateKeypair'),
-        'developers wallet-connect must use the PQ runtime fallback',
+        !walletConnectSource.includes('window.LichenPQ.generateKeypair'),
+        'developers wallet-connect must not use the PQ runtime fallback',
     );
     assert(
-        !walletConnectSource.includes('window.nacl') && !walletConnectSource.includes('nacl.sign.keyPair'),
-        'developers wallet-connect must not retain a classical NaCl fallback',
+        !walletConnectSource.includes("lichenRpcCall('createWallet'"),
+        'developers wallet-connect must not retain RPC wallet creation fallback',
     );
-
-    const pq = await import(pathToFileURL(path.join(root, 'monitoring', 'shared', 'pq.js')).href);
 
     const storage = new Map();
     const rpcMethods = [];
@@ -43,12 +40,6 @@ const { pathToFileURL } = require('node:url');
             const payload = JSON.parse(options.body);
             rpcMethods.push(payload.method);
 
-            if (payload.method === 'createWallet') {
-                return {
-                    json: async () => ({ error: { message: 'createWallet unavailable in test' } }),
-                };
-            }
-
             if (payload.method === 'getBalance') {
                 return {
                     json: async () => ({ result: 0 }),
@@ -60,10 +51,13 @@ const { pathToFileURL } = require('node:url');
     };
 
     context.window = context;
-    context.LichenPQ = pq;
     context.bs58 = {
-        encode: pq.base58Encode,
-        decode: pq.base58Decode,
+        encode(value) {
+            return String(value || '');
+        },
+        decode() {
+            return new Uint8Array();
+        },
     };
 
     vm.createContext(context);
@@ -72,18 +66,14 @@ const { pathToFileURL } = require('node:url');
     assert.equal(typeof context.LichenWallet, 'function', 'LichenWallet constructor must be exported globally');
 
     const wallet = new context.LichenWallet({ rpcUrl: 'http://localhost:8899', persist: false });
-    const info = await wallet.connect();
+    await assert.rejects(
+        wallet.connect(),
+        /extension not found|Use the Lichen wallet extension/i,
+        'wallet connect must fail closed when no extension is present',
+    );
+    assert.deepStrictEqual(rpcMethods, [], 'wallet connect must not hit RPC wallet creation or balance refresh without an extension');
 
-    assert.equal(rpcMethods[0], 'createWallet', 'wallet connect must try RPC wallet creation first');
-    assert.equal(rpcMethods[1], 'getBalance', 'wallet connect must refresh balance after fallback wallet creation');
-    assert.equal(info.balance, 0, 'wallet connect must return the fetched balance');
-    assert.equal(wallet._walletData.hasKeys, true, 'fallback wallet must record that local keys exist');
-    assert.equal(wallet.address, info.address, 'returned address must match wallet state');
-    assert.equal(pq.addressToBytes(info.address).length, 32, 'fallback wallet must produce a valid native address');
-    assert.equal(Buffer.from(wallet._walletData.publicKey, 'hex').length, pq.ML_DSA_65_PUBLIC_KEY_BYTES,
-        'fallback wallet must persist the full PQ public key hex');
-
-    console.log('developers-wallet-connect-pq: ok');
+    console.log('developers-wallet-connect-extension-only: ok');
 })().catch((error) => {
     console.error(error);
     process.exit(1);

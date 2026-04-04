@@ -89,7 +89,7 @@ async def wait_for_chain_ready(conn: Connection, timeout_secs: float = 45.0) -> 
 
 # ─── Symbol → dir name mapping ───
 SYMBOL_TO_DIR = {
-    "LICN": "lichencoin", "LUSD": "lusd_token", "WSOL": "wsol_token", "WETH": "weth_token",
+    "LUSD": "lusd_token", "WSOL": "wsol_token", "WETH": "weth_token",
     "YID": "lichenid", "DEX": "dex_core", "DEXAMM": "dex_amm", "DEXROUTER": "dex_router",
     "DEXMARGIN": "dex_margin", "DEXREWARDS": "dex_rewards", "DEXGOV": "dex_governance",
     "ANALYTICS": "dex_analytics", "LICHENSWAP": "lichenswap", "BRIDGE": "lichenbridge",
@@ -100,7 +100,7 @@ SYMBOL_TO_DIR = {
     "WBNB": "wbnb_token", "SHIELDED": "shielded_pool",
 }
 
-REQUIRED_DISCOVERED_CONTRACTS = {name for name in SYMBOL_TO_DIR.values() if name != "lichencoin"}
+REQUIRED_DISCOVERED_CONTRACTS = set(SYMBOL_TO_DIR.values())
 
 DISPATCHER_CONTRACTS = {
     "dex_core", "dex_amm", "dex_analytics", "dex_governance",
@@ -136,6 +136,22 @@ def extract_spores(balance: Any) -> int:
             if isinstance(value, (int, float)):
                 return int(value)
     return 0
+
+
+def shielded_pool_snapshot(state: Dict[str, Any]) -> Tuple[str, int, int, int, int, int, int]:
+    return (
+        str(state.get("merkleRoot") or state.get("merkle_root") or ""),
+        int(state.get("commitmentCount", state.get("commitment_count", 0)) or 0),
+        int(state.get("totalShielded", state.get("total_shielded", 0)) or 0),
+        int(state.get("nullifierCount", state.get("nullifier_count", 0)) or 0),
+        int(state.get("shieldCount", state.get("shield_count", 0)) or 0),
+        int(state.get("unshieldCount", state.get("unshield_count", 0)) or 0),
+        int(state.get("transferCount", state.get("transfer_count", 0)) or 0),
+    )
+
+
+def shielded_pool_unchanged(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+    return shielded_pool_snapshot(before) == shielded_pool_snapshot(after)
 
 
 # ─── Binary encoding helpers ───
@@ -368,21 +384,12 @@ def build_named_scenarios(
     dp = str(deployer.address())
     sp = str(secondary.address())
     zero = "11111111111111111111111111111111"
-    quote = str(contracts.get("lichencoin") or dp)
+    quote = zero
     base = str(contracts.get("weth_token") or dp)
     now = int(time.time())
     rid = random.randint(1000, 99999)
 
     return {
-        "lichencoin": [
-            {"fn": "initialize", "args": {"owner": dp}},
-            {"fn": "mint", "args": {"to": dp, "amount": 1_000_000}},
-            {"fn": "transfer", "args": {"from": dp, "to": sp, "amount": 1000}},
-            {"fn": "burn", "args": {"from": dp, "amount": 100}},
-            {"fn": "approve", "args": {"owner": dp, "spender": sp, "amount": 500}},
-            {"fn": "balance_of", "args": {"account": dp}},
-            {"fn": "total_supply", "args": {}},
-        ],
         "lusd_token": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "mint", "args": {"caller": dp, "to": dp, "amount": 1_000_000}},
@@ -844,7 +851,7 @@ def build_opcode_scenarios(
     admin = deployer.address().to_bytes()
     sec = secondary.address().to_bytes()
     zero = b'\x00' * 32
-    licn = contracts.get("lichencoin", PublicKey(zero)).to_bytes()
+    licn = PublicKey(zero).to_bytes()
     weth = contracts.get("weth_token", PublicKey(zero)).to_bytes()
     musd = contracts.get("lusd_token", PublicKey(zero)).to_bytes()
     yid = contracts.get("lichenid", PublicKey(zero)).to_bytes()
@@ -1174,9 +1181,6 @@ async def main() -> int:
     for contract_name, steps in named_scenarios.items():
         program = contracts.get(contract_name)
         if not program:
-            if contract_name == "lichencoin":
-                report("SKIP", "lichencoin: native LICN path has no registry-backed contract")
-                continue
             report("FAIL", f"{contract_name}: not deployed")
             continue
 
@@ -1826,6 +1830,7 @@ async def main() -> int:
         # ── 3.18  Double-spend rejection: re-submit same unshield ──
         if unshield_sig and unshield_json:
             try:
+                pool_before_double = await conn._rpc("getShieldedPoolState")
                 nullifier = bytes.fromhex(unshield_json["nullifier"])
                 merkle_root_b = bytes.fromhex(unshield_json["merkle_root"])
                 recipient_hash_b = bytes.fromhex(unshield_json["recipient_hash"])
@@ -1839,16 +1844,24 @@ async def main() -> int:
                 dbl_sig = await conn.send_transaction(tx)
                 # Should either fail to send or not confirm
                 tx_result = await wait_tx(conn, dbl_sig, timeout=5)
+                pool_after_double = await conn._rpc("getShieldedPoolState")
+                nullifier_after = await conn._rpc("isNullifierSpent", [unshield_json["nullifier"]])
                 if tx_result is None:
                     report("PASS", "zk.verify.double_spend rejected (not confirmed)")
+                elif shielded_pool_unchanged(pool_before_double, pool_after_double) and nullifier_after.get("spent", False):
+                    report("PASS", "zk.verify.double_spend rejected (no state change)")
                 else:
-                    report("FAIL", "zk.verify.double_spend SHOULD have been rejected")
+                    report(
+                        "FAIL",
+                        "zk.verify.double_spend SHOULD have been rejected",
+                    )
             except Exception as e:
                 # Expected: RPC rejects duplicate nullifier
                 report("PASS", f"zk.verify.double_spend rejected ({type(e).__name__})")
 
         # ── 3.19  Shield with zero amount rejection ──
         try:
+            pool_before_zero = await conn._rpc("getShieldedPoolState")
             zero_commitment = bytes(32)
             zero_proof = bytes(128)
             ix = shield_instruction(deployer.address(), 0, zero_commitment, zero_proof)
@@ -1856,8 +1869,11 @@ async def main() -> int:
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
             sig = await conn.send_transaction(tx)
             tx_result = await wait_tx(conn, sig, timeout=5)
+            pool_after_zero = await conn._rpc("getShieldedPoolState")
             if tx_result is None:
                 report("PASS", "zk.verify.zero_amount_shield rejected")
+            elif shielded_pool_unchanged(pool_before_zero, pool_after_zero):
+                report("PASS", "zk.verify.zero_amount_shield rejected (no state change)")
             else:
                 report("FAIL", "zk.verify.zero_amount_shield should have been rejected")
         except Exception as e:

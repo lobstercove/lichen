@@ -11,6 +11,7 @@ const {
   stableJsonStringify,
   verifySignedMetadataEnvelope,
 } = require('../monitoring/shared/utils.js');
+const { publicKeyToAddress, verifySignature } = require('../monitoring/shared/pq.js');
 
 let passed = 0;
 let failed = 0;
@@ -166,12 +167,7 @@ async function main() {
   const verified = await verifySignedMetadataEnvelope(
     manifest,
     'local-testnet',
-    async (signature, messageBytes, expectedAddress) => {
-      assert.strictEqual(expectedAddress, manifest.signer);
-      assert.strictEqual(Buffer.from(messageBytes).toString('utf8'), stableJsonStringify(manifest.payload));
-      assert.ok(signature && signature.public_key && signature.sig);
-      return true;
-    },
+    verifySignature,
     manifest.signer
   );
 
@@ -180,6 +176,15 @@ async function main() {
     assert.strictEqual(verified.registryEntries.length, 3);
     assert.strictEqual(verified.registryBySymbol.DEX.program, '11111111111111111111111111111112');
     assert.strictEqual(verified.registryByProgram['11111111111111111111111111111114'].symbol, 'YID');
+  });
+
+  const derivedSigner = await publicKeyToAddress(
+    Buffer.from(manifest.signature.public_key.bytes, 'hex'),
+    manifest.signature.public_key.scheme_version
+  );
+
+  test('generated manifest signer matches the embedded verifying key', () => {
+    assert.strictEqual(manifest.signer, derivedSigner);
   });
 
   await new Promise((resolve) => server.close(resolve));

@@ -425,15 +425,38 @@ function buildGetGovernanceStats() {
 // ── prediction_market builders ──
 
 // create_market: opcode 1, variable length
-function buildCreateMarket(creator, category, closeSlot, outcomeCount, question) {
-    const qBytes = new TextEncoder().encode(question);
+function buildCreateMarket(creator, category, closeSlot, outcomeCount, question, outcomeNames = []) {
+    const encoder = new TextEncoder();
+    const qBytes = encoder.encode(question);
+    const normalizedNames = Array.isArray(outcomeNames)
+        ? outcomeNames.map((name) => String(name || '').trim()).filter((name) => name.length > 0)
+        : [];
+    const encodedNames = normalizedNames.length === outcomeCount
+        ? normalizedNames
+            .map((name) => encoder.encode(name))
+            .filter((nameBytes) => nameBytes.length > 0 && nameBytes.length <= 64)
+        : [];
     const qHash = crypto.createHash('sha256').update(qBytes).digest();
-    const totalLen = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length; // 79 + qLen
+    const namesLen = encodedNames.length === outcomeCount
+        ? 1 + encodedNames.reduce((sum, nameBytes) => sum + 1 + nameBytes.length, 0)
+        : 0;
+    const totalLen = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length + namesLen; // 79 + qLen + names
     const buf = new ArrayBuffer(totalLen); const v = new DataView(buf); const a = new Uint8Array(buf);
     writeU8(a, 0, 1); writePubkey(a, 1, creator);
     writeU8(a, 33, category); writeU64LE(v, 34, closeSlot);
     writeU8(a, 42, outcomeCount); a.set(qHash, 43);
     v.setUint32(75, qBytes.length, true); a.set(qBytes, 79);
+    let offset = 79 + qBytes.length;
+    if (namesLen > 0) {
+        writeU8(a, offset, encodedNames.length);
+        offset += 1;
+        encodedNames.forEach((nameBytes) => {
+            writeU8(a, offset, nameBytes.length);
+            offset += 1;
+            a.set(nameBytes, offset);
+            offset += nameBytes.length;
+        });
+    }
     return a;
 }
 
@@ -595,7 +618,7 @@ async function discoverContracts() {
         'DEX': 'dex_core', 'DEXAMM': 'dex_amm', 'DEXROUTER': 'dex_router',
         'DEXMARGIN': 'dex_margin', 'DEXREWARDS': 'dex_rewards', 'DEXGOV': 'dex_governance',
         'ANALYTICS': 'dex_analytics', 'PREDICT': 'prediction_market',
-        'LICN': 'lichencoin', 'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
+        'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
         'ORACLE': 'lichenoracle', 'SPOREPUMP': 'sporepump',
     };
     for (const e of entries) {
@@ -625,11 +648,7 @@ async function runTests() {
     for (const c of expectedContracts) {
         assert(!!CONTRACTS[c], `Contract ${c}: ${CONTRACTS[c] || 'MISSING'}`);
     }
-    if (CONTRACTS.lichencoin) {
-        assert(true, `Token LICN: ${CONTRACTS.lichencoin}`);
-    } else {
-        skip('Token LICN not present in symbol registry (native asset path)');
-    }
+    assert(true, 'Native LICN uses zero-address asset path');
     assert(!!CONTRACTS.lusd_token, `Token lUSD: ${CONTRACTS.lusd_token}`);
 
     // Check for sporepump

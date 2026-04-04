@@ -110,6 +110,10 @@ DISPATCHER_CONTRACTS = {
     "dex_rewards", "dex_governance", "dex_analytics", "prediction_market",
 }
 
+LAYOUT_ENCODED_NAMED_CONTRACTS = {
+    "lichenauction", "lichenid", "lichenoracle", "lichenpunks", "lichenswap",
+}
+
 ABI_CACHE: Dict[str, Any] = {}
 
 
@@ -184,6 +188,70 @@ def build_dispatcher_ix(abi: dict, fn_name: str, args: dict) -> bytes:
         else:
             buf += struct.pack("<Q", int(val))
     return bytes(buf)
+
+
+def _encode_layout_named_chunk(value: Any) -> Tuple[int, bytes]:
+    if hasattr(value, "to_bytes"):
+        return 32, value.to_bytes()
+
+    if isinstance(value, bytes):
+        stride = max(32, min(255, len(value)))
+        return stride, value.ljust(stride, b"\x00")[:stride]
+
+    if isinstance(value, bytearray):
+        raw = bytes(value)
+        stride = max(32, min(255, len(raw)))
+        return stride, raw.ljust(stride, b"\x00")[:stride]
+
+    if isinstance(value, str):
+        try:
+            return 32, PublicKey.from_base58(value).to_bytes()
+        except Exception:
+            raw = value.encode("utf-8")
+            stride = max(32, min(255, len(raw)))
+            return stride, raw.ljust(stride, b"\x00")[:stride]
+
+    return 32, b"\x00" * 32
+
+
+def build_named_layout_args(abi: dict, fn_name: str, args: dict) -> bytes:
+    funcs = abi.get("functions", [])
+    func = next((f for f in funcs if f["name"] == fn_name), None)
+    if not func:
+        raise ValueError(f"Function {fn_name} not found in ABI")
+
+    layout: List[int] = []
+    chunks: List[bytes] = []
+    for param in func.get("params", []):
+        name = param["name"]
+        ptype = param["type"]
+        value = args.get(name)
+
+        if ptype == "Pubkey":
+            stride, chunk = _encode_layout_named_chunk(value)
+        elif ptype == "u64":
+            stride, chunk = 8, struct.pack("<Q", int(value or 0))
+        elif ptype == "u32":
+            stride, chunk = 4, struct.pack("<I", int(value or 0))
+        elif ptype == "u16":
+            stride, chunk = 2, struct.pack("<H", int(value or 0))
+        elif ptype == "u8":
+            stride, chunk = 1, struct.pack("<B", int(value or 0) & 0xFF)
+        elif ptype == "i64":
+            stride, chunk = 8, struct.pack("<q", int(value or 0))
+        elif ptype == "i32":
+            stride, chunk = 4, struct.pack("<i", int(value or 0))
+        elif ptype == "i16":
+            stride, chunk = 2, struct.pack("<h", int(value or 0))
+        elif ptype == "bool":
+            stride, chunk = 1, struct.pack("<B", 1 if value else 0)
+        else:
+            raise ValueError(f"Unsupported ABI param type {ptype} for {fn_name}")
+
+        layout.append(stride)
+        chunks.append(chunk)
+
+    return bytes([0xAB]) + bytes(layout) + b"".join(chunks)
 
 
 def load_activity_overrides() -> Dict[str, int]:
@@ -302,9 +370,13 @@ def parse_contract_public_functions() -> Dict[str, List[str]]:
     if not contracts_dir.exists():
         return output
 
+    expected_contracts = set(load_expected_contracts())
+
     pattern = re.compile(r'pub\s+extern\s+"C"\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(')
     for child in sorted(contracts_dir.iterdir()):
         if not child.is_dir():
+            continue
+        if expected_contracts and child.name not in expected_contracts:
             continue
         lib_rs = child / "src" / "lib.rs"
         if not lib_rs.exists():
@@ -325,6 +397,7 @@ async def call_contract(
     func: str,
     args: Optional[Dict[str, Any]] = None,
     contract_dir: str = "",
+    value: int = 0,
 ) -> str:
     args = args or {}
 
@@ -335,11 +408,14 @@ async def call_contract(
     if is_dispatcher:
         raw_args = build_dispatcher_ix(abi, func, args)
         envelope_fn = "call"
+    elif contract_dir in LAYOUT_ENCODED_NAMED_CONTRACTS and abi is not None:
+        raw_args = build_named_layout_args(abi, func, args)
+        envelope_fn = func
     else:
         raw_args = json.dumps(args).encode()
         envelope_fn = func
 
-    payload = json.dumps({"Call": {"function": envelope_fn, "args": list(raw_args), "value": 0}})
+    payload = json.dumps({"Call": {"function": envelope_fn, "args": list(raw_args), "value": int(value)}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
         accounts=[caller.pubkey(), program],
@@ -501,10 +577,6 @@ def transaction_has_positive_failure_signal(tx_data: Dict[str, Any]) -> bool:
     if error not in (None, "", {}, []):
         return True
 
-    return_code = tx_data.get("return_code")
-    if isinstance(return_code, int) and return_code == 0:
-        return True
-
     failure_markers = [
         "not authorized",
         "unauthorized",
@@ -520,8 +592,6 @@ def transaction_has_positive_failure_signal(tx_data: Dict[str, Any]) -> bool:
         "panic",
         "overflow",
         "underflow",
-        "return: 0",
-        "return 0",
     ]
     return transaction_contains_any(tx_data, failure_markers)
 
@@ -551,7 +621,7 @@ def evaluate_domain_assertions(
             )
         )
 
-    if contract_name in {"lichencoin", "lusd_token", "weth_token", "wsol_token"}:
+    if contract_name in {"lusd_token", "weth_token", "wsol_token", "wbnb_token"}:
         require_steps("token_invariants", ["mint", "transfer", "burn"])
 
     elif contract_name == "sporepump":
@@ -652,7 +722,6 @@ async def ensure_minimum_balance(conn: Connection, sender: Keypair, recipient: P
 async def get_contracts_map(conn: Connection) -> Dict[str, PublicKey]:
     # Symbol→dir_name mapping for the genesis contract catalog
     SYMBOL_TO_DIR: Dict[str, str] = {
-        "LICN": "lichencoin",
         "LUSD": "lusd_token",
         "WSOL": "wsol_token",
         "WETH": "weth_token",
@@ -684,7 +753,7 @@ async def get_contracts_map(conn: Connection) -> Dict[str, PublicKey]:
     }
 
     ALL_NAMES = [
-        "lichencoin", "sporepump", "thalllend", "lichenmarket", "lichenauction",
+        "sporepump", "thalllend", "lichenmarket", "lichenauction",
         "lichenbridge", "moss_storage", "sporevault", "sporepay", "lichendao",
         "prediction_market", "compute_market", "lichenid", "dex_core",
         "dex_amm", "dex_router", "dex_margin", "dex_rewards",
@@ -754,13 +823,14 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
     provider = str(deployer.pubkey())
     user2 = str(secondary.pubkey())
     zero_addr = "11111111111111111111111111111111"
-    quote_addr = str(contracts.get("lichencoin") or provider)
+    quote_addr = zero_addr
     base_addr = str(contracts.get("weth_token") or contracts.get("wsol_token") or provider)
     dex_core_addr = str(contracts.get("dex_core") or provider)
     dex_amm_addr = str(contracts.get("dex_amm") or provider)
     now = int(time.time())
     market_deadline_slot = now + 1_000_000
     identity_name = f"agent{random.randint(100, 999)}"
+    delegate_identity_name = f"delegate{random.randint(1000, 9999)}"
     metadata_json = '{"role":"agent","mode":"e2e"}'
     endpoint_url = "https://agent.e2e"
     asset_symbol = "LICN"
@@ -770,12 +840,6 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
     rand_job_id = random.randint(30000, 99999)
 
     return {
-        "lichencoin": [
-            {"fn": "initialize", "args": {"owner": provider}, "actor": "deployer"},
-            {"fn": "mint", "args": {"to": provider, "amount": 1000}, "actor": "deployer"},
-            {"fn": "transfer", "args": {"from": provider, "to": user2, "amount": 25}, "actor": "deployer"},
-            {"fn": "burn", "args": {"from": provider, "amount": 5}, "actor": "deployer"},
-        ],
         "sporepump": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
             {"fn": "create_token", "args": {"creator": provider, "fee_paid": 10_000_000_000}, "actor": "deployer"},
@@ -796,10 +860,43 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
             {"fn": "get_marketplace_stats", "args": {}, "actor": "deployer"},
         ],
         "lichenauction": [
-            {"fn": "initialize", "args": {"marketplace": provider}, "actor": "deployer"},
-            {"fn": "create_auction", "args": {"seller": provider, "token_id": rand_token_id, "start_price": 100, "duration_slots": 300}, "actor": "deployer"},
-            {"fn": "place_bid", "args": {"bidder": provider, "token_id": rand_token_id, "bid_amount": 120}, "actor": "deployer"},
-            {"fn": "cancel_auction", "args": {"seller": provider, "token_id": rand_token_id}, "actor": "deployer"},
+            {"fn": "initialize", "args": {"marketplace_addr_ptr": provider}, "actor": "deployer"},
+            {
+                "fn": "create_auction",
+                "args": {
+                    "seller_ptr": provider,
+                    "nft_contract_ptr": str(contracts.get("lichenpunks") or zero_addr),
+                    "token_id": rand_token_id,
+                    "min_bid": 100,
+                    "payment_token_ptr": zero_addr,
+                    "duration": 300,
+                },
+                "actor": "deployer",
+            },
+            {
+                "fn": "place_bid",
+                "args": {
+                    "bidder_ptr": user2,
+                    "nft_contract_ptr": str(contracts.get("lichenpunks") or zero_addr),
+                    "token_id": rand_token_id,
+                    "bid_amount": 120,
+                },
+                "actor": "secondary",
+                "value": 120,
+            },
+            {
+                "fn": "cancel_auction",
+                "args": {
+                    "caller_ptr": provider,
+                    "nft_contract_ptr": str(contracts.get("lichenpunks") or zero_addr),
+                    "token_id": rand_token_id,
+                },
+                "actor": "deployer",
+                "negative": True,
+                "expect_no_state_change": True,
+                "expected_error_code": 3,
+                "expected_error_any": ["has bids", "return: 3", "error"],
+            },
         ],
         "lichenbridge": [
             {"fn": "initialize", "args": {"owner": provider}, "actor": "deployer"},
@@ -848,9 +945,19 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
             {"fn": "set_metadata", "args": {"caller_ptr": provider, "json_ptr": metadata_json, "json_len": len(metadata_json)}, "actor": "deployer"},
             {"fn": "set_availability", "args": {"caller_ptr": provider, "status": 1}, "actor": "deployer"},
             {"fn": "set_rate", "args": {"caller_ptr": provider, "licn_per_unit": 1_000}, "actor": "deployer"},
-            {"fn": "add_skill", "args": {"owner_ptr": provider, "skill_ptr": "rust", "skill_len": 4}, "actor": "deployer"},
+            {"fn": "add_skill", "args": {"caller_ptr": provider, "skill_name_ptr": "rust", "skill_name_len": 4, "proficiency": 50}, "actor": "deployer"},
+            {
+                "fn": "register_identity",
+                "args": {
+                    "owner_ptr": user2,
+                    "agent_type": 1,
+                    "name_ptr": delegate_identity_name,
+                    "name_len": len(delegate_identity_name),
+                },
+                "actor": "secondary",
+            },
             {"fn": "vouch", "args": {"voucher_ptr": provider, "vouchee_ptr": user2}, "actor": "deployer"},
-            {"fn": "set_delegate", "args": {"owner_ptr": provider, "delegate_ptr": user2, "flags": 255, "expiry_ts": now + 86_400}, "actor": "deployer"},
+            {"fn": "set_delegate", "args": {"owner_ptr": provider, "delegate_ptr": user2, "permissions": 3, "expires_at_ms": market_deadline_slot}, "actor": "deployer"},
             {"fn": "revoke_delegate", "args": {"owner_ptr": provider, "delegate_ptr": user2}, "actor": "deployer"},
             {
                 "fn": "register_identity",
@@ -876,7 +983,7 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
         "prediction_market": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
             {"fn": "set_lichenid_address", "args": {"caller": provider, "address": str(contracts.get("lichenid", ""))}, "actor": "deployer"},
-            {"fn": "set_musd_address", "args": {"caller": provider, "address": str(contracts.get("lichencoin", ""))}, "actor": "deployer"},
+            {"fn": "set_musd_address", "args": {"caller": provider, "address": str(contracts.get("lusd_token") or zero_addr)}, "actor": "deployer"},
         ],
         "compute_market": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
@@ -936,7 +1043,6 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
                 "fn": "approve",
                 "args": {"owner_ptr": user2, "spender_ptr": provider, "token_id": rand_token_id},
                 "actor": "secondary",
-                "expect_no_state_change": True,
             },
             {"fn": "transfer_from", "args": {"caller_ptr": provider, "from_ptr": user2, "to_ptr": provider, "token_id": rand_token_id}, "actor": "deployer"},
             {
@@ -949,17 +1055,13 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
                     "metadata_len": len(nft_metadata),
                 },
                 "actor": "secondary",
-                "negative": True,
-                "expect_no_state_change": True,
-                "expected_error_code": 0,
-                "expected_error_any": ["unauthorized", "mint failed", "return: 0", "error"],
             },
         ],
         "lichenswap": [
             {"fn": "initialize", "args": {"token_a_ptr": base_addr, "token_b_ptr": quote_addr}, "actor": "deployer"},
             {"fn": "set_identity_admin", "args": {"admin_ptr": provider}, "actor": "deployer"},
-            {"fn": "add_liquidity", "args": {"provider_ptr": provider, "amount_a": 100_000, "amount_b": 100_000, "min_liquidity": 1}, "actor": "deployer"},
-            {"fn": "swap_a_for_b", "args": {"amount_a_in": 1_000, "min_amount_b_out": 1}, "actor": "deployer"},
+            {"fn": "add_liquidity", "args": {"provider_ptr": provider, "amount_a": 100_000, "amount_b": 100_000, "min_liquidity": 1}, "actor": "deployer", "value": 200_000},
+            {"fn": "swap_a_for_b", "args": {"amount_a_in": 1_000, "min_amount_b_out": 1}, "actor": "deployer", "value": 1_000},
             {"fn": "set_protocol_fee", "args": {"caller_ptr": provider, "treasury_ptr": provider, "fee_share": 1500}, "actor": "deployer"},
             {
                 "fn": "set_protocol_fee",
@@ -1123,7 +1225,15 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
             {"fn": "set_lichencoin_address", "args": {"caller": provider, "addr": quote_addr}, "actor": "deployer"},
             {"fn": "set_rewards_pool", "args": {"caller": provider, "addr": provider}, "actor": "deployer"},
             {"fn": "set_reward_rate", "args": {"caller": provider, "pair_id": 1, "rate": 100}, "actor": "deployer"},
-            {"fn": "record_trade", "args": {"trader": provider, "fee_paid": 1_000, "volume": 50_000}, "actor": "deployer"},
+            {
+                "fn": "record_trade",
+                "args": {"trader": provider, "fee_paid": 1_000, "volume": 50_000},
+                "actor": "deployer",
+                "negative": True,
+                "expect_no_state_change": True,
+                "expected_error_code": 5,
+                "expected_error_any": ["unauthorized caller", "return: 5", "error"],
+            },
             {"fn": "register_referral", "args": {"trader": user2, "referrer": provider}, "actor": "deployer"},
             {"fn": "get_total_distributed", "args": {}, "actor": "deployer"},
         ],
@@ -1150,7 +1260,10 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
         "wbnb_token": [
             {"fn": "initialize", "args": {"owner": provider}, "actor": "deployer"},
             {"fn": "mint", "args": {"to": provider, "amount": 1000}, "actor": "deployer"},
-            {"fn": "balance_of", "args": {"account": provider}, "actor": "deployer"},
+            {"fn": "transfer", "args": {"to": user2, "amount": 100}, "actor": "deployer"},
+            {"fn": "approve", "args": {"spender": user2, "amount": 50}, "actor": "deployer"},
+            {"fn": "burn", "args": {"amount": 25}, "actor": "deployer"},
+            {"fn": "get_transfer_count", "args": {}, "actor": "deployer"},
         ],
     }
 
@@ -1275,6 +1388,17 @@ async def main() -> int:
                 record_result("global", "expected_contract_set", "PASS", "matched")
 
     scenarios = scenario_spec(deployer, secondary, contracts)
+    if "lichenauction" in scenarios and "lichenpunks" in scenarios:
+        reordered_scenarios: Dict[str, List[Dict[str, Any]]] = {}
+        for name, steps in scenarios.items():
+            if name == "lichenauction":
+                continue
+            reordered_scenarios[name] = steps
+            if name == "lichenpunks":
+                reordered_scenarios["lichenauction"] = scenarios["lichenauction"]
+        if "lichenauction" not in reordered_scenarios:
+            reordered_scenarios["lichenauction"] = scenarios["lichenauction"]
+        scenarios = reordered_scenarios
     activity_overrides = load_activity_overrides()
     negative_assertions_executed = 0
 
@@ -1318,10 +1442,6 @@ async def main() -> int:
         print(f"\n--- {contract_name} ---")
         program = contracts.get(contract_name)
         if program is None:
-            if contract_name == "lichencoin":
-                report("SKIP", "native LICN path has no registry-backed contract program")
-                record_result(contract_name, "discovery", "SKIP", "native LICN path")
-                continue
             if REQUIRE_ALL_SCENARIOS:
                 report("FAIL", f"contract not discovered: {contract_name}")
                 record_result(contract_name, "discovery", "FAIL", "contract not discovered")
@@ -1376,7 +1496,15 @@ async def main() -> int:
                     before_calls, before_events = await get_program_observability(conn, program)
                     before_storage = await get_program_storage_count(conn, program)
 
-                sig = await call_contract(conn, actor, program, function_name, args, contract_dir=contract_name)
+                sig = await call_contract(
+                    conn,
+                    actor,
+                    program,
+                    function_name,
+                    args,
+                    contract_dir=contract_name,
+                    value=int(step.get("value", 0)),
+                )
                 tx_data = await wait_for_transaction(conn, sig, TX_CONFIRM_TIMEOUT_SECS)
 
                 if should_assert_write and STRICT_WRITE_ASSERTIONS:

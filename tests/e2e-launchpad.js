@@ -178,6 +178,7 @@ async function simulateTx(keypair, instructions) {
 // Contract call helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 const CONTRACT_PID = bs58encode(new Uint8Array(32).fill(0xFF));
+const NATIVE_LICN = bs58encode(new Uint8Array(32));
 
 // Opcode-based ABI (DEX Governance uses opcode 0=byte)
 function contractIx(callerAddr, contractAddr, argsBytes) {
@@ -338,7 +339,7 @@ async function discoverContracts() {
         'DEX': 'dex_core', 'DEXAMM': 'dex_amm', 'DEXROUTER': 'dex_router',
         'DEXMARGIN': 'dex_margin', 'DEXREWARDS': 'dex_rewards', 'DEXGOV': 'dex_governance',
         'ANALYTICS': 'dex_analytics', 'PREDICT': 'prediction_market',
-        'LICN': 'lichencoin', 'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
+        'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
         'ORACLE': 'lichenoracle', 'SPOREPUMP': 'sporepump', 'MOSS': 'moss_token',
     };
     for (const e of entries) {
@@ -680,8 +681,8 @@ async function runTests() {
         section('10. Governance: Propose New Pair');
         let proposalId = 0;
 
-        // Use LICN and lUSD addresses as base/quote for a new pair proposal
-        const baseToken = CONTRACTS.lichen || CONTRACTS.lichencoin || alice.address;
+        // Use native LICN zero sentinel and lUSD for the proposed pair.
+        const baseToken = NATIVE_LICN;
         const quoteToken = CONTRACTS.lusd_token || bob.address;
 
         try {

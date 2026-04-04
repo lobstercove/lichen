@@ -437,59 +437,63 @@ async def main() -> int:
 
     print("\n-- Bridge Deposit User Flow --")
     custody_ok, custody_detail = custody_healthcheck()
-    if custody_ok:
-        report("PASS", "Custody health")
+    if REQUIRE_CUSTODY:
+        if not custody_ok:
+            report("FAIL", "Custody health", custody_detail)
+        else:
+            report("PASS", "Custody health")
 
-        bridge_wallet = Keypair.generate()
-        bridge_auth = create_bridge_access_auth(bridge_wallet)
-        bridge_request = {
-            "user_id": bridge_wallet.address().to_base58(),
-            "chain": "ethereum",
-            "asset": "eth",
-            "auth": bridge_auth,
-        }
-
-        try:
-            deposit = await conn._rpc("createBridgeDeposit", [bridge_request])
-            deposit_id = str(deposit.get("deposit_id") or "")
-            deposit_address = str(deposit.get("address") or "")
-            if len(deposit_id) != 36 or not deposit_address.startswith("0x") or len(deposit_address) != 42:
-                raise RuntimeError(f"Unexpected bridge deposit payload: {deposit}")
-            report("PASS", "Bridge deposit address issued", deposit_id)
-
-            deposit_status = await conn._rpc(
-                "getBridgeDeposit",
-                [{
-                    "deposit_id": deposit_id,
-                    "user_id": bridge_wallet.address().to_base58(),
-                    "auth": bridge_auth,
-                }],
-            )
-            if (
-                isinstance(deposit_status, dict)
-                and deposit_status.get("deposit_id") == deposit_id
-                and deposit_status.get("address") == deposit_address
-                and deposit_status.get("status") == "issued"
-                and str(deposit_status.get("user_id") or "") == bridge_wallet.address().to_base58()
-            ):
-                report("PASS", "Bridge deposit status lookup", f"status={deposit_status.get('status')}")
-            else:
-                raise RuntimeError(f"Unexpected bridge status payload: {deposit_status}")
+            bridge_wallet = Keypair.generate()
+            bridge_auth = create_bridge_access_auth(bridge_wallet)
+            bridge_request = {
+                "user_id": bridge_wallet.address().to_base58(),
+                "chain": "ethereum",
+                "asset": "eth",
+                "auth": bridge_auth,
+            }
 
             try:
-                await conn._rpc("createBridgeDeposit", [bridge_request])
-                report("FAIL", "Bridge deposit cooldown enforcement", "second request unexpectedly succeeded")
-            except Exception as exc:
-                if "wait 10s between deposit requests" in str(exc):
-                    report("PASS", "Bridge deposit cooldown enforcement")
+                deposit = await conn._rpc("createBridgeDeposit", [bridge_request])
+                deposit_id = str(deposit.get("deposit_id") or "")
+                deposit_address = str(deposit.get("address") or "")
+                if len(deposit_id) != 36 or not deposit_address.startswith("0x") or len(deposit_address) != 42:
+                    raise RuntimeError(f"Unexpected bridge deposit payload: {deposit}")
+                report("PASS", "Bridge deposit address issued", deposit_id)
+
+                deposit_status = await conn._rpc(
+                    "getBridgeDeposit",
+                    [{
+                        "deposit_id": deposit_id,
+                        "user_id": bridge_wallet.address().to_base58(),
+                        "auth": bridge_auth,
+                    }],
+                )
+                if (
+                    isinstance(deposit_status, dict)
+                    and deposit_status.get("deposit_id") == deposit_id
+                    and deposit_status.get("address") == deposit_address
+                    and deposit_status.get("status") == "issued"
+                    and str(deposit_status.get("user_id") or "") == bridge_wallet.address().to_base58()
+                ):
+                    report("PASS", "Bridge deposit status lookup", f"status={deposit_status.get('status')}")
                 else:
-                    raise
-        except Exception as exc:
-            report("FAIL", "Bridge deposit user flow", str(exc))
-    elif REQUIRE_CUSTODY:
-        report("FAIL", "Custody health", custody_detail)
+                    raise RuntimeError(f"Unexpected bridge status payload: {deposit_status}")
+
+                try:
+                    await conn._rpc("createBridgeDeposit", [bridge_request])
+                    report("FAIL", "Bridge deposit cooldown enforcement", "second request unexpectedly succeeded")
+                except Exception as exc:
+                    if "wait 10s between deposit requests" in str(exc):
+                        report("PASS", "Bridge deposit cooldown enforcement")
+                    else:
+                        raise
+            except Exception as exc:
+                report("FAIL", "Bridge deposit user flow", str(exc))
     else:
-        print("  INFO  Custody bridge flow not requested in this environment")
+        if custody_ok:
+            report("SKIP", "Bridge deposit user flow", "set REQUIRE_CUSTODY=1 to require RPC custody bridge coverage")
+        else:
+            print("  INFO  Custody bridge flow not requested in this environment")
 
     print("\n-- Marketplace Browse Flow --")
     try:

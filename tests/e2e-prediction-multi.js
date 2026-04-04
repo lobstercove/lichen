@@ -52,6 +52,15 @@ function assertEq(a, b, msg) { assert(a === b, `${msg} (expected ${b}, got ${a})
 function assertGt(a, b, msg) { assert(a > b, `${msg} (expected > ${b}, got ${a})`); }
 function assertGte(a, b, msg) { assert(a >= b, `${msg} (expected >= ${b}, got ${a})`); }
 function assertLte(a, b, msg) { assert(a <= b, `${msg} (expected <= ${b}, got ${a})`); }
+function assertOutcomeNames(outcomes, expectedNames, msg) {
+    const actualNames = Array.isArray(outcomes)
+        ? outcomes.map((outcome) => String(outcome?.name || '').trim())
+        : [];
+    assertEq(actualNames.length, expectedNames.length, `${msg} outcome label count`);
+    for (let i = 0; i < expectedNames.length; i++) {
+        assertEq(actualNames[i], expectedNames[i], `${msg} outcome ${i} label`);
+    }
+}
 function skip(msg) { skipped++; console.log(`  ⊘ ${msg}`); }
 function section(name) { console.log(`\n── ${name} ──`); }
 
@@ -224,9 +233,21 @@ function writePubkey(arr, off, addrB58) { const b = bs58decode(addrB58); arr.set
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Opcode 1: create_market
-function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionText) {
-    const qBytes = new TextEncoder().encode(questionText);
-    const total = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length;
+function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionText, outcomeNames = []) {
+    const encoder = new TextEncoder();
+    const qBytes = encoder.encode(questionText);
+    const normalizedNames = Array.isArray(outcomeNames)
+        ? outcomeNames.map((name) => String(name || '').trim()).filter((name) => name.length > 0)
+        : [];
+    const encodedNames = normalizedNames.length === outcomeCount
+        ? normalizedNames
+            .map((name) => encoder.encode(name))
+            .filter((nameBytes) => nameBytes.length > 0 && nameBytes.length <= 64)
+        : [];
+    const namesLen = encodedNames.length === outcomeCount
+        ? 1 + encodedNames.reduce((sum, nameBytes) => sum + 1 + nameBytes.length, 0)
+        : 0;
+    const total = 1 + 32 + 1 + 8 + 1 + 32 + 4 + qBytes.length + namesLen;
     const buf = new ArrayBuffer(total);
     const a = new Uint8Array(buf);
     const v = new DataView(buf);
@@ -239,6 +260,17 @@ function buildCreateMarket(creator, category, closeSlot, outcomeCount, questionT
     a.set(qHash, 43);
     writeU32LE(v, 75, qBytes.length);
     a.set(qBytes, 79);
+    let offset = 79 + qBytes.length;
+    if (namesLen > 0) {
+        writeU8(a, offset, encodedNames.length);
+        offset += 1;
+        encodedNames.forEach((nameBytes) => {
+            writeU8(a, offset, nameBytes.length);
+            offset += 1;
+            a.set(nameBytes, offset);
+            offset += nameBytes.length;
+        });
+    }
     return a;
 }
 
@@ -454,7 +486,7 @@ async function main() {
     let market4Id = 0;
 
     try {
-        const args = buildCreateMarket(alpha.address, 0, currentSlot + 20_000, 4, question4);
+        const args = buildCreateMarket(alpha.address, 0, currentSlot + 20_000, 4, question4, ['Lichen', 'Ethereum', 'Solana', 'Other']);
         const sig = await sendTx(alpha, [contractIx(alpha.address, CONTRACTS.predict, args, PREDICT_CREATE_FEE)], 400_000);
         assert(typeof sig === 'string', `4-outcome market created: ${sig?.slice(0, 16)}...`);
         await sleep(2500);
@@ -484,7 +516,7 @@ async function main() {
     let market5Id = 0;
 
     try {
-        const args = buildCreateMarket(beta.address, 1, currentSlot + 20_000, 5, question5);
+        const args = buildCreateMarket(beta.address, 1, currentSlot + 20_000, 5, question5, ['Rust', 'Solidity', 'Move', 'Cairo', 'Other']);
         const sig = await sendTx(beta, [contractIx(beta.address, CONTRACTS.predict, args, PREDICT_CREATE_FEE)], 400_000);
         assert(typeof sig === 'string', `5-outcome market created: ${sig?.slice(0, 16)}...`);
         await sleep(2500);
@@ -514,7 +546,7 @@ async function main() {
     let market6Id = 0;
 
     try {
-        const args = buildCreateMarket(gamma.address, 2, currentSlot + 20_000, 6, question6);
+        const args = buildCreateMarket(gamma.address, 2, currentSlot + 20_000, 6, question6, ['AI', 'DeFi', 'Gaming', 'NFTs', 'Social', 'RWA']);
         const sig = await sendTx(gamma, [contractIx(gamma.address, CONTRACTS.predict, args, PREDICT_CREATE_FEE)], 400_000);
         assert(typeof sig === 'string', `6-outcome market created: ${sig?.slice(0, 16)}...`);
         await sleep(2500);
@@ -544,7 +576,7 @@ async function main() {
     let market8Id = 0;
 
     try {
-        const args = buildCreateMarket(delta.address, 3, currentSlot + 20_000, 8, question8);
+        const args = buildCreateMarket(delta.address, 3, currentSlot + 20_000, 8, question8, ['Lichen', 'Ethereum', 'Solana', 'Avalanche', 'Sui', 'Aptos', 'Cosmos', 'Near']);
         const sig = await sendTx(delta, [contractIx(delta.address, CONTRACTS.predict, args, PREDICT_CREATE_FEE)], 500_000);
         assert(typeof sig === 'string', `8-outcome market created: ${sig?.slice(0, 16)}...`);
         await sleep(2500);
@@ -568,10 +600,10 @@ async function main() {
 
     // Collect all active markets
     const allMarkets = [
-        { id: market4Id, outcomes: 4, name: '4-outcome', creator: alpha },
-        { id: market5Id, outcomes: 5, name: '5-outcome', creator: beta },
-        { id: market6Id, outcomes: 6, name: '6-outcome', creator: gamma },
-        { id: market8Id, outcomes: 8, name: '8-outcome', creator: delta },
+        { id: market4Id, outcomes: 4, name: '4-outcome', creator: alpha, expectedNames: ['Lichen', 'Ethereum', 'Solana', 'Other'] },
+        { id: market5Id, outcomes: 5, name: '5-outcome', creator: beta, expectedNames: ['Rust', 'Solidity', 'Move', 'Cairo', 'Other'] },
+        { id: market6Id, outcomes: 6, name: '6-outcome', creator: gamma, expectedNames: ['AI', 'DeFi', 'Gaming', 'NFTs', 'Social', 'RWA'] },
+        { id: market8Id, outcomes: 8, name: '8-outcome', creator: delta, expectedNames: ['Lichen', 'Ethereum', 'Solana', 'Avalanche', 'Sui', 'Aptos', 'Cosmos', 'Near'] },
     ].filter(m => m.id > 0);
 
     assertGte(allMarkets.length, 1, `${allMarkets.length} multi-outcome markets active`);
@@ -748,6 +780,7 @@ async function main() {
         if (found) {
             const oc = found.outcome_count || found.outcomes?.length || 0;
             assertEq(oc, market.outcomes, `${market.name} in list with ${oc} outcomes`);
+            assertOutcomeNames(found.outcomes, market.expectedNames, `${market.name} list`);
         } else {
             skip(`${market.name} not found in markets list`);
         }
@@ -858,6 +891,7 @@ async function main() {
             const d = detail.data || detail.market || detail;
             const oc = d.outcome_count || d.outcomes?.length || 0;
             assertEq(oc, market.outcomes, `${market.name} detail shows ${oc} outcomes`);
+            assertOutcomeNames(d.outcomes, market.expectedNames, `${market.name} detail`);
         } else {
             skip(`${market.name} detail not available`);
         }

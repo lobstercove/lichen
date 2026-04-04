@@ -182,6 +182,10 @@ def build_named_ix(fn_name: str, args: dict) -> bytes:
     return payload.encode("utf-8")
 
 
+def tx_has_success_return(info: Dict[str, Any]) -> bool:
+    return info.get("return_code") not in (None, 0) and bool(info.get("return_data"))
+
+
 async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_name: str, args: dict) -> Any:
     """Send a contract call and return the result.
 
@@ -236,7 +240,7 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
                 if info.get("error"):
                     raise RuntimeError(f"{contract_dir}.{fn_name} failed: {info['error']}")
                 return_code = info.get("return_code")
-                if return_code not in (None, 0):
+                if return_code not in (None, 0) and not tx_has_success_return(info):
                     raise RuntimeError(
                         f"{contract_dir}.{fn_name} returned code {return_code}, "
                         f"return_data={info.get('return_data')}"
@@ -283,7 +287,7 @@ async def call_contract_raw(
                 if info.get("error"):
                     raise RuntimeError(f"{fn_name} failed: {info['error']}")
                 return_code = info.get("return_code")
-                if return_code not in (None, 0):
+                if return_code not in (None, 0) and not tx_has_success_return(info):
                     raise RuntimeError(
                         f"{contract_pubkey}.{fn_name} returned code {return_code}, "
                         f"return_data={info.get('return_data')}"
@@ -606,7 +610,6 @@ DIR_TO_SYMBOL: Dict[str, str] = {
     "dex_rewards": "DEXREWARDS",
     "dex_router": "DEXROUTER",
     "prediction_market": "PREDICT",
-    "lichencoin": "LICN",
     "lusd_token": "LUSD",
     "wsol_token": "WSOL",
     "weth_token": "WETH",
@@ -850,13 +853,17 @@ def _position_shares(positions: List[Dict[str, Any]], market_id: int, outcome: i
 
 # ─── Token address resolver ───
 SYMBOL_TO_DIR = {
-    "LICN": "lichencoin", "LUSD": "lusd_token", "WETH": "weth_token", "WSOL": "wsol_token",
+    "LUSD": "lusd_token", "WETH": "weth_token", "WSOL": "wsol_token",
 }
 TOKEN_CACHE: Dict[str, PublicKey] = {}
 
 
 async def resolve_token(conn: Connection, symbol: str) -> PublicKey:
     """Resolve a token symbol to its deployed contract address."""
+    if symbol == "LICN":
+        native = PublicKey(b'\x00' * 32)
+        TOKEN_CACHE[symbol] = native
+        return native
     if symbol in TOKEN_CACHE:
         return TOKEN_CACHE[symbol]
     d = SYMBOL_TO_DIR.get(symbol)

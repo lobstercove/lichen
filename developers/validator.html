@@ -306,8 +306,8 @@ lichen-validator \
 
             <h3>Option B: Repo Workflow</h3>
 
-            <p>If you are building from source or using the helper scripts, clone the repository and use the scripted
-                workflow:</p>
+            <p>The supported repo-local validator path is the 3-validator launcher. It prepares genesis on validator 1,
+                starts the local cluster, and generates signed metadata once the chain is healthy.</p>
 
             <div class="code-block">
                 <div class="code-block-header">
@@ -316,12 +316,21 @@ lichen-validator \
                 </div>
                 <pre><code>git clone https://github.com/lobstercove/lichen.git
 cd lichen
-./lichen-start.sh testnet</code></pre>
+cargo build --release
+bash scripts/start-local-3validators.sh start-reset</code></pre>
             </div>
 
-            <p>The start script will automatically build the binary, create genesis (if this is the first validator),
-                deploy all 27 smart contracts, seed AMM pools, and fund the insurance reserve. Everything is idempotent
-                — run it again and it picks up where it left off.</p>
+            <p>If you need custody, faucet, and post-genesis bootstrap for browser or service testing, extend the local
+                validator path with the full-stack wrapper:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>./scripts/start-local-stack.sh testnet
+./scripts/status-local-stack.sh testnet</code></pre>
+            </div>
 
             <h4>Port Assignments</h4>
 
@@ -356,17 +365,24 @@ cd lichen
             <p>You can run <strong>both</strong> testnet and mainnet on the same machine — they use different ports and
                 separate data directories.</p>
 
-            <h4>Joining an Existing Network</h4>
+            <h4>Local Status / Stop</h4>
 
-            <p>To join a network with existing validators, pass one or more bootstrap peers. Domains are preferred over
-                raw IPs:</p>
+            <p>Use the same launcher family for status checks, clean stops, and full resets:</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>./lichen-start.sh testnet --bootstrap seed-01.lichen.network:7001</code></pre>
+                <pre><code># Validator-only cluster
+bash scripts/start-local-3validators.sh status
+bash scripts/start-local-3validators.sh stop
+bash scripts/start-local-3validators.sh start-reset
+
+# Full local stack
+./scripts/status-local-stack.sh testnet
+./scripts/stop-local-stack.sh testnet
+./scripts/start-local-stack.sh testnet</code></pre>
             </div>
 
             <h4>Stop / Restart</h4>
@@ -376,12 +392,10 @@ cd lichen
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code># Stop
-./lichen-stop.sh testnet
-
-# Full reset (wipe all state and start fresh)
+                <pre><code># Clean local reset
+bash scripts/start-local-3validators.sh stop
 ./reset-blockchain.sh testnet
-./lichen-start.sh testnet</code></pre>
+bash scripts/start-local-3validators.sh start-reset</code></pre>
             </div>
 
             <h3>Option C: Build from Source (Manual)</h3>
@@ -1317,8 +1331,8 @@ sudo bash deploy/setup.sh testnet mainnet</code></pre>
 
             <h3>Systemd Unit File</h3>
 
-            <p>The service reads its port configuration from the environment file. Key flags match
-                <code>lichen-start.sh</code>:
+            <p>The service reads its port configuration from the environment file. Key flags map directly to the
+                validator binary:
             </p>
 
             <div class="code-block">

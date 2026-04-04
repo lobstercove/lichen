@@ -1854,10 +1854,13 @@ Prefer domains over raw IPs in agent prompts and operational scripts. DNS lets b
 ### Start / Stop / Reset (Scripts)
 
 ```bash
-bash lichen-start.sh mainnet      # Start mainnet validator
-bash lichen-start.sh testnet      # Start testnet validator
-bash lichen-stop.sh               # Stop all
-bash reset-blockchain.sh          # Full reset of local chain state
+bash scripts/start-local-3validators.sh start-reset   # Fresh local 3-validator cluster
+bash scripts/start-local-3validators.sh start         # Reuse local state
+bash scripts/start-local-3validators.sh status        # Cluster health
+bash scripts/start-local-3validators.sh stop          # Stop cluster
+bash scripts/start-local-stack.sh testnet             # Local full stack (validators + custody + faucet)
+bash scripts/stop-local-stack.sh testnet              # Stop local full stack
+bash reset-blockchain.sh                              # Full reset of local chain state
 ```
 
 ### Identity & Keypair Management
@@ -2212,7 +2215,7 @@ bash scripts/build-all-contracts.sh                       # All 28 contracts
 | E2E prediction | `node tests/e2e-prediction.js` | 49 tests |
 | Contracts write | `python tests/contracts-write-e2e.py` | 157 scenarios |
 
-All E2E tests require a running validator (`bash lichen-start.sh testnet`).
+All E2E tests require a running validator (`bash scripts/start-local-3validators.sh start-reset` or `bash scripts/start-local-stack.sh testnet`).
 
 ---
 

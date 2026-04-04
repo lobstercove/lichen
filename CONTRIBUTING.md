@@ -89,7 +89,7 @@ Lichen ships 29 on-chain contracts under `contracts/`. Each is its own crate:
 
 ```bash
 # Build a single contract
-cargo build --target wasm32-unknown-unknown --release -p lichencoin
+cargo build --target wasm32-unknown-unknown --release -p lusd_token
 
 # Build all contracts
 for dir in contracts/*/; do

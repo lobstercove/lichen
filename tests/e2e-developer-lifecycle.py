@@ -8,7 +8,7 @@ Exercises the complete developer onboarding journey in one coherent flow:
   1. Generate a fresh keypair
   2. Fund it via faucet airdrop
   3. Verify balance
-  4. Deploy a WASM contract (lichencoin template)
+    4. Deploy a WASM contract (wrapped-token template)
   5. Read contract info
   6. Call a contract function (name / symbol / total_supply)
   7. Perform a signed transfer to a second keypair
@@ -40,7 +40,7 @@ from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instructi
 # ── Config ──
 RPC_URL    = os.environ.get("RPC_URL",    "http://127.0.0.1:8899")
 FAUCET_URL = os.environ.get("FAUCET_URL", "http://127.0.0.1:9100")
-WASM_PATH  = REPO / "contracts" / "lichencoin" / "lichencoin.wasm"
+WASM_PATH  = REPO / "contracts" / "lusd_token" / "lusd_token.wasm"
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN") or os.environ.get("LICHEN_ADMIN_TOKEN")
 
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)

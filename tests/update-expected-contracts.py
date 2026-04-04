@@ -1,25 +1,38 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import List, Set
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTRACTS_DIR = ROOT / "contracts"
+GENESIS_LIB = ROOT / "genesis" / "src" / "lib.rs"
 DEFAULT_OUTPUT = ROOT / "tests" / "expected-contracts.json"
 
 
 def discover_contracts() -> List[str]:
-    if not CONTRACTS_DIR.exists():
+    if not GENESIS_LIB.exists():
         return []
+    try:
+        source = GENESIS_LIB.read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    catalog_match = re.search(
+        r"pub const GENESIS_CONTRACT_CATALOG:\s*&\[\(&str,\s*&str,\s*&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not catalog_match:
+        return []
+
     discovered: List[str] = []
-    for child in sorted(CONTRACTS_DIR.iterdir()):
-        if not child.is_dir():
-            continue
-        if (child / "src" / "lib.rs").exists():
-            discovered.append(child.name)
-    return discovered
+    pattern = re.compile(r'\(\s*"([^"]+)"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*\)')
+    for name in pattern.findall(catalog_match.group(1)):
+        if name not in discovered:
+            discovered.append(name)
+    return sorted(discovered)
 
 
 def load_existing(path: Path) -> List[str]:
@@ -51,14 +64,21 @@ def write_output(path: Path, contracts: List[str]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Regenerate tests/expected-contracts.json from contracts/*")
+    parser = argparse.ArgumentParser(description="Regenerate tests/expected-contracts.json from the genesis contract catalog")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output JSON path")
     parser.add_argument("--write", action="store_true", help="Write updated lockfile")
     parser.add_argument("--check", action="store_true", help="Exit non-zero if lockfile is out of date")
+    parser.add_argument("--names-only", action="store_true", help="Print discovered contract names, one per line")
     args = parser.parse_args()
 
     out_path = Path(args.output).resolve()
     discovered = discover_contracts()
+
+    if args.names_only:
+        for name in discovered:
+            print(name)
+        return 0
+
     existing = load_existing(out_path)
     missing, stale = diff_sets(existing, discovered)
 

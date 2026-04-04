@@ -341,8 +341,7 @@ async function runTests() {
     console.log('\n── Test 3: requestAirdrop (LICN to Alice) ──');
     let airdropResult;
     try {
-        const freshAddr = freshAlice.address;
-        airdropResult = await rpc('requestAirdrop', [freshAddr, 10]);
+        airdropResult = await rpc('requestAirdrop', [alice.address, 10]);
         assert(airdropResult.success === true, `Airdrop success: ${airdropResult.message}`);
         assert(airdropResult.amount === 10, `Airdropped 10 LICN`);
     } catch (e) {
@@ -361,7 +360,7 @@ async function runTests() {
     // ── Test 5: Airdrop to Bob ──
     console.log('\n── Test 5: requestAirdrop (LICN to Bob) ──');
     try {
-        const bobAirdrop = await rpc('requestAirdrop', [freshBob.address, 5]);
+        const bobAirdrop = await rpc('requestAirdrop', [bob.address, 5]);
         assert(bobAirdrop.success === true, `Bob airdrop: ${bobAirdrop.message}`);
     } catch (e) {
         console.warn(`  ⚠ Bob airdrop skipped (multi-validator mode): ${e.message}`);

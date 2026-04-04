@@ -108,7 +108,7 @@
     }
 
     function getItemHref(nft) {
-        return 'item.html?id=' + encodeURIComponent(nft.id || '') +
+        return 'item.html?id=' + encodeURIComponent(nft.id || nft.token || '') +
             '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') +
             '&token=' + encodeURIComponent(nft.token_id || '');
     }
