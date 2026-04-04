@@ -54,7 +54,17 @@ read_env_file_value() {
         return 1
     fi
 
-    grep "^${key}=" "$env_file" | tail -1 | cut -d= -f2- || true
+    if [[ -r "$env_file" ]]; then
+        grep "^${key}=" "$env_file" | tail -1 | cut -d= -f2- || true
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo grep "^${key}=" "$env_file" | tail -1 | cut -d= -f2- || true
+        return 0
+    fi
+
+    return 1
 }
 
 # Colors
@@ -90,6 +100,9 @@ PY
     fi
 
     echo -e "  ${YELLOW}⚠  Bootstrapping repo Python environment for deployment helpers...${NC}"
+    if [[ -d "$venv_dir" ]]; then
+        rm -rf "$venv_dir"
+    fi
     "$bootstrap_python" -m venv "$venv_dir"
     "$venv_dir/bin/python" -m pip install --upgrade pip >/dev/null
     "$venv_dir/bin/pip" install -r "$SDK_REQUIREMENTS_FILE"

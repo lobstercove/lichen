@@ -6,9 +6,20 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const { stableJsonStringify } = require('../monitoring/shared/utils.js');
-const { publicKeyToAddress, signMessage } = require('../monitoring/shared/pq.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const PQ_MODULE_PATH = path.join(REPO_ROOT, 'monitoring', 'shared', 'pq.js');
+
+let pqModulePromise = null;
+
+function loadPqModule() {
+    if (!pqModulePromise) {
+        const pqModuleSource = fs.readFileSync(PQ_MODULE_PATH, 'utf8');
+        const pqModuleUrl = `data:text/javascript;base64,${Buffer.from(pqModuleSource, 'utf8').toString('base64')}`;
+        pqModulePromise = import(pqModuleUrl);
+    }
+    return pqModulePromise;
+}
 
 function usage() {
     console.error('Usage: node scripts/generate-signed-metadata-manifest.js --rpc <url> --network <name> --keypair <keypair.json> --out <manifest.json> [--page-limit <n>]');
@@ -134,6 +145,7 @@ async function fetchAllSymbolRegistry(rpcUrl, pageLimit) {
 }
 
 async function signPayload(payloadBytes, keypairPath) {
+    const { publicKeyToAddress, signMessage } = await loadPqModule();
     const keypairJson = JSON.parse(fs.readFileSync(path.resolve(keypairPath), 'utf8'));
     const seedBytes = Array.isArray(keypairJson.privateKey)
         ? Uint8Array.from(keypairJson.privateKey)
