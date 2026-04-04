@@ -85,6 +85,15 @@ prepare_local_bridge_env() {
   chmod 600 "$LOCAL_CUSTODY_TOKEN_FILE" 2>/dev/null || true
 }
 
+clear_local_peer_trust_state() {
+  local state_dir
+  for state_dir in "$ROOT/data/state-${P2P1}" "$ROOT/data/state-${P2P2}" "$ROOT/data/state-${P2P3}"; do
+    rm -f "$state_dir/known-peers.json" 2>/dev/null || true
+    rm -f "$state_dir/home/.lichen/peer_identities.json" 2>/dev/null || true
+    rm -rf "$state_dir/home/.lichen/validators" 2>/dev/null || true
+  done
+}
+
 rpc_ok() {
   local port="$1"
   curl -sf "http://127.0.0.1:${port}" \
@@ -198,6 +207,8 @@ start_cluster() {
   if [[ "$reset" == "1" ]]; then
     bash "$ROOT/reset-blockchain.sh" "$NETWORK" >/dev/null
   fi
+
+  clear_local_peer_trust_state
 
   echo "[local-3validators] starting V1 via run-validator.sh ($NETWORK)"
   LICHEN_SIGNER_BIND=127.0.0.1:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
