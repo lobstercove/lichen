@@ -150,6 +150,7 @@ pub struct StatusResponseMsg {
 #[derive(Debug, Clone)]
 pub struct ConsistencyReportMsg {
     pub requester: SocketAddr,
+    pub current_slot: u64,
     pub validator_set_hash: lichen_core::Hash,
     pub stake_pool_hash: lichen_core::Hash,
 }
@@ -801,11 +802,13 @@ impl P2PNetwork {
             }
 
             MessageType::ConsistencyReport {
+                current_slot,
                 validator_set_hash,
                 stake_pool_hash,
             } => {
                 let report = ConsistencyReportMsg {
                     requester: peer_addr,
+                    current_slot,
                     validator_set_hash,
                     stake_pool_hash,
                 };

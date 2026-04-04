@@ -9747,12 +9747,22 @@ async fn run_validator() {
         // Start consistency report handler
         let validator_set_for_consistency = validator_set.clone();
         let stake_pool_for_consistency = stake_pool.clone();
+        let state_for_consistency = state.clone();
         let peer_mgr_for_consistency = p2p_pm.clone();
         let local_addr_for_consistency = p2p_config.listen_addr;
         tokio::spawn(async move {
             let mut last_request: HashMap<(std::net::SocketAddr, u8), std::time::Instant> =
                 HashMap::new();
             while let Some(report) = consistency_report_rx.recv().await {
+                let local_slot = state_for_consistency.get_last_slot().unwrap_or(0);
+                if report.current_slot != local_slot {
+                    debug!(
+                        "⏭️  Skipping consistency comparison with {} at local slot {} vs peer slot {}",
+                        report.requester, local_slot, report.current_slot
+                    );
+                    continue;
+                }
+
                 let vs = validator_set_for_consistency.read().await;
                 let pool = stake_pool_for_consistency.read().await;
                 let local_vs_hash = hash_validator_set(&vs);
@@ -11180,12 +11190,14 @@ async fn run_validator() {
         // Broadcast consistency report periodically
         let peer_mgr_for_report = p2p_pm.clone();
         let local_addr_for_report = p2p_config.listen_addr;
+        let state_for_report = state.clone();
         let validator_set_for_report = validator_set.clone();
         let stake_pool_for_report = stake_pool.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
+                let current_slot = state_for_report.get_last_slot().unwrap_or(0);
                 let vs = validator_set_for_report.read().await;
                 let pool = stake_pool_for_report.read().await;
                 let vs_hash = hash_validator_set(&vs);
@@ -11195,6 +11207,7 @@ async fn run_validator() {
 
                 let report = P2PMessage::new(
                     MessageType::ConsistencyReport {
+                        current_slot,
                         validator_set_hash: vs_hash,
                         stake_pool_hash: pool_hash,
                     },

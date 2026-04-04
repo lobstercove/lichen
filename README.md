@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated and published at tag `v0.4.0`.
+**Release-ready status:** main validated for release tag `v0.5.3`.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -89,9 +89,35 @@ cd lichen
 cargo build --release
 ```
 
+### Supported operator paths
+
+For a repo checkout, there are two supported validator bring-up paths:
+
+Local development validators:
+
+```bash
+cargo build --release
+bash scripts/start-local-3validators.sh start-reset
+```
+
+VPS or production service deployment:
+
+```bash
+cargo build --release
+sudo bash deploy/setup.sh mainnet
+```
+
+If you need custody, faucet, and post-genesis bootstrap on a local testnet too, extend the local path with:
+
+```bash
+./scripts/start-local-stack.sh testnet
+```
+
 ### Run a validator
 
 If you already have a `lichen-validator` binary from a release bundle or prior build, you do not need the full repository checkout to join the network. A validator can run from the binary plus a writable state directory.
+
+Manual binary launch is for release bundles or one-off debugging. The supported repo operator paths remain `scripts/start-local-3validators.sh` for local validators and `deploy/setup.sh` for VPS deployment.
 
 ### Fast Install From Release
 
@@ -349,6 +375,8 @@ cargo build --release
     --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
 ```
 
+For a repo checkout on Linux, the supported unattended path is `sudo bash deploy/setup.sh mainnet`; the foreground command above is the manual fallback for ad hoc starts and debugging.
+
 That's it. The validator will:
 - Generate a keypair (saved to `~/.lichen/validators/validator-mainnet.json`)
 - Sync the chain from seed nodes
@@ -387,7 +415,7 @@ Domain names are preferred over raw IPs for bootstrap because they let the found
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 
 **Detailed guides:**
-- [Validator Setup](docs/consensus/VALIDATOR_SETUP.md)
+- [Validator Setup](docs/guides/VALIDATOR_SETUP.md)
 - [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
 - [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
 - [SKILL.md](SKILL.md) — Full agent reference (contracts, RPC, identity, staking)
@@ -444,7 +472,7 @@ Canonical developer-facing API docs:
 - **[JSON-RPC API](developers/rpc-reference.html)** — Canonical RPC method index
 - **[WebSocket API](developers/ws-reference.html)** — Canonical WS subscriptions index
 - **[Detailed RPC Guide](docs/guides/RPC_API_REFERENCE.md)** — Full request/response examples
-- **[Validator Setup](docs/consensus/VALIDATOR_SETUP.md)** — Runtime validator operations baseline
+- **[Validator Setup](docs/guides/VALIDATOR_SETUP.md)** — Runtime validator operations baseline
 
 ---
 

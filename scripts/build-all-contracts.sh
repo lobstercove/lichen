@@ -3,10 +3,9 @@
 # Build All Lichen Smart Contracts to WASM
 # ============================================================================
 #
-# Compiles all 29 smart contracts to
-# WebAssembly using the wasm32-unknown-unknown target. Copies final .wasm
-# files to each contract's crate root for deploy_dex.py / deploy_contract.py
-# to find them.
+# Compiles the active smart contract set to WebAssembly using the
+# wasm32-unknown-unknown target. Copies final .wasm files to each contract's
+# crate root for genesis replay, local bootstrap, and CLI-based deploy flows.
 #
 # Usage:
 #   ./scripts/build-all-contracts.sh           # build all
@@ -31,9 +30,8 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# All 26 contracts in dependency order
+# Contract crates in dependency order
 CORE_CONTRACTS=(
-    lichencoin
     lichendao
     lichenswap
     lichenbridge

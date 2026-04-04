@@ -140,8 +140,9 @@
         }
 
         container.innerHTML = nfts.map(function (nft) {
+            var escapedNftId = escapeHtml(nft.id);
             var buyBtnHtml = currentWallet
-                ? '<button class="nft-action" data-marketplace-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy Now</button>'
+                ? '<button class="nft-action" data-marketplace-action="buy" data-nft-id="' + escapedNftId + '">Buy Now</button>'
                 : '';
             return '<div class="nft-card" data-marketplace-href="item.html?id=' + encodeURIComponent(nft.id || '') + '">' +
                 '<div class="nft-image" style="background: ' + escapeHtml(nft.image) + '"></div>' +

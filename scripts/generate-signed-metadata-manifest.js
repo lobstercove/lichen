@@ -4,10 +4,9 @@
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
 const { stableJsonStringify } = require('../monitoring/shared/utils.js');
+const { publicKeyToAddress, signMessage } = require('../monitoring/shared/pq.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -134,42 +133,19 @@ async function fetchAllSymbolRegistry(rpcUrl, pageLimit) {
     return Array.from(deduped.values()).sort((left, right) => String(left.symbol).localeCompare(String(right.symbol)));
 }
 
-function signPayloadWithRust(payloadBytes, keypairPath) {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-metadata-signer-'));
-    const cargoTomlPath = path.join(tempDir, 'Cargo.toml');
-    const srcDir = path.join(tempDir, 'src');
-    const mainRsPath = path.join(srcDir, 'main.rs');
+async function signPayload(payloadBytes, keypairPath) {
+    const keypairJson = JSON.parse(fs.readFileSync(path.resolve(keypairPath), 'utf8'));
+    const seedBytes = Array.isArray(keypairJson.privateKey)
+        ? Uint8Array.from(keypairJson.privateKey)
+        : null;
 
-    fs.mkdirSync(srcDir, { recursive: true });
-    fs.writeFileSync(cargoTomlPath, `[package]\nname = \"signed-metadata-signer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\nserde_json = \"1.0\"\nlichen-core = { path = \"${REPO_ROOT.replace(/\\/g, '\\\\')}\/core\" }\n`);
-    fs.writeFileSync(mainRsPath, `use lichen_core::account::Keypair;\nuse serde::{Deserialize, Serialize};\nuse std::{env, fs};\n\n#[derive(Deserialize)]\nstruct KeypairFile {\n    #[serde(rename = \"privateKey\")]\n    private_key: Vec<u8>,\n}\n\n#[derive(Serialize)]\nstruct SignedPayload {\n    signer: String,\n    signature: lichen_core::PqSignature,\n}\n\nfn main() {\n    let args: Vec<String> = env::args().collect();\n    if args.len() < 3 {\n        eprintln!(\"Usage: signer <payload-file> <keypair-json>\");\n        std::process::exit(1);\n    }\n\n    let payload = fs::read(&args[1]).expect(\"Failed to read payload\");\n    let keypair_json = fs::read_to_string(&args[2]).expect(\"Failed to read keypair file\");\n    let keypair_file: KeypairFile = serde_json::from_str(&keypair_json).expect(\"Invalid keypair JSON\");\n    let seed: [u8; 32] = keypair_file.private_key.as_slice().try_into().expect(\"privateKey must be 32 bytes\");\n    let keypair = Keypair::from_seed(&seed);\n    let signature = keypair.sign(&payload);\n    let result = SignedPayload {\n        signer: keypair.pubkey().to_base58(),\n        signature,\n    };\n    println!(\"{}\", serde_json::to_string(&result).expect(\"serialize signature\"));\n}\n`);
-
-    const payloadPath = path.join(tempDir, 'payload.json');
-    fs.writeFileSync(payloadPath, payloadBytes);
-
-    const run = spawnSync('cargo', [
-        'run',
-        '--quiet',
-        '--manifest-path', cargoTomlPath,
-        '--',
-        payloadPath,
-        path.resolve(keypairPath),
-    ], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        env: {
-            ...process.env,
-            CARGO_TARGET_DIR: path.join(REPO_ROOT, 'target', 'cargo-tools'),
-        },
-    });
-
-    fs.rmSync(tempDir, { recursive: true, force: true });
-
-    if (run.status !== 0) {
-        throw new Error((run.stderr || run.stdout || 'Rust signer failed').trim());
+    if (!seedBytes || seedBytes.length !== 32) {
+        throw new Error('Signing keypair must include a 32-byte privateKey seed array');
     }
 
-    return JSON.parse(run.stdout);
+    const signature = await signMessage(seedBytes, payloadBytes);
+    const signer = await publicKeyToAddress(signature.public_key.bytes, signature.scheme_version);
+    return { signer, signature };
 }
 
 async function main() {
@@ -192,7 +168,7 @@ async function main() {
         symbol_registry: symbolRegistry,
     };
     const payloadBytes = Buffer.from(stableJsonStringify(payload), 'utf8');
-    const signedPayload = signPayloadWithRust(payloadBytes, options.keypair);
+    const signedPayload = await signPayload(payloadBytes, options.keypair);
     const envelope = {
         schema_version: 1,
         manifest_type: 'signed_metadata',

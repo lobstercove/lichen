@@ -271,7 +271,7 @@ fn load_licn_addr() -> [u8; 32] {
 /// AUDIT-FIX G11-01: Transfer tokens OUT from the bridge's own balance.
 fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
     let licn_addr = load_licn_addr();
-    if is_zero(&licn_addr) {
+    if !has_configured_address(LICHENCOIN_ADDRESS_KEY) {
         log_info("Lichencoin address not configured");
         return 30;
     }
@@ -1416,7 +1416,8 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 // AUDIT-FIX G11-01: TOKEN ADDRESS ADMIN
 // ============================================================================
 
-/// Owner sets the lichencoin contract address for token transfers.
+/// Owner sets the LICN payout address for bridge transfers.
+/// Zero address = native LICN.
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
@@ -1439,9 +1440,6 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
         core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
     }
 
-    if is_zero(&addr) {
-        return 5;
-    }
     if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
         return 6;
     }
@@ -2620,7 +2618,10 @@ mod tests {
         assert_eq!(set_lichenid_address(owner.as_ptr(), first_addr.as_ptr()), 0);
 
         test_mock::set_caller(owner);
-        assert_eq!(set_lichenid_address(owner.as_ptr(), second_addr.as_ptr()), 4);
+        assert_eq!(
+            set_lichenid_address(owner.as_ptr(), second_addr.as_ptr()),
+            4
+        );
 
         let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
         assert_eq!(&stored[..32], &first_addr);
@@ -3172,13 +3173,15 @@ mod tests {
     }
 
     #[test]
-    fn test_set_token_address_zero_rejected() {
+    fn test_set_token_address_accepts_native_licn() {
         setup_no_licn();
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
         test_mock::set_caller(owner);
-        assert_eq!(set_token_address(owner.as_ptr(), [0u8; 32].as_ptr()), 5);
+        assert_eq!(set_token_address(owner.as_ptr(), [0u8; 32].as_ptr()), 0);
+        let stored = test_mock::get_storage(LICHENCOIN_ADDRESS_KEY).unwrap();
+        assert_eq!(&stored[..32], &[0u8; 32]);
     }
 
     #[test]

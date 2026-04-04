@@ -51,6 +51,7 @@ SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)       # system program (for Deploy inst
 OUTPUT_PATH = REPO_ROOT / "deploy-manifest.json"
 CONTRACT_TX_LOOKUP_ATTEMPTS = int(os.environ.get("LICHEN_CONTRACT_TX_LOOKUP_ATTEMPTS", "80"))
 CONTRACT_TX_LOOKUP_DELAY_SECS = float(os.environ.get("LICHEN_CONTRACT_TX_LOOKUP_DELAY_SECS", "0.25"))
+NATIVE_LICN = PublicKey(b'\x00' * 32)
 
 # Contracts in deployment order
 PHASE_1_TOKENS = [
@@ -149,7 +150,8 @@ def keypair_address_bytes(keypair: Keypair) -> bytes:
     return bytes(keypair.address().to_bytes())
 
 
-# Maps symbol registry names → deploy_dex contract names
+# Maps symbol registry names → deploy_dex contract names.
+# Native LICN is not registry-backed and is handled separately via NATIVE_LICN.
 SYMBOL_TO_CONTRACT = {
     "LUSD": "lusd_token",
     "WSOL": "wsol_token",
@@ -163,7 +165,6 @@ SYMBOL_TO_CONTRACT = {
     "DEXGOV": "dex_governance",
     "ANALYTICS": "dex_analytics",
     "PREDICT": "prediction_market",
-    "LICN": "lichencoin",
 }
 
 # DEX contracts that use opcode dispatch (match args[0]) instead of named exports.
@@ -427,7 +428,7 @@ async def phase_initialize_dex(
             "wSOL":  addrs.get("wsol_token"),
             "wETH":  addrs.get("weth_token"),
             "wBNB":  addrs.get("wbnb_token"),
-            "LICN":  addrs.get("lichencoin"),
+            "LICN":  NATIVE_LICN,
         }
 
         # Default CLOB parameters (spores-denominated)
@@ -692,8 +693,8 @@ async def main():
     # ── Pre-check: discover contracts deployed at genesis ──
     existing = await discover_existing_contracts(conn)
 
-    # Merge ALL discovered genesis contracts into all_addrs so the manifest
-    # includes genesis-deployed contracts like lichencoin, lichenid, etc.
+    # Merge discovered genesis contracts into all_addrs so the manifest
+    # includes registry-backed contracts that already exist on-chain.
     all_addrs.update(existing)
 
     # ── Phase 1: Wrapped Tokens ──

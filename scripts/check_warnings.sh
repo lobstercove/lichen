@@ -5,7 +5,7 @@ echo "🦞⚡ FINAL WARNING CHECK - ALL CONTRACTS ⚡🦞"
 echo ""
 
 total_warnings=0
-contracts=("lichencoin" "lichenpunks" "lichenswap" "lichenmarket" "lichenauction" "lichenoracle" "lichendao")
+contracts=("lichenpunks" "lichenswap" "lichenmarket" "lichenauction" "lichenoracle" "lichendao")
 
 for contract in "${contracts[@]}"; do
     echo "Checking $contract..."

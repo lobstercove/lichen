@@ -285,6 +285,64 @@ fn outcome_name_key(market_id: u64, outcome: u8) -> Vec<u8> {
     k
 }
 
+fn default_outcome_name(outcome: u8, outcome_count: u8) -> Vec<u8> {
+    if outcome_count == 2 {
+        return if outcome == 0 {
+            b"Yes".to_vec()
+        } else {
+            b"No".to_vec()
+        };
+    }
+
+    let mut name = Vec::from(&b"Outcome "[..]);
+    name.extend_from_slice(&u64_to_decimal(outcome as u64 + 1));
+    name
+}
+
+fn persist_outcome_names(market_id: u64, outcome_count: u8, names: &[Vec<u8>]) {
+    for outcome in 0..outcome_count {
+        let key = outcome_name_key(market_id, outcome);
+        if let Some(name) = names.get(outcome as usize) {
+            storage_set(&key, name);
+        } else {
+            let default_name = default_outcome_name(outcome, outcome_count);
+            storage_set(&key, &default_name);
+        }
+    }
+}
+
+fn parse_outcome_name_payload(data: &[u8], expected_count: u8) -> Option<Vec<Vec<u8>>> {
+    if data.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let declared_count = *data.first()?;
+    if declared_count == 0 || declared_count != expected_count {
+        return None;
+    }
+
+    let mut offset = 1usize;
+    let mut names = Vec::with_capacity(declared_count as usize);
+    for _ in 0..declared_count {
+        if offset >= data.len() {
+            return None;
+        }
+        let len = data[offset] as usize;
+        offset += 1;
+        if len == 0 || len > MAX_OUTCOME_NAME_LEN || offset + len > data.len() {
+            return None;
+        }
+        names.push(data[offset..offset + len].to_vec());
+        offset += len;
+    }
+
+    if offset != data.len() {
+        return None;
+    }
+
+    Some(names)
+}
+
 fn position_key(market_id: u64, addr: &[u8], outcome: u8) -> Vec<u8> {
     let mut k = Vec::from(&b"pm_p_"[..]);
     k.extend_from_slice(&u64_to_decimal(market_id));
@@ -1594,6 +1652,8 @@ pub fn create_market(
         let pool = encode_outcome_pool(0, 0, 0, 0, 0, 0);
         save_outcome_pool(new_id, i, &pool);
     }
+
+    persist_outcome_names(new_id, outcome_count, &[]);
 
     // Store question hash → market_id mapping
     save_u64(&qh_key, new_id);
@@ -3678,7 +3738,7 @@ pub extern "C" fn call() -> u32 {
         }
         // 1: create_market
         1 => {
-            // [creator 32B][category 1B][close_slot 8B][outcome_count 1B][question_hash 32B][question_len 4B][question...]
+            // [creator 32B][category 1B][close_slot 8B][outcome_count 1B][question_hash 32B][question_len 4B][question...][optional: name_count 1B][name_len 1B][name_bytes...]xN
             if args.len() >= 1 + 32 + 1 + 8 + 1 + 32 + 4 {
                 let creator_ptr = args[1..33].as_ptr();
                 let category = args[33];
@@ -3686,8 +3746,17 @@ pub extern "C" fn call() -> u32 {
                 let outcome_count = args[42];
                 let qh_ptr = args[43..75].as_ptr();
                 let q_len = u32::from_le_bytes([args[75], args[76], args[77], args[78]]);
-                if args.len() >= 79 + q_len as usize {
-                    let q_ptr = args[79..].as_ptr();
+                let question_end = 79 + q_len as usize;
+                if args.len() >= question_end {
+                    let outcome_names =
+                        match parse_outcome_name_payload(&args[question_end..], outcome_count) {
+                            Some(names) => names,
+                            None => {
+                                lichen_sdk::set_return_data(&u64_to_bytes(0));
+                                return 0;
+                            }
+                        };
+                    let q_ptr = args[79..question_end].as_ptr();
                     let result = create_market(
                         creator_ptr,
                         category,
@@ -3702,6 +3771,8 @@ pub extern "C" fn call() -> u32 {
                     _rc = result as u32;
                     if result == 0 {
                         lichen_sdk::set_return_data(&u64_to_bytes(0));
+                    } else if !outcome_names.is_empty() {
+                        persist_outcome_names(result as u64, outcome_count, &outcome_names);
                     }
                 }
             }
@@ -4234,6 +4305,10 @@ mod tests {
         save_market(market_id, &record);
     }
 
+    fn read_outcome_name(market_id: u64, outcome: u8) -> Vec<u8> {
+        storage_get(&outcome_name_key(market_id, outcome)).unwrap_or_default()
+    }
+
     // ========================================================================
     // INITIALIZATION TESTS
     // ========================================================================
@@ -4272,6 +4347,81 @@ mod tests {
         assert_eq!(market_outcome_count(&record), 2);
         assert_eq!(market_close_slot(&record), 100_000);
         assert_eq!(market_category(&record), CATEGORY_CRYPTO);
+        assert_eq!(read_outcome_name(mid, 0), b"Yes");
+        assert_eq!(read_outcome_name(mid, 1), b"No");
+    }
+
+    #[test]
+    fn test_create_market_multi_stores_default_outcome_names() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_slot(1000);
+        test_mock::set_value(MARKET_CREATION_FEE);
+        let qhash = [0x52u8; 32];
+        let question = b"Which chain leads weekly agent txs?";
+        let mid = create_market(
+            creator.as_ptr(),
+            CATEGORY_CUSTOM,
+            100_000,
+            4,
+            qhash.as_ptr(),
+            question.as_ptr(),
+            question.len() as u32,
+        ) as u64;
+
+        assert_eq!(read_outcome_name(mid, 0), b"Outcome 1");
+        assert_eq!(read_outcome_name(mid, 1), b"Outcome 2");
+        assert_eq!(read_outcome_name(mid, 2), b"Outcome 3");
+        assert_eq!(read_outcome_name(mid, 3), b"Outcome 4");
+    }
+
+    #[test]
+    fn test_parse_outcome_name_payload_and_persist_custom_names() {
+        let mut payload = Vec::new();
+        let names = [
+            b"Lichen".as_slice(),
+            b"Solana".as_slice(),
+            b"Base".as_slice(),
+            b"Other".as_slice(),
+        ];
+        payload.push(names.len() as u8);
+        for name in names {
+            payload.push(name.len() as u8);
+            payload.extend_from_slice(name);
+        }
+
+        let parsed = parse_outcome_name_payload(&payload, 4).expect("payload should decode");
+        assert_eq!(parsed[0], b"Lichen");
+        assert_eq!(parsed[1], b"Solana");
+        assert_eq!(parsed[2], b"Base");
+        assert_eq!(parsed[3], b"Other");
+        assert!(parse_outcome_name_payload(&payload, 3).is_none());
+
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_slot(1000);
+        test_mock::set_value(MARKET_CREATION_FEE);
+        let qhash = [0x53u8; 32];
+        let question = b"Which chain leads weekly agent txs?";
+        let mid = create_market(
+            creator.as_ptr(),
+            CATEGORY_CUSTOM,
+            100_000,
+            4,
+            qhash.as_ptr(),
+            question.as_ptr(),
+            question.len() as u32,
+        ) as u64;
+
+        persist_outcome_names(mid, 4, &parsed);
+        assert_eq!(read_outcome_name(mid, 0), b"Lichen");
+        assert_eq!(read_outcome_name(mid, 1), b"Solana");
+        assert_eq!(read_outcome_name(mid, 2), b"Base");
+        assert_eq!(read_outcome_name(mid, 3), b"Other");
     }
 
     #[test]

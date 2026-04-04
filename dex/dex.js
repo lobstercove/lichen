@@ -3,6 +3,10 @@
    Wired to Lichen RPC + WebSocket
    ======================================== */
 
+if (typeof window !== 'undefined') {
+    window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY = 'dexNetwork';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     'use strict';
 
@@ -10,8 +14,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Configuration — override via window globals or <script> config block
     // Uses LICHEN_CONFIG (shared-config.js) for environment-aware defaults.
     // ═══════════════════════════════════════════════════════════════════════
-    const _licnRpc = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.rpc('dexNetwork') : 'http://localhost:8899';
-    const _licnWs = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.ws('dexNetwork') : 'ws://localhost:8900';
+    const initialNetwork = (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function')
+        ? LICHEN_CONFIG.currentNetwork('dexNetwork')
+        : (localStorage.getItem('dexNetwork') || undefined);
+    const _licnRpc = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.rpc(initialNetwork) : 'http://localhost:8899';
+    const _licnWs = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.ws(initialNetwork) : 'ws://localhost:8900';
     const RPC_BASE = (localStorage.getItem('dexRpcUrl') || window.LICHEN_RPC || _licnRpc).replace(/\/$/, '');
     const WS_URL = (localStorage.getItem('dexWsUrl') || window.LICHEN_WS || _licnWs).replace(/\/$/, '');
     const API_BASE = `${RPC_BASE}/api/v1`;
@@ -764,11 +771,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
-    // Opcode 1: create_market(creator, category, close_slot, outcome_count, question_hash, question)
-    async function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot) {
+    // Opcode 1: create_market(creator, category, close_slot, outcome_count, question_hash, question, optional outcome names)
+    async function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot, outcomeNames = []) {
         const encoder = new TextEncoder();
         const qBytes = encoder.encode(question);
-        const totalLen = 79 + qBytes.length;
+        const normalizedNames = Array.isArray(outcomeNames)
+            ? outcomeNames.map((name) => String(name || '').trim()).filter((name) => name.length > 0)
+            : [];
+        const encodedNames = normalizedNames.length === outcomeCount
+            ? normalizedNames
+                .map((name) => encoder.encode(name))
+                .filter((nameBytes) => nameBytes.length > 0 && nameBytes.length <= 64)
+            : [];
+        const namesLen = encodedNames.length === outcomeCount
+            ? 1 + encodedNames.reduce((sum, nameBytes) => sum + 1 + nameBytes.length, 0)
+            : 0;
+        const totalLen = 79 + qBytes.length + namesLen;
         const buf = new ArrayBuffer(totalLen);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
@@ -786,6 +804,17 @@ document.addEventListener('DOMContentLoaded', () => {
         arr.set(hashBytes, 43);
         view.setUint32(75, qBytes.length, true); // question_len
         arr.set(qBytes, 79);
+        let offset = 79 + qBytes.length;
+        if (namesLen > 0) {
+            writeU8(arr, offset, encodedNames.length);
+            offset += 1;
+            encodedNames.forEach((nameBytes) => {
+                writeU8(arr, offset, nameBytes.length);
+                offset += 1;
+                arr.set(nameBytes, offset);
+                offset += nameBytes.length;
+            });
+        }
         return arr;
     }
 
@@ -4915,6 +4944,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return outcomeIndex === 1 ? 'NO' : 'YES';
     }
 
+    function getPredictOutcomeLabelById(marketId, outcomeIndex) {
+        const market = predictState.markets.find((entry) => Number(entry.id) === Number(marketId));
+        if (market) {
+            return getPredictOutcomeLabel(market, outcomeIndex);
+        }
+
+        const numericOutcome = Number.parseInt(outcomeIndex, 10);
+        if (Number.isInteger(numericOutcome) && numericOutcome >= 0) {
+            return `Outcome ${numericOutcome + 1}`;
+        }
+
+        return '—';
+    }
+
     function getPredictOutcomePrice(market, outcomeIndex = normalizePredictOutcomeSelection(market)) {
         if (!market) return 0;
         const directPrice = Number(market.outcomes?.[outcomeIndex]?.price);
@@ -5312,7 +5355,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const actionRaw = String(t.action || '');
                     const actionLabel = actionRaw.replace(/_/g, ' ').toUpperCase();
                     const actionClass = actionRaw === 'buy' ? 'positive' : (actionRaw === 'sell' ? 'negative' : '');
-                    const outcomeLabel = t.outcome === 0 ? 'YES' : (t.outcome === 1 ? 'NO' : '—');
+                    const outcomeLabel = getPredictOutcomeLabelById(t.market_id, t.outcome);
                     const amount = Number(t.amount || 0);
                     const timestamp = Number(t.timestamp || 0);
                     const timeLabel = timestamp > 0 ? new Date(timestamp * 1000).toLocaleString() : `Slot ${formatNumber(t.slot || 0)}`;
@@ -5547,7 +5590,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const minutesRemaining = Math.floor((secondsRemaining % 3600) / 60);
                 const disputeExpired = slotsRemaining <= 0;
                 const resolverAddr = m.resolver ? escapeHtml(m.resolver.slice(0, 8) + '...' + m.resolver.slice(-6)) : 'Unknown';
-                const outcomeLabel = m.winning_outcome !== undefined ? (m.winning_outcome === 0 ? 'YES' : 'NO') : '—';
+                const outcomeLabel = m.winning_outcome !== undefined
+                    ? getPredictOutcomeLabel(m, Number(m.winning_outcome))
+                    : '—';
                 disputeHtml = `<div class="dispute-panel" data-market="${m.id}">
                     <div class="dispute-info">
                         <span class="dispute-label">Resolution: <strong>${outcomeLabel}</strong> by ${resolverAddr}</span>
@@ -5628,13 +5673,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const m = predictState.markets.find(x => x.id === p.market_id);
             const qText = escapeHtml(m?.question?.slice(0, 40) || `Market #${p.market_id}`);
             const isResolved = m?.status === 'resolved';
-            const won = isResolved && ((m.resolved_outcome === 'yes' && p.outcome === 0) || (m.resolved_outcome === 'no' && p.outcome === 1));
+            const won = isResolved && Number(m?.winning_outcome) === Number(p.outcome);
             const shares = Number(p.shares || 0);
             const costBasis = Number(p.cost_basis || 0);
             const avgPrice = shares > 0 ? (costBasis / shares) : 0;
-            const currentPrice = p.outcome === 0
-                ? Number(m?.yes || 0)
-                : (1 - Number(m?.yes || 0));
+            const currentPrice = m?.multi
+                ? Number(m?.outcomes?.[p.outcome]?.price || 0)
+                : (p.outcome === 0
+                    ? Number(m?.yes || 0)
+                    : (1 - Number(m?.yes || 0)));
             const value = shares * currentPrice;
             const pnl = value - costBasis;
             const pnlCls = pnl >= 0 ? 'positive' : 'negative';
@@ -5644,7 +5691,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 : '<span style="color:var(--text-muted)">Active</span>';
             return `<tr>
                 <td>${qText}</td>
-                <td>${p.outcome === 0 ? 'YES' : 'NO'}</td>
+                <td>${escapeHtml(getPredictOutcomeLabelById(p.market_id, p.outcome))}</td>
                 <td class="mono-value">${shares.toFixed(2)}</td>
                 <td class="mono-value">$${avgPrice.toFixed(4)}</td>
                 <td class="mono-value">$${currentPrice.toFixed(4)}</td>
@@ -6152,7 +6199,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!currentSlot) currentSlot = Math.round(Date.now() / 400); // F16.9: 400ms per slot
             const closeSlot = currentSlot + durationSlots;
             const predictCreateFee = 10_000_000; // 10 lUSD, matches prediction contract MARKET_CREATION_FEE
-            const createIx = contractIx(contracts.prediction_market, await buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot), predictCreateFee);
+            const createIx = contractIx(contracts.prediction_market, await buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot, outcomes), predictCreateFee);
             await wallet.sendTransaction([createIx]);
 
             const findCreatedMarketId = async () => {

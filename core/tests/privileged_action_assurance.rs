@@ -43,9 +43,11 @@ fn caller_verification_regressions_remain_in_suite() {
     let source = read_workspace_file("core/tests/caller_verification.rs");
 
     for test_name in [
-        "test_g1_01_lichencoin_approve_has_caller_check",
-        "test_g1_02_lichencoin_mint_has_caller_check",
+        "test_g7_01_dex_rewards_initialize_has_caller_check",
+        "test_g10_01_lichenauction_create_auction_has_caller_check",
+        "test_g13_01_lichendao_cancel_proposal_has_caller_check",
         "test_g15_01_lichenoracle_submit_price_has_caller_check",
+        "test_g26_01_compute_market_admin_fns_have_caller_checks",
         "b1_03_genesis_initialization_uses_governance_authority",
         "b1_05_genesis_oracle_seeding_uses_governance_authority",
     ] {

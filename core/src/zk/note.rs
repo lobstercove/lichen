@@ -191,7 +191,12 @@ mod tests {
     use crate::zk::merkle::random_scalar_bytes;
 
     fn test_note() -> Note {
-        Note::new([1u8; 32], 1_000_000_000, random_scalar_bytes(), random_scalar_bytes())
+        Note::new(
+            [1u8; 32],
+            1_000_000_000,
+            random_scalar_bytes(),
+            random_scalar_bytes(),
+        )
     }
 
     #[test]

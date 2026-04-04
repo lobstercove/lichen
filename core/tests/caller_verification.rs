@@ -1,7 +1,7 @@
 // Phase 1 Task 5: Caller verification sweep — source-level integrity tests
 //
-// These tests statically verify that all 7 identified caller-verification
-// vulnerabilities (G1-01, G1-02, G7-01, G10-01, G13-01, G15-01, G26-01)
+// These tests statically verify the remaining caller-verification
+// hardening points (G7-01, G10-01, G13-01, G15-01, G26-01)
 // remain fixed by checking that the target WASM contract source files
 // contain the required `get_caller()` verification pattern in each
 // vulnerable function.
@@ -37,29 +37,6 @@ fn verify_contract_has_pattern(contract_rel_path: &str, patterns: &[(&str, &str)
             pattern
         );
     }
-}
-
-#[test]
-fn test_g1_01_lichencoin_approve_has_caller_check() {
-    verify_contract_has_pattern(
-        "contracts/lichencoin/src/lib.rs",
-        &[(
-            "approve()",
-            // The AUDIT-FIX pattern: get_caller() + compare with owner_array
-            "let real_caller = get_caller();\n    if real_caller.0 != owner_array",
-        )],
-    );
-}
-
-#[test]
-fn test_g1_02_lichencoin_mint_has_caller_check() {
-    verify_contract_has_pattern(
-        "contracts/lichencoin/src/lib.rs",
-        &[(
-            "mint()",
-            "let real_caller = get_caller();\n    if real_caller.0 != caller_array",
-        )],
-    );
 }
 
 #[test]
@@ -164,10 +141,9 @@ fn test_g26_01_compute_market_admin_fns_have_caller_checks() {
 }
 
 #[test]
-fn test_all_7_contracts_import_get_caller() {
-    // Every vulnerable contract must import get_caller
+fn test_all_target_contracts_import_get_caller() {
+    // Every remaining target contract must import get_caller.
     let contracts = [
-        "contracts/lichencoin/src/lib.rs",
         "contracts/dex_rewards/src/lib.rs",
         "contracts/lichenauction/src/lib.rs",
         "contracts/lichendao/src/lib.rs",
@@ -374,8 +350,8 @@ fn b1_03_genesis_initialization_uses_governance_authority() {
     let init_body = &genesis_src[init_fn_start..init_fn_end];
 
     assert!(
-        init_body.contains("get_governance_authority()?.ok_or_else(||"),
-        "REGRESSION B1-03: genesis_initialize_contracts must load governance_authority from state"
+        init_body.contains("require_genesis_governance_authority(state, \"genesis initialization\")?"),
+        "REGRESSION B1-03: genesis_initialize_contracts must load governance_authority from state via the shared helper"
     );
     assert!(
         init_body.contains("let exec_as_governance =")

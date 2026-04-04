@@ -128,18 +128,17 @@ test-prediction-market:
 .PHONY: deploy-local deploy-testnet deploy-mainnet
 
 deploy-local: build-contracts-wasm
-	@echo "🚀 Deploying to local validator..."
+	@echo "🚀 Running post-genesis bootstrap against local validator..."
 	scripts/first-boot-deploy.sh --rpc=$(RPC_URL)
 
 deploy-testnet: build-contracts-wasm
-	@echo "🚀 Deploying to testnet..."
-	scripts/testnet-deploy.sh --rpc=$(RPC_URL) --seed-pairs --seed-pools
+	@echo "🚀 Running post-genesis bootstrap against testnet RPC..."
+	DEPLOY_NETWORK=testnet scripts/first-boot-deploy.sh --rpc=$(RPC_URL) --skip-build
 
 deploy-mainnet: build-contracts-wasm
-	@echo "🚀 Deploying to mainnet..."
-	@echo "⚠️  Mainnet deployment requires manual confirmation."
-	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	scripts/mainnet-deploy.sh --rpc=$(RPC_URL) --network=mainnet
+	@echo "🚀 Running post-genesis bootstrap against mainnet RPC..."
+	@echo "⚠️  Ensure deploy/setup.sh and genesis creation already completed on the target host."
+	DEPLOY_NETWORK=mainnet scripts/first-boot-deploy.sh --rpc=$(RPC_URL) --skip-build
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run

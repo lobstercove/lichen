@@ -1670,9 +1670,6 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
-    if is_zero(&a) {
-        return 2;
-    }
     if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
         return 3;
     }
@@ -1710,7 +1707,7 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
     }
 
     let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
-    if is_zero(&licn_addr) {
+    if !has_configured_address(LICHENCOIN_ADDRESS_KEY) {
         return 4;
     }
 
@@ -3260,10 +3257,11 @@ mod tests {
     }
 
     #[test]
-    fn test_set_lichencoin_address_zero() {
+    fn test_set_lichencoin_address_accepts_native_licn() {
         let admin = setup();
         let zero = [0u8; 32];
-        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), zero);
     }
 
     #[test]

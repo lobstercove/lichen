@@ -391,7 +391,8 @@ var LICHEN_SIGNED_METADATA_SIGNERS = Object.freeze({
 
 var _signedMetadataManifestCache = new Map();
 var _signedMetadataVerifierPromise = null;
-var _sharedDynamicImport = null;
+var _sharedPqScriptPromise = null;
+var SHARED_PQ_SCRIPT_ID = 'lichen-shared-pq-module';
 
 function normalizeSignedMetadataNetworkKey(networkKey) {
     return String(networkKey || '').trim().toLowerCase();
@@ -543,13 +544,6 @@ function shapeSignedMetadataListResponse(entries, params) {
     };
 }
 
-function importSharedModule(specifier) {
-    if (!_sharedDynamicImport) {
-        _sharedDynamicImport = Function('specifier', 'return import(specifier);');
-    }
-    return _sharedDynamicImport(specifier);
-}
-
 function getSharedPqModuleUrl() {
     if (SHARED_UTILS_BASE_URL) {
         try {
@@ -561,26 +555,72 @@ function getSharedPqModuleUrl() {
     return 'shared/pq.js';
 }
 
+function loadSharedPqVerifier() {
+    if (typeof window !== 'undefined' && window.LichenPQ && typeof window.LichenPQ.verifySignature === 'function') {
+        return Promise.resolve(window.LichenPQ.verifySignature.bind(window.LichenPQ));
+    }
+    if (typeof document === 'undefined') {
+        return Promise.reject(new Error('Shared PQ verifier is unavailable in this environment'));
+    }
+    if (_sharedPqScriptPromise) {
+        return _sharedPqScriptPromise;
+    }
+
+    _sharedPqScriptPromise = new Promise(function (resolve, reject) {
+        function resolveVerifier() {
+            if (typeof window !== 'undefined' && window.LichenPQ && typeof window.LichenPQ.verifySignature === 'function') {
+                resolve(window.LichenPQ.verifySignature.bind(window.LichenPQ));
+                return true;
+            }
+            return false;
+        }
+
+        function handleLoad() {
+            if (!resolveVerifier()) {
+                reject(new Error('Shared PQ verifier did not expose verifySignature'));
+            }
+        }
+
+        if (resolveVerifier()) {
+            return;
+        }
+
+        var script = document.getElementById(SHARED_PQ_SCRIPT_ID);
+        if (!script) {
+            script = document.createElement('script');
+            script.id = SHARED_PQ_SCRIPT_ID;
+            script.type = 'module';
+            script.src = getSharedPqModuleUrl();
+        }
+
+        script.addEventListener('load', handleLoad, { once: true });
+        script.addEventListener('error', function () {
+            reject(new Error('Failed to load shared PQ verifier module'));
+        }, { once: true });
+
+        if (!script.parentNode) {
+            var parent = document.head || document.body || document.documentElement;
+            if (!parent) {
+                reject(new Error('Document is missing a node for loading the shared PQ verifier'));
+                return;
+            }
+            parent.appendChild(script);
+        }
+    }).catch(function (error) {
+        _sharedPqScriptPromise = null;
+        throw error;
+    });
+
+    return _sharedPqScriptPromise;
+}
+
 async function resolveSignedMetadataVerifier() {
     if (typeof window !== 'undefined' && window.LichenPQ && typeof window.LichenPQ.verifySignature === 'function') {
         return window.LichenPQ.verifySignature.bind(window.LichenPQ);
     }
     if (_signedMetadataVerifierPromise) return _signedMetadataVerifierPromise;
 
-    _signedMetadataVerifierPromise = importSharedModule(getSharedPqModuleUrl())
-        .then(function (module) {
-            var verifier = module && typeof module.verifySignature === 'function'
-                ? module.verifySignature
-                : (module && module.default && typeof module.default.verifySignature === 'function'
-                    ? module.default.verifySignature
-                    : (typeof window !== 'undefined' && window.LichenPQ
-                        ? window.LichenPQ.verifySignature
-                        : null));
-            if (typeof verifier !== 'function') {
-                throw new Error('Shared PQ verifier did not expose verifySignature');
-            }
-            return verifier;
-        })
+    _signedMetadataVerifierPromise = loadSharedPqVerifier()
         .catch(function (error) {
             _signedMetadataVerifierPromise = null;
             throw error;

@@ -180,9 +180,19 @@ fn build_create_market_args(
     close_slot: u64,
     outcome_count: u8,
     question: &str,
+    outcome_names: &[String],
 ) -> Vec<u8> {
     let q_bytes = question.as_bytes();
-    let mut args = Vec::with_capacity(79 + q_bytes.len());
+    let encoded_names: Vec<&[u8]> = outcome_names.iter().map(|name| name.as_bytes()).collect();
+    let names_len = if encoded_names.is_empty() {
+        0
+    } else {
+        1 + encoded_names
+            .iter()
+            .map(|name| 1 + name.len())
+            .sum::<usize>()
+    };
+    let mut args = Vec::with_capacity(79 + q_bytes.len() + names_len);
     args.push(1); // opcode: create_market
     args.extend_from_slice(&creator.0);
     args.push(category);
@@ -196,6 +206,13 @@ fn build_create_market_args(
 
     args.extend_from_slice(&(q_bytes.len() as u32).to_le_bytes());
     args.extend_from_slice(q_bytes);
+    if !encoded_names.is_empty() {
+        args.push(encoded_names.len() as u8);
+        for name in encoded_names {
+            args.push(name.len() as u8);
+            args.extend_from_slice(name);
+        }
+    }
     args
 }
 
@@ -395,6 +412,17 @@ fn status_name(status: u8, close_slot: u64, current_slot: u64) -> &'static str {
     }
 }
 
+fn default_outcome_name(index: u8, outcome_count: u8) -> String {
+    if outcome_count == 2 {
+        if index == 0 {
+            return "Yes".to_string();
+        }
+        return "No".to_string();
+    }
+
+    format!("Outcome {}", index as usize + 1)
+}
+
 fn u64_le(data: &[u8], offset: usize) -> u64 {
     if data.len() < offset + 8 {
         return 0;
@@ -544,13 +572,7 @@ fn decode_market(state: &RpcState, id: u64, current_slot: u64) -> Option<MarketJ
 
         let name = read_bytes(state, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
-            .unwrap_or_else(|| {
-                if oi == 0 {
-                    "Yes".to_string()
-                } else {
-                    "No".to_string()
-                }
-            });
+            .unwrap_or_else(|| default_outcome_name(oi, outcome_count));
 
         let (reserve, shares) = read_bytes(state, o_key.as_bytes())
             .map(|d| {
@@ -1028,6 +1050,22 @@ async fn post_create_template(
         return api_err("outcome_count must be between 2 and 8");
     }
 
+    let normalized_outcomes: Vec<String> = req
+        .outcomes
+        .iter()
+        .map(|outcome| outcome.trim().to_string())
+        .filter(|outcome| !outcome.is_empty())
+        .collect();
+    if !req.outcomes.is_empty() && normalized_outcomes.len() != req.outcomes.len() {
+        return api_err("outcomes must be non-empty strings");
+    }
+    if normalized_outcomes.iter().any(|outcome| outcome.len() > 64) {
+        return api_err("outcomes must be 64 bytes or fewer");
+    }
+    if !normalized_outcomes.is_empty() && normalized_outcomes.len() as u8 != outcome_count {
+        return api_err("outcomes length must match outcome_count");
+    }
+
     let slot = current_slot(&state);
     if slot == 0 {
         return api_err("chain is not ready: no slots available");
@@ -1056,6 +1094,7 @@ async fn post_create_template(
         close_slot,
         outcome_count,
         req.question.trim(),
+        &normalized_outcomes,
     );
 
     let contract_call =
@@ -1580,7 +1619,9 @@ mod tests {
     #[test]
     fn build_create_market_args_structure() {
         let creator = lichen_core::Pubkey([0xAAu8; 32]);
-        let args = build_create_market_args(&creator, 2, 10000, 2, "Will BTC hit 100k?");
+        let outcome_names: Vec<String> = Vec::new();
+        let args =
+            build_create_market_args(&creator, 2, 10000, 2, "Will BTC hit 100k?", &outcome_names);
         // byte 0: opcode (1)
         assert_eq!(args[0], 1);
         // bytes 1-32: creator pubkey
@@ -1603,10 +1644,41 @@ mod tests {
     #[test]
     fn build_create_market_args_empty_question() {
         let creator = lichen_core::Pubkey([0u8; 32]);
-        let args = build_create_market_args(&creator, 0, 0, 2, "");
+        let outcome_names: Vec<String> = Vec::new();
+        let args = build_create_market_args(&creator, 0, 0, 2, "", &outcome_names);
         let q_len = u32::from_le_bytes(args[75..79].try_into().unwrap());
         assert_eq!(q_len, 0);
         assert_eq!(args.len(), 79); // no question bytes
+    }
+
+    #[test]
+    fn build_create_market_args_includes_outcome_names() {
+        let creator = lichen_core::Pubkey([0xBBu8; 32]);
+        let outcome_names = vec![
+            "Lichen".to_string(),
+            "Solana".to_string(),
+            "Base".to_string(),
+            "Other".to_string(),
+        ];
+        let args = build_create_market_args(
+            &creator,
+            7,
+            12345,
+            4,
+            "Which chain leads weekly agent txs?",
+            &outcome_names,
+        );
+        let q_len = u32::from_le_bytes(args[75..79].try_into().unwrap()) as usize;
+        let mut offset = 79 + q_len;
+        assert_eq!(args[offset], 4);
+        offset += 1;
+        for expected in ["Lichen", "Solana", "Base", "Other"] {
+            let len = args[offset] as usize;
+            offset += 1;
+            assert_eq!(&args[offset..offset + len], expected.as_bytes());
+            offset += len;
+        }
+        assert_eq!(offset, args.len());
     }
 
     // ── Constants ──

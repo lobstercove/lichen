@@ -11,10 +11,12 @@ case $NETWORK in
   testnet)
     BASE_P2P=7001
     BASE_RPC=8899
+    CUSTODY_PORT=9105
     ;;
   mainnet)
     BASE_P2P=8001
     BASE_RPC=9899
+    CUSTODY_PORT=9106
     ;;
   *)
     echo "Usage: $0 [testnet|mainnet]"
@@ -54,26 +56,93 @@ clear_local_peer_trust_state() {
   done
 }
 
+any_path_newer_than() {
+  local target=$1
+  shift
+
+  if [ ! -e "$target" ]; then
+    return 0
+  fi
+
+  local path newer_file
+  for path in "$@"; do
+    if [ ! -e "$path" ]; then
+      continue
+    fi
+
+    if [ -d "$path" ]; then
+      newer_file=$(find "$path" -type f -newer "$target" -print -quit)
+      if [ -n "$newer_file" ]; then
+        return 0
+      fi
+    elif [ "$path" -nt "$target" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_runtime_binaries() {
+  local runtime_sources=(
+    ./Cargo.toml
+    ./Cargo.lock
+    ./core
+    ./validator
+    ./rpc
+    ./p2p
+    ./cli
+    ./genesis
+    ./custody
+    ./faucet-service
+  )
+
+  if any_path_newer_than "./target/release/lichen-validator" "${runtime_sources[@]}" \
+    || any_path_newer_than "./target/release/lichen-custody" "${runtime_sources[@]}" \
+    || any_path_newer_than "./target/release/lichen-faucet" "${runtime_sources[@]}"; then
+    echo "🔨 Rebuilding local runtime release binaries..."
+    cargo build --release -p lichen-validator -p lichen-custody -p lichen-faucet
+  fi
+}
+
+refresh_changed_contract_wasm() {
+  local contract_dir manifest contract_name root_wasm target_wasm
+
+  for contract_dir in ./contracts/*; do
+    [ -d "$contract_dir" ] || continue
+
+    manifest="$contract_dir/Cargo.toml"
+    [ -f "$manifest" ] || continue
+
+    contract_name=$(basename "$contract_dir")
+    root_wasm="$contract_dir/${contract_name}.wasm"
+    target_wasm="$contract_dir/target/wasm32-unknown-unknown/release/${contract_name}.wasm"
+
+    if any_path_newer_than "$root_wasm" "$manifest" "$contract_dir/Cargo.lock" "$contract_dir/src"; then
+      echo "🔨 Refreshing ${contract_name}.wasm..."
+      cargo build --manifest-path "$manifest" --target wasm32-unknown-unknown --release
+      cp "$target_wasm" "$root_wasm"
+    fi
+  done
+}
+
 export LICHEN_LOCAL_DEV=1
 export LICHEN_SIGNER_AUTH_TOKEN="${LICHEN_SIGNER_AUTH_TOKEN:-$(generate_local_token)}"
 if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
   export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
 fi
 export CUSTODY_API_AUTH_TOKEN="${CUSTODY_API_AUTH_TOKEN:-$(generate_local_token)}"
+export CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:${CUSTODY_PORT}}"
 
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 
 CHAIN_ID="lichen-${NETWORK}-1"
 GENESIS_KEYS_DIR="./data/state-${BASE_P2P}/genesis-keys"
+GENESIS_PRIMARY_KEYPAIR="${GENESIS_KEYS_DIR}/genesis-primary-${CHAIN_ID}.json"
 GENESIS_TREASURY_KEYPAIR="${GENESIS_KEYS_DIR}/treasury-${CHAIN_ID}.json"
-CUSTODY_KEYPAIR="./keypairs/deployer.json"
-if [ ! -f "$CUSTODY_KEYPAIR" ]; then
-  CUSTODY_KEYPAIR="$GENESIS_TREASURY_KEYPAIR"
-fi
+LOCAL_DEPLOYER_KEYPAIR="./keypairs/deployer.json"
 RPC_CANDIDATES=("${BASE_RPC}" "$((BASE_RPC + 2))" "$((BASE_RPC + 4))")
-
-export CUSTODY_TREASURY_KEYPAIR="$CUSTODY_KEYPAIR"
 if [ -n "$SOLANA_RPC_URL" ]; then
   export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
 fi
@@ -81,9 +150,8 @@ if [ -n "$EVM_RPC_URL" ]; then
   export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
 fi
 
-if [ ! -x "./target/release/lichen-validator" ] || [ ! -x "./target/release/lichen-custody" ] || [ ! -x "./target/release/lichen-faucet" ]; then
-  cargo build --release
-fi
+ensure_runtime_binaries
+refresh_changed_contract_wasm
 
 clear_local_peer_trust_state
 
@@ -140,6 +208,11 @@ V3_PID=$!
 sleep 2
 
 wait_for_file "$GENESIS_TREASURY_KEYPAIR" "genesis treasury keypair"
+wait_for_file "$GENESIS_PRIMARY_KEYPAIR" "genesis primary keypair"
+
+mkdir -p ./keypairs
+cp "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
+export CUSTODY_TREASURY_KEYPAIR="${CUSTODY_TREASURY_KEYPAIR:-$LOCAL_DEPLOYER_KEYPAIR}"
 
 CLUSTER_RPC_URL="$(wait_for_healthy_rpc 90)"
 export CUSTODY_LICHEN_RPC_URL="$CLUSTER_RPC_URL"
@@ -161,7 +234,7 @@ fi
 
 # ── First-boot contract deployment ──
 # Wait 5s for validators to stabilize, then deploy all contracts if not yet deployed
-echo "🔧 Running first-boot contract deployment..."
+echo "🔧 Running post-genesis bootstrap..."
 sleep 5
 "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1 &
 DEPLOY_PID=$!
@@ -174,7 +247,7 @@ echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"
 fi
-echo "Deploy PID: $DEPLOY_PID"
+echo "Bootstrap PID: $DEPLOY_PID"
 if [ -n "$SOLANA_RPC_URL" ]; then
   echo "Solana RPC: $SOLANA_RPC_URL"
 fi
