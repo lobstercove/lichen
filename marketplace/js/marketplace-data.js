@@ -8,6 +8,7 @@
     var CREATOR_EMOJIS = ['\u{1F3A8}', '\u2728', '\u{1F680}', '\u{1F48E}', '\u{1F525}', '\u26A1', '\u{1F31F}', '\u{1F3AF}', '\u{1F3C6}', '\u{1F451}'];
     var collectionNameCache = {};
     var SPORES_PER_LICN = 1000000000;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
 
     // ===== Utility Helpers =====
 
@@ -52,11 +53,12 @@
         if (!contractId) return 'Unknown';
         if (collectionNameCache[contractId]) return collectionNameCache[contractId];
         try {
-            var info = await rpcCall('getContractInfo', [contractId]);
+            var info = await marketTrustedRpcCall('getContractInfo', [contractId]);
             var name = (info && info.name) || formatHash(contractId, 12);
             collectionNameCache[contractId] = name;
             return name;
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return formatHash(contractId, 12);
         }
     }
@@ -65,7 +67,7 @@
 
     async function getFeaturedCollections(limit) {
         try {
-            var contracts = await rpcCall('getAllContracts', []);
+            var contracts = await marketTrustedRpcCall('getAllContracts', []);
             if (!Array.isArray(contracts) || contracts.length === 0) return [];
             var maxItems = Math.max(1, Number(limit) || 6);
             return contracts.slice(0, maxItems).map(function (c) {
@@ -81,7 +83,8 @@
                     volume: c.total_volume ? priceToLicn(c.total_volume) : '0.00',
                 };
             });
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -111,7 +114,8 @@
                 });
             }
             return results;
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -143,7 +147,8 @@
                     rank: i + 1,
                 };
             });
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -170,7 +175,8 @@
                 });
             }
             return results;
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -213,7 +219,7 @@
     async function getUserCollections(address) {
         if (!address) return [];
         try {
-            var contracts = await rpcCall('getAllContracts', []);
+            var contracts = await marketTrustedRpcCall('getAllContracts', []);
             if (!Array.isArray(contracts)) return [];
             return contracts.filter(function (c) {
                 var owner = c.owner || c.deployer || c.creator || '';
@@ -228,7 +234,8 @@
                     volume: c.total_volume ? priceToLicn(c.total_volume) : '0.00',
                 };
             });
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -238,7 +245,8 @@
         try {
             var result = await rpcCall('getNFTsByOwner', [address, { limit: 200 }]);
             return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -247,7 +255,8 @@
         if (!tokenId) return null;
         try {
             return await rpcCall('getNFT', [tokenId]);
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return null;
         }
     }
@@ -257,7 +266,8 @@
         try {
             var result = await rpcCall('getNFTsByCollection', [collectionId, { limit: limit || 20 }]);
             return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -267,7 +277,8 @@
         try {
             var result = await rpcCall('getNFTActivity', [collectionId, { limit: limit || 20 }]);
             return result && result.activity ? result.activity : (Array.isArray(result) ? result : []);
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
@@ -283,25 +294,28 @@
             }
             var result = await rpcCall('getMarketListings', [params]);
             return (result && result.listings) ? result.listings : (Array.isArray(result) ? result : []);
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
 
     async function getAllCollections() {
         try {
-            var result = await rpcCall('getAllContracts', []);
+            var result = await marketTrustedRpcCall('getAllContracts', []);
             return Array.isArray(result) ? result : [];
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return [];
         }
     }
 
     async function resolveMarketplaceProgram() {
         try {
-            var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
             return entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
-        } catch (err) { console.warn("marketplace-data:", err.message || err);
+        } catch (err) {
+            console.warn("marketplace-data:", err.message || err);
             return null;
         }
     }

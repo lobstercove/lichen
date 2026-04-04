@@ -114,6 +114,11 @@ pub extern "C" fn create_auction(
 ) -> u32 {
     log_info("Creating English auction...");
 
+    if is_ma_paused() {
+        log_info("LichenAuction is paused");
+        return 0;
+    }
+
     // Parse addresses
     let mut seller = [0u8; 32];
     unsafe {
@@ -190,6 +195,10 @@ pub extern "C" fn place_bid(
     token_id: u64,
     bid_amount: u64,
 ) -> u32 {
+    if is_ma_paused() {
+        log_info("LichenAuction is paused");
+        return 0;
+    }
     if !reentrancy_enter() {
         return 0;
     }
@@ -574,6 +583,11 @@ pub extern "C" fn make_offer(
 ) -> u32 {
     log_info("Making offer...");
 
+    if is_ma_paused() {
+        log_info("LichenAuction is paused");
+        return 0;
+    }
+
     let mut offerer = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
@@ -631,6 +645,11 @@ pub extern "C" fn accept_offer(
     token_id: u64,
 ) -> u32 {
     log_info("Accepting offer...");
+
+    if is_ma_paused() {
+        log_info("LichenAuction is paused");
+        return 0;
+    }
 
     let mut seller = [0u8; 32];
     unsafe {
@@ -1070,7 +1089,7 @@ pub extern "C" fn cancel_auction(
 }
 
 /// Initialize LichenAuction admin (once).
-/// Returns: 0 success, 1 already set
+/// Returns: 0 success, 1 already set, 2 caller mismatch
 #[no_mangle]
 pub extern "C" fn initialize_ma_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
@@ -1080,6 +1099,13 @@ pub extern "C" fn initialize_ma_admin(admin_ptr: *const u8) -> u32 {
     if storage_get(MA_ADMIN_KEY).is_some() {
         return 1;
     }
+
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        log_info("LichenAuction admin init rejected: caller mismatch");
+        return 2;
+    }
+
     storage_set(MA_ADMIN_KEY, &admin);
     log_info("LichenAuction admin set");
     0
@@ -1181,6 +1207,11 @@ mod tests {
         test_mock::reset();
     }
 
+    fn initialize_test_admin(admin: &[u8; 32]) -> u32 {
+        test_mock::set_caller(*admin);
+        initialize_ma_admin(admin.as_ptr())
+    }
+
     /// Helper to manually create auction data in storage (bypassing cross-contract calls)
     fn create_test_auction(
         nft_contract: &[u8; 32],
@@ -1273,6 +1304,48 @@ mod tests {
     }
 
     #[test]
+    fn test_create_auction_blocked_when_paused() {
+        setup();
+        let admin = [10u8; 32];
+        let seller = [2u8; 32];
+        let nft = [3u8; 32];
+        let pay = [4u8; 32];
+
+        assert_eq!(initialize_test_admin(&admin), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_response(Some(seller.to_vec()));
+        assert_eq!(
+            create_auction(seller.as_ptr(), nft.as_ptr(), 1, 1000, pay.as_ptr(), 3600),
+            0
+        );
+    }
+
+    #[test]
+    fn test_place_bid_blocked_when_paused() {
+        setup();
+        let admin = [10u8; 32];
+        let seller = [2u8; 32];
+        let bidder = [4u8; 32];
+        let nft = [3u8; 32];
+
+        create_test_auction(&nft, 1, &seller, 100, 999_999);
+        assert_eq!(initialize_test_admin(&admin), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+
+        test_mock::set_caller(bidder);
+        assert_eq!(place_bid(bidder.as_ptr(), nft.as_ptr(), 1, 1000), 0);
+
+        let key = alloc::format!("auction_{}_{}", hex_addr(&nft), 1u64);
+        let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
+        assert_eq!(bytes_to_u64(&data[160..168]), 0);
+    }
+
+    #[test]
     fn test_finalize_auction_still_active() {
         setup();
         let nft = [3u8; 32];
@@ -1295,6 +1368,34 @@ mod tests {
     }
 
     #[test]
+    fn test_finalize_auction_still_works_when_paused() {
+        setup();
+        let admin = [10u8; 32];
+        let seller = [2u8; 32];
+        let bidder = [4u8; 32];
+        let nft = [3u8; 32];
+
+        initialize([1u8; 32].as_ptr());
+        create_test_auction(&nft, 1, &seller, 100, 500);
+
+        let key = alloc::format!("auction_{}_{}", hex_addr(&nft), 1u64);
+        let mut data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
+        data[128..160].copy_from_slice(&bidder);
+        data[160..168].copy_from_slice(&u64_to_bytes(500));
+        lichen_sdk::storage_set(key.as_bytes(), &data);
+
+        assert_eq!(initialize_test_admin(&admin), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+
+        test_mock::set_timestamp(1000);
+        assert_eq!(finalize_auction(nft.as_ptr(), 1), 1);
+
+        let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
+        assert_eq!(data[168], 0);
+    }
+
+    #[test]
     fn test_make_offer() {
         setup();
         let offerer = [2u8; 32];
@@ -1311,6 +1412,25 @@ mod tests {
     }
 
     #[test]
+    fn test_make_offer_blocked_when_paused() {
+        setup();
+        let admin = [10u8; 32];
+        let offerer = [2u8; 32];
+        let nft = [3u8; 32];
+        let pay = [4u8; 32];
+
+        assert_eq!(initialize_test_admin(&admin), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+
+        test_mock::set_caller(offerer);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 5000, pay.as_ptr(), 3600),
+            0
+        );
+    }
+
+    #[test]
     fn test_accept_offer_ownership_fails() {
         setup();
         let seller = [2u8; 32];
@@ -1319,6 +1439,32 @@ mod tests {
         let pay = [5u8; 32];
         make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 5000, pay.as_ptr(), 3600);
         // call_nft_owner returns Err in mock → accept fails
+        assert_eq!(
+            accept_offer(seller.as_ptr(), offerer.as_ptr(), nft.as_ptr(), 1),
+            0
+        );
+    }
+
+    #[test]
+    fn test_accept_offer_blocked_when_paused() {
+        setup();
+        let admin = [10u8; 32];
+        let seller = [2u8; 32];
+        let offerer = [3u8; 32];
+        let nft = [4u8; 32];
+        let pay = [5u8; 32];
+
+        test_mock::set_caller(offerer);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 5000, pay.as_ptr(), 3600),
+            1
+        );
+
+        assert_eq!(initialize_test_admin(&admin), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+
+        test_mock::set_caller(seller);
         assert_eq!(
             accept_offer(seller.as_ptr(), offerer.as_ptr(), nft.as_ptr(), 1),
             0
@@ -1364,7 +1510,7 @@ mod tests {
         let admin = [1u8; 32];
         let nft = [3u8; 32];
         // AUDIT-FIX P2: Set up admin and caller for ACL check on update_collection_stats
-        initialize_ma_admin(admin.as_ptr());
+        assert_eq!(initialize_test_admin(&admin), 0);
         test_mock::set_caller(admin);
         assert_eq!(update_collection_stats(nft.as_ptr(), 5000), 1);
         assert_eq!(update_collection_stats(nft.as_ptr(), 3000), 1);
@@ -1416,7 +1562,7 @@ mod tests {
 
         // Now place a second bid in snipe window — this one will trigger extension
         // (the first bid is already 200, so we need > 210 = 200 + 5%)
-        let result = place_bid(bidder.as_ptr(), nft.as_ptr(), 1, 250);
+        let _result = place_bid(bidder.as_ptr(), nft.as_ptr(), 1, 250);
         // Token transfer fails in mock, so result = 0
         // We need to test the extension logic differently.
         // Let's verify extension counting directly:
@@ -1555,7 +1701,7 @@ mod tests {
         let seller = [2u8; 32];
         let nft = [3u8; 32];
 
-        assert_eq!(initialize_ma_admin(admin.as_ptr()), 0);
+        assert_eq!(initialize_test_admin(&admin), 0);
         assert_eq!(initialize_ma_admin(non_admin.as_ptr()), 1); // already set
 
         // H-9: ma_pause/ma_unpause now use get_caller(), so set_caller is required
@@ -1624,6 +1770,17 @@ mod tests {
         assert_eq!(initialize(addr.as_ptr()), 0);
     }
 
+    #[test]
+    fn test_initialize_ma_admin_rejects_caller_mismatch() {
+        setup();
+        let admin = [10u8; 32];
+        let attacker = [11u8; 32];
+
+        test_mock::set_caller(attacker);
+        assert_eq!(initialize_ma_admin(admin.as_ptr()), 2);
+        assert_eq!(lichen_sdk::storage_get(MA_ADMIN_KEY), None);
+    }
+
     // AUDIT-FIX P2: Security regression test
     #[test]
     fn test_update_collection_stats_non_admin() {
@@ -1632,7 +1789,7 @@ mod tests {
         let non_admin = [9u8; 32];
         let nft = [3u8; 32];
         // Set up admin
-        initialize_ma_admin(admin.as_ptr());
+        assert_eq!(initialize_test_admin(&admin), 0);
         // Non-admin calls update_collection_stats → should fail (return 0)
         test_mock::set_caller(non_admin);
         assert_eq!(update_collection_stats(nft.as_ptr(), 5000), 0);

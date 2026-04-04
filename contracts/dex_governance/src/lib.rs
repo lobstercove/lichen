@@ -87,6 +87,11 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
         })
         .unwrap_or([0u8; 32])
 }
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|d| d.len() >= 32 && d[..32].iter().any(|&b| b != 0))
+        .unwrap_or(false)
+}
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
@@ -923,7 +928,7 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
 
 /// Set the LichenID contract address for on-chain reputation verification.
 /// Admin only. Required for reputation-gated voting and proposals.
-/// Returns: 0=success, 1=not admin, 2=zero address
+/// Returns: 0=success, 1=not admin, 2=zero address, 3=already configured
 pub fn set_lichenid_address(caller: *const u8, lichenid_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut addr = [0u8; 32];
@@ -941,6 +946,9 @@ pub fn set_lichenid_address(caller: *const u8, lichenid_addr: *const u8) -> u32 
     }
     if is_zero(&addr) {
         return 2;
+    }
+    if has_configured_address(LICHENID_ADDRESS_KEY) {
+        return 3;
     }
     storage_set(LICHENID_ADDRESS_KEY, &addr);
     log_info("LichenID address configured for reputation verification");
@@ -1598,6 +1606,19 @@ mod tests {
         let admin = setup();
         let zero = [0u8; 32];
         assert_eq!(set_lichenid_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_lichenid_address_cannot_reconfigure() {
+        let admin = setup();
+        let first = [77u8; 32];
+        let second = [88u8; 32];
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), second.as_ptr()), 3);
+
+        let stored = storage_get(LICHENID_ADDRESS_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
     }
 
     #[test]

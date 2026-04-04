@@ -1210,7 +1210,7 @@ services:
       - LICHEN_RPC_PORT=8899
       - LICHEN_WS_PORT=8900
       - LICHEN_P2P_PORT=7001
-      - LICHEN_SIGNER_BIND=0.0.0.0:9201
+    - LICHEN_SIGNER_BIND=127.0.0.1:9201
       - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
       - lichen
@@ -1828,18 +1828,6 @@ RUST_LOG=trace lichen-validator --network testnet --rpc-port 8899 --ws-port 8900
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        (function () {
-            // Wire up nav search input to open ⌘K overlay
-            const navInput = document.getElementById('searchInput');
-            if (navInput) {
-                navInput.addEventListener('focus', () => {
-                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                    navInput.blur();
-                });
-            }
-        })();
-    </script>
 </body>
 
 </html>

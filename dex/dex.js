@@ -69,6 +69,28 @@ document.addEventListener('DOMContentLoaded', () => {
         },
     };
 
+    function getTrustedMetadataNetworkKey() {
+        if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
+            return LICHEN_CONFIG.currentNetwork('dexNetwork');
+        }
+        return localStorage.getItem('dexNetwork') || undefined;
+    }
+
+    async function trustedMetadataRpcCall(method, params = []) {
+        if (typeof signedMetadataRpcCall === 'function') {
+            return signedMetadataRpcCall(method, params, getTrustedMetadataNetworkKey(), function (resolvedMethod, resolvedParams) {
+                if (typeof trustedLichenRpcCall === 'function') {
+                    return trustedLichenRpcCall(resolvedMethod, resolvedParams, getTrustedMetadataNetworkKey());
+                }
+                return api.rpc(resolvedMethod, resolvedParams);
+            });
+        }
+        if (typeof trustedLichenRpcCall === 'function') {
+            return trustedLichenRpcCall(method, params, getTrustedMetadataNetworkKey());
+        }
+        return api.rpc(method, params);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // WebSocket Manager
     // ═══════════════════════════════════════════════════════════════════════
@@ -235,13 +257,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wallet
     // ═══════════════════════════════════════════════════════════════════════
     const wallet = {
-        keypair: null, address: null, shortAddr: null, _lichenWallet: null,
+        keypair: null, address: null, shortAddr: null, _lichenWallet: null, signingReady: false,
 
         async _ensureWallet() {
             if (this._lichenWallet) return this._lichenWallet;
             // Try wallet extension first
             if (typeof LichenWallet !== 'undefined') {
-                this._lichenWallet = new LichenWallet({ rpcUrl: RPC_BASE });
+                this._lichenWallet = new LichenWallet({ rpcUrl: RPC_BASE, persist: false });
                 return this._lichenWallet;
             }
             return null;
@@ -260,106 +282,32 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error('Wallet connection failed');
         },
         async connectAddress(addr, options = {}) {
-            const { signingReady = false, localKeypair = null } = options;
+            const { signingReady = false } = options;
             // Connect to a known address (e.g. from saved wallets list) — read-only until extension signs
             this.address = addr;
             this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
             this.signingReady = !!signingReady;
-            this.keypair = localKeypair || (this.signingReady ? { connected: true } : null);
+            this.keypair = this.signingReady ? { connected: true } : null;
             return this;
-        },
-        /** Import wallet from a canonical 32-byte private key seed. */
-        async fromPrivateKey(secretInput) {
-            const pq = requireLichenPQ();
-            const text = (secretInput || '').trim();
-            if (!text) throw new Error('Private key is required');
-            let bytes;
-            try {
-                const hex = text.startsWith('0x') ? text.slice(2) : text;
-                if (/^[0-9a-fA-F]+$/.test(hex) && hex.length === 64) {
-                    bytes = hexToBytes(hex);
-                } else {
-                    bytes = bs58decode(text);
-                }
-            } catch {
-                throw new Error('Invalid private key format (expected hex or base58)');
-            }
-
-            if (bytes.length !== pq.ML_DSA_65_SEED_BYTES) {
-                throw new Error('Private key must be a 32-byte ML-DSA-65 seed');
-            }
-
-            const kp = await pq.keypairFromSeed(bytes);
-            this.keypair = makeLocalWalletKeypair(kp);
-            this.address = kp.address;
-            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-            this.signingReady = true;
-            return this;
-        },
-        /** Generate a fresh ML-DSA-65 keypair */
-        async generate() {
-            const kp = await requireLichenPQ().generateKeypair();
-            this.keypair = makeLocalWalletKeypair(kp);
-            this.address = kp.address;
-            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-            this.signingReady = true;
-            return this;
-        },
-        async sign(message) {
-            if (!this.keypair || !this.keypair.privateKey) throw new Error('No local keypair available for signing');
-            const payload = message instanceof Uint8Array ? message : new Uint8Array(message || []);
-            return requireLichenPQ().signMessage(this.keypair.privateKey, payload);
         },
         async sendTransaction(instructions) {
             if (!this.address) throw new Error('Wallet not connected');
-            if (!this.signingReady) throw new Error('Signing session not active. Reconnect wallet extension to sign.');
-            // Prefer local keypair (import/create)
-            if (this.keypair && this.keypair.privateKey) {
-                const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
-                const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
-                const msg = serializeMessageBincode({ instructions: normalizedIx, blockhash: blockhash });
-                const sig = await this.sign(msg);
-                const txPayload = {
-                    signatures: [sig],
-                    message: { instructions: normalizedIx, blockhash: blockhash },
-                };
-                const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
-                return api.rpc('sendTransaction', [txBase64]);
+            if (!this.signingReady) {
+                throw new Error('Signing session not active. Reconnect the matching wallet extension account to sign.');
             }
-            // Delegate signing to wallet extension
-            const w = await this._ensureWallet();
-            if (w && typeof w.sendTransaction === 'function') {
-                return w.sendTransaction(instructions);
+            const provider = await resolveExtensionProviderForAddress(this.address, 800);
+            if (!provider || typeof provider.sendTransaction !== 'function') {
+                this.signingReady = false;
+                this.keypair = null;
+                throw new Error('Lichen wallet extension not available for transaction approval');
             }
             const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
             const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
-            const txPayload = {
+            const result = await provider.sendTransaction({
                 signatures: [],
                 message: { instructions: normalizedIx, blockhash: blockhash },
-            };
-
-            let injectedProvider = null;
-            if (typeof waitForInjectedLichenProvider === 'function') {
-                injectedProvider = await waitForInjectedLichenProvider(800);
-            } else if (typeof getInjectedLichenProvider === 'function') {
-                injectedProvider = getInjectedLichenProvider();
-            } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
-                injectedProvider = window.licnwallet;
-            }
-
-            if (injectedProvider && typeof injectedProvider.sendTransaction === 'function') {
-                const result = await injectedProvider.sendTransaction(txPayload);
-                return result && typeof result === 'object' && result.txHash ? result.txHash : result;
-            }
-
-            // Fallback: build unsigned TX and request extension signature
-            if (typeof window !== 'undefined' && window.Lichen && window.Lichen.Wallet) {
-                return window.Lichen.Wallet.signAndSend(instructions);
-            }
-            // Last resort: submit via RPC (for server-side wallets)
-            txPayload.signer = this.address;
-            const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
-            return api.rpc('sendTransaction', [txBase64]);
+            });
+            return result && typeof result === 'object' && result.txHash ? result.txHash : result;
         },
     };
 
@@ -367,19 +315,36 @@ document.addEventListener('DOMContentLoaded', () => {
         return !!(wallet.address && wallet.signingReady);
     }
 
-    function requireLichenPQ() {
-        if (!window.LichenPQ) {
-            throw new Error('Shared PQ runtime not loaded');
-        }
-        return window.LichenPQ;
-    }
+    async function resolveExtensionProviderForAddress(address, timeoutMs = 0) {
+        let provider = null;
 
-    function makeLocalWalletKeypair(keypair) {
-        return {
-            privateKey: String(keypair.privateKey || ''),
-            publicKeyHex: String(keypair.publicKeyHex || ''),
-            address: String(keypair.address || ''),
-        };
+        if (typeof getInjectedLichenProvider === 'function') {
+            provider = getInjectedLichenProvider();
+        } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+            provider = window.licnwallet;
+        }
+
+        if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+            provider = await waitForInjectedLichenProvider(timeoutMs);
+        }
+
+        if (!provider) {
+            return null;
+        }
+
+        if (address && typeof provider.getProviderState === 'function') {
+            const state = await provider.getProviderState().catch(() => null);
+            if (!state || !Array.isArray(state.accounts) || state.accounts.length === 0) {
+                return null;
+            }
+
+            const normalizedAddress = String(address).trim();
+            if (!state.accounts.some((account) => String(account).trim() === normalizedAddress)) {
+                return null;
+            }
+        }
+
+        return provider;
     }
 
     function normalizeRecentBlockhash(result) {
@@ -404,9 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
-    function keypairSeedHex(keypair) {
-        return keypair?.privateKey || '';
-    }
     function hexToBytes(h) {
         const c = h.startsWith('0x') ? h.slice(2) : h;
         // F20.14: Validate hex format before parsing
@@ -1059,9 +1021,9 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     let pairs = [], balances = {}, openOrders = [];
 
-    // AUDIT-FIX F10.10: Contract addresses loaded from RPC symbol registry.
+    // AUDIT-FIX F10.10 / P4-3: Contract addresses load from a trusted metadata RPC.
     // These are base58-encoded 32-byte pubkeys — the actual deployed addresses
-    // from deploy-manifest.json, resolved at runtime via getSymbolRegistry.
+    // from deploy-manifest.json / symbol registry, pinned to the official network endpoint.
     const contracts = {
         dex_core: null, dex_amm: null, dex_router: null, dex_margin: null,
         dex_rewards: null, dex_governance: null, dex_analytics: null, prediction_market: null,
@@ -1070,7 +1032,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadContractAddresses() {
         try {
-            const result = await api.rpc('getAllSymbolRegistry', [100]);
+            const result = await trustedMetadataRpcCall('getAllSymbolRegistry', [100]);
             if (result?.entries?.length) {
                 const map = {};
                 for (const e of result.entries) map[e.symbol] = e.program;
@@ -2703,185 +2665,61 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wallet UI
     // ═══════════════════════════════════════════════════════════════════════
     const connectBtn = document.getElementById('connectWallet'), walletModal = document.getElementById('walletModal'), closeModalBtn = document.getElementById('closeWalletModal');
-    const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
+    const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), extension: document.getElementById('wmTabExtension') };
     const ACTIVE_WALLET_KEY = 'dexActiveWallet';
-    const LOCAL_WALLET_SESSION_KEY = 'dexWalletSessionsV1';
-    const LOCAL_WALLET_PASSWORD_PREFIX = 'dexWalletPassword:';
+    const LEGACY_LOCAL_WALLET_SESSION_KEY = 'dexWalletSessionsV1';
+    const LEGACY_LOCAL_WALLET_PASSWORD_PREFIX = 'dexWalletPassword:';
     let savedWallets = (() => {
         try {
             const parsed = JSON.parse(localStorage.getItem('dexWallets') || '[]');
             if (!Array.isArray(parsed)) return [];
-            return parsed.filter(w => w && typeof w.address === 'string' && w.address.length > 0);
+            return parsed
+                .filter(w => w && typeof w.address === 'string' && w.address.trim().length > 0)
+                .map((w) => {
+                    const address = w.address.trim();
+                    return {
+                        address,
+                        short: typeof w.short === 'string' && w.short.trim().length > 0
+                            ? w.short.trim()
+                            : address.slice(0, 8) + '...' + address.slice(-6),
+                        added: typeof w.added === 'number' && Number.isFinite(w.added) ? w.added : Date.now(),
+                        provider: 'extension',
+                    };
+                });
         } catch {
             return [];
         }
     })();
-    const localWalletSessions = new Map();
-    let persistedLocalWalletSessions = (() => {
+
+    function persistSavedWallets() {
+        if (savedWallets.length) {
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+        } else {
+            localStorage.removeItem('dexWallets');
+        }
+    }
+
+    function purgeLegacyLocalWalletArtifacts() {
+        try { sessionStorage.removeItem(LEGACY_LOCAL_WALLET_SESSION_KEY); } catch { }
         try {
-            const parsed = JSON.parse(sessionStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
-            return parsed && typeof parsed === 'object' ? parsed : {};
-        } catch {
-            return {};
-        }
-    })();
-
-    function getWalletPasswordCacheKey(address) {
-        return `${LOCAL_WALLET_PASSWORD_PREFIX}${address}`;
-    }
-
-    async function deriveSessionKey(password, saltBytes) {
-        const passwordKey = await crypto.subtle.importKey(
-            'raw',
-            new TextEncoder().encode(password),
-            'PBKDF2',
-            false,
-            ['deriveKey']
-        );
-        return crypto.subtle.deriveKey(
-            {
-                name: 'PBKDF2',
-                salt: saltBytes,
-                iterations: 100000,
-                hash: 'SHA-256'
-            },
-            passwordKey,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['encrypt', 'decrypt']
-        );
-    }
-
-    async function encryptSeedHex(seedHex, password) {
-        if (window.LichenCrypto && typeof window.LichenCrypto.encryptPrivateKey === 'function') {
-            return window.LichenCrypto.encryptPrivateKey(seedHex, password);
-        }
-        const salt = crypto.getRandomValues(new Uint8Array(16));
-        const key = await deriveSessionKey(password, salt);
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const payload = new TextEncoder().encode(seedHex);
-        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
-        return {
-            encrypted: bytesToHex(new Uint8Array(encrypted)),
-            salt: bytesToHex(salt),
-            iv: bytesToHex(iv)
-        };
-    }
-
-    async function decryptSeedHex(encryptedData, password) {
-        if (window.LichenCrypto && typeof window.LichenCrypto.decryptPrivateKey === 'function') {
-            return window.LichenCrypto.decryptPrivateKey(encryptedData, password);
-        }
-        const saltBytes = hexToBytes(encryptedData.salt || '');
-        const ivBytes = hexToBytes(encryptedData.iv || '');
-        const encryptedBytes = hexToBytes(encryptedData.encrypted || '');
-        const key = await deriveSessionKey(password, saltBytes);
-        try {
-            const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, key, encryptedBytes);
-            return new TextDecoder().decode(decrypted);
-        } catch {
-            throw new Error('Invalid password');
-        }
-    }
-
-    function walletSeedHex(keypair) {
-        return keypair?.privateKey || '';
-    }
-
-    function persistSessionStoragePassword(address, password) {
-        if (!address || !password) return;
-        try { sessionStorage.setItem(getWalletPasswordCacheKey(address), password); } catch { }
-    }
-
-    function getCachedSessionPassword(address) {
-        if (!address) return '';
-        try { return sessionStorage.getItem(getWalletPasswordCacheKey(address)) || ''; } catch { return ''; }
-    }
-
-    function clearCachedSessionPassword(address) {
-        if (!address) return;
-        try { sessionStorage.removeItem(getWalletPasswordCacheKey(address)); } catch { }
-    }
-
-    // DEX-10: Wallet sessions are AES-encrypted before storage.
-    // Use sessionStorage (cleared on tab close) instead of localStorage
-    // to limit the attack window for XSS-based session theft.
-    async function persistLocalWalletSession(address, keypair, password) {
-        if (!address || !keypair || !keypair.privateKey) return;
-        if (!password) throw new Error('Password is required');
-        const seedHex = walletSeedHex(keypair);
-        const encrypted = await encryptSeedHex(seedHex, password);
-        persistedLocalWalletSessions[address] = { ...encrypted, updatedAt: Date.now() };
-        try { sessionStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
-        persistSessionStoragePassword(address, password);
-    }
-
-    function removePersistedLocalWalletSession(address) {
-        if (!address) return;
-        delete persistedLocalWalletSessions[address];
-        localWalletSessions.delete(address);
-        clearCachedSessionPassword(address);
-        try { sessionStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
-    }
-
-    function restoreLocalWalletSessions() {
-        try {
-            const parsed = JSON.parse(sessionStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
-            persistedLocalWalletSessions = parsed && typeof parsed === 'object' ? parsed : {};
-        } catch {
-            persistedLocalWalletSessions = {};
-        }
-    }
-
-    async function unlockLocalWalletSession(address) {
-        if (!address) return null;
-        const existing = localWalletSessions.get(address);
-        if (existing) return existing;
-        const encrypted = persistedLocalWalletSessions[address];
-        if (!encrypted || !encrypted.encrypted || !encrypted.salt || !encrypted.iv) return null;
-
-        let password = getCachedSessionPassword(address);
-        if (!password) {
-            const entered = window.prompt('Enter wallet password to unlock signing for this address.');
-            if (!entered) return null;
-            password = entered;
-        }
-        try {
-            const seedHex = await decryptSeedHex(encrypted, password);
-            const seedBytes = hexToBytes(seedHex);
-            const pq = requireLichenPQ();
-            if (seedBytes.length !== pq.ML_DSA_65_SEED_BYTES) throw new Error('Invalid wallet seed length');
-            const kp = makeLocalWalletKeypair(await pq.keypairFromSeed(seedBytes));
-            if (String(kp.address) !== String(address)) throw new Error('Password does not match wallet');
-            localWalletSessions.set(address, kp);
-            persistSessionStoragePassword(address, password);
-            return kp;
-        } catch {
-            clearCachedSessionPassword(address);
-            return null;
-        }
+            Object.keys(sessionStorage)
+                .filter((key) => key.startsWith(LEGACY_LOCAL_WALLET_PASSWORD_PREFIX))
+                .forEach((key) => sessionStorage.removeItem(key));
+        } catch { }
     }
 
     async function tryHydrateExtensionSigner(targetAddress) {
         if (!targetAddress) return false;
-        try {
-            const ext = await wallet.connect();
-            return !!(ext?.address && String(ext.address).trim() === String(targetAddress).trim());
-        } catch {
-            return false;
-        }
+        return !!(await resolveExtensionProviderForAddress(targetAddress));
     }
 
     async function resolveWalletSigningState(address) {
-        const sessionKp = await unlockLocalWalletSession(address);
-        if (sessionKp) {
-            return { signingReady: true, localKeypair: sessionKp, source: 'local' };
-        }
         const extensionReady = await tryHydrateExtensionSigner(address);
-        return { signingReady: extensionReady, localKeypair: null, source: extensionReady ? 'extension' : 'none' };
+        return { signingReady: extensionReady, source: extensionReady ? 'extension' : 'none' };
     }
 
-    restoreLocalWalletSessions();
+    purgeLegacyLocalWalletArtifacts();
+    persistSavedWallets();
 
     function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'extension'); } }
     function closeWalletModalFn() {
@@ -2889,41 +2727,8 @@ document.addEventListener('DOMContentLoaded', () => {
         resetWalletModalInputs();
     }
     function switchWmTab(t) { wmTabs.forEach(x => x.classList.toggle('active', x.dataset.wmTab === t)); Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== t); }); }
-    function resetWalletModalInputs(options = {}) {
-        const { clearCreated = true } = options;
-        const privateKeyInput = document.getElementById('wmPrivateKey');
-        if (privateKeyInput) privateKeyInput.value = '';
-
-        const passwordInput = document.getElementById('wmPassword');
-        if (passwordInput) passwordInput.value = '';
-
-        const createPasswordInput = document.getElementById('wmCreatePassword');
-        if (createPasswordInput) createPasswordInput.value = '';
-
-        const importTypeButtons = document.querySelectorAll('.wm-import-type');
-        importTypeButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.import === 'key'));
-
-        const importKeyPanel = document.getElementById('wmImportKey');
-        const importMnemonicPanel = document.getElementById('wmImportMnemonic');
-        if (importKeyPanel) importKeyPanel.classList.remove('hidden');
-        if (importMnemonicPanel) importMnemonicPanel.classList.add('hidden');
-
-        const mnemonicInputs = document.querySelectorAll('#mnemonicGrid input');
-        mnemonicInputs.forEach((input, idx) => {
-            input.value = '';
-            input.style.display = idx >= 12 ? 'none' : '';
-        });
-
-        const createdBox = document.getElementById('wmCreatedWallet');
-        const newAddrEl = document.getElementById('wmNewAddress');
-        const newKeyEl = document.getElementById('wmNewKey');
-        const createBtn = document.getElementById('wmCreateBtn');
-        if (clearCreated) {
-            if (createdBox) createdBox.classList.add('hidden');
-            if (newAddrEl) newAddrEl.textContent = '';
-            if (newKeyEl) newKeyEl.textContent = '';
-            if (createBtn) createBtn.classList.remove('hidden');
-        }
+    function resetWalletModalInputs() {
+        // DEX only supports extension-backed wallets.
     }
 
     if (connectBtn) connectBtn.addEventListener('click', () => openWalletModal());
@@ -2932,87 +2737,16 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
 
-    // Import-type toggle (Private Key / Mnemonic)
-    document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
-        document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active')); btn.classList.add('active');
-        const k = document.getElementById('wmImportKey'), m = document.getElementById('wmImportMnemonic');
-        if (btn.dataset.import === 'key') { if (k) k.classList.remove('hidden'); if (m) m.classList.add('hidden'); } else { if (k) k.classList.add('hidden'); if (m) m.classList.remove('hidden'); }
-    }));
-
-    // Build mnemonic word grid (supports 12 or 24 words — show 12 by default, expand on paste)
-    const mnGrid = document.getElementById('mnemonicGrid');
-    if (mnGrid) {
-        for (let i = 0; i < 24; i++) {
-            const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = `Word ${i + 1}`; inp.className = 'form-input'; inp.dataset.wordIdx = i;
-            if (i >= 12) inp.style.display = 'none'; // hide 13-24 by default
-            mnGrid.appendChild(inp);
-        }
-        // Handle paste of full mnemonic phrase into any word input
-        mnGrid.addEventListener('paste', (e) => {
-            const text = (e.clipboardData || window.clipboardData).getData('text').trim();
-            const words = text.split(/\s+/);
-            if (words.length >= 2) {
-                e.preventDefault();
-                const inputs = mnGrid.querySelectorAll('input');
-                // Show all 24 fields if >12 words
-                if (words.length > 12) inputs.forEach(inp => inp.style.display = '');
-                words.forEach((w, i) => { if (inputs[i]) inputs[i].value = w; });
-            }
-        });
-    }
-
-    // Import tab — connect from private key or mnemonic
-    const wmConnectBtn = document.getElementById('wmConnectBtn');
-    if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
-        try {
-            const activeImport = document.querySelector('.wm-import-type.active')?.dataset.import || 'key';
-            const password = (document.getElementById('wmPassword')?.value || '').trim();
-            if (!password) throw new Error('Password is required');
-            let connectedWallet;
-            if (activeImport === 'mnemonic') {
-                const words = Array.from(document.querySelectorAll('#mnemonicGrid input'))
-                    .map(i => (i.value || '').trim())
-                    .filter(Boolean);
-                if (words.length !== 12 && words.length !== 24) throw new Error('Mnemonic must have 12 or 24 words');
-                const phrase = words.join(' ').toLowerCase();
-                // BIP39: PBKDF2-HMAC-SHA512, salt="mnemonic", 2048 iterations (matches wallet app & extension)
-                const mnemonicBytes = new TextEncoder().encode(phrase.normalize('NFKD').trim());
-                const saltBytes = new TextEncoder().encode('mnemonic');
-                const keyMaterial = await crypto.subtle.importKey('raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']);
-                const seedBuffer = await crypto.subtle.deriveBits(
-                    { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
-                    keyMaterial, 512
-                );
-                const seed = new Uint8Array(seedBuffer).slice(0, 32);
-                const kp = makeLocalWalletKeypair(await requireLichenPQ().keypairFromSeed(seed));
-                connectedWallet = await wallet.connectAddress(kp.address, { signingReady: true, localKeypair: kp });
-            } else {
-                const pkInput = document.getElementById('wmPrivateKey')?.value || '';
-                connectedWallet = await wallet.fromPrivateKey(pkInput);
-            }
-
-            localWalletSessions.set(connectedWallet.address, connectedWallet.keypair);
-            await persistLocalWalletSession(connectedWallet.address, connectedWallet.keypair, password);
-            if (!savedWallets.some(w => w.address === connectedWallet.address)) {
-                savedWallets.push({ address: connectedWallet.address, short: connectedWallet.shortAddr, added: Date.now() });
-                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            }
-            await connectWalletTo(connectedWallet.address, connectedWallet.shortAddr, { signingReady: true, localKeypair: connectedWallet.keypair });
-            closeWalletModalFn();
-            showNotification('Wallet connected: ' + connectedWallet.shortAddr, 'success');
-        } catch (e) {
-            showNotification(`Import failed: ${e.message}`, 'error');
-        }
-    });
-
     // Extension tab — connect via wallet extension
     const wmExtensionBtn = document.getElementById('wmExtensionBtn');
+    const wmOpenExtensionTabBtn = document.getElementById('wmOpenExtensionTabBtn');
+    if (wmOpenExtensionTabBtn) wmOpenExtensionTabBtn.addEventListener('click', () => switchWmTab('extension'));
     if (wmExtensionBtn) wmExtensionBtn.addEventListener('click', async () => {
         try {
             await wallet.connect();
             if (!savedWallets.some(w => w.address === wallet.address)) {
-                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
-                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now(), provider: 'extension' });
+                persistSavedWallets();
             }
             await connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
             closeWalletModalFn();
@@ -3020,48 +2754,17 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
     });
 
-    // Create tab — generate a new ML-DSA-65 keypair
-    const wmCreateBtn = document.getElementById('wmCreateBtn');
-    if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
-        try {
-            const createPassword = (document.getElementById('wmCreatePassword')?.value || '').trim();
-            if (!createPassword) throw new Error('Password is required');
-            const generated = await wallet.generate();
-            localWalletSessions.set(generated.address, generated.keypair);
-            await persistLocalWalletSession(generated.address, generated.keypair, createPassword);
-            if (!savedWallets.some(w => w.address === generated.address)) {
-                savedWallets.push({ address: generated.address, short: generated.shortAddr, added: Date.now() });
-                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            }
-            const newAddrEl = document.getElementById('wmNewAddress');
-            const newKeyEl = document.getElementById('wmNewKey');
-            const createdBox = document.getElementById('wmCreatedWallet');
-            if (newAddrEl) newAddrEl.textContent = generated.address;
-            if (newKeyEl) newKeyEl.textContent = keypairSeedHex(generated.keypair);
-            if (createdBox) createdBox.classList.remove('hidden');
-            if (wmCreateBtn) wmCreateBtn.classList.add('hidden');
-            await connectWalletTo(generated.address, generated.shortAddr, { signingReady: true, localKeypair: generated.keypair, preserveCreatedDetails: true });
-            showNotification('New wallet created and connected', 'success');
-        } catch (e) {
-            showNotification(`Create wallet failed: ${e.message}`, 'error');
-        }
-    });
-
-    document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
-
     async function connectWalletTo(address, shortAddr, options = {}) {
-        const { signingReady = false, localKeypair = null, preserveCreatedDetails = false } = options;
+        const { signingReady = false } = options;
         state.connected = true; state.walletAddress = address;
         localStorage.setItem(ACTIVE_WALLET_KEY, address);
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
-        let resolvedSessionKey = localKeypair || localWalletSessions.get(address) || null;
         let resolvedSigningReady = !!signingReady;
-        if (!resolvedSessionKey && !resolvedSigningReady) {
+        if (!resolvedSigningReady) {
             const resolved = await resolveWalletSigningState(address);
-            resolvedSessionKey = resolved.localKeypair || null;
             resolvedSigningReady = !!resolved.signingReady;
         }
-        await wallet.connectAddress(address, { signingReady: resolvedSigningReady || !!resolvedSessionKey, localKeypair: resolvedSessionKey });
+        await wallet.connectAddress(address, { signingReady: resolvedSigningReady });
         // M16: Resolve .lichen name and fetch LichenID profile for connected trader
         let displayLabel = shortAddr;
         try {
@@ -3089,7 +2792,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(displayLabel)}${repBadge}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
-        resetWalletModalInputs({ clearCreated: !preserveCreatedDetails });
+        resetWalletModalInputs();
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
         renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory();
         loadPredictionHistory();
@@ -3126,7 +2829,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function renderWalletList() {
         const list = document.getElementById('wmWalletsList'); if (!list) return;
-        if (!savedWallets.length) { list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>`; const b = document.getElementById('wmEmptyImport'); if (b) b.addEventListener('click', () => switchWmTab('import')); return; }
+        if (!savedWallets.length) {
+            list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyExtension">Connect Extension</button></div>`;
+            const b = document.getElementById('wmEmptyExtension');
+            if (b) b.addEventListener('click', () => switchWmTab('extension'));
+            return;
+        }
         // M16: Batch-resolve .lichen names for saved wallets
         const nameMap = {};
         try {
@@ -3140,16 +2848,11 @@ document.addEventListener('DOMContentLoaded', () => {
         list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', async () => {
             const w = savedWallets[parseInt(btn.dataset.idx)];
             if (w) {
-                const currentAddress = state.walletAddress;
-                const { signingReady, localKeypair } = await resolveWalletSigningState(w.address);
-                if (!signingReady && walletCanSign() && currentAddress && currentAddress !== w.address) {
-                    showNotification('Switch blocked: target wallet is not ready to sign. Connect matching extension account or import its key first.', 'warning');
-                    return;
-                }
+                const { signingReady } = await resolveWalletSigningState(w.address);
                 if (!signingReady) {
-                    showNotification('Switched wallet in read-only mode. Import key or reconnect matching extension account to sign.', 'warning');
+                    showNotification('Switched wallet in read-only mode. Connect the matching extension account to sign.', 'warning');
                 }
-                await connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady, localKeypair });
+                await connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady });
                 renderWalletList();
             }
         }));
@@ -3159,17 +2862,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (Number.isNaN(i) || !removedWallet) return;
 
             savedWallets.splice(i, 1);
-            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            removePersistedLocalWalletSession(removedWallet.address);
+            persistSavedWallets();
 
             if (state.walletAddress === removedWallet.address) {
                 const fallbackWallet = savedWallets[0] || null;
                 if (fallbackWallet) {
-                    const { signingReady, localKeypair } = await resolveWalletSigningState(fallbackWallet.address);
+                    const { signingReady } = await resolveWalletSigningState(fallbackWallet.address);
                     await connectWalletTo(
                         fallbackWallet.address,
                         fallbackWallet.short || fallbackWallet.address.slice(0, 8) + '...',
-                        { signingReady, localKeypair }
+                        { signingReady }
                     );
                     showNotification('Wallet removed. Switched to another wallet', 'info');
                 } else {
@@ -3184,16 +2886,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
         const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => {
             savedWallets = [];
-            localWalletSessions.clear();
-            persistedLocalWalletSessions = {};
-            try {
-                Object.keys(sessionStorage)
-                    .filter(k => k.startsWith(LOCAL_WALLET_PASSWORD_PREFIX))
-                    .forEach(k => sessionStorage.removeItem(k));
-            } catch { }
-            localStorage.removeItem('dexWallets');
+            persistSavedWallets();
             localStorage.removeItem(ACTIVE_WALLET_KEY);
-            sessionStorage.removeItem(LOCAL_WALLET_SESSION_KEY);
+            purgeLegacyLocalWalletArtifacts();
             disconnectWallet();
             renderWalletList();
             showNotification('All wallets disconnected', 'info');
@@ -7232,8 +6927,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const restored = savedWallets.find(w => w.address === activeWalletAddress) || savedWallets[savedWallets.length - 1];
             if (restored && restored.address) {
                 const shortAddr = restored.short || restored.address.slice(0, 8) + '...';
-                const { signingReady, localKeypair } = await resolveWalletSigningState(restored.address);
-                await connectWalletTo(restored.address, shortAddr, { signingReady, localKeypair });
+                const { signingReady } = await resolveWalletSigningState(restored.address);
+                await connectWalletTo(restored.address, shortAddr, { signingReady });
             }
         }
     })().catch(e => console.error('[DEX] Init error:', e));

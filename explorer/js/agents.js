@@ -6,6 +6,18 @@ let allAgents = [];
 let filteredAgents = [];
 let currentPage = 1;
 
+function bindStaticControls() {
+    document.getElementById('agentsApplyFiltersBtn')?.addEventListener('click', applyFilters);
+    document.getElementById('agentsClearFiltersBtn')?.addEventListener('click', clearFilters);
+    document.getElementById('prevPage')?.addEventListener('click', previousPage);
+    document.getElementById('nextPage')?.addEventListener('click', nextPage);
+    document.getElementById('agentsTable')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+}
+
 function formatRateLicn(rateRaw) {
     const raw = Number(rateRaw || 0);
     return (raw / 1_000_000_000).toFixed(4);
@@ -140,7 +152,7 @@ function renderAgents() {
             <td>${nameLink}</td>
             <td>
                 <a href="address.html?address=${encodeURIComponent(addr)}&tab=identity" class="hash-short" title="${escapeHtml(addr)}">${formatHash(addr)}</a>
-                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(addr)}" onclick="safeCopy(this)" title="Copy address"></i>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(addr)}" title="Copy address"></i>
             </td>
             <td><span class="pill">${typeName}</span></td>
             <td>${formatNumber(rep)}</td>
@@ -204,6 +216,8 @@ function clearFilters() {
 
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof initExplorerNetworkSelector === 'function') initExplorerNetworkSelector();
+
+    bindStaticControls();
 
     ['agentTypeFilter', 'agentSort'].forEach((id) => {
         const control = document.getElementById(id);

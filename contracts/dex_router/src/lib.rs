@@ -80,6 +80,10 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![b'0'];
@@ -317,6 +321,15 @@ pub fn set_addresses(caller: *const u8, core_addr: *const u8, amm_addr: *const u
     if !require_admin(&c) {
         return 1;
     }
+
+    if is_zero(&ca) || is_zero(&aa) {
+        return 2;
+    }
+
+    if has_configured_address(CORE_ADDRESS_KEY) || has_configured_address(AMM_ADDRESS_KEY) {
+        return 3;
+    }
+
     storage_set(CORE_ADDRESS_KEY, &ca);
     storage_set(AMM_ADDRESS_KEY, &aa);
     0
@@ -1052,6 +1065,36 @@ mod tests {
             set_addresses(rando.as_ptr(), core.as_ptr(), core.as_ptr()),
             1
         );
+    }
+
+    #[test]
+    fn test_set_addresses_zero_rejected_and_cannot_reconfigure() {
+        let admin = setup();
+        let first_core = [50u8; 32];
+        let first_amm = [51u8; 32];
+        let second_core = [60u8; 32];
+        let second_amm = [61u8; 32];
+
+        assert_eq!(
+            set_addresses(admin.as_ptr(), [0u8; 32].as_ptr(), first_amm.as_ptr()),
+            2
+        );
+        assert_eq!(
+            set_addresses(admin.as_ptr(), first_core.as_ptr(), [0u8; 32].as_ptr()),
+            2
+        );
+
+        assert_eq!(
+            set_addresses(admin.as_ptr(), first_core.as_ptr(), first_amm.as_ptr()),
+            0
+        );
+
+        assert_eq!(
+            set_addresses(admin.as_ptr(), second_core.as_ptr(), second_amm.as_ptr()),
+            3
+        );
+        assert_eq!(load_addr(CORE_ADDRESS_KEY), first_core);
+        assert_eq!(load_addr(AMM_ADDRESS_KEY), first_amm);
     }
 
     // --- Route Registration ---

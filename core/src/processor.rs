@@ -3,13 +3,14 @@
 use crate::account::{Account, Keypair, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
-    ContractAbi, ContractAccount, ContractContext, ContractRuntime, NativeAccountOp,
+    ContractAbi, ContractAccount, ContractContext, ContractEvent, ContractRuntime, NativeAccountOp,
 };
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
     decode_evm_transaction, execute_evm_transaction, u256_is_multiple_of_spore, u256_to_spores,
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
+use crate::governance::{GovernanceAction, GovernanceProposal};
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
 use crate::transaction::{Instruction, Transaction};
 use crate::Hash;
@@ -17,7 +18,7 @@ use alloy_primitives::U256;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Transaction execution result
 #[derive(Debug, Clone)]
@@ -63,6 +64,81 @@ pub struct SimulationResult {
     pub state_changes: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SymbolRegistrationSpec {
+    symbol: String,
+    name: Option<String>,
+    template: Option<String>,
+    metadata: Option<serde_json::Value>,
+    decimals: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GovernedTransferExecutionPolicy {
+    threshold: u8,
+    execute_after_epoch: u64,
+    velocity_tier: crate::multisig::GovernedTransferVelocityTier,
+    daily_cap_spores: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct IncidentGuardianPauseTarget {
+    symbol: String,
+    pause_function: String,
+}
+
+static INCIDENT_GUARDIAN_PAUSE_TARGETS: OnceLock<Vec<IncidentGuardianPauseTarget>> =
+    OnceLock::new();
+
+fn incident_guardian_pause_targets() -> &'static [IncidentGuardianPauseTarget] {
+    INCIDENT_GUARDIAN_PAUSE_TARGETS
+        .get_or_init(|| {
+            serde_json::from_str(include_str!(
+                "../../shared/incident-guardian-pause-allowlist.json"
+            ))
+            .expect("shared incident guardian pause allowlist must be valid JSON")
+        })
+        .as_slice()
+}
+
+fn is_allowlisted_incident_guardian_pause(symbol: &str, function: &str) -> bool {
+    incident_guardian_pause_targets()
+        .iter()
+        .any(|target| target.symbol == symbol && target.pause_function == function)
+}
+
+fn is_bridge_committee_admin_contract_call(symbol: &str, function: &str) -> bool {
+    (symbol.eq_ignore_ascii_case("BRIDGE") || symbol.eq_ignore_ascii_case("LICHENBRIDGE"))
+        && matches!(
+            function,
+            "add_bridge_validator"
+                | "remove_bridge_validator"
+                | "set_required_confirmations"
+                | "set_request_timeout"
+        )
+}
+
+fn is_oracle_committee_admin_contract_call(symbol: &str, function: &str) -> bool {
+    (symbol.eq_ignore_ascii_case("ORACLE") || symbol.eq_ignore_ascii_case("LICHENORACLE"))
+        && matches!(function, "add_price_feeder" | "set_authorized_attester")
+}
+
+fn is_treasury_executor_contract_call(symbol: &str, function: &str, args: &[u8]) -> bool {
+    if symbol.eq_ignore_ascii_case("DEXMARGIN") {
+        return function == "call" && args.first() == Some(&9u8);
+    }
+
+    if symbol.eq_ignore_ascii_case("DEXAMM") || symbol.eq_ignore_ascii_case("AMM") {
+        return function == "call" && args.first() == Some(&21u8);
+    }
+
+    ((symbol.eq_ignore_ascii_case("LEND") || symbol.eq_ignore_ascii_case("THALLLEND"))
+        && function == "withdraw_reserves")
+        || ((symbol.eq_ignore_ascii_case("SPOREVAULT") || symbol.eq_ignore_ascii_case("VAULT"))
+            && function == "withdraw_protocol_fees")
+        || (symbol.eq_ignore_ascii_case("SPOREPUMP") && function == "withdraw_fees")
+}
+
 fn is_evm_instruction(tx: &Transaction) -> bool {
     tx.message
         .instructions
@@ -97,6 +173,8 @@ pub const RENT_FREE_BYTES: u64 = 2048;
 
 /// Number of consecutive missed rent epochs before an account becomes dormant
 pub const DORMANCY_THRESHOLD_EPOCHS: u64 = 2;
+
+const SECONDS_PER_DAY: u64 = 86_400;
 
 /// Maximum age in blocks for a transaction's recent_blockhash.
 /// Transactions referencing a blockhash older than this are rejected.
@@ -141,6 +219,19 @@ pub const CONFLICT_KEY_STAKE_POOL: Pubkey = Pubkey([0xFE; 32]);
 pub const CONFLICT_KEY_MOSSSTAKE_POOL: Pubkey = Pubkey([0xFD; 32]);
 /// Virtual key: any TX that allocates/reads governed proposal IDs (opcode 21).
 pub const CONFLICT_KEY_GOVERNED_PROPOSALS: Pubkey = Pubkey([0xFC; 32]);
+/// Virtual key: any TX that allocates/reads protocol-governance proposal IDs (opcodes 34-37).
+pub const CONFLICT_KEY_GOVERNANCE_PROPOSALS: Pubkey = Pubkey([0xFB; 32]);
+
+pub const GOVERNANCE_ACTION_TREASURY_TRANSFER: u8 = 0;
+pub const GOVERNANCE_ACTION_PARAM_CHANGE: u8 = 1;
+pub const GOVERNANCE_ACTION_CONTRACT_UPGRADE: u8 = 2;
+pub const GOVERNANCE_ACTION_SET_UPGRADE_TIMELOCK: u8 = 3;
+pub const GOVERNANCE_ACTION_EXECUTE_UPGRADE: u8 = 4;
+pub const GOVERNANCE_ACTION_VETO_UPGRADE: u8 = 5;
+pub const GOVERNANCE_ACTION_CONTRACT_CLOSE: u8 = 6;
+pub const GOVERNANCE_ACTION_REGISTER_SYMBOL: u8 = 7;
+pub const GOVERNANCE_ACTION_SET_CONTRACT_ABI: u8 = 8;
+pub const GOVERNANCE_ACTION_CONTRACT_CALL: u8 = 9;
 
 // ── Governance parameter IDs (system instruction type 29) ──
 /// base_fee (spores per transaction)
@@ -185,6 +276,7 @@ pub const CU_REGISTER_VALIDATOR: u64 = 500;
 pub const CU_SLASH_VALIDATOR: u64 = 500;
 pub const CU_NONCE: u64 = 200;
 pub const CU_GOVERNANCE_PARAM: u64 = 300;
+pub const CU_GOVERNANCE_ACTION: u64 = 1_000;
 pub const CU_ORACLE_ATTESTATION: u64 = 500;
 pub const CU_DEREGISTER_VALIDATOR: u64 = 500;
 
@@ -221,6 +313,8 @@ pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
         29 => CU_GOVERNANCE_PARAM,
         30 => CU_ORACLE_ATTESTATION,
         31 => CU_DEREGISTER_VALIDATOR,
+        32 | 33 => CU_GOVERNED_PROPOSAL,
+        34..=37 => CU_GOVERNANCE_ACTION,
         _ => 100, // Unknown — default cost
     }
 }
@@ -1084,6 +1178,42 @@ impl TxProcessor {
         }
     }
 
+    fn b_queue_governance_param_change(&self, param_id: u8, value: u64) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.queue_governance_param_change(param_id, value)
+        } else {
+            self.state.queue_governance_param_change(param_id, value)
+        }
+    }
+
+    fn b_next_governance_proposal_id(&self) -> Result<u64, String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.next_governance_proposal_id()
+        } else {
+            self.state.next_governance_proposal_id()
+        }
+    }
+
+    fn b_set_governance_proposal(&self, proposal: &GovernanceProposal) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.set_governance_proposal(proposal)
+        } else {
+            self.state.set_governance_proposal(proposal)
+        }
+    }
+
+    fn b_get_governance_proposal(&self, id: u64) -> Result<Option<GovernanceProposal>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_governance_proposal(id)
+        } else {
+            self.state.get_governance_proposal(id)
+        }
+    }
+
     fn b_get_governed_proposal(
         &self,
         id: u64,
@@ -1102,6 +1232,35 @@ impl TxProcessor {
             batch.get_last_slot()
         } else {
             self.state.get_last_slot()
+        }
+    }
+
+    fn b_get_governed_transfer_day_volume(
+        &self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+    ) -> Result<u64, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_governed_transfer_day_volume(wallet_pubkey, day_start)
+        } else {
+            self.state
+                .get_governed_transfer_day_volume(wallet_pubkey, day_start)
+        }
+    }
+
+    fn b_set_governed_transfer_day_volume(
+        &self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+        volume: u64,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.set_governed_transfer_day_volume(wallet_pubkey, day_start, volume)
+        } else {
+            self.state
+                .set_governed_transfer_day_volume(wallet_pubkey, day_start, volume)
         }
     }
 
@@ -1484,9 +1643,13 @@ impl TxProcessor {
                                 13..=16 => {
                                     accounts.insert(CONFLICT_KEY_MOSSSTAKE_POOL);
                                 }
-                                // Governed proposals: propose transfer
-                                21 => {
+                                // Governed transfer proposal lifecycle
+                                21 | 22 | 32 | 33 => {
                                     accounts.insert(CONFLICT_KEY_GOVERNED_PROPOSALS);
+                                }
+                                // Protocol governance proposal lifecycle
+                                34..=37 => {
+                                    accounts.insert(CONFLICT_KEY_GOVERNANCE_PROPOSALS);
                                 }
                                 _ => {}
                             }
@@ -2417,6 +2580,14 @@ impl TxProcessor {
             30 => self.system_oracle_attestation(ix),
             // Voluntary validator deregistration (queued for next epoch boundary)
             31 => self.system_deregister_validator(ix),
+            // Governed wallet timelock lifecycle
+            32 => self.system_execute_governed_transfer(ix),
+            33 => self.system_cancel_governed_transfer(ix),
+            // Protocol governance proposal lifecycle
+            34 => self.system_propose_governance_action(ix),
+            35 => self.system_approve_governance_action(ix),
+            36 => self.system_execute_governance_action(ix),
+            37 => self.system_cancel_governance_action(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -2434,9 +2605,8 @@ impl TxProcessor {
         let from = &ix.accounts[0];
         let to = &ix.accounts[1];
 
-        // Guard: governed wallets (ecosystem_partnerships, reserve_pool) cannot
-        // use standard transfers. They require the multi-sig proposal flow
-        // (instruction types 21/22).
+        // Guard: governed wallets cannot use standard transfers. They require
+        // the governed transfer proposal flow (instruction types 21/22/32/33).
         if self
             .state
             .get_governed_wallet_config(from)
@@ -2445,7 +2615,7 @@ impl TxProcessor {
             .is_some()
         {
             return Err(format!(
-                "Transfer from governed wallet {} requires multi-sig proposal (use type 21/22)",
+                "Transfer from governed wallet {} requires multi-sig proposal (use types 21/22/32/33)",
                 from.to_base58()
             ));
         }
@@ -2519,7 +2689,6 @@ impl TxProcessor {
         let owner = ix.accounts[0];
         let contract_id = ix.accounts[1];
 
-        // Verify the contract exists and the caller owns it
         let account = self
             .b_get_account(&contract_id)?
             .ok_or_else(|| "Contract account not found".to_string())?;
@@ -2532,87 +2701,81 @@ impl TxProcessor {
             return Err("Only the contract owner can register a symbol".to_string());
         }
 
-        // Parse the JSON payload
-        let json_bytes = &ix.data[1..];
-        let raw = std::str::from_utf8(json_bytes)
-            .map_err(|_| "RegisterSymbol: invalid UTF-8 data".to_string())?;
-        let payload: serde_json::Value = serde_json::from_str(raw)
-            .map_err(|e| format!("RegisterSymbol: invalid JSON: {}", e))?;
-
-        let symbol = payload
-            .get("symbol")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| "RegisterSymbol: missing 'symbol' field".to_string())?;
-
-        // Check if this program already has a registered symbol
-        if let Ok(Some(_existing)) = self.state.get_symbol_registry_by_program(&contract_id) {
-            // Update: allow re-registration by same owner (overwrite)
+        if self.contract_owner_requires_governance_flow(&owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)"
+                    .to_string(),
+            );
         }
 
-        // AUDIT-FIX B-4 + B-7: Check if a DIFFERENT program already owns this symbol
-        // Use batch-aware lookup to catch intra-batch duplicates
+        let registration = self.parse_symbol_registration_fields(&ix.data[1..])?;
+        self.register_symbol_as_owner(&owner, &contract_id, registration)
+    }
+
+    fn register_symbol_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_id: &Pubkey,
+        registration: SymbolRegistrationSpec,
+    ) -> Result<(), String> {
+        let account = self
+            .b_get_account(contract_id)?
+            .ok_or_else(|| "Contract account not found".to_string())?;
+        if !account.executable {
+            return Err("Account is not a deployed contract".to_string());
+        }
+        let contract: crate::ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to decode contract: {}", e))?;
+        if contract.owner != *owner {
+            return Err("Only the contract owner can register a symbol".to_string());
+        }
+
+        if let Ok(Some(_existing)) = self.state.get_symbol_registry_by_program(contract_id) {
+            // Allow re-registration by the same owner/program.
+        }
+
         {
             let batch_lock = self.batch.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref batch) = *batch_lock {
-                // Check batch overlay first (handles intra-batch duplicates)
-                if batch.symbol_exists(symbol).unwrap_or(false) {
-                    // Symbol is already registered in this batch or committed state;
-                    // verify via full entry lookup to see if same program or different
-                    if let Ok(Some(existing)) = batch.get_symbol_registry(symbol) {
-                        if existing.program != contract_id {
+                if batch.symbol_exists(&registration.symbol).unwrap_or(false) {
+                    if let Ok(Some(existing)) = batch.get_symbol_registry(&registration.symbol) {
+                        if existing.program != *contract_id {
                             return Err(format!(
                                 "Symbol '{}' is already registered by program {}",
-                                symbol,
+                                registration.symbol,
                                 existing.program.to_base58()
                             ));
                         }
                     } else {
-                        // Symbol is in overlay but entry not yet committed — this means
-                        // another instruction in this same batch already registered it.
-                        // Since re-registration by the same program is allowed, we only
-                        // reject if we know it's a different program. The overlay only stores
-                        // names, so we must conservatively reject to prevent symbol squatting.
                         return Err(format!(
                             "Symbol '{}' was already registered in this transaction batch",
-                            symbol
+                            registration.symbol
                         ));
                     }
                 }
-            } else {
-                // No batch — direct state lookup
-                if let Ok(Some(existing)) = self.state.get_symbol_registry(symbol) {
-                    if existing.program != contract_id {
-                        return Err(format!(
-                            "Symbol '{}' is already registered by program {}",
-                            symbol,
-                            existing.program.to_base58()
-                        ));
-                    }
+            } else if let Ok(Some(existing)) = self.state.get_symbol_registry(&registration.symbol)
+            {
+                if existing.program != *contract_id {
+                    return Err(format!(
+                        "Symbol '{}' is already registered by program {}",
+                        registration.symbol,
+                        existing.program.to_base58()
+                    ));
                 }
             }
         }
 
         let entry = SymbolRegistryEntry {
-            symbol: symbol.to_string(),
-            program: contract_id,
-            owner,
-            name: payload
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string()),
-            template: payload
-                .get("template")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string()),
-            metadata: payload.get("metadata").cloned(),
-            decimals: payload
-                .get("decimals")
-                .and_then(|d| d.as_u64())
-                .map(|d| d as u8),
+            symbol: registration.symbol.clone(),
+            program: *contract_id,
+            owner: *owner,
+            name: registration.name,
+            template: registration.template,
+            metadata: registration.metadata,
+            decimals: registration.decimals,
         };
 
-        self.b_register_symbol(symbol, entry)?;
-        Ok(())
+        self.b_register_symbol(&registration.symbol, entry)
     }
 
     // ========================================================================
@@ -2649,10 +2812,6 @@ impl TxProcessor {
                 .map_err(|_| "Invalid amount encoding".to_string())?,
         );
 
-        if amount == 0 {
-            return Err("ProposeGovernedTransfer: amount must be > 0".to_string());
-        }
-
         // Load governed wallet config — source must be a governed wallet
         let config = self
             .state
@@ -2680,30 +2839,31 @@ impl TxProcessor {
             ));
         }
 
-        let threshold = config.threshold;
-
-        // If threshold is 1, the proposer's approval is sufficient — auto-execute
-        if threshold <= 1 {
-            return self.b_transfer(source, recipient, amount);
-        }
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        let execution_policy =
+            self.governed_transfer_policy_snapshot(&config, amount, current_epoch)?;
 
         // Create proposal
-        // AUDIT-FIX H-1: Route through batch for atomicity on rollback
         let proposal_id = self
             .b_next_governed_proposal_id()
             .map_err(|e| format!("Failed to get proposal ID: {}", e))?;
 
-        let proposal = crate::multisig::GovernedProposal {
+        let mut proposal = crate::multisig::GovernedProposal {
             id: proposal_id,
             source: *source,
             recipient: *recipient,
             amount,
             approvals: vec![*proposer],
-            threshold,
+            threshold: execution_policy.threshold,
+            execute_after_epoch: execution_policy.execute_after_epoch,
+            velocity_tier: execution_policy.velocity_tier,
+            daily_cap_spores: execution_policy.daily_cap_spores,
             executed: false,
+            cancelled: false,
         };
 
-        // AUDIT-FIX H-1: Write through batch so proposal is reverted on rollback
+        self.try_execute_governed_proposal(&mut proposal)?;
+
         self.b_set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to store proposal: {}", e))?;
 
@@ -2747,6 +2907,9 @@ impl TxProcessor {
                 proposal_id
             ));
         }
+        if proposal.cancelled {
+            return Err(format!("Governed proposal {} was cancelled", proposal_id));
+        }
 
         // Load config for the source wallet
         let config = self
@@ -2774,18 +2937,1422 @@ impl TxProcessor {
 
         proposal.approvals.push(*approver);
 
-        // Check if threshold is met
-        if proposal.approvals.len() >= proposal.threshold as usize {
-            // Auto-execute the transfer
-            self.b_transfer(&proposal.source, &proposal.recipient, proposal.amount)?;
-            proposal.executed = true;
-        }
+        self.try_execute_governed_proposal(&mut proposal)?;
 
-        // Save updated proposal
-        // AUDIT-FIX H-1: Write through batch so approval is reverted on rollback
         self.b_set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to update proposal: {}", e))?;
 
+        Ok(())
+    }
+
+    /// System instruction type 32: Execute a governed transfer proposal once
+    /// approvals and timelock requirements are satisfied.
+    ///
+    /// Instruction format:
+    ///   data[0]    = 32
+    ///   data[1..9] = proposal_id (u64 LE)
+    ///   accounts   = [executor]
+    fn system_execute_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("ExecuteGovernedTransfer requires [executor]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("ExecuteGovernedTransfer: missing proposal_id".to_string());
+        }
+
+        let executor = &ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        let mut proposal = self
+            .b_get_governed_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load proposal: {}", e))?
+            .ok_or_else(|| format!("Governed proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!(
+                "Governed proposal {} already executed",
+                proposal_id
+            ));
+        }
+        if proposal.cancelled {
+            return Err(format!("Governed proposal {} was cancelled", proposal_id));
+        }
+
+        let config = self
+            .state
+            .get_governed_wallet_config(&proposal.source)
+            .map_err(|e| format!("Failed to load governed wallet config: {}", e))?
+            .ok_or_else(|| "Source is no longer a governed wallet".to_string())?;
+
+        if !config.is_authorized(executor) {
+            return Err(format!(
+                "Executor {} is not authorized for this governed wallet",
+                executor.to_base58()
+            ));
+        }
+
+        if proposal.approvals.len() < proposal.threshold as usize {
+            return Err(format!(
+                "Governed proposal {} has {} approvals but needs {}",
+                proposal_id,
+                proposal.approvals.len(),
+                proposal.threshold
+            ));
+        }
+
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        if current_epoch < proposal.execute_after_epoch {
+            return Err(format!(
+                "Governed proposal {} is timelocked until epoch {}",
+                proposal_id, proposal.execute_after_epoch
+            ));
+        }
+
+        if !self.try_execute_governed_proposal(&mut proposal)? {
+            return Err(self.governed_transfer_daily_cap_error(
+                &proposal.source,
+                proposal.amount,
+                proposal.daily_cap_spores,
+            )?);
+        }
+        self.b_set_governed_proposal(&proposal)
+            .map_err(|e| format!("Failed to update proposal: {}", e))?;
+        Ok(())
+    }
+
+    /// System instruction type 33: Cancel a governed transfer proposal before execution.
+    ///
+    /// Instruction format:
+    ///   data[0]    = 33
+    ///   data[1..9] = proposal_id (u64 LE)
+    ///   accounts   = [canceller]
+    fn system_cancel_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("CancelGovernedTransfer requires [canceller]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("CancelGovernedTransfer: missing proposal_id".to_string());
+        }
+
+        let canceller = &ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        let mut proposal = self
+            .b_get_governed_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load proposal: {}", e))?
+            .ok_or_else(|| format!("Governed proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!(
+                "Governed proposal {} already executed",
+                proposal_id
+            ));
+        }
+        if proposal.cancelled {
+            return Err(format!(
+                "Governed proposal {} already cancelled",
+                proposal_id
+            ));
+        }
+
+        let config = self
+            .state
+            .get_governed_wallet_config(&proposal.source)
+            .map_err(|e| format!("Failed to load governed wallet config: {}", e))?
+            .ok_or_else(|| "Source is no longer a governed wallet".to_string())?;
+
+        if !config.is_authorized(canceller) {
+            return Err(format!(
+                "Canceller {} is not authorized for this governed wallet",
+                canceller.to_base58()
+            ));
+        }
+
+        proposal.cancelled = true;
+        self.b_set_governed_proposal(&proposal)
+            .map_err(|e| format!("Failed to update proposal: {}", e))?;
+        Ok(())
+    }
+
+    fn try_execute_governed_proposal(
+        &self,
+        proposal: &mut crate::multisig::GovernedProposal,
+    ) -> Result<bool, String> {
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        if proposal.cancelled
+            || proposal.executed
+            || proposal.approvals.len() < proposal.threshold as usize
+            || current_epoch < proposal.execute_after_epoch
+        {
+            return Ok(false);
+        }
+
+        if !self.consume_governed_transfer_daily_capacity(
+            &proposal.source,
+            proposal.amount,
+            proposal.daily_cap_spores,
+        )? {
+            return Ok(false);
+        }
+
+        self.b_transfer(&proposal.source, &proposal.recipient, proposal.amount)?;
+        proposal.executed = true;
+        Ok(true)
+    }
+
+    fn governed_transfer_policy_snapshot_from_parts(
+        threshold: u8,
+        timelock_epochs: u32,
+        signer_count: usize,
+        label: &str,
+        transfer_velocity_policy: Option<&crate::multisig::GovernedTransferVelocityPolicy>,
+        amount: u64,
+        current_epoch: u64,
+    ) -> Result<GovernedTransferExecutionPolicy, String> {
+        let mut execution_policy = GovernedTransferExecutionPolicy {
+            threshold,
+            execute_after_epoch: current_epoch + timelock_epochs as u64,
+            velocity_tier: crate::multisig::GovernedTransferVelocityTier::Standard,
+            daily_cap_spores: 0,
+        };
+
+        if let Some(policy) = transfer_velocity_policy {
+            if policy.per_transfer_cap_spores > 0 && amount > policy.per_transfer_cap_spores {
+                return Err(format!(
+                    "Governed transfer amount {} exceeds per-transfer cap {} for {}",
+                    amount, policy.per_transfer_cap_spores, label
+                ));
+            }
+
+            let tier = policy.tier_for_amount(amount);
+            execution_policy.threshold = policy.required_threshold(threshold, signer_count, tier);
+            execution_policy.execute_after_epoch +=
+                u64::from(policy.additional_timelock_epochs(tier));
+            execution_policy.velocity_tier = tier;
+            execution_policy.daily_cap_spores = policy.daily_cap_spores;
+        }
+
+        Ok(execution_policy)
+    }
+
+    fn governed_transfer_policy_snapshot(
+        &self,
+        config: &crate::multisig::GovernedWalletConfig,
+        amount: u64,
+        current_epoch: u64,
+    ) -> Result<GovernedTransferExecutionPolicy, String> {
+        Self::governed_transfer_policy_snapshot_from_parts(
+            config.threshold,
+            config.timelock_epochs,
+            config.signers.len(),
+            config.label.as_str(),
+            config.transfer_velocity_policy.as_ref(),
+            amount,
+            current_epoch,
+        )
+    }
+
+    fn governance_treasury_transfer_policy_snapshot(
+        &self,
+        approval_config: &crate::multisig::GovernedWalletConfig,
+        source_config: &crate::multisig::GovernedWalletConfig,
+        amount: u64,
+        current_epoch: u64,
+    ) -> Result<GovernedTransferExecutionPolicy, String> {
+        Self::governed_transfer_policy_snapshot_from_parts(
+            approval_config.threshold,
+            approval_config.timelock_epochs,
+            approval_config.signers.len(),
+            source_config.label.as_str(),
+            source_config.transfer_velocity_policy.as_ref(),
+            amount,
+            current_epoch,
+        )
+    }
+
+    fn current_governed_transfer_day_bucket(&self) -> Result<u64, String> {
+        let last_slot = self.b_get_last_slot().unwrap_or(0);
+        let timestamp = self
+            .state
+            .get_block_by_slot(last_slot)?
+            .map(|block| block.header.timestamp)
+            .unwrap_or(last_slot);
+        Ok(timestamp / SECONDS_PER_DAY)
+    }
+
+    fn consume_governed_transfer_daily_capacity(
+        &self,
+        source: &Pubkey,
+        amount: u64,
+        daily_cap_spores: u64,
+    ) -> Result<bool, String> {
+        if daily_cap_spores == 0 {
+            return Ok(true);
+        }
+
+        let day_bucket = self.current_governed_transfer_day_bucket()?;
+        let current_volume = self.b_get_governed_transfer_day_volume(source, day_bucket)?;
+        let updated_volume = current_volume.checked_add(amount).ok_or_else(|| {
+            format!(
+                "Governed transfer volume overflow for {}",
+                source.to_base58()
+            )
+        })?;
+        if updated_volume > daily_cap_spores {
+            return Ok(false);
+        }
+
+        self.b_set_governed_transfer_day_volume(source, day_bucket, updated_volume)?;
+        Ok(true)
+    }
+
+    fn governed_transfer_daily_cap_error(
+        &self,
+        source: &Pubkey,
+        amount: u64,
+        daily_cap_spores: u64,
+    ) -> Result<String, String> {
+        let day_bucket = self.current_governed_transfer_day_bucket()?;
+        let current_volume = self.b_get_governed_transfer_day_volume(source, day_bucket)?;
+        Ok(format!(
+            "Governed transfer would exceed daily cap for {}: {} + {} > {} on day {}",
+            source.to_base58(),
+            current_volume,
+            amount,
+            daily_cap_spores,
+            day_bucket
+        ))
+    }
+
+    fn get_governed_governance_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        let Some(authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_treasury_executor_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        if let Some(authority) = self.state.get_treasury_executor_authority()? {
+            if let Some(config) = self.state.get_governed_wallet_config(&authority)? {
+                return Ok(Some((authority, config)));
+            }
+        }
+
+        let Some(governance_authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let authority = crate::multisig::derive_treasury_executor_authority(&governance_authority);
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_incident_guardian_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        let Some(authority) = self.state.get_incident_guardian_authority()? else {
+            return Ok(None);
+        };
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_bridge_committee_admin_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        if let Some(authority) = self.state.get_bridge_committee_admin_authority()? {
+            if let Some(config) = self.state.get_governed_wallet_config(&authority)? {
+                return Ok(Some((authority, config)));
+            }
+        }
+
+        let Some(governance_authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let authority =
+            crate::multisig::derive_bridge_committee_admin_authority(&governance_authority);
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_oracle_committee_admin_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        if let Some(authority) = self.state.get_oracle_committee_admin_authority()? {
+            if let Some(config) = self.state.get_governed_wallet_config(&authority)? {
+                return Ok(Some((authority, config)));
+            }
+        }
+
+        let Some(governance_authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let authority =
+            crate::multisig::derive_oracle_committee_admin_authority(&governance_authority);
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_upgrade_proposer_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        if let Some(authority) = self.state.get_upgrade_proposer_authority()? {
+            if let Some(config) = self.state.get_governed_wallet_config(&authority)? {
+                return Ok(Some((authority, config)));
+            }
+        }
+
+        let Some(governance_authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let authority = crate::multisig::derive_upgrade_proposer_authority(&governance_authority);
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governed_upgrade_veto_guardian_authority(
+        &self,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        if let Some(authority) = self.state.get_upgrade_veto_guardian_authority()? {
+            if let Some(config) = self.state.get_governed_wallet_config(&authority)? {
+                return Ok(Some((authority, config)));
+            }
+        }
+
+        let Some(governance_authority) = self.state.get_governance_authority()? else {
+            return Ok(None);
+        };
+        let authority =
+            crate::multisig::derive_upgrade_veto_guardian_authority(&governance_authority);
+        let Some(config) = self.state.get_governed_wallet_config(&authority)? else {
+            return Ok(None);
+        };
+        Ok(Some((authority, config)))
+    }
+
+    fn get_governance_proposal_approval_authority(
+        &self,
+        proposal: &GovernanceProposal,
+    ) -> Result<(Pubkey, crate::multisig::GovernedWalletConfig), String> {
+        let approval_authority = proposal.approval_authority();
+        let Some(config) = self.state.get_governed_wallet_config(&approval_authority)? else {
+            return Err(format!(
+                "Governance proposal approval authority {} is not configured as a governed wallet",
+                approval_authority.to_base58()
+            ));
+        };
+        Ok((approval_authority, config))
+    }
+
+    fn resolve_governance_proposal_authority(
+        &self,
+        requested_authority: &Pubkey,
+        action: &GovernanceAction,
+    ) -> Result<
+        (
+            Pubkey,
+            Option<Pubkey>,
+            crate::multisig::GovernedWalletConfig,
+        ),
+        String,
+    > {
+        let (governance_authority, governance_config) =
+            self.get_governed_governance_authority()?.ok_or_else(|| {
+                "Governance authority is not configured as a governed wallet".to_string()
+            })?;
+
+        if self.governance_action_requires_treasury_executor_policy(action)? {
+            let (treasury_authority, treasury_config) = self
+                .get_governed_treasury_executor_authority()?
+                .ok_or_else(|| {
+                    "Treasury executor authority is not configured as a governed wallet".to_string()
+                })?;
+            if *requested_authority != treasury_authority {
+                return Err(
+                    "Protocol fund movement governance actions must use the treasury executor approval authority"
+                        .to_string(),
+                );
+            }
+            return Ok((
+                governance_authority,
+                Some(treasury_authority),
+                treasury_config,
+            ));
+        }
+
+        if self.governance_action_requires_upgrade_proposer_policy(action) {
+            let (upgrade_authority, upgrade_config) = self
+                .get_governed_upgrade_proposer_authority()?
+                .ok_or_else(|| {
+                    "Upgrade proposer authority is not configured as a governed wallet".to_string()
+                })?;
+            if *requested_authority != upgrade_authority {
+                return Err(
+                    "Upgrade governance actions must use the upgrade proposer approval authority"
+                        .to_string(),
+                );
+            }
+            return Ok((
+                governance_authority,
+                Some(upgrade_authority),
+                upgrade_config,
+            ));
+        }
+
+        if self.governance_action_requires_upgrade_veto_guardian_policy(action) {
+            let (veto_authority, veto_config) = self
+                .get_governed_upgrade_veto_guardian_authority()?
+                .ok_or_else(|| {
+                    "Upgrade veto guardian authority is not configured as a governed wallet"
+                        .to_string()
+                })?;
+            if *requested_authority != veto_authority {
+                return Err(
+                    "Upgrade veto governance actions must use the upgrade veto guardian approval authority"
+                        .to_string(),
+                );
+            }
+            return Ok((governance_authority, Some(veto_authority), veto_config));
+        }
+
+        if self.governance_action_requires_bridge_committee_admin_policy(action)? {
+            let (bridge_authority, bridge_config) = self
+                .get_governed_bridge_committee_admin_authority()?
+                .ok_or_else(|| {
+                    "Bridge committee admin authority is not configured as a governed wallet"
+                        .to_string()
+                })?;
+            if *requested_authority != bridge_authority {
+                return Err(
+                    "Bridge governance actions must use the bridge committee admin approval authority"
+                        .to_string(),
+                );
+            }
+            return Ok((governance_authority, Some(bridge_authority), bridge_config));
+        }
+
+        if self.governance_action_requires_oracle_committee_admin_policy(action)? {
+            let (oracle_authority, oracle_config) = self
+                .get_governed_oracle_committee_admin_authority()?
+                .ok_or_else(|| {
+                    "Oracle committee admin authority is not configured as a governed wallet"
+                        .to_string()
+                })?;
+            if *requested_authority != oracle_authority {
+                return Err(
+                    "Oracle governance actions must use the oracle committee admin approval authority"
+                        .to_string(),
+                );
+            }
+            return Ok((governance_authority, Some(oracle_authority), oracle_config));
+        }
+
+        if *requested_authority == governance_authority {
+            return Ok((governance_authority, None, governance_config));
+        }
+
+        if self.governance_action_uses_immediate_risk_reduction_policy(action)? {
+            if let Some((guardian_authority, guardian_config)) =
+                self.get_governed_incident_guardian_authority()?
+            {
+                if *requested_authority == guardian_authority {
+                    return Ok((
+                        governance_authority,
+                        Some(guardian_authority),
+                        guardian_config,
+                    ));
+                }
+            }
+        }
+
+        if let Some((guardian_authority, _)) = self.get_governed_incident_guardian_authority()? {
+            if *requested_authority == guardian_authority {
+                return Err(
+                    "Incident guardian authority may only submit allowlisted immediate risk-reduction proposals"
+                        .to_string(),
+                );
+            }
+        }
+
+        Err("Governance action authority account mismatch".to_string())
+    }
+
+    fn emit_governance_proposal_event(
+        &self,
+        event_name: &str,
+        proposal: &GovernanceProposal,
+        actor: &Pubkey,
+    ) -> Result<(), String> {
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let mut data = HashMap::new();
+        data.insert("proposal_id".to_string(), proposal.id.to_string());
+        data.insert("action".to_string(), proposal.action_label.clone());
+        data.insert("authority".to_string(), proposal.authority.to_base58());
+        data.insert("proposer".to_string(), proposal.proposer.to_base58());
+        data.insert("actor".to_string(), actor.to_base58());
+        data.insert(
+            "approvals".to_string(),
+            proposal.approvals.len().to_string(),
+        );
+        data.insert("threshold".to_string(), proposal.threshold.to_string());
+        data.insert(
+            "execute_after_epoch".to_string(),
+            proposal.execute_after_epoch.to_string(),
+        );
+        data.insert(
+            "velocity_tier".to_string(),
+            proposal.velocity_tier.as_str().to_string(),
+        );
+        data.insert(
+            "daily_cap_spores".to_string(),
+            proposal.daily_cap_spores.to_string(),
+        );
+        if let Some(approval_authority) = proposal.approval_authority {
+            data.insert(
+                "approval_authority".to_string(),
+                approval_authority.to_base58(),
+            );
+        }
+        data.insert("executed".to_string(), proposal.executed.to_string());
+        data.insert("cancelled".to_string(), proposal.cancelled.to_string());
+        data.insert("metadata".to_string(), proposal.metadata.clone());
+        for (key, value) in proposal.action.event_fields() {
+            data.insert(key.to_string(), value);
+        }
+
+        let event = ContractEvent {
+            program: SYSTEM_PROGRAM_ID,
+            name: event_name.to_string(),
+            data,
+            slot: current_slot,
+        };
+
+        self.b_put_contract_event(&SYSTEM_PROGRAM_ID, &event)
+    }
+
+    fn parse_symbol_registration_fields(
+        &self,
+        json_bytes: &[u8],
+    ) -> Result<SymbolRegistrationSpec, String> {
+        let raw = std::str::from_utf8(json_bytes)
+            .map_err(|_| "RegisterSymbol: invalid UTF-8 data".to_string())?;
+        let payload: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| format!("RegisterSymbol: invalid JSON: {}", e))?;
+
+        let symbol = payload
+            .get("symbol")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "RegisterSymbol: missing 'symbol' field".to_string())?
+            .to_string();
+
+        Ok(SymbolRegistrationSpec {
+            symbol,
+            name: payload
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string()),
+            template: payload
+                .get("template")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string()),
+            metadata: payload.get("metadata").cloned(),
+            decimals: payload
+                .get("decimals")
+                .and_then(|d| d.as_u64())
+                .map(|d| d as u8),
+        })
+    }
+
+    fn validate_governance_param_change(&self, param_id: u8, value: u64) -> Result<(), String> {
+        match param_id {
+            GOV_PARAM_BASE_FEE => {
+                if value == 0 || value > 1_000_000_000 {
+                    return Err(
+                        "GovernanceParamChange: base_fee must be 1..=1_000_000_000 spores"
+                            .to_string(),
+                    );
+                }
+            }
+            GOV_PARAM_FEE_BURN_PERCENT
+            | GOV_PARAM_FEE_PRODUCER_PERCENT
+            | GOV_PARAM_FEE_VOTERS_PERCENT
+            | GOV_PARAM_FEE_TREASURY_PERCENT
+            | GOV_PARAM_FEE_COMMUNITY_PERCENT => {
+                if value > 100 {
+                    return Err("GovernanceParamChange: fee percentage must be 0..=100".to_string());
+                }
+            }
+            GOV_PARAM_MIN_VALIDATOR_STAKE => {
+                if !(1_000_000_000..=1_000_000_000_000_000_000).contains(&value) {
+                    return Err(
+                        "GovernanceParamChange: min_validator_stake out of range".to_string()
+                    );
+                }
+            }
+            GOV_PARAM_EPOCH_SLOTS => {
+                if !(1_000..=10_000_000).contains(&value) {
+                    return Err(
+                        "GovernanceParamChange: epoch_slots must be 1_000..=10_000_000".to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "GovernanceParamChange: unknown param_id {}",
+                    param_id
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn governance_action_uses_immediate_risk_reduction_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> Result<bool, String> {
+        let GovernanceAction::ContractCall {
+            contract, function, ..
+        } = action
+        else {
+            return Ok(false);
+        };
+
+        let Some(entry) = self.state.get_symbol_registry_by_program(contract)? else {
+            return Ok(false);
+        };
+
+        Ok(is_allowlisted_incident_guardian_pause(
+            entry.symbol.as_str(),
+            function.as_str(),
+        ))
+    }
+
+    fn governance_action_requires_treasury_executor_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> Result<bool, String> {
+        if matches!(action, GovernanceAction::TreasuryTransfer { .. }) {
+            return Ok(true);
+        }
+
+        let GovernanceAction::ContractCall {
+            contract,
+            function,
+            args,
+            ..
+        } = action
+        else {
+            return Ok(false);
+        };
+
+        let Some(entry) = self.state.get_symbol_registry_by_program(contract)? else {
+            return Ok(false);
+        };
+
+        Ok(is_treasury_executor_contract_call(
+            entry.symbol.as_str(),
+            function.as_str(),
+            args.as_slice(),
+        ))
+    }
+
+    fn governance_action_requires_upgrade_proposer_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> bool {
+        matches!(
+            action,
+            GovernanceAction::ContractUpgrade { .. }
+                | GovernanceAction::SetContractUpgradeTimelock { .. }
+                | GovernanceAction::ExecuteContractUpgrade { .. }
+        )
+    }
+
+    fn governance_action_requires_upgrade_veto_guardian_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> bool {
+        matches!(action, GovernanceAction::VetoContractUpgrade { .. })
+    }
+
+    fn governance_action_requires_bridge_committee_admin_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> Result<bool, String> {
+        let GovernanceAction::ContractCall {
+            contract, function, ..
+        } = action
+        else {
+            return Ok(false);
+        };
+
+        let Some(entry) = self.state.get_symbol_registry_by_program(contract)? else {
+            return Ok(false);
+        };
+
+        Ok(is_bridge_committee_admin_contract_call(
+            entry.symbol.as_str(),
+            function.as_str(),
+        ))
+    }
+
+    fn governance_action_requires_oracle_committee_admin_policy(
+        &self,
+        action: &GovernanceAction,
+    ) -> Result<bool, String> {
+        let GovernanceAction::ContractCall {
+            contract, function, ..
+        } = action
+        else {
+            return Ok(false);
+        };
+
+        let Some(entry) = self.state.get_symbol_registry_by_program(contract)? else {
+            return Ok(false);
+        };
+
+        Ok(is_oracle_committee_admin_contract_call(
+            entry.symbol.as_str(),
+            function.as_str(),
+        ))
+    }
+
+    fn parse_governance_action(
+        &self,
+        ix: &Instruction,
+    ) -> Result<(Pubkey, Pubkey, GovernanceAction), String> {
+        if ix.accounts.len() < 2 {
+            return Err("Governance action requires [proposer, governance_authority]".to_string());
+        }
+        if ix.data.len() < 2 {
+            return Err("Governance action missing action type".to_string());
+        }
+
+        let proposer = ix.accounts[0];
+        let authority_account = ix.accounts[1];
+
+        let action = match ix.data[1] {
+            GOVERNANCE_ACTION_TREASURY_TRANSFER => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "TreasuryTransfer requires [proposer, governance_authority, recipient]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 10 {
+                    return Err("TreasuryTransfer missing amount".to_string());
+                }
+                let amount = u64::from_le_bytes(
+                    ix.data[2..10]
+                        .try_into()
+                        .map_err(|_| "Invalid treasury transfer amount encoding".to_string())?,
+                );
+                if amount == 0 {
+                    return Err("TreasuryTransfer amount must be > 0".to_string());
+                }
+                GovernanceAction::TreasuryTransfer {
+                    recipient: ix.accounts[2],
+                    amount,
+                }
+            }
+            GOVERNANCE_ACTION_PARAM_CHANGE => {
+                if ix.data.len() < 11 {
+                    return Err("GovernanceParamChange missing param_id/value".to_string());
+                }
+                let param_id = ix.data[2];
+                let value = u64::from_le_bytes(
+                    ix.data[3..11]
+                        .try_into()
+                        .map_err(|_| "Invalid governance param value encoding".to_string())?,
+                );
+                self.validate_governance_param_change(param_id, value)?;
+                GovernanceAction::ParamChange { param_id, value }
+            }
+            GOVERNANCE_ACTION_CONTRACT_UPGRADE => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "ContractUpgrade requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 6 {
+                    return Err("ContractUpgrade missing code length".to_string());
+                }
+                let code_len = u32::from_le_bytes(
+                    ix.data[2..6]
+                        .try_into()
+                        .map_err(|_| "Invalid contract upgrade length encoding".to_string())?,
+                ) as usize;
+                if ix.data.len() < 6 + code_len {
+                    return Err("ContractUpgrade code payload truncated".to_string());
+                }
+                GovernanceAction::ContractUpgrade {
+                    contract: ix.accounts[2],
+                    code: ix.data[6..6 + code_len].to_vec(),
+                }
+            }
+            GOVERNANCE_ACTION_SET_UPGRADE_TIMELOCK => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "SetContractUpgradeTimelock requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 6 {
+                    return Err("SetContractUpgradeTimelock missing epochs".to_string());
+                }
+                let epochs = u32::from_le_bytes(
+                    ix.data[2..6]
+                        .try_into()
+                        .map_err(|_| "Invalid timelock epoch encoding".to_string())?,
+                );
+                GovernanceAction::SetContractUpgradeTimelock {
+                    contract: ix.accounts[2],
+                    epochs,
+                }
+            }
+            GOVERNANCE_ACTION_EXECUTE_UPGRADE => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "ExecuteContractUpgrade requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                GovernanceAction::ExecuteContractUpgrade {
+                    contract: ix.accounts[2],
+                }
+            }
+            GOVERNANCE_ACTION_VETO_UPGRADE => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "VetoContractUpgrade requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                GovernanceAction::VetoContractUpgrade {
+                    contract: ix.accounts[2],
+                }
+            }
+            GOVERNANCE_ACTION_CONTRACT_CLOSE => {
+                if ix.accounts.len() < 4 {
+                    return Err(
+                        "ContractClose requires [proposer, governance_authority, contract, destination]"
+                            .to_string(),
+                    );
+                }
+                GovernanceAction::ContractClose {
+                    contract: ix.accounts[2],
+                    destination: ix.accounts[3],
+                }
+            }
+            GOVERNANCE_ACTION_CONTRACT_CALL => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "ContractCall requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 16 {
+                    return Err("ContractCall missing payload".to_string());
+                }
+
+                let value = u64::from_le_bytes(
+                    ix.data[2..10]
+                        .try_into()
+                        .map_err(|_| "Invalid contract call value encoding".to_string())?,
+                );
+                let function_len =
+                    u16::from_le_bytes(ix.data[10..12].try_into().map_err(|_| {
+                        "Invalid contract call function length encoding".to_string()
+                    })?) as usize;
+                if function_len == 0 {
+                    return Err("ContractCall function name cannot be empty".to_string());
+                }
+                let args_len_offset = 12 + function_len;
+                if ix.data.len() < args_len_offset + 4 {
+                    return Err("ContractCall function payload truncated".to_string());
+                }
+                let function = std::str::from_utf8(&ix.data[12..args_len_offset])
+                    .map_err(|_| "ContractCall function name must be valid UTF-8".to_string())?
+                    .to_string();
+                let args_len = u32::from_le_bytes(
+                    ix.data[args_len_offset..args_len_offset + 4]
+                        .try_into()
+                        .map_err(|_| "Invalid contract call args length encoding".to_string())?,
+                ) as usize;
+                let args_offset = args_len_offset + 4;
+                if ix.data.len() < args_offset + args_len {
+                    return Err("ContractCall args payload truncated".to_string());
+                }
+
+                GovernanceAction::ContractCall {
+                    contract: ix.accounts[2],
+                    function,
+                    args: ix.data[args_offset..args_offset + args_len].to_vec(),
+                    value,
+                }
+            }
+            GOVERNANCE_ACTION_REGISTER_SYMBOL => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "RegisterContractSymbol requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 6 {
+                    return Err("RegisterContractSymbol missing payload length".to_string());
+                }
+                let payload_len =
+                    u32::from_le_bytes(ix.data[2..6].try_into().map_err(|_| {
+                        "Invalid register symbol payload length encoding".to_string()
+                    })?) as usize;
+                if ix.data.len() < 6 + payload_len {
+                    return Err("RegisterContractSymbol payload truncated".to_string());
+                }
+                let registration =
+                    self.parse_symbol_registration_fields(&ix.data[6..6 + payload_len])?;
+                GovernanceAction::RegisterContractSymbol {
+                    contract: ix.accounts[2],
+                    symbol: registration.symbol,
+                    name: registration.name,
+                    template: registration.template,
+                    metadata: registration.metadata,
+                    decimals: registration.decimals,
+                }
+            }
+            GOVERNANCE_ACTION_SET_CONTRACT_ABI => {
+                if ix.accounts.len() < 3 {
+                    return Err(
+                        "SetContractAbi requires [proposer, governance_authority, contract]"
+                            .to_string(),
+                    );
+                }
+                if ix.data.len() < 6 {
+                    return Err("SetContractAbi missing ABI length".to_string());
+                }
+                let abi_len = u32::from_le_bytes(
+                    ix.data[2..6]
+                        .try_into()
+                        .map_err(|_| "Invalid ABI length encoding".to_string())?,
+                ) as usize;
+                if ix.data.len() < 6 + abi_len {
+                    return Err("SetContractAbi payload truncated".to_string());
+                }
+                let abi: ContractAbi = serde_json::from_slice(&ix.data[6..6 + abi_len])
+                    .map_err(|e| format!("Invalid ABI format: {}", e))?;
+                GovernanceAction::SetContractAbi {
+                    contract: ix.accounts[2],
+                    abi,
+                }
+            }
+            action_type => {
+                return Err(format!("Unknown governance action type {}", action_type));
+            }
+        };
+
+        Ok((proposer, authority_account, action))
+    }
+
+    fn try_execute_governance_proposal(
+        &self,
+        proposal: &mut GovernanceProposal,
+    ) -> Result<bool, String> {
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        if !proposal.is_ready(current_epoch) {
+            return Ok(false);
+        }
+
+        match proposal.action.clone() {
+            GovernanceAction::TreasuryTransfer { recipient, amount } => {
+                if !self.consume_governed_transfer_daily_capacity(
+                    &proposal.authority,
+                    amount,
+                    proposal.daily_cap_spores,
+                )? {
+                    return Ok(false);
+                }
+                self.b_transfer(&proposal.authority, &recipient, amount)?;
+            }
+            GovernanceAction::ParamChange { param_id, value } => {
+                self.b_queue_governance_param_change(param_id, value)?;
+            }
+            GovernanceAction::ContractUpgrade { contract, code } => {
+                self.contract_upgrade_as_owner(&proposal.authority, &contract, code)?;
+            }
+            GovernanceAction::SetContractUpgradeTimelock { contract, epochs } => {
+                self.contract_set_upgrade_timelock_as_owner(
+                    &proposal.authority,
+                    &contract,
+                    epochs,
+                )?;
+            }
+            GovernanceAction::ExecuteContractUpgrade { contract } => {
+                self.contract_execute_upgrade_as_owner(&proposal.authority, &contract)?;
+            }
+            GovernanceAction::VetoContractUpgrade { contract } => {
+                self.contract_veto_upgrade_as_authority(&proposal.authority, &contract)?;
+            }
+            GovernanceAction::ContractClose {
+                contract,
+                destination,
+            } => {
+                self.contract_close_as_owner(&proposal.authority, &contract, &destination)?;
+            }
+            GovernanceAction::ContractCall {
+                contract,
+                function,
+                args,
+                value,
+            } => {
+                self.contract_call_as_caller(
+                    &proposal.authority,
+                    &contract,
+                    &function,
+                    &args,
+                    value,
+                )?;
+            }
+            GovernanceAction::RegisterContractSymbol {
+                contract,
+                symbol,
+                name,
+                template,
+                metadata,
+                decimals,
+            } => {
+                self.register_symbol_as_owner(
+                    &proposal.authority,
+                    &contract,
+                    SymbolRegistrationSpec {
+                        symbol,
+                        name,
+                        template,
+                        metadata,
+                        decimals,
+                    },
+                )?;
+            }
+            GovernanceAction::SetContractAbi { contract, abi } => {
+                self.set_contract_abi_as_owner(&proposal.authority, &contract, abi)?;
+            }
+        }
+
+        proposal.executed = true;
+        Ok(true)
+    }
+
+    /// System instruction type 34: Propose a protocol governance action.
+    fn system_propose_governance_action(&self, ix: &Instruction) -> Result<(), String> {
+        let (proposer, requested_authority, action) = self.parse_governance_action(ix)?;
+        let (authority, approval_authority, approval_config) =
+            self.resolve_governance_proposal_authority(&requested_authority, &action)?;
+
+        if !approval_config.is_authorized(&proposer) {
+            return Err(format!(
+                "Proposer {} is not authorized for governance proposal authority {}",
+                proposer.to_base58(),
+                approval_config.label
+            ));
+        }
+
+        if let GovernanceAction::TreasuryTransfer { amount, .. } = &action {
+            let source_acct = self
+                .b_get_account(&authority)?
+                .ok_or_else(|| "Governance treasury account not found".to_string())?;
+            if source_acct.spendable < *amount {
+                return Err(format!(
+                    "Governance treasury has insufficient spendable balance: {} < {}",
+                    source_acct.spendable, amount
+                ));
+            }
+        }
+
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        let mut execution_policy = GovernedTransferExecutionPolicy {
+            threshold: approval_config.threshold,
+            execute_after_epoch: current_epoch + approval_config.timelock_epochs as u64,
+            velocity_tier: crate::multisig::GovernedTransferVelocityTier::Standard,
+            daily_cap_spores: 0,
+        };
+        if approval_authority.is_some()
+            && self.governance_action_uses_immediate_risk_reduction_policy(&action)?
+        {
+            execution_policy.execute_after_epoch = current_epoch;
+        } else if let GovernanceAction::TreasuryTransfer { amount, .. } = &action {
+            let source_config = self
+                .state
+                .get_governed_wallet_config(&authority)
+                .map_err(|e| format!("Failed to load governance treasury policy: {}", e))?
+                .ok_or_else(|| {
+                    format!(
+                        "Governance treasury source {} is not configured as a governed wallet",
+                        authority.to_base58()
+                    )
+                })?;
+            execution_policy = self.governance_treasury_transfer_policy_snapshot(
+                &approval_config,
+                &source_config,
+                *amount,
+                current_epoch,
+            )?;
+        }
+        let proposal_id = self
+            .b_next_governance_proposal_id()
+            .map_err(|e| format!("Failed to get governance proposal ID: {}", e))?;
+
+        let mut proposal = GovernanceProposal {
+            id: proposal_id,
+            authority,
+            approval_authority,
+            proposer,
+            action_label: action.label().to_string(),
+            metadata: action.metadata(),
+            action,
+            approvals: vec![proposer],
+            threshold: execution_policy.threshold,
+            execute_after_epoch: execution_policy.execute_after_epoch,
+            velocity_tier: execution_policy.velocity_tier,
+            daily_cap_spores: execution_policy.daily_cap_spores,
+            executed: false,
+            cancelled: false,
+        };
+
+        self.try_execute_governance_proposal(&mut proposal)?;
+        self.b_set_governance_proposal(&proposal)
+            .map_err(|e| format!("Failed to store governance proposal: {}", e))?;
+        self.emit_governance_proposal_event("GovernanceProposalCreated", &proposal, &proposer)?;
+        if proposal.executed {
+            self.emit_governance_proposal_event(
+                "GovernanceProposalExecuted",
+                &proposal,
+                &proposer,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// System instruction type 35: Approve a protocol governance action.
+    fn system_approve_governance_action(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("ApproveGovernanceAction requires [approver]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("ApproveGovernanceAction: missing proposal_id".to_string());
+        }
+
+        let approver = ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        let mut proposal = self
+            .b_get_governance_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load governance proposal: {}", e))?
+            .ok_or_else(|| format!("Governance proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!(
+                "Governance proposal {} already executed",
+                proposal_id
+            ));
+        }
+        if proposal.cancelled {
+            return Err(format!("Governance proposal {} was cancelled", proposal_id));
+        }
+
+        let (approval_authority, config) =
+            self.get_governance_proposal_approval_authority(&proposal)?;
+        if !config.is_authorized(&approver) {
+            return Err(format!(
+                "Approver {} is not authorized for governance proposal approval authority {}",
+                approver.to_base58(),
+                approval_authority.to_base58()
+            ));
+        }
+        if proposal.approvals.contains(&approver) {
+            return Err(format!(
+                "Approver {} has already approved governance proposal {}",
+                approver.to_base58(),
+                proposal_id
+            ));
+        }
+
+        let was_executed = proposal.executed;
+        proposal.approvals.push(approver);
+        self.try_execute_governance_proposal(&mut proposal)?;
+        self.b_set_governance_proposal(&proposal)
+            .map_err(|e| format!("Failed to update governance proposal: {}", e))?;
+        self.emit_governance_proposal_event("GovernanceProposalApproved", &proposal, &approver)?;
+        if !was_executed && proposal.executed {
+            self.emit_governance_proposal_event(
+                "GovernanceProposalExecuted",
+                &proposal,
+                &approver,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// System instruction type 36: Execute a ready governance proposal.
+    fn system_execute_governance_action(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("ExecuteGovernanceAction requires [executor]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("ExecuteGovernanceAction: missing proposal_id".to_string());
+        }
+
+        let executor = ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        let mut proposal = self
+            .b_get_governance_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load governance proposal: {}", e))?
+            .ok_or_else(|| format!("Governance proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!(
+                "Governance proposal {} already executed",
+                proposal_id
+            ));
+        }
+        if proposal.cancelled {
+            return Err(format!("Governance proposal {} was cancelled", proposal_id));
+        }
+
+        let (approval_authority, config) =
+            self.get_governance_proposal_approval_authority(&proposal)?;
+        if !config.is_authorized(&executor) {
+            return Err(format!(
+                "Executor {} is not authorized for governance proposal approval authority {}",
+                executor.to_base58(),
+                approval_authority.to_base58()
+            ));
+        }
+        if proposal.approvals.len() < proposal.threshold as usize {
+            return Err(format!(
+                "Governance proposal {} has {} approvals but needs {}",
+                proposal_id,
+                proposal.approvals.len(),
+                proposal.threshold
+            ));
+        }
+
+        let current_epoch = slot_to_epoch(self.b_get_last_slot().unwrap_or(0));
+        if current_epoch < proposal.execute_after_epoch {
+            return Err(format!(
+                "Governance proposal {} is timelocked until epoch {}",
+                proposal_id, proposal.execute_after_epoch
+            ));
+        }
+
+        let was_executed = proposal.executed;
+        if !self.try_execute_governance_proposal(&mut proposal)? {
+            let error = match proposal.action {
+                GovernanceAction::TreasuryTransfer { amount, .. } => self
+                    .governed_transfer_daily_cap_error(
+                        &proposal.authority,
+                        amount,
+                        proposal.daily_cap_spores,
+                    )?,
+                _ => format!(
+                    "Governance proposal {} is not ready for execution",
+                    proposal_id
+                ),
+            };
+            return Err(error);
+        }
+        self.b_set_governance_proposal(&proposal)
+            .map_err(|e| format!("Failed to update governance proposal: {}", e))?;
+        if !was_executed && proposal.executed {
+            self.emit_governance_proposal_event(
+                "GovernanceProposalExecuted",
+                &proposal,
+                &executor,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// System instruction type 37: Cancel a governance proposal before execution.
+    fn system_cancel_governance_action(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("CancelGovernanceAction requires [canceller]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("CancelGovernanceAction: missing proposal_id".to_string());
+        }
+
+        let canceller = ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        let mut proposal = self
+            .b_get_governance_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load governance proposal: {}", e))?
+            .ok_or_else(|| format!("Governance proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!(
+                "Governance proposal {} already executed",
+                proposal_id
+            ));
+        }
+        if proposal.cancelled {
+            return Err(format!(
+                "Governance proposal {} already cancelled",
+                proposal_id
+            ));
+        }
+
+        let (approval_authority, config) =
+            self.get_governance_proposal_approval_authority(&proposal)?;
+        if !config.is_authorized(&canceller) {
+            return Err(format!(
+                "Canceller {} is not authorized for governance proposal approval authority {}",
+                canceller.to_base58(),
+                approval_authority.to_base58()
+            ));
+        }
+
+        proposal.cancelled = true;
+        self.b_set_governance_proposal(&proposal)
+            .map_err(|e| format!("Failed to update governance proposal: {}", e))?;
+        self.emit_governance_proposal_event("GovernanceProposalCancelled", &proposal, &canceller)?;
         Ok(())
     }
 
@@ -3846,8 +5413,24 @@ impl TxProcessor {
         let abi: crate::ContractAbi =
             serde_json::from_slice(abi_bytes).map_err(|e| format!("Invalid ABI format: {}", e))?;
 
+        if self.contract_owner_requires_governance_flow(&owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)"
+                    .to_string(),
+            );
+        }
+
+        self.set_contract_abi_as_owner(&owner, &contract_id, abi)
+    }
+
+    fn set_contract_abi_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_id: &Pubkey,
+        abi: ContractAbi,
+    ) -> Result<(), String> {
         let mut account = self
-            .b_get_account(&contract_id)?
+            .b_get_account(contract_id)?
             .ok_or_else(|| "Contract not found".to_string())?;
         if !account.executable {
             return Err("Account is not a contract".to_string());
@@ -3856,8 +5439,7 @@ impl TxProcessor {
         let mut contract: crate::ContractAccount = serde_json::from_slice(&account.data)
             .map_err(|e| format!("Failed to decode contract: {}", e))?;
 
-        // Verify caller is the contract deployer/owner
-        if contract.owner != owner {
+        if contract.owner != *owner {
             return Err(format!(
                 "Only the contract deployer ({}) can set the ABI",
                 contract.owner.to_base58()
@@ -3867,9 +5449,7 @@ impl TxProcessor {
         contract.abi = Some(abi);
         account.data = serde_json::to_vec(&contract)
             .map_err(|e| format!("Failed to serialize contract: {}", e))?;
-        self.b_put_account(&contract_id, &account)?;
-
-        Ok(())
+        self.b_put_account(contract_id, &account)
     }
 
     /// H16 fix: Faucet airdrop through consensus (instruction type 19).
@@ -4571,58 +6151,22 @@ impl TxProcessor {
             .get_governance_authority()?
             .ok_or("GovernanceParamChange: no governance authority configured")?;
 
+        if self.state.get_governed_wallet_config(&authority)?.is_some() {
+            return Err(
+                "GovernanceParamChange: governed governance authority must use governance action proposal flow (use types 34-37)".to_string(),
+            );
+        }
+
         if signer != authority {
             return Err(
                 "GovernanceParamChange: signer is not the governance authority".to_string(),
             );
         }
 
-        // Validate param_id and value ranges
-        match param_id {
-            GOV_PARAM_BASE_FEE => {
-                // base_fee must be > 0 (anti-spam) and <= 1 LICN
-                if value == 0 || value > 1_000_000_000 {
-                    return Err(
-                        "GovernanceParamChange: base_fee must be 1..=1_000_000_000 spores"
-                            .to_string(),
-                    );
-                }
-            }
-            GOV_PARAM_FEE_BURN_PERCENT
-            | GOV_PARAM_FEE_PRODUCER_PERCENT
-            | GOV_PARAM_FEE_VOTERS_PERCENT
-            | GOV_PARAM_FEE_TREASURY_PERCENT
-            | GOV_PARAM_FEE_COMMUNITY_PERCENT => {
-                if value > 100 {
-                    return Err("GovernanceParamChange: fee percentage must be 0..=100".to_string());
-                }
-            }
-            GOV_PARAM_MIN_VALIDATOR_STAKE => {
-                // Minimum 1 LICN, maximum 1,000,000 LICN
-                if !(1_000_000_000..=1_000_000_000_000_000_000).contains(&value) {
-                    return Err(
-                        "GovernanceParamChange: min_validator_stake out of range".to_string()
-                    );
-                }
-            }
-            GOV_PARAM_EPOCH_SLOTS => {
-                // Minimum 1,000 slots (~6.7 min at 400ms), maximum 10,000,000 slots (~46 days)
-                if !(1_000..=10_000_000).contains(&value) {
-                    return Err(
-                        "GovernanceParamChange: epoch_slots must be 1_000..=10_000_000".to_string(),
-                    );
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "GovernanceParamChange: unknown param_id {}",
-                    param_id
-                ));
-            }
-        }
+        self.validate_governance_param_change(param_id, value)?;
 
         // Queue the change
-        self.state.queue_governance_param_change(param_id, value)?;
+        self.b_queue_governance_param_change(param_id, value)?;
 
         Ok(())
     }
@@ -4907,8 +6451,31 @@ impl TxProcessor {
             return Err("Call requires caller and contract accounts".to_string());
         }
 
-        let caller = &ix.accounts[0];
-        let contract_address = &ix.accounts[1];
+        let caller = ix.accounts[0];
+        let contract_address = ix.accounts[1];
+
+        if matches!(
+            self.get_governed_governance_authority()?,
+            Some((authority, _)) if authority == caller
+        ) {
+            return Err(
+                "Governed governance authority must use governance action proposal flow (use types 34-37)"
+                    .to_string(),
+            );
+        }
+
+        self.contract_call_as_caller(&caller, &contract_address, &function, &args, value)
+    }
+
+    fn contract_call_as_caller(
+        &self,
+        caller: &Pubkey,
+        contract_address: &Pubkey,
+        function: &str,
+        args: &[u8],
+        value: u64,
+    ) -> Result<(), String> {
+        let args = args.to_vec();
 
         let account = self
             .b_get_account(contract_address)?
@@ -4997,7 +6564,7 @@ impl TxProcessor {
         }
 
         let mut runtime = ContractRuntime::get_pooled();
-        let result = runtime.execute(&contract, &function, &context.args.clone(), context)?;
+        let result = runtime.execute(&contract, function, &context.args.clone(), context)?;
 
         // Return runtime to thread-local pool for reuse
         runtime.return_to_pool();
@@ -5888,6 +7455,13 @@ impl TxProcessor {
         Ok(())
     }
 
+    fn contract_owner_requires_governance_flow(&self, owner: &Pubkey) -> Result<bool, String> {
+        Ok(matches!(
+            self.get_governed_governance_authority()?,
+            Some((authority, _)) if authority == *owner
+        ))
+    }
+
     /// Upgrade contract (owner only).
     /// If the contract has a timelock, the upgrade is staged rather than applied
     /// immediately. Without a timelock, behaviour is unchanged (instant upgrade).
@@ -5899,6 +7473,21 @@ impl TxProcessor {
         let owner = &ix.accounts[0];
         let contract_address = &ix.accounts[1];
 
+        if self.contract_owner_requires_governance_flow(owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)".to_string(),
+            );
+        }
+
+        self.contract_upgrade_as_owner(owner, contract_address, new_code)
+    }
+
+    fn contract_upgrade_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_address: &Pubkey,
+        new_code: Vec<u8>,
+    ) -> Result<(), String> {
         let account = self
             .b_get_account(contract_address)?
             .ok_or("Contract not found")?;
@@ -5970,6 +7559,21 @@ impl TxProcessor {
         let owner = &ix.accounts[0];
         let contract_address = &ix.accounts[1];
 
+        if self.contract_owner_requires_governance_flow(owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)".to_string(),
+            );
+        }
+
+        self.contract_set_upgrade_timelock_as_owner(owner, contract_address, epochs)
+    }
+
+    fn contract_set_upgrade_timelock_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_address: &Pubkey,
+        epochs: u32,
+    ) -> Result<(), String> {
         let account = self
             .b_get_account(contract_address)?
             .ok_or("Contract not found")?;
@@ -6009,6 +7613,20 @@ impl TxProcessor {
         let owner = &ix.accounts[0];
         let contract_address = &ix.accounts[1];
 
+        if self.contract_owner_requires_governance_flow(owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)".to_string(),
+            );
+        }
+
+        self.contract_execute_upgrade_as_owner(owner, contract_address)
+    }
+
+    fn contract_execute_upgrade_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_address: &Pubkey,
+    ) -> Result<(), String> {
         let account = self
             .b_get_account(contract_address)?
             .ok_or("Contract not found")?;
@@ -6067,10 +7685,28 @@ impl TxProcessor {
             .get_governance_authority()?
             .ok_or("No governance authority configured")?;
 
+        if self
+            .state
+            .get_governed_wallet_config(&governance_authority)?
+            .is_some()
+        {
+            return Err(
+                "Governed governance authority must use governance action proposal flow (use types 34-37)".to_string(),
+            );
+        }
+
         if *signer != governance_authority {
             return Err("Only governance authority can veto upgrades".to_string());
         }
 
+        self.contract_veto_upgrade_as_authority(signer, contract_address)
+    }
+
+    fn contract_veto_upgrade_as_authority(
+        &self,
+        authority: &Pubkey,
+        contract_address: &Pubkey,
+    ) -> Result<(), String> {
         let account = self
             .b_get_account(contract_address)?
             .ok_or("Contract not found")?;
@@ -6080,6 +7716,14 @@ impl TxProcessor {
 
         if contract.pending_upgrade.is_none() {
             return Err("No pending upgrade to veto".to_string());
+        }
+
+        let governance_authority = self
+            .state
+            .get_governance_authority()?
+            .ok_or("No governance authority configured")?;
+        if *authority != governance_authority {
+            return Err("Only governance authority can veto upgrades".to_string());
         }
 
         contract.pending_upgrade = None;
@@ -6103,6 +7747,22 @@ impl TxProcessor {
         let contract_address = &ix.accounts[1];
         let destination = &ix.accounts[2];
 
+        if self.contract_owner_requires_governance_flow(owner)? {
+            return Err(
+                "Governed contract owner must use governance action proposal flow (use types 34-37)"
+                    .to_string(),
+            );
+        }
+
+        self.contract_close_as_owner(owner, contract_address, destination)
+    }
+
+    fn contract_close_as_owner(
+        &self,
+        owner: &Pubkey,
+        contract_address: &Pubkey,
+        destination: &Pubkey,
+    ) -> Result<(), String> {
         let account = self
             .b_get_account(contract_address)?
             .ok_or("Contract not found")?;
@@ -6114,9 +7774,6 @@ impl TxProcessor {
             return Err("Only contract owner can close".to_string());
         }
 
-        // T2.10 fix: Refuse to close if staked or locked balance exists.
-        // Those balances follow their own lifecycle (unstake cooldown, etc.)
-        // and must be claimed before the contract can be closed.
         if account.staked > 0 {
             return Err(format!(
                 "Cannot close contract with {} staked spores — unstake first",
@@ -6130,19 +7787,15 @@ impl TxProcessor {
             ));
         }
 
-        // Transfer only spendable balance (not staked/locked) to destination
         let spendable = account.spendable;
         if spendable > 0 {
             self.b_transfer(contract_address, destination, spendable)?;
         }
 
-        // Mark contract as non-executable and clear code data
         let mut closed_account = self.b_get_account(contract_address)?.unwrap_or(account);
         closed_account.executable = false;
         closed_account.data = Vec::new();
-        self.b_put_account(contract_address, &closed_account)?;
-
-        Ok(())
+        self.b_put_account(contract_address, &closed_account)
     }
 
     fn apply_rent(&self, tx: &Transaction) -> Result<(), String> {
@@ -6372,6 +8025,26 @@ mod tests {
             treasury,
             genesis_hash,
         )
+    }
+
+    fn advance_test_slot(state: &StateStore, slot: u64) -> Hash {
+        let parent_hash = state
+            .get_block_by_slot(state.get_last_slot().unwrap())
+            .unwrap()
+            .map(|block| block.hash())
+            .unwrap_or_default();
+        let block = crate::Block::new_with_timestamp(
+            slot,
+            parent_hash,
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            slot,
+        );
+        let blockhash = block.hash();
+        state.put_block(&block).unwrap();
+        state.set_last_slot(slot).unwrap();
+        blockhash
     }
 
     /// Helper: build and sign a transfer tx
@@ -8644,6 +10317,170 @@ mod tests {
         state.put_account(&contract_id, &acct).unwrap();
     }
 
+    fn register_contract_symbol_for_test(
+        state: &StateStore,
+        owner: Pubkey,
+        contract_id: Pubkey,
+        symbol: &str,
+    ) {
+        state
+            .register_symbol(
+                symbol,
+                SymbolRegistryEntry {
+                    symbol: symbol.to_string(),
+                    program: contract_id,
+                    owner,
+                    name: Some(symbol.to_string()),
+                    template: Some("contract".to_string()),
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .unwrap();
+    }
+
+    fn configure_incident_guardian_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let guardian_authority =
+            crate::multisig::derive_incident_guardian_authority(&governance_authority);
+        state
+            .set_incident_guardian_authority(&guardian_authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &guardian_authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::INCIDENT_GUARDIAN_LABEL,
+                ),
+            )
+            .unwrap();
+        guardian_authority
+    }
+
+    fn configure_treasury_executor_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let authority = crate::multisig::derive_treasury_executor_authority(&governance_authority);
+        state.set_treasury_executor_authority(&authority).unwrap();
+        state
+            .set_governed_wallet_config(
+                &authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::TREASURY_EXECUTOR_LABEL,
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        authority
+    }
+
+    fn configure_bridge_committee_admin_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let authority =
+            crate::multisig::derive_bridge_committee_admin_authority(&governance_authority);
+        state
+            .set_bridge_committee_admin_authority(&authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::BRIDGE_COMMITTEE_ADMIN_LABEL,
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        authority
+    }
+
+    fn configure_oracle_committee_admin_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let authority =
+            crate::multisig::derive_oracle_committee_admin_authority(&governance_authority);
+        state
+            .set_oracle_committee_admin_authority(&authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::ORACLE_COMMITTEE_ADMIN_LABEL,
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        authority
+    }
+
+    fn configure_upgrade_proposer_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let authority = crate::multisig::derive_upgrade_proposer_authority(&governance_authority);
+        state.set_upgrade_proposer_authority(&authority).unwrap();
+        state
+            .set_governed_wallet_config(
+                &authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::UPGRADE_PROPOSER_LABEL,
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        authority
+    }
+
+    fn configure_upgrade_veto_guardian_for_test(
+        state: &StateStore,
+        governance_authority: Pubkey,
+        threshold: u8,
+        signers: Vec<Pubkey>,
+    ) -> Pubkey {
+        let authority =
+            crate::multisig::derive_upgrade_veto_guardian_authority(&governance_authority);
+        state
+            .set_upgrade_veto_guardian_authority(&authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    signers,
+                    crate::multisig::UPGRADE_VETO_GUARDIAN_LABEL,
+                ),
+            )
+            .unwrap();
+        authority
+    }
+
     #[test]
     fn test_register_symbol_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -9043,6 +10880,312 @@ mod tests {
             state.get_balance(&recipient).unwrap(),
             transfer_amount,
             "Recipient should have received the transfer"
+        );
+    }
+
+    #[test]
+    fn test_governed_proposal_timelock_requires_execute() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let eco_kp = Keypair::generate();
+        let eco = eco_kp.pubkey();
+        let recipient = Pubkey([98u8; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&eco, &Account::new(fund, Pubkey([0u8; 32])))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let config = crate::multisig::GovernedWalletConfig::new(
+            2,
+            vec![alice, bob, eco],
+            "community_treasury",
+        )
+        .with_timelock(1);
+        state.set_governed_wallet_config(&eco, &config).unwrap();
+
+        let transfer_amount = Account::licn_to_spores(25);
+
+        let mut propose_data = vec![21u8];
+        propose_data.extend_from_slice(&transfer_amount.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, eco, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &Pubkey([42u8; 32]));
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
+
+        let mut approve_data = vec![22u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &Pubkey([42u8; 32]));
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed, "Proposal should remain timelocked");
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+
+        let mut execute_data = vec![32u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &Pubkey([42u8; 32]));
+        assert!(
+            !result.success,
+            "Execution should fail before timelock expires"
+        );
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &Pubkey([42u8; 32]));
+        assert!(
+            result.success,
+            "Execution should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(
+            proposal.executed,
+            "Proposal should be executed after timelock"
+        );
+        assert_eq!(state.get_balance(&recipient).unwrap(), transfer_amount);
+    }
+
+    #[test]
+    fn test_governed_transfer_velocity_policy_rejects_amount_over_cap() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let governed_wallet = Pubkey([0x71; 32]);
+        let recipient = Pubkey([0x72; 32]);
+
+        state
+            .put_account(&governed_wallet, &Account::new(1_000, governed_wallet))
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &governed_wallet,
+                &crate::multisig::GovernedWalletConfig::new(
+                    1,
+                    vec![alice],
+                    "ecosystem_partnerships",
+                )
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::new(50, 100, 0, 0, 0, 0),
+                ),
+            )
+            .unwrap();
+
+        let mut propose_data = vec![21u8];
+        propose_data.extend_from_slice(&60u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, governed_wallet, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("per-transfer cap"));
+    }
+
+    #[test]
+    fn test_governed_transfer_velocity_policy_snapshots_escalation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let governed_wallet = Pubkey([0x73; 32]);
+        let recipient = Pubkey([0x74; 32]);
+
+        state.put_account(&bob, &Account::new(1_000, bob)).unwrap();
+        state
+            .put_account(&governed_wallet, &Account::new(1_000, governed_wallet))
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &governed_wallet,
+                &crate::multisig::GovernedWalletConfig::new(
+                    1,
+                    vec![alice, bob],
+                    "community_treasury",
+                )
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::new(200, 200, 50, 90, 1, 3),
+                ),
+            )
+            .unwrap();
+
+        let mut propose_data = vec![21u8];
+        propose_data.extend_from_slice(&60u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, governed_wallet, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(result.success, "proposal failed: {:?}", result.error);
+
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.threshold, 2);
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert_eq!(
+            proposal.velocity_tier,
+            crate::multisig::GovernedTransferVelocityTier::Elevated
+        );
+        assert_eq!(proposal.daily_cap_spores, 200);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![22u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(result.success, "approval failed: {:?}", result.error);
+        assert!(!state.get_governed_proposal(1).unwrap().unwrap().executed);
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let mut execute_data = vec![32u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(result.success, "execution failed: {:?}", result.error);
+        assert_eq!(state.get_balance(&recipient).unwrap(), 60);
+    }
+
+    #[test]
+    fn test_governed_transfer_daily_cap_defers_until_next_day() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let governed_wallet = Pubkey([0x75; 32]);
+        let first_recipient = Pubkey([0x76; 32]);
+        let second_recipient = Pubkey([0x77; 32]);
+
+        state
+            .put_account(&governed_wallet, &Account::new(1_000, governed_wallet))
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &governed_wallet,
+                &crate::multisig::GovernedWalletConfig::new(1, vec![alice], "community_treasury")
+                    .with_transfer_velocity_policy(
+                        crate::multisig::GovernedTransferVelocityPolicy::new(200, 100, 0, 0, 0, 0),
+                    ),
+            )
+            .unwrap();
+
+        let mut first_propose_data = vec![21u8];
+        first_propose_data.extend_from_slice(&60u64.to_le_bytes());
+        let first_propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, governed_wallet, first_recipient],
+            data: first_propose_data,
+        };
+        let first_propose_tx = make_signed_tx(&alice_kp, first_propose_ix, genesis_hash);
+        let result = processor.process_transaction(&first_propose_tx, &validator);
+        assert!(result.success, "first transfer failed: {:?}", result.error);
+        assert!(state.get_governed_proposal(1).unwrap().unwrap().executed);
+
+        let mut second_propose_data = vec![21u8];
+        second_propose_data.extend_from_slice(&50u64.to_le_bytes());
+        let second_propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, governed_wallet, second_recipient],
+            data: second_propose_data,
+        };
+        let second_propose_tx = make_signed_tx(&alice_kp, second_propose_ix, genesis_hash);
+        let result = processor.process_transaction(&second_propose_tx, &validator);
+        assert!(result.success, "second proposal failed: {:?}", result.error);
+
+        let second_proposal = state.get_governed_proposal(2).unwrap().unwrap();
+        assert!(!second_proposal.executed);
+        assert_eq!(state.get_balance(&second_recipient).unwrap(), 0);
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&governed_wallet, 0)
+                .unwrap(),
+            60
+        );
+
+        let mut execute_data = vec![32u8];
+        execute_data.extend_from_slice(&2u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("daily cap"));
+
+        let fresh_blockhash = advance_test_slot(&state, SECONDS_PER_DAY);
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "deferred execute failed: {:?}",
+            result.error
+        );
+        assert!(state.get_governed_proposal(2).unwrap().unwrap().executed);
+        assert_eq!(state.get_balance(&second_recipient).unwrap(), 50);
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&governed_wallet, 1)
+                .unwrap(),
+            50
         );
     }
 
@@ -10162,6 +12305,363 @@ mod tests {
         assert_eq!(pending[0], (GOV_PARAM_BASE_FEE, 3_000_000));
     }
 
+    #[test]
+    fn test_governance_param_change_via_governed_authority_proposal_flow() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+
+        let direct_ix = make_gov_param_ix(gov, GOV_PARAM_BASE_FEE, 2_000_000);
+        let direct_msg = crate::transaction::Message::new(vec![direct_ix], genesis_hash);
+        let mut direct_tx = Transaction::new(direct_msg);
+        direct_tx
+            .signatures
+            .push(gov_kp.sign(&direct_tx.message.serialize()));
+        let direct_result = processor.process_transaction(&direct_tx, &validator);
+        assert!(!direct_result.success);
+        assert!(direct_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_PARAM_CHANGE, GOV_PARAM_BASE_FEE];
+        propose_data.extend_from_slice(&2_000_000u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.action_label, "governance_param_change");
+        assert_eq!(proposal.approval_authority, None);
+        assert!(!proposal.executed);
+        assert_eq!(proposal.execute_after_epoch, 1);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
+        assert!(state.get_pending_governance_changes().unwrap().is_empty());
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "Execution should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        let pending = state.get_pending_governance_changes().unwrap();
+        assert_eq!(pending, vec![(GOV_PARAM_BASE_FEE, 2_000_000)]);
+    }
+
+    #[test]
+    fn test_governance_treasury_transfer_velocity_policy_snapshots_escalation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let carol_kp = Keypair::generate();
+        let carol = carol_kp.pubkey();
+        let gov = Pubkey([0x81; 32]);
+        let recipient = Pubkey([0x82; 32]);
+
+        state.put_account(&bob, &Account::new(1_000, bob)).unwrap();
+        state
+            .put_account(&carol, &Account::new(1_000, carol))
+            .unwrap();
+        state.put_account(&gov, &Account::new(1_000, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    1,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5)
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::new(200, 200, 50, 90, 1, 3),
+                ),
+            )
+            .unwrap();
+        let treasury_authority =
+            configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob, carol]);
+
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        propose_data.extend_from_slice(&60u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(result.success, "proposal failed: {:?}", result.error);
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(treasury_authority));
+        assert_eq!(proposal.threshold, 3);
+        assert_eq!(proposal.execute_after_epoch, 2);
+        assert_eq!(
+            proposal.velocity_tier,
+            crate::multisig::GovernedTransferVelocityTier::Elevated
+        );
+        assert_eq!(proposal.daily_cap_spores, 200);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(result.success, "approval failed: {:?}", result.error);
+        assert!(!state.get_governance_proposal(1).unwrap().unwrap().executed);
+
+        let mut final_approve_data = vec![35u8];
+        final_approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let final_approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![carol],
+            data: final_approve_data,
+        };
+        let final_approve_tx = make_signed_tx(&carol_kp, final_approve_ix, genesis_hash);
+        let result = processor.process_transaction(&final_approve_tx, &validator);
+        assert!(result.success, "final approval failed: {:?}", result.error);
+        assert!(!state.get_governance_proposal(1).unwrap().unwrap().executed);
+
+        let mid_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, mid_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, 2 * SLOTS_PER_EPOCH);
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(result.success, "execution failed: {:?}", result.error);
+        assert_eq!(state.get_balance(&recipient).unwrap(), 60);
+    }
+
+    #[test]
+    fn test_governance_treasury_daily_cap_defers_until_next_day() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let gov = Pubkey([0x83; 32]);
+        let first_recipient = Pubkey([0x84; 32]);
+        let second_recipient = Pubkey([0x85; 32]);
+        let treasury_authority = crate::multisig::derive_treasury_executor_authority(&gov);
+
+        state.put_account(&gov, &Account::new(1_000, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(1, vec![alice], "community_treasury")
+                    .with_transfer_velocity_policy(
+                        crate::multisig::GovernedTransferVelocityPolicy::new(200, 100, 0, 0, 0, 0),
+                    ),
+            )
+            .unwrap();
+        state
+            .set_treasury_executor_authority(&treasury_authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &treasury_authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    1,
+                    vec![alice],
+                    crate::multisig::TREASURY_EXECUTOR_LABEL,
+                ),
+            )
+            .unwrap();
+
+        let mut first_propose_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        first_propose_data.extend_from_slice(&60u64.to_le_bytes());
+        let first_propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, first_recipient],
+            data: first_propose_data,
+        };
+        let first_propose_tx = make_signed_tx(&alice_kp, first_propose_ix, genesis_hash);
+        let result = processor.process_transaction(&first_propose_tx, &validator);
+        assert!(result.success, "first transfer failed: {:?}", result.error);
+        assert!(state.get_governance_proposal(1).unwrap().unwrap().executed);
+
+        let mut second_propose_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        second_propose_data.extend_from_slice(&50u64.to_le_bytes());
+        let second_propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, second_recipient],
+            data: second_propose_data,
+        };
+        let second_propose_tx = make_signed_tx(&alice_kp, second_propose_ix, genesis_hash);
+        let result = processor.process_transaction(&second_propose_tx, &validator);
+        assert!(result.success, "second proposal failed: {:?}", result.error);
+
+        let second_proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert!(!second_proposal.executed);
+        assert_eq!(state.get_balance(&second_recipient).unwrap(), 0);
+        assert_eq!(state.get_governed_transfer_day_volume(&gov, 0).unwrap(), 60);
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&2u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("daily cap"));
+
+        let fresh_blockhash = advance_test_slot(&state, SECONDS_PER_DAY);
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "deferred execute failed: {:?}",
+            result.error
+        );
+        assert!(state.get_governance_proposal(2).unwrap().unwrap().executed);
+        assert_eq!(state.get_balance(&second_recipient).unwrap(), 50);
+        assert_eq!(state.get_governed_transfer_day_volume(&gov, 1).unwrap(), 50);
+    }
+
+    #[test]
+    fn test_governance_treasury_transfer_rejects_general_governance_authority_when_split_is_configured(
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0xA7; 32]);
+        let gov = Pubkey([0xA8; 32]);
+        let recipient = Pubkey([0xA9; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::community_treasury_defaults(),
+                ),
+            )
+            .unwrap();
+        configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        propose_data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains(
+            "Protocol fund movement governance actions must use the treasury executor approval authority"
+        ));
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Compute-unit metering tests (Task 2.12)
     // ──────────────────────────────────────────────────────────────
@@ -10700,15 +13200,15 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────────
 
     /// Helper: deploy a minimal WASM contract and return the contract address and loaded ContractAccount.
-    fn deploy_test_contract(
+    fn deploy_test_contract_with_code(
         processor: &TxProcessor,
         state: &StateStore,
         deployer_kp: &crate::Keypair,
         deployer: Pubkey,
+        code: Vec<u8>,
         genesis_hash: Hash,
         validator: &Pubkey,
     ) -> Pubkey {
-        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let code_hash = Hash::hash(&code);
         let mut addr_bytes = [0u8; 32];
         addr_bytes[..16].copy_from_slice(&deployer.0[..16]);
@@ -10730,9 +13230,43 @@ mod tests {
             .push(deployer_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, validator);
         assert!(result.success, "deploy should succeed: {:?}", result.error);
-        // Verify created
+
         let acct = state.get_account(&contract_addr).unwrap();
         assert!(acct.is_some() && acct.unwrap().executable);
+        contract_addr
+    }
+
+    fn deploy_test_contract(
+        processor: &TxProcessor,
+        state: &StateStore,
+        deployer_kp: &crate::Keypair,
+        deployer: Pubkey,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+    ) -> Pubkey {
+        deploy_test_contract_with_code(
+            processor,
+            state,
+            deployer_kp,
+            deployer,
+            vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00],
+            genesis_hash,
+            validator,
+        )
+    }
+
+    fn install_test_contract_account(state: &StateStore, owner: Pubkey, code: Vec<u8>) -> Pubkey {
+        let code_hash = Hash::hash(&code);
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[..16].copy_from_slice(&owner.0[..16]);
+        addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+        let contract_addr = Pubkey(addr_bytes);
+
+        let contract = crate::ContractAccount::new(code, owner);
+        let mut account = Account::new(0, contract_addr);
+        account.data = serde_json::to_vec(&contract).unwrap();
+        account.executable = true;
+        state.put_account(&contract_addr, &account).unwrap();
         contract_addr
     }
 
@@ -10764,6 +13298,207 @@ mod tests {
         vec![
             0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, tag,
         ]
+    }
+
+    fn governance_test_contract_code() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (import "env" "storage_write" (func $storage_write (param i32 i32 i32 i32) (result i32)))
+                (import "env" "get_caller" (func $get_caller (param i32) (result i32)))
+                (import "env" "get_args_len" (func $get_args_len (result i32)))
+                (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "last_caller")
+                (data (i32.const 16) "last_args")
+                (func $record_call_impl
+                    (local $args_len i32)
+                    (drop (call $get_caller (i32.const 64)))
+                    (drop (call $storage_write (i32.const 0) (i32.const 11) (i32.const 64) (i32.const 32)))
+                    (local.set $args_len (call $get_args_len))
+                    (drop (call $get_args (i32.const 96) (local.get $args_len)))
+                    (drop (call $storage_write (i32.const 16) (i32.const 9) (i32.const 96) (local.get $args_len))))
+                (func (export "record_call")
+                    (call $record_call_impl))
+                (func (export "add_bridge_validator")
+                    (call $record_call_impl))
+                (func (export "set_required_confirmations")
+                    (call $record_call_impl))
+                (func (export "set_request_timeout")
+                    (call $record_call_impl))
+                (func (export "add_price_feeder")
+                    (call $record_call_impl))
+                (func (export "set_authorized_attester")
+                    (call $record_call_impl))
+                (func (export "mb_pause")
+                    (call $record_call_impl))
+                (func (export "mb_unpause")
+                    (call $record_call_impl))
+                (func (export "cv_pause")
+                    (call $record_call_impl))
+                (func (export "cv_unpause")
+                    (call $record_call_impl))
+                (func (export "ms_pause")
+                    (call $record_call_impl))
+                (func (export "ms_unpause")
+                    (call $record_call_impl))
+                (func (export "pause")
+                    (call $record_call_impl))
+                (func (export "unpause")
+                    (call $record_call_impl))
+                (func (export "bb_pause")
+                    (call $record_call_impl))
+                (func (export "bb_unpause")
+                    (call $record_call_impl))
+                (func (export "emergency_pause")
+                    (call $record_call_impl))
+                (func (export "emergency_unpause")
+                    (call $record_call_impl))
+                (func (export "pause_pair")
+                    (call $record_call_impl))
+                (func (export "call")
+                    (call $record_call_impl))
+            )"#,
+        )
+        .expect("governance test contract should compile")
+    }
+
+    fn assert_governed_committee_contract_call_requires_proposal(
+        function: &str,
+        call_args: Vec<u8>,
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Call {
+                function: function.to_string(),
+                args: call_args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data(function, &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approval_authority, None);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "Execution should succeed: {:?}",
+            result.error
+        );
+
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            call_args
+        );
+    }
+
+    fn make_governance_contract_call_data(function: &str, args: &[u8], value: u64) -> Vec<u8> {
+        let function_bytes = function.as_bytes();
+        assert!(u16::try_from(function_bytes.len()).is_ok());
+        let mut data = vec![34u8, GOVERNANCE_ACTION_CONTRACT_CALL];
+        data.extend_from_slice(&value.to_le_bytes());
+        data.extend_from_slice(&(function_bytes.len() as u16).to_le_bytes());
+        data.extend_from_slice(function_bytes);
+        data.extend_from_slice(&(args.len() as u32).to_le_bytes());
+        data.extend_from_slice(args);
+        data
     }
 
     #[test]
@@ -10867,6 +13602,2196 @@ mod tests {
         assert_eq!(ca.version, 2, "Version should be bumped immediately");
         assert!(ca.pending_upgrade.is_none());
         assert_eq!(ca.code, new_code);
+    }
+
+    #[test]
+    fn test_contract_upgrade_uses_split_upgrade_proposer_when_owner_is_governed() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        let upgrade_authority =
+            configure_upgrade_proposer_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            deploy_test_contract(&processor, &state, &gov_kp, gov, genesis_hash, &validator);
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x22),
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let code = valid_wasm_code(0x23);
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_CONTRACT_UPGRADE];
+        propose_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        propose_data.extend_from_slice(&code);
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, upgrade_authority, contract_addr],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(upgrade_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "Execution should succeed: {:?}",
+            result.error
+        );
+
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert_eq!(ca.version, 2);
+        assert!(ca.pending_upgrade.is_none());
+        assert_eq!(ca.code, code);
+    }
+
+    #[test]
+    fn test_contract_upgrade_rejects_general_governance_authority_when_split_is_configured() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x34; 32]);
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        configure_upgrade_proposer_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            deploy_test_contract(&processor, &state, &gov_kp, gov, genesis_hash, &validator);
+        let code = valid_wasm_code(0x24);
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_CONTRACT_UPGRADE];
+        propose_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        propose_data.extend_from_slice(&code);
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result.error.as_deref().unwrap_or("").contains(
+            "Upgrade governance actions must use the upgrade proposer approval authority"
+        ));
+    }
+
+    #[test]
+    fn test_contract_call_requires_governance_proposal_when_authority_is_governed() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        let call_args = b"pause".to_vec();
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: call_args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("record_call", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            result.success,
+            "Execution should succeed: {:?}",
+            result.error
+        );
+
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            call_args
+        );
+    }
+
+    #[test]
+    fn test_generic_admin_and_authority_rotation_contract_calls_remain_on_cold_governance_root() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x47; 32]);
+        let gov = Pubkey([0x48; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let treasury_authority =
+            configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_upgrade_proposer_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_upgrade_veto_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let admin_contract =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, admin_contract, "DEXREWARDS");
+
+        let mut admin_args = vec![0u8; 65];
+        admin_args[32] = 0x11;
+        admin_args[64] = 1;
+        let admin_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, admin_contract],
+            data: make_governance_contract_call_data("set_authorized_caller", &admin_args, 0),
+        };
+        let admin_tx = make_signed_tx(&alice_kp, admin_ix, genesis_hash);
+        let admin_result = processor.process_transaction(&admin_tx, &validator);
+        assert!(
+            admin_result.success,
+            "Generic admin proposal should stay on cold governance root: {:?}",
+            admin_result.error
+        );
+
+        let admin_proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(admin_proposal.authority, gov);
+        assert_eq!(admin_proposal.approval_authority, None);
+        assert_eq!(admin_proposal.execute_after_epoch, 5);
+
+        let rotation_contract =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, rotation_contract, "LUSD");
+
+        let mut rotation_args = vec![0u8; 64];
+        rotation_args[32] = 0x22;
+        let rotation_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, rotation_contract],
+            data: make_governance_contract_call_data("transfer_admin", &rotation_args, 0),
+        };
+        let rotation_tx = make_signed_tx(&alice_kp, rotation_ix, genesis_hash);
+        let rotation_result = processor.process_transaction(&rotation_tx, &validator);
+        assert!(
+            rotation_result.success,
+            "Authority rotation proposal should stay on cold governance root: {:?}",
+            rotation_result.error
+        );
+
+        let rotation_proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(rotation_proposal.authority, gov);
+        assert_eq!(rotation_proposal.approval_authority, None);
+        assert_eq!(rotation_proposal.execute_after_epoch, 5);
+
+        let wrong_role_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, rotation_contract],
+            data: make_governance_contract_call_data("transfer_admin", &rotation_args, 0),
+        };
+        let wrong_role_tx = make_signed_tx(&alice_kp, wrong_role_ix, genesis_hash);
+        let wrong_role_result = processor.process_transaction(&wrong_role_tx, &validator);
+        assert!(!wrong_role_result.success);
+        assert!(wrong_role_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Governance action authority account mismatch"));
+    }
+
+    #[test]
+    fn test_allowlisted_emergency_pause_contract_call_uses_incident_guardian_without_timelock() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xB1; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "BRIDGE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, guardian_authority, contract_addr],
+            data: make_governance_contract_call_data("mb_pause", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(guardian_authority));
+        assert_eq!(proposal.execute_after_epoch, 0);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute the pause immediately: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+    }
+
+    #[test]
+    fn test_allowlisted_emergency_pause_contract_call_stays_timelocked_on_governance_authority() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xB4; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "BRIDGE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("mb_pause", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+        assert_eq!(proposal.execute_after_epoch, 5);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should keep the proposal pending behind the governance timelock: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+    }
+
+    #[test]
+    fn test_non_allowlisted_emergency_pause_contract_call_stays_timelocked() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xB2; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "LUSD");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("emergency_pause", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.execute_after_epoch, 5);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should keep the proposal pending behind the timelock: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+    }
+
+    #[test]
+    fn test_incident_guardian_rejects_non_allowlisted_contract_call() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x35; 32]);
+        let gov = Pubkey([0xB5; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "LUSD");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, guardian_authority, contract_addr],
+            data: make_governance_contract_call_data("emergency_pause", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Incident guardian authority may only submit allowlisted immediate risk-reduction proposals"));
+    }
+
+    #[test]
+    fn test_allowlisted_unpause_contract_call_remains_timelocked() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xB3; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "BRIDGE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("mb_unpause", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.execute_after_epoch, 5);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should leave unpause behind the timelock: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+    }
+
+    #[test]
+    fn test_bridge_committee_admin_contract_call_uses_split_approval_authority_and_timelock() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xB8; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let bridge_authority =
+            configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "BRIDGE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, bridge_authority, contract_addr],
+            data: make_governance_contract_call_data("set_required_confirmations", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(bridge_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should leave the proposal behind the committee timelock: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+    }
+
+    #[test]
+    fn test_bridge_committee_admin_contract_call_rejects_governance_authority_direct_path() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x36; 32]);
+        let gov = Pubkey([0xB9; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "BRIDGE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("set_request_timeout", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result.error.as_deref().unwrap_or("").contains(
+            "Bridge governance actions must use the bridge committee admin approval authority"
+        ));
+    }
+
+    #[test]
+    fn test_oracle_committee_admin_contract_call_uses_split_approval_authority_and_timelock() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xBA; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let oracle_authority =
+            configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "ORACLE");
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, oracle_authority, contract_addr],
+            data: make_governance_contract_call_data("set_authorized_attester", &[], 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(oracle_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should leave the proposal behind the committee timelock: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+    }
+
+    #[test]
+    fn test_upgrade_governance_actions_use_split_role_policies() {
+        let (processor, _state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let contract = Pubkey([0xBD; 32]);
+
+        assert!(
+            processor.governance_action_requires_upgrade_proposer_policy(
+                &GovernanceAction::ContractUpgrade {
+                    contract,
+                    code: vec![1, 2, 3],
+                }
+            )
+        );
+        assert!(
+            processor.governance_action_requires_upgrade_proposer_policy(
+                &GovernanceAction::SetContractUpgradeTimelock {
+                    contract,
+                    epochs: 2,
+                }
+            )
+        );
+        assert!(
+            processor.governance_action_requires_upgrade_proposer_policy(
+                &GovernanceAction::ExecuteContractUpgrade { contract }
+            )
+        );
+        assert!(
+            !processor.governance_action_requires_upgrade_proposer_policy(
+                &GovernanceAction::VetoContractUpgrade { contract }
+            )
+        );
+        assert!(
+            processor.governance_action_requires_upgrade_veto_guardian_policy(
+                &GovernanceAction::VetoContractUpgrade { contract }
+            )
+        );
+    }
+
+    #[test]
+    fn test_treasury_executor_policy_covers_protocol_outflow_contract_calls() {
+        let (processor, state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let owner = Pubkey([0xC4; 32]);
+        let margin_contract = Pubkey([0xC5; 32]);
+        let lend_contract = Pubkey([0xC6; 32]);
+        let vault_contract = Pubkey([0xC7; 32]);
+        let pump_contract = Pubkey([0xC8; 32]);
+        let amm_contract = Pubkey([0xC9; 32]);
+        let generic_contract = Pubkey([0xCA; 32]);
+
+        register_contract_symbol_for_test(&state, owner, margin_contract, "DEXMARGIN");
+        register_contract_symbol_for_test(&state, owner, lend_contract, "LEND");
+        register_contract_symbol_for_test(&state, owner, vault_contract, "SPOREVAULT");
+        register_contract_symbol_for_test(&state, owner, pump_contract, "SPOREPUMP");
+        register_contract_symbol_for_test(&state, owner, amm_contract, "DEXAMM");
+        register_contract_symbol_for_test(&state, owner, generic_contract, "GENERIC");
+
+        let mut insurance_args = vec![0u8; 73];
+        insurance_args[0] = 9u8;
+        insurance_args[1] = 0x44;
+        insurance_args[33..41].copy_from_slice(&500_000u64.to_le_bytes());
+        insurance_args[41] = 0x99;
+
+        let mut amm_outflow_args = vec![0u8; 41];
+        amm_outflow_args[0] = 21u8;
+        amm_outflow_args[1] = 0x55;
+        amm_outflow_args[33..41].copy_from_slice(&7u64.to_le_bytes());
+
+        let mut amm_admin_args = vec![0u8; 65];
+        amm_admin_args[0] = 20u8;
+        amm_admin_args[1] = 0x11;
+        amm_admin_args[33] = 0x22;
+
+        let mut margin_admin_args = vec![0u8; 49];
+        margin_admin_args[0] = 7u8;
+
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(
+                &GovernanceAction::TreasuryTransfer {
+                    recipient: Pubkey([0xCA; 32]),
+                    amount: 1,
+                }
+            )
+            .unwrap());
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: margin_contract,
+                function: "call".to_string(),
+                args: insurance_args,
+                value: 0,
+            })
+            .unwrap());
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: lend_contract,
+                function: "withdraw_reserves".to_string(),
+                args: vec![0u8; 8],
+                value: 0,
+            })
+            .unwrap());
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: vault_contract,
+                function: "withdraw_protocol_fees".to_string(),
+                args: vec![],
+                value: 0,
+            })
+            .unwrap());
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: amm_contract,
+                function: "call".to_string(),
+                args: amm_outflow_args,
+                value: 0,
+            })
+            .unwrap());
+        assert!(processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: pump_contract,
+                function: "withdraw_fees".to_string(),
+                args: 500_000u64.to_le_bytes().to_vec(),
+                value: 0,
+            })
+            .unwrap());
+        assert!(!processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: margin_contract,
+                function: "call".to_string(),
+                args: margin_admin_args,
+                value: 0,
+            })
+            .unwrap());
+        assert!(!processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: amm_contract,
+                function: "call".to_string(),
+                args: amm_admin_args,
+                value: 0,
+            })
+            .unwrap());
+        assert!(!processor
+            .governance_action_requires_treasury_executor_policy(&GovernanceAction::ContractCall {
+                contract: generic_contract,
+                function: "withdraw_fees".to_string(),
+                args: vec![],
+                value: 0,
+            })
+            .unwrap());
+    }
+
+    #[test]
+    fn test_veto_upgrade_governance_action_uses_split_veto_guardian_authority() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xBE; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        let veto_authority =
+            configure_upgrade_veto_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr = deploy_test_contract(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Timelock should succeed: {:?}",
+            result.error
+        );
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x31),
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success, "Upgrade should stage: {:?}", result.error);
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, veto_authority, contract_addr],
+            data: vec![34u8, GOVERNANCE_ACTION_VETO_UPGRADE],
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(veto_authority));
+        assert_eq!(proposal.execute_after_epoch, 0);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute the veto immediately: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert!(ca.pending_upgrade.is_none());
+        assert_eq!(ca.version, 1);
+    }
+
+    #[test]
+    fn test_veto_upgrade_rejects_general_governance_authority_when_split_is_configured() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x35; 32]);
+        let gov = Pubkey([0xBF; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(1),
+            )
+            .unwrap();
+        configure_upgrade_veto_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr = deploy_test_contract(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 1 },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success);
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x32),
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success);
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: vec![34u8, GOVERNANCE_ACTION_VETO_UPGRADE],
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result.error.as_deref().unwrap_or("").contains(
+            "Upgrade veto governance actions must use the upgrade veto guardian approval authority"
+        ));
+    }
+
+    #[test]
+    fn test_marketplace_pause_entries_are_allowlisted() {
+        let (processor, state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let owner = Pubkey([0xB6; 32]);
+        let auction_contract = Pubkey([0xC1; 32]);
+        let market_contract = Pubkey([0xC2; 32]);
+
+        register_contract_symbol_for_test(&state, owner, auction_contract, "AUCTION");
+        register_contract_symbol_for_test(&state, owner, market_contract, "MARKET");
+
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: auction_contract,
+                    function: "ma_pause".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: market_contract,
+                    function: "mm_pause".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_additional_pause_safe_contract_entries_are_allowlisted() {
+        let (processor, state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let owner = Pubkey([0xB8; 32]);
+        let compute_contract = Pubkey([0xD1; 32]);
+        let predict_contract = Pubkey([0xD2; 32]);
+        let pump_contract = Pubkey([0xD3; 32]);
+
+        register_contract_symbol_for_test(&state, owner, compute_contract, "COMPUTE");
+        register_contract_symbol_for_test(&state, owner, predict_contract, "PREDICT");
+        register_contract_symbol_for_test(&state, owner, pump_contract, "SPOREPUMP");
+
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: compute_contract,
+                    function: "cm_pause".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: predict_contract,
+                    function: "emergency_pause".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: pump_contract,
+                    function: "pause".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_dex_pause_pair_entry_remains_allowlisted() {
+        let (processor, state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let owner = Pubkey([0xB7; 32]);
+        let dex_contract = Pubkey([0xC3; 32]);
+
+        register_contract_symbol_for_test(&state, owner, dex_contract, "DEX");
+
+        assert!(processor
+            .governance_action_uses_immediate_risk_reduction_policy(
+                &GovernanceAction::ContractCall {
+                    contract: dex_contract,
+                    function: "pause_pair".to_string(),
+                    args: vec![],
+                    value: 0,
+                }
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_bridge_validator_change_requires_governance_proposal_when_authority_is_governed() {
+        let mut call_args = vec![0u8; 64];
+        call_args[32] = 0x55;
+        assert_governed_committee_contract_call_requires_proposal(
+            "add_bridge_validator",
+            call_args,
+        );
+    }
+
+    #[test]
+    fn test_bridge_threshold_change_requires_governance_proposal_when_authority_is_governed() {
+        let mut call_args = vec![0u8; 40];
+        call_args[0] = 0x11;
+        call_args[32..40].copy_from_slice(&3u64.to_le_bytes());
+        assert_governed_committee_contract_call_requires_proposal(
+            "set_required_confirmations",
+            call_args,
+        );
+    }
+
+    #[test]
+    fn test_bridge_timeout_change_requires_governance_proposal_when_authority_is_governed() {
+        let mut call_args = vec![0u8; 40];
+        call_args[0] = 0x22;
+        call_args[32..40].copy_from_slice(&1_000u64.to_le_bytes());
+        assert_governed_committee_contract_call_requires_proposal("set_request_timeout", call_args);
+    }
+
+    #[test]
+    fn test_oracle_feeder_change_requires_governance_proposal_when_authority_is_governed() {
+        let mut call_args = vec![0u8; 40];
+        call_args[0] = 0x88;
+        call_args[32..36].copy_from_slice(b"LICN");
+        call_args[36..40].copy_from_slice(&4u32.to_le_bytes());
+        assert_governed_committee_contract_call_requires_proposal("add_price_feeder", call_args);
+    }
+
+    #[test]
+    fn test_oracle_attester_change_requires_governance_proposal_when_authority_is_governed() {
+        let mut call_args = vec![0u8; 36];
+        call_args[0] = 0x77;
+        call_args[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert_governed_committee_contract_call_requires_proposal(
+            "set_authorized_attester",
+            call_args,
+        );
+    }
+
+    #[test]
+    fn test_margin_insurance_withdraw_contract_call_uses_treasury_executor_approval_authority_and_timelock(
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let treasury_authority =
+            configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "DEXMARGIN");
+
+        let mut call_args = vec![0u8; 73];
+        call_args[0] = 9u8;
+        call_args[1] = 0x44;
+        call_args[33..41].copy_from_slice(&500_000u64.to_le_bytes());
+        call_args[41] = 0x99;
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "call".to_string(),
+                args: call_args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, contract_addr],
+            data: make_governance_contract_call_data("call", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(treasury_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should succeed: {:?}",
+            approve_result.error
+        );
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let execute_result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!execute_result.success);
+        assert!(execute_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let execute_result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            execute_result.success,
+            "Execution should succeed: {:?}",
+            execute_result.error
+        );
+
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            call_args
+        );
+    }
+
+    #[test]
+    fn test_amm_protocol_fee_collection_contract_call_uses_treasury_executor_approval_authority_and_timelock(
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let treasury_authority =
+            configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "DEXAMM");
+
+        let mut call_args = vec![0u8; 41];
+        call_args[0] = 21u8;
+        call_args[1] = 0x44;
+        call_args[33..41].copy_from_slice(&7u64.to_le_bytes());
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "call".to_string(),
+                args: call_args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, contract_addr],
+            data: make_governance_contract_call_data("call", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(treasury_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should succeed: {:?}",
+            approve_result.error
+        );
+
+        let mut execute_data = vec![36u8];
+        execute_data.extend_from_slice(&1u64.to_le_bytes());
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: execute_data.clone(),
+        };
+        let execute_tx = make_signed_tx(&alice_kp, execute_ix, genesis_hash);
+        let execute_result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!execute_result.success);
+        assert!(execute_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let execute_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: execute_data,
+        };
+        let execute_tx = make_signed_tx(&bob_kp, execute_ix, fresh_blockhash);
+        let execute_result = processor.process_transaction(&execute_tx, &validator);
+        assert!(
+            execute_result.success,
+            "Execution should succeed: {:?}",
+            execute_result.error
+        );
+
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            call_args
+        );
+    }
+
+    #[test]
+    fn test_amm_protocol_fee_collection_rejects_governance_authority_direct_path() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x49; 32]);
+        let gov = Pubkey([0x4A; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "DEXAMM");
+
+        let mut call_args = vec![0u8; 41];
+        call_args[0] = 21u8;
+        call_args[1] = 0x44;
+        call_args[33..41].copy_from_slice(&7u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("call", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result.error.as_deref().unwrap_or("").contains(
+            "Protocol fund movement governance actions must use the treasury executor approval authority"
+        ));
+    }
+
+    #[test]
+    fn test_protocol_outflow_contract_calls_reject_governance_authority_direct_path() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0x45; 32]);
+        let gov = Pubkey([0x46; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        configure_treasury_executor_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "LEND");
+
+        let mut call_args = vec![0u8; 8];
+        call_args.copy_from_slice(&500_000u64.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("withdraw_reserves", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(!propose_result.success);
+        assert!(propose_result.error.as_deref().unwrap_or("").contains(
+            "Protocol fund movement governance actions must use the treasury executor approval authority"
+        ));
+    }
+
+    #[test]
+    fn test_register_symbol_requires_governance_proposal_when_owner_is_governed() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+        let contract_id = Pubkey([0xA1; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                ),
+            )
+            .unwrap();
+        deploy_fake_contract(&state, gov, contract_id);
+
+        let json_payload = r#"{"symbol":"GOVSYM","name":"Governed Symbol","template":"token"}"#;
+        let mut direct_data = vec![20u8];
+        direct_data.extend_from_slice(json_payload.as_bytes());
+        let direct_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![gov, contract_id],
+            data: direct_data,
+        };
+        let direct_tx = make_signed_tx(&gov_kp, direct_ix, genesis_hash);
+        let direct_result = processor.process_transaction(&direct_tx, &validator);
+        assert!(!direct_result.success);
+        assert!(direct_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_REGISTER_SYMBOL];
+        propose_data.extend_from_slice(&(json_payload.len() as u32).to_le_bytes());
+        propose_data.extend_from_slice(json_payload.as_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_id],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute symbol registration: {:?}",
+            approve_result.error
+        );
+
+        let entry = state.get_symbol_registry("GOVSYM").unwrap().unwrap();
+        assert_eq!(entry.program, contract_id);
+        assert_eq!(entry.owner, gov);
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approval_authority, None);
+        assert!(proposal.executed);
+        assert_eq!(proposal.action_label, "register_contract_symbol");
+    }
+
+    #[test]
+    fn test_set_contract_abi_requires_governance_proposal_when_owner_is_governed() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+        let contract_id = Pubkey([0xA2; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                ),
+            )
+            .unwrap();
+        deploy_fake_contract(&state, gov, contract_id);
+
+        let abi = serde_json::json!({
+            "version": "1.0",
+            "name": "GovernedAbi",
+            "functions": []
+        });
+        let abi_bytes = serde_json::to_vec(&abi).unwrap();
+
+        let mut direct_data = vec![18u8];
+        direct_data.extend_from_slice(&abi_bytes);
+        let direct_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![gov, contract_id],
+            data: direct_data,
+        };
+        let direct_tx = make_signed_tx(&gov_kp, direct_ix, genesis_hash);
+        let direct_result = processor.process_transaction(&direct_tx, &validator);
+        assert!(!direct_result.success);
+        assert!(direct_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_SET_CONTRACT_ABI];
+        propose_data.extend_from_slice(&(abi_bytes.len() as u32).to_le_bytes());
+        propose_data.extend_from_slice(&abi_bytes);
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_id],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute ABI update: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approval_authority, None);
+
+        let acct = state.get_account(&contract_id).unwrap().unwrap();
+        let contract: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        let abi = contract.abi.expect("governance proposal should set ABI");
+        assert_eq!(abi.name, "GovernedAbi");
+    }
+
+    #[test]
+    fn test_contract_close_requires_governance_proposal_when_owner_is_governed() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+        let contract_id = Pubkey([0xA3; 32]);
+        let destination = Pubkey([0xA4; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                ),
+            )
+            .unwrap();
+        deploy_fake_contract(&state, gov, contract_id);
+
+        let mut contract_account = state.get_account(&contract_id).unwrap().unwrap();
+        contract_account.spores = Account::licn_to_spores(25);
+        contract_account.spendable = Account::licn_to_spores(25);
+        state.put_account(&contract_id, &contract_account).unwrap();
+
+        let direct_ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![gov, contract_id, destination],
+            data: crate::ContractInstruction::Close.serialize().unwrap(),
+        };
+        let direct_tx = make_signed_tx(&gov_kp, direct_ix, genesis_hash);
+        let direct_result = processor.process_transaction(&direct_tx, &validator);
+        assert!(!direct_result.success);
+        assert!(direct_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_id, destination],
+            data: vec![34u8, GOVERNANCE_ACTION_CONTRACT_CLOSE],
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute contract close: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approval_authority, None);
+
+        let closed = state.get_account(&contract_id).unwrap().unwrap();
+        assert!(!closed.executable);
+        assert!(closed.data.is_empty());
+        assert_eq!(
+            state.get_balance(&destination).unwrap(),
+            Account::licn_to_spores(25)
+        );
+    }
+
+    #[test]
+    fn test_governance_proposal_lifecycle_events_are_emitted() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xA6; 32]);
+        let recipient = Pubkey([0xA5; 32]);
+        let treasury_authority = crate::multisig::derive_treasury_executor_authority(&gov);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob],
+                    "community_treasury",
+                ),
+            )
+            .unwrap();
+        state
+            .set_treasury_executor_authority(&treasury_authority)
+            .unwrap();
+        state
+            .set_governed_wallet_config(
+                &treasury_authority,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob],
+                    crate::multisig::TREASURY_EXECUTOR_LABEL,
+                ),
+            )
+            .unwrap();
+
+        let amount = Account::licn_to_spores(10);
+        let mut propose_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        propose_data.extend_from_slice(&amount.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&approve_tx, &validator)
+                .success
+        );
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 10, None)
+            .unwrap();
+        let proposal_events: Vec<_> = events
+            .into_iter()
+            .filter(|event| event.data.get("proposal_id").map(String::as_str) == Some("1"))
+            .collect();
+
+        let event_names: Vec<_> = proposal_events
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect();
+        assert!(event_names.contains(&"GovernanceProposalCreated"));
+        assert!(event_names.contains(&"GovernanceProposalApproved"));
+        assert!(event_names.contains(&"GovernanceProposalExecuted"));
+        assert!(proposal_events
+            .iter()
+            .all(|event| event.program == SYSTEM_PROGRAM_ID));
+        assert!(proposal_events
+            .iter()
+            .all(|event| { event.data.get("action") == Some(&"treasury_transfer".to_string()) }));
+    }
+
+    #[test]
+    fn test_governance_contract_call_events_include_structured_call_hints() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xA7; 32]);
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob],
+                    "community_treasury",
+                ),
+            )
+            .unwrap();
+
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        let call_args = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let call_value = 7u64;
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, gov, contract_addr],
+            data: make_governance_contract_call_data("record_call", &call_args, call_value),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&propose_tx, &validator)
+                .success
+        );
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&approve_tx, &validator)
+                .success
+        );
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 10, None)
+            .unwrap();
+        let proposal_events: Vec<_> = events
+            .into_iter()
+            .filter(|event| event.data.get("proposal_id").map(String::as_str) == Some("1"))
+            .collect();
+
+        let event_names: Vec<_> = proposal_events
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect();
+        assert!(event_names.contains(&"GovernanceProposalCreated"));
+        assert!(event_names.contains(&"GovernanceProposalApproved"));
+        assert!(event_names.contains(&"GovernanceProposalExecuted"));
+
+        let target_contract = contract_addr.to_base58();
+        let call_args_len = call_args.len().to_string();
+        let call_value = call_value.to_string();
+        assert!(proposal_events.iter().all(|event| {
+            event.data.get("target_contract") == Some(&target_contract)
+                && event.data.get("target_function") == Some(&"record_call".to_string())
+                && event.data.get("call_args_len") == Some(&call_args_len)
+                && event.data.get("call_value_spores") == Some(&call_value)
+        }));
     }
 
     #[test]

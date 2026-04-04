@@ -67,6 +67,8 @@ zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-relations", "ark-r1cs-std", "ark-cry
 criterion = "0.5"
 tempfile = "3.24.0"
 bincode = "1"
+wat = "1"
+proptest = "1"
 
 [[bench]]
 name = "processor_bench"

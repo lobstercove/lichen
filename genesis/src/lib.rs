@@ -313,6 +313,108 @@ pub fn derive_contract_address(deployer_pubkey: &Pubkey, dir_name: &str) -> Opti
     Some(Pubkey(addr_bytes))
 }
 
+pub const GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS: u32 = 1;
+
+fn resolve_genesis_governance_authority(state: &StateStore) -> Result<Pubkey, String> {
+    state
+        .get_community_treasury_pubkey()?
+        .ok_or_else(|| "community_treasury wallet not found in genesis accounts".to_string())
+}
+
+fn require_genesis_governance_authority(state: &StateStore, phase: &str) -> Result<Pubkey, String> {
+    state
+        .get_governance_authority()?
+        .ok_or_else(|| format!("governance authority must be configured before {phase}"))
+}
+
+fn uses_operational_token_admin(dir_name: &str) -> bool {
+    matches!(
+        dir_name,
+        "lusd_token" | "wsol_token" | "weth_token" | "wbnb_token"
+    )
+}
+
+fn apply_genesis_contract_hardening(
+    state: &StateStore,
+    governance_authority: &Pubkey,
+    contract_pubkeys: &[Pubkey],
+    timelock_epochs: u32,
+) -> Result<usize, String> {
+    state.set_governance_authority(governance_authority)?;
+
+    let timelock = if timelock_epochs == 0 {
+        None
+    } else {
+        Some(timelock_epochs)
+    };
+
+    let mut updated = 0usize;
+    for contract_pubkey in contract_pubkeys {
+        let Some(mut account) = state.get_account(contract_pubkey)? else {
+            continue;
+        };
+
+        let mut contract: ContractAccount = serde_json::from_slice(&account.data).map_err(|e| {
+            format!(
+                "Failed to deserialize contract {}: {}",
+                contract_pubkey.to_base58(),
+                e
+            )
+        })?;
+
+        if contract.upgrade_timelock_epochs == timelock {
+            continue;
+        }
+
+        contract.upgrade_timelock_epochs = timelock;
+        account.data = serde_json::to_vec(&contract).map_err(|e| {
+            format!(
+                "Failed to serialize contract {}: {}",
+                contract_pubkey.to_base58(),
+                e
+            )
+        })?;
+        state.put_account(contract_pubkey, &account)?;
+        updated += 1;
+    }
+
+    Ok(updated)
+}
+
+pub fn genesis_harden_contract_controls(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+) -> Result<Pubkey, String> {
+    info!("──────────────────────────────────────────────────────");
+    info!("  {} Installing genesis governance and timelocks", label);
+    info!("──────────────────────────────────────────────────────");
+
+    let governance_authority = resolve_genesis_governance_authority(state)?;
+    let contract_pubkeys: Vec<Pubkey> = GENESIS_CONTRACT_CATALOG
+        .iter()
+        .filter_map(|(dir_name, _, _, _)| derive_contract_address(deployer_pubkey, dir_name))
+        .collect();
+
+    let hardened = apply_genesis_contract_hardening(
+        state,
+        &governance_authority,
+        &contract_pubkeys,
+        GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS,
+    )?;
+
+    info!(
+        "  ✓ Governance authority set to community_treasury {}",
+        governance_authority.to_base58()
+    );
+    info!(
+        "  ✓ Installed {}-epoch upgrade timelock on {} genesis contracts",
+        GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS, hardened
+    );
+
+    Ok(governance_authority)
+}
+
 /// Execute a contract function via WASM runtime and apply storage changes.
 /// Returns true on success.
 /// Monotonic sequence counter for genesis activity indexing.
@@ -474,12 +576,15 @@ pub fn genesis_initialize_contracts(
     deployer_pubkey: &Pubkey,
     label: &str,
     genesis_timestamp: u64,
-) {
+) -> Result<(), String> {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Initializing all contracts", label);
     info!("──────────────────────────────────────────────────────");
 
-    let admin = deployer_pubkey.0;
+    let governance_authority =
+        require_genesis_governance_authority(state, "genesis initialization")?;
+    let admin = governance_authority.0;
+    let operational_token_admin = deployer_pubkey.0;
     let mut initialized: usize = 0;
     let mut skipped: usize = 0;
 
@@ -523,6 +628,18 @@ pub fn genesis_initialize_contracts(
     fn named_init_args(admin: &[u8; 32]) -> Vec<u8> {
         admin.to_vec()
     }
+
+    let exec_as_governance =
+        |program_pubkey: &Pubkey, function_name: &str, args: &[u8], contract_label: &str| {
+            genesis_exec_contract(
+                state,
+                program_pubkey,
+                &governance_authority,
+                function_name,
+                args,
+                contract_label,
+            )
+        };
 
     // Resolve token contract addresses for lichenswap and lichendao
     // Native LICN is the system token — no contract needed.
@@ -569,22 +686,22 @@ pub fn genesis_initialize_contracts(
         InitSpec {
             dir_name: "lusd_token",
             function: "initialize",
-            args: named_init_args(&admin),
+            args: named_init_args(&operational_token_admin),
         },
         InitSpec {
             dir_name: "wsol_token",
             function: "initialize",
-            args: named_init_args(&admin),
+            args: named_init_args(&operational_token_admin),
         },
         InitSpec {
             dir_name: "weth_token",
             function: "initialize",
-            args: named_init_args(&admin),
+            args: named_init_args(&operational_token_admin),
         },
         InitSpec {
             dir_name: "wbnb_token",
             function: "initialize",
-            args: named_init_args(&admin),
+            args: named_init_args(&operational_token_admin),
         },
         // ── Layer 1: Identity ──
         InitSpec {
@@ -732,14 +849,23 @@ pub fn genesis_initialize_contracts(
             }
         };
 
-        if genesis_exec_contract(
-            state,
-            &pubkey,
-            deployer_pubkey,
-            spec.function,
-            &spec.args,
-            spec.dir_name,
-        ) {
+        let initialized_ok = if uses_operational_token_admin(spec.dir_name) {
+            // Wrapped/quote token minting remains on the operational deployer key
+            // used by custody and local DEX seeding. Governance hardening still
+            // applies at the contract control layer via genesis_harden_contract_controls.
+            genesis_exec_contract(
+                state,
+                &pubkey,
+                deployer_pubkey,
+                spec.function,
+                &spec.args,
+                spec.dir_name,
+            )
+        } else {
+            exec_as_governance(&pubkey, spec.function, &spec.args, spec.dir_name)
+        };
+
+        if initialized_ok {
             info!("  INIT {}", spec.dir_name);
             initialized += 1;
         } else {
@@ -752,18 +878,9 @@ pub fn genesis_initialize_contracts(
     // 2. initialize_ma_admin(admin) — sets admin
     if let Some(auction_pk) = address_map.get("lichenauction") {
         let mkt_args = lichenmarket_addr.to_vec();
-        if genesis_exec_contract(
-            state,
-            auction_pk,
-            deployer_pubkey,
-            "initialize",
-            &mkt_args,
-            "lichenauction(escrow)",
-        ) {
-            if genesis_exec_contract(
-                state,
+        if exec_as_governance(auction_pk, "initialize", &mkt_args, "lichenauction(escrow)") {
+            if exec_as_governance(
                 auction_pk,
-                deployer_pubkey,
                 "initialize_ma_admin",
                 admin.as_ref(),
                 "lichenauction(admin)",
@@ -810,7 +927,7 @@ pub fn genesis_initialize_contracts(
             args.push(opcode);
             args.extend_from_slice(&admin);
             args.extend_from_slice(addr);
-            if genesis_exec_contract(state, predict_pk, deployer_pubkey, "call", &args, label) {
+            if exec_as_governance(predict_pk, "call", &args, label) {
                 info!("  SET {}", label);
             } else {
                 warn!("  WARN: Failed to set {}", label);
@@ -826,14 +943,7 @@ pub fn genesis_initialize_contracts(
         args.push(14u8);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&lichenid_addr);
-        if genesis_exec_contract(
-            state,
-            dex_gov_pk,
-            deployer_pubkey,
-            "call",
-            &args,
-            "dex_governance(lichenid)",
-        ) {
+        if exec_as_governance(dex_gov_pk, "call", &args, "dex_governance(lichenid)") {
             info!("  SET dex_governance(lichenid)");
         } else {
             warn!("  WARN: Failed to set dex_governance(lichenid)");
@@ -857,14 +967,7 @@ pub fn genesis_initialize_contracts(
         args.push(13u8);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&builder_grants_addr);
-        if genesis_exec_contract(
-            state,
-            dex_rewards_pk,
-            deployer_pubkey,
-            "call",
-            &args,
-            "dex_rewards(builder_grants)",
-        ) {
+        if exec_as_governance(dex_rewards_pk, "call", &args, "dex_rewards(builder_grants)") {
             info!("  SET dex_rewards(builder_grants)");
         } else {
             warn!("  WARN: Failed to set dex_rewards builder_grants pool");
@@ -907,14 +1010,7 @@ pub fn genesis_initialize_contracts(
         args.extend_from_slice(&dex_core_addr);
         args.extend_from_slice(&dex_amm_addr);
         args.extend_from_slice(&lichenswap_addr);
-        if genesis_exec_contract(
-            state,
-            router_pk,
-            deployer_pubkey,
-            "call",
-            &args,
-            "dex_router(set_addresses)",
-        ) {
+        if exec_as_governance(router_pk, "call", &args, "dex_router(set_addresses)") {
             info!("  SET dex_router(set_addresses)");
         } else {
             warn!("  WARN: Failed to set dex_router addresses");
@@ -959,10 +1055,8 @@ pub fn genesis_initialize_contracts(
             clob_args.extend_from_slice(&pair_id.to_le_bytes());
             clob_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
             clob_args.push(0); // split_percent
-            if genesis_exec_contract(
-                state,
+            if exec_as_governance(
                 router_pk,
-                deployer_pubkey,
                 "call",
                 &clob_args,
                 &format!("dex_router(route CLOB {})", label),
@@ -982,10 +1076,8 @@ pub fn genesis_initialize_contracts(
             amm_args.extend_from_slice(&pool_id.to_le_bytes());
             amm_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
             amm_args.push(0); // split_percent
-            if genesis_exec_contract(
-                state,
+            if exec_as_governance(
                 router_pk,
-                deployer_pubkey,
                 "call",
                 &amm_args,
                 &format!("dex_router(route AMM {})", label),
@@ -1010,10 +1102,8 @@ pub fn genesis_initialize_contracts(
         args.push(28u8); // opcode 28 = set_analytics_address
         args.extend_from_slice(&admin);
         args.extend_from_slice(&analytics_pk.0);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             dex_core_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_core(set_analytics_address)",
@@ -1035,10 +1125,8 @@ pub fn genesis_initialize_contracts(
         args.push(11u8); // opcode 11 = set_authorized_caller
         args.extend_from_slice(&admin);
         args.extend_from_slice(&dex_core_pk.0);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             analytics_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_analytics(set_authorized_caller)",
@@ -1058,10 +1146,8 @@ pub fn genesis_initialize_contracts(
         args.push(12u8); // opcode 12 = set_lichencoin_address
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             dex_rewards_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_rewards(set_lichencoin_address)",
@@ -1079,10 +1165,8 @@ pub fn genesis_initialize_contracts(
         args.push(15u8); // opcode 15 = set_lichencoin_address
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             dex_margin_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_margin(set_lichencoin_address)",
@@ -1108,10 +1192,8 @@ pub fn genesis_initialize_contracts(
         args.push(32u8); // opcode 32 = set_fee_treasury_address
         args.extend_from_slice(&admin);
         args.extend_from_slice(&fee_treasury);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             dex_core_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_core(set_fee_treasury_address)",
@@ -1128,10 +1210,8 @@ pub fn genesis_initialize_contracts(
         args.push(20u8); // opcode 20 = set_fee_treasury_address
         args.extend_from_slice(&admin);
         args.extend_from_slice(&fee_treasury);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             dex_amm_pk,
-            deployer_pubkey,
             "call",
             &args,
             "dex_amm(set_fee_treasury_address)",
@@ -1149,10 +1229,8 @@ pub fn genesis_initialize_contracts(
             pf_args.extend_from_slice(&admin);
             pf_args.extend_from_slice(&pid.to_le_bytes());
             pf_args.push(10u8); // 10% protocol fee
-            if genesis_exec_contract(
-                state,
+            if exec_as_governance(
                 dex_amm_pk,
-                deployer_pubkey,
                 "call",
                 &pf_args,
                 &format!("dex_amm(set_pool_protocol_fee pool={})", pid),
@@ -1170,10 +1248,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             sporepay_pk,
-            deployer_pubkey,
             "set_token_address",
             &args,
             "sporepay(set_token_address)",
@@ -1187,10 +1263,8 @@ pub fn genesis_initialize_contracts(
         let mut self_args = Vec::with_capacity(64);
         self_args.extend_from_slice(&admin);
         self_args.extend_from_slice(&sporepay_pk.0);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             sporepay_pk,
-            deployer_pubkey,
             "set_self_address",
             &self_args,
             "sporepay(set_self_address)",
@@ -1207,10 +1281,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             sporepump_pk,
-            deployer_pubkey,
             "set_licn_token",
             &args,
             "sporepump(set_licn_token)",
@@ -1227,10 +1299,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             sporevault_pk,
-            deployer_pubkey,
             "set_licn_token",
             &args,
             "sporevault(set_licn_token)",
@@ -1247,10 +1317,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             compute_pk,
-            deployer_pubkey,
             "set_token_address",
             &args,
             "compute_market(set_token_address)",
@@ -1268,14 +1336,7 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&lichenid_addr);
-        if genesis_exec_contract(
-            state,
-            dao_pk,
-            deployer_pubkey,
-            "set_lichenid_address",
-            &args,
-            "lichendao(lichenid)",
-        ) {
+        if exec_as_governance(dao_pk, "set_lichenid_address", &args, "lichendao(lichenid)") {
             info!("  SET lichendao(lichenid)");
         } else {
             warn!("  WARN: Failed to set lichendao lichenid address");
@@ -1289,10 +1350,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&lichenid_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             swap_pk,
-            deployer_pubkey,
             "set_lichenid_address",
             &args,
             "lichenswap(lichenid)",
@@ -1309,14 +1368,7 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
-            moss_pk,
-            deployer_pubkey,
-            "set_licn_token",
-            &args,
-            "moss_storage(lichencoin)",
-        ) {
+        if exec_as_governance(moss_pk, "set_licn_token", &args, "moss_storage(lichencoin)") {
             info!("  SET moss_storage(lichencoin)");
         } else {
             warn!("  WARN: Failed to set moss_storage licn token address");
@@ -1329,10 +1381,8 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             lend_pk,
-            deployer_pubkey,
             "set_lichencoin_address",
             &args,
             "thalllend(lichencoin)",
@@ -1349,14 +1399,7 @@ pub fn genesis_initialize_contracts(
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&licn_addr);
-        if genesis_exec_contract(
-            state,
-            bridge_pk,
-            deployer_pubkey,
-            "set_token_address",
-            &args,
-            "lichenbridge(token)",
-        ) {
+        if exec_as_governance(bridge_pk, "set_token_address", &args, "lichenbridge(token)") {
             info!("  SET lichenbridge(token)");
         } else {
             warn!("  WARN: Failed to set lichenbridge token address");
@@ -1367,10 +1410,8 @@ pub fn genesis_initialize_contracts(
         let mut val_args = Vec::with_capacity(64);
         val_args.extend_from_slice(&admin);
         val_args.extend_from_slice(&admin); // deployer is first bridge validator
-        if genesis_exec_contract(
-            state,
+        if exec_as_governance(
             bridge_pk,
-            deployer_pubkey,
             "add_bridge_validator",
             &val_args,
             "lichenbridge(bridge_validator)",
@@ -1382,7 +1423,7 @@ pub fn genesis_initialize_contracts(
     }
 
     // ── LichenID: Bootstrap admin reputation ──
-    // The admin (deployer) needs reputation >= 1000 to create prediction markets,
+    // The governance admin needs reputation >= 1000 to create prediction markets,
     // submit governance proposals, resolve markets, etc. The initial identity
     // registration gives only 100. Write directly to LichenID's contract storage
     // so the admin has the required reputation from genesis.
@@ -1613,10 +1654,8 @@ pub fn genesis_initialize_contracts(
             args.extend_from_slice(&name_len.to_le_bytes());
             args.push(gn.agent_type);
 
-            if genesis_exec_contract(
-                state,
+            if exec_as_governance(
                 lichenid_pk,
-                deployer_pubkey,
                 "admin_register_reserved_name",
                 &args,
                 &format!("lichenid(name:{})", gn.label),
@@ -1625,7 +1664,7 @@ pub fn genesis_initialize_contracts(
                     "  NAME {}.lichen → {}",
                     gn.label,
                     if gn.owner_key == "admin" {
-                        "deployer"
+                        "governance"
                     } else {
                         gn.owner_key
                     }
@@ -1810,6 +1849,7 @@ pub fn genesis_initialize_contracts(
         initialized, skipped
     );
     info!("──────────────────────────────────────────────────────");
+    Ok(())
 }
 
 // ========================================================================
@@ -1829,7 +1869,15 @@ pub fn genesis_create_trading_pairs(
     info!("  {} Creating trading pairs & AMM pools", label);
     info!("──────────────────────────────────────────────────────");
 
-    let admin = deployer_pubkey.0;
+    let governance_authority =
+        match require_genesis_governance_authority(state, "genesis trading pair creation") {
+            Ok(authority) => authority,
+            Err(err) => {
+                error!("  FAIL: {}", err);
+                return;
+            }
+        };
+    let admin = governance_authority.0;
 
     // Resolve contract addresses
     let dex_core_pk = match derive_contract_address(deployer_pubkey, "dex_core") {
@@ -1899,7 +1947,7 @@ pub fn genesis_create_trading_pairs(
         if genesis_exec_contract(
             state,
             &dex_core_pk,
-            deployer_pubkey,
+            &governance_authority,
             "call",
             &args,
             &format!("dex_core.add_allowed_quote({})", sym),
@@ -1921,7 +1969,7 @@ pub fn genesis_create_trading_pairs(
             if genesis_exec_contract(
                 state,
                 gov_pk,
-                deployer_pubkey,
+                &governance_authority,
                 "call",
                 &args,
                 &format!("dex_governance.add_allowed_quote({})", sym),
@@ -1947,7 +1995,7 @@ pub fn genesis_create_trading_pairs(
         if genesis_exec_contract(
             state,
             &dex_core_pk,
-            deployer_pubkey,
+            &governance_authority,
             "call",
             &args,
             &format!("dex_core.create_pair({})", label),
@@ -2015,7 +2063,7 @@ pub fn genesis_create_trading_pairs(
         if genesis_exec_contract(
             state,
             &dex_amm_pk,
-            deployer_pubkey,
+            &governance_authority,
             "call",
             &args,
             &format!("dex_amm.create_pool({})", label),
@@ -2087,8 +2135,8 @@ pub fn genesis_set_fee_exempt_contracts(state: &StateStore, deployer_pubkey: &Pu
 
 // ========================================================================
 //  GENESIS PHASE 4 — Seed Oracle Price Feeds
-//  Authorizes the genesis admin as a LICN price feeder on the lichenoracle
-//  contract, then submits the initial launch price ($0.10).
+//  Authorizes the governance authority as a LICN price feeder on the
+//  lichenoracle contract, then submits the initial launch price ($0.10).
 //  This ensures oracle-adjusted rewards work from the very first block.
 // ========================================================================
 
@@ -2103,7 +2151,14 @@ pub fn genesis_seed_oracle(
     info!("  {} Seeding oracle price feeds", label);
     info!("──────────────────────────────────────────────────────");
 
-    let admin = deployer_pubkey.0;
+    let governance_authority = match resolve_genesis_governance_authority(state) {
+        Ok(authority) => authority,
+        Err(e) => {
+            warn!("  SKIP oracle seeding: {}", e);
+            return;
+        }
+    };
+    let admin = governance_authority.0;
 
     // Resolve lichenoracle contract address
     let oracle_pk = match derive_contract_address(deployer_pubkey, "lichenoracle") {
@@ -2114,7 +2169,7 @@ pub fn genesis_seed_oracle(
         }
     };
 
-    // Step 1: Authorize genesis admin as LICN price feeder
+    // Step 1: Authorize the governance authority as LICN price feeder
     // add_price_feeder(feeder_ptr: 32, asset_ptr: N, asset_len: u32) -> u32
     let asset = b"LICN";
     let mut feeder_args = Vec::with_capacity(32 + asset.len() + 4);
@@ -2125,12 +2180,12 @@ pub fn genesis_seed_oracle(
     if genesis_exec_contract(
         state,
         &oracle_pk,
-        deployer_pubkey,
+        &governance_authority,
         "add_price_feeder",
         &feeder_args,
         "lichenoracle.add_price_feeder(LICN)",
     ) {
-        info!("  FEEDER authorized: genesis admin → LICN");
+        info!("  FEEDER authorized: governance authority → LICN");
     } else {
         warn!("  SKIP feeder authorization failed");
         return;
@@ -2150,7 +2205,7 @@ pub fn genesis_seed_oracle(
     if genesis_exec_contract(
         state,
         &oracle_pk,
-        deployer_pubkey,
+        &governance_authority,
         "submit_price",
         &price_args,
         "lichenoracle.submit_price(LICN=$0.10)",
@@ -2179,7 +2234,7 @@ pub fn genesis_seed_oracle(
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
-        // Authorize genesis admin as feeder for this asset
+        // Authorize the governance authority as feeder for this asset
         let mut ext_feeder_args = Vec::with_capacity(32 + ext_asset.len() + 4);
         ext_feeder_args.extend_from_slice(&admin);
         ext_feeder_args.extend_from_slice(ext_asset);
@@ -2189,12 +2244,12 @@ pub fn genesis_seed_oracle(
         if genesis_exec_contract(
             state,
             &oracle_pk,
-            deployer_pubkey,
+            &governance_authority,
             "add_price_feeder",
             &ext_feeder_args,
             &format!("lichenoracle.add_price_feeder({})", asset_name),
         ) {
-            info!("  FEEDER authorized: genesis admin → {}", asset_name);
+            info!("  FEEDER authorized: governance authority → {}", asset_name);
         } else {
             warn!("  SKIP feeder auth for {} failed", asset_name);
             continue;
@@ -2211,7 +2266,7 @@ pub fn genesis_seed_oracle(
         if genesis_exec_contract(
             state,
             &oracle_pk,
-            deployer_pubkey,
+            &governance_authority,
             "submit_price",
             &ext_price_args,
             &format!(
@@ -2955,6 +3010,17 @@ fn pubkey_to_hex(pubkey: &Pubkey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    const TEST_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+
+    fn store_test_contract(state: &StateStore, pubkey: Pubkey) {
+        let contract = ContractAccount::new(TEST_WASM_MODULE.to_vec(), Pubkey([7u8; 32]));
+        let mut account = Account::new(0, pubkey);
+        account.data = serde_json::to_vec(&contract).unwrap();
+        account.executable = true;
+        state.put_account(&pubkey, &account).unwrap();
+    }
 
     #[test]
     fn test_genesis_pair_prices_are_deterministic() {
@@ -2966,5 +3032,105 @@ mod tests {
         assert!((pair_prices[1].1 - 81.84).abs() < f64::EPSILON);
         assert!((pair_prices[2].1 - 1999.34).abs() < f64::EPSILON);
         assert!((pair_prices[5].1 - 609.78).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_resolve_genesis_governance_authority_uses_community_treasury() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let community_treasury = Pubkey([9u8; 32]);
+
+        state
+            .set_genesis_accounts(&[(
+                "community_treasury".to_string(),
+                community_treasury,
+                125_000_000,
+                25,
+            )])
+            .unwrap();
+
+        assert_eq!(
+            resolve_genesis_governance_authority(&state).unwrap(),
+            community_treasury
+        );
+    }
+
+    #[test]
+    fn test_resolve_genesis_governance_authority_requires_community_treasury() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let error = resolve_genesis_governance_authority(&state).unwrap_err();
+        assert!(error.contains("community_treasury"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn test_apply_genesis_contract_hardening_sets_governance_and_timelock() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let governance_authority = Pubkey([9u8; 32]);
+        let contract_pubkey = Pubkey([3u8; 32]);
+
+        store_test_contract(&state, contract_pubkey);
+
+        let hardened = apply_genesis_contract_hardening(
+            &state,
+            &governance_authority,
+            &[contract_pubkey],
+            GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS,
+        )
+        .unwrap();
+
+        assert_eq!(hardened, 1);
+        assert_eq!(
+            state.get_governance_authority().unwrap(),
+            Some(governance_authority)
+        );
+
+        let account = state.get_account(&contract_pubkey).unwrap().unwrap();
+        let contract: ContractAccount = serde_json::from_slice(&account.data).unwrap();
+        assert_eq!(
+            contract.upgrade_timelock_epochs,
+            Some(GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS)
+        );
+    }
+
+    #[test]
+    fn test_require_genesis_governance_authority_reads_stored_authority() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let governance_authority = Pubkey([5u8; 32]);
+
+        state
+            .set_governance_authority(&governance_authority)
+            .unwrap();
+
+        assert_eq!(
+            require_genesis_governance_authority(&state, "genesis trading pair creation").unwrap(),
+            governance_authority
+        );
+    }
+
+    #[test]
+    fn test_require_genesis_governance_authority_requires_configuration() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let error = require_genesis_governance_authority(&state, "genesis trading pair creation")
+            .unwrap_err();
+        assert!(
+            error.contains("genesis trading pair creation"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn test_uses_operational_token_admin_only_for_wrapped_and_quote_tokens() {
+        assert!(uses_operational_token_admin("lusd_token"));
+        assert!(uses_operational_token_admin("wsol_token"));
+        assert!(uses_operational_token_admin("weth_token"));
+        assert!(uses_operational_token_admin("wbnb_token"));
+        assert!(!uses_operational_token_admin("dex_core"));
+        assert!(!uses_operational_token_admin("lichenbridge"));
     }
 }

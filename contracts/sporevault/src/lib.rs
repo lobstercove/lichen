@@ -9,9 +9,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
-    get_timestamp, get_value, log_info, set_return_data, storage_get, storage_set,
-    transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, get_value,
+    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // ============================================================================
@@ -68,6 +68,11 @@ fn is_cv_paused() -> bool {
 fn is_cv_admin(caller: &[u8]) -> bool {
     storage_get(ADMIN_KEY)
         .map(|d| d.as_slice() == caller)
+        .unwrap_or(false)
+}
+fn has_cv_configured_address(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|data| data.len() == 32)
         .unwrap_or(false)
 }
 fn get_deposit_fee_bps() -> u64 {
@@ -514,7 +519,7 @@ fn transfer_licn_out(to: &[u8; 32], amount: u64) -> bool {
 /// Set protocol addresses for real yield sources. Admin only.
 /// Both addresses optional (pass zero to skip). Non-zero addresses are stored.
 ///
-/// Returns: 0 success, 1 not admin
+/// Returns: 0 success, 1 not admin, 2 ThallLend already configured, 3 LichenSwap already configured
 #[no_mangle]
 pub extern "C" fn set_protocol_addresses(
     caller_ptr: *const u8,
@@ -545,11 +550,23 @@ pub extern "C" fn set_protocol_addresses(
         core::ptr::copy_nonoverlapping(lichenswap_ptr, lichenswap.as_mut_ptr(), 32);
     }
 
-    if thalllend.iter().any(|&b| b != 0) {
+    let set_thalllend = thalllend.iter().any(|&b| b != 0);
+    let set_lichenswap = lichenswap.iter().any(|&b| b != 0);
+
+    if set_thalllend && has_cv_configured_address(THALLLEND_ADDRESS_KEY) {
+        log_info("ThallLend address already configured");
+        return 2;
+    }
+    if set_lichenswap && has_cv_configured_address(LICHENSWAP_ADDRESS_KEY) {
+        log_info("LichenSwap address already configured");
+        return 3;
+    }
+
+    if set_thalllend {
         storage_set(THALLLEND_ADDRESS_KEY, &thalllend);
         log_info("ThallLend address configured");
     }
-    if lichenswap.iter().any(|&b| b != 0) {
+    if set_lichenswap {
         storage_set(LICHENSWAP_ADDRESS_KEY, &lichenswap);
         log_info("LichenSwap address configured");
     }
@@ -557,7 +574,7 @@ pub extern "C" fn set_protocol_addresses(
 }
 
 /// G25-02: Set LICN token address for self-custody transfers. Admin only.
-/// Returns: 0 success, 1 not admin
+/// Returns: 0 success, 1 not admin, 2 already configured
 #[no_mangle]
 pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
@@ -574,6 +591,10 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
     let mut token = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
+    }
+    if has_cv_configured_address(LICN_TOKEN_KEY) {
+        log_info("LICN token already configured");
+        return 2;
     }
     storage_set(LICN_TOKEN_KEY, &token);
     log_info("LICN token address configured");
@@ -1595,6 +1616,50 @@ mod tests {
     }
 
     #[test]
+    fn test_set_protocol_addresses_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let zero = [0u8; 32];
+        let thalllend = [0xAA; 32];
+        let lichenswap = [0xBB; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), thalllend.as_ptr(), zero.as_ptr()),
+            0
+        );
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), zero.as_ptr(), lichenswap.as_ptr()),
+            0
+        );
+
+        let new_thalllend = [0xAB; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), new_thalllend.as_ptr(), zero.as_ptr()),
+            2
+        );
+        assert_eq!(
+            test_mock::get_storage(THALLLEND_ADDRESS_KEY)
+                .unwrap()
+                .as_slice(),
+            &thalllend
+        );
+
+        let new_lichenswap = [0xBC; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), zero.as_ptr(), new_lichenswap.as_ptr()),
+            3
+        );
+        assert_eq!(
+            test_mock::get_storage(LICHENSWAP_ADDRESS_KEY)
+                .unwrap()
+                .as_slice(),
+            &lichenswap
+        );
+    }
+
+    #[test]
     fn test_simulated_yield_calculation() {
         // Verify the simulated yield formula directly
         let deployed = 1_000_000_000u64;
@@ -1776,6 +1841,23 @@ mod tests {
         let other = [2u8; 32];
         test_mock::set_caller(other);
         assert_eq!(set_licn_token(other.as_ptr(), token.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_g25_set_licn_token_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let token = [0xCC; 32];
+        let new_token = [0xCD; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(set_licn_token(admin.as_ptr(), new_token.as_ptr()), 2);
+        assert_eq!(
+            test_mock::get_storage(LICN_TOKEN_KEY).unwrap().as_slice(),
+            &token
+        );
     }
 
     #[test]

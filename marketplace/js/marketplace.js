@@ -56,6 +56,14 @@
         }
     }
 
+    function buyNFT(id) {
+        if (!currentWallet) {
+            showMarketToast('Please connect your wallet first', 'error');
+            return;
+        }
+        window.location.href = 'item.html?id=' + encodeURIComponent(id);
+    }
+
     // ===== Initialize =====
     document.addEventListener('DOMContentLoaded', function () {
         // Marketplace initializing
@@ -68,6 +76,7 @@
         setupConnectWallet();
         setupSearch();
         setupFilterTabs();
+        bindRenderedControls();
         updateStats();
         updateNavForWallet();
         updateHeroCTA();
@@ -100,7 +109,7 @@
             var collectionId = escapeHtml(collection.id);
             var banner = collection.banner ? escapeHtml(collection.banner) : escapeHtml(collection.image || '');
             var avatar = collection.avatar ? escapeHtml(collection.avatar) : '';
-            return '<div class="collection-card" onclick="window.location.href=\'browse.html?collection=' + encodeURIComponent(collectionId) + '\'">' +
+            return '<div class="collection-card" data-marketplace-href="browse.html?collection=' + encodeURIComponent(collectionId) + '">' +
                 '<div class="collection-banner" style="background: ' + banner + '"></div>' +
                 '<div class="collection-avatar">' + avatar + '</div>' +
                 '<div class="collection-info">' +
@@ -132,9 +141,9 @@
 
         container.innerHTML = nfts.map(function (nft) {
             var buyBtnHtml = currentWallet
-                ? '<button class="nft-action" onclick="event.stopPropagation(); window._homeBuyNFT(\'' + escapeJsAttr(nft.id) + '\')">Buy Now</button>'
+                ? '<button class="nft-action" data-marketplace-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy Now</button>'
                 : '';
-            return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id) + '\'">' +
+            return '<div class="nft-card" data-marketplace-href="item.html?id=' + encodeURIComponent(nft.id || '') + '">' +
                 '<div class="nft-image" style="background: ' + escapeHtml(nft.image) + '"></div>' +
                 '<div class="nft-info">' +
                 '<div class="nft-collection">' + escapeHtml(nft.collection) + '</div>' +
@@ -165,7 +174,7 @@
 
         container.innerHTML = creators.slice(0, 5).map(function (creator) {
             var creatorId = creator.id ? escapeHtml(creator.id) : escapeHtml(creator.address || '');
-            return '<div class="creator-card" onclick="window.location.href=\'profile.html?id=' + encodeURIComponent(creatorId) + '\'">' +
+            return '<div class="creator-card" data-marketplace-href="profile.html?id=' + encodeURIComponent(creatorId) + '">' +
                 '<div class="creator-avatar">' + escapeHtml(creator.avatar) + '</div>' +
                 '<div class="creator-name">' + escapeHtml(creator.name) + '</div>' +
                 '<div class="creator-sales">' + formatNumber(creator.sales) + ' sales</div>' +
@@ -192,7 +201,7 @@
 
         tbody.innerHTML = sales.map(function (sale) {
             var saleId = escapeHtml(sale.id);
-            return '<tr onclick="window.location.href=\'item.html?id=' + encodeURIComponent(saleId) + '\'" style="cursor:pointer;">' +
+            return '<tr data-marketplace-href="item.html?id=' + encodeURIComponent(saleId) + '" style="cursor:pointer;">' +
                 '<td><div class="sale-nft"><div class="sale-nft-image" style="background: ' + escapeHtml(sale.image) + '"></div><div><div class="sale-nft-name">' + escapeHtml(sale.nft) + '</div><div class="sale-nft-collection">' + escapeHtml(sale.collection) + '</div></div></div></td>' +
                 '<td>' + escapeHtml(sale.collection) + '</td>' +
                 '<td class="sale-price">' + escapeHtml(sale.price) + ' LICN</td>' +
@@ -265,14 +274,51 @@
         });
     }
 
-    // ===== Buy from home page =====
-    window._homeBuyNFT = function (id) {
-        if (!currentWallet) {
-            showMarketToast('Please connect your wallet first', 'error');
-            return;
+    function bindRenderedControls() {
+        var featuredCollections = document.getElementById('featuredCollections');
+        if (featuredCollections) {
+            featuredCollections.addEventListener('click', function (event) {
+                var card = event.target.closest('[data-marketplace-href]');
+                if (!card) return;
+                window.location.href = card.getAttribute('data-marketplace-href');
+            });
         }
-        window.location.href = 'item.html?id=' + encodeURIComponent(id);
-    };
+
+        var trendingNFTs = document.getElementById('trendingNFTs');
+        if (trendingNFTs) {
+            trendingNFTs.addEventListener('click', function (event) {
+                var actionButton = event.target.closest('[data-marketplace-action="buy"]');
+                if (actionButton) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    buyNFT(actionButton.getAttribute('data-nft-id') || '');
+                    return;
+                }
+
+                var card = event.target.closest('[data-marketplace-href]');
+                if (!card) return;
+                window.location.href = card.getAttribute('data-marketplace-href');
+            });
+        }
+
+        var topCreators = document.getElementById('topCreators');
+        if (topCreators) {
+            topCreators.addEventListener('click', function (event) {
+                var card = event.target.closest('[data-marketplace-href]');
+                if (!card) return;
+                window.location.href = card.getAttribute('data-marketplace-href');
+            });
+        }
+
+        var recentSales = document.getElementById('recentSales');
+        if (recentSales) {
+            recentSales.addEventListener('click', function (event) {
+                var row = event.target.closest('[data-marketplace-href]');
+                if (!row) return;
+                window.location.href = row.getAttribute('data-marketplace-href');
+            });
+        }
+    }
 
     // ===== Utility =====
     function animateNumber(elementId, target, decimals) {

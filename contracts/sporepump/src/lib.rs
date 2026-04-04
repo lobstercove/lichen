@@ -16,9 +16,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address,
+    bytes_to_u64, get_caller, get_contract_address, get_timestamp, get_value, log_info,
+    set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // T5.12: Reentrancy guard
@@ -150,6 +149,10 @@ fn is_admin(caller: &[u8]) -> bool {
         Some(data) => data.as_slice() == caller,
         None => false,
     }
+}
+
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|data| data.len() == 32).unwrap_or(false)
 }
 
 fn is_token_frozen(token_id: u64) -> bool {
@@ -560,10 +563,6 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
 #[no_mangle]
 pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) -> u64 {
     if token_amount == 0 {
-        return 0;
-    }
-    if is_paused() {
-        log_info("Protocol is paused");
         return 0;
     }
     if is_token_frozen(token_id) {
@@ -981,6 +980,7 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
 }
 
 /// Admin sets the LICN token contract address (for outgoing transfers)
+/// Returns: 0 success, 1 not admin, 2 already configured
 #[no_mangle]
 pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
@@ -1002,6 +1002,11 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
         core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
     }
 
+    if has_configured_address(LICN_TOKEN_KEY) {
+        log_info("LICN token already configured");
+        return 2;
+    }
+
     // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(LICN_TOKEN_KEY, &token);
     log_info("LICN token address configured");
@@ -1010,6 +1015,7 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
 
 /// Admin sets DEX contract addresses for graduation migration
 /// Both addresses must be non-zero 32-byte addresses
+/// Returns: 0 success, 1 not admin, 2 zero core, 3 zero amm, 4 already configured
 #[no_mangle]
 pub extern "C" fn set_dex_addresses(
     caller_ptr: *const u8,
@@ -1047,6 +1053,11 @@ pub extern "C" fn set_dex_addresses(
     if amm_addr.iter().all(|&b| b == 0) {
         log_info("DEX AMM address cannot be zero");
         return 3;
+    }
+
+    if has_configured_address(DEX_CORE_ADDRESS_KEY) || has_configured_address(DEX_AMM_ADDRESS_KEY) {
+        log_info("DEX addresses already configured");
+        return 4;
     }
 
     storage_set(DEX_CORE_ADDRESS_KEY, &core_addr);
@@ -1346,12 +1357,42 @@ mod tests {
         // Buy blocked (paused check is before caller check)
         let buyer = [3u8; 32];
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
-        // Sell blocked
-        assert_eq!(sell(buyer.as_ptr(), 1, 100), 0);
 
         test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 0);
         assert!(!is_paused());
+    }
+
+    #[test]
+    fn test_pause_allows_sell_exit() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let licn = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
+        test_mock::set_cross_call_response(Some(vec![1u8]));
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
+        assert!(tokens > 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+
+        test_mock::set_timestamp(16_000);
+        test_mock::set_caller(buyer);
+        let refund = sell(buyer.as_ptr(), 1, tokens / 2);
+        assert!(refund > 0, "sell should remain available while paused");
     }
 
     #[test]
@@ -1660,6 +1701,30 @@ mod tests {
     }
 
     #[test]
+    fn test_set_dex_addresses_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()),
+            0
+        );
+
+        let new_core = [11u8; 32];
+        let new_amm = [21u8; 32];
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), new_core.as_ptr(), new_amm.as_ptr()),
+            4
+        );
+        assert_eq!(test_mock::get_storage(DEX_CORE_ADDRESS_KEY), Some(core_addr.to_vec()));
+        assert_eq!(test_mock::get_storage(DEX_AMM_ADDRESS_KEY), Some(amm_addr.to_vec()));
+    }
+
+    #[test]
     fn test_threshold_crossing_with_dex_addresses_keeps_token_on_curve() {
         setup();
         let admin = [1u8; 32];
@@ -1949,18 +2014,33 @@ mod tests {
         initialize(admin.as_ptr());
 
         let token = [42u8; 32];
+        let other = [9u8; 32];
+
+        test_mock::set_caller(other);
+        assert_eq!(set_licn_token(other.as_ptr(), token.as_ptr()), 1);
+
+        test_mock::set_caller(admin);
         assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 0);
         let stored = test_mock::get_storage(LICN_TOKEN_KEY);
         assert_eq!(stored, Some(token.to_vec()));
 
-        // Zero address accepted (native LICN sentinel)
+        let zero = [0u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_g24_set_licn_token_allows_native_sentinel_first() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
         let zero = [0u8; 32];
         assert_eq!(set_licn_token(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(test_mock::get_storage(LICN_TOKEN_KEY), Some(zero.to_vec()));
 
-        // Non-admin rejected
-        let other = [9u8; 32];
-        test_mock::set_caller(other);
-        assert_eq!(set_licn_token(other.as_ptr(), token.as_ptr()), 1);
+        let token = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 2);
     }
 
     #[test]

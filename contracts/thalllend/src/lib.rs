@@ -19,9 +19,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::crosscall::{call_contract, CrossCall};
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
-    log_info, set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address,
+    bytes_to_u64, get_caller, get_contract_address, get_timestamp, get_value, log_info,
+    set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // Oracle configuration key (stores lichenoracle contract address)
@@ -184,6 +183,22 @@ fn load_licn_addr() -> [u8; 32] {
         })
         .unwrap_or([0u8; 32])
 }
+
+fn oracle_feed_configured() -> bool {
+    storage_get(ORACLE_ADDR_KEY)
+        .map(|bytes| {
+            let mut addr = [0u8; 32];
+            if bytes.len() >= 32 {
+                addr.copy_from_slice(&bytes[..32]);
+            }
+            !is_zero_addr(&addr)
+        })
+        .unwrap_or(false)
+        && storage_get(ORACLE_ASSET_KEY)
+            .map(|asset| !asset.is_empty())
+            .unwrap_or(false)
+}
+
 fn is_zero_addr(a: &[u8; 32]) -> bool {
     a.iter().all(|&b| b == 0)
 }
@@ -424,10 +439,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
 pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     if amount == 0 {
         return 1;
-    }
-    if is_paused() {
-        log_info("Protocol is paused");
-        return 20;
     }
     if !reentrancy_enter() {
         return 21;
@@ -1189,6 +1200,10 @@ pub extern "C" fn set_lichencoin_address(caller_ptr: *const u8, addr_ptr: *const
     if is_zero_addr(&addr) {
         return 2;
     }
+    if !is_zero_addr(&load_licn_addr()) {
+        log_info("LichenCoin address already configured");
+        return 3;
+    }
     storage_set(LICHENCOIN_ADDRESS_KEY, &addr);
     log_info("LichenCoin address configured");
     0
@@ -1228,6 +1243,10 @@ pub extern "C" fn set_oracle_feed(
     if asset_len == 0 {
         log_info("Cannot set empty oracle asset key");
         return 3;
+    }
+    if oracle_feed_configured() {
+        log_info("Oracle feed already configured");
+        return 4;
     }
 
     let mut asset = Vec::with_capacity(asset_len as usize);
@@ -1823,7 +1842,6 @@ mod tests {
 
         // Operations blocked
         assert_eq!(deposit(user.as_ptr(), 1_000), 20);
-        assert_eq!(withdraw(user.as_ptr(), 1_000), 20);
         assert_eq!(borrow(user.as_ptr(), 1_000), 20);
         assert_eq!(flash_borrow(user.as_ptr(), 1_000), 20);
 
@@ -1843,6 +1861,26 @@ mod tests {
         // Double unpause rejected
         test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_withdraw_still_works_when_paused() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(user);
+        assert_eq!(withdraw(user.as_ptr(), 100_000), 0);
+        assert_eq!(load_u64(b"ll_total_deposits"), 900_000);
     }
 
     #[test]
@@ -2053,7 +2091,7 @@ mod tests {
 
     #[test]
     fn test_set_lichencoin_address() {
-        setup();
+        setup_no_licn();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
@@ -2065,7 +2103,7 @@ mod tests {
 
     #[test]
     fn test_set_lichencoin_address_non_admin() {
-        setup();
+        setup_no_licn();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
@@ -2078,13 +2116,60 @@ mod tests {
 
     #[test]
     fn test_set_lichencoin_address_zero_rejected() {
-        setup();
+        setup_no_licn();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let zero = [0u8; 32];
         assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_lichencoin_address_cannot_reconfigure() {
+        setup_no_licn();
+        let admin = [1u8; 32];
+        let first = [77u8; 32];
+        let second = [88u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_licn_addr(), first);
+    }
+
+    #[test]
+    fn test_set_oracle_feed_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        let first_oracle = [7u8; 32];
+        let second_oracle = [8u8; 32];
+        let first_asset = b"LICN/USD";
+        let second_asset = b"LICN/EUR";
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        assert_eq!(
+            set_oracle_feed(
+                admin.as_ptr(),
+                first_oracle.as_ptr(),
+                first_asset.as_ptr(),
+                first_asset.len() as u32,
+            ),
+            0
+        );
+        assert_eq!(
+            set_oracle_feed(
+                admin.as_ptr(),
+                second_oracle.as_ptr(),
+                second_asset.as_ptr(),
+                second_asset.len() as u32,
+            ),
+            4
+        );
+        assert_eq!(test_mock::get_storage(ORACLE_ADDR_KEY).unwrap().as_slice(), &first_oracle);
+        assert_eq!(test_mock::get_storage(ORACLE_ASSET_KEY).unwrap().as_slice(), first_asset);
     }
 
     #[test]

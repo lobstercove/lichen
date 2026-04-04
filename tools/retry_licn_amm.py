@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 
@@ -18,8 +18,7 @@ def price_to_tick(p):
 
 async def main():
     conn = Connection('http://127.0.0.1:8899')
-    keys = Path('data/state-testnet/genesis-keys')
-    reserve = Keypair.load(keys / 'reserve_pool-lichen-testnet-1.json')
+    reserve = load_genesis_keypair('reserve_pool')
     # Discover dex_amm from registry
     result = await conn._rpc("getAllSymbolRegistry")
     dex_amm_addr = None
@@ -40,7 +39,7 @@ async def main():
     a = 1_000_000 * SPORES
     b = 100_000 * SPORES
 
-    caller_bytes = bytes(reserve.public_key().to_bytes())
+    caller_bytes = bytes(reserve.address().to_bytes())
     args = (
         bytes([3]) + caller_bytes +
         struct.pack('<Q', 1) +
@@ -51,7 +50,7 @@ async def main():
     )
     print(f'Adding LICN/lUSD AMM: 1M LICN + 100K lUSD, ticks=[{lt},{ut}]')
     try:
-        sig = await call_contract_raw(conn, reserve, dex_amm, 'call', list(args))
+        sig = await call_contract_raw(conn, reserve, dex_amm, 'call', list(args), value=a)
         print(f'Success! sig: {sig}')
     except Exception as e:
         print(f'Failed: {e}')
@@ -67,7 +66,7 @@ async def main():
             struct.pack('<Q', b2)
         )
         try:
-            sig = await call_contract_raw(conn, reserve, dex_amm, 'call', list(args2))
+            sig = await call_contract_raw(conn, reserve, dex_amm, 'call', list(args2), value=a2)
             print(f'Success with smaller amount! sig: {sig}')
         except Exception as e2:
             print(f'Also failed: {e2}')

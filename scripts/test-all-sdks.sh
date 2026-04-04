@@ -2,7 +2,8 @@
 # Comprehensive SDK Coverage Test
 # Tests all SDKs (Rust, Python, TypeScript) against all core functionality
 
-set -e
+set -eu
+set +o pipefail
 
 echo "🦞 Lichen - Complete SDK Coverage Test"
 echo "========================================================================"
@@ -10,9 +11,30 @@ echo ""
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+RPC_URL="${RPC_URL:-http://localhost:8899}"
 if [[ ! -x "$PYTHON_BIN" ]]; then
     PYTHON_BIN="python3"
 fi
+
+rpc_post() {
+    local payload="$1"
+    curl -sS --connect-timeout 3 --max-time 10 -X POST "$RPC_URL" \
+        -H "Content-Type: application/json" \
+        -d "$payload"
+}
+
+run_and_expect() {
+    local expected="$1"
+    shift
+    local output=""
+
+    if output="$("$@" 2>&1)" && printf '%s' "$output" | grep -q "$expected"; then
+        return 0
+    fi
+
+    printf '%s\n' "$output" >&2
+    return 1
+}
 
 # Colors
 GREEN='\033[0;32m'
@@ -22,15 +44,14 @@ NC='\033[0m' # No Color
 
 # Check validators are running
 echo "🔍 Checking validator status..."
-if ! curl -s http://localhost:8899 -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | grep -q '"result"'; then
+SLOT_RESPONSE="$(rpc_post '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' 2>/dev/null || true)"
+if ! printf '%s' "$SLOT_RESPONSE" | grep -q '"result"'; then
     echo -e "${RED}❌ Validators not running!${NC}"
     echo "   Start validators with: ./start-validators.sh"
     exit 1
 fi
 
-SLOT=$(curl -s http://localhost:8899 -X POST -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | grep -o '"result":[0-9]*' | cut -d':' -f2)
+SLOT="$(printf '%s' "$SLOT_RESPONSE" | grep -o '"result":[0-9]*' | cut -d':' -f2)"
 echo -e "${GREEN}✅ Validators running (slot: $SLOT)${NC}"
 echo ""
 
@@ -48,7 +69,7 @@ echo "------------------------------------------------------------------------"
 
 cd sdk/rust
 
-if cargo test 2>&1 | grep -q "test result: ok"; then
+if run_and_expect "test result: ok" cargo test; then
     echo -e "${GREEN}✅ Rust unit tests passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -57,7 +78,7 @@ else
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-if cargo run --example comprehensive_test 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
+if run_and_expect "COMPREHENSIVE TEST COMPLETE" cargo run --example comprehensive_test; then
     echo -e "${GREEN}✅ Rust comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -66,7 +87,7 @@ else
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-if cargo run --example test_transactions 2>&1 | grep -q "Transaction creation capability verified"; then
+if run_and_expect "Transaction creation capability verified" cargo run --example test_transactions; then
     echo -e "${GREEN}✅ Rust transaction test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -86,7 +107,7 @@ echo "🐍 Testing Python SDK"
 echo "------------------------------------------------------------------------"
 
 cd sdk/python
-if PYTHONPATH=$PWD "$PYTHON_BIN" examples/comprehensive_test.py 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
+if run_and_expect "COMPREHENSIVE TEST COMPLETE" env PYTHONPATH="$PWD" "$PYTHON_BIN" examples/comprehensive_test.py; then
     echo -e "${GREEN}✅ Python comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -124,7 +145,7 @@ fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
 # Run comprehensive test
-if npx ts-node test-all-features.ts 2>&1 | grep -q "TypeScript SDK Test Complete"; then
+if run_and_expect "TypeScript SDK Test Complete" npx ts-node test-all-features.ts; then
     echo -e "${GREEN}✅ TypeScript comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else

@@ -126,6 +126,26 @@ fn test_g26_01_compute_market_admin_fns_have_caller_checks() {
             ),
             ("add_arbitrator()", "fn add_arbitrator(caller_ptr"),
             ("remove_arbitrator()", "fn remove_arbitrator(caller_ptr"),
+            (
+                "signer_matches() helper",
+                "fn signer_matches(addr: &[u8; 32]) -> bool",
+            ),
+            (
+                "set_lichenid_address() signer check",
+                "pub extern \"C\" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {\n    let caller = match read_address32(caller_ptr)",
+            ),
+            (
+                "set_identity_gate() signer check",
+                "pub extern \"C\" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {\n    let caller = match read_address32(caller_ptr)",
+            ),
+            (
+                "pause() signer check",
+                "pub extern \"C\" fn pause(caller_ptr: *const u8) -> u32 {\n    let caller = match read_address32(caller_ptr)",
+            ),
+            (
+                "unpause() signer check",
+                "pub extern \"C\" fn unpause(caller_ptr: *const u8) -> u32 {\n    let caller = match read_address32(caller_ptr)",
+            ),
         ],
     );
     // Additionally verify the shared caller check pattern exists for each
@@ -135,6 +155,10 @@ fn test_g26_01_compute_market_admin_fns_have_caller_checks() {
             "admin functions (shared pattern)",
             // This exact string appears 5+ times for admin functions
             "let real_caller = get_caller();\n    if real_caller.0 != caller {\n        return 200;\n    }\n    if !is_admin",
+        ),
+        (
+            "identity/pausing caller guard via signer helper",
+            "if !signer_matches(&caller) {\n        return 200;\n    }",
         )],
     );
 }
@@ -317,8 +341,11 @@ fn b1_02_all_contracts_initialized_at_genesis() {
     let init_fn_start = source
         .find("fn genesis_initialize_contracts(")
         .expect("genesis_initialize_contracts function not found");
-    // Take a generous slice — the function is ~450 lines
-    let init_body = &source[init_fn_start..std::cmp::min(init_fn_start + 20000, source.len())];
+    let init_fn_end = source[init_fn_start..]
+        .find("\npub fn genesis_create_trading_pairs(")
+        .map(|offset| init_fn_start + offset)
+        .expect("end of genesis_initialize_contracts function not found");
+    let init_body = &source[init_fn_start..init_fn_end];
 
     for contract in &all_contracts {
         // Each contract must appear as a dir_name in an InitSpec or in a special-case block
@@ -331,6 +358,105 @@ fn b1_02_all_contracts_initialized_at_genesis() {
             contract
         );
     }
+}
+
+#[test]
+fn b1_03_genesis_initialization_uses_governance_authority() {
+    let genesis_src =
+        std::fs::read_to_string("../genesis/src/lib.rs").expect("Cannot read genesis/src/lib.rs");
+    let init_fn_start = genesis_src
+        .find("fn genesis_initialize_contracts(")
+        .expect("genesis_initialize_contracts function not found");
+    let init_fn_end = genesis_src[init_fn_start..]
+        .find("\npub fn genesis_create_trading_pairs(")
+        .map(|offset| init_fn_start + offset)
+        .expect("end of genesis_initialize_contracts function not found");
+    let init_body = &genesis_src[init_fn_start..init_fn_end];
+
+    assert!(
+        init_body.contains("get_governance_authority()?.ok_or_else(||"),
+        "REGRESSION B1-03: genesis_initialize_contracts must load governance_authority from state"
+    );
+    assert!(
+        init_body.contains("let exec_as_governance =")
+            && init_body.contains("&governance_authority"),
+        "REGRESSION B1-03: genesis_initialize_contracts must route privileged init calls through governance authority"
+    );
+
+    let main_src =
+        std::fs::read_to_string("../genesis/src/main.rs").expect("Cannot read genesis/src/main.rs");
+    assert!(
+        main_src
+            .contains("genesis_harden_contract_controls(&state, &genesis_pubkey, \"GENESIS:\")"),
+        "REGRESSION B1-03: genesis binary must install governance/timelocks before initialization"
+    );
+}
+
+#[test]
+fn b1_04_validator_sync_replays_genesis_hardening() {
+    let validator_src = std::fs::read_to_string("../validator/src/main.rs")
+        .expect("Cannot read validator/src/main.rs");
+
+    assert!(
+        validator_src.contains("genesis_harden_contract_controls(")
+            && validator_src.contains("genesis_initialize_contracts("),
+        "REGRESSION B1-04: validator sync must replay genesis hardening before initialization"
+    );
+}
+
+#[test]
+fn b1_05_genesis_oracle_seeding_uses_governance_authority() {
+    let genesis_src =
+        std::fs::read_to_string("../genesis/src/lib.rs").expect("Cannot read genesis/src/lib.rs");
+    let seed_fn_start = genesis_src
+        .find("pub fn genesis_seed_oracle(")
+        .expect("genesis_seed_oracle function not found");
+    let seed_fn_end = genesis_src[seed_fn_start..]
+        .find("\npub fn genesis_seed_analytics_prices(")
+        .map(|offset| seed_fn_start + offset)
+        .expect("end of genesis_seed_oracle function not found");
+    let seed_body = &genesis_src[seed_fn_start..seed_fn_end];
+
+    assert!(
+        seed_body.contains("resolve_genesis_governance_authority(state)"),
+        "REGRESSION B1-05: genesis_seed_oracle must resolve governance authority before oracle mutations"
+    );
+    assert!(
+        seed_body.contains("let admin = governance_authority.0"),
+        "REGRESSION B1-05: genesis_seed_oracle must seed feeder identity from governance authority"
+    );
+    assert!(
+        seed_body.contains("&governance_authority"),
+        "REGRESSION B1-05: genesis_seed_oracle must execute feeder and price setup as governance authority"
+    );
+}
+
+#[test]
+fn b1_06_genesis_bridge_validator_seeding_uses_governance_executor() {
+    let genesis_src =
+        std::fs::read_to_string("../genesis/src/lib.rs").expect("Cannot read genesis/src/lib.rs");
+    let init_fn_start = genesis_src
+        .find("fn genesis_initialize_contracts(")
+        .expect("genesis_initialize_contracts function not found");
+    let init_fn_end = genesis_src[init_fn_start..]
+        .find("\npub fn genesis_create_trading_pairs(")
+        .map(|offset| init_fn_start + offset)
+        .expect("end of genesis_initialize_contracts function not found");
+    let init_body = &genesis_src[init_fn_start..init_fn_end];
+
+    assert!(
+        init_body.contains("exec_as_governance(bridge_pk, \"set_token_address\"")
+            || init_body.contains(
+                "exec_as_governance(\n            bridge_pk,\n            \"set_token_address\""
+            ),
+        "REGRESSION B1-06: lichenbridge token wiring must execute through governance executor"
+    );
+    assert!(
+        init_body.contains("\"add_bridge_validator\"")
+            && init_body.contains("lichenbridge(bridge_validator)")
+            && init_body.contains("exec_as_governance("),
+        "REGRESSION B1-06: genesis bridge validator seeding must remain on the governance executor path"
+    );
 }
 
 // ============================================================================

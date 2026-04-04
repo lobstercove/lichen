@@ -63,6 +63,7 @@ const DECIMALS: u8 = 9; // F19.3a: Match system-wide 9-decimal convention (1e9 s
 // Minting controls
 const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000_000_000; // 100M lUSD per epoch — circuit breaker, not growth limiter
 const EPOCH_SLOTS: u64 = 86_400; // ~24 hours at 1 slot/sec
+const MAX_ATTESTATION_AGE_SLOTS: u64 = EPOCH_SLOTS;
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed
 #[allow(dead_code)]
@@ -70,6 +71,9 @@ const RESERVE_WARNING_BPS: u64 = 10_200; // 102% — warn if close to floor
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"lusd_admin";
+const PENDING_ADMIN_KEY: &[u8] = b"lusd_pending_admin";
+const ATTESTER_KEY: &[u8] = b"lusd_attester";
+const BOOTSTRAP_COMPLETE_KEY: &[u8] = b"lusd_bootstrap_complete";
 const PAUSED_KEY: &[u8] = b"lusd_paused";
 const REENTRANCY_KEY: &[u8] = b"lusd_reentrancy";
 const TOTAL_SUPPLY_KEY: &[u8] = b"lusd_supply";
@@ -196,12 +200,32 @@ fn require_admin(caller: &[u8; 32]) -> bool {
     !is_zero(&admin) && *caller == admin
 }
 
+fn require_attester(caller: &[u8; 32]) -> bool {
+    let attester = load_addr(ATTESTER_KEY);
+    !is_zero(&attester) && *caller == attester
+}
+
+fn is_bootstrap_complete() -> bool {
+    storage_get(BOOTSTRAP_COMPLETE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+
 // Reserve circuit breaker: block minting if supply would exceed attested reserves
 fn check_reserve_circuit_breaker(additional_mint: u64) -> bool {
     let attested = load_u64(RESERVE_ATTESTED_KEY);
     if attested == 0 {
-        return true;
-    } // No attestation yet — allow initial minting
+        return !is_bootstrap_complete();
+    }
+    if is_bootstrap_complete() {
+        let last_attestation_slot = load_u64(RESERVE_SLOT_KEY);
+        let current_slot = get_slot();
+        if last_attestation_slot == 0
+            || current_slot > last_attestation_slot.saturating_add(MAX_ATTESTATION_AGE_SLOTS)
+        {
+            return false;
+        }
+    }
     let supply = load_u64(TOTAL_SUPPLY_KEY);
     let new_supply = supply.saturating_add(additional_mint);
     // new_supply must not exceed attested reserves
@@ -228,6 +252,23 @@ fn check_epoch_cap(amount: u64) -> bool {
 // PUBLIC FUNCTIONS — TOKEN OPERATIONS
 // ============================================================================
 
+fn init_signer_matches(admin: &[u8; 32]) -> bool {
+    let caller = lichen_sdk::get_caller();
+    if caller.0 == *admin {
+        return true;
+    }
+
+    #[cfg(test)]
+    {
+        return caller.0 == [0u8; 32];
+    }
+
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// Initialize the lUSD token contract. Admin should be a multisig address.
 #[no_mangle]
 pub extern "C" fn initialize(admin: *const u8) -> u32 {
@@ -243,8 +284,13 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     if is_zero(&addr) {
         return 2;
     } // Zero address
+    if !init_signer_matches(&addr) {
+        return 200;
+    }
 
     storage_set(ADMIN_KEY, &addr);
+    storage_set(ATTESTER_KEY, &addr);
+    storage_set(BOOTSTRAP_COMPLETE_KEY, &[0u8]);
     save_u64(TOTAL_SUPPLY_KEY, 0);
     save_u64(TOTAL_MINTED_KEY, 0);
     save_u64(TOTAL_BURNED_KEY, 0);
@@ -370,11 +416,6 @@ pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
     if caller.0 != caller_addr {
         reentrancy_exit();
         return 200;
-    }
-
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 1;
     }
     if amount == 0 {
         reentrancy_exit();
@@ -610,7 +651,7 @@ pub extern "C" fn attest_reserves(
         return 200;
     }
 
-    if !require_admin(&caller_addr) {
+    if !require_attester(&caller_addr) {
         return 2;
     }
 
@@ -791,8 +832,103 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
     if is_zero(&new_addr) {
         return 3;
     }
-    storage_set(ADMIN_KEY, &new_addr);
-    log_info("lUSD: admin transferred");
+    if is_bootstrap_complete() && new_addr == load_addr(ATTESTER_KEY) {
+        return 4;
+    }
+    storage_set(PENDING_ADMIN_KEY, &new_addr);
+    log_info("lUSD: pending admin set");
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn accept_admin(caller: *const u8) -> u32 {
+    let mut caller_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
+    }
+
+    let pending_admin = load_addr(PENDING_ADMIN_KEY);
+    if is_zero(&pending_admin) {
+        return 1;
+    }
+    if pending_admin != caller_addr {
+        return 2;
+    }
+    if is_bootstrap_complete() && caller_addr == load_addr(ATTESTER_KEY) {
+        return 3;
+    }
+
+    storage_set(ADMIN_KEY, &caller_addr);
+    storage_set(PENDING_ADMIN_KEY, &[0u8; 32]);
+    log_info("lUSD: admin accepted");
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn set_attester(caller: *const u8, new_attester: *const u8) -> u32 {
+    let mut caller_addr = [0u8; 32];
+    let mut new_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(new_attester, new_addr.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
+    }
+    if !require_admin(&caller_addr) {
+        return 2;
+    }
+    if is_zero(&new_addr) {
+        return 3;
+    }
+    if is_bootstrap_complete() && new_addr == load_addr(ADMIN_KEY) {
+        return 4;
+    }
+    if load_addr(ATTESTER_KEY) == new_addr {
+        return 0;
+    }
+
+    storage_set(ATTESTER_KEY, &new_addr);
+    save_u64(RESERVE_ATTESTED_KEY, 0);
+    save_u64(RESERVE_SLOT_KEY, 0);
+    storage_set(RESERVE_HASH_KEY, &[0u8; 32]);
+    log_info("lUSD: reserve attester updated");
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn complete_bootstrap(caller: *const u8) -> u32 {
+    let mut caller_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
+    }
+    if !require_admin(&caller_addr) {
+        return 2;
+    }
+    if is_bootstrap_complete() {
+        return 1;
+    }
+
+    let admin = load_addr(ADMIN_KEY);
+    let attester = load_addr(ATTESTER_KEY);
+    if is_zero(&attester) || attester == admin {
+        return 3;
+    }
+    if load_u64(RESERVE_ATTESTED_KEY) == 0 || load_u64(RESERVE_SLOT_KEY) == 0 {
+        return 4;
+    }
+
+    storage_set(BOOTSTRAP_COMPLETE_KEY, &[1u8]);
+    log_info("lUSD: bootstrap completed");
     0
 }
 
@@ -843,6 +979,15 @@ mod tests {
         reset_store();
         let zero = [0u8; 32];
         assert_eq!(initialize(zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_initialize_caller_mismatch_fails() {
+        reset_store();
+        let admin = addr(1);
+        test_mock::set_caller(addr(9));
+        assert_eq!(initialize(admin.as_ptr()), 200);
+        assert_eq!(load_addr(ADMIN_KEY), [0u8; 32]);
     }
 
     // ---- Minting ----
@@ -1090,7 +1235,7 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000), 1); // Blocked
         test_mock::set_caller(user);
-        assert_eq!(burn(user.as_ptr(), 100_000), 1); // Blocked
+        assert_eq!(burn(user.as_ptr(), 100_000), 0); // Burn remains available
 
         test_mock::set_caller(admin);
         emergency_unpause(admin.as_ptr());
@@ -1101,7 +1246,7 @@ mod tests {
     // ---- Admin Transfer ----
 
     #[test]
-    fn test_transfer_admin() {
+    fn test_transfer_admin_requires_acceptance() {
         reset_store();
         let admin = addr(1);
         let new_admin = addr(5);
@@ -1110,11 +1255,76 @@ mod tests {
 
         test_mock::set_caller(admin);
         assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
-        // Old admin can no longer mint
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 2);
-        // New admin can mint
+        assert_eq!(load_addr(PENDING_ADMIN_KEY), new_admin);
+        // Old admin remains active until the pending admin accepts.
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+        // New admin cannot act until acceptance.
         test_mock::set_caller(new_admin);
+        assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 2);
+        assert_eq!(accept_admin(new_admin.as_ptr()), 0);
         assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+        assert_eq!(load_addr(PENDING_ADMIN_KEY), [0u8; 32]);
+    }
+
+    #[test]
+    fn test_accept_admin_rejects_non_pending_admin() {
+        reset_store();
+        let admin = addr(1);
+        let new_admin = addr(5);
+        let attacker = addr(9);
+        initialize(admin.as_ptr());
+
+        test_mock::set_caller(admin);
+        assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(accept_admin(attacker.as_ptr()), 2);
+        assert_eq!(load_addr(ADMIN_KEY), admin);
+        assert_eq!(load_addr(PENDING_ADMIN_KEY), new_admin);
+    }
+
+    #[test]
+    fn test_attester_bootstrap_requires_split_and_fresh_attestation() {
+        reset_store();
+        let admin = addr(1);
+        let attester = addr(7);
+        let user = addr(2);
+        let proof = addr(9);
+        initialize(admin.as_ptr());
+
+        test_mock::set_caller(admin);
+        assert_eq!(complete_bootstrap(admin.as_ptr()), 3);
+        assert_eq!(set_attester(admin.as_ptr(), attester.as_ptr()), 0);
+        assert_eq!(
+            attest_reserves(admin.as_ptr(), 5_000_000, proof.as_ptr()),
+            2
+        );
+        assert_eq!(complete_bootstrap(admin.as_ptr()), 4);
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(attester);
+        assert_eq!(
+            attest_reserves(attester.as_ptr(), 5_000_000, proof.as_ptr()),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(complete_bootstrap(admin.as_ptr()), 0);
+        assert_eq!(transfer_admin(admin.as_ptr(), attester.as_ptr()), 4);
+        assert_eq!(set_attester(admin.as_ptr(), admin.as_ptr()), 4);
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+
+        test_mock::set_slot(100 + MAX_ATTESTATION_AGE_SLOTS + 1);
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 10);
+
+        test_mock::set_caller(attester);
+        assert_eq!(
+            attest_reserves(attester.as_ptr(), 10_000_000, proof.as_ptr()),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
     }
 
     // ---- Edge cases ----

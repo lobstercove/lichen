@@ -42,12 +42,15 @@ from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instructi
 # Configuration
 # ===========================================================================
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 RPC_URL = "http://127.0.0.1:8899"
-KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
+KEYPAIR_DIR = REPO_ROOT / "keypairs"
 DEPLOYER_PATH = KEYPAIR_DIR / "deployer.json"
 CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)   # contract runtime program address (for Call instructions)
 SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)       # system program (for Deploy instructions, type 17)
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "deploy-manifest.json"
+OUTPUT_PATH = REPO_ROOT / "deploy-manifest.json"
+CONTRACT_TX_LOOKUP_ATTEMPTS = int(os.environ.get("LICHEN_CONTRACT_TX_LOOKUP_ATTEMPTS", "80"))
+CONTRACT_TX_LOOKUP_DELAY_SECS = float(os.environ.get("LICHEN_CONTRACT_TX_LOOKUP_DELAY_SECS", "0.25"))
 
 # Contracts in deployment order
 PHASE_1_TOKENS = [
@@ -77,9 +80,9 @@ PHASE_4_PREDICTION = [
 ALL_CONTRACTS = PHASE_1_TOKENS + PHASE_2_DEX_CORE + PHASE_3_DEX_MODULES + PHASE_4_PREDICTION
 
 WASM_SEARCH_DIRS = [
-    Path(__file__).resolve().parent.parent / "contracts" / "target" / "wasm32-unknown-unknown" / "release",
-    Path(__file__).resolve().parent.parent / "contracts" / "build",
-    Path(__file__).resolve().parent.parent / "contracts",
+    REPO_ROOT / "contracts" / "target" / "wasm32-unknown-unknown" / "release",
+    REPO_ROOT / "contracts" / "build",
+    REPO_ROOT / "contracts",
 ]
 
 
@@ -90,7 +93,7 @@ WASM_SEARCH_DIRS = [
 def find_wasm(filename: str) -> Optional[Path]:
     # Also search in contracts/<name>/<name>.wasm (per-contract directories)
     stem = filename.replace(".wasm", "")
-    per_contract = Path(__file__).resolve().parent.parent / "contracts" / stem / filename
+    per_contract = REPO_ROOT / "contracts" / stem / filename
     if per_contract.exists():
         return per_contract
     for d in WASM_SEARCH_DIRS:
@@ -98,6 +101,31 @@ def find_wasm(filename: str) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+def find_genesis_keypair_path(role: str, network: Optional[str] = None) -> Path:
+    network = (network or os.environ.get("LICHEN_NETWORK", "testnet")).lower()
+    filename = f"{role}-lichen-{network}-1.json"
+    data_dir = REPO_ROOT / "data"
+    preferred_state = "7001" if network == "testnet" else "8001"
+    candidates = [
+        data_dir / f"state-{preferred_state}" / "genesis-keys" / filename,
+        data_dir / f"state-{network}" / "genesis-keys" / filename,
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    matches = sorted(data_dir.glob(f"state-*/genesis-keys/{filename}"))
+    if matches:
+        return matches[0]
+
+    raise FileNotFoundError(f"Genesis keypair not found for role '{role}' on network '{network}'")
+
+
+def load_genesis_keypair(role: str, network: Optional[str] = None) -> Keypair:
+    return Keypair.load(find_genesis_keypair_path(role, network))
 
 
 def load_or_create_deployer() -> Keypair:
@@ -115,6 +143,10 @@ def load_or_create_deployer() -> Keypair:
 def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
     h = hashlib.sha256(deployer.to_bytes() + wasm_bytes).digest()
     return PublicKey(h[:32])
+
+
+def keypair_address_bytes(keypair: Keypair) -> bytes:
+    return bytes(keypair.address().to_bytes())
 
 
 # Maps symbol registry names → deploy_dex contract names
@@ -225,7 +257,8 @@ async def call_contract(
         .set_recent_blockhash(blockhash)
         .build_and_sign(caller)
     )
-    return await conn.send_transaction(tx)
+    sig = await conn.send_transaction(tx)
+    return await await_contract_success(conn, sig, f"{program_pubkey}.{func}")
 
 
 async def call_contract_raw(
@@ -246,7 +279,38 @@ async def call_contract_raw(
         .set_recent_blockhash(blockhash)
         .build_and_sign(caller)
     )
-    return await conn.send_transaction(tx)
+    sig = await conn.send_transaction(tx)
+    return await await_contract_success(conn, sig, f"{program_pubkey}.{func}")
+
+
+async def await_contract_success(conn: Connection, signature: str, context: str) -> str:
+    last_error = None
+    for _ in range(CONTRACT_TX_LOOKUP_ATTEMPTS):
+        await asyncio.sleep(CONTRACT_TX_LOOKUP_DELAY_SECS)
+        try:
+            tx = await conn.get_transaction(signature)
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+        if not tx:
+            continue
+
+        if tx.get("error"):
+            raise RuntimeError(f"{context} failed: {tx['error']}")
+
+        return_code = tx.get("return_code")
+        if return_code not in (None, 0):
+            return_data = tx.get("return_data")
+            details = f", return_data={return_data}" if return_data else ""
+            raise RuntimeError(f"{context} returned code {return_code}{details}")
+
+        return signature
+
+    if last_error:
+        raise RuntimeError(f"{context} confirmation unavailable: {last_error}")
+
+    raise RuntimeError(f"{context} confirmation unavailable: transaction not found")
 
 
 # ===========================================================================
@@ -687,15 +751,17 @@ async def main():
         print(f"  ⚠️  Missing: {', '.join(missing)}")
         print(f"  Build WASM first: cargo build --release --target wasm32-unknown-unknown")
 
+    custody_keypair_path = f"/etc/lichen/custody-treasury-{args.network}.json"
+
     print(f"\n  Next steps:")
     print(f"  1. Copy deployer keypair to custody treasury (CRITICAL — admin must match):")
-    print(f"     sudo cp {DEPLOYER_PATH} /etc/lichen/custody-treasury.json")
+    print(f"     sudo cp {DEPLOYER_PATH} {custody_keypair_path}")
     print(f"  2. Copy token addresses to custody config:")
     for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token"]:
         if name in all_addrs:
             env_key = f"CUSTODY_{name.upper()}_ADDR"
             print(f"     export {env_key}={all_addrs[name]}")
-    print(f"  3. Set CUSTODY_TREASURY_KEYPAIR=/etc/lichen/custody-treasury.json in custody env")
+    print(f"  3. Set CUSTODY_TREASURY_KEYPAIR={custody_keypair_path} in custody env")
     print(f"  4. Restart custody service with new env vars")
     print(f"  5. First deposit will trigger wrapped token minting ✅")
 

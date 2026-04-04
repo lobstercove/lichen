@@ -1,6 +1,13 @@
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::{
-    extract::State, routing::delete, routing::get, routing::post, routing::put, Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::delete,
+    routing::get,
+    routing::post,
+    routing::put,
+    Json, Router,
 };
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
@@ -53,10 +60,53 @@ struct WithdrawalRateState {
     /// (timestamp, count) for rolling window
     window_start: std::time::Instant,
     count_this_minute: u64,
+    count_warning_level: Option<WithdrawalWarningLevel>,
     value_this_hour: u64,
     hour_start: std::time::Instant,
+    value_warning_level: Option<WithdrawalWarningLevel>,
     /// Per-address: last withdrawal time
     per_address: std::collections::HashMap<String, std::time::Instant>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WithdrawalVelocityMetrics {
+    count_this_minute: u64,
+    max_withdrawals_per_min: u64,
+    value_this_hour: u64,
+    max_value_per_hour: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum WithdrawalWarningLevel {
+    HalfUsed,
+    ThreeQuartersUsed,
+    NearLimit,
+}
+
+impl WithdrawalWarningLevel {
+    fn threshold_percent(self) -> u64 {
+        match self {
+            WithdrawalWarningLevel::HalfUsed => 50,
+            WithdrawalWarningLevel::ThreeQuartersUsed => 75,
+            WithdrawalWarningLevel::NearLimit => 90,
+        }
+    }
+
+    fn severity(self) -> &'static str {
+        match self {
+            WithdrawalWarningLevel::HalfUsed => "warning",
+            WithdrawalWarningLevel::ThreeQuartersUsed => "high",
+            WithdrawalWarningLevel::NearLimit => "critical",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            WithdrawalWarningLevel::HalfUsed => "fifty_percent",
+            WithdrawalWarningLevel::ThreeQuartersUsed => "seventy_five_percent",
+            WithdrawalWarningLevel::NearLimit => "ninety_percent",
+        }
+    }
 }
 
 impl WithdrawalRateState {
@@ -64,8 +114,10 @@ impl WithdrawalRateState {
         Self {
             window_start: std::time::Instant::now(),
             count_this_minute: 0,
+            count_warning_level: None,
             value_this_hour: 0,
             hour_start: std::time::Instant::now(),
+            value_warning_level: None,
             per_address: std::collections::HashMap::new(),
         }
     }
@@ -88,6 +140,53 @@ impl DepositRateState {
             per_user: std::collections::HashMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+enum WithdrawalVelocityTier {
+    #[default]
+    Standard,
+    Elevated,
+    Extraordinary,
+}
+
+impl WithdrawalVelocityTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            WithdrawalVelocityTier::Standard => "standard",
+            WithdrawalVelocityTier::Elevated => "elevated",
+            WithdrawalVelocityTier::Extraordinary => "extraordinary",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WithdrawalOperatorConfirmation {
+    operator_id: String,
+    confirmed_at: i64,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct WithdrawalVelocityPolicy {
+    tx_caps: BTreeMap<String, u64>,
+    daily_caps: BTreeMap<String, u64>,
+    elevated_thresholds: BTreeMap<String, u64>,
+    extraordinary_thresholds: BTreeMap<String, u64>,
+    elevated_delay_secs: i64,
+    extraordinary_delay_secs: i64,
+    operator_confirmation_tokens: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WithdrawalVelocitySnapshot {
+    tier: WithdrawalVelocityTier,
+    daily_cap: u64,
+    required_signer_threshold: usize,
+    required_operator_confirmations: usize,
+    delay_secs: i64,
 }
 
 /// Registered webhook destination.
@@ -176,10 +275,12 @@ struct CustodyConfig {
     /// Set via CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS (default: 50 = 0.5%).
     rebalance_max_slippage_bps: u64,
     deposit_ttl_secs: i64,
+    /// Optional incident-response manifest shared with RPC/operator banners.
+    incident_status_path: Option<String>,
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     master_seed: String,
     /// Dedicated seed root for deposit address derivation and deposit sweeps.
-    /// Falls back to master_seed when no separate deposit root is configured.
+    /// Must differ from master_seed outside explicit insecure dev mode.
     deposit_master_seed: String,
     /// C9 fix: Auth token for threshold signer requests (global fallback)
     signer_auth_token: Option<String>,
@@ -192,6 +293,7 @@ struct CustodyConfig {
     signer_pq_addresses: Vec<Pubkey>,
     /// M17 fix: API auth token for withdrawal and other write endpoints
     api_auth_token: Option<String>,
+    withdrawal_velocity_policy: WithdrawalVelocityPolicy,
     /// EVM multisig contract address (e.g. Gnosis Safe).
     /// Required for multi-signer EVM withdrawals.
     /// Set via CUSTODY_EVM_MULTISIG_ADDRESS env var.
@@ -225,12 +327,39 @@ struct CreateDepositRequest {
     user_id: String,
     chain: String,
     asset: String,
+    #[serde(default)]
+    auth: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CreateDepositResponse {
     deposit_id: String,
     address: String,
+}
+
+const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
+const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
+const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BridgeAccessAuth {
+    issued_at: u64,
+    expires_at: u64,
+    signature: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct IncidentComponentStatus {
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct IncidentStatusRecord {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    components: BTreeMap<String, IncidentComponentStatus>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -362,6 +491,18 @@ struct WithdrawalJob {
     safe_nonce: Option<u64>,
     #[serde(default)]
     signatures: Vec<SignerSignature>,
+    #[serde(default)]
+    velocity_tier: WithdrawalVelocityTier,
+    #[serde(default)]
+    required_signer_threshold: usize,
+    #[serde(default)]
+    required_operator_confirmations: usize,
+    #[serde(default)]
+    release_after: Option<i64>,
+    #[serde(default)]
+    burn_confirmed_at: Option<i64>,
+    #[serde(default)]
+    operator_confirmations: Vec<WithdrawalOperatorConfirmation>,
     status: String, // "pending_burn" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
     #[serde(default)]
     attempts: u32,
@@ -715,36 +856,30 @@ async fn main() {
     }
     info!("══════════════════════════════════════════════════════════════");
 
-    // AUDIT-FIX M3: Single seed architecture warning
-    // All deposit addresses are derived from one master seed via HMAC-SHA256.
-    // Compromise of this seed would expose ALL deposit private keys.
-    warn!(
-        "🔐 SECURITY NOTICE: All custody keys derive from a single master seed. \
-         Protect this seed with the highest operational security: \
-         (1) Store via CUSTODY_MASTER_SEED_FILE on an encrypted, access-controlled volume. \
-         (2) Rotate the seed periodically and re-derive addresses (requires fund sweep). \
-         (3) Consider hardware HSM integration for production deployments. \
-         (4) Limit process memory access (disable core dumps, restrict ptrace)."
-    );
-
-    // Multi-signer mode: validate threshold configuration
-    if config.signer_threshold > config.signer_endpoints.len() {
-        panic!(
-            "FATAL: signer_threshold={} exceeds configured signer count={}. \
-             Threshold must be ≤ number of signer endpoints.",
-            config.signer_threshold,
-            config.signer_endpoints.len()
+    if config.deposit_master_seed == config.master_seed {
+        warn!(
+            "🔐 INSECURE DEV SEED MODE: treasury and deposit keys share the same root because \
+             CUSTODY_ALLOW_INSECURE_SEED=1. Never use this outside local development."
         );
+    } else {
+        info!(
+            "🔐 Custody seed separation active: deposit addresses use \
+             CUSTODY_DEPOSIT_MASTER_SEED and treasury execution uses CUSTODY_MASTER_SEED."
+        );
+    }
+
+    if let Err(err) = validate_custody_security_configuration(&config) {
+        panic!("FATAL: {}", err);
     }
     if let Err(err) = validate_pq_signer_configuration(&config) {
         panic!("FATAL: {}", err);
     }
     if config.signer_endpoints.len() > 1 {
         tracing::warn!(
-            "MULTI-SIGNER MODE DETECTED ({}-of-{}). Deposit sweeps remain locally signed from \
-             derived deposit keys, Solana withdrawals now require PQ signer approvals before the \
-             local executor signs the outbound transfer, and the EVM Safe path remains the only \
-             classical threshold executor.",
+            "MULTI-SIGNER MODE DETECTED ({}-of-{}). Deposit creation remains disabled while \
+             sweeps rely on locally derived deposit keys, threshold Solana withdrawals are \
+             hard-disabled until a real threshold executor exists, and only the EVM Safe path \
+             supports multi-party treasury execution.",
             config.signer_threshold,
             config.signer_endpoints.len()
         );
@@ -887,6 +1022,10 @@ async fn main() {
         // Without this, withdrawal jobs stay in "pending_burn" forever because
         // burn_tx_signature starts as None and nothing ever populates it.
         .route("/withdrawals/:job_id/burn", put(submit_burn_signature))
+        .route(
+            "/withdrawals/:job_id/confirm",
+            put(confirm_withdrawal_operator),
+        )
         .route("/reserves", get(get_reserves))
         // ── Webhook management endpoints ──
         .route("/webhooks", post(create_webhook))
@@ -914,7 +1053,11 @@ async fn main() {
                     http::Method::DELETE,
                     http::Method::OPTIONS,
                 ])
-                .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION]),
+                .allow_headers([
+                    http::header::CONTENT_TYPE,
+                    http::header::AUTHORIZATION,
+                    http::header::HeaderName::from_static("x-custody-operator-token"),
+                ]),
         )
         .with_state(state);
 
@@ -972,22 +1115,30 @@ async fn create_deposit(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
     Json(payload): Json<CreateDepositRequest>,
-) -> Result<Json<CreateDepositResponse>, Json<ErrorResponse>> {
+) -> Result<Json<CreateDepositResponse>, ErrorResponse> {
     verify_api_auth(&state.config, &headers)?;
 
     let chain = payload.chain.to_lowercase();
     let asset = payload.asset.to_lowercase();
     if chain.is_empty() || asset.is_empty() || payload.user_id.is_empty() {
-        return Err(Json(ErrorResponse::invalid("Missing user_id/chain/asset")));
+        return Err(ErrorResponse::invalid("Missing user_id/chain/asset"));
     }
 
     // Validate user_id is a valid Lichen base58 pubkey (32 bytes).
     // Reject early so build_credit_job never silently drops a credit.
     if Pubkey::from_base58(&payload.user_id).is_err() {
-        return Err(Json(ErrorResponse::invalid(
+        return Err(ErrorResponse::invalid(
             "user_id must be a valid Lichen base58 public key (32 bytes)",
-        )));
+        ));
     }
+
+    let bridge_auth_value = payload.auth.as_ref().ok_or_else(|| {
+        Json(ErrorResponse::invalid(
+            "Missing auth: expected wallet-signed bridge access",
+        ))
+    })?;
+    let bridge_auth = parse_bridge_access_auth_value(bridge_auth_value)?;
+    verify_bridge_access_auth(&payload.user_id, &bridge_auth)?;
 
     ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
 
@@ -1005,15 +1156,15 @@ async fn create_deposit(
                 "⚠️  Deposit rate limit exceeded: {} this minute",
                 dr.count_this_minute
             );
-            return Err(Json(ErrorResponse::invalid(
+            return Err(ErrorResponse::invalid(
                 "rate_limited: too many deposit requests, try again later",
-            )));
+            ));
         }
         if let Some(last) = dr.per_user.get(&payload.user_id) {
             if now.duration_since(*last).as_secs() < 10 {
-                return Err(Json(ErrorResponse::invalid(
+                return Err(ErrorResponse::invalid(
                     "rate_limited: wait 10s between deposit requests",
-                )));
+                ));
             }
         }
         dr.per_user.insert(payload.user_id.clone(), now);
@@ -1091,19 +1242,42 @@ async fn create_deposit(
     }))
 }
 
-/// AUDIT-FIX F8.3: Deposit lookup now requires API auth.
-/// Without auth, anyone guessing/brute-forcing deposit UUIDs could retrieve
-/// user_id, chain, asset, address, and derivation_path.
+/// AUDIT-FIX F8.3 / P0-4: Deposit lookup requires both service Bearer auth and
+/// user-signed bridge access auth so custody does not trust the proxy alone.
 async fn get_deposit(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(deposit_id): axum::extract::Path<String>,
-) -> Result<Json<DepositRequest>, Json<ErrorResponse>> {
+    axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+) -> Result<Json<DepositRequest>, ErrorResponse> {
     verify_api_auth(&state.config, &headers)?;
+
+    let user_id = query.get("user_id").ok_or_else(|| {
+        Json(ErrorResponse::invalid(
+            "Missing user_id: expected authenticated bridge lookup",
+        ))
+    })?;
+    if Pubkey::from_base58(user_id).is_err() {
+        return Err(ErrorResponse::invalid(
+            "user_id must be a valid Lichen base58 public key (32 bytes)",
+        ));
+    }
+    let bridge_auth_json = query.get("auth").ok_or_else(|| {
+        Json(ErrorResponse::invalid(
+            "Missing auth: expected wallet-signed bridge access",
+        ))
+    })?;
+    let bridge_auth = parse_bridge_access_auth_json(bridge_auth_json)?;
+    verify_bridge_access_auth(user_id, &bridge_auth)?;
 
     let record = fetch_deposit(&state.db, &deposit_id)
         .map_err(|e| Json(ErrorResponse::db(&e)))?
         .ok_or_else(|| Json(ErrorResponse::not_found("Deposit not found")))?;
+    if record.user_id != *user_id {
+        return Err(ErrorResponse::not_found(
+            "Deposit not found for authenticated user",
+        ));
+    }
     Ok(Json(record))
 }
 
@@ -1133,6 +1307,29 @@ impl ErrorResponse {
             code: "db_error",
             message: message.to_string(),
         }
+    }
+
+    fn status_code(&self) -> StatusCode {
+        match self.code {
+            "invalid_request" => StatusCode::BAD_REQUEST,
+            "not_found" => StatusCode::NOT_FOUND,
+            "unauthorized" => StatusCode::UNAUTHORIZED,
+            "db_error" => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+impl From<Json<ErrorResponse>> for ErrorResponse {
+    fn from(value: Json<ErrorResponse>) -> Self {
+        value.0
+    }
+}
+
+impl IntoResponse for ErrorResponse {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
+        (status, Json(self)).into_response()
     }
 }
 
@@ -1856,6 +2053,237 @@ fn load_solana_keypair(path: &str) -> Result<SimpleSolanaKeypair, String> {
     })
 }
 
+const SPORES_PER_ASSET_UNIT: u64 = 1_000_000_000;
+
+fn build_asset_policy_map(entries: [(&str, u64); 4]) -> BTreeMap<String, u64> {
+    entries
+        .into_iter()
+        .map(|(asset, amount)| (asset.to_string(), amount))
+        .collect()
+}
+
+fn default_withdrawal_tx_caps() -> BTreeMap<String, u64> {
+    build_asset_policy_map([
+        ("musd", 250_000 * SPORES_PER_ASSET_UNIT),
+        ("wsol", 50_000 * SPORES_PER_ASSET_UNIT),
+        ("weth", 5_000 * SPORES_PER_ASSET_UNIT),
+        ("wbnb", 10_000 * SPORES_PER_ASSET_UNIT),
+    ])
+}
+
+fn default_withdrawal_daily_caps() -> BTreeMap<String, u64> {
+    build_asset_policy_map([
+        ("musd", 1_000_000 * SPORES_PER_ASSET_UNIT),
+        ("wsol", 250_000 * SPORES_PER_ASSET_UNIT),
+        ("weth", 25_000 * SPORES_PER_ASSET_UNIT),
+        ("wbnb", 50_000 * SPORES_PER_ASSET_UNIT),
+    ])
+}
+
+fn default_withdrawal_elevated_thresholds() -> BTreeMap<String, u64> {
+    build_asset_policy_map([
+        ("musd", 100_000 * SPORES_PER_ASSET_UNIT),
+        ("wsol", 10_000 * SPORES_PER_ASSET_UNIT),
+        ("weth", 1_000 * SPORES_PER_ASSET_UNIT),
+        ("wbnb", 2_500 * SPORES_PER_ASSET_UNIT),
+    ])
+}
+
+fn default_withdrawal_extraordinary_thresholds() -> BTreeMap<String, u64> {
+    build_asset_policy_map([
+        ("musd", 200_000 * SPORES_PER_ASSET_UNIT),
+        ("wsol", 25_000 * SPORES_PER_ASSET_UNIT),
+        ("weth", 2_500 * SPORES_PER_ASSET_UNIT),
+        ("wbnb", 5_000 * SPORES_PER_ASSET_UNIT),
+    ])
+}
+
+fn parse_policy_u64(value: &Value, env_name: &str, asset: &str) -> u64 {
+    if let Some(number) = value.as_u64() {
+        return number;
+    }
+
+    if let Some(number) = value.as_str().and_then(|text| text.parse::<u64>().ok()) {
+        return number;
+    }
+
+    panic!(
+        "FATAL: {} must map asset '{}' to an integer spore amount",
+        env_name, asset
+    );
+}
+
+fn load_asset_policy_from_env(
+    env_name: &str,
+    defaults: &BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
+    let Some(raw) = std::env::var(env_name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return defaults.clone();
+    };
+
+    let parsed: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("FATAL: {} must be valid JSON: {}", env_name, error));
+    let object = parsed.as_object().unwrap_or_else(|| {
+        panic!(
+            "FATAL: {} must be a JSON object of asset -> spores",
+            env_name
+        )
+    });
+
+    let mut policy = defaults.clone();
+    for (asset, value) in object {
+        let asset_key = asset.to_ascii_lowercase();
+        if !policy.contains_key(&asset_key) {
+            panic!(
+                "FATAL: {} contains unsupported withdrawal asset '{}'; expected musd, wsol, weth, or wbnb",
+                env_name, asset
+            );
+        }
+        policy.insert(
+            asset_key.clone(),
+            parse_policy_u64(value, env_name, &asset_key),
+        );
+    }
+
+    policy
+}
+
+fn load_operator_confirmation_tokens() -> Vec<String> {
+    std::env::var("CUSTODY_OPERATOR_CONFIRMATION_TOKENS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn load_withdrawal_velocity_policy() -> WithdrawalVelocityPolicy {
+    WithdrawalVelocityPolicy {
+        tx_caps: load_asset_policy_from_env(
+            "CUSTODY_WITHDRAWAL_TX_CAPS",
+            &default_withdrawal_tx_caps(),
+        ),
+        daily_caps: load_asset_policy_from_env(
+            "CUSTODY_WITHDRAWAL_DAILY_CAPS",
+            &default_withdrawal_daily_caps(),
+        ),
+        elevated_thresholds: load_asset_policy_from_env(
+            "CUSTODY_WITHDRAWAL_ELEVATED_THRESHOLDS",
+            &default_withdrawal_elevated_thresholds(),
+        ),
+        extraordinary_thresholds: load_asset_policy_from_env(
+            "CUSTODY_WITHDRAWAL_EXTRAORDINARY_THRESHOLDS",
+            &default_withdrawal_extraordinary_thresholds(),
+        ),
+        elevated_delay_secs: std::env::var("CUSTODY_WITHDRAWAL_ELEVATED_DELAY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(1_800),
+        extraordinary_delay_secs: std::env::var("CUSTODY_WITHDRAWAL_EXTRAORDINARY_DELAY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(14_400),
+        operator_confirmation_tokens: load_operator_confirmation_tokens(),
+    }
+}
+
+fn withdrawal_policy_amount(policy: &BTreeMap<String, u64>, asset: &str) -> u64 {
+    policy
+        .get(&asset.to_ascii_lowercase())
+        .copied()
+        .unwrap_or_default()
+}
+
+fn velocity_delay_secs(policy: &WithdrawalVelocityPolicy, tier: WithdrawalVelocityTier) -> i64 {
+    match tier {
+        WithdrawalVelocityTier::Standard => 0,
+        WithdrawalVelocityTier::Elevated => policy.elevated_delay_secs,
+        WithdrawalVelocityTier::Extraordinary => policy.extraordinary_delay_secs,
+    }
+}
+
+fn required_signer_threshold_for_tier(
+    config: &CustodyConfig,
+    tier: WithdrawalVelocityTier,
+) -> usize {
+    match tier {
+        WithdrawalVelocityTier::Standard => config.signer_threshold,
+        WithdrawalVelocityTier::Elevated | WithdrawalVelocityTier::Extraordinary => {
+            if config.signer_endpoints.is_empty() {
+                0
+            } else {
+                config.signer_endpoints.len().max(config.signer_threshold)
+            }
+        }
+    }
+}
+
+fn build_withdrawal_velocity_snapshot(
+    config: &CustodyConfig,
+    asset: &str,
+    amount: u64,
+) -> Result<WithdrawalVelocitySnapshot, String> {
+    let asset_key = asset.to_ascii_lowercase();
+    let tx_cap = withdrawal_policy_amount(&config.withdrawal_velocity_policy.tx_caps, &asset_key);
+    if tx_cap > 0 && amount > tx_cap {
+        return Err(format!(
+            "withdrawal amount {} exceeds the {} per-transaction cap {}",
+            amount, asset, tx_cap
+        ));
+    }
+
+    let extraordinary_threshold = withdrawal_policy_amount(
+        &config.withdrawal_velocity_policy.extraordinary_thresholds,
+        &asset_key,
+    );
+    let elevated_threshold = withdrawal_policy_amount(
+        &config.withdrawal_velocity_policy.elevated_thresholds,
+        &asset_key,
+    );
+
+    let tier = if extraordinary_threshold > 0 && amount >= extraordinary_threshold {
+        WithdrawalVelocityTier::Extraordinary
+    } else if elevated_threshold > 0 && amount >= elevated_threshold {
+        WithdrawalVelocityTier::Elevated
+    } else {
+        WithdrawalVelocityTier::Standard
+    };
+
+    let required_operator_confirmations = if tier == WithdrawalVelocityTier::Extraordinary {
+        if config
+            .withdrawal_velocity_policy
+            .operator_confirmation_tokens
+            .is_empty()
+        {
+            return Err(
+                "extraordinary withdrawals are disabled until CUSTODY_OPERATOR_CONFIRMATION_TOKENS is configured"
+                    .to_string(),
+            );
+        }
+        1
+    } else {
+        0
+    };
+
+    Ok(WithdrawalVelocitySnapshot {
+        tier,
+        daily_cap: withdrawal_policy_amount(
+            &config.withdrawal_velocity_policy.daily_caps,
+            &asset_key,
+        ),
+        required_signer_threshold: required_signer_threshold_for_tier(config, tier),
+        required_operator_confirmations,
+        delay_secs: velocity_delay_secs(&config.withdrawal_velocity_policy, tier),
+    })
+}
+
 fn load_config() -> CustodyConfig {
     let db_path = std::env::var("CUSTODY_DB_PATH").unwrap_or_else(|_| "./data/custody".to_string());
     let solana_rpc_url = std::env::var("CUSTODY_SOLANA_RPC_URL").ok();
@@ -1915,6 +2343,10 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(86400); // 24 hours default
+    let incident_status_path = std::env::var("LICHEN_INCIDENT_STATUS_FILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let master_seed =
         load_required_seed_secret("CUSTODY_MASTER_SEED_FILE", "CUSTODY_MASTER_SEED", true);
     let deposit_master_seed = load_optional_seed_secret(
@@ -1954,6 +2386,7 @@ fn load_config() -> CustodyConfig {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let withdrawal_velocity_policy = load_withdrawal_velocity_policy();
     let webhook_allowed_hosts = std::env::var("CUSTODY_WEBHOOK_ALLOWED_HOSTS")
         .ok()
         .map(|value| {
@@ -1998,6 +2431,7 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
+        incident_status_path,
         master_seed,
         deposit_master_seed,
         // AUDIT-FIX P10-CUST-01: Signer auth token MUST NOT be predictable.
@@ -2055,6 +2489,7 @@ fn load_config() -> CustodyConfig {
             }
             token
         },
+        withdrawal_velocity_policy,
         evm_multisig_address: std::env::var("CUSTODY_EVM_MULTISIG_ADDRESS").ok(),
         webhook_allowed_hosts,
     }
@@ -2091,19 +2526,64 @@ fn validate_webhook_destination(config: &CustodyConfig, raw_url: &str) -> Result
     }
 }
 
-fn default_signer_threshold(endpoint_count: usize) -> usize {
-    if endpoint_count >= 5 {
-        3
-    } else if endpoint_count >= 3 {
-        2
-    } else if endpoint_count >= 1 {
-        1
-    } else {
+fn insecure_seed_mode_enabled() -> bool {
+    std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1"
+}
+
+fn strict_majority_threshold(endpoint_count: usize) -> usize {
+    if endpoint_count == 0 {
         0
+    } else {
+        (endpoint_count / 2) + 1
     }
 }
 
+fn default_signer_threshold(endpoint_count: usize) -> usize {
+    strict_majority_threshold(endpoint_count)
+}
+
+fn validate_multi_signer_policy(config: &CustodyConfig) -> Result<(), String> {
+    let endpoint_count = config.signer_endpoints.len();
+    if config.signer_threshold > endpoint_count {
+        return Err(format!(
+            "signer_threshold={} exceeds configured signer count={}. Threshold must be <= number of signer endpoints.",
+            config.signer_threshold, endpoint_count
+        ));
+    }
+
+    if endpoint_count > 1 {
+        let required_threshold = strict_majority_threshold(endpoint_count);
+        if config.signer_threshold < required_threshold {
+            return Err(format!(
+                "multi-signer custody requires a strict-majority threshold; signer_threshold={} but {} signer endpoint(s) require at least {}",
+                config.signer_threshold, endpoint_count, required_threshold
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_custody_security_configuration(config: &CustodyConfig) -> Result<(), String> {
+    validate_custody_security_configuration_with_mode(config, insecure_seed_mode_enabled())
+}
+
+fn validate_custody_security_configuration_with_mode(
+    config: &CustodyConfig,
+    allow_insecure_seed_mode: bool,
+) -> Result<(), String> {
+    if !allow_insecure_seed_mode && config.deposit_master_seed == config.master_seed {
+        return Err(
+            "CUSTODY_DEPOSIT_MASTER_SEED must be set and must differ from CUSTODY_MASTER_SEED outside explicit dev mode (CUSTODY_ALLOW_INSECURE_SEED=1)".to_string(),
+        );
+    }
+
+    validate_multi_signer_policy(config)
+}
+
 fn validate_pq_signer_configuration(config: &CustodyConfig) -> Result<(), String> {
+    validate_multi_signer_policy(config)?;
+
     if config.signer_endpoints.is_empty() || config.signer_threshold == 0 {
         return Ok(());
     }
@@ -2128,12 +2608,90 @@ fn validate_pq_signer_configuration(config: &CustodyConfig) -> Result<(), String
 }
 
 fn multi_signer_local_sweep_mode(config: &CustodyConfig) -> bool {
-    config.signer_threshold > 1 && config.signer_endpoints.len() > 1
+    config.signer_endpoints.len() > 1
+}
+
+fn load_incident_status(config: &CustodyConfig) -> Option<IncidentStatusRecord> {
+    let path = config
+        .incident_status_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            warn!(
+                "failed to read custody incident manifest {}: {}",
+                path, error
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<IncidentStatusRecord>(&raw) {
+        Ok(status) => Some(status),
+        Err(error) => {
+            warn!(
+                "failed to parse custody incident manifest {}: {}",
+                path, error
+            );
+            None
+        }
+    }
+}
+
+fn incident_mode_matches(status: &IncidentStatusRecord, modes: &[&str]) -> bool {
+    modes
+        .iter()
+        .any(|mode| status.mode.eq_ignore_ascii_case(mode))
+}
+
+fn incident_component_is_blocked(status: &IncidentStatusRecord, component: &str) -> bool {
+    status
+        .components
+        .get(component)
+        .map(|component_status| {
+            matches!(
+                component_status.status.trim().to_ascii_lowercase().as_str(),
+                "paused" | "blocked" | "disabled" | "frozen"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn deposit_incident_block_reason(config: &CustodyConfig) -> Option<&'static str> {
+    let status = load_incident_status(config)?;
+    if incident_component_is_blocked(&status, "bridge")
+        || incident_mode_matches(&status, &["bridge_pause"])
+    {
+        return Some("bridge deposits are temporarily paused while bridge risk is assessed");
+    }
+    if incident_component_is_blocked(&status, "deposits")
+        || incident_mode_matches(&status, &["deposit_guard", "deposit_only_freeze"])
+    {
+        return Some("new deposits are temporarily paused while operators verify inbound activity");
+    }
+    None
+}
+
+fn withdrawal_incident_block_reason(config: &CustodyConfig) -> Option<&'static str> {
+    let status = load_incident_status(config)?;
+    if incident_component_is_blocked(&status, "bridge")
+        || incident_mode_matches(&status, &["bridge_pause"])
+    {
+        return Some("bridge redemptions are temporarily paused while bridge risk is assessed");
+    }
+    None
 }
 
 fn ensure_deposit_creation_allowed(config: &CustodyConfig) -> Result<(), String> {
     if let Some(err) = local_sweep_policy_error(config) {
         return Err(err);
+    }
+
+    if let Some(err) = deposit_incident_block_reason(config) {
+        return Err(err.to_string());
     }
 
     Ok(())
@@ -2143,6 +2701,16 @@ fn local_sweep_policy_error(config: &CustodyConfig) -> Option<String> {
     if multi_signer_local_sweep_mode(config) {
         return Some(
             "multi-signer deposit creation is disabled because deposit sweeps still broadcast with locally derived deposit keys; this path remains hard-disabled until deposit sweeps have a real threshold architecture".to_string(),
+        );
+    }
+
+    None
+}
+
+fn local_rebalance_policy_error(config: &CustodyConfig) -> Option<String> {
+    if multi_signer_local_sweep_mode(config) {
+        return Some(
+            "multi-signer reserve rebalance is disabled because rebalances still broadcast with locally derived treasury keys; this path remains hard-disabled until rebalances have a real threshold executor".to_string(),
         );
     }
 
@@ -3720,6 +4288,7 @@ async fn collect_pq_withdrawal_approvals(
     state: &CustodyState,
     job: &mut WithdrawalJob,
     outbound_asset: &str,
+    required_threshold: usize,
 ) -> Result<usize, String> {
     validate_pq_signer_configuration(&state.config)?;
 
@@ -3798,7 +4367,7 @@ async fn collect_pq_withdrawal_approvals(
             }
         }
 
-        if approved.len() >= state.config.signer_threshold {
+        if required_threshold > 0 && approved.len() >= required_threshold {
             break;
         }
     }
@@ -3974,14 +4543,19 @@ fn determine_withdrawal_signing_mode(
     job: &WithdrawalJob,
     outbound_asset: &str,
 ) -> Result<Option<WithdrawalSigningMode>, String> {
+    validate_pq_signer_configuration(&state.config)?;
+
     if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
         return Ok(None);
     }
 
-    validate_pq_signer_configuration(&state.config)?;
-
     match job.dest_chain.as_str() {
         "solana" | "sol" => {
+            if state.config.signer_endpoints.len() > 1 {
+                return Err(
+                    "threshold Solana withdrawals are disabled until custody has a real threshold executor; PQ approval quorum plus local treasury signing is banned".to_string(),
+                );
+            }
             if outbound_asset != "sol" && !is_solana_stablecoin(outbound_asset) {
                 return Err(format!(
                     "threshold Solana withdrawals currently support native SOL and SPL stablecoins, not {}",
@@ -4347,6 +4921,7 @@ async fn collect_threshold_solana_withdrawal_signatures(
     state: &CustodyState,
     job: &mut WithdrawalJob,
     outbound_asset: &str,
+    required_threshold: usize,
 ) -> Result<usize, String> {
     if is_solana_stablecoin(outbound_asset) {
         let (treasury_owner, mint, from_token_account, to_token_account) =
@@ -4360,13 +4935,14 @@ async fn collect_threshold_solana_withdrawal_signatures(
         ensure_associated_token_account_for_str(state, &job.dest_address, &mint, &to_token_account)
             .await?;
     }
-    collect_pq_withdrawal_approvals(state, job, outbound_asset).await
+    collect_pq_withdrawal_approvals(state, job, outbound_asset, required_threshold).await
 }
 
 async fn collect_threshold_evm_withdrawal_signatures(
     state: &CustodyState,
     job: &mut WithdrawalJob,
     outbound_asset: &str,
+    required_threshold: usize,
 ) -> Result<usize, String> {
     let url = rpc_url_for_chain(&state.config, &job.dest_chain)
         .ok_or_else(|| format!("missing RPC URL for chain {}", job.dest_chain))?;
@@ -4439,7 +5015,7 @@ async fn collect_threshold_evm_withdrawal_signatures(
             }
         }
 
-        if job.signatures.len() >= state.config.signer_threshold {
+        if required_threshold > 0 && job.signatures.len() >= required_threshold {
             break;
         }
     }
@@ -5441,6 +6017,123 @@ fn record_audit_event_ext(
     Ok(())
 }
 
+fn emit_withdrawal_spike_event(
+    state: &CustodyState,
+    req: &WithdrawalRequest,
+    reason: &str,
+    count_this_minute: u64,
+    max_withdrawals_per_min: u64,
+    value_this_hour: u64,
+    max_value_per_hour: u64,
+) {
+    let entity_id = if req.user_id.trim().is_empty() {
+        req.dest_address.as_str()
+    } else {
+        req.user_id.as_str()
+    };
+    let projected_value_this_hour = value_this_hour.saturating_add(req.amount);
+    let data = json!({
+        "reason": reason,
+        "user_id": req.user_id,
+        "dest_chain": req.dest_chain,
+        "asset": req.asset,
+        "requested_amount": req.amount,
+        "dest_address": req.dest_address,
+        "count_this_minute": count_this_minute,
+        "projected_count_this_minute": count_this_minute.saturating_add(1),
+        "max_withdrawals_per_min": max_withdrawals_per_min,
+        "value_this_hour": value_this_hour,
+        "projected_value_this_hour": projected_value_this_hour,
+        "max_value_per_hour": max_value_per_hour,
+    });
+
+    if let Err(err) = record_audit_event_ext(
+        &state.db,
+        "security.withdrawal_spike",
+        entity_id,
+        None,
+        None,
+        Some(&data),
+        Some(&state.event_tx),
+    ) {
+        warn!("failed to record withdrawal spike event: {}", err);
+    }
+}
+
+fn next_withdrawal_warning_level(
+    projected_value: u64,
+    max_value: u64,
+    last_emitted: Option<WithdrawalWarningLevel>,
+) -> Option<WithdrawalWarningLevel> {
+    if max_value == 0 {
+        return None;
+    }
+
+    [
+        WithdrawalWarningLevel::NearLimit,
+        WithdrawalWarningLevel::ThreeQuartersUsed,
+        WithdrawalWarningLevel::HalfUsed,
+    ]
+    .into_iter()
+    .find(|level| {
+        let threshold = u128::from(max_value) * u128::from(level.threshold_percent());
+        let scaled = u128::from(projected_value) * 100;
+        scaled >= threshold
+            && match last_emitted {
+                Some(prev) => *level > prev,
+                None => true,
+            }
+    })
+}
+
+fn emit_withdrawal_velocity_warning_event(
+    state: &CustodyState,
+    req: &WithdrawalRequest,
+    reason: &str,
+    level: WithdrawalWarningLevel,
+    metrics: WithdrawalVelocityMetrics,
+) {
+    let entity_id = if req.user_id.trim().is_empty() {
+        req.dest_address.as_str()
+    } else {
+        req.user_id.as_str()
+    };
+    let projected_count_this_minute = metrics.count_this_minute.saturating_add(1);
+    let projected_value_this_hour = metrics.value_this_hour.saturating_add(req.amount);
+    let data = json!({
+        "reason": reason,
+        "alert_level": level.as_str(),
+        "severity": level.severity(),
+        "threshold_percent": level.threshold_percent(),
+        "user_id": req.user_id,
+        "dest_chain": req.dest_chain,
+        "asset": req.asset,
+        "requested_amount": req.amount,
+        "dest_address": req.dest_address,
+        "count_this_minute": metrics.count_this_minute,
+        "projected_count_this_minute": projected_count_this_minute,
+        "max_withdrawals_per_min": metrics.max_withdrawals_per_min,
+        "value_this_hour": metrics.value_this_hour,
+        "projected_value_this_hour": projected_value_this_hour,
+        "max_value_per_hour": metrics.max_value_per_hour,
+    });
+
+    if let Err(err) = record_audit_event_ext(
+        &state.db,
+        "security.withdrawal_velocity_warning",
+        entity_id,
+        None,
+        None,
+        Some(&data),
+        Some(&state.event_tx),
+    ) {
+        warn!(
+            "failed to record withdrawal velocity warning event: {}",
+            err
+        );
+    }
+}
+
 /// Convenience: emit a custody event with full state context (DB + broadcast channel).
 fn emit_custody_event(
     state: &CustodyState,
@@ -6022,6 +6715,17 @@ async fn create_withdrawal(
         return Json(json!({ "error": err_resp.0.message }));
     }
 
+    if let Some(reason) = withdrawal_incident_block_reason(&state.config) {
+        return Json(json!({ "error": reason }));
+    }
+
+    let asset_lower = req.asset.to_lowercase();
+    let velocity_snapshot =
+        match build_withdrawal_velocity_snapshot(&state.config, &asset_lower, req.amount) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Json(json!({ "error": error })),
+        };
+
     // AUDIT-FIX 1.20: Global and per-address withdrawal rate limiting
     {
         let mut rl = state.withdrawal_rate.lock().await;
@@ -6031,29 +6735,58 @@ async fn create_withdrawal(
         if now.duration_since(rl.window_start) >= std::time::Duration::from_secs(60) {
             rl.window_start = now;
             rl.count_this_minute = 0;
+            rl.count_warning_level = None;
         }
         // Reset per-hour value counter
         if now.duration_since(rl.hour_start) >= std::time::Duration::from_secs(3600) {
             rl.hour_start = now;
             rl.value_this_hour = 0;
+            rl.value_warning_level = None;
         }
 
-        // Global: max 20 withdrawals per minute
         const MAX_WITHDRAWALS_PER_MIN: u64 = 20;
-        if rl.count_this_minute >= MAX_WITHDRAWALS_PER_MIN {
+        const MAX_VALUE_PER_HOUR: u64 = 10_000_000_000_000_000; // 10M with 9 decimals
+        let projected_count_this_minute = rl.count_this_minute.saturating_add(1);
+        let projected_value_this_hour = rl.value_this_hour.saturating_add(req.amount);
+        let velocity_metrics = WithdrawalVelocityMetrics {
+            count_this_minute: rl.count_this_minute,
+            max_withdrawals_per_min: MAX_WITHDRAWALS_PER_MIN,
+            value_this_hour: rl.value_this_hour,
+            max_value_per_hour: MAX_VALUE_PER_HOUR,
+        };
+
+        // Global: max 20 withdrawals per minute
+        if projected_count_this_minute > MAX_WITHDRAWALS_PER_MIN {
             tracing::warn!(
                 "⚠️  Withdrawal rate limit exceeded: {} this minute",
                 rl.count_this_minute
+            );
+            emit_withdrawal_spike_event(
+                &state,
+                &req,
+                "count_per_minute",
+                rl.count_this_minute,
+                MAX_WITHDRAWALS_PER_MIN,
+                rl.value_this_hour,
+                MAX_VALUE_PER_HOUR,
             );
             return Json(json!({ "error": "rate_limited: too many withdrawals, try again later" }));
         }
 
         // Global: max 10M value per hour (in smallest units)
-        const MAX_VALUE_PER_HOUR: u64 = 10_000_000_000_000_000; // 10M with 9 decimals
-        if rl.value_this_hour.saturating_add(req.amount) > MAX_VALUE_PER_HOUR {
+        if projected_value_this_hour > MAX_VALUE_PER_HOUR {
             tracing::warn!(
                 "⚠️  Withdrawal value limit exceeded: {} this hour",
                 rl.value_this_hour
+            );
+            emit_withdrawal_spike_event(
+                &state,
+                &req,
+                "value_per_hour",
+                rl.count_this_minute,
+                MAX_WITHDRAWALS_PER_MIN,
+                rl.value_this_hour,
+                MAX_VALUE_PER_HOUR,
             );
             return Json(json!({ "error": "rate_limited: hourly withdrawal value limit reached" }));
         }
@@ -6065,12 +6798,40 @@ async fn create_withdrawal(
             }
         }
 
-        rl.count_this_minute += 1;
-        rl.value_this_hour = rl.value_this_hour.saturating_add(req.amount);
+        if let Some(level) = next_withdrawal_warning_level(
+            projected_count_this_minute,
+            MAX_WITHDRAWALS_PER_MIN,
+            rl.count_warning_level,
+        ) {
+            emit_withdrawal_velocity_warning_event(
+                &state,
+                &req,
+                "count_per_minute",
+                level,
+                velocity_metrics,
+            );
+            rl.count_warning_level = Some(level);
+        }
+
+        if let Some(level) = next_withdrawal_warning_level(
+            projected_value_this_hour,
+            MAX_VALUE_PER_HOUR,
+            rl.value_warning_level,
+        ) {
+            emit_withdrawal_velocity_warning_event(
+                &state,
+                &req,
+                "value_per_hour",
+                level,
+                velocity_metrics,
+            );
+            rl.value_warning_level = Some(level);
+        }
+
+        rl.count_this_minute = projected_count_this_minute;
+        rl.value_this_hour = projected_value_this_hour;
         rl.per_address.insert(req.dest_address.clone(), now);
     }
-
-    let asset_lower = req.asset.to_lowercase();
 
     // AUDIT-FIX F8.8: Validate dest_address format before processing.
     // Invalid addresses would waste signer resources and only fail at broadcast time.
@@ -6213,6 +6974,12 @@ async fn create_withdrawal(
         outbound_tx_hash: None,
         safe_nonce: None,
         signatures: Vec::new(),
+        velocity_tier: velocity_snapshot.tier,
+        required_signer_threshold: velocity_snapshot.required_signer_threshold,
+        required_operator_confirmations: velocity_snapshot.required_operator_confirmations,
+        release_after: None,
+        burn_confirmed_at: None,
+        operator_confirmations: Vec::new(),
         status: "pending_burn".to_string(),
         attempts: 0,
         last_error: None,
@@ -6250,14 +7017,30 @@ async fn create_withdrawal(
     } else {
         None
     };
+    let velocity_message = if velocity_snapshot.tier == WithdrawalVelocityTier::Standard {
+        "".to_string()
+    } else {
+        format!(
+            " Velocity tier={} applies after burn confirmation: delay={}s, signer_threshold={}, operator_confirmations={}",
+            velocity_snapshot.tier.as_str(),
+            velocity_snapshot.delay_secs,
+            velocity_snapshot.required_signer_threshold,
+            velocity_snapshot.required_operator_confirmations,
+        )
+    };
 
     Json(json!({
         "job_id": job.job_id,
         "status": "pending_burn",
         "preferred_stablecoin": stablecoin_info,
+        "velocity_tier": velocity_snapshot.tier.as_str(),
+        "daily_cap": velocity_snapshot.daily_cap,
+        "required_signer_threshold": velocity_snapshot.required_signer_threshold,
+        "required_operator_confirmations": velocity_snapshot.required_operator_confirmations,
+        "delay_seconds_after_burn": velocity_snapshot.delay_secs,
         "message": format!(
-            "Burn {} {} on Lichen, then the outbound transfer to {} will be processed automatically.",
-            job.amount, job.asset, job.dest_chain
+            "Burn {} {} on Lichen, then the outbound transfer to {} will be processed automatically.{}",
+            job.amount, job.asset, job.dest_chain, velocity_message
         ),
     }))
 }
@@ -6383,6 +7166,12 @@ struct BurnSignaturePayload {
     burn_tx_signature: String,
 }
 
+#[derive(Deserialize)]
+struct WithdrawalOperatorConfirmationPayload {
+    #[serde(default)]
+    note: Option<String>,
+}
+
 async fn submit_burn_signature(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
@@ -6479,6 +7268,66 @@ async fn submit_burn_signature(
         "status": "pending_burn",
         "burn_tx_signature": payload.burn_tx_signature,
         "message": "Burn signature recorded. Verification will proceed automatically.",
+    })))
+}
+
+async fn confirm_withdrawal_operator(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+    Json(payload): Json<WithdrawalOperatorConfirmationPayload>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    let operator_id = verify_operator_confirmation_auth(&state.config, &headers)?;
+
+    let mut job = fetch_withdrawal_job(&state.db, &job_id)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?
+        .ok_or_else(|| Json(ErrorResponse::invalid("withdrawal not found")))?;
+
+    if matches!(
+        job.status.as_str(),
+        "confirmed" | "failed" | "permanently_failed"
+    ) {
+        return Err(Json(ErrorResponse::invalid(&format!(
+            "withdrawal {} is no longer confirmable (current: {})",
+            job_id, job.status
+        ))));
+    }
+
+    if job.required_operator_confirmations == 0 {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal does not require operator confirmation",
+        )));
+    }
+
+    let added = record_operator_confirmation(&mut job, &operator_id, payload.note.clone());
+    store_withdrawal_job(&state.db, &job).map_err(|e| Json(ErrorResponse::db(&e)))?;
+
+    if added {
+        emit_custody_event(
+            &state,
+            "withdrawal.operator_confirmed",
+            &job.job_id,
+            None,
+            None,
+            Some(&json!({
+                "operator_id": operator_id,
+                "required_operator_confirmations": job.required_operator_confirmations,
+                "received_operator_confirmations": job.operator_confirmations.len(),
+                "velocity_tier": job.velocity_tier.as_str(),
+                "release_after": job.release_after,
+                "note": payload.note,
+            })),
+        );
+    }
+
+    Ok(Json(json!({
+        "job_id": job.job_id,
+        "status": job.status,
+        "velocity_tier": job.velocity_tier.as_str(),
+        "operator_confirmation_added": added,
+        "required_operator_confirmations": job.required_operator_confirmations,
+        "received_operator_confirmations": job.operator_confirmations.len(),
+        "release_after": job.release_after,
     })))
 }
 
@@ -7142,8 +7991,33 @@ async fn parse_evm_swap_output(
 /// Process queued rebalance jobs: submit swaps on external DEXes.
 async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
     // Process queued → submitted
+    let rebalance_policy_error = local_rebalance_policy_error(&state.config);
     let queued = list_rebalance_jobs_by_status(&state.db, "queued")?;
     for mut job in queued {
+        if let Some(err) = rebalance_policy_error.as_ref() {
+            job.attempts = job.attempts.saturating_add(1);
+            job.status = "failed".to_string();
+            job.last_error = Some(err.clone());
+            job.next_attempt_at = None;
+            store_rebalance_job(&state.db, &job)?;
+            emit_custody_event(
+                state,
+                "rebalance.failed",
+                &job.job_id,
+                None,
+                None,
+                Some(&serde_json::json!({
+                    "chain": job.chain,
+                    "from_asset": job.from_asset,
+                    "to_asset": job.to_asset,
+                    "amount": job.amount,
+                    "last_error": err,
+                    "mode": "blocked-local-rebalance",
+                })),
+            );
+            continue;
+        }
+
         match execute_rebalance_swap(state, &job).await {
             Ok(tx_hash) => {
                 job.swap_tx_hash = Some(tx_hash.clone());
@@ -7858,7 +8732,26 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 continue;
                             }
 
+                            let burn_confirmed_at = chrono::Utc::now().timestamp();
                             job.status = "burned".to_string();
+                            job.burn_confirmed_at = Some(burn_confirmed_at);
+                            if job.velocity_tier != WithdrawalVelocityTier::Standard
+                                && job.release_after.is_none()
+                            {
+                                let hold_until =
+                                    burn_confirmed_at.saturating_add(velocity_delay_secs(
+                                        &state.config.withdrawal_velocity_policy,
+                                        job.velocity_tier,
+                                    ));
+                                if hold_until > burn_confirmed_at {
+                                    job.release_after = Some(hold_until);
+                                    job.next_attempt_at = Some(hold_until);
+                                    job.last_error = Some(format!(
+                                        "withdrawal velocity hold active until {}",
+                                        hold_until
+                                    ));
+                                }
+                            }
                             store_withdrawal_job(&state.db, &job)?;
                             emit_custody_event(
                                 state,
@@ -7872,6 +8765,23 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     "amount": job.amount
                                 })),
                             );
+                            if let Some(release_after) = job.release_after {
+                                emit_custody_event(
+                                    state,
+                                    "security.withdrawal_velocity_hold",
+                                    &job.job_id,
+                                    None,
+                                    job.burn_tx_signature.as_deref(),
+                                    Some(&serde_json::json!({
+                                        "asset": job.asset,
+                                        "amount": job.amount,
+                                        "velocity_tier": job.velocity_tier.as_str(),
+                                        "release_after": release_after,
+                                        "required_signer_threshold": job.required_signer_threshold,
+                                        "required_operator_confirmations": job.required_operator_confirmations,
+                                    })),
+                                );
+                            }
                             info!("withdrawal burn confirmed: {}", job.job_id);
                         }
                     }
@@ -7890,6 +8800,70 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             continue;
         }
 
+        let now = chrono::Utc::now().timestamp();
+        match evaluate_withdrawal_velocity_gate(state, &job, now)? {
+            WithdrawalVelocityGate::Ready => clear_withdrawal_hold(&mut job),
+            WithdrawalVelocityGate::AwaitingRelease { release_after } => {
+                let reason = format!("withdrawal velocity hold active until {}", release_after);
+                if update_withdrawal_hold(&mut job, reason, Some(release_after)) {
+                    store_withdrawal_job(&state.db, &job)?;
+                }
+                continue;
+            }
+            WithdrawalVelocityGate::DailyCapHold {
+                daily_cap,
+                current_volume,
+                retry_after,
+            } => {
+                let reason = format!(
+                    "daily withdrawal cap hold: asset={} volume={} cap={} retry_after={}",
+                    job.asset, current_volume, daily_cap, retry_after
+                );
+                if update_withdrawal_hold(&mut job, reason, Some(retry_after)) {
+                    store_withdrawal_job(&state.db, &job)?;
+                    emit_custody_event(
+                        state,
+                        "security.withdrawal_daily_cap_hold",
+                        &job.job_id,
+                        None,
+                        job.burn_tx_signature.as_deref(),
+                        Some(&serde_json::json!({
+                            "asset": job.asset,
+                            "amount": job.amount,
+                            "current_volume": current_volume,
+                            "daily_cap": daily_cap,
+                            "retry_after": retry_after,
+                        })),
+                    );
+                }
+                continue;
+            }
+            WithdrawalVelocityGate::AwaitingOperatorConfirmation { required, received } => {
+                let reason = format!(
+                    "awaiting operator confirmation: {}/{} confirmations",
+                    received, required
+                );
+                if update_withdrawal_hold(&mut job, reason, None) {
+                    store_withdrawal_job(&state.db, &job)?;
+                    emit_custody_event(
+                        state,
+                        "security.withdrawal_operator_confirmation_required",
+                        &job.job_id,
+                        None,
+                        job.burn_tx_signature.as_deref(),
+                        Some(&serde_json::json!({
+                            "asset": job.asset,
+                            "amount": job.amount,
+                            "velocity_tier": job.velocity_tier.as_str(),
+                            "required_operator_confirmations": required,
+                            "received_operator_confirmations": received,
+                        })),
+                    );
+                }
+                continue;
+            }
+        }
+
         // Determine the outbound transaction details
         let outbound_asset = match job.asset.to_lowercase().as_str() {
             "musd" => job.preferred_stablecoin.clone(),
@@ -7898,6 +8872,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             "wbnb" => "bnb".to_string(),
             _ => continue,
         };
+        let required_signer_threshold = effective_required_signer_threshold(&job, &state.config);
 
         let signing_mode = match determine_withdrawal_signing_mode(state, &job, &outbound_asset) {
             Ok(mode) => mode,
@@ -7948,14 +8923,31 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
         let sig_count = match signing_mode.unwrap() {
             WithdrawalSigningMode::PqApprovalQuorum => {
                 if job.dest_chain == "solana" || job.dest_chain == "sol" {
-                    collect_threshold_solana_withdrawal_signatures(state, &mut job, &outbound_asset)
-                        .await
+                    collect_threshold_solana_withdrawal_signatures(
+                        state,
+                        &mut job,
+                        &outbound_asset,
+                        required_signer_threshold,
+                    )
+                    .await
                 } else {
-                    collect_pq_withdrawal_approvals(state, &mut job, &outbound_asset).await
+                    collect_pq_withdrawal_approvals(
+                        state,
+                        &mut job,
+                        &outbound_asset,
+                        required_signer_threshold,
+                    )
+                    .await
                 }
             }
             WithdrawalSigningMode::EvmThresholdSafe => {
-                collect_threshold_evm_withdrawal_signatures(state, &mut job, &outbound_asset).await
+                collect_threshold_evm_withdrawal_signatures(
+                    state,
+                    &mut job,
+                    &outbound_asset,
+                    required_signer_threshold,
+                )
+                .await
             }
         };
 
@@ -7968,7 +8960,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             }
         };
 
-        if sig_count >= state.config.signer_threshold && state.config.signer_threshold > 0 {
+        if sig_count >= required_signer_threshold && required_signer_threshold > 0 {
             job.status = "signing".to_string();
             job.last_error = None;
             job.next_attempt_at = None;
@@ -7981,12 +8973,12 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 None,
                 Some(&serde_json::json!({
                     "sig_count": sig_count,
-                    "threshold": state.config.signer_threshold
+                    "threshold": required_signer_threshold
                 })),
             );
             info!(
                 "withdrawal threshold met: {} ({}/{} signatures)",
-                job.job_id, sig_count, state.config.signer_threshold
+                job.job_id, sig_count, required_signer_threshold
             );
         } else {
             // Not enough signatures yet, will retry next cycle
@@ -9258,9 +10250,312 @@ fn verify_api_auth(
     Ok(())
 }
 
+fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<u8> {
+    format!(
+        "{}\nuser_id={}\nissued_at={}\nexpires_at={}\n",
+        BRIDGE_ACCESS_DOMAIN, user_id, issued_at, expires_at
+    )
+    .into_bytes()
+}
+
+fn current_unix_secs() -> Result<u64, Json<ErrorResponse>> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| {
+            Json(ErrorResponse::invalid(&format!(
+                "System clock error: {}",
+                error
+            )))
+        })
+}
+
+fn parse_bridge_access_signature(value: &Value) -> Result<PqSignature, Json<ErrorResponse>> {
+    if value.is_object() {
+        return serde_json::from_value(value.clone()).map_err(|error| {
+            Json(ErrorResponse::invalid(&format!(
+                "Invalid PQ signature object: {}",
+                error
+            )))
+        });
+    }
+
+    if let Some(encoded) = value.as_str() {
+        return serde_json::from_str(encoded).map_err(|error| {
+            Json(ErrorResponse::invalid(&format!(
+                "Invalid PQ signature JSON string: {}",
+                error
+            )))
+        });
+    }
+
+    Err(Json(ErrorResponse::invalid(
+        "Signature must be a PQ signature object or JSON string",
+    )))
+}
+
+fn parse_bridge_access_auth_value(value: &Value) -> Result<BridgeAccessAuth, Json<ErrorResponse>> {
+    serde_json::from_value(value.clone()).map_err(|error| {
+        Json(ErrorResponse::invalid(&format!(
+            "Invalid bridge auth object: {}",
+            error
+        )))
+    })
+}
+
+fn parse_bridge_access_auth_json(value: &str) -> Result<BridgeAccessAuth, Json<ErrorResponse>> {
+    serde_json::from_str(value).map_err(|error| {
+        Json(ErrorResponse::invalid(&format!(
+            "Invalid bridge auth object: {}",
+            error
+        )))
+    })
+}
+
+fn verify_bridge_access_auth(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+) -> Result<(), Json<ErrorResponse>> {
+    verify_bridge_access_auth_at(user_id, auth, current_unix_secs()?)
+}
+
+fn verify_bridge_access_auth_at(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), Json<ErrorResponse>> {
+    if auth.expires_at <= auth.issued_at {
+        return Err(Json(ErrorResponse::invalid(
+            "bridge auth expires_at must be greater than issued_at",
+        )));
+    }
+
+    if auth.expires_at - auth.issued_at > BRIDGE_ACCESS_MAX_TTL_SECS {
+        return Err(Json(ErrorResponse::invalid(&format!(
+            "bridge auth exceeds max ttl of {} seconds",
+            BRIDGE_ACCESS_MAX_TTL_SECS
+        ))));
+    }
+
+    if auth.issued_at > now.saturating_add(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+        return Err(Json(ErrorResponse::invalid(
+            "bridge auth issued_at is too far in the future",
+        )));
+    }
+
+    if auth.expires_at < now.saturating_sub(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+        return Err(Json(ErrorResponse::invalid("bridge auth has expired")));
+    }
+
+    let user_pubkey = Pubkey::from_base58(user_id).map_err(|_| {
+        Json(ErrorResponse::invalid(
+            "user_id must be a valid Lichen base58 public key (32 bytes)",
+        ))
+    })?;
+    let signature = parse_bridge_access_signature(&auth.signature)?;
+    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
+    if !Keypair::verify(&user_pubkey, &message, &signature) {
+        return Err(Json(ErrorResponse::invalid(
+            "Invalid bridge auth signature",
+        )));
+    }
+
+    Ok(())
+}
+
+fn operator_token_fingerprint(token: &str) -> String {
+    use sha2::Digest;
+
+    let digest = sha2::Sha256::digest(token.as_bytes());
+    format!("operator-{}", hex::encode(&digest[..6]))
+}
+
+fn verify_operator_confirmation_auth(
+    config: &CustodyConfig,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, Json<ErrorResponse>> {
+    let provided = headers
+        .get("x-custody-operator-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+
+    if provided.is_empty() {
+        return Err(Json(ErrorResponse {
+            code: "unauthorized",
+            message: "Invalid or missing X-Custody-Operator-Token".to_string(),
+        }));
+    }
+
+    use subtle::ConstantTimeEq;
+    for token in &config
+        .withdrawal_velocity_policy
+        .operator_confirmation_tokens
+    {
+        let matches: bool = provided.as_bytes().ct_eq(token.as_bytes()).into();
+        if matches {
+            return Ok(operator_token_fingerprint(token));
+        }
+    }
+
+    Err(Json(ErrorResponse {
+        code: "unauthorized",
+        message: "Invalid or missing X-Custody-Operator-Token".to_string(),
+    }))
+}
+
+fn withdrawal_activity_timestamp(job: &WithdrawalJob) -> i64 {
+    job.burn_confirmed_at.unwrap_or(job.created_at)
+}
+
+fn start_of_utc_day(timestamp: i64) -> i64 {
+    const SECONDS_PER_DAY: i64 = 86_400;
+    timestamp - timestamp.rem_euclid(SECONDS_PER_DAY)
+}
+
+fn next_utc_day_start(timestamp: i64) -> i64 {
+    start_of_utc_day(timestamp) + 86_400
+}
+
+fn asset_daily_withdrawal_volume(db: &DB, asset: &str, now: i64) -> Result<u64, String> {
+    let asset_key = asset.to_ascii_lowercase();
+    let day_start = start_of_utc_day(now);
+    let day_end = day_start + 86_400;
+    let mut total = 0u64;
+
+    for status in ["burned", "signing", "broadcasting", "confirmed"] {
+        for job in list_withdrawal_jobs_by_status(db, status)? {
+            if job.asset.to_ascii_lowercase() != asset_key {
+                continue;
+            }
+
+            let activity_ts = withdrawal_activity_timestamp(&job);
+            if activity_ts >= day_start && activity_ts < day_end {
+                total = total.saturating_add(job.amount);
+            }
+        }
+    }
+
+    Ok(total)
+}
+
+fn effective_required_signer_threshold(job: &WithdrawalJob, config: &CustodyConfig) -> usize {
+    if job.required_signer_threshold > 0 || job.velocity_tier != WithdrawalVelocityTier::Standard {
+        job.required_signer_threshold
+    } else {
+        config.signer_threshold
+    }
+}
+
+fn record_operator_confirmation(
+    job: &mut WithdrawalJob,
+    operator_id: &str,
+    note: Option<String>,
+) -> bool {
+    if let Some(existing) = job
+        .operator_confirmations
+        .iter_mut()
+        .find(|entry| entry.operator_id == operator_id)
+    {
+        if note.is_some() {
+            existing.note = note;
+        }
+        return false;
+    }
+
+    job.operator_confirmations
+        .push(WithdrawalOperatorConfirmation {
+            operator_id: operator_id.to_string(),
+            confirmed_at: chrono::Utc::now().timestamp(),
+            note,
+        });
+    true
+}
+
+fn update_withdrawal_hold(
+    job: &mut WithdrawalJob,
+    reason: String,
+    next_attempt_at: Option<i64>,
+) -> bool {
+    let changed = job.last_error.as_deref() != Some(reason.as_str())
+        || job.next_attempt_at != next_attempt_at;
+    job.last_error = Some(reason);
+    job.next_attempt_at = next_attempt_at;
+    changed
+}
+
+fn clear_withdrawal_hold(job: &mut WithdrawalJob) {
+    job.last_error = None;
+    job.next_attempt_at = None;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WithdrawalVelocityGate {
+    Ready,
+    AwaitingRelease {
+        release_after: i64,
+    },
+    DailyCapHold {
+        daily_cap: u64,
+        current_volume: u64,
+        retry_after: i64,
+    },
+    AwaitingOperatorConfirmation {
+        required: usize,
+        received: usize,
+    },
+}
+
+fn evaluate_withdrawal_velocity_gate(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    now: i64,
+) -> Result<WithdrawalVelocityGate, String> {
+    if let Some(release_after) = job.release_after {
+        if now < release_after {
+            return Ok(WithdrawalVelocityGate::AwaitingRelease { release_after });
+        }
+    }
+
+    let daily_cap = withdrawal_policy_amount(
+        &state.config.withdrawal_velocity_policy.daily_caps,
+        &job.asset.to_ascii_lowercase(),
+    );
+    if daily_cap > 0 {
+        let current_volume = asset_daily_withdrawal_volume(&state.db, &job.asset, now)?;
+        if current_volume > daily_cap {
+            return Ok(WithdrawalVelocityGate::DailyCapHold {
+                daily_cap,
+                current_volume,
+                retry_after: next_utc_day_start(now),
+            });
+        }
+    }
+
+    if job.required_operator_confirmations > job.operator_confirmations.len() {
+        return Ok(WithdrawalVelocityGate::AwaitingOperatorConfirmation {
+            required: job.required_operator_confirmations,
+            received: job.operator_confirmations.len(),
+        });
+    }
+
+    Ok(WithdrawalVelocityGate::Ready)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_withdrawal_velocity_policy() -> WithdrawalVelocityPolicy {
+        WithdrawalVelocityPolicy {
+            tx_caps: default_withdrawal_tx_caps(),
+            daily_caps: default_withdrawal_daily_caps(),
+            elevated_thresholds: default_withdrawal_elevated_thresholds(),
+            extraordinary_thresholds: default_withdrawal_extraordinary_thresholds(),
+            elevated_delay_secs: 900,
+            extraordinary_delay_secs: 3600,
+            operator_confirmation_tokens: vec!["test-operator-token".to_string()],
+        }
+    }
 
     fn test_config() -> CustodyConfig {
         CustodyConfig {
@@ -9296,14 +10591,16 @@ mod tests {
             jupiter_api_url: None,
             uniswap_router: None,
             deposit_ttl_secs: 86400,
+            incident_status_path: None,
             master_seed: "test_master_seed_for_unit_tests".to_string(),
-            deposit_master_seed: "test_master_seed_for_unit_tests".to_string(),
+            deposit_master_seed: "test_deposit_seed_for_unit_tests".to_string(),
             signer_auth_token: Some("test_token".to_string()),
             signer_auth_tokens: vec![],
             signer_pq_addresses: vec![],
             api_auth_token: Some("test_api_token".to_string()),
             evm_multisig_address: None,
             webhook_allowed_hosts: vec![],
+            withdrawal_velocity_policy: test_withdrawal_velocity_policy(),
         }
     }
 
@@ -9320,11 +10617,57 @@ mod tests {
     fn test_default_signer_threshold() {
         assert_eq!(default_signer_threshold(0), 0);
         assert_eq!(default_signer_threshold(1), 1);
-        assert_eq!(default_signer_threshold(2), 1);
+        assert_eq!(default_signer_threshold(2), 2);
         assert_eq!(default_signer_threshold(3), 2);
-        assert_eq!(default_signer_threshold(4), 2);
+        assert_eq!(default_signer_threshold(4), 3);
         assert_eq!(default_signer_threshold(5), 3);
-        assert_eq!(default_signer_threshold(10), 3);
+        assert_eq!(default_signer_threshold(10), 6);
+    }
+
+    #[test]
+    fn test_validate_custody_security_configuration_requires_distinct_deposit_seed() {
+        let mut config = test_config();
+        config.deposit_master_seed = config.master_seed.clone();
+
+        let err = validate_custody_security_configuration_with_mode(&config, false)
+            .expect_err("shared treasury/deposit seed must fail outside dev mode");
+
+        assert!(err.contains("CUSTODY_DEPOSIT_MASTER_SEED"));
+    }
+
+    #[test]
+    fn test_validate_custody_security_configuration_allows_shared_seed_in_dev_mode() {
+        let mut config = test_config();
+        config.deposit_master_seed = config.master_seed.clone();
+
+        validate_custody_security_configuration_with_mode(&config, true)
+            .expect("explicit dev mode should allow shared seeds");
+    }
+
+    #[test]
+    fn test_validate_pq_signer_configuration_rejects_non_majority_threshold() {
+        let mut config = test_config();
+        config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        config.signer_threshold = 1;
+
+        let err = validate_pq_signer_configuration(&config)
+            .expect_err("2 signer endpoints must require a strict-majority threshold");
+
+        assert!(err.contains("strict-majority threshold"));
+    }
+
+    #[test]
+    fn test_local_rebalance_policy_error_rejects_multi_signer_mode() {
+        let mut config = test_config();
+        config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        config.signer_threshold = 2;
+
+        let err = local_rebalance_policy_error(&config)
+            .expect("multi-signer rebalance should fail closed while treasury signing is local");
+
+        assert!(err.contains("multi-signer reserve rebalance is disabled"));
     }
 
     fn test_withdrawal_job() -> WithdrawalJob {
@@ -9340,11 +10683,28 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "burned".to_string(),
             attempts: 0,
             last_error: None,
             next_attempt_at: None,
             created_at: 0,
+        }
+    }
+
+    fn test_withdrawal_request() -> WithdrawalRequest {
+        WithdrawalRequest {
+            user_id: "user-1".to_string(),
+            asset: "wSOL".to_string(),
+            amount: 1_000_000_000,
+            dest_chain: "solana".to_string(),
+            dest_address: "11111111111111111111111111111111".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
         }
     }
 
@@ -9380,6 +10740,581 @@ mod tests {
         }
     }
 
+    fn write_test_incident_status(value: Value) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "lichen-custody-incident-{}-{}.json",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, value.to_string()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn test_auth_headers() -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer test_api_token"),
+        );
+        headers
+    }
+
+    fn test_bridge_access_auth_payload(seed: u8) -> (String, Value) {
+        let keypair = Keypair::from_seed(&[seed; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let expires_at = issued_at + 600;
+        let message = bridge_access_message(&user_id, issued_at, expires_at);
+
+        (
+            user_id,
+            json!({
+                "issued_at": issued_at,
+                "expires_at": expires_at,
+                "signature": serde_json::to_value(keypair.sign(&message))
+                    .expect("encode bridge auth signature"),
+            }),
+        )
+    }
+
+    fn test_bridge_lookup_query(user_id: &str, auth: &Value) -> BTreeMap<String, String> {
+        let mut query = BTreeMap::new();
+        query.insert("user_id".to_string(), user_id.to_string());
+        query.insert(
+            "auth".to_string(),
+            serde_json::to_string(auth).expect("encode bridge auth query"),
+        );
+        query
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_rate_limit_emits_spike_event() {
+        let state = test_state();
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.count_this_minute = 20;
+            rl.value_this_hour = 5_000_000_000;
+        }
+        let mut event_rx = state.event_tx.subscribe();
+
+        let response = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert_eq!(
+            response.0.get("error").and_then(|value| value.as_str()),
+            Some("rate_limited: too many withdrawals, try again later")
+        );
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("spike event should be broadcast");
+        assert_eq!(event.event_type, "security.withdrawal_spike");
+        assert_eq!(event.entity_id, "user-1");
+        let data = event.data.expect("spike event should include data");
+        assert_eq!(
+            data.get("reason").and_then(|value| value.as_str()),
+            Some("count_per_minute")
+        );
+        assert_eq!(
+            data.get("max_withdrawals_per_min")
+                .and_then(|value| value.as_u64()),
+            Some(20)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_value_limit_emits_spike_event() {
+        let state = test_state();
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.count_this_minute = 2;
+            rl.value_this_hour = 10_000_000_000_000_000;
+        }
+        let mut event_rx = state.event_tx.subscribe();
+
+        let response = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert_eq!(
+            response.0.get("error").and_then(|value| value.as_str()),
+            Some("rate_limited: hourly withdrawal value limit reached")
+        );
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("spike event should be broadcast");
+        assert_eq!(event.event_type, "security.withdrawal_spike");
+        let data = event.data.expect("spike event should include data");
+        assert_eq!(
+            data.get("reason").and_then(|value| value.as_str()),
+            Some("value_per_hour")
+        );
+        assert_eq!(
+            data.get("max_value_per_hour")
+                .and_then(|value| value.as_u64()),
+            Some(10_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_next_withdrawal_warning_level_escalates_and_deduplicates() {
+        assert_eq!(
+            next_withdrawal_warning_level(10, 20, None),
+            Some(WithdrawalWarningLevel::HalfUsed)
+        );
+        assert_eq!(
+            next_withdrawal_warning_level(11, 20, Some(WithdrawalWarningLevel::HalfUsed)),
+            None
+        );
+        assert_eq!(
+            next_withdrawal_warning_level(15, 20, Some(WithdrawalWarningLevel::HalfUsed)),
+            Some(WithdrawalWarningLevel::ThreeQuartersUsed)
+        );
+        assert_eq!(
+            next_withdrawal_warning_level(18, 20, Some(WithdrawalWarningLevel::ThreeQuartersUsed)),
+            Some(WithdrawalWarningLevel::NearLimit)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_emits_velocity_warning_event_for_count_threshold() {
+        let state = test_state();
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.count_this_minute = 9;
+            rl.value_this_hour = 5_000_000_000;
+        }
+        let mut event_rx = state.event_tx.subscribe();
+
+        let response = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert_eq!(
+            response.0.get("status").and_then(|value| value.as_str()),
+            Some("pending_burn")
+        );
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("velocity warning should be broadcast");
+        assert_eq!(event.event_type, "security.withdrawal_velocity_warning");
+        assert_eq!(event.entity_id, "user-1");
+        let data = event.data.expect("velocity warning should include data");
+        assert_eq!(
+            data.get("reason").and_then(|value| value.as_str()),
+            Some("count_per_minute")
+        );
+        assert_eq!(
+            data.get("alert_level").and_then(|value| value.as_str()),
+            Some("fifty_percent")
+        );
+        assert_eq!(
+            data.get("threshold_percent")
+                .and_then(|value| value.as_u64()),
+            Some(50)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_emits_velocity_warning_event_for_value_threshold() {
+        let state = test_state();
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.count_this_minute = 2;
+            rl.value_this_hour = 7_499_999_000_000_000;
+        }
+        let mut event_rx = state.event_tx.subscribe();
+
+        let response = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert_eq!(
+            response.0.get("status").and_then(|value| value.as_str()),
+            Some("pending_burn")
+        );
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("velocity warning should be broadcast");
+        assert_eq!(event.event_type, "security.withdrawal_velocity_warning");
+        let data = event.data.expect("velocity warning should include data");
+        assert_eq!(
+            data.get("reason").and_then(|value| value.as_str()),
+            Some("value_per_hour")
+        );
+        assert_eq!(
+            data.get("alert_level").and_then(|value| value.as_str()),
+            Some("seventy_five_percent")
+        );
+        assert_eq!(
+            data.get("severity").and_then(|value| value.as_str()),
+            Some("high")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_deposit_blocked_when_deposits_are_paused() {
+        let mut state = test_state();
+        state.config.incident_status_path = Some(write_test_incident_status(serde_json::json!({
+            "mode": "deposit_guard",
+            "components": {
+                "deposits": {
+                    "status": "paused"
+                }
+            }
+        })));
+        let (user_id, auth) = test_bridge_access_auth_payload(15);
+
+        let response = create_deposit(
+            State(state),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id,
+                chain: "solana".to_string(),
+                asset: "sol".to_string(),
+                auth: Some(auth),
+            }),
+        )
+        .await
+        .expect_err("deposit creation must be blocked when deposits are paused");
+
+        assert_eq!(response.code, "invalid_request");
+        assert!(response
+            .message
+            .contains("new deposits are temporarily paused"));
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_allows_deposit_guard_mode() {
+        let mut state = test_state();
+        state.config.incident_status_path = Some(write_test_incident_status(serde_json::json!({
+            "mode": "deposit_guard",
+            "components": {
+                "bridge": {
+                    "status": "operational"
+                },
+                "deposits": {
+                    "status": "paused"
+                }
+            }
+        })));
+
+        let response = create_withdrawal(
+            State(state),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert!(response
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(response.0.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_blocked_when_bridge_is_paused() {
+        let mut state = test_state();
+        state.config.incident_status_path = Some(write_test_incident_status(serde_json::json!({
+            "mode": "bridge_pause",
+            "components": {
+                "bridge": {
+                    "status": "paused"
+                }
+            }
+        })));
+
+        let response = create_withdrawal(
+            State(state),
+            test_auth_headers(),
+            Json(test_withdrawal_request()),
+        )
+        .await;
+
+        assert_eq!(
+            response.0.get("error").and_then(|value| value.as_str()),
+            Some("bridge redemptions are temporarily paused while bridge risk is assessed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_rejects_per_transaction_cap_breach() {
+        let mut state = test_state();
+        state
+            .config
+            .withdrawal_velocity_policy
+            .tx_caps
+            .insert("wsol".to_string(), 100);
+
+        let mut request = test_withdrawal_request();
+        request.amount = 101;
+
+        let response = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
+
+        assert!(response
+            .0
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains("per-transaction cap"));
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_returns_elevated_velocity_policy_metadata() {
+        let mut state = test_state();
+        state.config.signer_endpoints = vec![
+            "http://signer-1".to_string(),
+            "http://signer-2".to_string(),
+            "http://signer-3".to_string(),
+        ];
+        state.config.signer_threshold = 2;
+        state
+            .config
+            .withdrawal_velocity_policy
+            .elevated_thresholds
+            .insert("wsol".to_string(), 500);
+        state
+            .config
+            .withdrawal_velocity_policy
+            .extraordinary_thresholds
+            .insert("wsol".to_string(), 5_000);
+        state.config.withdrawal_velocity_policy.elevated_delay_secs = 600;
+
+        let mut request = test_withdrawal_request();
+        request.amount = 750;
+
+        let response =
+            create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+        let job_id = response
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("elevated withdrawal should create a job")
+            .to_string();
+
+        assert_eq!(
+            response
+                .0
+                .get("velocity_tier")
+                .and_then(|value| value.as_str()),
+            Some("elevated")
+        );
+        assert_eq!(
+            response
+                .0
+                .get("required_signer_threshold")
+                .and_then(|value| value.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            response
+                .0
+                .get("required_operator_confirmations")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            response
+                .0
+                .get("delay_seconds_after_burn")
+                .and_then(|value| value.as_i64()),
+            Some(600)
+        );
+
+        let stored_job = fetch_withdrawal_job(&state.db, &job_id)
+            .expect("fetch stored withdrawal job")
+            .expect("stored withdrawal job should exist");
+        assert_eq!(stored_job.velocity_tier, WithdrawalVelocityTier::Elevated);
+        assert_eq!(stored_job.required_signer_threshold, 3);
+        assert_eq!(stored_job.required_operator_confirmations, 0);
+    }
+
+    #[test]
+    fn test_evaluate_withdrawal_velocity_gate_holds_when_daily_cap_exceeded() {
+        let mut state = test_state();
+        state
+            .config
+            .withdrawal_velocity_policy
+            .daily_caps
+            .insert("wsol".to_string(), 100);
+        let now = 1_700_000_000;
+
+        let mut existing = test_withdrawal_job();
+        existing.job_id = "daily-cap-existing".to_string();
+        existing.amount = 70;
+        existing.status = "confirmed".to_string();
+        existing.created_at = now - 30;
+        existing.burn_confirmed_at = Some(now - 30);
+        store_withdrawal_job(&state.db, &existing).expect("store existing withdrawal job");
+
+        let mut current = test_withdrawal_job();
+        current.job_id = "daily-cap-current".to_string();
+        current.amount = 40;
+        current.status = "burned".to_string();
+        current.created_at = now;
+        current.burn_confirmed_at = Some(now);
+        store_withdrawal_job(&state.db, &current).expect("store current withdrawal job");
+
+        match evaluate_withdrawal_velocity_gate(&state, &current, now)
+            .expect("evaluate daily cap gate")
+        {
+            WithdrawalVelocityGate::DailyCapHold {
+                daily_cap,
+                current_volume,
+                retry_after,
+            } => {
+                assert_eq!(daily_cap, 100);
+                assert_eq!(current_volume, 110);
+                assert_eq!(retry_after, next_utc_day_start(now));
+            }
+            gate => panic!("expected daily cap hold, got {:?}", gate),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_confirm_withdrawal_operator_records_out_of_band_confirmation() {
+        let state = test_state();
+        let mut job = test_withdrawal_job();
+        job.job_id = "operator-confirmation-job".to_string();
+        job.velocity_tier = WithdrawalVelocityTier::Extraordinary;
+        job.required_operator_confirmations = 1;
+        job.status = "burned".to_string();
+        store_withdrawal_job(&state.db, &job).expect("store extraordinary withdrawal job");
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-custody-operator-token",
+            axum::http::HeaderValue::from_static("test-operator-token"),
+        );
+
+        let response = confirm_withdrawal_operator(
+            State(state.clone()),
+            headers,
+            axum::extract::Path(job.job_id.clone()),
+            Json(WithdrawalOperatorConfirmationPayload {
+                note: Some("manual approval".to_string()),
+            }),
+        )
+        .await
+        .expect("operator confirmation should succeed")
+        .0;
+
+        assert_eq!(
+            response
+                .get("operator_confirmation_added")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            response
+                .get("received_operator_confirmations")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+
+        let stored_job = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch confirmed withdrawal job")
+            .expect("withdrawal job should exist");
+        assert_eq!(stored_job.operator_confirmations.len(), 1);
+        assert_eq!(
+            stored_job.operator_confirmations[0].operator_id,
+            operator_token_fingerprint("test-operator-token")
+        );
+        assert_eq!(
+            stored_job.operator_confirmations[0].note.as_deref(),
+            Some("manual approval")
+        );
+        assert!(matches!(
+            evaluate_withdrawal_velocity_gate(&state, &stored_job, chrono::Utc::now().timestamp())
+                .expect("evaluate post-confirmation gate"),
+            WithdrawalVelocityGate::Ready
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_sets_velocity_hold_after_burn_confirmation() {
+        let mut state = test_state();
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
+                transaction_result: json!({
+                    "status": "Success",
+                    "to": "wrapped-weth-contract",
+                    "from": "11111111111111111111111111111111",
+                    "contract_function": "burn",
+                    "token_amount_spores": 2500,
+                }),
+                requests: licn_requests,
+            });
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
+
+        state.config.licn_rpc_url = Some(licn_rpc_url);
+        state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
+        state
+            .config
+            .withdrawal_velocity_policy
+            .elevated_thresholds
+            .insert("weth".to_string(), 2_000);
+        state.config.withdrawal_velocity_policy.elevated_delay_secs = 600;
+
+        let mut job = test_withdrawal_job();
+        job.job_id = "withdrawal-burn-delay-hold".to_string();
+        job.user_id = "11111111111111111111111111111111".to_string();
+        job.asset = "wETH".to_string();
+        job.amount = 2_500;
+        job.dest_chain = "ethereum".to_string();
+        job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+        job.burn_tx_signature = Some("burn-delay-hold".to_string());
+        job.status = "pending_burn".to_string();
+        job.velocity_tier = WithdrawalVelocityTier::Elevated;
+        store_withdrawal_job(&state.db, &job).expect("store pending burn withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let stored_job = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch delayed withdrawal job")
+            .expect("delayed withdrawal job should exist");
+        let burn_confirmed_at = stored_job
+            .burn_confirmed_at
+            .expect("burn confirmation timestamp should be recorded");
+        assert_eq!(stored_job.status, "burned");
+        assert_eq!(stored_job.release_after, Some(burn_confirmed_at + 600));
+        assert_eq!(stored_job.next_attempt_at, stored_job.release_after);
+        assert!(stored_job
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("velocity hold"));
+    }
+
     fn test_pq_signer(fill: u8) -> (Pubkey, [u8; 32]) {
         let seed = [fill; 32];
         (Keypair::from_seed(&seed).pubkey(), seed)
@@ -9396,19 +11331,11 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_withdrawal_signing_mode_routes_native_solana_to_pq_approvals() {
+    fn test_determine_withdrawal_signing_mode_routes_single_signer_solana_to_pq_approval() {
         let mut state = test_state();
-        state.config.signer_endpoints = vec![
-            "http://signer-1".to_string(),
-            "http://signer-2".to_string(),
-            "http://signer-3".to_string(),
-        ];
-        state.config.signer_threshold = 2;
-        state.config.signer_pq_addresses = vec![
-            test_pq_signer(1).0,
-            test_pq_signer(2).0,
-            test_pq_signer(3).0,
-        ];
+        state.config.signer_endpoints = vec!["http://signer-1".to_string()];
+        state.config.signer_threshold = 1;
+        state.config.signer_pq_addresses = vec![test_pq_signer(1).0];
         let job = test_withdrawal_job();
 
         let mode = determine_withdrawal_signing_mode(&state, &job, "sol").unwrap();
@@ -9417,7 +11344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_withdrawal_signing_mode_routes_solana_stablecoin_to_pq_approvals() {
+    fn test_determine_withdrawal_signing_mode_rejects_multi_signer_solana_threshold_mode() {
         let mut state = test_state();
         state.config.signer_endpoints = vec![
             "http://signer-1".to_string(),
@@ -9434,9 +11361,10 @@ mod tests {
         job.asset = "lUSD".to_string();
         job.amount = 1_000_000_000;
 
-        let mode = determine_withdrawal_signing_mode(&state, &job, "usdt").unwrap();
+        let err = determine_withdrawal_signing_mode(&state, &job, "usdt")
+            .expect_err("multi-signer Solana withdrawals must fail closed");
 
-        assert_eq!(mode, Some(WithdrawalSigningMode::PqApprovalQuorum));
+        assert!(err.contains("threshold Solana withdrawals are disabled"));
     }
 
     #[test]
@@ -9740,7 +11668,7 @@ mod tests {
         state.config.signer_pq_addresses = vec![signer_one_addr, signer_two_addr];
 
         let mut job = test_withdrawal_job();
-        let sig_count = collect_pq_withdrawal_approvals(&state, &mut job, "sol")
+        let sig_count = collect_pq_withdrawal_approvals(&state, &mut job, "sol", 2)
             .await
             .expect("collect PQ approvals");
 
@@ -9813,7 +11741,7 @@ mod tests {
         job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
         job.amount = 2_000_000_000;
 
-        let sig_count = collect_threshold_evm_withdrawal_signatures(&state, &mut job, "eth")
+        let sig_count = collect_threshold_evm_withdrawal_signatures(&state, &mut job, "eth", 2)
             .await
             .expect("collect threshold evm signatures");
 
@@ -10125,6 +12053,7 @@ mod tests {
         let mut state = test_state();
         state.config.deposit_master_seed =
             "dedicated_deposit_seed_for_tests_0123456789".to_string();
+        let (user_id, auth) = test_bridge_access_auth_payload(11);
 
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
@@ -10133,9 +12062,10 @@ mod tests {
             State(state.clone()),
             headers,
             Json(CreateDepositRequest {
-                user_id: "11111111111111111111111111111111".to_string(),
+                user_id,
                 chain: "ethereum".to_string(),
                 asset: "eth".to_string(),
+                auth: Some(auth),
             }),
         )
         .await
@@ -10154,6 +12084,116 @@ mod tests {
         )
         .expect("derive address from dedicated deposit seed");
         assert_eq!(stored.address, expected);
+    }
+
+    #[tokio::test]
+    async fn test_create_deposit_rejects_forged_bridge_auth() {
+        let state = test_state();
+        let (_, forged_auth) = test_bridge_access_auth_payload(12);
+        let wrong_user_id = Keypair::from_seed(&[13; 32]).pubkey().to_base58();
+
+        let err = create_deposit(
+            State(state),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: wrong_user_id,
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(forged_auth),
+            }),
+        )
+        .await
+        .expect_err("forged bridge auth must fail");
+
+        assert_eq!(err.code, "invalid_request");
+        assert_eq!(err.message, "Invalid bridge auth signature");
+    }
+
+    #[tokio::test]
+    async fn test_get_deposit_requires_matching_bridge_auth_user() {
+        let state = test_state();
+        let (user_id, auth) = test_bridge_access_auth_payload(21);
+        let deposit = DepositRequest {
+            deposit_id: "dep-lookup-1".to_string(),
+            user_id: user_id.clone(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            address: "lookup-address".to_string(),
+            derivation_path: "m/44'/501'/0'/0/1".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1,
+            status: "issued".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store deposit for lookup test");
+
+        let response = get_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            axum::extract::Path(deposit.deposit_id.clone()),
+            axum::extract::Query(test_bridge_lookup_query(&user_id, &auth)),
+        )
+        .await
+        .expect("authorized user should be able to read deposit");
+
+        assert_eq!(response.0.user_id, user_id);
+
+        let (other_user_id, other_auth) = test_bridge_access_auth_payload(22);
+        let err = get_deposit(
+            State(state),
+            test_auth_headers(),
+            axum::extract::Path(deposit.deposit_id),
+            axum::extract::Query(test_bridge_lookup_query(&other_user_id, &other_auth)),
+        )
+        .await
+        .expect_err("foreign users must not read another deposit");
+
+        assert_eq!(err.code, "not_found");
+        assert_eq!(err.message, "Deposit not found for authenticated user");
+    }
+
+    #[tokio::test]
+    async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
+        let state = test_state();
+        let app = Router::new()
+            .route("/deposits", post(create_deposit))
+            .with_state(state);
+        let base_url = spawn_mock_server(app).await;
+        let (user_id, auth) = test_bridge_access_auth_payload(23);
+        let payload = json!({
+            "user_id": user_id,
+            "chain": "solana",
+            "asset": "sol",
+            "auth": auth,
+        });
+        let client = reqwest::Client::new();
+
+        let first = client
+            .post(format!("{}/deposits", base_url))
+            .header("Authorization", "Bearer test_api_token")
+            .json(&payload)
+            .send()
+            .await
+            .expect("send first deposit request");
+        assert_eq!(first.status(), reqwest::StatusCode::OK);
+
+        let second = client
+            .post(format!("{}/deposits", base_url))
+            .header("Authorization", "Bearer test_api_token")
+            .json(&payload)
+            .send()
+            .await
+            .expect("send second deposit request");
+        assert_eq!(second.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let body: Value = second
+            .json()
+            .await
+            .expect("parse rate-limited deposit response");
+        assert_eq!(body["code"], "invalid_request");
+        assert_eq!(
+            body["message"],
+            "rate_limited: wait 10s between deposit requests"
+        );
     }
 
     #[test]
@@ -10682,6 +12722,7 @@ mod tests {
         state.config.signer_endpoints =
             vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
         state.config.signer_threshold = 2;
+        let (user_id, auth) = test_bridge_access_auth_payload(14);
 
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
@@ -10690,17 +12731,17 @@ mod tests {
             State(state.clone()),
             headers,
             Json(CreateDepositRequest {
-                user_id: "11111111111111111111111111111111".to_string(),
+                user_id,
                 chain: "ethereum".to_string(),
                 asset: "eth".to_string(),
+                auth: Some(auth),
             }),
         )
         .await
         .expect_err("multi-signer local sweep mode should fail closed by default");
 
-        assert_eq!(err.0.code, "invalid_request");
+        assert_eq!(err.code, "invalid_request");
         assert!(err
-            .0
             .message
             .contains("multi-signer deposit creation is disabled"));
 
@@ -10975,6 +13016,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_process_rebalance_jobs_multi_signer_blocks_local_treasury_execution() {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x0".to_string(),
+                    safe_tx_hash_hex: "0x0".to_string(),
+                    send_raw_tx_hash_hex: Some(
+                        "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
+                            .to_string(),
+                    ),
+                    transaction_receipt: None,
+                    requests: rpc_requests.clone(),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.uniswap_router =
+            Some("0x1111111111111111111111111111111111111111".to_string());
+        state.config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.signer_threshold = 2;
+
+        let job = RebalanceJob {
+            job_id: "rebalance-blocked-local-treasury".to_string(),
+            chain: "ethereum".to_string(),
+            from_asset: "usdt".to_string(),
+            to_asset: "usdc".to_string(),
+            amount: 1_000_000,
+            trigger: "threshold".to_string(),
+            linked_withdrawal_job_id: None,
+            swap_tx_hash: None,
+            status: "queued".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_rebalance_job(&state.db, &job).expect("store rebalance job");
+
+        process_rebalance_jobs(&state)
+            .await
+            .expect("process blocked rebalance jobs");
+
+        let failed_jobs =
+            list_rebalance_jobs_by_status(&state.db, "failed").expect("list failed rebalance jobs");
+        assert_eq!(failed_jobs.len(), 1);
+        assert_eq!(failed_jobs[0].job_id, "rebalance-blocked-local-treasury");
+        assert_eq!(failed_jobs[0].attempts, 1);
+        assert!(failed_jobs[0]
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("multi-signer reserve rebalance is disabled"));
+        assert!(list_rebalance_jobs_by_status(&state.db, "submitted")
+            .expect("list submitted rebalance jobs")
+            .is_empty());
+
+        let requests = rpc_requests.lock().await;
+        assert!(requests.is_empty());
+        drop(requests);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("timed out waiting for blocked rebalance event")
+            .expect("receive blocked rebalance event");
+        assert_eq!(event.event_type, "rebalance.failed");
+        assert_eq!(event.entity_id, "rebalance-blocked-local-treasury");
+        let data = event.data.expect("blocked rebalance event metadata");
+        assert_eq!(
+            data.get("mode").and_then(|value| value.as_str()),
+            Some("blocked-local-rebalance")
+        );
+    }
+
+    #[tokio::test]
     async fn test_process_sweep_jobs_confirmed_enqueues_credit_and_updates_status() {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
@@ -11220,6 +13341,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: Some("old failure".to_string()),
@@ -11315,6 +13442,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: None,
@@ -11399,6 +13532,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: None,
@@ -11483,6 +13622,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: None,
@@ -11567,6 +13712,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: None,
@@ -11651,6 +13802,12 @@ mod tests {
             outbound_tx_hash: None,
             safe_nonce: None,
             signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
             status: "pending_burn".to_string(),
             attempts: 0,
             last_error: None,

@@ -74,7 +74,6 @@ const Playground = {
     deployedPrograms: [],
     networkPrograms: [],
     selectedProgramId: null,
-    programKeypair: null,
     programIdOverrideEnabled: false,
     projectName: 'workspace',
     formatOnSave: false,
@@ -91,6 +90,70 @@ const Playground = {
     terminalTab: 'terminal',
     sidebarTab: 'files',
     terminalCollapsed: false,
+
+    sanitizeWalletStoreEntries(wallets) {
+        if (!Array.isArray(wallets)) return [];
+        return wallets
+            .filter(item => item?.provider === 'extension' && typeof item.address === 'string' && item.address.trim())
+            .map((item, index) => ({
+                id: typeof item.id === 'string' && item.id.trim() ? item.id : `wallet_ext_${index + 1}`,
+                name: (item.name || 'Extension Wallet').trim() || 'Extension Wallet',
+                address: item.address.trim(),
+                provider: 'extension'
+            }));
+    },
+
+    purgeLegacyBrowserSecrets() {
+        let changed = false;
+
+        if (localStorage.getItem('lichen_wallet')) {
+            localStorage.removeItem('lichen_wallet');
+            changed = true;
+        }
+
+        if (localStorage.getItem('program_keypair')) {
+            localStorage.removeItem('program_keypair');
+            changed = true;
+        }
+
+        const storedWallets = localStorage.getItem('lichen_wallets');
+        if (storedWallets) {
+            try {
+                const parsedWallets = JSON.parse(storedWallets) || [];
+                const sanitizedWallets = this.sanitizeWalletStoreEntries(parsedWallets);
+                if (JSON.stringify(parsedWallets) !== JSON.stringify(sanitizedWallets)) {
+                    changed = true;
+                }
+                if (sanitizedWallets.length) {
+                    localStorage.setItem('lichen_wallets', JSON.stringify(sanitizedWallets));
+                } else {
+                    localStorage.removeItem('lichen_wallets');
+                }
+            } catch (e) {
+                localStorage.removeItem('lichen_wallets');
+                changed = true;
+            }
+        }
+
+        const rawSnapshot = localStorage.getItem('playground_snapshot');
+        if (rawSnapshot) {
+            try {
+                const snapshot = JSON.parse(rawSnapshot);
+                if (snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'programKeypair')) {
+                    delete snapshot.programKeypair;
+                    localStorage.setItem('playground_snapshot', JSON.stringify(snapshot));
+                    changed = true;
+                }
+            } catch (e) {
+                localStorage.removeItem('playground_snapshot');
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            console.warn('Purged legacy browser-side wallet/program secret storage from Programs.');
+        }
+    },
 
     // Initialize everything
     async init() {
@@ -116,6 +179,8 @@ const Playground = {
                 }
             }
         }
+
+        this.purgeLegacyBrowserSecrets();
 
         // Initialize network clients
         await this.initNetwork(this.network);
@@ -168,6 +233,21 @@ const Playground = {
 
         await this.loadWalletStore();
         await this.applyActiveWallet();
+    },
+
+    async trustedMetadataRpc(method, params = []) {
+        if (typeof signedMetadataRpcCall === 'function') {
+            return signedMetadataRpcCall(method, params, this.network, (resolvedMethod, resolvedParams) => {
+                if (typeof trustedLichenRpcCall === 'function') {
+                    return trustedLichenRpcCall(resolvedMethod, resolvedParams, this.network);
+                }
+                return this.rpc.call(resolvedMethod, resolvedParams);
+            });
+        }
+        if (typeof trustedLichenRpcCall === 'function') {
+            return trustedLichenRpcCall(method, params, this.network);
+        }
+        return this.rpc.call(method, params);
     },
 
     // Initialize Monaco Editor
@@ -294,50 +374,12 @@ const Playground = {
             tab.addEventListener('click', () => this.switchWmTab(tab.dataset.wmTab));
         });
 
-        // Import-type toggle (Private Key / Mnemonic)
-        document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
-            document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const k = document.getElementById('wmImportKey'), m = document.getElementById('wmImportMnemonic');
-            if (btn.dataset.import === 'key') { if (k) k.classList.remove('hidden'); if (m) m.classList.add('hidden'); }
-            else { if (k) k.classList.add('hidden'); if (m) m.classList.remove('hidden'); }
-        }));
-
-        // Build mnemonic word grid (12 words default, expand to 24 on paste)
-        const mnGrid = document.getElementById('mnemonicGrid');
-        if (mnGrid) {
-            for (let i = 0; i < 24; i++) {
-                const inp = document.createElement('input');
-                inp.type = 'text'; inp.placeholder = `Word ${i + 1}`; inp.className = 'form-input'; inp.dataset.wordIdx = i;
-                if (i >= 12) inp.style.display = 'none';
-                mnGrid.appendChild(inp);
-            }
-            mnGrid.addEventListener('paste', (e) => {
-                const text = (e.clipboardData || window.clipboardData).getData('text').trim();
-                const words = text.split(/\s+/);
-                if (words.length >= 2) {
-                    e.preventDefault();
-                    const inputs = mnGrid.querySelectorAll('input');
-                    if (words.length > 12) inputs.forEach(inp => inp.style.display = '');
-                    words.forEach((w, i) => { if (inputs[i]) inputs[i].value = w; });
-                }
-            });
-        }
-
-        // Import tab — connect from private key or mnemonic
-        document.getElementById('wmConnectBtn')?.addEventListener('click', async () => { await this.wmImportWallet(); });
+        document.getElementById('wmOpenExtensionTabBtn')?.addEventListener('click', () => {
+            this.switchWmTab('extension');
+        });
 
         // Extension tab
         document.getElementById('wmExtensionBtn')?.addEventListener('click', () => this.wmConnectExtension());
-
-        // Create tab — generate new keypair
-        document.getElementById('wmCreateBtn')?.addEventListener('click', async () => { await this.wmCreateWallet(); });
-
-        // Copy buttons in create tab
-        document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => {
-            const el = document.getElementById(btn.dataset.copy);
-            if (el) navigator.clipboard.writeText(el.textContent).then(() => this.addTerminalLine('Copied!', 'success'));
-        }));
 
         // Faucet button
         document.getElementById('faucetBtn')?.addEventListener('click', () => {
@@ -422,35 +464,11 @@ const Playground = {
             }
         });
 
-        document.getElementById('newProgramKeypairBtn')?.addEventListener('click', async () => {
-            await this.createProgramKeypair(true);
-        });
-
-        document.getElementById('importProgramKeypairBtn')?.addEventListener('click', () => {
-            this.toggleProgramSeedImportUI(true);
-        });
-
-        document.getElementById('programSeedImportConfirmBtn')?.addEventListener('click', async () => {
-            await this.importProgramKeypair();
-        });
-
-        document.getElementById('programSeedImportCancelBtn')?.addEventListener('click', () => {
-            this.toggleProgramSeedImportUI(false);
-        });
-
-        document.getElementById('programSeedImportInput')?.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                await this.importProgramKeypair();
+        document.getElementById('copyProgramInfoIdBtn')?.addEventListener('click', () => {
+            const value = document.getElementById('infoProgramId')?.textContent?.trim();
+            if (value && value !== '-') {
+                navigator.clipboard.writeText(value);
             }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                this.toggleProgramSeedImportUI(false);
-            }
-        });
-
-        document.getElementById('exportProgramKeypairBtn')?.addEventListener('click', () => {
-            this.exportProgramKeypair();
         });
 
         // Build & Deploy button (sidebar)
@@ -617,25 +635,6 @@ const Playground = {
                 });
             } catch (e) {
                 console.error('Failed to load deployed programs:', e);
-            }
-        }
-
-        const savedProgramKeypair = localStorage.getItem('program_keypair');
-        if (savedProgramKeypair) {
-            try {
-                const parsed = JSON.parse(savedProgramKeypair);
-                if (parsed?.seed) {
-                    const derived = await Lichen.Wallet.create(Lichen.utils.base58Decode(parsed.seed));
-                    this.programKeypair = {
-                        seed: parsed.seed,
-                        address: derived.address,
-                        publicKey: derived.address,
-                    };
-                } else {
-                    this.programKeypair = parsed;
-                }
-            } catch (e) {
-                console.error('Failed to load program keypair:', e);
             }
         }
 
@@ -930,7 +929,6 @@ const Playground = {
             projectName: this.projectName,
             programIdOverrideEnabled: this.programIdOverrideEnabled,
             programIdOverrideValue: document.getElementById('programIdOverrideValue')?.value || '',
-            programKeypair: this.programKeypair,
             deployedPrograms: this.deployedPrograms,
             network: this.network,
             formatOnSave: this.formatOnSave,
@@ -952,6 +950,7 @@ const Playground = {
         }
         try {
             const snapshot = JSON.parse(raw);
+            delete snapshot.programKeypair;
             this.files.clear();
             (snapshot.files || []).forEach(([path, content]) => {
                 this.files.set(path, content);
@@ -959,7 +958,6 @@ const Playground = {
             this.currentFile = snapshot.currentFile || 'lib.rs';
             this.projectName = snapshot.projectName || 'workspace';
             this.programIdOverrideEnabled = Boolean(snapshot.programIdOverrideEnabled);
-            this.programKeypair = snapshot.programKeypair || null;
             this.deployedPrograms = snapshot.deployedPrograms || [];
             this.formatOnSave = Boolean(snapshot.formatOnSave);
             this.currentTemplateId = snapshot.currentTemplateId || null;
@@ -1025,7 +1023,7 @@ const Playground = {
         const programId = this.programIdOverrideEnabled
             ? this.getProgramIdOverride()
             : document.getElementById('programIdPreview')?.value?.trim();
-        if (!programId || programId === 'Build to preview' || programId === 'Build and connect wallet' || programId === 'Override enabled') {
+        if (!programId || programId === 'Build to preview' || programId === 'Build and connect wallet' || programId === 'Enter override program id') {
             this.showToast('Program ID not available yet', 'warning');
             return;
         }
@@ -1722,7 +1720,7 @@ const Playground = {
         this.setRegistryStatus('Checking...', 'info');
 
         try {
-            const entry = await this.rpc.getSymbolRegistry(symbol);
+            const entry = await this.trustedMetadataRpc('getSymbolRegistry', [symbol]);
             if (entry && entry.program) {
                 this.registryLookupCache.set(symbol, entry);
                 this.setRegistryStatus(`Taken by ${this.truncateAddress(entry.program)}`, 'taken');
@@ -2956,7 +2954,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
 
         if (!this.wallet) {
-            this.addTerminalLine('❌ No wallet connected. Create or import wallet first!', 'error');
+            this.addTerminalLine('❌ No wallet extension connected. Connect the extension first.', 'error');
             this.openWalletModal();
             return;
         }
@@ -2994,7 +2992,7 @@ pub extern "C" fn total_minted() -> u64 {
             }
 
             if (registryPayload?.symbol) {
-                const existing = await this.rpc.getSymbolRegistry(registryPayload.symbol);
+                const existing = await this.trustedMetadataRpc('getSymbolRegistry', [registryPayload.symbol]);
                 if (existing && existing.program) {
                     this.addTerminalLine(`❌ Symbol already registered: ${registryPayload.symbol}`, 'error');
                     this.addTerminalLine(`   Program: ${existing.program}`, 'error');
@@ -3070,7 +3068,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
 
         if (!this.wallet) {
-            this.addTerminalLine('❌ No wallet connected. Create or import wallet first!', 'error');
+            this.addTerminalLine('❌ No wallet extension connected. Connect the extension first.', 'error');
             this.openWalletModal();
             return;
         }
@@ -3108,7 +3106,7 @@ pub extern "C" fn total_minted() -> u64 {
 
     async closeProgram() {
         if (!this.wallet) {
-            this.addTerminalLine('❌ No wallet connected.', 'error');
+            this.addTerminalLine('❌ No wallet extension connected.', 'error');
             this.openWalletModal();
             return;
         }
@@ -3341,7 +3339,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
 
         if (!this.wallet) {
-            this.addTerminalLine('❌ Connect wallet first', 'error');
+            this.addTerminalLine('❌ Connect wallet extension first', 'error');
             this.openWalletModal();
             return;
         }
@@ -3422,30 +3420,13 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     switchWmTab(tab) {
-        const wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
+        const wmTC = { wallets: document.getElementById('wmTabWallets'), extension: document.getElementById('wmTabExtension') };
         document.querySelectorAll('.wm-tab').forEach(t => t.classList.toggle('active', t.dataset.wmTab === tab));
         Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== tab); });
     },
 
     resetWalletModalInputs() {
-        const pk = document.getElementById('wmPrivateKey');
-        if (pk) pk.value = '';
-        const pwd = document.getElementById('wmPassword');
-        if (pwd) pwd.value = '';
-        const createPwd = document.getElementById('wmCreatePassword');
-        if (createPwd) createPwd.value = '';
-        const mnGrid = document.getElementById('mnemonicGrid');
-        if (mnGrid) mnGrid.querySelectorAll('input').forEach((inp, idx) => { inp.value = ''; inp.style.display = idx >= 12 ? 'none' : ''; });
-        const created = document.getElementById('wmCreatedWallet');
-        if (created) created.classList.add('hidden');
-        const createBtn = document.getElementById('wmCreateBtn');
-        if (createBtn) createBtn.classList.remove('hidden');
-        // Default import type to key
-        document.querySelectorAll('.wm-import-type').forEach(b => b.classList.toggle('active', b.dataset.import === 'key'));
-        const k = document.getElementById('wmImportKey');
-        const m = document.getElementById('wmImportMnemonic');
-        if (k) k.classList.remove('hidden');
-        if (m) m.classList.add('hidden');
+        // Programs only supports extension-backed wallets.
     },
 
     renderWalletList() {
@@ -3453,9 +3434,9 @@ pub extern "C" fn total_minted() -> u64 {
         if (!list) return;
 
         if (!this.wallets.length) {
-            list.innerHTML = '<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>';
-            const b = document.getElementById('wmEmptyImport');
-            if (b) b.addEventListener('click', () => this.switchWmTab('import'));
+            list.innerHTML = '<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyExtension">Connect Extension</button></div>';
+            const b = document.getElementById('wmEmptyExtension');
+            if (b) b.addEventListener('click', () => this.switchWmTab('extension'));
             return;
         }
 
@@ -3507,75 +3488,6 @@ pub extern "C" fn total_minted() -> u64 {
         });
     },
 
-    async wmImportWallet() {
-        const importPassword = document.getElementById('wmPassword')?.value.trim() || '';
-        if (!importPassword) { alert('Password is required'); return; }
-        const activeType = document.querySelector('.wm-import-type.active')?.dataset.import || 'key';
-        let wallet;
-
-        if (activeType === 'key') {
-            const raw = (document.getElementById('wmPrivateKey')?.value || '').trim();
-            if (!raw) { alert('Enter a private key'); return; }
-            try {
-                let seedBytes;
-                if (/^(0x)?[0-9a-fA-F]+$/.test(raw)) {
-                    const hex = raw.startsWith('0x') ? raw.slice(2) : raw;
-                    seedBytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-                } else {
-                    // Try base58 decode
-                    seedBytes = Lichen.utils.base58Decode(raw);
-                }
-                if (seedBytes.length !== 32) { alert('Invalid key length (need 32 bytes)'); return; }
-                wallet = await Lichen.Wallet.create(seedBytes);
-            } catch (e) {
-                alert('Invalid private key: ' + e.message);
-                return;
-            }
-        } else {
-            // Mnemonic
-            const inputs = document.querySelectorAll('#mnemonicGrid input');
-            const words = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
-            if (words.length !== 12 && words.length !== 24) { alert('Enter 12 or 24 mnemonic words'); return; }
-            try {
-                // BIP39: PBKDF2-HMAC-SHA512, salt="mnemonic", 2048 iterations (matches wallet app & extension)
-                const phrase = words.join(' ').toLowerCase();
-                const mnemonicBytes = new TextEncoder().encode(phrase.normalize('NFKD').trim());
-                const saltBytes = new TextEncoder().encode('mnemonic');
-                crypto.subtle.importKey('raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']).then(keyMaterial => {
-                    return crypto.subtle.deriveBits(
-                        { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
-                        keyMaterial, 512
-                    );
-                }).then(async seedBuffer => {
-                    const seed = new Uint8Array(seedBuffer).slice(0, 32);
-                    wallet = await Lichen.Wallet.create(seed);
-                    this._finishImport(wallet);
-                }).catch(e => alert('Mnemonic derivation failed: ' + e.message));
-                return; // async path
-            } catch (e) {
-                alert('Invalid mnemonic: ' + e.message);
-                return;
-            }
-        }
-
-        this._finishImport(wallet);
-    },
-
-    _finishImport(wallet) {
-        if (!wallet) return;
-        const label = document.getElementById('wmPassword')?.value.trim() || '';
-        this.wallet = wallet;
-        this.addWalletToStore(wallet, label || `Imported ${this.wallets.length}`);
-        this.saveWallet();
-        this.updateWalletDisplay();
-        this.renderWalletList();
-        this.closeWalletModal();
-        this.refreshBalance();
-        this.addTerminalLine('✅ Wallet imported!', 'success');
-        this.addTerminalLine(`   Address: ${this.wallet.address}`, 'info');
-        this.updateProgramIdPreview();
-    },
-
     buildExtensionWallet(address) {
         return {
             address,
@@ -3594,7 +3506,6 @@ pub extern "C" fn total_minted() -> u64 {
             if (resp && resp.address) {
                 this.wallet = this.buildExtensionWallet(resp.address);
                 this.addWalletToStore(this.wallet, 'Extension Wallet');
-                this.saveWalletStore();
                 this.updateWalletDisplay();
                 this.renderWalletList();
                 this.closeWalletModal();
@@ -3606,62 +3517,6 @@ pub extern "C" fn total_minted() -> u64 {
         } catch (e) {
             alert('Extension connection failed: ' + e.message);
         }
-    },
-
-    async wmCreateWallet() {
-        try {
-            const createPassword = document.getElementById('wmCreatePassword')?.value.trim() || '';
-            if (!createPassword) { alert('Password is required'); return; }
-            const wallet = await Lichen.Wallet.create();
-            this.wallet = wallet;
-            const label = `Wallet ${this.wallets.length + 1}`;
-            this.addWalletToStore(wallet, label);
-            this.saveWallet();
-            this.updateWalletDisplay();
-
-            // Show generated info — private key as 64 hex chars (32-byte seed), matching DEX format
-            const created = document.getElementById('wmCreatedWallet');
-            const addrEl = document.getElementById('wmNewAddress');
-            const keyEl = document.getElementById('wmNewKey');
-            const createBtn = document.getElementById('wmCreateBtn');
-            if (created && addrEl && keyEl) {
-                addrEl.textContent = wallet.address;
-                keyEl.textContent = Array.from(wallet.seed).map(x => x.toString(16).padStart(2, '0')).join('');
-                created.classList.remove('hidden');
-            }
-            if (createBtn) createBtn.classList.add('hidden');
-
-            // Subscribe to updates
-            if (this.ws && this.ws.connected) {
-                this.ws.subscribeAccount(wallet.address, (accountInfo) => {
-                    this.balance = accountInfo;
-                    this.updateBalanceDisplay();
-                });
-            }
-
-            this.refreshBalance();
-            this.addTerminalLine('✅ New wallet created!', 'success');
-            this.addTerminalLine(`   Address: ${wallet.address}`, 'info');
-            this.updateProgramIdPreview();
-            this.renderWalletList();
-        } catch (e) {
-            alert('Wallet creation failed: ' + e.message);
-        }
-    },
-
-    exportWallet() {
-        if (!this.wallet) return;
-
-        const walletData = this.wallet.export('');
-        const json = JSON.stringify(walletData, null, 2);
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lichen-wallet-${Date.now()}.json`;
-        a.click();
-
-        this.addTerminalLine('✅ Wallet exported', 'success');
     },
 
     disconnectWallet() {
@@ -3682,17 +3537,12 @@ pub extern "C" fn total_minted() -> u64 {
         }
     },
 
-    saveWallet() {
-        if (!this.wallet) return;
-        const walletData = this.wallet.export('');
-        localStorage.setItem('lichen_wallet', JSON.stringify(walletData));
-    },
-
     async loadWalletStore() {
+        this.wallets = [];
         const stored = localStorage.getItem('lichen_wallets');
         if (stored) {
             try {
-                this.wallets = JSON.parse(stored) || [];
+                this.wallets = this.sanitizeWalletStoreEntries(JSON.parse(stored) || []);
             } catch (e) {
                 this.wallets = [];
             }
@@ -3703,41 +3553,16 @@ pub extern "C" fn total_minted() -> u64 {
             this.activeWalletId = savedActive;
         }
 
-        const legacy = localStorage.getItem('lichen_wallet');
-        if (legacy) {
-            try {
-                const walletData = JSON.parse(legacy);
-                if (walletData?.provider === 'extension' && walletData.address) {
-                    if (!this.wallets.some(item => item.address === walletData.address && item.provider === 'extension')) {
-                        this.wallets.push({
-                            id: `wallet_${Date.now()}`,
-                            name: 'Extension Wallet',
-                            provider: 'extension',
-                            address: walletData.address
-                        });
-                    }
-                } else {
-                    const imported = await Lichen.Wallet.import(walletData, '');
-                    const address = imported.address;
-                    if (!this.wallets.some(item => item.address === address)) {
-                        this.wallets.push({
-                            id: `wallet_${Date.now()}`,
-                            name: 'Wallet',
-                            seed: walletData.seed,
-                            address
-                        });
-                    }
-                }
-            } catch (e) {
-                // ignore
-            }
-        }
-
         this.saveWalletStore();
     },
 
     saveWalletStore() {
-        localStorage.setItem('lichen_wallets', JSON.stringify(this.wallets));
+        this.wallets = this.sanitizeWalletStoreEntries(this.wallets);
+        if (this.wallets.length) {
+            localStorage.setItem('lichen_wallets', JSON.stringify(this.wallets));
+        } else {
+            localStorage.removeItem('lichen_wallets');
+        }
         if (this.activeWalletId) {
             localStorage.setItem('lichen_active_wallet_id', this.activeWalletId);
         } else {
@@ -3746,27 +3571,23 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     addWalletToStore(wallet, name = '') {
-        if (!wallet) return;
-        const exported = typeof wallet.export === 'function' ? wallet.export('') : {};
-        const seed = exported.seed || '';
+        if (!wallet?.isExtension || !wallet.address) {
+            throw new Error('Programs only supports extension-backed wallets');
+        }
         const address = wallet.address;
-        const provider = wallet.isExtension ? 'extension' : exported.provider || null;
         const existing = this.wallets.find(item => item.address === address);
-        const label = (name || '').trim() || `Wallet ${this.wallets.length + 1}`;
+        const label = (name || '').trim() || 'Extension Wallet';
 
         if (existing) {
             existing.name = label;
-            existing.provider = provider || existing.provider || null;
-            if (seed) existing.seed = seed;
+            existing.provider = 'extension';
             this.activeWalletId = existing.id;
             this.saveWalletStore();
             return;
         }
 
         const id = `wallet_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-        const entry = { id, name: label, address };
-        if (seed) entry.seed = seed;
-        if (provider) entry.provider = provider;
+        const entry = { id, name: label, address, provider: 'extension' };
         this.wallets.push(entry);
         this.activeWalletId = id;
         this.saveWalletStore();
@@ -3783,17 +3604,6 @@ pub extern "C" fn total_minted() -> u64 {
             await this.refreshBalance();
             this.updateWalletDisplay();
             return;
-        }
-
-        if (active?.seed) {
-            try {
-                this.wallet = await Lichen.Wallet.import({ seed: active.seed }, '');
-                await this.refreshBalance();
-                this.updateWalletDisplay();
-                return;
-            } catch (e) {
-                console.error('Failed to load active wallet:', e);
-            }
         }
 
         this.wallet = null;
@@ -3906,7 +3716,7 @@ pub extern "C" fn total_minted() -> u64 {
 
     async requestFaucet() {
         if (!this.wallet) {
-            this.addTerminalLine('❌ Create wallet first', 'error');
+            this.addTerminalLine('❌ Connect wallet extension first', 'error');
             this.openWalletModal();
             return;
         }
@@ -4076,7 +3886,7 @@ pub extern "C" fn total_minted() -> u64 {
                 <div class="empty-state">
                     <i class="fas fa-wallet"></i>
                     <p>No wallet connected</p>
-                    <small>Connect a wallet to view your deployed programs</small>
+                    <small>Connect a wallet extension to view your deployed programs</small>
                 </div>
             `;
             return;
@@ -4427,23 +4237,6 @@ pub extern "C" fn total_minted() -> u64 {
         if (checkbox) {
             checkbox.checked = enabled;
         }
-        if (!enabled) {
-            this.toggleProgramSeedImportUI(false);
-        }
-    },
-
-    toggleProgramSeedImportUI(show) {
-        const group = document.getElementById('programSeedImportGroup');
-        const input = document.getElementById('programSeedImportInput');
-        if (!group) return;
-        group.style.display = show ? 'block' : 'none';
-        if (!show && input) {
-            input.value = '';
-        }
-        if (show && input) {
-            input.focus();
-            input.select();
-        }
     },
 
     saveProgramOverride() {
@@ -4461,18 +4254,13 @@ pub extern "C" fn total_minted() -> u64 {
                 preview.value = 'Connect wallet';
                 return;
             }
-            let overrideValue = this.getProgramIdOverride();
-            if (!overrideValue && (this.programKeypair?.address || this.programKeypair?.publicKey)) {
-                overrideValue = this.programKeypair.address || this.programKeypair.publicKey;
-                const overrideInput = document.getElementById('programIdOverrideValue');
-                if (overrideInput) {
-                    overrideInput.value = overrideValue;
-                }
+            const overrideValue = this.getProgramIdOverride();
+            if (!overrideValue) {
+                preview.value = 'Enter override program id';
+                return;
             }
-            preview.value = overrideValue || 'Override enabled';
-            if (overrideValue) {
-                this.updateProgramIdDeclaration(overrideValue);
-            }
+            preview.value = overrideValue;
+            this.updateProgramIdDeclaration(overrideValue);
             return;
         }
 
@@ -4521,95 +4309,6 @@ pub extern "C" fn total_minted() -> u64 {
         if (!this.programIdOverrideEnabled) return null;
         const value = document.getElementById('programIdOverrideValue')?.value?.trim();
         return value || null;
-    },
-
-    async createProgramKeypair(autoDownload = false) {
-        try {
-            const wallet = await Lichen.Wallet.create();
-            const seedBase58 = Lichen.utils.base58Encode(wallet.seed);
-            const programAddress = wallet.address;
-
-            this.programKeypair = {
-                seed: seedBase58,
-                address: programAddress,
-                publicKey: programAddress
-            };
-
-            localStorage.setItem('program_keypair', JSON.stringify(this.programKeypair));
-
-            const overrideInput = document.getElementById('programIdOverrideValue');
-            if (overrideInput) {
-                overrideInput.value = programAddress;
-            }
-
-            this.programIdOverrideEnabled = true;
-            this.toggleProgramOverrideUI(true);
-            this.saveProgramOverride();
-
-            this.updateProgramIdPreview();
-
-            if (autoDownload) {
-                this.exportProgramKeypair();
-            }
-        } catch (e) {
-            this.showToast('Failed to create program keypair', 'warning');
-        }
-    },
-
-    async importProgramKeypair(seedInput) {
-        const fromInput = document.getElementById('programSeedImportInput')?.value;
-        const seed = String(seedInput || fromInput || '').trim();
-        if (!seed) {
-            this.showToast('Enter program seed first', 'warning');
-            return;
-        }
-
-        try {
-            const seedBytes = Lichen.utils.base58Decode(seed);
-            if (!seedBytes || seedBytes.length !== 32) {
-                this.showToast('Program seed must decode to 32 bytes', 'warning');
-                return;
-            }
-            const wallet = await Lichen.Wallet.create(seedBytes);
-            const programAddress = wallet.address;
-
-            this.programKeypair = {
-                seed,
-                address: programAddress,
-                publicKey: programAddress
-            };
-            localStorage.setItem('program_keypair', JSON.stringify(this.programKeypair));
-
-            const overrideInput = document.getElementById('programIdOverrideValue');
-            if (overrideInput) {
-                overrideInput.value = programAddress;
-            }
-
-            this.programIdOverrideEnabled = true;
-            this.toggleProgramOverrideUI(true);
-            this.saveProgramOverride();
-
-            this.updateProgramIdPreview();
-            this.toggleProgramSeedImportUI(false);
-            this.showToast('Program keypair imported', 'success');
-        } catch (e) {
-            this.showToast('Invalid program seed', 'warning');
-        }
-    },
-
-    exportProgramKeypair() {
-        if (!this.programKeypair) {
-            alert('No program keypair available');
-            return;
-        }
-
-        const json = JSON.stringify(this.programKeypair, null, 2);
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lichen-program-keypair-${Date.now()}.json`;
-        a.click();
     },
 
     async showProgramDetails(programId) {
@@ -4708,7 +4407,7 @@ pub extern "C" fn total_minted() -> u64 {
             } else {
                 this.populateProgramRegistryInfo(resolvedProgramId);
                 try {
-                    const entry = await this.rpc.getSymbolRegistryByProgram(resolvedProgramId);
+                    const entry = await this.trustedMetadataRpc('getSymbolRegistryByProgram', [resolvedProgramId]);
                     if (entry && entry.program) {
                         this.applyProgramRegistryEntry(entry, resolvedProgramId);
                         this.populateProgramRegistryInfo(resolvedProgramId);
@@ -4725,10 +4424,6 @@ pub extern "C" fn total_minted() -> u64 {
             } catch (error) {
                 this.displayProgramAbi(null);
             }
-
-            window.copyProgramId = () => {
-                navigator.clipboard.writeText(info.program || programId);
-            };
         } catch (error) {
             this.addTerminalLine('⚠️  Failed to load program info', 'warning');
         }

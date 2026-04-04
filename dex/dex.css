@@ -1424,14 +1424,10 @@
 .gov-layout,
 .launch-layout,
 .predict-layout {
-    max-width: 1800px;
-    margin: 0 auto;
-    padding: 0;
-}
-
-.predict-layout {
     max-width: none;
     width: 100%;
+    margin: 0;
+    padding: 0;
     box-sizing: border-box;
 }
 

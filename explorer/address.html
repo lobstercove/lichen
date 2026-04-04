@@ -117,8 +117,7 @@
                                     <div class="detail-label">Address (Base58)</div>
                                     <div class="detail-value">
                                         <code id="addressBase58">-</code>
-                                        <button class="copy-icon"
-                                            onclick="copyAddressToClipboard('addressBase58', event)">
+                                        <button class="copy-icon" id="copyAddressBase58Btn">
                                             <i class="fas fa-copy"></i>
                                         </button>
                                     </div>
@@ -127,7 +126,7 @@
                                     <div class="detail-label">Address (EVM Format)</div>
                                     <div class="detail-value">
                                         <code id="addressEVM">-</code>
-                                        <button class="copy-icon" onclick="copyAddressToClipboard('addressEVM', event)">
+                                        <button class="copy-icon" id="copyAddressEvmBtn">
                                             <i class="fas fa-copy"></i>
                                         </button>
                                     </div>
@@ -345,7 +344,7 @@
                     <div class="detail-card">
                         <div class="detail-card-header">
                             <h2><i class="fas fa-code"></i> Raw Account Data</h2>
-                            <button class="btn btn-small" onclick="copyAddressToClipboard('rawData', event)">
+                            <button class="btn btn-small" id="copyAddressRawDataBtn">
                                 <i class="fas fa-copy"></i> Copy
                             </button>
                         </div>
@@ -417,7 +416,9 @@
     <script src="shared/utils.js?v=20260322"></script>
     <script src="shared/pq.js?v=20260322"></script>
     <script src="shared/wallet-connect.js?v=20260322"></script>
-    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/build/sha3.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/build/sha3.min.js"
+        integrity="sha512-vPFW2/msTSDLL1vGc/5mQndcojozbjLV52ZAg0eb1awjc3AESwpR7O8mCE31ociBye1Wxosf2B7C6xw+AGsD6A=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
     <script src="shared/env.js?v=20260322"></script>
     <script src="shared-config.js?v=20260322"></script>

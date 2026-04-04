@@ -9,9 +9,12 @@ document.addEventListener('DOMContentLoaded', () => {
     initSidebar();
     initScrollSpy();
     initCodeCopy();
+    initSdkTabs();
     initLangTabs();
     initSearch();
+    initChangelogFilters();
     initNetworkSelector();
+    initDeveloperHomeStats();
     initNavHighlight();
     initMobileNav();
 });
@@ -234,6 +237,27 @@ function initCodeCopy() {
                     showCopied();
                 } catch (_) { /* silently fail */ }
                 document.body.removeChild(textarea);
+            });
+        });
+    });
+}
+
+function initSdkTabs() {
+    const tabs = document.querySelectorAll('.sdk-tab[data-sdk-lang]');
+    const panels = document.querySelectorAll('.sdk-panel');
+
+    if (tabs.length === 0 || panels.length === 0) return;
+
+    tabs.forEach((button) => {
+        button.addEventListener('click', () => {
+            const lang = button.dataset.sdkLang;
+            if (!lang) return;
+
+            tabs.forEach((tab) => {
+                tab.classList.toggle('active', tab === button);
+            });
+            panels.forEach((panel) => {
+                panel.classList.toggle('active', panel.id === 'tab-' + lang);
             });
         });
     });
@@ -571,6 +595,40 @@ function normalizeSearchText(text) {
     return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+function initChangelogFilters() {
+    const filterBtns = document.querySelectorAll('.changelog-filter-btn');
+    const entries = document.querySelectorAll('.changelog-entry');
+
+    if (filterBtns.length === 0 || entries.length === 0) return;
+
+    filterBtns.forEach((button) => {
+        button.addEventListener('click', () => {
+            filterBtns.forEach((btn) => btn.classList.toggle('active', btn === button));
+
+            const filter = button.dataset.filter || 'all';
+            entries.forEach((entry) => {
+                if (filter === 'all') {
+                    entry.style.display = '';
+                    entry.querySelectorAll('.changelog-section').forEach((section) => {
+                        section.style.display = '';
+                    });
+                    return;
+                }
+
+                let hasMatch = false;
+                entry.querySelectorAll('.changelog-section').forEach((section) => {
+                    const matches = section.dataset.type === filter;
+                    section.style.display = matches ? '' : 'none';
+                    if (matches) {
+                        hasMatch = true;
+                    }
+                });
+                entry.style.display = hasMatch ? '' : 'none';
+            });
+        });
+    });
+}
+
 
 // ============================================================
 // 6. NETWORK SELECTOR — devnet / testnet / mainnet
@@ -643,6 +701,117 @@ function getActiveNetwork() {
 
 // Expose globally for other scripts
 window.lichenNetwork = { getActiveNetwork, NETWORK_ENDPOINTS, NETWORK_WS_ENDPOINTS };
+
+let developerHomeWs = null;
+let developerHomeWsReconnect = null;
+let developerHomeStatsPoll = null;
+
+function initDeveloperHomeStats() {
+    const statBlockHeight = document.getElementById('statBlockHeight');
+    const statValidators = document.getElementById('statValidators');
+    if (!statBlockHeight && !statValidators) return;
+
+    function getDeveloperHomeNetwork() {
+        const sel = document.getElementById('devNetworkSelect');
+        return sel ? sel.value : LICHEN_CONFIG.defaultNetwork;
+    }
+
+    function getDeveloperHomeRpcEndpoint() {
+        return LICHEN_CONFIG.rpc(getDeveloperHomeNetwork());
+    }
+
+    function getDeveloperHomeWsEndpoint() {
+        return LICHEN_CONFIG.ws(getDeveloperHomeNetwork());
+    }
+
+    function formatDeveloperHomeStat(value) {
+        if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+        if (value >= 1e3) return (value / 1e3).toFixed(1) + 'K';
+        return value.toLocaleString();
+    }
+
+    async function developerHomeRpcCall(method, params) {
+        const response = await fetch(getDeveloperHomeRpcEndpoint(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: params || [] })
+        });
+        const json = await response.json();
+        return json.result;
+    }
+
+    async function fetchDeveloperHomeStats() {
+        try {
+            const [slot, validators] = await Promise.allSettled([
+                developerHomeRpcCall('getSlot'),
+                developerHomeRpcCall('getValidators')
+            ]);
+
+            if (slot.status === 'fulfilled' && slot.value != null && statBlockHeight) {
+                statBlockHeight.textContent = formatDeveloperHomeStat(slot.value);
+            }
+
+            if (validators.status === 'fulfilled' && validators.value && statValidators) {
+                const count = validators.value.count || validators.value.validators?.length || 0;
+                statValidators.textContent = formatDeveloperHomeStat(count);
+            }
+        } catch (_) {
+            // Silently fail — stats stay in placeholder state.
+        }
+    }
+
+    function connectDeveloperHomeWs() {
+        if (developerHomeWs) {
+            try { developerHomeWs.close(); } catch (_) { }
+        }
+        clearTimeout(developerHomeWsReconnect);
+
+        try {
+            developerHomeWs = new WebSocket(getDeveloperHomeWsEndpoint());
+            developerHomeWs.onopen = () => {
+                developerHomeWs.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'subscribeSlots', params: null }));
+            };
+            developerHomeWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.params?.result?.slot !== undefined && statBlockHeight) {
+                        statBlockHeight.textContent = formatDeveloperHomeStat(data.params.result.slot);
+                    }
+                } catch (_) { }
+            };
+            developerHomeWs.onclose = () => {
+                developerHomeWsReconnect = setTimeout(connectDeveloperHomeWs, 5000);
+            };
+            developerHomeWs.onerror = () => { developerHomeWs.close(); };
+        } catch (_) {
+            developerHomeWsReconnect = setTimeout(connectDeveloperHomeWs, 5000);
+        }
+    }
+
+    function refreshDeveloperHomeStats() {
+        void fetchDeveloperHomeStats();
+        connectDeveloperHomeWs();
+    }
+
+    void fetchDeveloperHomeStats();
+    if (!developerHomeStatsPoll) {
+        developerHomeStatsPoll = setInterval(fetchDeveloperHomeStats, 5000);
+    }
+    connectDeveloperHomeWs();
+
+    const sel = document.getElementById('devNetworkSelect');
+    if (sel) {
+        sel.addEventListener('change', refreshDeveloperHomeStats);
+    }
+
+    window.addEventListener('beforeunload', () => {
+        clearTimeout(developerHomeWsReconnect);
+        if (developerHomeWs) {
+            try { developerHomeWs.close(); } catch (_) { }
+            developerHomeWs = null;
+        }
+    }, { once: true });
+}
 
 
 // ============================================================

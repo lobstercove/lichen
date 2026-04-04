@@ -820,17 +820,6 @@ bootstrap_peers = [
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        (function () {
-            const navInput = document.getElementById('searchInput');
-            if (navInput) {
-                navInput.addEventListener('focus', () => {
-                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                    navInput.blur();
-                });
-            }
-        })();
-    </script>
 </body>
 
 </html>

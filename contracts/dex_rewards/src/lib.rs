@@ -16,8 +16,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
-    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_contract_address, get_slot, log_info, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -87,6 +87,10 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
 }
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
+}
+
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
 }
 
 fn is_licn_configured() -> bool {
@@ -352,15 +356,11 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
 
 /// Claim trading rewards — transfers LICN from contract's own balance to trader.
 /// The contract itself holds the reward tokens (self-custody pattern).
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+/// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
 ///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
-    }
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 2;
     }
     let mut t = [0u8; 32];
     unsafe {
@@ -409,15 +409,11 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
 }
 
 /// Claim LP rewards for a position — transfers LICN from contract's own balance to provider.
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+/// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
 ///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 3;
-    }
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 2;
     }
     let mut p = [0u8; 32];
     unsafe {
@@ -506,15 +502,11 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
 /// Claim referral rewards — transfers accumulated referral earnings to the referrer.
 /// AUDIT-FIX G7-02: referral earnings were recorded in record_trade but had
 /// no claim path. This function completes the referral economy.
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+/// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
 ///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
-    }
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 2;
     }
     let mut r = [0u8; 32];
     unsafe {
@@ -672,6 +664,9 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    if is_licn_configured() {
+        return 2;
+    }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     storage_set(LICHENCOIN_CONFIGURED_KEY, &[1u8]);
     0
@@ -695,6 +690,9 @@ pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
     }
     if is_zero(&a) {
         return 2;
+    }
+    if has_configured_address(REWARDS_POOL_KEY) {
+        return 3;
     }
     storage_set(REWARDS_POOL_KEY, &a);
     0
@@ -1228,14 +1226,55 @@ mod tests {
     #[test]
     fn test_emergency_pause() {
         let admin = setup();
+        let trader = [2u8; 32];
+
+        test_mock::set_caller([0xFFu8; 32]);
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+
         test_mock::set_caller(admin);
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
         assert!(is_paused());
-        let trader = [2u8; 32];
-        test_mock::set_caller([0xFFu8; 32]);
-        record_trade(trader.as_ptr(), 5000, 5_000_000);
+
         test_mock::set_caller(trader);
-        assert_eq!(claim_trading_rewards(trader.as_ptr()), 2); // paused
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_claim_lp_rewards_still_work_when_paused() {
+        let admin = setup();
+        let provider = [2u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 1, 1_000_000), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, 100_000, 1), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(provider);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
+    }
+
+    #[test]
+    fn test_claim_referral_rewards_still_work_when_paused() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(register_referral(trader.as_ptr(), referrer.as_ptr()), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader.as_ptr(), 10_000, 10_000_000), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(referrer);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 0);
     }
 
     #[test]
@@ -1284,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_set_lichencoin_address() {
-        let admin = setup();
+        let admin = setup_no_licn();
         let licn = [10u8; 32];
         test_mock::set_caller(admin);
         assert_eq!(set_lichencoin_address(admin.as_ptr(), licn.as_ptr()), 0);
@@ -1293,11 +1332,31 @@ mod tests {
 
     #[test]
     fn test_set_lichencoin_address_zero() {
-        let admin = setup();
+        let admin = setup_no_licn();
         let zero = [0u8; 32];
         test_mock::set_caller(admin);
         // Zero address = native LICN, should succeed
         assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_set_lichencoin_address_rejects_reconfiguration() {
+        let admin = setup_no_licn();
+        let native_licn = [0u8; 32];
+        let wrapped_licn = [10u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), native_licn.as_ptr()),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_lichencoin_address(admin.as_ptr(), wrapped_licn.as_ptr()),
+            2
+        );
+        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), native_licn);
     }
 
     #[test]
@@ -1319,6 +1378,20 @@ mod tests {
     }
 
     #[test]
+    fn test_set_rewards_pool_rejects_reconfiguration() {
+        let admin = setup();
+        let first_pool = [11u8; 32];
+        let second_pool = [12u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), first_pool.as_ptr()), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), second_pool.as_ptr()), 3);
+        assert_eq!(load_addr(REWARDS_POOL_KEY), first_pool);
+    }
+
+    #[test]
     fn test_set_rewards_pool_zero() {
         let admin = setup();
         let zero = [0u8; 32];
@@ -1337,7 +1410,7 @@ mod tests {
 
     #[test]
     fn test_claim_with_licn_configured() {
-        let admin = setup();
+        setup();
         let trader = [2u8; 32];
 
         test_mock::set_caller([0xFFu8; 32]);

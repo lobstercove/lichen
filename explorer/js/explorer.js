@@ -116,6 +116,28 @@ class LichenRPC {
 
 let rpc = new LichenRPC(RPC_URL);
 
+function getTrustedExplorerNetwork() {
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
+        return LICHEN_CONFIG.currentNetwork(NETWORK_STORAGE_KEY);
+    }
+    return currentNetwork;
+}
+
+async function trustedRpcCall(method, params = []) {
+    if (typeof signedMetadataRpcCall === 'function') {
+        return signedMetadataRpcCall(method, params, getTrustedExplorerNetwork(), function (resolvedMethod, resolvedParams) {
+            if (typeof trustedLichenRpcCall === 'function') {
+                return trustedLichenRpcCall(resolvedMethod, resolvedParams, getTrustedExplorerNetwork());
+            }
+            return rpc.call(resolvedMethod, resolvedParams);
+        });
+    }
+    if (typeof trustedLichenRpcCall === 'function') {
+        return trustedLichenRpcCall(method, params, getTrustedExplorerNetwork());
+    }
+    return rpc.call(method, params);
+}
+
 // WebSocket Client (for real-time updates)
 class LichenWS {
     constructor(url) {
@@ -461,7 +483,7 @@ async function navigateExplorerSearch(query) {
     const isAddressLike = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/i.test(value);
     if (isAddressLike) {
         try {
-            const contractInfo = await rpc.getContractInfo(value);
+            const contractInfo = await trustedRpcCall('getContractInfo', [value]);
             if (contractInfo && contractInfo.is_executable === true) {
                 window.location.href = `contract.html?address=${encoded}`;
                 return;
@@ -488,7 +510,7 @@ async function navigateExplorerSearch(query) {
     }
 
     try {
-        const symbol = await rpc.call('getSymbolRegistry', [value.toUpperCase()]);
+        const symbol = await trustedRpcCall('getSymbolRegistry', [value.toUpperCase()]);
         if (symbol && symbol.program) {
             window.location.href = `contract.html?address=${encodeURIComponent(symbol.program)}`;
             return;
@@ -733,7 +755,7 @@ async function updateLatestBlocks() {
                 <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
                 <td>
                 <span class="hash-short" title="${escapeExplorerHtml(block.hash)}">${formatHash(block.hash)}</span>
-                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(block.hash)}" onclick="safeCopy(this)" title="Copy hash"></i>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(block.hash)}" title="Copy hash"></i>
                 </td>
                 <td><span class="pill pill-info">${block.transaction_count || 0} txs</span></td>
                 <td>${formatValidator(block.validator)}</td>
@@ -778,7 +800,7 @@ async function updateLatestTransactions() {
             <tr>
                 <td>
                     <a href="transaction.html?sig=${encodeURIComponent(signature)}" title="${escapeExplorerHtml(signature)}">${formatHash(signature)}</a>
-                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(signature)}" onclick="safeCopy(this)" title="Copy signature"></i>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(signature)}" title="Copy signature"></i>
                 </td>
                 <td><span class="pill pill-${escapeExplorerHtml(pillClass)}">${escapeExplorerHtml(type)}</span></td>
                 <td><span class="pill pill-${statusClass}"><i class="fas fa-${statusIcon}"></i> ${statusLabel}</span></td>
@@ -863,11 +885,26 @@ function setupSearch() {
     });
 }
 
+function bindDashboardCopyControls() {
+    document.getElementById('blocksTable')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+
+    document.getElementById('txsTable')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+}
+
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', () => {
     // console.log('🦞 Lichen Explorer loaded');
 
     initExplorerNetworkSelector();
+    bindDashboardCopyControls();
 
     // Only run dashboard-specific updates on index.html
     const isDashboard = !!document.getElementById('latestBlock');

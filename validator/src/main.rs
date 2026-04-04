@@ -24,7 +24,12 @@ pub mod updater;
 pub mod wal;
 
 use futures_util::{SinkExt, StreamExt};
-use lichen_core::multisig::GovernedWalletConfig;
+use lichen_core::multisig::{
+    bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
+    incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
+    treasury_executor_config_for_roles, upgrade_proposer_config_for_roles,
+    upgrade_veto_guardian_config_for_roles,
+};
 use lichen_core::nft::decode_token_state;
 use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
@@ -39,8 +44,9 @@ use lichen_core::{
 };
 use lichen_genesis::{
     derive_contract_address, genesis_assign_achievements, genesis_auto_deploy,
-    genesis_create_trading_pairs, genesis_initialize_contracts, genesis_seed_analytics_prices,
-    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
+    genesis_create_trading_pairs, genesis_harden_contract_controls, genesis_initialize_contracts,
+    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
+    genesis_set_fee_exempt_contracts,
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -698,6 +704,42 @@ fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
         }
     }
     None
+}
+
+fn persist_effective_genesis_config(data_dir: &str, config: &GenesisConfig) {
+    let path = Path::new(data_dir).join("genesis.json");
+    let json = match serde_json::to_string_pretty(config) {
+        Ok(json) => json,
+        Err(err) => {
+            warn!(
+                "⚠️  Failed to serialize synced genesis config for {}: {}",
+                path.display(),
+                err
+            );
+            return;
+        }
+    };
+
+    let already_current = fs::read_to_string(&path)
+        .map(|existing| existing == json)
+        .unwrap_or(false);
+    if already_current {
+        return;
+    }
+
+    if let Err(err) = fs::write(&path, json) {
+        warn!(
+            "⚠️  Failed to persist synced genesis config {}: {}",
+            path.display(),
+            err
+        );
+        return;
+    }
+
+    info!(
+        "💾 Persisted authoritative genesis config to {}",
+        path.display()
+    );
 }
 
 fn validate_p2p_transaction_signatures(tx: &Transaction) -> bool {
@@ -5169,6 +5211,8 @@ async fn run_validator() {
         }
     };
 
+    let runtime_genesis_config = Arc::new(RwLock::new(genesis_config.clone()));
+
     // P2P NETWORK SETUP - do this early to check if joining existing network
     info!("🦞 Initializing P2P network...");
 
@@ -6624,6 +6668,7 @@ async fn run_validator() {
         let global_last_user_tx_activity_for_blocks =
             global_last_user_tx_activity_for_blocks.clone();
         let genesis_config_for_blocks = genesis_config.clone();
+        let runtime_genesis_config_for_blocks = runtime_genesis_config.clone();
         // genesis_time_secs_for_blocks and slot_duration_ms_for_blocks removed:
         // Timestamp validation now uses wall-clock only, not slot-derived timestamps.
         let slashing_for_blocks = slashing_tracker.clone();
@@ -6950,6 +6995,15 @@ async fn run_validator() {
                             // the fork choice has better information.
                             let current = state_for_blocks.get_last_slot().unwrap_or(0);
                             let has_pending = sync_mgr.pending_count().await > 0;
+                            let current_finalized = finality_for_blocks.finalized_slot();
+                            if is_sync_block && block_slot <= current_finalized {
+                                // Sync batches intentionally overlap the current tip in
+                                // live mode for fork resolution, but once that tip is
+                                // finalized we must treat the overlap as an ordinary
+                                // duplicate. Re-evaluating it would immediately trip the
+                                // finality guard and strand the rest of the sync batch.
+                                continue;
+                            }
                             if block_slot <= current && has_pending {
                                 // Let through to fork choice for re-evaluation
                                 info!(
@@ -7033,18 +7087,29 @@ async fn run_validator() {
                         // validator must derive the same state from the genesis block
                         // transactions + genesis config.
 
+                        let effective_genesis_config = extract_genesis_config(&block)
+                            .unwrap_or_else(|| genesis_config_for_blocks.clone());
+                        {
+                            let mut config = runtime_genesis_config_for_blocks.write().await;
+                            *config = effective_genesis_config.clone();
+                        }
+                        persist_effective_genesis_config(
+                            &data_dir_for_blocks,
+                            &effective_genesis_config,
+                        );
+
                         // 1. Rent params from genesis config
                         state_for_blocks
                             .set_rent_params(
-                                genesis_config_for_blocks
+                                effective_genesis_config
                                     .features
                                     .rent_rate_spores_per_kb_month,
-                                genesis_config_for_blocks.features.rent_free_kb,
+                                effective_genesis_config.features.rent_free_kb,
                             )
                             .ok();
 
                         // 2. Fee config from genesis config
-                        let gc = &genesis_config_for_blocks;
+                        let gc = &effective_genesis_config;
                         let genesis_fee_config = FeeConfig {
                             base_fee: gc.features.base_fee_spores,
                             contract_deploy_fee: CONTRACT_DEPLOY_FEE,
@@ -7065,7 +7130,7 @@ async fn run_validator() {
                         // 2b. Slot duration from genesis config
                         state_for_blocks
                             .set_slot_duration_ms(
-                                genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                effective_genesis_config.consensus.slot_duration_ms.max(1),
                             )
                             .ok();
 
@@ -7161,27 +7226,269 @@ async fn run_validator() {
                                     all_signers.push(gpk);
                                 }
                                 for (role, pk, _, _) in &dist_recipients {
-                                    if role == "ecosystem_partnerships" {
-                                        let config = GovernedWalletConfig::new(
-                                            2,
-                                            all_signers.clone(),
-                                            "ecosystem_partnerships",
-                                        );
+                                    if let Some(config) =
+                                        governed_wallet_config_for_role(role, &all_signers)
+                                    {
                                         state_for_blocks
                                             .set_governed_wallet_config(pk, &config)
                                             .ok();
-                                        info!("  ✓ 📡 [sync] ecosystem_partnerships governed wallet: threshold={}, {} signers", config.threshold, config.signers.len());
-                                    } else if role == "reserve_pool" {
-                                        let config = GovernedWalletConfig::new(
-                                            3,
-                                            all_signers.clone(),
-                                            "reserve_pool",
+                                        info!(
+                                            "  ✓ 📡 [sync] {} governed wallet: threshold={}, {} signers, timelock={} epoch(s)",
+                                            role,
+                                            config.threshold,
+                                            config.signers.len(),
+                                            config.timelock_epochs
                                         );
-                                        state_for_blocks
-                                            .set_governed_wallet_config(pk, &config)
-                                            .ok();
-                                        info!("  ✓ 📡 [sync] reserve_pool governed wallet: threshold={}, {} signers [SUPERMAJORITY]", config.threshold, config.signers.len());
                                     }
+                                }
+
+                                let committee_roles: Vec<(String, Pubkey)> = dist_recipients
+                                    .iter()
+                                    .map(|(role, pk, _, _)| (role.clone(), *pk))
+                                    .collect();
+                                match state_for_blocks.get_community_treasury_pubkey() {
+                                    Ok(Some(governance_authority)) => {
+                                        match incident_guardian_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((guardian_authority, guardian_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_incident_guardian_authority(
+                                                        &guardian_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store incident guardian authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &guardian_authority,
+                                                        &guardian_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store incident guardian config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] incident_guardian governed authority: threshold={}, {} signers, authority={}",
+                                                        guardian_config.threshold,
+                                                        guardian_config.signers.len(),
+                                                        guardian_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive incident guardian config during sync: {}",
+                                                err
+                                            ),
+                                        }
+
+                                        match bridge_committee_admin_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((bridge_authority, bridge_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_bridge_committee_admin_authority(
+                                                        &bridge_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store bridge committee admin authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &bridge_authority,
+                                                        &bridge_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store bridge committee admin config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] bridge_committee_admin governed authority: threshold={}, {} signers, authority={}",
+                                                        bridge_config.threshold,
+                                                        bridge_config.signers.len(),
+                                                        bridge_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive bridge committee admin config during sync: {}",
+                                                err
+                                            ),
+                                        }
+
+                                        match oracle_committee_admin_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((oracle_authority, oracle_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_oracle_committee_admin_authority(
+                                                        &oracle_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store oracle committee admin authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &oracle_authority,
+                                                        &oracle_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store oracle committee admin config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] oracle_committee_admin governed authority: threshold={}, {} signers, authority={}",
+                                                        oracle_config.threshold,
+                                                        oracle_config.signers.len(),
+                                                        oracle_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive oracle committee admin config during sync: {}",
+                                                err
+                                            ),
+                                        }
+
+                                        match treasury_executor_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((treasury_authority, treasury_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_treasury_executor_authority(
+                                                        &treasury_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store treasury executor authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &treasury_authority,
+                                                        &treasury_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store treasury executor config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] treasury_executor governed authority: threshold={}, {} signers, authority={}",
+                                                        treasury_config.threshold,
+                                                        treasury_config.signers.len(),
+                                                        treasury_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive treasury executor config during sync: {}",
+                                                err
+                                            ),
+                                        }
+
+                                        match upgrade_proposer_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((upgrade_authority, upgrade_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_upgrade_proposer_authority(
+                                                        &upgrade_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store upgrade proposer authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &upgrade_authority,
+                                                        &upgrade_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store upgrade proposer config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] upgrade_proposer governed authority: threshold={}, {} signers, authority={}",
+                                                        upgrade_config.threshold,
+                                                        upgrade_config.signers.len(),
+                                                        upgrade_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive upgrade proposer config during sync: {}",
+                                                err
+                                            ),
+                                        }
+
+                                        match upgrade_veto_guardian_config_for_roles(
+                                            &committee_roles,
+                                            &governance_authority,
+                                        ) {
+                                            Ok((veto_authority, veto_config)) => {
+                                                if let Err(err) = state_for_blocks
+                                                    .set_upgrade_veto_guardian_authority(
+                                                        &veto_authority,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store upgrade veto guardian authority during sync: {}",
+                                                        err
+                                                    );
+                                                } else if let Err(err) = state_for_blocks
+                                                    .set_governed_wallet_config(
+                                                        &veto_authority,
+                                                        &veto_config,
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "failed to store upgrade veto guardian config during sync: {}",
+                                                        err
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        "  ✓ 📡 [sync] upgrade_veto_guardian governed authority: threshold={}, {} signers, authority={}",
+                                                        veto_config.threshold,
+                                                        veto_config.signers.len(),
+                                                        veto_authority.to_base58()
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => tracing::error!(
+                                                "failed to derive upgrade veto guardian config during sync: {}",
+                                                err
+                                            ),
+                                        }
+                                    }
+                                    Ok(None) => tracing::error!(
+                                        "failed to derive incident guardian config during sync: community_treasury not found"
+                                    ),
+                                    Err(err) => tracing::error!(
+                                        "failed to load community_treasury for incident guardian during sync: {}",
+                                        err
+                                    ),
                                 }
                             }
 
@@ -7222,7 +7529,7 @@ async fn run_validator() {
                             );
 
                             // 6. Create initial accounts from genesis config
-                            for account_info in &genesis_config_for_blocks.initial_accounts {
+                            for account_info in &effective_genesis_config.initial_accounts {
                                 if let Ok(pubkey) = Pubkey::from_base58(&account_info.address) {
                                     let account = Account::new(account_info.balance_licn, pubkey);
                                     state_for_blocks.put_account(&pubkey, &account).ok();
@@ -7306,9 +7613,11 @@ async fn run_validator() {
                                         // and persist to RocksDB (joining-network
                                         // loop reads from DB if in-memory is empty).
                                         let mut reconstructed_vs = ValidatorSet::new();
+                                        let min_stake =
+                                            effective_genesis_config.consensus.min_validator_stake;
                                         for entry in pool.stake_entries() {
                                             let resolved_stake = entry.total_stake();
-                                            if resolved_stake < min_validator_stake {
+                                            if resolved_stake < min_stake {
                                                 continue;
                                             }
                                             reconstructed_vs.add_validator(ValidatorInfo {
@@ -7349,19 +7658,29 @@ async fn run_validator() {
                             //    + CF_TX_BY_SLOT in one atomic WriteBatch).
 
                             // 7b. Extract embedded GenesisPrices from block (opcode 40).
-                            // Falls back to compiled defaults for pre-standard genesis blocks.
-                            let genesis_prices = extract_genesis_config(&block)
-                                .map(|c| c.genesis_prices)
-                                .unwrap_or_default();
+                            // Falls back to the active local config for pre-standard blocks.
+                            let genesis_prices = effective_genesis_config.genesis_prices.clone();
 
                             // 8. Auto-deploy contracts (using frozen genesis prices)
                             genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
-                            genesis_initialize_contracts(
+                            if let Err(err) = genesis_harden_contract_controls(
+                                &state_for_blocks,
+                                &gpk,
+                                "📡 [sync]",
+                            ) {
+                                tracing::error!("genesis hardening during sync failed: {}", err);
+                            };
+                            if let Err(err) = genesis_initialize_contracts(
                                 &state_for_blocks,
                                 &gpk,
                                 "📡 [sync]",
                                 block.header.timestamp,
-                            );
+                            ) {
+                                tracing::error!(
+                                    "genesis contract initialization during sync failed: {}",
+                                    err
+                                );
+                            };
                             genesis_create_trading_pairs(
                                 &state_for_blocks,
                                 &gpk,
@@ -7573,7 +7892,12 @@ async fn run_validator() {
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
                                 pending_block.header.slot,
-                                genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                runtime_genesis_config_for_blocks
+                                    .read()
+                                    .await
+                                    .consensus
+                                    .slot_duration_ms
+                                    .max(1),
                             );
                             run_sltp_triggers_from_state(&state_for_blocks);
                             reset_24h_stats_if_expired(
@@ -7935,7 +8259,12 @@ async fn run_validator() {
                         run_analytics_bridge_from_state(
                             &state_for_blocks,
                             block.header.slot,
-                            genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                            runtime_genesis_config_for_blocks
+                                .read()
+                                .await
+                                .consensus
+                                .slot_duration_ms
+                                .max(1),
                         );
                         run_sltp_triggers_from_state(&state_for_blocks);
                         reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
@@ -8100,7 +8429,12 @@ async fn run_validator() {
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
                                     pending_block.header.slot,
-                                    genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                    runtime_genesis_config_for_blocks
+                                        .read()
+                                        .await
+                                        .consensus
+                                        .slot_duration_ms
+                                        .max(1),
                                 );
                                 run_sltp_triggers_from_state(&state_for_blocks);
                                 reset_24h_stats_if_expired(
@@ -8493,7 +8827,12 @@ async fn run_validator() {
                                     run_analytics_bridge_from_state(
                                         &state_for_blocks,
                                         block.header.slot,
-                                        genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                        runtime_genesis_config_for_blocks
+                                            .read()
+                                            .await
+                                            .consensus
+                                            .slot_duration_ms
+                                            .max(1),
                                     );
                                     run_sltp_triggers_from_state(&state_for_blocks);
                                     reset_24h_stats_if_expired(

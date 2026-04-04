@@ -132,7 +132,7 @@ jobs:
           path: SHA256SUMS
 
   release:
-    name: Create GitHub Release
+    name: Create Draft GitHub Release
     needs: checksums
     runs-on: ubuntu-latest
     steps:
@@ -147,7 +147,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: false
+          draft: true
           generate_release_notes: true
           files: |
             lichen-validator-linux-x86_64.tar.gz
@@ -186,7 +186,8 @@ jobs:
 
             ### Auto-Update
 
-            Existing validators with `--auto-update=apply` will automatically update.
+            Production validators should keep auto-update disabled until this draft has a detached
+            `SHA256SUMS.sig` attached and a canary rollout is explicitly approved.
 
             ### Signature Verification
 
@@ -200,4 +201,4 @@ jobs:
             > 1. Download SHA256SUMS from this release
             > 2. Sign it offline: `./scripts/sign-release.sh SHA256SUMS release-signing-keypair.json`
             > 3. Upload SHA256SUMS.sig to the release (`SHA256SUMS.sig` is JSON-encoded `PqSignature` data)
-            > 4. Publish the release
+            > 4. Publish the release only after the detached signature is attached and the canary gate is approved

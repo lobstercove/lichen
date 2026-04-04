@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
@@ -16,8 +16,8 @@ async def main():
     conn = Connection(RPC)
 
     # Load reserve_pool keypair
-    reserve = Keypair.load(Path("data/state-testnet/genesis-keys/reserve_pool-lichen-testnet-1.json"))
-    print(f"Reserve: {reserve.public_key()}")
+    reserve = load_genesis_keypair("reserve_pool")
+    print(f"Reserve: {reserve.address()}")
 
     # Discover dex_core
     result = await conn._rpc("getAllSymbolRegistry")
@@ -33,7 +33,7 @@ async def main():
     print(f"dex_core: {dex_core}")
 
     # Test: one sell order LICN/lUSD @ $0.100, 1000 LICN
-    caller_bytes = bytes(reserve.public_key().to_bytes())
+    caller_bytes = bytes(reserve.address().to_bytes())
     pair_id = 1  # LICN/lUSD
     SIDE_SELL = 1
     ORDER_LIMIT = 0
@@ -53,7 +53,7 @@ async def main():
         struct.pack('<Q', EXPIRY_SLOTS)              # expiry
     )
 
-    sig = await call_contract_raw(conn, reserve, dex_core, "call", list(args))
+    sig = await call_contract_raw(conn, reserve, dex_core, "call", list(args), value=qty_spores)
     print(f"SELL 1000 LICN @ $0.100 -> sig: {sig}")
 
 asyncio.run(main())

@@ -15,9 +15,10 @@ PAIR_NAMES = {
 
 async def main():
     conn = Connection('http://127.0.0.1:8899')
-    keys = Path('data/state-testnet/genesis-keys')
-    reserve = Keypair.load(keys / 'reserve_pool-lichen-testnet-1.json')
-    reserve_str = str(reserve.public_key())
+    from deploy_dex import load_genesis_keypair
+
+    reserve = load_genesis_keypair('reserve_pool')
+    reserve_str = str(reserve.address())
 
     # Find DEX contract
     result = await conn._rpc("getAllSymbolRegistry")
@@ -63,7 +64,7 @@ async def main():
     
     # Also try querying user orders - opcode 11 (get_user_orders)
     # Args: opcode(1) + trader(32B)
-    reserve_bytes = bytes(reserve.public_key().to_bytes())
+    reserve_bytes = bytes(reserve.address().to_bytes())
     args = bytes([11]) + reserve_bytes
     args_b64 = base64.b64encode(args).decode()
     try:
@@ -82,7 +83,7 @@ async def main():
     
     # Check token balances after seeding
     print("Token balances (reserve_pool) after seeding:")
-    reserve_bytes = bytes(reserve.public_key().to_bytes())
+    reserve_bytes = bytes(reserve.address().to_bytes())
     args_b64 = base64.b64encode(reserve_bytes).decode()
     for sym, addr in sorted(token_addrs.items()):
         r = await conn._rpc('callContract', [addr, 'balance_of', args_b64, reserve_str])

@@ -14,8 +14,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_timestamp, log_info, storage_get,
-    storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_timestamp, log_info, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -79,6 +79,8 @@ const DELEGATE_PERM_SKILLS: u8 = 0b0000_0100;
 const DELEGATE_PERM_NAMING: u8 = 0b0000_1000;
 
 // ---- Hardening constants ----
+const MID_ADMIN_KEY: &[u8] = b"mid_admin";
+const MID_PENDING_ADMIN_KEY: &[u8] = b"mid_pending_admin";
 const MID_PAUSE_KEY: &[u8] = b"mid_paused";
 /// Vouch cooldown: minimum time between vouches from same voucher (seconds)
 const VOUCH_COOLDOWN_MS: u64 = 3_600_000; // 1 hour
@@ -91,7 +93,7 @@ fn is_mid_paused() -> bool {
         .unwrap_or(false)
 }
 fn is_mid_admin(caller: &[u8]) -> bool {
-    storage_get(b"mid_admin")
+    storage_get(MID_ADMIN_KEY)
         .map(|d| d.as_slice() == caller)
         .unwrap_or(false)
 }
@@ -2518,6 +2520,12 @@ fn get_mid_self_address() -> Option<Address> {
     })
 }
 
+fn has_mid_configured_address(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|data| data.len() == 32)
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // ATTEST SKILL
 // ============================================================================
@@ -4920,7 +4928,7 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
 }
 
 /// Transfer admin key. Current admin only.
-/// Returns: 0 success, 1 not admin
+/// Returns: 0 success, 1 not admin, 2 zero address rejected
 #[no_mangle]
 pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
@@ -4947,14 +4955,56 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
     unsafe {
         core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32);
     }
-    storage_set(b"mid_admin", &new_admin);
-    log_info("Admin key transferred");
+    if new_admin.iter().all(|&byte| byte == 0) {
+        reentrancy_exit();
+        return 2;
+    }
+    storage_set(MID_PENDING_ADMIN_KEY, &new_admin);
+    log_info("Pending admin key staged");
+    reentrancy_exit();
+    0
+}
+
+/// Accept a staged admin key transfer.
+/// Returns: 0 success, 1 no matching pending admin
+#[no_mangle]
+pub extern "C" fn accept_admin(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
+    let mut caller = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("accept_admin: caller does not match transaction signer");
+        reentrancy_exit();
+        return 200;
+    }
+
+    let pending_admin = match storage_get(MID_PENDING_ADMIN_KEY) {
+        Some(bytes) if bytes.len() >= 32 => bytes,
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
+    if pending_admin.as_slice() != caller {
+        reentrancy_exit();
+        return 1;
+    }
+
+    storage_set(MID_ADMIN_KEY, &caller);
+    storage_set(MID_PENDING_ADMIN_KEY, &[0u8; 32]);
+    log_info("Admin key accepted");
     reentrancy_exit();
     0
 }
 
 /// Set the LICN token contract address for auction refunds. Admin only.
-/// Returns: 0 success, 1 not admin, 2 zero address rejected
+/// Returns: 0 success, 1 not admin, 2 zero address rejected, 3 already configured
 #[no_mangle]
 pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
@@ -4983,6 +5033,11 @@ pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *
         reentrancy_exit();
         return 2;
     }
+    if has_mid_configured_address(MID_TOKEN_ADDR_KEY) {
+        log_info("set_mid_token_address: already configured");
+        reentrancy_exit();
+        return 3;
+    }
     storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
     log_info("LichenID token address set");
     reentrancy_exit();
@@ -4990,7 +5045,7 @@ pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *
 }
 
 /// Set this contract's own address (needed as transfer source). Admin only.
-/// Returns: 0 success, 1 not admin, 2 zero address rejected
+/// Returns: 0 success, 1 not admin, 2 zero address rejected, 3 already configured
 #[no_mangle]
 pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
@@ -5018,6 +5073,11 @@ pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *co
         log_info("set_mid_self_address: zero address rejected");
         reentrancy_exit();
         return 2;
+    }
+    if has_mid_configured_address(MID_SELF_ADDR_KEY) {
+        log_info("set_mid_self_address: already configured");
+        reentrancy_exit();
+        return 3;
     }
     storage_set(MID_SELF_ADDR_KEY, &self_addr);
     log_info("LichenID self address set");
@@ -6784,13 +6844,55 @@ mod tests {
         // Admin transfers
         test_mock::set_caller(admin);
         assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
+        assert_eq!(
+            test_mock::get_storage(MID_PENDING_ADMIN_KEY),
+            Some(new_admin.to_vec())
+        );
 
-        // Old admin no longer works
+        // Old admin remains active until acceptance.
         test_mock::set_caller(admin);
-        assert_eq!(mid_pause(admin.as_ptr()), 1);
-        // New admin works
+        assert_eq!(mid_pause(admin.as_ptr()), 0);
+        assert_eq!(mid_unpause(admin.as_ptr()), 0);
+
+        // New admin must accept before it gains control.
         test_mock::set_caller(new_admin);
+        assert_eq!(mid_pause(new_admin.as_ptr()), 1);
+        assert_eq!(accept_admin(new_admin.as_ptr()), 0);
         assert_eq!(mid_pause(new_admin.as_ptr()), 0);
+        assert_eq!(
+            test_mock::get_storage(MID_PENDING_ADMIN_KEY),
+            Some([0u8; 32].to_vec())
+        );
+    }
+
+    #[test]
+    fn test_accept_admin_rejects_non_pending_admin() {
+        setup();
+        let admin = [1u8; 32];
+        let new_admin = [10u8; 32];
+        let attacker = [12u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(accept_admin(attacker.as_ptr()), 1);
+        assert_eq!(mid_pause(attacker.as_ptr()), 1);
+
+        test_mock::set_caller(admin);
+        assert_eq!(mid_pause(admin.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_transfer_admin_rejects_zero_address() {
+        setup();
+        let admin = [1u8; 32];
+        let zero = [0u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        assert_eq!(transfer_admin(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(test_mock::get_storage(MID_PENDING_ADMIN_KEY), None);
     }
 
     #[test]
@@ -7382,6 +7484,26 @@ mod tests {
         let zero = [0u8; 32];
         assert_eq!(set_mid_token_address(admin.as_ptr(), zero.as_ptr()), 2);
         assert_eq!(set_mid_self_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_mid_addresses_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let token = [0xCC; 32];
+        let token_new = [0xCD; 32];
+        assert_eq!(set_mid_token_address(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(set_mid_token_address(admin.as_ptr(), token_new.as_ptr()), 3);
+        assert_eq!(storage_get(MID_TOKEN_ADDR_KEY).unwrap(), token.to_vec());
+
+        let self_addr = [0xDD; 32];
+        let self_new = [0xDE; 32];
+        assert_eq!(set_mid_self_address(admin.as_ptr(), self_addr.as_ptr()), 0);
+        assert_eq!(set_mid_self_address(admin.as_ptr(), self_new.as_ptr()), 3);
+        assert_eq!(storage_get(MID_SELF_ADDR_KEY).unwrap(), self_addr.to_vec());
     }
 
     #[test]

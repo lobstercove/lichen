@@ -839,8 +839,8 @@ await conn.offSignatureStatus(subId);</code></pre>
             <!-- subscribeGovernance -->
             <div class="method-card" id="subscribeGovernance">
                 <h3 class="method-name">subscribeGovernance / governanceSubscribe</h3>
-                <p class="method-desc">Receive notifications for on-chain governance events: proposal creation, votes,
-                    execution, and cancellation.</p>
+                <p class="method-desc">Receive notifications for on-chain governance events: proposal creation,
+                    approval, execution, and cancellation.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>None</p>
@@ -852,9 +852,17 @@ await conn.offSignatureStatus(subId);</code></pre>
                         <pre><code>{
   "event": "GovernanceEvent",
   "proposal_id": 7,
-  "kind": "voted",
-  "voter": "VoterPub...",
-  "vote_weight": 50000000000,
+    "kind": "approved",
+    "action": "contract_call",
+    "authority": "AuthorityPub...",
+    "proposer": "ProposerPub...",
+    "actor": "ActorPub...",
+    "approvals": 2,
+    "threshold": 2,
+    "execute_after_epoch": 9,
+    "executed": false,
+    "cancelled": false,
+    "metadata": "contract=... function=... args_len=0 value_spores=0",
   "slot": 1234
 }</code></pre>
                     </div>

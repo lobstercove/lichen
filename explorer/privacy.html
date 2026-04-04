@@ -158,13 +158,13 @@
 
             <!-- Tabs: Shielded Transactions | Nullifier Lookup | Architecture -->
             <div class="address-tabs" style="margin-top: 2rem;">
-                <button class="address-tab active" data-tab="shielded-txs" onclick="switchPrivacyTab('shielded-txs')">
+                <button class="address-tab active" data-tab="shielded-txs">
                     <i class="fas fa-exchange-alt"></i> Shielded Transactions
                 </button>
-                <button class="address-tab" data-tab="nullifier-check" onclick="switchPrivacyTab('nullifier-check')">
+                <button class="address-tab" data-tab="nullifier-check">
                     <i class="fas fa-search"></i> Nullifier Lookup
                 </button>
-                <button class="address-tab" data-tab="zk-architecture" onclick="switchPrivacyTab('zk-architecture')">
+                <button class="address-tab" data-tab="zk-architecture">
                     <i class="fas fa-project-diagram"></i> ZK Architecture
                 </button>
             </div>
@@ -175,7 +175,7 @@
                     <div class="detail-card-header"
                         style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem;">
                         <h2><i class="fas fa-lock"></i> Recent Shielded Transactions</h2>
-                        <button class="btn btn-secondary btn-small" onclick="refreshShieldedTxs()">
+                        <button class="btn btn-secondary btn-small" id="refreshShieldedTxsBtn">
                             <i class="fas fa-sync-alt"></i> Refresh
                         </button>
                     </div>
@@ -230,7 +230,7 @@
                                     placeholder="Enter nullifier hash (64 hex characters)"
                                     style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
                             </div>
-                            <button class="btn btn-primary" onclick="lookupNullifier()">
+                            <button class="btn btn-primary" id="lookupNullifierBtn">
                                 <i class="fas fa-search"></i> Check
                             </button>
                         </div>

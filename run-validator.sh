@@ -6,6 +6,9 @@
 # Usage: ./run-validator.sh [network] <validator_number>
 #   network: testnet | mainnet (default: testnet)
 #
+# Explicit local-dev opt-in:
+#   export LICHEN_LOCAL_DEV=1
+#
 # Port Assignments (testnet):
 #   V1: p2p=7001  rpc=8899  ws=8900
 #   V2: p2p=7002  rpc=8901  ws=8902
@@ -57,6 +60,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 cd "$REPO_ROOT" || exit 1
 
+require_local_dev() {
+	if [[ "${LICHEN_LOCAL_DEV:-0}" != "1" ]]; then
+		echo "run-validator.sh is restricted to explicit local development."
+		echo "Export LICHEN_LOCAL_DEV=1 to continue, or use lichen-start.sh / deploy services for non-dev environments."
+		exit 1
+	fi
+}
+
+require_local_dev
+
 SUPERVISOR_SCRIPT="$REPO_ROOT/scripts/validator-supervisor.sh"
 
 P2P_PORT=$((BASE_P2P + (VALIDATOR_NUM - 1)))
@@ -75,6 +88,7 @@ LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
 CLI_BIN="${REPO_ROOT}/target/release/lichen"
 GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
 VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
+SIGNED_METADATA_MANIFEST_FILE_DEFAULT="${REPO_ROOT}/signed-metadata-manifest-${NETWORK}.json"
 
 # Save real user home BEFORE overriding.
 REAL_USER_HOME="${HOME}"
@@ -83,6 +97,7 @@ REAL_USER_HOME="${HOME}"
 # Without this, multiple local validators share ~/.lichen/node_identity.json and
 # can appear as the same peer address.
 export HOME="$VALIDATOR_HOME"
+export LICHEN_SIGNED_METADATA_MANIFEST_FILE="${LICHEN_SIGNED_METADATA_MANIFEST_FILE:-$SIGNED_METADATA_MANIFEST_FILE_DEFAULT}"
 
 if [[ "${LICHEN_SUPERVISED:-0}" != "1" && "${LICHEN_DISABLE_SUPERVISOR:-0}" != "1" && -x "$SUPERVISOR_SCRIPT" ]]; then
 	SUPERVISOR_INSTANCE="${NETWORK}-v${VALIDATOR_NUM}-p${P2P_PORT}"
@@ -204,7 +219,7 @@ echo "   With TXs: ~400ms blocks (0.02 LICN)"
 echo ""
 
 if [ -z "${LICHEN_SIGNER_BIND:-}" ]; then
-	export LICHEN_SIGNER_BIND="0.0.0.0:${SIGNER_PORT}"
+	export LICHEN_SIGNER_BIND="127.0.0.1:${SIGNER_PORT}"
 fi
 
 if [ "$NETWORK" = "testnet" ]; then

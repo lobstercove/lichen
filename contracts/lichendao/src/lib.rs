@@ -8,10 +8,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    balance_of_token_or_native, bytes_to_u64, call_contract, call_token_balance,
-    call_token_transfer, get_caller, get_contract_address, get_timestamp, log_info,
-    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address, CrossCall,
+    balance_of_token_or_native, bytes_to_u64, call_contract, get_caller,
+    get_contract_address, get_timestamp, log_info, receive_token_or_native, storage_get,
+    storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -1540,6 +1539,14 @@ pub extern "C" fn set_lichenid_address(
     unsafe {
         core::ptr::copy_nonoverlapping(lichenid_addr_ptr, addr.as_mut_ptr(), 32);
     }
+    if addr.iter().all(|&b| b == 0) {
+        log_info("set_lichenid_address: zero address rejected");
+        return 0;
+    }
+    if storage_get(b"lichenid_address").is_some() {
+        log_info("set_lichenid_address: already configured");
+        return 0;
+    }
     storage_set(b"lichenid_address", &addr);
     log_info("LichenID address configured for reputation verification");
     1
@@ -1579,6 +1586,29 @@ mod tests {
         // Check proposal count is 0
         let count_bytes = test_mock::get_storage(b"proposal_count").unwrap();
         assert_eq!(bytes_to_u64(&count_bytes), 0);
+    }
+
+    #[test]
+    fn test_set_lichenid_address_rejects_zero_and_cannot_reconfigure() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+
+        let owner = [0u8; 32];
+        test_mock::set_caller(owner);
+
+        let zero = [0u8; 32];
+        assert_eq!(set_lichenid_address(owner.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(test_mock::get_storage(b"lichenid_address"), None);
+
+        let first = [9u8; 32];
+        assert_eq!(set_lichenid_address(owner.as_ptr(), first.as_ptr()), 1);
+        assert_eq!(test_mock::get_storage(b"lichenid_address"), Some(first.to_vec()));
+
+        let second = [8u8; 32];
+        assert_eq!(set_lichenid_address(owner.as_ptr(), second.as_ptr()), 0);
+        assert_eq!(test_mock::get_storage(b"lichenid_address"), Some(first.to_vec()));
     }
 
     #[test]

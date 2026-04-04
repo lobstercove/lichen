@@ -812,9 +812,9 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
                 <h2>SDK Examples</h2>
 
                 <div class="sdk-tabs">
-                    <button class="sdk-tab active" onclick="switchTab(event, 'js')">JavaScript</button>
-                    <button class="sdk-tab" onclick="switchTab(event, 'python')">Python</button>
-                    <button class="sdk-tab" onclick="switchTab(event, 'rust')">Rust</button>
+                    <button class="sdk-tab active" data-sdk-lang="js">JavaScript</button>
+                    <button class="sdk-tab" data-sdk-lang="python">Python</button>
+                    <button class="sdk-tab" data-sdk-lang="rust">Rust</button>
                 </div>
 
                 <!-- JAVASCRIPT -->
@@ -993,16 +993,6 @@ if result.len() &gt;= 8 {
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        function switchTab(event, lang) {
-            // Deactivate all tabs and panels
-            document.querySelectorAll('.sdk-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.sdk-panel').forEach(p => p.classList.remove('active'));
-            // Activate clicked tab and matching panel
-            event.target.classList.add('active');
-            document.getElementById('tab-' + lang).classList.add('active');
-        }
-    </script>
 </body>
 
 </html>

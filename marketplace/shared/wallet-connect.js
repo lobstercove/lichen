@@ -1,16 +1,7 @@
 /**
  * Lichen Shared Wallet Connect Utility
  * 
- * Provides a unified wallet connection experience across all Lichen frontends.
- * Uses the Lichen SDK for real keypair generation and signing.
- * 
- * Usage:
- *   <script src="../shared/wallet-connect.js"></script>
- *   <script>
- *     const wallet = new LichenWallet({ rpcUrl: 'http://localhost:8899' });
- *     wallet.bindConnectButton('#connectWallet');
- *     wallet.onConnect(info => console.log('Connected:', info.address));
- *   </script>
+ * Provides a unified extension-backed wallet connection flow for Marketplace.
  */
 
 // ─── Shared Utilities ────────────────────────────────────
@@ -155,6 +146,10 @@ function waitForInjectedLichenProvider(timeoutMs) {
     });
 }
 
+function extensionOnlyWalletError() {
+    return new Error('Browser-local wallets are disabled in Marketplace. Use the Lichen wallet extension.');
+}
+
 // ─── Wallet Manager ──────────────────────────────────────
 
 /**
@@ -181,7 +176,6 @@ function LichenWallet(options) {
     this._balanceInterval = null;
     this._provider = null;
     this._providerListenersBound = false;
-    this._sdkWallet = null;
 
     // Try to restore from localStorage
     if (this.persist) {
@@ -200,7 +194,6 @@ LichenWallet.prototype._clearConnectionState = function (notifyDisconnect, oldAd
     this.address = null;
     this.balance = 0;
     this._walletData = null;
-    this._sdkWallet = null;
     this._provider = null;
 
     if (this.persist) {
@@ -259,7 +252,6 @@ LichenWallet.prototype._bindInjectedProvider = function (provider) {
 
 LichenWallet.prototype._connectInjectedProvider = async function (provider) {
     this._bindInjectedProvider(provider);
-    this._sdkWallet = null;
 
     var accounts = [];
     if (typeof provider.getProviderState === 'function') {
@@ -298,46 +290,20 @@ LichenWallet.prototype._connectInjectedProvider = async function (provider) {
 };
 
 /**
- * Connect wallet - creates or imports a wallet
- * If Lichen SDK is available, uses real keypair generation
- * Otherwise falls back to address-only mode with server-side wallet
- * @param {Object} [importData] - Import data { seed, hex, json }
+ * Connect wallet via the injected Lichen extension only.
  * @returns {Promise<Object>} - { address, balance }
  */
 LichenWallet.prototype.connect = async function (importData) {
-    var injectedProvider = !importData ? await waitForInjectedLichenProvider() : null;
-    this._sdkWallet = null;
-
-    if (injectedProvider) {
-        await this._connectInjectedProvider(injectedProvider);
-    } else if (window.Lichen && window.Lichen.Wallet) {
-        // Try Lichen SDK next (real local wallet)
-        try {
-            var wallet;
-            if (importData && importData.seed) {
-                wallet = await Promise.resolve(Lichen.Wallet.import({ seed: importData.seed }, ''));
-            } else if (importData && importData.json) {
-                wallet = await Promise.resolve(Lichen.Wallet.import(importData.json, importData.password || ''));
-            } else if (typeof Lichen.Wallet.create === 'function') {
-                wallet = await Lichen.Wallet.create();
-            } else {
-                wallet = new Lichen.Wallet();
-            }
-            this.address = wallet.address || wallet.publicKey;
-            this._sdkWallet = wallet;
-            this._walletData = {
-                address: this.address,
-                hasKeys: true,
-                created: Date.now()
-            };
-        } catch (err) {
-            console.warn('Lichen SDK wallet creation failed, using RPC wallet:', err);
-            await this._createRpcWallet();
-        }
-    } else {
-        // No SDK available - create via RPC
-        await this._createRpcWallet();
+    if (importData) {
+        throw extensionOnlyWalletError();
     }
+
+    var injectedProvider = await waitForInjectedLichenProvider();
+    if (!injectedProvider) {
+        throw new Error('Lichen wallet extension not found. Install the extension to continue.');
+    }
+
+    await this._connectInjectedProvider(injectedProvider);
 
     // Fetch balance
     await this.refreshBalance();
@@ -361,36 +327,9 @@ LichenWallet.prototype.connect = async function (importData) {
     return info;
 };
 
-/** Create wallet via RPC (address-only, no local keys) */
+/** Browser-local and RPC wallet creation are disabled. */
 LichenWallet.prototype._createRpcWallet = async function () {
-    try {
-        var result = await lichenRpcCall('createWallet', [], this.rpcUrl);
-        this.address = result.address || result.pubkey || result;
-        this._walletData = {
-            address: this.address,
-            hasKeys: false,
-            created: Date.now()
-        };
-    } catch (err) {
-        // Fallback - generate a native PQ wallet locally if the shared runtime is available
-        if (window.LichenPQ && typeof window.LichenPQ.generateKeypair === 'function') {
-            var kp = await window.LichenPQ.generateKeypair();
-            this.address = kp.address;
-            this._walletData = {
-                address: this.address,
-                publicKey: kp.publicKeyHex,
-                hasKeys: true,
-                created: Date.now()
-            };
-        } else {
-            // No crypto library available — prompt user to install extension
-            this.address = null;
-            var errorMsg = 'Wallet creation failed: no wallet extension or PQ runtime available. ' +
-                'Please install the Lichen wallet extension or import a private key directly.';
-            console.error(errorMsg);
-            throw new Error(errorMsg);
-        }
-    }
+    throw extensionOnlyWalletError();
 };
 
 /** Disconnect wallet and clear state */
@@ -438,50 +377,35 @@ LichenWallet.prototype.sendTransaction = async function (instructions) {
     }, this);
     var blockhash = normalizeRecentBlockhash(await lichenRpcCall('getRecentBlockhash', [], this.rpcUrl));
 
-    if (this._walletData && this._walletData.provider === 'extension') {
-        var provider = await this._resolveInjectedProvider();
-        if (!provider || typeof provider.sendTransaction !== 'function') {
-            throw new Error('Lichen wallet extension not available for transaction approval');
-        }
-
-        return unwrapTransactionResult(await provider.sendTransaction({
-            signatures: [],
-            message: {
-                instructions: normalizedInstructions.map(function (ix) {
-                    return {
-                        program_id: Array.from(ix.program_id),
-                        accounts: ix.accounts.map(function (account) { return Array.from(account); }),
-                        data: Array.from(ix.data),
-                    };
-                }),
-                blockhash: blockhash,
-            },
-        }));
+    var provider = await this._resolveInjectedProvider();
+    if (!provider || typeof provider.sendTransaction !== 'function') {
+        throw new Error('Lichen wallet extension not available for transaction approval');
     }
 
-    if (this._sdkWallet && typeof this._sdkWallet.sign === 'function') {
-        if (typeof serializeMessageBincode !== 'function') {
-            throw new Error('Transaction serializer unavailable on this page');
-        }
+    return unwrapTransactionResult(await provider.sendTransaction({
+        signatures: [],
+        message: {
+            instructions: normalizedInstructions.map(function (ix) {
+                return {
+                    program_id: Array.from(ix.program_id),
+                    accounts: ix.accounts.map(function (account) { return Array.from(account); }),
+                    data: Array.from(ix.data),
+                };
+            }),
+            blockhash: blockhash,
+        },
+    }));
+};
 
-        var message = { instructions: normalizedInstructions, blockhash: blockhash };
-        var signature = await this._sdkWallet.sign(serializeMessageBincode(message));
-        return lichenRpcCall('sendTransaction', [encodeTransactionPayload({
-            signatures: [signature],
-            message: {
-                instructions: normalizedInstructions.map(function (ix) {
-                    return {
-                        program_id: Array.from(ix.program_id),
-                        accounts: ix.accounts.map(function (account) { return Array.from(account); }),
-                        data: Array.from(ix.data),
-                    };
-                }),
-                blockhash: blockhash,
-            },
-        })], this.rpcUrl);
+LichenWallet.prototype._openWalletModal = function () {
+    if (this.isConnected()) {
+        return Promise.resolve({ address: this.address, balance: this.balance });
     }
 
-    throw new Error('Connected wallet cannot sign in this page session. Reconnect the extension or reconnect the local wallet.');
+    return this.connect().catch(function (err) {
+        console.error('Marketplace wallet connect failed:', err);
+        return null;
+    });
 };
 
 /** Toggle connect/disconnect */
@@ -595,7 +519,9 @@ LichenWallet.prototype.bindConnectButton = function (selector) {
 
     el.addEventListener('click', function (e) {
         e.preventDefault();
-        self.toggle();
+        self.toggle().catch(function (err) {
+            console.error('Marketplace wallet action failed:', err);
+        });
     });
 
     // Set initial state

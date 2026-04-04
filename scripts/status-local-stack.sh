@@ -63,7 +63,7 @@ fi
 
 if [ -n "$FAUCET_PORT" ]; then
   echo "Faucet:"
-  if curl -s "http://127.0.0.1:${FAUCET_PORT}/health" | grep -q '"status":"ok"'; then
+  if curl -s "http://127.0.0.1:${FAUCET_PORT}/health" | grep -Eq 'OK|"status":"ok"'; then
     echo "  ✓ http://127.0.0.1:${FAUCET_PORT}"
   else
     echo "  ✗ http://127.0.0.1:${FAUCET_PORT}"

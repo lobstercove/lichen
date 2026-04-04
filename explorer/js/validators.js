@@ -20,6 +20,16 @@ function trustTierFromReputation(score) {
     return getTrustTier(score).label;
 }
 
+function bindStaticControls() {
+    document.getElementById('prevPage')?.addEventListener('click', previousPage);
+    document.getElementById('nextPage')?.addEventListener('click', nextPage);
+    document.getElementById('validatorsTable')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+}
+
 async function loadValidators() {
     const table = document.getElementById('validatorsTable');
     if (!table) return;
@@ -104,7 +114,7 @@ function renderValidators() {
             ? `<a href="address.html?address=${encodeURIComponent(validatorPubkey)}" class="hash-short" title="${escapeHtml(validatorPubkey)}">${addressLabel}</a>`
             : `<span class="hash-short">${addressLabel}</span>`;
         const copyIcon = validatorPubkey
-            ? `<i class="fas fa-copy copy-hash" data-copy="${escapeHtml(validatorPubkey)}" onclick="safeCopy(this)" title="Copy address"></i>`
+            ? `<i class="fas fa-copy copy-hash" data-copy="${escapeHtml(validatorPubkey)}" title="Copy address"></i>`
             : '';
 
         return `
@@ -187,6 +197,7 @@ function scheduleValidatorsRefresh() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     lastValidatorsRefreshAt = Date.now();
     loadValidators();
 

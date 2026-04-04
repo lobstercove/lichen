@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, find_genesis_keypair_path
 
 SPORES = 1_000_000_000  # 1 token = 1B spores
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
@@ -91,7 +91,7 @@ def price_to_tick(p, tick_spacing=60):
 async def approve_token(conn, caller, token_contract, spender_pubkey, amount):
     """Approve spender to transfer tokens on behalf of caller.
     Named export: approve(owner[32B], spender[32B], amount[u64])"""
-    owner_bytes = bytes(caller.public_key().to_bytes())
+    owner_bytes = bytes(caller.address().to_bytes())
     spender_bytes = bytes(spender_pubkey.to_bytes())
     args = list(owner_bytes + spender_bytes + struct.pack('<Q', amount))
     return await call_contract_raw(conn, caller, token_contract, 'approve', args)
@@ -101,7 +101,7 @@ async def place_order(conn, caller, dex_core, pair_id, side, price_spores, qty_s
                       is_base_native=False, is_quote_native=False, taker_fee_bps=5):
     """Place a limit order on CLOB. dex_core opcode 2.
     For native LICN escrow: sends value with the transaction."""
-    caller_bytes = bytes(caller.public_key().to_bytes())
+    caller_bytes = bytes(caller.address().to_bytes())
     args = (
         bytes([2])                                +  # opcode 2
         caller_bytes                              +  # trader (32B)
@@ -130,7 +130,7 @@ async def place_order(conn, caller, dex_core, pair_id, side, price_spores, qty_s
 async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_tick, amount_a, amount_b, value=0):
     """Add concentrated liquidity. dex_amm opcode 3.
     value: native LICN (spores) to send with the tx when one side is LICN."""
-    caller_bytes = bytes(caller.public_key().to_bytes())
+    caller_bytes = bytes(caller.address().to_bytes())
     args = (
         bytes([3])                                +  # opcode 3
         caller_bytes                              +  # provider (32B)
@@ -150,12 +150,13 @@ async def main():
     repo = Path(__file__).resolve().parent.parent
 
     # Load reserve_pool keypair (protocol market maker)
-    rp_path = repo / f"data/state-{NETWORK}/genesis-keys/reserve_pool-lichen-{NETWORK}-1.json"
-    if not rp_path.exists():
-        print(f"ERROR: reserve_pool keypair not found at {rp_path}")
+    try:
+        rp_path = find_genesis_keypair_path("reserve_pool", NETWORK)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}")
         sys.exit(1)
     reserve = Keypair.load(rp_path)
-    print(f"  Market maker:  {reserve.public_key()}")
+    print(f"  Market maker:  {reserve.address()}")
 
     # Discover contracts from symbol registry
     result = await conn._rpc("getAllSymbolRegistry")
@@ -389,7 +390,7 @@ async def main():
     print(f"{'═' * 60}")
     print(f"  CLOB orders placed:  {total_orders}")
     print(f"  AMM pools seeded:    {pools_seeded}/7")
-    print(f"  Market maker wallet: {reserve.public_key()}")
+    print(f"  Market maker wallet: {reserve.address()}")
 
 
 asyncio.run(main())

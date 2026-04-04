@@ -189,7 +189,13 @@ async function tryDecryptNote(entry) {
             );
             plaintext = new Uint8Array(decrypted);
         } else {
-            return null;
+            // Legacy compatibility: decrypt historical XOR-encrypted notes.
+            const ciphertext = hexToBytes(entry.encrypted_note);
+            const legacyPlaintext = new Uint8Array(ciphertext.length);
+            for (let i = 0; i < ciphertext.length; i++) {
+                legacyPlaintext[i] = ciphertext[i] ^ decKey[i % 32];
+            }
+            plaintext = legacyPlaintext;
         }
 
         // Parse note: 32 bytes owner + 8 bytes value + 32 bytes blinding + 32 bytes serial = 104 bytes
@@ -718,7 +724,11 @@ async function loadNotesFromStorage() {
             return;
         }
 
-        console.warn('Ignoring unsupported shielded notes storage format');
+        // Legacy migration path: previous plaintext object format.
+        shieldedState.ownedNotes = parsed.ownedNotes || [];
+        shieldedState.lastSyncedIndex = parsed.lastSyncedIndex || 0;
+        shieldedState.shieldedBalance = parsed.shieldedBalance || 0;
+        await saveNotesToStorage();
     } catch (e) {
         console.error('Failed to load shielded notes:', e);
     }

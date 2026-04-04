@@ -7,7 +7,12 @@
 use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
-use lichen_core::multisig::GovernedWalletConfig;
+use lichen_core::multisig::{
+    bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
+    incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
+    treasury_executor_config_for_roles, upgrade_proposer_config_for_roles,
+    upgrade_veto_guardian_config_for_roles,
+};
 use lichen_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisValidator, GenesisWallet, Hash,
     Instruction, Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE,
@@ -15,8 +20,8 @@ use lichen_core::{
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
-    genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices,
-    genesis_seed_oracle, genesis_set_fee_exempt_contracts,
+    genesis_harden_contract_controls, genesis_initialize_contracts, genesis_seed_analytics_prices,
+    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -793,28 +798,181 @@ fn main() {
             if !all_signers.contains(&genesis_pubkey) {
                 all_signers.push(genesis_pubkey);
             }
-
             for dw in dist_wallets.iter() {
-                if dw.role == "ecosystem_partnerships" {
-                    let config =
-                        GovernedWalletConfig::new(2, all_signers.clone(), "ecosystem_partnerships");
+                if let Some(config) = governed_wallet_config_for_role(&dw.role, &all_signers) {
                     if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
-                        error!("Failed to store ecosystem_partnerships governed config: {e}");
+                        error!("Failed to store {} governed config: {e}", dw.role);
                     } else {
                         info!(
-                            "  ✓ ecosystem_partnerships governed wallet: threshold={}, {} signers",
+                            "  ✓ {} governed wallet: threshold={}, {} signers, timelock={} epoch(s)",
+                            dw.role,
                             config.threshold,
-                            config.signers.len()
+                            config.signers.len(),
+                            config.timelock_epochs
                         );
                     }
-                } else if dw.role == "reserve_pool" {
-                    let config = GovernedWalletConfig::new(3, all_signers.clone(), "reserve_pool");
-                    if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
-                        error!("Failed to store reserve_pool governed config: {e}");
-                    } else {
-                        info!("  ✓ reserve_pool governed wallet: threshold={}, {} signers [SUPERMAJORITY]", config.threshold, config.signers.len());
+                }
+            }
+
+            let committee_roles: Vec<(String, Pubkey)> = dist_wallets
+                .iter()
+                .map(|dw| (dw.role.clone(), dw.pubkey))
+                .collect();
+            match state.get_community_treasury_pubkey() {
+                Ok(Some(governance_authority)) => {
+                    match incident_guardian_config_for_roles(
+                        &committee_roles,
+                        &governance_authority,
+                    ) {
+                        Ok((guardian_authority, guardian_config)) => {
+                            if let Err(e) =
+                                state.set_incident_guardian_authority(&guardian_authority)
+                            {
+                                error!("Failed to store incident guardian authority: {e}");
+                            } else if let Err(e) = state
+                                .set_governed_wallet_config(&guardian_authority, &guardian_config)
+                            {
+                                error!("Failed to store incident guardian config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ incident_guardian governed authority: threshold={}, {} signers, authority={}",
+                                    guardian_config.threshold,
+                                    guardian_config.signers.len(),
+                                    guardian_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive incident guardian config: {e}"),
+                    }
+
+                    match bridge_committee_admin_config_for_roles(
+                        &committee_roles,
+                        &governance_authority,
+                    ) {
+                        Ok((bridge_authority, bridge_config)) => {
+                            if let Err(e) =
+                                state.set_bridge_committee_admin_authority(&bridge_authority)
+                            {
+                                error!("Failed to store bridge committee admin authority: {e}");
+                            } else if let Err(e) =
+                                state.set_governed_wallet_config(&bridge_authority, &bridge_config)
+                            {
+                                error!("Failed to store bridge committee admin config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ bridge_committee_admin governed authority: threshold={}, {} signers, authority={}",
+                                    bridge_config.threshold,
+                                    bridge_config.signers.len(),
+                                    bridge_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive bridge committee admin config: {e}"),
+                    }
+
+                    match oracle_committee_admin_config_for_roles(
+                        &committee_roles,
+                        &governance_authority,
+                    ) {
+                        Ok((oracle_authority, oracle_config)) => {
+                            if let Err(e) =
+                                state.set_oracle_committee_admin_authority(&oracle_authority)
+                            {
+                                error!("Failed to store oracle committee admin authority: {e}");
+                            } else if let Err(e) =
+                                state.set_governed_wallet_config(&oracle_authority, &oracle_config)
+                            {
+                                error!("Failed to store oracle committee admin config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ oracle_committee_admin governed authority: threshold={}, {} signers, authority={}",
+                                    oracle_config.threshold,
+                                    oracle_config.signers.len(),
+                                    oracle_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive oracle committee admin config: {e}"),
+                    }
+
+                    match treasury_executor_config_for_roles(
+                        &committee_roles,
+                        &governance_authority,
+                    ) {
+                        Ok((treasury_authority, treasury_config)) => {
+                            if let Err(e) =
+                                state.set_treasury_executor_authority(&treasury_authority)
+                            {
+                                error!("Failed to store treasury executor authority: {e}");
+                            } else if let Err(e) = state
+                                .set_governed_wallet_config(&treasury_authority, &treasury_config)
+                            {
+                                error!("Failed to store treasury executor config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ treasury_executor governed authority: threshold={}, {} signers, authority={}",
+                                    treasury_config.threshold,
+                                    treasury_config.signers.len(),
+                                    treasury_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive treasury executor config: {e}"),
+                    }
+
+                    match upgrade_proposer_config_for_roles(&committee_roles, &governance_authority)
+                    {
+                        Ok((upgrade_authority, upgrade_config)) => {
+                            if let Err(e) = state.set_upgrade_proposer_authority(&upgrade_authority)
+                            {
+                                error!("Failed to store upgrade proposer authority: {e}");
+                            } else if let Err(e) = state
+                                .set_governed_wallet_config(&upgrade_authority, &upgrade_config)
+                            {
+                                error!("Failed to store upgrade proposer config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ upgrade_proposer governed authority: threshold={}, {} signers, authority={}",
+                                    upgrade_config.threshold,
+                                    upgrade_config.signers.len(),
+                                    upgrade_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive upgrade proposer config: {e}"),
+                    }
+
+                    match upgrade_veto_guardian_config_for_roles(
+                        &committee_roles,
+                        &governance_authority,
+                    ) {
+                        Ok((veto_authority, veto_config)) => {
+                            if let Err(e) =
+                                state.set_upgrade_veto_guardian_authority(&veto_authority)
+                            {
+                                error!("Failed to store upgrade veto guardian authority: {e}");
+                            } else if let Err(e) =
+                                state.set_governed_wallet_config(&veto_authority, &veto_config)
+                            {
+                                error!("Failed to store upgrade veto guardian config: {e}");
+                            } else {
+                                info!(
+                                    "  ✓ upgrade_veto_guardian governed authority: threshold={}, {} signers, authority={}",
+                                    veto_config.threshold,
+                                    veto_config.signers.len(),
+                                    veto_authority.to_base58()
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to derive upgrade veto guardian config: {e}"),
                     }
                 }
+                Ok(None) => {
+                    error!(
+                        "Failed to derive incident guardian config: community_treasury not found"
+                    )
+                }
+                Err(e) => error!("Failed to load community_treasury for incident guardian: {e}"),
             }
         }
 
@@ -1000,7 +1158,16 @@ fn main() {
     // ════════════════════════════════════════════════════════════════════
     let gp = &genesis_config.genesis_prices;
     genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:");
-    genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
+    if let Err(err) = genesis_harden_contract_controls(&state, &genesis_pubkey, "GENESIS:") {
+        error!("Failed to install genesis governance/timelocks: {}", err);
+        std::process::exit(1);
+    };
+    if let Err(err) =
+        genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp)
+    {
+        error!("Failed to initialize genesis contracts: {}", err);
+        std::process::exit(1);
+    };
     genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:", gp);
     genesis_set_fee_exempt_contracts(&state, &genesis_pubkey, "GENESIS:");
     genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp, gp);

@@ -26,6 +26,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 cd "$REPO_ROOT" || exit 1
 
+generate_local_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+    return 0
+  fi
+
+  echo "python3 or openssl is required to generate local auth tokens" >&2
+  exit 1
+}
+
+export LICHEN_LOCAL_DEV=1
+export LICHEN_SIGNER_AUTH_TOKEN="${LICHEN_SIGNER_AUTH_TOKEN:-$(generate_local_token)}"
+if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
+  export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
+fi
+export CUSTODY_API_AUTH_TOKEN="${CUSTODY_API_AUTH_TOKEN:-$(generate_local_token)}"
+
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 
@@ -116,6 +141,7 @@ FAUCET_PORT=9100
 if [ "$NETWORK" = "testnet" ]; then
   # The faucet currently serves from the genesis treasury on local networks.
   PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
+    TRUSTED_PROXY="127.0.0.1,::1" \
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
     ./target/release/lichen-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
   FAUCET_PID=$!

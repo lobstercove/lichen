@@ -1214,9 +1214,6 @@ pub extern "C" fn settle_auction(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    if is_mm_paused() {
-        return 0;
-    }
     if !reentrancy_enter() {
         return 0;
     }
@@ -2278,6 +2275,51 @@ mod tests {
             update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 2000),
             0
         );
+    }
+
+    #[test]
+    fn test_settle_auction_still_works_when_paused() {
+        setup();
+
+        let owner = [1u8; 32];
+        let fee_addr = [2u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr(), fee_addr.as_ptr());
+
+        let seller = [3u8; 32];
+        let bidder = [6u8; 32];
+        let nft = Address([4u8; 32]);
+        let payment_token = Address([5u8; 32]);
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_response(Some(seller.to_vec()));
+        assert_eq!(
+            create_auction(
+                seller.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                1_000,
+                0,
+                1_000,
+                payment_token.0.as_ptr(),
+            ),
+            1
+        );
+
+        test_mock::set_cross_call_response(None);
+        test_mock::set_slot(110);
+        test_mock::set_caller(bidder);
+        assert_eq!(place_bid(bidder.as_ptr(), nft.0.as_ptr(), 1, 1_000), 1);
+
+        test_mock::set_caller(owner);
+        assert_eq!(mm_pause(owner.as_ptr()), 0);
+
+        test_mock::set_slot(1_200);
+        assert_eq!(settle_auction(owner.as_ptr(), nft.0.as_ptr(), 1), 1);
+
+        let auction = test_mock::get_storage(&create_auction_key(nft, 1)).unwrap();
+        assert_eq!(auction[144], 2);
     }
 
     #[test]

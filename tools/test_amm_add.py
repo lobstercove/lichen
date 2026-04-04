@@ -7,14 +7,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 
 from lichen import Connection, Keypair, PublicKey
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, find_genesis_keypair_path
 
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
 
 async def main():
     conn = Connection(RPC)
 
-    rp_path = Path('data/state-testnet/genesis-keys/reserve_pool-lichen-testnet-1.json')
+    rp_path = find_genesis_keypair_path('reserve_pool')
     reserve = Keypair.load(rp_path)
     print(f"Reserve: {reserve.public_key()}")
 
@@ -38,7 +38,7 @@ async def main():
     amount_a = 1_000_000_000     # 1 wSOL
     amount_b = 100_000_000_000   # 100 lUSD
 
-    caller_bytes = bytes(reserve.public_key().to_bytes())
+    caller_bytes = bytes(reserve.address().to_bytes())
     args = (
         bytes([3]) +
         caller_bytes +
@@ -76,7 +76,7 @@ async def main():
     print(f"\nPool 2 liquidity: {pool.get('data',{}).get('liquidity', '?')}")
 
     # Check positions for reserve
-    reserve_hex = reserve.public_key().to_bytes().hex()
+    reserve_hex = reserve.address().to_bytes().hex()
     r = urllib.request.urlopen(f'{RPC}/api/v1/positions/{reserve_hex}').read()
     pos = json.loads(r)
     print(f"Positions: {json.dumps(pos)[:200]}")

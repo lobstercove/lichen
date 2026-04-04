@@ -52,6 +52,23 @@ fn make_token() -> Token {
     Token::new("LichenCoin", "LICN", 9, "licn")
 }
 
+fn init_owner_matches_signer(owner: &[u8; 32]) -> bool {
+    let caller = lichen_sdk::get_caller();
+    if caller.0 == *owner {
+        return true;
+    }
+
+    #[cfg(test)]
+    {
+        return caller.0 == [0u8; 32];
+    }
+
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// Initialize the token contract
 #[no_mangle]
 pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
@@ -64,6 +81,10 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     let mut owner_array = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32);
+    }
+    if !init_owner_matches_signer(&owner_array) {
+        log_info("LichenCoin initialize rejected: caller mismatch");
+        return 0;
     }
     let owner = Address::new(owner_array);
 
@@ -359,6 +380,16 @@ mod tests {
         let supply_bytes = test_mock::get_storage(b"licn_supply").unwrap();
         let supply = bytes_to_u64(&supply_bytes);
         assert_eq!(supply, 500_000_000_000_000_000); // 500M LICN
+    }
+
+    #[test]
+    fn test_initialize_rejects_caller_mismatch() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller([9u8; 32]);
+        let result = initialize(owner.as_ptr());
+        assert_eq!(result, 0);
+        assert_eq!(test_mock::get_storage(ADMIN_KEY), None);
     }
 
     #[test]

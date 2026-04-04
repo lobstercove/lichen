@@ -80,6 +80,28 @@ jobs:
             fi
           done
           if [ $FAIL -ne 0 ]; then echo "❌ Contract tests failed"; exit 1; fi
+      - name: Run local helper guard checks
+        run: bash tests/test_local_helper_guards.sh
+
+  rust-sbom:
+    name: Rust SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+      - name: Generate workspace Rust SBOM
+        run: cargo cyclonedx --manifest-path Cargo.toml --all-features --format json --override-filename lichen-rust-sbom
+      - name: Upload Rust SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lichen-rust-sbom
+          path: |
+            ./lichen-rust-sbom.json
+            ./**/lichen-rust-sbom.json
+          if-no-files-found: error
 
   clippy:
     name: Clippy

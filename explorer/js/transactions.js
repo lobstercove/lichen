@@ -8,6 +8,18 @@ let cursorStack = [];      // stack of before_slot cursors for prev navigation
 let nextCursor = null;     // cursor for the next page
 let currentFilter = { type: '', status: '' };
 
+function bindStaticControls() {
+    document.getElementById('transactionsApplyFiltersBtn')?.addEventListener('click', applyFilters);
+    document.getElementById('transactionsClearFiltersBtn')?.addEventListener('click', clearFilters);
+    document.getElementById('prevPage')?.addEventListener('click', previousPage);
+    document.getElementById('nextPage')?.addEventListener('click', nextPage);
+    document.getElementById('transactionsTable')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+}
+
 function isShieldedType(typeRaw) {
     return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
 }
@@ -148,7 +160,7 @@ async function renderTransactions() {
         <tr>
             <td>
                 <a href="transaction.html?sig=${encodeURIComponent(signature)}" title="${escapeHtml(signature)}">${formatHash(signature)}</a>
-                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(signature)}" onclick="safeCopy(this)" title="Copy signature"></i>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(signature)}" title="Copy signature"></i>
             </td>
             <td><a href="block.html?slot=${slot}">#${formatSlot(slot)}</a></td>
             <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
@@ -215,6 +227,7 @@ function clearFilters() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     loadPage(undefined);
 
     let wsRefreshTimer = null;

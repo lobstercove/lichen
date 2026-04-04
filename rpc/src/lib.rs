@@ -51,7 +51,7 @@ use axum::{
     Json, Router,
 };
 use lichen_core::account::Keypair as TreasuryKeypair;
-use lichen_core::contract::{ContractAccount, ContractContext, ContractRuntime};
+use lichen_core::contract::{ContractAccount, ContractContext, ContractEvent, ContractRuntime};
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
@@ -94,7 +94,7 @@ pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcE
 use dashmap::DashMap;
 use lichen_core::consensus::{compute_block_reward, ValidatorInfo, GENESIS_SUPPLY_SPORES};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::net::IpAddr;
@@ -125,6 +125,393 @@ pub(crate) fn pq_signature_is_zero(signature: &PqSignature) -> bool {
     signature.sig.iter().all(|&byte| byte == 0)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct GovernanceEventRecord {
+    pub proposal_id: u64,
+    pub event_kind: String,
+    pub action: String,
+    pub authority: Pubkey,
+    pub proposer: Pubkey,
+    pub actor: Pubkey,
+    pub approvals: u64,
+    pub threshold: u8,
+    pub execute_after_epoch: u64,
+    pub executed: bool,
+    pub cancelled: bool,
+    pub metadata: String,
+    pub target_contract: Option<Pubkey>,
+    pub target_function: Option<String>,
+    pub call_args_len: Option<u64>,
+    pub call_value_spores: Option<u64>,
+    pub slot: u64,
+}
+
+fn governance_event_kind(name: &str) -> Option<&'static str> {
+    match name {
+        "GovernanceProposalCreated" => Some("created"),
+        "GovernanceProposalApproved" => Some("approved"),
+        "GovernanceProposalExecuted" => Some("executed"),
+        "GovernanceProposalCancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_governance_event(event: &ContractEvent) -> Option<GovernanceEventRecord> {
+    if event.program != SYSTEM_PROGRAM_ID {
+        return None;
+    }
+
+    let event_kind = governance_event_kind(&event.name)?.to_string();
+    let data = &event.data;
+
+    Some(GovernanceEventRecord {
+        proposal_id: data.get("proposal_id")?.parse().ok()?,
+        event_kind,
+        action: data.get("action")?.clone(),
+        authority: Pubkey::from_base58(data.get("authority")?).ok()?,
+        proposer: Pubkey::from_base58(data.get("proposer")?).ok()?,
+        actor: Pubkey::from_base58(data.get("actor")?).ok()?,
+        approvals: data.get("approvals")?.parse().ok()?,
+        threshold: data.get("threshold")?.parse().ok()?,
+        execute_after_epoch: data.get("execute_after_epoch")?.parse().ok()?,
+        executed: data.get("executed")?.parse().ok()?,
+        cancelled: data.get("cancelled")?.parse().ok()?,
+        metadata: data.get("metadata").cloned().unwrap_or_default(),
+        target_contract: data
+            .get("target_contract")
+            .and_then(|value| Pubkey::from_base58(value).ok()),
+        target_function: data.get("target_function").cloned(),
+        call_args_len: data
+            .get("call_args_len")
+            .and_then(|value| value.parse().ok()),
+        call_value_spores: data
+            .get("call_value_spores")
+            .and_then(|value| value.parse().ok()),
+        slot: event.slot,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct IncidentComponentStatus {
+    status: String,
+    #[serde(default)]
+    message: String,
+}
+
+impl IncidentComponentStatus {
+    fn new(status: &str, message: &str) -> Self {
+        Self {
+            status: status.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    fn normalize(&mut self, fallback: &Self) {
+        if self.status.trim().is_empty() {
+            self.status = fallback.status.clone();
+        }
+        if self.message.trim().is_empty() {
+            self.message = fallback.message.clone();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct IncidentEnforcementTarget {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    symbol: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    pause_function: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct IncidentEnforcementRecord {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    contract_targets: Vec<IncidentEnforcementTarget>,
+}
+
+impl IncidentEnforcementRecord {
+    fn is_empty(&self) -> bool {
+        self.mode.trim().is_empty() && self.contract_targets.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct IncidentStatusRecord {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    network: String,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    active_since: Option<String>,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    banner_enabled: bool,
+    #[serde(default)]
+    headline: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    customer_message: String,
+    #[serde(default)]
+    status_page_url: Option<String>,
+    #[serde(default)]
+    actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "IncidentEnforcementRecord::is_empty")]
+    enforcement: IncidentEnforcementRecord,
+    #[serde(default)]
+    components: BTreeMap<String, IncidentComponentStatus>,
+}
+
+impl IncidentStatusRecord {
+    fn default_components() -> BTreeMap<String, IncidentComponentStatus> {
+        BTreeMap::from([
+            (
+                "bridge".to_string(),
+                IncidentComponentStatus::new(
+                    "operational",
+                    "Bridge deposits and mints are operating normally.",
+                ),
+            ),
+            (
+                "contracts".to_string(),
+                IncidentComponentStatus::new(
+                    "operational",
+                    "No contract circuit breakers are active.",
+                ),
+            ),
+            (
+                "deposits".to_string(),
+                IncidentComponentStatus::new(
+                    "operational",
+                    "Deposits and withdrawals are operating normally.",
+                ),
+            ),
+            (
+                "wallet".to_string(),
+                IncidentComponentStatus::new(
+                    "operational",
+                    "Local wallet access remains available.",
+                ),
+            ),
+        ])
+    }
+
+    fn normal(network_id: &str) -> Self {
+        Self {
+            schema_version: 1,
+            source: "default".to_string(),
+            network: network_id.to_string(),
+            updated_at: None,
+            active_since: None,
+            mode: "normal".to_string(),
+            severity: "info".to_string(),
+            banner_enabled: false,
+            headline: "All systems operational".to_string(),
+            summary: "No incident response mode is active.".to_string(),
+            customer_message: "Deposits, bridge access, and wallet usage are operating normally."
+                .to_string(),
+            status_page_url: None,
+            actions: Vec::new(),
+            enforcement: IncidentEnforcementRecord::default(),
+            components: Self::default_components(),
+        }
+    }
+
+    fn status_feed_error(network_id: &str) -> Self {
+        let mut status = Self::normal(network_id);
+        status.source = "error".to_string();
+        status.mode = "status_feed_error".to_string();
+        status.severity = "warning".to_string();
+        status.banner_enabled = true;
+        status.headline = "Public status feed unavailable".to_string();
+        status.summary =
+            "The incident-response manifest could not be loaded from the configured RPC source."
+                .to_string();
+        status.customer_message = "If you are waiting on an incident update, use official Lichen operator channels before making high-value deposit, bridge, or treasury decisions.".to_string();
+        status.actions = vec![
+            "Delay high-value bridge and deposit actions until the public status feed is restored."
+                .to_string(),
+        ];
+        for component in status.components.values_mut() {
+            component.status = "unknown".to_string();
+            component.message =
+                "Verify the current service state with operators before relying on this surface."
+                    .to_string();
+        }
+        status
+    }
+
+    fn normalize(mut self, network_id: &str, source: &str) -> Self {
+        let defaults = Self::normal(network_id);
+
+        if self.schema_version == 0 {
+            self.schema_version = defaults.schema_version;
+        }
+        if self.source.trim().is_empty() {
+            self.source = source.to_string();
+        }
+        if self.network.trim().is_empty() {
+            self.network = defaults.network;
+        }
+        if self.mode.trim().is_empty() {
+            self.mode = defaults.mode;
+        }
+        if self.severity.trim().is_empty() {
+            self.severity = defaults.severity;
+        }
+        if self.headline.trim().is_empty() {
+            self.headline = defaults.headline;
+        }
+        if self.summary.trim().is_empty() {
+            self.summary = defaults.summary;
+        }
+        if self.customer_message.trim().is_empty() {
+            self.customer_message = defaults.customer_message;
+        }
+
+        self.updated_at = self
+            .updated_at
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.active_since = self
+            .active_since
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.status_page_url = self
+            .status_page_url
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.actions = self
+            .actions
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+
+        for (name, fallback) in defaults.components {
+            self.components
+                .entry(name)
+                .and_modify(|component| component.normalize(&fallback))
+                .or_insert(fallback);
+        }
+
+        self
+    }
+}
+
+fn load_incident_status_record(state: &RpcState) -> IncidentStatusRecord {
+    let Some(path) = state.incident_status_path.as_ref() else {
+        return IncidentStatusRecord::normal(&state.network_id);
+    };
+
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return IncidentStatusRecord::status_feed_error(&state.network_id),
+    };
+
+    match serde_json::from_str::<IncidentStatusRecord>(&raw) {
+        Ok(status) => status.normalize(&state.network_id, "file"),
+        Err(_) => IncidentStatusRecord::status_feed_error(&state.network_id),
+    }
+}
+
+fn load_signed_metadata_manifest_value(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let path = state
+        .signed_metadata_manifest_path
+        .as_ref()
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Signed metadata manifest is not configured on this RPC node".to_string(),
+        })?;
+
+    let raw = fs::read_to_string(path).map_err(|error| RpcError {
+        code: -32000,
+        message: format!(
+            "Failed to read signed metadata manifest from {}: {}",
+            path.display(),
+            error
+        ),
+    })?;
+
+    let manifest = serde_json::from_str::<serde_json::Value>(&raw).map_err(|error| RpcError {
+        code: -32000,
+        message: format!(
+            "Failed to parse signed metadata manifest from {}: {}",
+            path.display(),
+            error
+        ),
+    })?;
+
+    if !manifest.is_object() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "Signed metadata manifest at {} must be a JSON object",
+                path.display()
+            ),
+        });
+    }
+
+    if manifest.get("payload").is_none() || manifest.get("signature").is_none() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "Signed metadata manifest at {} must include payload and signature",
+                path.display()
+            ),
+        });
+    }
+
+    Ok(manifest)
+}
+
+fn incident_mode_matches(status: &IncidentStatusRecord, modes: &[&str]) -> bool {
+    modes
+        .iter()
+        .any(|mode| status.mode.eq_ignore_ascii_case(mode))
+}
+
+fn incident_component_is_blocked(status: &IncidentStatusRecord, component: &str) -> bool {
+    status
+        .components
+        .get(component)
+        .map(|component_status| {
+            matches!(
+                component_status.status.trim().to_ascii_lowercase().as_str(),
+                "paused" | "blocked" | "disabled" | "frozen"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn bridge_deposit_incident_block_reason(status: &IncidentStatusRecord) -> Option<&'static str> {
+    if incident_component_is_blocked(status, "bridge")
+        || incident_mode_matches(status, &["bridge_pause"])
+    {
+        return Some("bridge deposits are temporarily paused while bridge risk is assessed");
+    }
+    if incident_component_is_blocked(status, "deposits")
+        || incident_mode_matches(status, &["deposit_guard", "deposit_only_freeze"])
+    {
+        return Some("new deposits are temporarily paused while operators verify inbound activity");
+    }
+    None
+}
+
 fn parse_pq_signature_value(value: &serde_json::Value) -> Result<PqSignature, RpcError> {
     if value.is_object() {
         return serde_json::from_value(value.clone()).map_err(|error| RpcError {
@@ -144,6 +531,101 @@ fn parse_pq_signature_value(value: &serde_json::Value) -> Result<PqSignature, Rp
         code: -32602,
         message: "Signature must be a PQ signature object or JSON string".to_string(),
     })
+}
+
+const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
+const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
+const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct BridgeAccessAuth {
+    issued_at: u64,
+    expires_at: u64,
+    signature: serde_json::Value,
+}
+
+fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<u8> {
+    format!(
+        "{}\nuser_id={}\nissued_at={}\nexpires_at={}\n",
+        BRIDGE_ACCESS_DOMAIN, user_id, issued_at, expires_at
+    )
+    .into_bytes()
+}
+
+fn current_unix_secs() -> Result<u64, RpcError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!("System clock error: {}", error),
+        })
+}
+
+fn parse_bridge_access_auth(value: &serde_json::Value) -> Result<BridgeAccessAuth, RpcError> {
+    serde_json::from_value(value.clone()).map_err(|error| RpcError {
+        code: -32602,
+        message: format!("Invalid bridge auth object: {}", error),
+    })
+}
+
+fn verify_bridge_access_auth(user_id: &str, auth: &BridgeAccessAuth) -> Result<(), RpcError> {
+    verify_bridge_access_auth_at(user_id, auth, current_unix_secs()?)
+}
+
+fn verify_bridge_access_auth_at(
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+    now: u64,
+) -> Result<(), RpcError> {
+    if auth.expires_at <= auth.issued_at {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth expires_at must be greater than issued_at".to_string(),
+        });
+    }
+
+    if auth.expires_at - auth.issued_at > BRIDGE_ACCESS_MAX_TTL_SECS {
+        return Err(RpcError {
+            code: -32602,
+            message: format!(
+                "bridge auth exceeds max ttl of {} seconds",
+                BRIDGE_ACCESS_MAX_TTL_SECS
+            ),
+        });
+    }
+
+    if auth.issued_at > now.saturating_add(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth issued_at is too far in the future".to_string(),
+        });
+    }
+
+    if auth.expires_at < now.saturating_sub(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+        return Err(RpcError {
+            code: -32602,
+            message: "bridge auth has expired".to_string(),
+        });
+    }
+
+    let user_pubkey = Pubkey::from_base58(user_id).map_err(|error| RpcError {
+        code: -32602,
+        message: format!(
+            "user_id must be a valid Lichen base58 public key (32 bytes): {}",
+            error
+        ),
+    })?;
+    let signature = parse_pq_signature_value(&auth.signature)?;
+    let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
+    if !lichen_core::account::Keypair::verify(&user_pubkey, &message, &signature) {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid bridge auth signature".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -368,6 +850,10 @@ struct RpcState {
     custody_url: Option<String>,
     /// Bearer token for custody API auth
     custody_auth_token: Option<String>,
+    /// Optional incident-response manifest consumed by getIncidentStatus.
+    incident_status_path: Option<PathBuf>,
+    /// Optional signed metadata manifest consumed by getSignedMetadataManifest.
+    signed_metadata_manifest_path: Option<PathBuf>,
     /// Treasury keypair for signing consensus-based airdrop transactions.
     /// Loaded from the treasury keypair file at startup.
     treasury_keypair: Option<Arc<TreasuryKeypair>>,
@@ -760,6 +1246,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getTokenHolders"
         | "getTokenTransfers"
         | "getContractEvents"
+        | "getGovernanceEvents"
         | "getContractLogs"
         | "getNFTsByOwner"
         | "getNFTsByCollection"
@@ -2160,6 +2647,14 @@ pub fn build_rpc_router_with_min_validator_stake(
         custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN")
             .ok()
             .filter(|s| !s.is_empty()),
+        incident_status_path: std::env::var("LICHEN_INCIDENT_STATUS_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty()),
+        signed_metadata_manifest_path: std::env::var("LICHEN_SIGNED_METADATA_MANIFEST_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty()),
         treasury_keypair: treasury_keypair.map(Arc::new),
     };
 
@@ -2353,6 +2848,8 @@ async fn handle_rpc(
         "getTotalBurned" => handle_get_total_burned(&state).await,
         "getValidators" => handle_get_validators(&state).await,
         "getMetrics" => handle_get_metrics(&state).await,
+        "getIncidentStatus" => handle_get_incident_status(&state).await,
+        "getSignedMetadataManifest" => handle_get_signed_metadata_manifest(&state).await,
         "getTreasuryInfo" => handle_get_treasury_info(&state).await,
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
@@ -2504,6 +3001,7 @@ async fn handle_rpc(
         "getTokenHolders" => handle_get_token_holders(&state, req.params).await,
         "getTokenTransfers" => handle_get_token_transfers(&state, req.params).await,
         "getContractEvents" => handle_get_contract_events(&state, req.params).await,
+        "getGovernanceEvents" => handle_get_governance_events(&state, req.params).await,
 
         // Testnet-only faucet airdrop
         "requestAirdrop" => handle_request_airdrop(&state, req.params).await,
@@ -2567,9 +3065,6 @@ async fn handle_rpc(
         "getLichenBridgeStats" => handle_get_lichenbridge_stats(&state).await,
         "createBridgeDeposit" => handle_create_bridge_deposit(&state, req.params).await,
         "getBridgeDeposit" => handle_get_bridge_deposit(&state, req.params).await,
-        "getBridgeDepositsByRecipient" => {
-            handle_get_bridge_deposits_by_recipient(&state, req.params).await
-        }
         "getLichenDaoStats" => handle_get_lichendao_stats(&state).await,
         "getLichenOracleStats" => handle_get_lichenoracle_stats(&state).await,
 
@@ -12306,6 +12801,84 @@ async fn handle_get_contract_events(
     }))
 }
 
+async fn handle_get_governance_events(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (limit, before_slot) = match params {
+        Some(params) => {
+            let arr = params.as_array().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Expected array params".to_string(),
+            })?;
+            (
+                arr.first()
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100)
+                    .min(1000) as usize,
+                arr.get(1).and_then(|v| v.as_u64()),
+            )
+        }
+        None => (100usize, None),
+    };
+
+    let fetch_limit = limit.saturating_mul(4).clamp(256, 1000);
+    let events = state
+        .state
+        .get_events_by_program(&SYSTEM_PROGRAM_ID, fetch_limit, before_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let event_list: Vec<serde_json::Value> = events
+        .iter()
+        .filter_map(parse_governance_event)
+        .take(limit)
+        .map(|event| {
+            serde_json::json!({
+                "proposal_id": event.proposal_id,
+                "kind": event.event_kind,
+                "action": event.action,
+                "authority": event.authority.to_base58(),
+                "proposer": event.proposer.to_base58(),
+                "actor": event.actor.to_base58(),
+                "approvals": event.approvals,
+                "threshold": event.threshold,
+                "execute_after_epoch": event.execute_after_epoch,
+                "executed": event.executed,
+                "cancelled": event.cancelled,
+                "metadata": event.metadata,
+                "target_contract": event.target_contract.map(|value| value.to_base58()),
+                "target_function": event.target_function,
+                "call_args_len": event.call_args_len,
+                "call_value_spores": event.call_value_spores,
+                "slot": event.slot,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "program": SYSTEM_PROGRAM_ID.to_base58(),
+        "events": event_list,
+        "count": event_list.len(),
+    }))
+}
+
+async fn handle_get_incident_status(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let status = load_incident_status_record(state);
+    serde_json::to_value(status).map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Failed to serialize incident status: {}", error),
+    })
+}
+
+async fn handle_get_signed_metadata_manifest(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    load_signed_metadata_manifest_value(state)
+}
+
 /// Testnet-only airdrop: creates a signed consensus transaction (type 19)
 /// that transfers LICN from treasury to a given address.
 /// Usage: requestAirdrop [address, amount_in_licn]
@@ -13400,29 +13973,16 @@ async fn handle_get_lichenbridge_stats(state: &RpcState) -> Result<serde_json::V
 }
 
 // ============================================================================
-// BRIDGE DEPOSIT PROXY — Forwards requests to the custody service.
-// The frontend calls these RPC methods instead of hitting custody directly,
-// avoiding CORS and exposing the Bearer token only server-to-server.
+// BRIDGE DEPOSIT AUTH PROXY — Wallet-signed bridge access is verified here,
+// forwarded to custody for re-verification, and wrapped in service Bearer auth.
 // ============================================================================
 
 /// createBridgeDeposit — Proxy to custody POST /deposits
-/// Params: [{ user_id, chain, asset }]
+/// Params: [{ user_id, chain, asset, auth: { issued_at, expires_at, signature } }]
 async fn handle_create_bridge_deposit(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
-    })?;
-    let auth_token = state
-        .custody_auth_token
-        .as_deref()
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Bridge service auth not configured".to_string(),
-        })?;
-
     let payload = params
         .and_then(|v| {
             if v.is_array() {
@@ -13460,6 +14020,10 @@ async fn handle_create_bridge_deposit(
             code: -32602,
             message: "Missing asset".to_string(),
         })?;
+    let auth = payload.get("auth").ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing auth: expected wallet-signed bridge access".to_string(),
+    })?;
 
     let valid_chains = ["solana", "ethereum", "bnb", "bsc"];
     let valid_assets = ["sol", "eth", "bnb", "usdc", "usdt"];
@@ -13489,6 +14053,29 @@ async fn handle_create_bridge_deposit(
         });
     }
 
+    let bridge_auth = parse_bridge_access_auth(auth)?;
+    verify_bridge_access_auth(user_id, &bridge_auth)?;
+
+    let incident_status = load_incident_status_record(state);
+    if let Some(reason) = bridge_deposit_incident_block_reason(&incident_status) {
+        return Err(RpcError {
+            code: -32000,
+            message: reason.to_string(),
+        });
+    }
+
+    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
+    })?;
+    let auth_token = state
+        .custody_auth_token
+        .as_deref()
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Bridge service auth not configured".to_string(),
+        })?;
+
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/deposits", custody_url))
@@ -13498,6 +14085,7 @@ async fn handle_create_bridge_deposit(
             "user_id": user_id,
             "chain": chain,
             "asset": asset,
+            "auth": bridge_auth,
         }))
         .send()
         .await
@@ -13527,7 +14115,35 @@ async fn handle_create_bridge_deposit(
 }
 
 /// getBridgeDeposit — Proxy to custody GET /deposits/:deposit_id
-/// Params: [deposit_id]
+/// Params: [{ deposit_id, user_id, auth: { issued_at, expires_at, signature } }]
+///    or [deposit_id, { user_id, auth: { ... } }]
+fn parse_bridge_deposit_lookup_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, String, BridgeAccessAuth), RpcError> {
+    let deposit_id = object
+        .get("deposit_id")
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing deposit_id".to_string(),
+        })?;
+    let user_id = object
+        .get("user_id")
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing user_id".to_string(),
+        })?;
+    let auth = object.get("auth").ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing auth: expected wallet-signed bridge access".to_string(),
+    })?;
+
+    Ok((deposit_id, user_id, parse_bridge_access_auth(auth)?))
+}
+
 async fn handle_get_bridge_deposit(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -13544,20 +14160,53 @@ async fn handle_get_bridge_deposit(
             message: "Bridge service auth not configured".to_string(),
         })?;
 
-    let deposit_id = params
-        .and_then(|v| {
-            if v.is_array() {
-                v.as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str().map(String::from))
-            } else {
-                v.as_str().map(String::from)
-            }
-        })
-        .ok_or_else(|| RpcError {
+    let payload = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params: expected [{ deposit_id, user_id, auth }]".to_string(),
+    })?;
+    let (deposit_id, user_id, bridge_auth) = if let Some(object) = payload.as_object() {
+        parse_bridge_deposit_lookup_object(object)?
+    } else if let Some(array) = payload.as_array() {
+        if let Some(object) = array.first().and_then(|value| value.as_object()) {
+            parse_bridge_deposit_lookup_object(object)?
+        } else {
+            let deposit_id = array
+                .first()
+                .and_then(|value| value.as_str())
+                .map(String::from)
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Missing deposit_id".to_string(),
+                })?;
+            let auth_object = array
+                .get(1)
+                .and_then(|value| value.as_object())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Missing auth params: expected [deposit_id, { user_id, auth }]"
+                        .to_string(),
+                })?;
+            let user_id = auth_object
+                .get("user_id")
+                .and_then(|value| value.as_str())
+                .map(String::from)
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Missing user_id".to_string(),
+                })?;
+            let auth = auth_object.get("auth").ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing auth: expected wallet-signed bridge access".to_string(),
+            })?;
+            let bridge_auth = parse_bridge_access_auth(auth)?;
+            (deposit_id, user_id, bridge_auth)
+        }
+    } else {
+        return Err(RpcError {
             code: -32602,
-            message: "Missing params: expected [deposit_id]".to_string(),
-        })?;
+            message: "Missing params: expected [{ deposit_id, user_id, auth }]".to_string(),
+        });
+    };
 
     // Basic ID validation — UUIDs are 36 chars (8-4-4-4-12 with hyphens)
     if deposit_id.len() != 36
@@ -13571,10 +14220,20 @@ async fn handle_get_bridge_deposit(
         });
     }
 
+    verify_bridge_access_auth(&user_id, &bridge_auth)?;
+    let bridge_auth_json = serde_json::to_string(&bridge_auth).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Failed to encode bridge auth for custody lookup: {}", e),
+    })?;
+
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{}/deposits/{}", custody_url, deposit_id))
         .header("Authorization", format!("Bearer {}", auth_token))
+        .query(&[
+            ("user_id", user_id.as_str()),
+            ("auth", bridge_auth_json.as_str()),
+        ])
         .send()
         .await
         .map_err(|e| RpcError {
@@ -13599,85 +14258,10 @@ async fn handle_get_bridge_deposit(
         });
     }
 
-    Ok(body)
-}
-
-/// getBridgeDepositsByRecipient — Proxy to custody GET /deposits?user_id=&limit=
-/// Params: [address, { limit }]
-async fn handle_get_bridge_deposits_by_recipient(
-    state: &RpcState,
-    params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, RpcError> {
-    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
-    })?;
-    let auth_token = state
-        .custody_auth_token
-        .as_deref()
-        .ok_or_else(|| RpcError {
-            code: -32000,
-            message: "Bridge service auth not configured".to_string(),
-        })?;
-
-    let arr = params
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-
-    let address = arr
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing params: expected [address, { limit? }]".to_string(),
-        })?;
-
-    // Basic address validation (base58, 32-44 chars)
-    if address.len() < 32
-        || address.len() > 44
-        || !address.chars().all(|c| c.is_ascii_alphanumeric())
-    {
-        return Err(RpcError {
-            code: -32602,
-            message: "Invalid address format".to_string(),
-        });
-    }
-
-    let limit = arr
-        .get(1)
-        .and_then(|v| v.get("limit"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10)
-        .min(100); // Cap at 100
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!(
-            "{}/deposits?user_id={}&limit={}",
-            custody_url, address, limit
-        ))
-        .header("Authorization", format!("Bearer {}", auth_token))
-        .send()
-        .await
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Bridge service unavailable: {}", e),
-        })?;
-
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Bridge service invalid response: {}", e),
-    })?;
-
-    if !status.is_success() {
-        let msg = body
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Deposit history lookup failed");
+    if body.get("user_id").and_then(|value| value.as_str()) != Some(user_id.as_str()) {
         return Err(RpcError {
             code: -32000,
-            message: msg.to_string(),
+            message: "Deposit not found for authenticated user".to_string(),
         });
     }
 
@@ -13816,18 +14400,150 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_method, classify_solana_method_tier, encode_rpc_response,
-        filter_signatures_for_address, parse_get_block_slot_param, parse_rpc_request,
-        parse_rpc_tier_probe, parse_topic_hash, validate_incoming_transaction_limits,
-        validate_solana_encoding, validate_solana_transaction_details, AirdropCooldowns,
-        MethodTier, RpcError, RpcResponse, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        bridge_access_message, classify_method, classify_solana_method_tier, encode_rpc_response,
+        filter_signatures_for_address, handle_create_bridge_deposit, handle_get_bridge_deposit,
+        handle_get_governance_events, handle_get_incident_status,
+        handle_get_signed_metadata_manifest, parse_bridge_access_auth, parse_get_block_slot_param,
+        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
+        pq_signature_json, validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, verify_bridge_access_auth_at, AirdropCooldowns,
+        MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES,
+        AIRDROP_COOLDOWN_SECS,
     };
-    use axum::http::HeaderMap;
-    use lichen_core::Hash;
+    use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+    use lichen_core::account::Keypair as LichenKeypair;
+    use lichen_core::contract::ContractEvent;
+    use lichen_core::{Hash, StateStore, SYSTEM_PROGRAM_ID};
+    use lru::LruCache;
+    use std::collections::HashMap;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tempfile::tempdir;
+    use tokio::sync::{Mutex as TokioMutex, RwLock};
+
+    fn make_test_rpc_state(state: StateStore) -> RpcState {
+        RpcState {
+            state,
+            tx_sender: None,
+            p2p: None,
+            stake_pool: None,
+            chain_id: "lichen-test".to_string(),
+            network_id: "local-testnet".to_string(),
+            min_validator_stake: 0,
+            version: "test".to_string(),
+            evm_chain_id: 31337,
+            solana_tx_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(16).unwrap()))),
+            admin_token: Arc::new(std::sync::RwLock::new(None)),
+            rate_limiter: Arc::new(RateLimiter::new(1_000)),
+            finality: None,
+            _dex_broadcaster: Arc::new(super::dex_ws::DexEventBroadcaster::new(16)),
+            prediction_broadcaster: Arc::new(super::ws::PredictionEventBroadcaster::new(16)),
+            validator_cache: Arc::new(RwLock::new((Instant::now(), Vec::new()))),
+            metrics_cache: Arc::new(RwLock::new((Instant::now(), None))),
+            program_list_response_cache: Arc::new(RwLock::new(HashMap::new())),
+            airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
+            orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
+            custody_url: None,
+            custody_auth_token: None,
+            incident_status_path: None,
+            signed_metadata_manifest_path: None,
+            treasury_keypair: None,
+        }
+    }
 
     fn make_hash(value: u8) -> Hash {
         Hash([value; 32])
+    }
+
+    fn signed_bridge_deposit_payload(seed: u8, chain: &str, asset: &str) -> serde_json::Value {
+        let keypair = LichenKeypair::from_seed(&[seed; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let expires_at = issued_at + 600;
+        let message = bridge_access_message(&user_id, issued_at, expires_at);
+
+        serde_json::json!({
+            "user_id": user_id,
+            "chain": chain,
+            "asset": asset,
+            "auth": {
+                "issued_at": issued_at,
+                "expires_at": expires_at,
+                "signature": pq_signature_json(&keypair.sign(&message)),
+            }
+        })
+    }
+
+    #[derive(Clone, Default)]
+    struct MockCustodyState {
+        requests: Arc<TokioMutex<Vec<serde_json::Value>>>,
+        lookups: Arc<TokioMutex<Vec<serde_json::Value>>>,
+    }
+
+    async fn mock_custody_create_deposit(
+        State(state): State<MockCustodyState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        state.requests.lock().await.push(payload);
+        Json(serde_json::json!({
+            "deposit_id": "11111111-1111-1111-1111-111111111111",
+            "address": "mock-bridge-address"
+        }))
+    }
+
+    async fn mock_custody_get_deposit(
+        State(state): State<MockCustodyState>,
+        axum::extract::Path(deposit_id): axum::extract::Path<String>,
+        axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        state.lookups.lock().await.push(serde_json::json!({
+            "deposit_id": deposit_id,
+            "query": query,
+        }));
+
+        let user_id = query.get("user_id").cloned().unwrap_or_default();
+        Json(serde_json::json!({
+            "deposit_id": "11111111-1111-1111-1111-111111111111",
+            "user_id": user_id,
+            "chain": "solana",
+            "asset": "sol",
+            "address": "mock-bridge-address",
+            "derivation_path": "m/44'/501'/0'/0/0",
+            "deposit_seed_source": "treasury_root",
+            "created_at": 0,
+            "status": "issued"
+        }))
+    }
+
+    async fn mock_custody_create_deposit_rate_limited(
+        State(state): State<MockCustodyState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        state.requests.lock().await.push(payload);
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "invalid_request",
+                "message": "rate_limited: wait 10s between deposit requests"
+            })),
+        )
+    }
+
+    async fn spawn_mock_server(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve mock app");
+        });
+        format!("http://{}", addr)
     }
 
     #[test]
@@ -13871,6 +14587,11 @@ mod tests {
     #[test]
     fn test_m02_native_get_block_is_moderate() {
         assert_eq!(classify_method("getBlock"), MethodTier::Moderate);
+    }
+
+    #[test]
+    fn test_m02_get_governance_events_is_moderate() {
+        assert_eq!(classify_method("getGovernanceEvents"), MethodTier::Moderate);
     }
 
     #[test]
@@ -14006,6 +14727,718 @@ mod tests {
         let slot = parse_get_block_slot_param(Some(&params), false)
             .expect("u64 slot param should be accepted");
         assert_eq!(slot, 123u64);
+    }
+
+    #[test]
+    fn test_bridge_access_auth_verifies_valid_signature() {
+        let keypair = LichenKeypair::from_seed(&[7u8; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let message = bridge_access_message(&user_id, issued_at, expires_at);
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "signature": pq_signature_json(&keypair.sign(&message)),
+        }))
+        .expect("parse bridge auth");
+
+        verify_bridge_access_auth_at(&user_id, &auth, issued_at + 60)
+            .expect("valid signed bridge auth must verify");
+    }
+
+    #[test]
+    fn test_bridge_access_auth_rejects_expired_signature() {
+        let keypair = LichenKeypair::from_seed(&[8u8; 32]);
+        let user_id = keypair.pubkey().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let message = bridge_access_message(&user_id, issued_at, expires_at);
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "signature": pq_signature_json(&keypair.sign(&message)),
+        }))
+        .expect("parse bridge auth");
+
+        let err = verify_bridge_access_auth_at(&user_id, &auth, expires_at + 301)
+            .expect_err("expired bridge auth must fail");
+        assert!(err.message.contains("expired"));
+    }
+
+    #[test]
+    fn test_bridge_access_auth_rejects_wrong_user() {
+        let signer = LichenKeypair::from_seed(&[9u8; 32]);
+        let other_user = LichenKeypair::from_seed(&[10u8; 32]).pubkey().to_base58();
+        let signer_user = signer.pubkey().to_base58();
+        let issued_at = 1_700_000_000u64;
+        let expires_at = issued_at + 600;
+        let message = bridge_access_message(&signer_user, issued_at, expires_at);
+        let auth = parse_bridge_access_auth(&serde_json::json!({
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "signature": pq_signature_json(&signer.sign(&message)),
+        }))
+        .expect("parse bridge auth");
+
+        let err = verify_bridge_access_auth_at(&other_user, &auth, issued_at + 60)
+            .expect_err("bridge auth must be bound to the requesting user");
+        assert!(err.message.contains("Invalid bridge auth signature"));
+    }
+
+    #[test]
+    fn test_bridge_recipient_history_proxy_is_not_public() {
+        let source = include_str!("lib.rs");
+        assert!(
+            !source.contains("\"getBridgeDepositsByRecipient\" =>"),
+            "REGRESSION P0-4: getBridgeDepositsByRecipient must not remain publicly exposed via RPC"
+        );
+    }
+
+    #[test]
+    fn test_parse_governance_event_maps_system_event() {
+        let mut data = HashMap::new();
+        let target_contract = lichen_core::Pubkey([0x77u8; 32]);
+        data.insert("proposal_id".to_string(), "7".to_string());
+        data.insert("action".to_string(), "contract_call".to_string());
+        data.insert(
+            "authority".to_string(),
+            lichen_core::Pubkey([0x11u8; 32]).to_base58(),
+        );
+        data.insert(
+            "proposer".to_string(),
+            lichen_core::Pubkey([0x22u8; 32]).to_base58(),
+        );
+        data.insert(
+            "actor".to_string(),
+            lichen_core::Pubkey([0x33u8; 32]).to_base58(),
+        );
+        data.insert("approvals".to_string(), "2".to_string());
+        data.insert("threshold".to_string(), "2".to_string());
+        data.insert("execute_after_epoch".to_string(), "9".to_string());
+        data.insert("executed".to_string(), "true".to_string());
+        data.insert("cancelled".to_string(), "false".to_string());
+        data.insert(
+            "metadata".to_string(),
+            format!(
+                "contract={} function=pause args_len=0 value_spores=0",
+                target_contract.to_base58()
+            ),
+        );
+        data.insert("target_contract".to_string(), target_contract.to_base58());
+        data.insert("target_function".to_string(), "pause".to_string());
+        data.insert("call_args_len".to_string(), "0".to_string());
+        data.insert("call_value_spores".to_string(), "0".to_string());
+
+        let event = ContractEvent {
+            program: SYSTEM_PROGRAM_ID,
+            name: "GovernanceProposalExecuted".to_string(),
+            data,
+            slot: 42,
+        };
+
+        let parsed = parse_governance_event(&event).expect("system governance event should parse");
+        assert_eq!(parsed.proposal_id, 7);
+        assert_eq!(parsed.event_kind, "executed");
+        assert_eq!(parsed.action, "contract_call");
+        assert_eq!(parsed.approvals, 2);
+        assert!(parsed.executed);
+        assert!(!parsed.cancelled);
+        assert_eq!(parsed.target_contract, Some(target_contract));
+        assert_eq!(parsed.target_function.as_deref(), Some("pause"));
+        assert_eq!(parsed.call_args_len, Some(0));
+        assert_eq!(parsed.call_value_spores, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_get_governance_events_returns_structured_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let mut data = HashMap::new();
+        let target_contract = lichen_core::Pubkey([0x77u8; 32]);
+        data.insert("proposal_id".to_string(), "9".to_string());
+        data.insert("action".to_string(), "contract_call".to_string());
+        data.insert(
+            "authority".to_string(),
+            lichen_core::Pubkey([0x44u8; 32]).to_base58(),
+        );
+        data.insert(
+            "proposer".to_string(),
+            lichen_core::Pubkey([0x55u8; 32]).to_base58(),
+        );
+        data.insert(
+            "actor".to_string(),
+            lichen_core::Pubkey([0x66u8; 32]).to_base58(),
+        );
+        data.insert("approvals".to_string(), "3".to_string());
+        data.insert("threshold".to_string(), "2".to_string());
+        data.insert("execute_after_epoch".to_string(), "11".to_string());
+        data.insert("executed".to_string(), "true".to_string());
+        data.insert("cancelled".to_string(), "false".to_string());
+        data.insert(
+            "metadata".to_string(),
+            format!(
+                "contract={} function=mb_pause args_len=0 value_spores=0",
+                target_contract.to_base58()
+            ),
+        );
+        data.insert("target_contract".to_string(), target_contract.to_base58());
+        data.insert("target_function".to_string(), "mb_pause".to_string());
+        data.insert("call_args_len".to_string(), "0".to_string());
+        data.insert("call_value_spores".to_string(), "0".to_string());
+
+        state
+            .put_contract_event(
+                &SYSTEM_PROGRAM_ID,
+                &ContractEvent {
+                    program: SYSTEM_PROGRAM_ID,
+                    name: "GovernanceProposalExecuted".to_string(),
+                    data,
+                    slot: 88,
+                },
+            )
+            .unwrap();
+
+        let result = handle_get_governance_events(&rpc_state, None)
+            .await
+            .expect("governance events RPC should succeed");
+
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["events"][0]["proposal_id"], 9);
+        assert_eq!(result["events"][0]["kind"], "executed");
+        assert_eq!(result["events"][0]["action"], "contract_call");
+        assert_eq!(result["events"][0]["approvals"], 3);
+        assert_eq!(
+            result["events"][0]["target_contract"],
+            target_contract.to_base58()
+        );
+        assert_eq!(result["events"][0]["target_function"], "mb_pause");
+        assert_eq!(result["events"][0]["call_args_len"], 0);
+        assert_eq!(result["events"][0]["call_value_spores"], 0);
+        assert_eq!(result["events"][0]["slot"], 88);
+    }
+
+    #[tokio::test]
+    async fn test_get_incident_status_returns_default_operational_manifest() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let result = handle_get_incident_status(&rpc_state)
+            .await
+            .expect("default incident status should serialize");
+
+        assert_eq!(result["mode"], "normal");
+        assert_eq!(result["severity"], "info");
+        assert_eq!(result["banner_enabled"], false);
+        assert_eq!(result["source"], "default");
+        assert_eq!(result["components"]["wallet"]["status"], "operational");
+    }
+
+    #[tokio::test]
+    async fn test_get_incident_status_reads_manifest_file() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let status_path = tmp.path().join("incident-status.json");
+        std::fs::write(
+            &status_path,
+            serde_json::json!({
+                "updated_at": "2026-04-03T12:00:00Z",
+                "active_since": "2026-04-03T11:45:00Z",
+                "mode": "deposit_only_freeze",
+                "severity": "warning",
+                "banner_enabled": true,
+                "headline": "Deposits temporarily paused",
+                "summary": "Inbound deposits are paused while withdrawals and local wallet access remain available.",
+                "customer_message": "Please wait for an operator notice before sending new bridge or custody deposits.",
+                "actions": ["Do not initiate new deposits until the banner clears."],
+                "components": {
+                    "deposits": {
+                        "status": "paused",
+                        "message": "New deposits are paused while withdrawals remain available."
+                    },
+                    "wallet": {
+                        "status": "operational",
+                        "message": "Local wallet access remains available."
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.incident_status_path = Some(status_path);
+
+        let result = handle_get_incident_status(&rpc_state)
+            .await
+            .expect("file-backed incident status should serialize");
+
+        assert_eq!(result["mode"], "deposit_only_freeze");
+        assert_eq!(result["severity"], "warning");
+        assert_eq!(result["banner_enabled"], true);
+        assert_eq!(result["source"], "file");
+        assert_eq!(result["components"]["deposits"]["status"], "paused");
+        assert_eq!(result["components"]["bridge"]["status"], "operational");
+        assert_eq!(
+            result["customer_message"],
+            "Please wait for an operator notice before sending new bridge or custody deposits."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_incident_status_preserves_contract_enforcement_metadata() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let status_path = tmp.path().join("incident-status.json");
+        std::fs::write(
+            &status_path,
+            serde_json::json!({
+                "mode": "contract_circuit_breaker",
+                "severity": "warning",
+                "banner_enabled": true,
+                "headline": "SporeSwap Router is in circuit-breaker mode",
+                "summary": "SporeSwap Router is temporarily restricted while operators verify abnormal behavior.",
+                "customer_message": "Only the affected contract flow is restricted.",
+                "enforcement": {
+                    "mode": "incident_guardian_allowlisted_pause",
+                    "contract_targets": [
+                        {
+                            "id": "dexrouter",
+                            "symbol": "DEXROUTER",
+                            "display_name": "SporeSwap Router",
+                            "pause_function": "emergency_pause"
+                        }
+                    ]
+                },
+                "components": {
+                    "contracts": {
+                        "status": "degraded",
+                        "message": "SporeSwap Router is under an active contract-specific circuit breaker."
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.incident_status_path = Some(status_path);
+
+        let result = handle_get_incident_status(&rpc_state)
+            .await
+            .expect("contract enforcement metadata should serialize");
+
+        assert_eq!(
+            result["enforcement"]["mode"],
+            "incident_guardian_allowlisted_pause"
+        );
+        assert_eq!(
+            result["enforcement"]["contract_targets"][0]["symbol"],
+            "DEXROUTER"
+        );
+        assert_eq!(
+            result["enforcement"]["contract_targets"][0]["pause_function"],
+            "emergency_pause"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_incident_status_warns_when_manifest_is_invalid() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let status_path = tmp.path().join("incident-status.json");
+        std::fs::write(&status_path, "{ invalid json").unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.incident_status_path = Some(status_path);
+
+        let result = handle_get_incident_status(&rpc_state)
+            .await
+            .expect("invalid manifest should still yield a warning banner");
+
+        assert_eq!(result["mode"], "status_feed_error");
+        assert_eq!(result["severity"], "warning");
+        assert_eq!(result["banner_enabled"], true);
+        assert_eq!(result["source"], "error");
+        assert_eq!(result["components"]["deposits"]["status"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_requires_configured_file() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let error = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect_err("missing metadata manifest should fail closed");
+
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.message,
+            "Signed metadata manifest is not configured on this RPC node"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_reads_manifest_file() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let manifest_path = tmp.path().join("signed-metadata-manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::json!({
+                "schema_version": 1,
+                "manifest_type": "signed_metadata",
+                "payload": {
+                    "schema_version": 1,
+                    "network": "local-testnet",
+                    "generated_at": "2026-04-03T12:00:00Z",
+                    "symbol_registry": [
+                        {
+                            "symbol": "DEX",
+                            "program": "11111111111111111111111111111112",
+                            "owner": "11111111111111111111111111111111",
+                            "name": "SporeSwap Core",
+                            "template": "dex",
+                            "metadata": {
+                                "icon_class": "fa-chart-line"
+                            },
+                            "decimals": null
+                        }
+                    ]
+                },
+                "signature": {
+                    "scheme_version": 1,
+                    "public_key": {
+                        "scheme_version": 1,
+                        "bytes": "deadbeef"
+                    },
+                    "sig": "deadbeef"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.signed_metadata_manifest_path = Some(manifest_path);
+
+        let result = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("file-backed signed metadata manifest should serialize");
+
+        assert_eq!(result["manifest_type"], "signed_metadata");
+        assert_eq!(result["payload"]["network"], "local-testnet");
+        assert_eq!(result["payload"]["symbol_registry"][0]["symbol"], "DEX");
+        assert_eq!(result["signature"]["scheme_version"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_rejects_invalid_json() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let manifest_path = tmp.path().join("signed-metadata-manifest.json");
+        std::fs::write(&manifest_path, "{ invalid json").unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.signed_metadata_manifest_path = Some(manifest_path.clone());
+
+        let error = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect_err("invalid signed metadata manifest should fail closed");
+
+        assert_eq!(error.code, -32000);
+        assert!(error
+            .message
+            .contains("Failed to parse signed metadata manifest"));
+        assert!(error.message.contains(&manifest_path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_blocked_when_deposits_are_paused() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let status_path = tmp.path().join("incident-status.json");
+        std::fs::write(
+            &status_path,
+            serde_json::json!({
+                "mode": "deposit_guard",
+                "components": {
+                    "deposits": {
+                        "status": "paused"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some("http://127.0.0.1:9".to_string());
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+        rpc_state.incident_status_path = Some(status_path);
+
+        let error = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                17, "solana", "sol"
+            )])),
+        )
+        .await
+        .expect_err("bridge deposit creation must be blocked while deposits are paused");
+
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.message,
+            "new deposits are temporarily paused while operators verify inbound activity"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_forwards_bridge_auth_to_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let payload = signed_bridge_deposit_payload(29, "solana", "sol");
+        let expected_auth = payload
+            .get("auth")
+            .cloned()
+            .expect("bridge auth payload should exist");
+
+        let response = handle_create_bridge_deposit(&rpc_state, Some(serde_json::json!([payload])))
+            .await
+            .expect("bridge deposit creation should succeed");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["auth"], expected_auth);
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_surfaces_custody_http_errors() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit_rate_limited))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let error = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                33, "solana", "sol"
+            )])),
+        )
+        .await
+        .expect_err("custody HTTP rate-limit errors must surface as RPC errors");
+
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.message,
+            "rate_limited: wait 10s between deposit requests"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_bridge_deposit_forwards_bridge_auth_to_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route(
+                    "/deposits/:deposit_id",
+                    axum::routing::get(mock_custody_get_deposit),
+                )
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let payload = signed_bridge_deposit_payload(31, "solana", "sol");
+        let user_id = payload["user_id"]
+            .as_str()
+            .expect("bridge payload user_id should exist")
+            .to_string();
+        let auth = payload
+            .get("auth")
+            .cloned()
+            .expect("bridge auth payload should exist");
+
+        let response = handle_get_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!({
+                "deposit_id": "11111111-1111-1111-1111-111111111111",
+                "user_id": user_id.clone(),
+                "auth": auth.clone(),
+            })),
+        )
+        .await
+        .expect("bridge deposit lookup should succeed");
+
+        assert_eq!(response["user_id"], user_id);
+
+        let lookups = custody_state.lookups.lock().await;
+        assert_eq!(lookups.len(), 1);
+        assert_eq!(lookups[0]["query"]["user_id"], user_id);
+        let forwarded_auth = lookups[0]["query"]["auth"]
+            .as_str()
+            .expect("forwarded auth query should be a JSON string");
+        let parsed_auth: serde_json::Value =
+            serde_json::from_str(forwarded_auth).expect("decode forwarded bridge auth");
+        assert_eq!(parsed_auth, auth);
+    }
+
+    #[tokio::test]
+    async fn test_get_bridge_deposit_accepts_single_object_array_params() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route(
+                    "/deposits/:deposit_id",
+                    axum::routing::get(mock_custody_get_deposit),
+                )
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let payload = signed_bridge_deposit_payload(32, "solana", "sol");
+        let user_id = payload["user_id"]
+            .as_str()
+            .expect("bridge payload user_id should exist")
+            .to_string();
+        let auth = payload
+            .get("auth")
+            .cloned()
+            .expect("bridge auth payload should exist");
+
+        let response = handle_get_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "deposit_id": "11111111-1111-1111-1111-111111111111",
+                "user_id": user_id.clone(),
+                "auth": auth.clone(),
+            }])),
+        )
+        .await
+        .expect("single-object array params should succeed");
+
+        assert_eq!(response["user_id"], user_id);
+
+        let lookups = custody_state.lookups.lock().await;
+        assert_eq!(lookups.len(), 1);
+        assert_eq!(lookups[0]["query"]["user_id"], user_id);
+        let forwarded_auth = lookups[0]["query"]["auth"]
+            .as_str()
+            .expect("forwarded auth query should be a JSON string");
+        let parsed_auth: serde_json::Value =
+            serde_json::from_str(forwarded_auth).expect("decode forwarded bridge auth");
+        assert_eq!(parsed_auth, auth);
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_rpc_route_blocked_when_deposits_are_paused() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let status_path = tmp.path().join("incident-status.json");
+        std::fs::write(
+            &status_path,
+            serde_json::json!({
+                "mode": "deposit_guard",
+                "components": {
+                    "deposits": {
+                        "status": "paused"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+        rpc_state.incident_status_path = Some(status_path);
+
+        let rpc_url = spawn_mock_server(
+            Router::new()
+                .route("/", post(super::handle_rpc))
+                .with_state(Arc::new(rpc_state)),
+        )
+        .await;
+
+        let response: serde_json::Value = reqwest::Client::new()
+            .post(format!("{}/", rpc_url))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "createBridgeDeposit",
+                "params": [signed_bridge_deposit_payload(23, "solana", "sol")]
+            }))
+            .send()
+            .await
+            .expect("send RPC request")
+            .json()
+            .await
+            .expect("parse RPC response");
+
+        assert_eq!(response["error"]["code"], -32000);
+        assert_eq!(
+            response["error"]["message"],
+            "new deposits are temporarily paused while operators verify inbound activity"
+        );
+        assert!(custody_state.requests.lock().await.is_empty());
     }
 
     // ── AUDIT-FIX A11-01: eth_gasPrice must return 1, not base_fee ──

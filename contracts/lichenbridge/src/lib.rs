@@ -251,6 +251,10 @@ fn is_zero(data: &[u8; 32]) -> bool {
     data.iter().all(|&b| b == 0)
 }
 
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
+}
+
 /// AUDIT-FIX G11-01: Load configured lichencoin address
 fn load_licn_addr() -> [u8; 32] {
     storage_get(LICHENCOIN_ADDRESS_KEY)
@@ -1339,6 +1343,14 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
         return code;
     }
 
+    if is_zero(&lichenid_addr) {
+        return 3;
+    }
+
+    if has_configured_address(LICHENID_ADDR_KEY) {
+        return 4;
+    }
+
     storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
     log_info("LichenID address configured");
     0
@@ -1429,6 +1441,9 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
 
     if is_zero(&addr) {
         return 5;
+    }
+    if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
+        return 6;
     }
     storage_set(LICHENCOIN_ADDRESS_KEY, &addr);
     log_info("Token address configured");
@@ -2270,6 +2285,52 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_expired_unlock_still_works_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+        test_mock::set_caller(owner);
+        set_required_confirmations(owner.as_ptr(), 3);
+        test_mock::set_caller(owner);
+        set_request_timeout(owner.as_ptr(), 1000);
+
+        let val1 = [2u8; 32];
+        test_mock::set_caller(owner);
+        add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+
+        let sender = [5u8; 32];
+        test_mock::set_caller(sender);
+        test_mock::set_value(1_000_000);
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
+
+        let burn_proof = [0xEE; 32];
+        test_mock::set_caller(val1);
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            burn_proof.as_ptr(),
+        );
+
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 1200);
+        assert_eq!(cancel_expired_request(1), 0);
+
+        let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
+        assert_eq!(locked, 1_000_000);
+    }
+
+    #[test]
     fn test_cancel_not_expired_fails() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
@@ -2541,6 +2602,28 @@ mod tests {
             set_lichenid_address(owner.as_ptr(), [0x42u8; 32].as_ptr()),
             0
         );
+    }
+
+    #[test]
+    fn test_set_lichenid_address_zero_and_reconfiguration_rejected() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+
+        test_mock::set_caller(owner);
+        assert_eq!(set_lichenid_address(owner.as_ptr(), [0u8; 32].as_ptr()), 3);
+
+        let first_addr = [0x42u8; 32];
+        let second_addr = [0x43u8; 32];
+        test_mock::set_caller(owner);
+        assert_eq!(set_lichenid_address(owner.as_ptr(), first_addr.as_ptr()), 0);
+
+        test_mock::set_caller(owner);
+        assert_eq!(set_lichenid_address(owner.as_ptr(), second_addr.as_ptr()), 4);
+
+        let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
+        assert_eq!(&stored[..32], &first_addr);
     }
 
     // =============================================
@@ -3066,7 +3149,7 @@ mod tests {
 
     #[test]
     fn test_set_token_address_happy() {
-        setup();
+        setup_no_licn();
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
@@ -3090,12 +3173,26 @@ mod tests {
 
     #[test]
     fn test_set_token_address_zero_rejected() {
-        setup();
+        setup_no_licn();
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
         test_mock::set_caller(owner);
         assert_eq!(set_token_address(owner.as_ptr(), [0u8; 32].as_ptr()), 5);
+    }
+
+    #[test]
+    fn test_set_token_address_reconfiguration_rejected() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+
+        test_mock::set_caller(owner);
+        assert_eq!(set_token_address(owner.as_ptr(), [0x77u8; 32].as_ptr()), 6);
+
+        let stored = test_mock::get_storage(LICHENCOIN_ADDRESS_KEY).unwrap();
+        assert_eq!(&stored[..32], &LICN_ADDR);
     }
 
     #[test]

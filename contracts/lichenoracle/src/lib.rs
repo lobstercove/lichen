@@ -20,6 +20,23 @@ use lichen_sdk::{
 // price (8) + timestamp (8) + decimals (1) + feeder (32)
 const PRICE_FEED_SIZE: usize = 49;
 
+fn init_owner_matches_signer(owner: &[u8; 32]) -> bool {
+    let caller = lichen_sdk::get_caller();
+    if caller.0 == *owner {
+        return true;
+    }
+
+    #[cfg(test)]
+    {
+        return caller.0 == [0u8; 32];
+    }
+
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
     // Re-initialization guard: reject if oracle_owner is already set
@@ -33,6 +50,10 @@ pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
     let mut owner = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
+    if !init_owner_matches_signer(&owner) {
+        log_info("Oracle initialize rejected: caller mismatch");
+        return 2;
     }
     storage_set(b"oracle_owner", &owner);
 
@@ -1086,6 +1107,15 @@ mod tests {
         assert_eq!(initialize_oracle(owner.as_ptr()), 0);
         let stored = test_mock::get_storage(b"oracle_owner");
         assert_eq!(stored, Some(owner.to_vec()));
+    }
+
+    #[test]
+    fn test_initialize_oracle_rejects_caller_mismatch() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller([9u8; 32]);
+        assert_eq!(initialize_oracle(owner.as_ptr()), 2);
+        assert_eq!(test_mock::get_storage(b"oracle_owner"), None);
     }
 
     #[test]

@@ -68,10 +68,10 @@
                         step="1">
                     <input type="number" id="slotToFilter" placeholder="To slot" class="filter-input" min="0" step="1">
                 </div>
-                <button class="btn btn-primary" onclick="applyFilters()">
+                <button class="btn btn-primary" id="blocksApplyFiltersBtn">
                     <i class="fas fa-filter"></i> Apply Filters
                 </button>
-                <button class="btn btn-secondary" onclick="clearFilters()">
+                <button class="btn btn-secondary" id="blocksClearFiltersBtn">
                     <i class="fas fa-times"></i> Clear
                 </button>
             </div>
@@ -104,11 +104,11 @@
 
                 <!-- Pagination -->
                 <div class="pagination">
-                    <button class="btn btn-secondary" id="prevPage" onclick="previousPage()" disabled>
+                    <button class="btn btn-secondary" id="prevPage" disabled>
                         <i class="fas fa-chevron-left"></i> Newer
                     </button>
                     <span class="pagination-info" id="paginationInfo">Page 1</span>
-                    <button class="btn btn-secondary" id="nextPage" onclick="nextPage()">
+                    <button class="btn btn-secondary" id="nextPage">
                         Older <i class="fas fa-chevron-right"></i>
                     </button>
                 </div>
@@ -152,7 +152,8 @@
                     <ul class="footer-links">
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Getting
                                 Started</a></li>
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/architecture.html">Architecture</a>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Architecture</a>
                         </li>
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API Docs</a>
                         </li>

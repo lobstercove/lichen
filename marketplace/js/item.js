@@ -14,6 +14,7 @@
     var marketplaceProgram = null;
     var userBalance = 0;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
@@ -41,7 +42,7 @@
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
         try {
-            var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
             if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
         } catch (_) { }
@@ -1142,7 +1143,7 @@
             offersList.innerHTML = offerItems.map(function (offer) {
                 var price = offer.price ? fmp(sporesToLicn(offer.price), true) + ' LICN' : '?';
                 var from = offer.seller || offer.buyer || offer.from || '';
-                var acceptBtnHtml = isOwner ? ' <button class="btn btn-small btn-primary" onclick="window._itemAcceptOffer(\'' + escapeJsAttr(from) + '\')">Accept</button>' : '';
+                var acceptBtnHtml = isOwner ? ' <button class="btn btn-small btn-primary" data-item-action="accept-offer" data-offerer="' + escapeHtml(from) + '">Accept</button>' : '';
                 return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-color);">' +
                     '<i class="fas fa-hand-holding-usd" style="opacity:0.6;"></i>' +
                     '<div style="flex:1;">' +
@@ -1158,7 +1159,7 @@
     }
 
     // Expose accept offer handler
-    window._itemAcceptOffer = async function (offererAddress) {
+    async function acceptOffer(offererAddress) {
         if (!currentWallet || !currentNFT) return;
         try {
             var mp = await resolveMarketplaceProgram();
@@ -1179,7 +1180,7 @@
         } catch (err) {
             showToast('Accept offer failed: ' + err.message, 'error');
         }
-    };
+    }
 
     // ===== Activity =====
     async function loadActivity() {
@@ -1304,6 +1305,15 @@
         if (favoriteBtn) {
             favoriteBtn.addEventListener('click', function () {
                 toggleFavorite();
+            });
+        }
+
+        var offersList = document.getElementById('offersList');
+        if (offersList) {
+            offersList.addEventListener('click', function (event) {
+                var actionButton = event.target.closest('[data-item-action="accept-offer"]');
+                if (!actionButton) return;
+                acceptOffer(actionButton.getAttribute('data-offerer') || '');
             });
         }
 

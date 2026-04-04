@@ -1,3 +1,6 @@
+# DEV-ONLY convenience stack.
+# Do not use this compose file for production exposure. Production deployment
+# is the hardened systemd path under deploy/setup.sh.
 version: "3.8"
 
 services:
@@ -8,10 +11,10 @@ services:
     container_name: lichen-validator
     restart: unless-stopped
     ports:
-      - "7001:7001"   # P2P
-      - "8899:8899"   # RPC
-      - "8900:8900"   # WebSocket
-      - "9100:9100"   # Metrics
+      - "127.0.0.1:7001:7001"   # P2P (dev-only)
+      - "127.0.0.1:8899:8899"   # RPC (dev-only)
+      - "127.0.0.1:8900:8900"   # WebSocket (dev-only)
+      - "127.0.0.1:9100:9100"   # Metrics (dev-only)
     volumes:
       - lichen-data:/var/lib/lichen
       - ./config.toml:/etc/lichen/config.toml:ro
@@ -36,7 +39,7 @@ services:
     restart: unless-stopped
     entrypoint: ["lichen-faucet"]
     ports:
-      - "9101:9101"
+      - "127.0.0.1:9101:9101"   # Faucet HTTP (dev-only)
     environment:
       - RUST_LOG=info
       - PORT=9101
@@ -57,7 +60,7 @@ services:
     container_name: lichen-explorer
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"   # Explorer HTTP (dev-only)
     volumes:
       - ./explorer:/usr/share/nginx/html:ro
     depends_on:

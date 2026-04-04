@@ -15,6 +15,13 @@ function clearIdentityCache() {
     _identityLoading = false;
 }
 
+function resetIdentityNetworkCaches() {
+    _lichenidAddress = null;
+    clearIdentityCache();
+}
+
+window.resetIdentityNetworkCaches = resetIdentityNetworkCaches;
+
 const AGENT_TYPES = [
     { value: 0, label: 'Unknown', desc: 'Unspecified or new identity' },
     { value: 1, label: 'Trading', desc: 'Market-making, arbitrage, DeFi strategies' },
@@ -307,14 +314,14 @@ async function getLichenIdProgramAddress() {
     const symbols = ['YID', 'yid', 'LICHENID'];
     for (const symbol of symbols) {
         try {
-            const result = await rpc.call('getSymbolRegistry', [symbol]);
+            const result = await trustedRpcCall('getSymbolRegistry', [symbol]);
             const program = result?.program || result?.address || result?.pubkey;
             if (program) { _lichenidAddress = program; return _lichenidAddress; }
         } catch (_) { continue; }
     }
     // Fallback: scan full contract list
     try {
-        const contracts = await rpc.call('getAllContracts');
+        const contracts = await trustedRpcCall('getAllContracts');
         if (Array.isArray(contracts)) {
             const c = contracts.find(c => c.name === 'lichenid' || c.symbol === 'YID');
             if (c) { _lichenidAddress = c.program_id || c.address; return _lichenidAddress; }
@@ -491,7 +498,7 @@ function renderIdentityBanner(compact = false) {
 function renderNoIdentity(container) {
     container.innerHTML = `
         <div class="id-onboard">
-            <div class="id-onboard-step id-onboard-active" onclick="showRegisterIdentityModal()">
+            <div class="id-onboard-step id-onboard-active" data-wallet-action="showRegisterIdentityModal">
                 <div class="id-onboard-num"><i class="fas fa-fingerprint" style="font-size:1rem;"></i></div>
                 <div class="id-onboard-body">
                     <div class="id-onboard-title">Register Your LichenID</div>
@@ -577,7 +584,7 @@ function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActi
                     <span class="id-strip-rep">${fmtNumber(rep)} rep</span>
                 </div>
             </div>
-            <button class="id-action-btn" onclick="showEditProfileModal()" title="Edit Profile">
+            <button class="id-action-btn" data-wallet-action="showEditProfileModal" title="Edit Profile">
                 <i class="fas fa-pen"></i>
             </button>
         </div>
@@ -620,7 +627,7 @@ function renderNameSection(lichenName, nameDetails) {
         <div class="id-section-divider" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border,#2a2e3e);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
                 <span style="font-size:0.8rem;opacity:0.7;"><i class="fas fa-gavel"></i> Premium Name Auctions</span>
-                <button class="id-link-btn" onclick="loadAuctionList()"><i class="fas fa-sync-alt"></i> Refresh</button>
+                <button class="id-link-btn" data-wallet-action="loadAuctionList"><i class="fas fa-sync-alt"></i> Refresh</button>
             </div>
             <div id="auctionListContainer" style="font-size:0.8rem;">
                 <span style="opacity:0.5;">Loading auctions...</span>
@@ -639,7 +646,7 @@ function renderNameSection(lichenName, nameDetails) {
                     <p>No name registered</p>
                     <small>5+ chars from 20 LICN/yr</small>
                     <div style="margin-top:0.75rem;">
-                        <button class="btn btn-small btn-primary" onclick="showRegisterNameModal()">
+                        <button class="btn btn-small btn-primary" data-wallet-action="showRegisterNameModal">
                             <i class="fas fa-plus"></i> Register
                         </button>
                     </div>
@@ -673,9 +680,9 @@ function renderNameSection(lichenName, nameDetails) {
                 <div class="id-name-display">${escHtml(name)}</div>
                 <div class="id-name-expiry" id="${expiryId}">Expires ${expiry ? formatSlotExpiry(expiry, registered, _cachedCurrentSlot) : '—'}</div>
                 <div class="id-section-actions">
-                    <button class="id-link-btn" onclick="showRenewNameModal()"><i class="fas fa-redo"></i> Renew</button>
-                    <button class="id-link-btn" onclick="showTransferNameModal()"><i class="fas fa-exchange-alt"></i> Transfer</button>
-                    <button class="id-link-btn id-link-danger" onclick="showReleaseNameModal()"><i class="fas fa-trash-alt"></i> Release</button>
+                    <button class="id-link-btn" data-wallet-action="showRenewNameModal"><i class="fas fa-redo"></i> Renew</button>
+                    <button class="id-link-btn" data-wallet-action="showTransferNameModal"><i class="fas fa-exchange-alt"></i> Transfer</button>
+                    <button class="id-link-btn id-link-danger" data-wallet-action="showReleaseNameModal"><i class="fas fa-trash-alt"></i> Release</button>
                 </div>
                 ${auctionHtml}
             </div>
@@ -706,7 +713,7 @@ function renderSkillsSection(skills) {
         <div class="id-section">
             <div class="id-section-head">
                 <span><i class="fas fa-tools"></i> Skills</span>
-                <button class="id-link-btn" onclick="showAddSkillModal()"><i class="fas fa-plus"></i> Add</button>
+                <button class="id-link-btn" data-wallet-action="showAddSkillModal"><i class="fas fa-plus"></i> Add</button>
             </div>
             <div class="id-section-body">${list}</div>
         </div>
@@ -726,7 +733,7 @@ function renderVouchesSection(received, given) {
         <div class="id-section">
             <div class="id-section-head">
                 <span><i class="fas fa-handshake"></i> Vouches</span>
-                <button class="id-link-btn" onclick="showVouchModal()"><i class="fas fa-plus"></i> Vouch</button>
+                <button class="id-link-btn" data-wallet-action="showVouchModal"><i class="fas fa-plus"></i> Vouch</button>
             </div>
             <div class="id-section-body">
                 <div class="id-vouch-counts">
@@ -766,7 +773,7 @@ function renderAgentSection(endpoint, availability, rateLicn, metadata) {
         <div class="id-section id-section-full">
             <div class="id-section-head">
                 <span><i class="fas fa-satellite-dish"></i> Agent Service</span>
-                <button class="id-link-btn" onclick="showEditAgentModal()"><i class="fas fa-cog"></i> Configure</button>
+                <button class="id-link-btn" data-wallet-action="showEditAgentModal"><i class="fas fa-cog"></i> Configure</button>
             </div>
             <div class="id-section-body">
                 <div class="id-agent-grid">
@@ -1387,7 +1394,7 @@ async function loadAuctionList() {
                             <span>Bid: ${highBid} LICN (reserve: ${reserve})</span>
                             <span>By: ${bidder}</span>
                         </div>
-                        ${!ended ? `<button class="id-link-btn" onclick="showBidAuctionModal('${escHtml(a.name)}')" style="margin-top:0.25rem;font-size:0.75rem;"><i class="fas fa-gavel"></i> Place Bid</button>` : ''}
+                        ${!ended ? `<button class="id-link-btn" data-wallet-action="showBidAuctionModal" data-wallet-arg="${escHtml(a.name)}" style="margin-top:0.25rem;font-size:0.75rem;"><i class="fas fa-gavel"></i> Place Bid</button>` : ''}
                     </div>
                 `;
             }).join('');
@@ -1406,7 +1413,7 @@ async function loadAuctionList() {
                     if (deployer === wallet.address) {
                         adminContainer.innerHTML = `
                             <div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px dashed var(--border,#2a2e3e);">
-                                <button class="id-link-btn" onclick="showCreateAuctionModal()" style="font-size:0.75rem;"><i class="fas fa-plus"></i> Create Auction (Admin)</button>
+                                <button class="id-link-btn" data-wallet-action="showCreateAuctionModal" style="font-size:0.75rem;"><i class="fas fa-plus"></i> Create Auction (Admin)</button>
                             </div>
                         `;
                     }

@@ -34,6 +34,10 @@ RPC_URL="${CUSTODY_LICHEN_RPC_URL:-http://127.0.0.1:8899}"
 SKIP_BUILD=false
 MAX_RETRIES=30
 RETRY_DELAY=2
+SIGNED_METADATA_MANIFEST="${LICHEN_SIGNED_METADATA_MANIFEST_FILE:-${REPO_ROOT}/signed-metadata-manifest-testnet.json}"
+SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-${REPO_ROOT}/keypairs/release-signing-key.json}"
+DEPLOY_NETWORK="${DEPLOY_NETWORK:-}"
+DEX_ADMIN_PUBKEY="${DEX_ADMIN_PUBKEY:-}"
 
 # Colors
 RED='\033[0;31m'
@@ -51,6 +55,15 @@ for arg in "$@"; do
         --force)    rm -f "$MANIFEST" ;;
     esac
 done
+
+if [ -z "$DEPLOY_NETWORK" ]; then
+    case "$RPC_URL" in
+        *:9899*|*:9901*|*:9903*|*:9905*) DEPLOY_NETWORK="mainnet" ;;
+        *) DEPLOY_NETWORK="testnet" ;;
+    esac
+fi
+
+CUSTODY_TREASURY_TARGET="${CUSTODY_TREASURY_TARGET:-/etc/lichen/custody-treasury-${DEPLOY_NETWORK}.json}"
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║  🦞 Lichen First-Boot Contract Deployment            ║${NC}"
@@ -142,7 +155,17 @@ if [ ! -f "${TOOLS_DIR}/deploy_dex.py" ]; then
 fi
 
 # Run deployment
-$PYTHON_BIN "${TOOLS_DIR}/deploy_dex.py" --rpc "${RPC_URL}" 2>&1 | sed 's/^/    /'
+DEPLOY_DEX_ARGS=(--rpc "${RPC_URL}" --network "${DEPLOY_NETWORK}")
+if [ "$DEPLOY_NETWORK" = "mainnet" ]; then
+    if [ -z "$DEX_ADMIN_PUBKEY" ]; then
+        echo -e "  ${RED}❌ DEX_ADMIN_PUBKEY is required when DEPLOY_NETWORK=mainnet${NC}"
+        echo -e "  ${RED}   Set DEX_ADMIN_PUBKEY to the governed admin or multisig address before running first-boot deploy.${NC}"
+        exit 1
+    fi
+    DEPLOY_DEX_ARGS+=(--admin "$DEX_ADMIN_PUBKEY")
+fi
+
+$PYTHON_BIN "${TOOLS_DIR}/deploy_dex.py" "${DEPLOY_DEX_ARGS[@]}" 2>&1 | sed 's/^/    /'
 DEPLOY_EXIT=$?
 
 if [ $DEPLOY_EXIT -ne 0 ]; then
@@ -154,7 +177,6 @@ fi
 # Critical: the custody service must use the SAME keypair that initialized
 # the wrapped token contracts, otherwise mint() calls will fail with
 # "not admin" (error code 2).
-CUSTODY_TREASURY_TARGET="/etc/lichen/custody-treasury.json"
 DEPLOYER_KP="${SCRIPT_DIR}/../keypairs/deployer.json"
 if [ -f "$DEPLOYER_KP" ]; then
     echo -e "  Aligning custody treasury keypair with contract admin"
@@ -209,6 +231,28 @@ CUSTODY_LICHEN_RPC_URL="${RPC_URL}" $PYTHON_BIN "${SCRIPT_DIR}/seed_pools.py" 2>
 # ─────────────────────────────────────────────────────────
 # Final verification
 # ─────────────────────────────────────────────────────────
+SIGNED_METADATA_NETWORK="${SIGNED_METADATA_NETWORK:-}"
+if [ -z "$SIGNED_METADATA_NETWORK" ]; then
+    case "$RPC_URL" in
+        *:9899*|*:9901*|*:9903*|*:9905*) SIGNED_METADATA_NETWORK="local-mainnet" ;;
+        *) SIGNED_METADATA_NETWORK="local-testnet" ;;
+    esac
+fi
+
+if [ -f "$SIGNED_METADATA_KEYPAIR" ] && command -v node >/dev/null 2>&1; then
+    echo -e "\n${CYAN}[5b/5]${NC} Generating signed metadata manifest..."
+    node "${SCRIPT_DIR}/generate-signed-metadata-manifest.js" \
+        --rpc "$RPC_URL" \
+        --network "$SIGNED_METADATA_NETWORK" \
+        --keypair "$SIGNED_METADATA_KEYPAIR" \
+        --out "$SIGNED_METADATA_MANIFEST" 2>&1 | sed 's/^/    /' \
+        || echo -e "  ${YELLOW}⚠  Signed metadata manifest generation failed${NC}"
+elif ! command -v node >/dev/null 2>&1; then
+    echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because Node.js is unavailable${NC}"
+else
+    echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because ${SIGNED_METADATA_KEYPAIR} is missing${NC}"
+fi
+
 echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║  FIRST-BOOT DEPLOYMENT COMPLETE                          ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"

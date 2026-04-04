@@ -214,6 +214,69 @@
         if (countEl) countEl.textContent = filteredListings.length;
     }
 
+    function getListingHref(nft) {
+        return 'item.html?id=' + encodeURIComponent(nft.id || '') +
+            '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') +
+            '&token=' + encodeURIComponent(nft.token_id || '');
+    }
+
+    function buyNFT(id) {
+        if (!currentWallet) {
+            showToast('Connect wallet to buy', 'error');
+            return;
+        }
+        window.location.href = 'item.html?id=' + encodeURIComponent(id);
+    }
+
+    function connectWallet() {
+        if (window.lichenWallet) window.lichenWallet._openWalletModal();
+    }
+
+    function setPage(page) {
+        currentPage = page;
+        renderListings();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function filterCollection(colId) {
+        currentFilter = colId;
+        loadListings();
+    }
+
+    function clearFilters() {
+        currentFilter = '';
+        currentSort = 'recent';
+        searchQuery = '';
+        priceMin = null;
+        priceMax = null;
+        selectedRarities = [];
+        statusBuyNow = true;
+        statusHasOffers = false;
+        urlFilterMode = '';
+        currentPage = 1;
+
+        var searchInput = document.getElementById('searchInput');
+        var browseSearch = document.getElementById('browseSearch');
+        var minEl = document.getElementById('minPrice');
+        var maxEl = document.getElementById('maxPrice');
+        var sortSelect = document.getElementById('sortSelect');
+        var buyNowBox = document.getElementById('filterBuyNow');
+        var hasOffersBox = document.getElementById('filterHasOffers');
+
+        if (searchInput) searchInput.value = '';
+        if (browseSearch) browseSearch.value = '';
+        if (minEl) minEl.value = '';
+        if (maxEl) maxEl.value = '';
+        if (sortSelect) sortSelect.value = 'recent';
+        if (buyNowBox) buyNowBox.checked = true;
+        if (hasOffersBox) hasOffersBox.checked = false;
+        document.querySelectorAll('.rarityFilter').forEach(function (box) { box.checked = false; });
+        var allCollectionsRadio = document.querySelector('input[name="collectionFilter"][value=""]');
+        if (allCollectionsRadio) allCollectionsRadio.checked = true;
+
+        loadListings();
+    }
+
     // ===== View Toggle =====
     function setView(view) {
         currentView = view;
@@ -261,12 +324,12 @@
 
                 var actionHtml = '';
                 if (currentWallet) {
-                    actionHtml = '<button class="nft-action" onclick="event.stopPropagation();window._browseBuyNFT(\'' + escapeJsAttr(nft.id) + '\')">Buy Now</button>';
+                    actionHtml = '<button class="nft-action" data-browse-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy Now</button>';
                 } else {
-                    actionHtml = '<button class="nft-action" onclick="event.stopPropagation();window._browseConnect()" style="opacity:0.7;">Connect to Buy</button>';
+                    actionHtml = '<button class="nft-action" data-browse-action="connect" style="opacity:0.7;">Connect to Buy</button>';
                 }
 
-                return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+                return '<div class="nft-card" data-browse-href="' + escapeHtml(getListingHref(nft)) + '">' +
                     '<div class="nft-image">' + imgHtml + '</div>' +
                     '<div class="nft-info">' +
                     '<div class="nft-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
@@ -298,12 +361,12 @@
 
                     var actionHtml = '';
                     if (currentWallet) {
-                        actionHtml = '<button class="btn btn-primary btn-small" onclick="event.stopPropagation();window._browseBuyNFT(\'' + escapeJsAttr(nft.id) + '\')">Buy</button>';
+                        actionHtml = '<button class="btn btn-primary btn-small" data-browse-action="buy" data-nft-id="' + escapeHtml(nft.id || '') + '">Buy</button>';
                     } else {
-                        actionHtml = '<button class="btn btn-secondary btn-small" onclick="event.stopPropagation();window._browseConnect()">Connect</button>';
+                        actionHtml = '<button class="btn btn-secondary btn-small" data-browse-action="connect">Connect</button>';
                     }
 
-                    return '<div class="nft-list-item" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.program || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+                    return '<div class="nft-list-item" data-browse-href="' + escapeHtml(getListingHref(nft)) + '">' +
                         '<div class="nft-list-col nft-list-col-image"><div class="nft-list-thumb" style="' + imgStyle + '"></div></div>' +
                         '<div class="nft-list-col nft-list-col-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
                         '<div class="nft-list-col nft-list-col-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
@@ -325,11 +388,11 @@
 
         var html = '';
         if (currentPage > 1) {
-            html += '<button class="btn btn-secondary" onclick="window._browseSetPage(' + (currentPage - 1) + ')"><i class="fas fa-chevron-left"></i></button>';
+            html += '<button class="btn btn-secondary" data-browse-page="' + (currentPage - 1) + '"><i class="fas fa-chevron-left"></i></button>';
         }
 
         function pageBtn(i) {
-            return '<button class="btn ' + (i === currentPage ? 'btn-primary' : 'btn-secondary') + '" onclick="window._browseSetPage(' + i + ')">' + i + '</button>';
+            return '<button class="btn ' + (i === currentPage ? 'btn-primary' : 'btn-secondary') + '" data-browse-page="' + i + '">' + i + '</button>';
         }
 
         if (totalPages <= 10) {
@@ -352,7 +415,7 @@
         }
 
         if (currentPage < totalPages) {
-            html += '<button class="btn btn-secondary" onclick="window._browseSetPage(' + (currentPage + 1) + ')"><i class="fas fa-chevron-right"></i></button>';
+            html += '<button class="btn btn-secondary" data-browse-page="' + (currentPage + 1) + '"><i class="fas fa-chevron-right"></i></button>';
         }
         pagEl.innerHTML = html;
     }
@@ -367,75 +430,16 @@
         }
 
         filterList.innerHTML = '<label style="display:block;padding:8px 12px;cursor:pointer;">' +
-            '<input type="radio" name="collectionFilter" value="" ' + (!currentFilter ? 'checked' : '') + ' onchange="window._browseFilterCollection(\'\')" style="margin-right:8px;"> All Collections</label>' +
+            '<input type="radio" name="collectionFilter" value="" ' + (!currentFilter ? 'checked' : '') + ' data-browse-collection="" style="margin-right:8px;"> All Collections</label>' +
             allCollections.map(function (c) {
                 var colId = c.id || c.program_id || '';
-                var colName = c.name || c.symbol || formatHash(colId, 10);
                 return '<label style="display:block;padding:8px 12px;cursor:pointer;">' +
                     '<input type="radio" name="collectionFilter" value="' + escapeHtml(c.id || c.program_id || '') + '" ' +
                     (currentFilter === colId ? 'checked' : '') +
-                    ' onchange="window._browseFilterCollection(\'' + escapeHtml(colId) + '\')" style="margin-right:8px;"> ' +
+                    ' data-browse-collection="' + escapeHtml(colId) + '" style="margin-right:8px;"> ' +
                     escapeHtml(c.name || c.symbol || formatHash(colId, 10)) + '</label>';
             }).join('');
     }
-
-    // ===== Public API =====
-    window._browseBuyNFT = function (id) {
-        if (!currentWallet) {
-            showToast('Connect wallet to buy', 'error');
-            return;
-        }
-        window.location.href = 'item.html?id=' + encodeURIComponent(id);
-    };
-
-    window._browseConnect = function () {
-        if (window.lichenWallet) window.lichenWallet._openWalletModal();
-    };
-
-    window._browseSetPage = function (page) {
-        currentPage = page;
-        renderListings();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    };
-
-    window._browseFilterCollection = function (colId) {
-        currentFilter = colId;
-        loadListings();
-    };
-
-    window.clearFilters = function () {
-        currentFilter = '';
-        currentSort = 'recent';
-        searchQuery = '';
-        priceMin = null;
-        priceMax = null;
-        selectedRarities = [];
-        statusBuyNow = true;
-        statusHasOffers = false;
-        urlFilterMode = '';
-        currentPage = 1;
-
-        var searchInput = document.getElementById('searchInput');
-        var browseSearch = document.getElementById('browseSearch');
-        var minEl = document.getElementById('minPrice');
-        var maxEl = document.getElementById('maxPrice');
-        var sortSelect = document.getElementById('sortSelect');
-        var buyNowBox = document.getElementById('filterBuyNow');
-        var hasOffersBox = document.getElementById('filterHasOffers');
-
-        if (searchInput) searchInput.value = '';
-        if (browseSearch) browseSearch.value = '';
-        if (minEl) minEl.value = '';
-        if (maxEl) maxEl.value = '';
-        if (sortSelect) sortSelect.value = 'recent';
-        if (buyNowBox) buyNowBox.checked = true;
-        if (hasOffersBox) hasOffersBox.checked = false;
-        document.querySelectorAll('.rarityFilter').forEach(function (box) { box.checked = false; });
-        var allCollectionsRadio = document.querySelector('input[name="collectionFilter"][value=""]');
-        if (allCollectionsRadio) allCollectionsRadio.checked = true;
-
-        loadListings();
-    };
 
     // ===== Events =====
     function setupEvents() {
@@ -474,6 +478,11 @@
             browseSearch.addEventListener('input', function () {
                 doSearch(browseSearch.value.trim());
             });
+        }
+
+        var clearFiltersBtn = document.getElementById('clearFiltersBtn');
+        if (clearFiltersBtn) {
+            clearFiltersBtn.addEventListener('click', clearFilters);
         }
 
         // Sort
@@ -548,6 +557,49 @@
                     var text = label.textContent.toLowerCase();
                     label.style.display = (!q || text.indexOf(q) >= 0) ? '' : 'none';
                 });
+            });
+        }
+
+        var collectionsList = document.getElementById('collectionsList');
+        if (collectionsList) {
+            collectionsList.addEventListener('change', function (event) {
+                var input = event.target;
+                if (!input || input.name !== 'collectionFilter') return;
+                filterCollection(input.getAttribute('data-browse-collection') || '');
+            });
+        }
+
+        var pagination = document.getElementById('pagination');
+        if (pagination) {
+            pagination.addEventListener('click', function (event) {
+                var button = event.target.closest('[data-browse-page]');
+                if (!button) return;
+                var page = parseInt(button.getAttribute('data-browse-page'), 10);
+                if (!Number.isFinite(page)) return;
+                setPage(page);
+            });
+        }
+
+        var nftsGrid = document.getElementById('nftsGrid');
+        if (nftsGrid) {
+            nftsGrid.addEventListener('click', function (event) {
+                var actionButton = event.target.closest('[data-browse-action]');
+                if (actionButton) {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    var action = actionButton.getAttribute('data-browse-action');
+                    if (action === 'buy') {
+                        buyNFT(actionButton.getAttribute('data-nft-id') || '');
+                    } else if (action === 'connect') {
+                        connectWallet();
+                    }
+                    return;
+                }
+
+                var card = event.target.closest('[data-browse-href]');
+                if (!card) return;
+                window.location.href = card.getAttribute('data-browse-href');
             });
         }
 

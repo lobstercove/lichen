@@ -3454,6 +3454,7 @@ dependencies = [
  "p3-poseidon2-air",
  "p3-symmetric",
  "p3-uni-stark",
+ "proptest",
  "rand 0.9.2",
  "rand_core 0.10.0",
  "rayon",
@@ -3470,6 +3471,7 @@ dependencies = [
  "wasmer",
  "wasmer-compiler-cranelift",
  "wasmer-middlewares",
+ "wat",
 ]
 
 [[package]]
@@ -3530,6 +3532,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tracing",
  "tracing-subscriber 0.3.23",
  "ureq",

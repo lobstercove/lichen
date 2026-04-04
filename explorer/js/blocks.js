@@ -18,13 +18,25 @@ function renderBlockValidator(validator) {
     return `<a href="address.html?address=${encodeURIComponent(validator)}" title="${escapeHtml(validator)}">${formatAddress(validator)}</a>`;
 }
 
+function bindStaticControls() {
+    document.getElementById('blocksApplyFiltersBtn')?.addEventListener('click', applyFilters);
+    document.getElementById('blocksClearFiltersBtn')?.addEventListener('click', clearFilters);
+    document.getElementById('prevPage')?.addEventListener('click', previousPage);
+    document.getElementById('nextPage')?.addEventListener('click', nextPage);
+    document.getElementById('blocksTableFull')?.addEventListener('click', (event) => {
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
+    });
+}
+
 async function loadAllBlocks() {
     const table = document.getElementById('blocksTableFull');
     if (!table) return;
 
     if (isLoadingBlocks) return;
     isLoadingBlocks = true;
-    
+
     try {
         const latestBlock = await rpc.getLatestBlock();
         if (!latestBlock) {
@@ -37,12 +49,12 @@ async function loadAllBlocks() {
             isLoadingBlocks = false;
             return;
         }
-        
+
         const blocks = [];
         const currentSlot = latestBlock.slot;
         const maxPages = 5;
         const totalToLoad = Math.min(blocksPerPage * maxPages, currentSlot + 1);
-        
+
         // Load blocks in parallel batches of 10
         const BATCH_SIZE = 10;
         for (let start = 0; start < totalToLoad; start += BATCH_SIZE) {
@@ -53,7 +65,7 @@ async function loadAllBlocks() {
             }
             const results = await Promise.all(promises);
             results.forEach(b => { if (b) blocks.push(b); });
-            
+
             // Update progressively
             if (!hasRenderedBlocks && start % 20 === 0) {
                 table.innerHTML = `<tr class="loading-row"><td colspan="6"><div class="loading-spinner"></div> Loading blocks... ${start}/${totalToLoad}</td></tr>`;
@@ -64,14 +76,14 @@ async function loadAllBlocks() {
                 await new Promise(r => setTimeout(r, 30));
             }
         }
-        
+
         allBlocks = blocks;
         filteredBlocks = blocks;
         renderBlocks();
         hasRenderedBlocks = true;
         lastRenderedSlot = currentSlot;
         isLoadingBlocks = false;
-        
+
     } catch (error) {
         console.error('Failed to load blocks:', error);
         table.innerHTML = '<tr><td colspan="6" style="text-align:center; color: #FF6B6B;">Failed to load blocks</td></tr>';
@@ -82,22 +94,22 @@ async function loadAllBlocks() {
 function renderBlocks() {
     const table = document.getElementById('blocksTableFull');
     if (!table) return;
-    
+
     const start = (currentPage - 1) * blocksPerPage;
     const end = start + blocksPerPage;
     const pageBlocks = filteredBlocks.slice(start, end);
-    
+
     if (pageBlocks.length === 0) {
         table.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">No blocks found</td></tr>';
         return;
     }
-    
+
     table.innerHTML = pageBlocks.map(block => `
         <tr>
             <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
             <td>
                 <span class="hash-short" title="${escapeHtml(block.hash)}">${formatHash(block.hash)}</span>
-                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(block.hash)}" onclick="safeCopy(this)" title="Copy hash"></i>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(block.hash)}" title="Copy hash"></i>
             </td>
             <td>
                 <span class="hash-short" title="${escapeHtml(block.parent_hash)}">${formatHash(block.parent_hash)}</span>
@@ -107,14 +119,14 @@ function renderBlocks() {
             <td>${formatTime(block.timestamp)}</td>
         </tr>
     `).join('');
-    
+
     updatePagination();
 }
 
 function updatePagination() {
     const totalPages = Math.ceil(filteredBlocks.length / blocksPerPage);
     document.getElementById('paginationInfo').textContent = `Page ${currentPage} of ${totalPages}`;
-    
+
     document.getElementById('prevPage').disabled = currentPage === 1;
     document.getElementById('nextPage').disabled = currentPage >= totalPages;
 }
@@ -212,11 +224,11 @@ function applyFilters() {
         if (typeof showToast === 'function') showToast(message);
         return;
     }
-    
-    filteredBlocks = allBlocks.filter(block => 
+
+    filteredBlocks = allBlocks.filter(block =>
         block.slot >= fromSlot && block.slot <= toSlot
     );
-    
+
     currentPage = 1;
     renderBlocks();
 }
@@ -232,6 +244,7 @@ function clearFilters() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     loadAllBlocks();
 
     const startPolling = () => {

@@ -7,7 +7,6 @@ use lusd_token::*;
 
 fn setup() -> [u8; 32] {
     lichen_sdk::test_mock::reset();
-    let admin = [0u8; 32].map(|_| 0u8);
     let mut a = [0u8; 32];
     a[0] = 1;
     lichen_sdk::test_mock::set_caller(a);
@@ -306,7 +305,7 @@ fn test_transfer_from_exceeds_balance() {
 
 #[test]
 fn test_approval_overwrite() {
-    let admin = setup();
+    setup();
     let owner = addr(2);
     let spender = addr(3);
 
@@ -389,7 +388,7 @@ fn test_burn_updates_accounting() {
 
 #[test]
 fn test_mint_non_admin() {
-    let admin = setup();
+    setup();
     let attacker = addr(99);
     let user = addr(2);
     lichen_sdk::test_mock::set_slot(100);
@@ -410,11 +409,13 @@ fn test_transfer_admin() {
 
     assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
 
-    // Old admin can't mint anymore
-    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 2);
+    // Old admin remains active until the pending admin accepts.
+    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
 
-    // New admin can mint
+    // New admin cannot act until acceptance.
     lichen_sdk::test_mock::set_caller(new_admin);
+    assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 2);
+    assert_eq!(accept_admin(new_admin.as_ptr()), 0);
     assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 0);
 }
 
@@ -472,14 +473,18 @@ fn test_transfer_while_paused() {
 }
 
 #[test]
-fn test_burn_while_paused() {
+fn test_burn_allowed_while_paused() {
     let admin = setup();
     let user = addr(2);
     lichen_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
     lichen_sdk::test_mock::set_caller(user);
-    assert_eq!(burn(user.as_ptr(), 100), 1, "burn should fail when paused");
+    assert_eq!(
+        burn(user.as_ptr(), 100),
+        0,
+        "burn should remain available when paused"
+    );
 }
 
 #[test]

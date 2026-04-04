@@ -110,8 +110,7 @@
                             <div class="detail-label">Transaction Hash</div>
                             <div class="detail-value">
                                 <code id="txHash">-</code>
-                                <button class="copy-icon"
-                                    onclick="copyToClipboard((document.getElementById('txHash')?.dataset?.full) || '')">
+                                <button class="copy-icon" id="copyTxHashBtn">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -247,8 +246,7 @@
                             <div class="detail-label">Transaction Root</div>
                             <div class="detail-value">
                                 <code id="proofRoot">-</code>
-                                <button class="copy-icon"
-                                    onclick="copyToClipboard((document.getElementById('proofRoot')?.dataset?.full) || '')">
+                                <button class="copy-icon" id="copyProofRootBtn">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -273,8 +271,7 @@
             <div class="detail-card">
                 <div class="detail-card-header">
                     <h2><i class="fas fa-code"></i> Raw Transaction Data</h2>
-                    <button class="btn btn-small"
-                        onclick="copyToClipboard(document.getElementById('rawData')?.textContent || '')">
+                    <button class="btn btn-small" id="copyTxRawDataBtn">
                         <i class="fas fa-copy"></i> Copy
                     </button>
                 </div>

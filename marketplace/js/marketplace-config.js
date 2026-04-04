@@ -30,6 +30,26 @@
         return window.lichenMarketConfig.rpcUrl;
     };
 
+    window.getTrustedMarketNetwork = function () {
+        return (window.lichenMarketConfig && window.lichenMarketConfig.network)
+            || LICHEN_CONFIG.currentNetwork(STORAGE_KEY);
+    };
+
+    window.marketTrustedRpcCall = function (method, params) {
+        if (typeof signedMetadataRpcCall === 'function') {
+            return signedMetadataRpcCall(method, params, window.getTrustedMarketNetwork(), function (resolvedMethod, resolvedParams) {
+                if (typeof trustedLichenRpcCall === 'function') {
+                    return trustedLichenRpcCall(resolvedMethod, resolvedParams, window.getTrustedMarketNetwork());
+                }
+                return rpcCall(resolvedMethod, resolvedParams, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
+            });
+        }
+        if (typeof trustedLichenRpcCall === 'function') {
+            return trustedLichenRpcCall(method, params, window.getTrustedMarketNetwork());
+        }
+        return rpcCall(method, params, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
+    };
+
     window.setMarketNetwork = function (name) {
         var resolved = LICHEN_CONFIG.resolveNetwork(name);
         localStorage.setItem(STORAGE_KEY, resolved);

@@ -20,7 +20,9 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+        integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+        crossorigin="anonymous" />
 </head>
 
 <body>
@@ -227,7 +229,7 @@
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">terminal</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -242,7 +244,7 @@
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">terminal</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -258,7 +260,7 @@ cd hello-world</code></pre>
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">src/lib.rs</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -276,7 +278,7 @@ pub extern "C" fn hello() {
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">terminal</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -291,7 +293,7 @@ pub extern "C" fn hello() {
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">terminal</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -344,7 +346,7 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('token')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code" data-example="token">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -372,7 +374,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichenswap" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenswap')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichenswap">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -400,7 +403,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichenpunks" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenpunks')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichenpunks">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -428,7 +432,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichendao" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichendao')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichendao">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -456,7 +461,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichenoracle" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenoracle')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichenoracle">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -485,7 +491,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichenmarket" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenmarket')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichenmarket">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -514,7 +521,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lichenauction" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenauction')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lichenauction">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -542,7 +550,7 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=bridge" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('bridge')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code" data-example="bridge">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -570,7 +578,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lending" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lending')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lending">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -598,7 +607,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=launchpad" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('launchpad')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="launchpad">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -626,7 +636,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=streaming" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('streaming')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="streaming">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -654,7 +665,7 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=vault" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('vault')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code" data-example="vault">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -682,7 +693,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=identity" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('identity')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="identity">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -710,7 +722,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=storage" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('storage')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="storage">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -738,7 +751,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=compute" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('compute')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="compute">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -769,7 +783,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_core" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_core')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_core">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -798,7 +813,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_amm" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_amm')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_amm">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -827,7 +843,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_router" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_router')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_router">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -856,7 +873,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_governance" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_governance')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_governance">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -885,7 +903,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_rewards" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_rewards')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_rewards">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -914,7 +933,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_margin" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_margin')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_margin">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -943,7 +963,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=dex_analytics" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_analytics')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="dex_analytics">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -972,7 +993,7 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=bounty" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('bounty')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code" data-example="bounty">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1001,7 +1022,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=lusd_token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lusd_token')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="lusd_token">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1030,7 +1052,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=weth_token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('weth_token')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="weth_token">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1059,7 +1082,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=wsol_token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('wsol_token')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="wsol_token">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1088,7 +1112,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=wbnb_token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('wbnb_token')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="wbnb_token">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1117,7 +1142,8 @@ pub extern "C" fn hello() {
                         <a href="playground.html?example=shielded_pool" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('shielded_pool')">
+                        <button class="btn btn-secondary btn-sm" data-programs-action="view-code"
+                            data-example="shielded_pool">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1160,7 +1186,7 @@ pub extern "C" fn hello() {
                 <div class="code-example">
                     <div class="code-header">
                         <span class="code-title">counter.rs</span>
-                        <button class="copy-btn" onclick="copyCode(this)">
+                        <button class="copy-btn" data-programs-action="copy-code">
                             <i class="fas fa-copy"></i> Copy
                         </button>
                     </div>
@@ -1218,7 +1244,7 @@ pub struct Initialize&lt;'info&gt; {
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">counter.c</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i> Copy
                             </button>
                         </div>
@@ -1269,7 +1295,7 @@ EXPORT uint64_t get_count() {
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">counter.ts</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i> Copy
                             </button>
                         </div>
@@ -1318,7 +1344,7 @@ export function getCount(): u64 {
                     <div class="code-example">
                         <div class="code-header">
                             <span class="code-title">Counter.sol</span>
-                            <button class="copy-btn" onclick="copyCode(this)">
+                            <button class="copy-btn" data-programs-action="copy-code">
                                 <i class="fas fa-copy"></i> Copy
                             </button>
                         </div>

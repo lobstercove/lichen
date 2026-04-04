@@ -9,19 +9,26 @@ PID_FILE="$ART_DIR/pids.txt"
 LOG1="$ART_DIR/v1.log"
 LOG2="$ART_DIR/v2.log"
 LOG3="$ART_DIR/v3.log"
+LOCAL_CUSTODY_TOKEN_FILE="$ART_DIR/custody-api-auth-token"
 STAGGER_SECS="${LICN_LOCAL_STAGGER_SECS:-15}"
 NETWORK="${LICN_LOCAL_NETWORK:-testnet}"
+MANIFEST_FILE="$ROOT/signed-metadata-manifest-${NETWORK}.json"
+SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-$ROOT/keypairs/release-signing-key.json}"
+
+export LICHEN_LOCAL_DEV=1
 
 case "$NETWORK" in
   testnet)
     RPC1=8899; RPC2=8901; RPC3=8903
     WS1=8900; WS2=8902; WS3=8904
     P2P1=7001; P2P2=7002; P2P3=7003
+    SIGNED_METADATA_NETWORK="local-testnet"
     ;;
   mainnet)
     RPC1=9899; RPC2=9901; RPC3=9903
     WS1=9900; WS2=9902; WS3=9904
     P2P1=8001; P2P2=8002; P2P3=8003
+    SIGNED_METADATA_NETWORK="local-mainnet"
     ;;
   *)
     echo "[local-3validators] ERROR: unsupported network '$NETWORK' (expected testnet|mainnet)"
@@ -30,6 +37,53 @@ case "$NETWORK" in
 esac
 
 mkdir -p "$ART_DIR"
+
+generate_local_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+    return 0
+  fi
+
+  echo "[local-3validators] ERROR: python3 or openssl is required to generate a local custody auth token" >&2
+  return 1
+}
+
+prepare_local_bridge_env() {
+  local custody_port
+  case "$NETWORK" in
+    testnet) custody_port=9105 ;;
+    mainnet) custody_port=9106 ;;
+    *)
+      echo "[local-3validators] ERROR: unsupported network '$NETWORK' for local bridge config" >&2
+      return 1
+      ;;
+  esac
+
+  export CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:${custody_port}}"
+
+  if [[ -n "${CUSTODY_API_AUTH_TOKEN:-}" ]]; then
+    printf '%s' "$CUSTODY_API_AUTH_TOKEN" > "$LOCAL_CUSTODY_TOKEN_FILE"
+    chmod 600 "$LOCAL_CUSTODY_TOKEN_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  if [[ -f "$LOCAL_CUSTODY_TOKEN_FILE" ]]; then
+    export CUSTODY_API_AUTH_TOKEN="$(cat "$LOCAL_CUSTODY_TOKEN_FILE")"
+    return 0
+  fi
+
+  export CUSTODY_API_AUTH_TOKEN="$(generate_local_token)"
+  printf '%s' "$CUSTODY_API_AUTH_TOKEN" > "$LOCAL_CUSTODY_TOKEN_FILE"
+  chmod 600 "$LOCAL_CUSTODY_TOKEN_FILE" 2>/dev/null || true
+}
 
 rpc_ok() {
   local port="$1"
@@ -49,6 +103,25 @@ wait_rpc() {
     sleep "$delay"
   done
   return 1
+}
+
+generate_signed_metadata_manifest() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[local-3validators] ERROR: Node.js is required to generate ${MANIFEST_FILE}"
+    return 1
+  fi
+
+  if [[ ! -f "$SIGNED_METADATA_KEYPAIR" ]]; then
+    echo "[local-3validators] ERROR: signing keypair not found at $SIGNED_METADATA_KEYPAIR"
+    return 1
+  fi
+
+  echo "[local-3validators] generating signed metadata manifest via RPC ${RPC1}"
+  node "$ROOT/scripts/generate-signed-metadata-manifest.js" \
+    --rpc "http://127.0.0.1:${RPC1}" \
+    --network "$SIGNED_METADATA_NETWORK" \
+    --keypair "$SIGNED_METADATA_KEYPAIR" \
+    --out "$MANIFEST_FILE"
 }
 
 kill_port_listener() {
@@ -120,6 +193,8 @@ start_cluster() {
 
   stop_cluster
 
+  prepare_local_bridge_env
+
   if [[ "$reset" == "1" ]]; then
     bash "$ROOT/reset-blockchain.sh" "$NETWORK" >/dev/null
   fi
@@ -140,6 +215,12 @@ start_cluster() {
 
   if ! wait_rpc "$RPC1" 90 1 || ! wait_rpc "$RPC2" 90 1 || ! wait_rpc "$RPC3" 90 1; then
     echo "[local-3validators] ERROR: cluster did not become healthy"
+    stop_cluster
+    exit 1
+  fi
+
+  if ! generate_signed_metadata_manifest; then
+    echo "[local-3validators] ERROR: failed to prepare signed metadata manifest"
     stop_cluster
     exit 1
   fi

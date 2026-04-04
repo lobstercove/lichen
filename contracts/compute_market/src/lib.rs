@@ -35,9 +35,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    log_info, receive_token_or_native, storage_get, storage_set, transfer_token_or_native,
-    u64_to_bytes, Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, log_info,
+    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // SECURITY: Reentrancy guard
@@ -155,11 +155,14 @@ fn is_admin(caller: &[u8]) -> bool {
 
 /// Load the configured payment token address, or None if not set.
 fn load_token_address() -> Option<[u8; 32]> {
-    if let Some(tb) = storage_get(CM_TOKEN_ADDRESS_KEY) {
-        if tb.len() == 32 {
+    load_configured_address(CM_TOKEN_ADDRESS_KEY)
+}
+
+fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    if let Some(bytes) = storage_get(key) {
+        if bytes.len() == 32 {
             let mut addr = [0u8; 32];
-            addr.copy_from_slice(&tb);
-            // Check not all zeros
+            addr.copy_from_slice(&bytes);
             if addr.iter().any(|&b| b != 0) {
                 return Some(addr);
             }
@@ -201,6 +204,10 @@ fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32) };
     Some(out)
+}
+
+fn signer_matches(addr: &[u8; 32]) -> bool {
+    get_caller().0 == *addr
 }
 
 // ============================================================================
@@ -620,12 +627,6 @@ pub extern "C" fn complete_job(
 pub extern "C" fn dispute_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Disputing compute job...");
 
-    // SECURITY FIX: Check if contract is paused
-    let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 {
-        return 99;
-    }
-
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
 
@@ -899,6 +900,14 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8)
         log_info("Not admin");
         return 1;
     }
+    if token.iter().all(|&b| b == 0) {
+        log_info("Cannot set zero payment token address");
+        return 2;
+    }
+    if load_token_address().is_some() {
+        log_info("Payment token address already configured");
+        return 3;
+    }
     storage_set(CM_TOKEN_ADDRESS_KEY, &token);
     log_info("Payment token address set");
     0
@@ -917,12 +926,6 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8)
 #[no_mangle]
 pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Cancelling compute job...");
-
-    // SECURITY FIX: Check if contract is paused
-    let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 {
-        return 99;
-    }
 
     let requester = match read_address32(requester_ptr) {
         Some(v) => v,
@@ -1023,12 +1026,6 @@ pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn release_payment(job_id: u64) -> u32 {
     log_info("Releasing payment...");
-
-    // SECURITY FIX: Check if contract is paused
-    let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 {
-        return 99;
-    }
 
     if !reentrancy_enter() {
         return 20;
@@ -1434,12 +1431,24 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
         }
     };
 
+    if !signer_matches(&caller) {
+        return 200;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
     };
     if caller[..] != admin[..] {
         return 2;
+    }
+    if lichenid_addr.iter().all(|&b| b == 0) {
+        log_info("Cannot set zero LichenID address");
+        return 3;
+    }
+    if load_configured_address(LICHENID_ADDR_KEY).is_some() {
+        log_info("LichenID address already configured");
+        return 4;
     }
 
     storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
@@ -1459,6 +1468,10 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
         }
     };
 
+    if !signer_matches(&caller) {
+        return 200;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
@@ -1473,14 +1486,17 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
 }
 
 /// Pause the compute market. Only callable by admin.
-/// While paused, submit_job, claim_job, complete_job, raise_dispute,
-/// and resolve_dispute all reject with error code 99.
+/// While paused, new work intake and execution progression stay blocked, but
+/// escrow unwind paths remain available so existing jobs can still be exited.
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let caller = match read_address32(caller_ptr) {
         Some(v) => v,
         None => return 98,
     };
+    if !signer_matches(&caller) {
+        return 200;
+    }
     if !is_admin(&caller) {
         return 2;
     }
@@ -1496,6 +1512,9 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
         Some(v) => v,
         None => return 98,
     };
+    if !signer_matches(&caller) {
+        return 200;
+    }
     if !is_admin(&caller) {
         return 2;
     }
@@ -1932,6 +1951,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_set_lichenid_address_rejects_zero_and_reconfiguration() {
+        setup();
+
+        let admin = [1u8; 32];
+        let first = [0x42u8; 32];
+        let second = [0x24u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
+        assert!(test_mock::get_storage(LICHENID_ADDR_KEY).is_none());
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), second.as_ptr()), 4);
+        assert_eq!(
+            test_mock::get_storage(LICHENID_ADDR_KEY)
+                .unwrap()
+                .as_slice(),
+            &first
+        );
+    }
+
+    #[test]
+    fn test_identity_admin_paths_reject_forged_caller_argument() {
+        setup();
+
+        let admin = [1u8; 32];
+        let attacker = [9u8; 32];
+        let lichenid_addr = [0x42u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(
+            set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
+            200
+        );
+        assert!(test_mock::get_storage(LICHENID_ADDR_KEY).is_none());
+
+        assert_eq!(set_identity_gate(admin.as_ptr(), 100), 200);
+        assert!(test_mock::get_storage(LICHENID_MIN_REP_KEY).is_none());
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
+            0
+        );
+        assert_eq!(
+            test_mock::get_storage(LICHENID_ADDR_KEY)
+                .unwrap()
+                .as_slice(),
+            &lichenid_addr
+        );
+
+        assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(LICHENID_MIN_REP_KEY).unwrap()),
+            100
+        );
+    }
+
+    #[test]
+    fn test_pause_and_unpause_reject_forged_caller_argument() {
+        setup();
+
+        let admin = [0xAD; 32];
+        let attacker = [9u8; 32];
+        initialize_as(&admin);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(pause(admin.as_ptr()), 200);
+        assert!(test_mock::get_storage(b"cm_paused").is_none());
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+        assert_eq!(
+            test_mock::get_storage(b"cm_paused").unwrap().as_slice(),
+            &[1u8]
+        );
+
+        test_mock::set_caller(attacker);
+        assert_eq!(unpause(admin.as_ptr()), 200);
+        assert_eq!(
+            test_mock::get_storage(b"cm_paused").unwrap().as_slice(),
+            &[1u8]
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(unpause(admin.as_ptr()), 0);
+        assert_eq!(
+            test_mock::get_storage(b"cm_paused").unwrap().as_slice(),
+            &[]
+        );
+    }
+
     // ========================================================================
     // v2 TESTS
     // ========================================================================
@@ -2046,6 +2162,32 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_job_still_works_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+
+        assert_eq!(cancel_as(&requester, 0), 0);
+
+        let jk = job_key(0);
+        let job = test_mock::get_storage(&jk).unwrap();
+        assert_eq!(job[80], JOB_CANCELLED);
+
+        let ek = escrow_key(0);
+        let escrowed = test_mock::get_storage(&ek).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 0);
+    }
+
+    #[test]
     fn test_cancel_claimed_job_after_complete_timeout() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
@@ -2096,6 +2238,65 @@ mod tests {
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 250);
         assert_eq!(release_payment(0), 5);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(release_payment(0), 0);
+
+        let jk = job_key(0);
+        let job = test_mock::get_storage(&jk).unwrap();
+        assert_eq!(job[80], JOB_RELEASED);
+
+        let ek = escrow_key(0);
+        let escrowed = test_mock::get_storage(&ek).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 0);
+    }
+
+    #[test]
+    fn test_dispute_job_still_works_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
+
+        assert_eq!(dispute_as(&requester, 0), 0);
+
+        let jk = job_key(0);
+        let job = test_mock::get_storage(&jk).unwrap();
+        assert_eq!(job[80], JOB_DISPUTED);
+    }
+
+    #[test]
+    fn test_release_payment_still_works_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+
+        test_mock::set_caller(admin);
+        assert_eq!(pause(admin.as_ptr()), 0);
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
         assert_eq!(release_payment(0), 0);
@@ -2333,7 +2534,7 @@ mod tests {
 
     #[test]
     fn test_set_token_address_admin_only() {
-        setup();
+        test_mock::reset();
         let admin = [0xAD; 32];
         initialize_as(&admin);
 
@@ -2346,6 +2547,24 @@ mod tests {
         assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 0);
         let stored = test_mock::get_storage(CM_TOKEN_ADDRESS_KEY).unwrap();
         assert_eq!(stored.as_slice(), &token);
+    }
+
+    #[test]
+    fn test_set_token_address_rejects_zero_and_reconfiguration() {
+        test_mock::reset();
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+
+        let first = [0xBB; 32];
+        let second = [0xCC; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_token_address(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+        assert!(load_token_address().is_none());
+
+        assert_eq!(set_token_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_token_address(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_token_address(), Some(first));
     }
 
     #[test]

@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, find_genesis_keypair_path
 
 SPORES = 1_000_000_000  # 1 token = 1B spores
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
@@ -57,8 +57,9 @@ async def main():
     # The genesis-primary keypair is the admin set during genesis
     # initialization of all contracts (deployer_pubkey).
     # NOT the validator-keypair (that's the node identity).
-    genesis_kp_path = repo / f"data/state-{NETWORK}/genesis-keys/genesis-primary-lichen-{NETWORK}-1.json"
-    if not genesis_kp_path.exists():
+    try:
+        genesis_kp_path = find_genesis_keypair_path("genesis-primary", NETWORK)
+    except FileNotFoundError:
         # Fallback: try validator-keypair (older setups)
         genesis_kp_path = repo / f"data/state-{NETWORK}/validator-keypair.json"
     if not genesis_kp_path.exists():
@@ -68,17 +69,25 @@ async def main():
         print(f"  Tried: {repo / f'data/state-{NETWORK}/genesis-keys/genesis-primary-lichen-{NETWORK}-1.json'}")
         sys.exit(1)
     admin = Keypair.load(genesis_kp_path)
-    admin_bytes = bytes(admin.public_key().to_bytes())
-    print(f"  Admin (genesis): {admin.public_key()}")
+    admin_bytes = bytes(admin.address().to_bytes())
+    print(f"  Admin (genesis): {admin.address()}")
+
+    admin_balance = await conn._rpc('getBalance', [str(admin.address())])
+    admin_spores = admin_balance.get('spendable', admin_balance.get('spores', 0)) if isinstance(admin_balance, dict) else admin_balance
+    if admin_spores < 1_000_000:
+        print("ERROR: genesis-primary has insufficient LICN for transaction fees.")
+        print("  Run tools/fund_accounts.py and wait for the funding balances to confirm before minting.")
+        sys.exit(1)
 
     # ── Load reserve_pool keypair ──
-    rp_path = repo / f"data/state-{NETWORK}/genesis-keys/reserve_pool-lichen-{NETWORK}-1.json"
-    if not rp_path.exists():
-        print(f"ERROR: reserve_pool keypair not found at {rp_path}")
+    try:
+        rp_path = find_genesis_keypair_path("reserve_pool", NETWORK)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}")
         sys.exit(1)
     reserve_kp = Keypair.load(rp_path)
-    reserve_bytes = bytes(reserve_kp.public_key().to_bytes())
-    print(f"  Reserve pool:  {reserve_kp.public_key()}")
+    reserve_bytes = bytes(reserve_kp.address().to_bytes())
+    print(f"  Reserve pool:  {reserve_kp.address()}")
 
     # ── Discover token contracts from symbol registry ──
     result = await conn._rpc("getAllSymbolRegistry")

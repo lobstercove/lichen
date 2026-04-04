@@ -110,8 +110,7 @@
                             <div class="detail-label">Block Hash</div>
                             <div class="detail-value">
                                 <code id="blockHash">-</code>
-                                <button class="copy-icon"
-                                    onclick="copyToClipboard((document.getElementById('blockHash')?.dataset?.full) || '')">
+                                <button class="copy-icon" id="copyBlockHashBtn">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -129,8 +128,7 @@
                             <div class="detail-label">State Root</div>
                             <div class="detail-value">
                                 <code id="stateRoot">-</code>
-                                <button class="copy-icon"
-                                    onclick="copyToClipboard((document.getElementById('stateRoot')?.dataset?.full) || '')">
+                                <button class="copy-icon" id="copyStateRootBtn">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -139,8 +137,7 @@
                             <div class="detail-label">Transaction Root (Merkle)</div>
                             <div class="detail-value">
                                 <code id="txRoot">-</code>
-                                <button class="copy-icon"
-                                    onclick="copyToClipboard((document.getElementById('txRoot')?.dataset?.full) || '')">
+                                <button class="copy-icon" id="copyTxRootBtn">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -279,8 +276,7 @@
             <div class="detail-card">
                 <div class="detail-card-header">
                     <h2><i class="fas fa-code"></i> Raw Block Data</h2>
-                    <button class="btn btn-small"
-                        onclick="copyToClipboard(document.getElementById('rawData')?.textContent || '')">
+                    <button class="btn btn-small" id="copyBlockRawDataBtn">
                         <i class="fas fa-copy"></i> Copy
                     </button>
                 </div>

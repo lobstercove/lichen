@@ -501,7 +501,7 @@ pub enum ShieldedPoolInstruction {
 // rate-limiting on shield operations. Migration to per-leaf storage is
 // planned for v2.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 mod wasm_abi {
     use super::*;
     use lichen_sdk::{get_caller, get_slot, log_info, set_return_data, storage_get, storage_set};
@@ -573,6 +573,11 @@ mod wasm_abi {
         let mut admin = [0u8; 32];
         unsafe {
             core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+        }
+        let caller = lichen_sdk::get_caller();
+        if caller.0 != admin {
+            log_info("ShieldedPool initialize rejected: caller mismatch");
+            return 1;
         }
         storage_set(OWNER_KEY, &admin);
 
@@ -696,11 +701,6 @@ mod wasm_abi {
     /// args: JSON-serialized UnshieldRequest.
     #[no_mangle]
     pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
-        // AUDIT-FIX CON-04: Pause check
-        if is_paused() {
-            log_info("ShieldedPool: paused");
-            return 1;
-        }
         // AUDIT-FIX CON-02: Reentrancy guard
         if !reentrancy_enter() {
             log_info("ShieldedPool: reentrant call blocked");
@@ -785,6 +785,26 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize() {
+        lichen_sdk::test_mock::reset();
+        let admin = [1u8; 32];
+        lichen_sdk::test_mock::set_caller(admin);
+        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
+        assert_eq!(lichen_sdk::storage_get(b"owner"), Some(admin.to_vec()));
+        assert!(lichen_sdk::storage_get(b"pool_state").is_some());
+    }
+
+    #[test]
+    fn test_initialize_rejects_caller_mismatch() {
+        lichen_sdk::test_mock::reset();
+        let admin = [1u8; 32];
+        lichen_sdk::test_mock::set_caller([9u8; 32]);
+        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 1);
+        assert_eq!(lichen_sdk::storage_get(b"owner"), None);
+        assert_eq!(lichen_sdk::storage_get(b"pool_state"), None);
+    }
+
+    #[test]
     fn test_shield() {
         let mut pool = test_pool();
         let request = ShieldRequest {
@@ -825,6 +845,49 @@ mod tests {
         let amount = pool.unshield(&unshield_req).unwrap();
         assert_eq!(amount, 500_000_000);
         assert_eq!(pool.pool_balance, 500_000_000);
+    }
+
+    #[test]
+    fn test_unshield_still_works_when_paused() {
+        lichen_sdk::test_mock::reset();
+        let admin = [1u8; 32];
+        lichen_sdk::test_mock::set_caller(admin);
+        assert_eq!(wasm_abi::initialize(admin.as_ptr()), 0);
+
+        let shield_req = ShieldRequest {
+            amount: 1_000_000_000,
+            commitment: [1u8; 32],
+            proof: vec![0u8; 7],
+            encrypted_note: vec![],
+            ephemeral_pk: [2u8; 32],
+        };
+        let shield_args = serde_json::to_vec(&shield_req).unwrap();
+        assert_eq!(
+            wasm_abi::shield(shield_args.as_ptr(), shield_args.len() as u32),
+            0
+        );
+
+        assert_eq!(wasm_abi::pause(), 0);
+
+        let stored_state = lichen_sdk::storage_get(b"pool_state").unwrap();
+        let state: ShieldedPoolState = serde_json::from_slice(&stored_state).unwrap();
+        let unshield_req = UnshieldRequest {
+            nullifier: [3u8; 32],
+            amount: 500_000_000,
+            recipient: [4u8; 32],
+            merkle_root: state.merkle_root,
+            proof: vec![0u8; 7],
+        };
+        let unshield_args = serde_json::to_vec(&unshield_req).unwrap();
+        assert_eq!(
+            wasm_abi::unshield(unshield_args.as_ptr(), unshield_args.len() as u32),
+            0
+        );
+
+        let stored_state = lichen_sdk::storage_get(b"pool_state").unwrap();
+        let state: ShieldedPoolState = serde_json::from_slice(&stored_state).unwrap();
+        assert_eq!(state.pool_balance, 500_000_000);
+        assert!(state.spent_nullifiers.contains(&[3u8; 32]));
     }
 
     #[test]

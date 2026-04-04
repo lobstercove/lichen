@@ -77,6 +77,35 @@ function switchTab(tab) {
     });
 }
 
+function bindStaticControls() {
+    document.getElementById('copyContractAddressBtn')?.addEventListener('click', copyAddress);
+    document.querySelectorAll('.tab-btn[data-contract-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+            switchTab(button.dataset.contractTab);
+        });
+    });
+}
+
+function bindProfileLogoFallback(profileEl) {
+    const logo = profileEl.querySelector('.token-profile-logo');
+    const placeholder = profileEl.querySelector('.token-profile-logo-placeholder');
+
+    if (!logo || !placeholder) {
+        return;
+    }
+
+    const showFallback = () => {
+        logo.style.display = 'none';
+        placeholder.style.display = 'flex';
+    };
+
+    logo.addEventListener('error', showFallback, { once: true });
+
+    if (logo.complete && logo.naturalWidth === 0) {
+        showFallback();
+    }
+}
+
 function isLikelyUrl(value) {
     return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
 }
@@ -162,8 +191,8 @@ async function loadContract() {
 
     // Fetch all data in parallel
     const [info, registry, abi, program, calls, events] = await Promise.all([
-        rpc.call('getContractInfo', [contractAddress]).catch(() => null),
-        rpc.call('getSymbolRegistryByProgram', [contractAddress]).catch(() => null),
+        trustedRpcCall('getContractInfo', [contractAddress]).catch(() => null),
+        trustedRpcCall('getSymbolRegistryByProgram', [contractAddress]).catch(() => null),
         rpc.call('getContractAbi', [contractAddress]).catch(() => null),
         rpc.call('getProgram', [contractAddress]).catch(() => null),
         rpc.call('getProgramCalls', [contractAddress, { limit: 200 }]).catch(() => null),
@@ -315,7 +344,7 @@ async function loadContract() {
 
             let html = '';
             if (logoUrl) {
-                html += '<img src="' + escapeHtml(logoUrl) + '" alt="Token Logo" class="token-profile-logo" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">';
+                html += '<img src="' + escapeHtml(logoUrl) + '" alt="Token Logo" class="token-profile-logo">';
                 html += '<div class="token-profile-logo-placeholder" style="display:none;"><i class="fas fa-coins"></i></div>';
             } else {
                 html += '<div class="token-profile-logo-placeholder"><i class="fas fa-coins"></i></div>';
@@ -337,6 +366,7 @@ async function loadContract() {
             }
             html += '</div>';
             profileEl.innerHTML = html;
+            bindProfileLogoFallback(profileEl);
         }
 
         const metaSection = document.getElementById('metadataSection');
@@ -707,6 +737,7 @@ function initSearch() {
 
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof initExplorerNetworkSelector === 'function') initExplorerNetworkSelector();
+    bindStaticControls();
     initSearch();
     const navToggle = document.getElementById('navToggle');
     const navMenu = document.querySelector('.nav-menu');

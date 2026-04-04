@@ -66,6 +66,14 @@ Four binaries ship from this repo:
 
 ---
 
+## Security Highlights
+
+- Browser token, registry, and contract-resolution metadata is verified from release-signed manifests served by `getSignedMetadataManifest`; custom RPC overrides remain transport-only for generic reads.
+- Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production setup stays on `deploy/setup.sh` plus systemd units.
+- Supply-chain policy in CI includes `cargo audit`, `cargo deny`, and Rust CycloneDX SBOM artifact generation for the workspace.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -87,7 +95,7 @@ If you already have a `lichen-validator` binary from a release bundle or prior b
 
 ### Fast Install From Release
 
-For agents and operators, the intended path is: download the signed release artifact for the current platform, extract it, start the validator, and let `--auto-update=apply` keep the binary current after that.
+For agents and operators, the intended path is: download the signed release artifact for the current platform, verify the release checksums and detached signature, extract it, and start the validator under a restart supervisor. Production examples intentionally keep auto-update disabled until the signed release path and canary rollout are proven.
 
 Release download pattern:
 
@@ -116,8 +124,7 @@ mkdir -p "$HOME/.lichen/state-mainnet"
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
-    --auto-update=apply
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
 ```
 
 macOS Apple Silicon:
@@ -136,8 +143,7 @@ mkdir -p "$HOME/.lichen/state-mainnet"
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
-    --auto-update=apply
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
 ```
 
 Windows x64 (PowerShell):
@@ -153,8 +159,7 @@ New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Nu
     --rpc-port 9899 `
     --ws-port 9900 `
     --db-path "$HOME\.lichen\state-mainnet" `
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 `
-    --auto-update=apply
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
 ```
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
@@ -169,7 +174,7 @@ When an agent starts `lichen-validator` on a fresh machine, the runtime does thi
 4. Connects to the bootstrap peers (`seed-01.lichen.network`, `seed-02.lichen.network`, `seed-03.lichen.network`).
 5. Syncs state from the network.
 6. Begins participating as a validator once synced and eligible.
-7. If `--auto-update=apply` is enabled, periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
+7. If auto-update is enabled later on a canary node, it periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
 
 Important runtime files in the chosen `--db-path`:
 
@@ -187,7 +192,7 @@ for new or state-scoped installs. If an existing deployment already has
 `node_identity.json` under the current process `HOME`, it keeps
 using that identity instead of generating a new node address.
 
-For unattended updates, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper. `--auto-update=apply` downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
+For production deployments, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper and leave auto-update disabled until detached signatures and canary rollout discipline are proven. When canary nodes later opt into `--auto-update=apply`, the updater downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
 
 ```bash
 mkdir -p "$HOME/.lichen/state-mainnet"

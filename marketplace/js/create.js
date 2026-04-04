@@ -20,6 +20,7 @@
     var userCollections = [];
     var userBalance = 0;
     var marketplaceProgram = null;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
 
     function lazyAddresses() {
         if (!SYSTEM_PROGRAM_ID) SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
@@ -112,7 +113,7 @@
 
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
-        var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
+        var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
         marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
         if (!marketplaceProgram) throw new Error('Marketplace program not found in symbol registry');
         CONTRACT_PROGRAM_ID = marketplaceProgram;
@@ -122,7 +123,7 @@
     async function resolveMossStorageProgram() {
         lazyAddresses();
         if (MOSS_STORAGE_PROGRAM_ID) return MOSS_STORAGE_PROGRAM_ID;
-        var entry = await rpcCall('getSymbolRegistry', ['MOSS']);
+        var entry = await marketTrustedRpcCall('getSymbolRegistry', ['MOSS']);
         var candidate = null;
         if (typeof entry === 'string') {
             candidate = entry;
@@ -497,7 +498,7 @@
         } else {
             html += '<img src="' + dataUrl + '" style="max-width:100%;max-height:300px;border-radius:8px;" alt="Preview">';
         }
-        html += '<button onclick="window._createRemoveFile()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);color:white;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">&times;</button>';
+        html += '<button type="button" data-create-action="remove-file" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);color:white;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">&times;</button>';
         html += '<div style="margin-top:8px;font-size:13px;color:var(--text-secondary);">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>';
         html += '</div>';
         filePreview.innerHTML = html;
@@ -518,18 +519,23 @@
     }
 
     // ===== Properties (Traits) =====
+    function addProperty() {
+        properties.push({ trait_type: '', value: '' });
+        renderProperties();
+    }
+
     function renderProperties() {
         var container = document.getElementById('propertiesList');
         if (!container) return;
         container.innerHTML = properties.map(function (prop, index) {
             return '<div class="property-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">' +
                 '<input type="text" placeholder="Trait type" value="' + escapeHtml(prop.trait_type || '') + '" ' +
-                'onchange="window._createUpdateProperty(' + index + ',\'trait_type\',this.value)" ' +
+                'data-property-index="' + index + '" data-property-field="trait_type" ' +
                 'style="flex:1;padding:8px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);">' +
                 '<input type="text" placeholder="Value" value="' + escapeHtml(prop.value || '') + '" ' +
-                'onchange="window._createUpdateProperty(' + index + ',\'value\',this.value)" ' +
+                'data-property-index="' + index + '" data-property-field="value" ' +
                 'style="flex:1;padding:8px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);">' +
-                '<button onclick="window._createRemoveProperty(' + index + ')" ' +
+                '<button type="button" data-create-action="remove-property" data-property-index="' + index + '" ' +
                 'style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:18px;padding:4px 8px;">&times;</button></div>';
         }).join('');
     }
@@ -834,6 +840,11 @@
             collectionSelect.addEventListener('change', handleCollectionChange);
         }
 
+        var addPropertyBtn = document.getElementById('addPropertyBtn');
+        if (addPropertyBtn) {
+            addPropertyBtn.addEventListener('click', addProperty);
+        }
+
         var colNameInput = document.getElementById('newCollectionName');
         if (colNameInput) {
             colNameInput.addEventListener('input', function () {
@@ -869,6 +880,36 @@
             });
         }
 
+        var filePreview = document.getElementById('filePreview');
+        if (filePreview) {
+            filePreview.addEventListener('click', function (event) {
+                var control = event.target.closest('[data-create-action="remove-file"]');
+                if (!control) return;
+                removeFile();
+            });
+        }
+
+        var propertiesList = document.getElementById('propertiesList');
+        if (propertiesList) {
+            propertiesList.addEventListener('input', function (event) {
+                var input = event.target.closest('[data-property-index][data-property-field]');
+                if (!input) return;
+                var index = parseInt(input.getAttribute('data-property-index'), 10);
+                var field = input.getAttribute('data-property-field');
+                if (!Number.isFinite(index) || !field || !properties[index]) return;
+                properties[index][field] = input.value;
+            });
+
+            propertiesList.addEventListener('click', function (event) {
+                var control = event.target.closest('[data-create-action="remove-property"]');
+                if (!control) return;
+                var index = parseInt(control.getAttribute('data-property-index'), 10);
+                if (!Number.isFinite(index)) return;
+                properties.splice(index, 1);
+                renderProperties();
+            });
+        }
+
         // Mobile nav
         var navToggle = document.getElementById('navToggle');
         if (navToggle) {
@@ -881,16 +922,6 @@
         // Network selector
         if (typeof initMarketNetworkSelector === 'function') initMarketNetworkSelector();
     }
-
-    // ===== Public API =====
-    window.addProperty = function () {
-        properties.push({ trait_type: '', value: '' });
-        renderProperties();
-    };
-    window._createRemoveProperty = function (index) { properties.splice(index, 1); renderProperties(); };
-    window._createUpdateProperty = function (index, field, value) { if (properties[index]) properties[index][field] = value; };
-    window._createRemoveFile = function () { removeFile(); };
-    window.removeProperty = function (index) { properties.splice(index, 1); renderProperties(); };
 
     // Fetch on-chain minting fee from marketplace contract config
     async function loadMintingFee() {

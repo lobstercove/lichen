@@ -17,6 +17,7 @@
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+        integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
         crossorigin="anonymous" />
 </head>
 
@@ -234,32 +235,8 @@
                     <div class="form-group" id="programIdOverrideGroup" style="display: none;">
                         <label>Override Program ID</label>
                         <input type="text" class="form-input" id="programIdOverrideValue" placeholder="base58...">
-                        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
-                            <button class="btn btn-secondary btn-sm" id="newProgramKeypairBtn">
-                                <i class="fas fa-random"></i> New
-                            </button>
-                            <button class="btn btn-secondary btn-sm" id="importProgramKeypairBtn">
-                                <i class="fas fa-file-import"></i> Import
-                            </button>
-                            <button class="btn btn-secondary btn-sm" id="exportProgramKeypairBtn">
-                                <i class="fas fa-download"></i> Export
-                            </button>
-                        </div>
-                        <div id="programSeedImportGroup" style="display: none; margin-top: 8px;">
-                            <label for="programSeedImportInput" style="display:block;margin-bottom:6px;">Program Seed
-                                (base58)</label>
-                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                                <input type="password" class="form-input" id="programSeedImportInput"
-                                    placeholder="Enter 32-byte seed in base58" style="flex:1;min-width:220px;">
-                                <button class="btn btn-secondary btn-sm" id="programSeedImportConfirmBtn">
-                                    <i class="fas fa-check"></i> Confirm
-                                </button>
-                                <button class="btn btn-secondary btn-sm" id="programSeedImportCancelBtn">
-                                    <i class="fas fa-times"></i> Cancel
-                                </button>
-                            </div>
-                        </div>
-                        <small>Override uses a dedicated program keypair. Save/export it when you regenerate.</small>
+                        <small>Optional manual override. Leave this off unless you already manage the target program
+                            address outside the browser.</small>
                     </div>
                 </div>
 
@@ -944,7 +921,7 @@
                         <div class="info-row">
                             <span class="info-label">Program ID:</span>
                             <span class="info-value monospace" id="infoProgramId">-</span>
-                            <button class="btn-icon-sm" onclick="copyProgramId()">
+                            <button class="btn-icon-sm" id="copyProgramInfoIdBtn">
                                 <i class="fas fa-copy"></i>
                             </button>
                             <button class="btn-icon-sm" id="openProgramInfoExplorerBtn" title="Open in Explorer">
@@ -1084,9 +1061,7 @@
             </div>
             <div class="wallet-modal-tabs">
                 <button class="wm-tab active" data-wm-tab="wallets">Wallets</button>
-                <button class="wm-tab" data-wm-tab="import">Import</button>
                 <button class="wm-tab" data-wm-tab="extension">Extension</button>
-                <button class="wm-tab" data-wm-tab="create">Create New</button>
             </div>
             <!-- Wallets Tab -->
             <div class="wm-tab-content" id="wmTabWallets">
@@ -1094,37 +1069,10 @@
                     <div class="wm-empty">
                         <i class="fas fa-wallet"></i>
                         <p>No wallets connected</p>
-                        <button class="btn btn-primary btn-small"
-                            onclick="document.querySelector('[data-wm-tab=import]').click()">Import Wallet</button>
+                        <button class="btn btn-primary btn-small" id="wmOpenExtensionTabBtn">Connect
+                            Extension</button>
                     </div>
                 </div>
-            </div>
-            <!-- Import Tab — private key or mnemonic -->
-            <div class="wm-tab-content hidden" id="wmTabImport">
-                <div class="wm-import-toggle">
-                    <button class="wm-import-type active" data-import="key">Private Key</button>
-                    <button class="wm-import-type" data-import="mnemonic">Mnemonic</button>
-                </div>
-                <div class="wm-import-key" id="wmImportKey">
-                    <div class="form-group">
-                        <label>Private Key</label>
-                        <input type="password" id="wmPrivateKey" placeholder="Enter your private key (hex or base58)"
-                            class="form-input">
-                    </div>
-                </div>
-                <div class="wm-import-mnemonic hidden" id="wmImportMnemonic">
-                    <div class="form-group">
-                        <label>Recovery Phrase (12 or 24 words)</label>
-                        <div class="mnemonic-grid" id="mnemonicGrid"></div>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local
-                            storage)</span></label>
-                    <input type="password" id="wmPassword" placeholder="Enter wallet password" class="form-input">
-                </div>
-                <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect
-                    Wallet</button>
             </div>
             <!-- Extension Tab — wallet extension -->
             <div class="wm-tab-content hidden" id="wmTabExtension">
@@ -1136,37 +1084,6 @@
                 </div>
                 <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect
                     Extension</button>
-            </div>
-            <!-- Create Tab — generate new keypair -->
-            <div class="wm-tab-content hidden" id="wmTabCreate">
-                <div class="wm-create-info">
-                    <i class="fas fa-shield-alt"></i>
-                    <h4>Generate New Wallet</h4>
-                    <p>Create a fresh Lichen wallet. Save the private key securely — it will not be shown again.</p>
-                </div>
-                <div class="form-group">
-                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local
-                            storage)</span></label>
-                    <input type="password" id="wmCreatePassword" placeholder="Enter wallet password" class="form-input">
-                </div>
-                <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create
-                    Wallet</button>
-                <div class="wm-created-wallet hidden" id="wmCreatedWallet">
-                    <div class="wm-generated-row">
-                        <span class="wm-label">Address</span>
-                        <span class="wm-value" id="wmNewAddress"></span>
-                    </div>
-                    <div class="wm-generated-row">
-                        <span class="wm-label">Private Key</span>
-                        <span class="wm-value wm-secret" id="wmNewKey"></span>
-                        <button class="btn btn-small btn-secondary wm-copy-btn" data-copy="wmNewKey"><i
-                                class="fas fa-copy"></i></button>
-                    </div>
-                    <div class="wm-warning">
-                        <i class="fas fa-exclamation-triangle"></i>
-                        <span>Save your private key! It will not be shown again.</span>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -1240,7 +1157,9 @@
     <script src="shared/pq.js"></script>
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"
+        integrity="sha512-ZG31AN9z/CQD1YDDAK4RUAvogwbJHv6bHrumrnMLzdCrVu4HeAqrUX7Jsal/cbUwXGfaMUNmQU04tQ8XXl5Znw=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
     <!-- Lichen SDK -->
     <script src="js/lichen-sdk.js"></script>

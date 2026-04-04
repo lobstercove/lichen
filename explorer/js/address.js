@@ -78,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentAddress = urlParams.get('address') || urlParams.get('addr');
     const initialTab = (urlParams.get('tab') || '').toLowerCase();
     if (!currentAddress) { showError('No address provided'); return; }
+    bindStaticControls();
     setTokensTabVisibility(true);
     setStakingTabVisibility(false);
     setupAddressTabs();
@@ -88,6 +89,18 @@ document.addEventListener('DOMContentLoaded', () => {
     initAddressRealtime();
     setupSearch();
 });
+
+function bindStaticControls() {
+    document.getElementById('copyAddressBase58Btn')?.addEventListener('click', (event) => {
+        copyAddressToClipboard('addressBase58', event);
+    });
+    document.getElementById('copyAddressEvmBtn')?.addEventListener('click', (event) => {
+        copyAddressToClipboard('addressEVM', event);
+    });
+    document.getElementById('copyAddressRawDataBtn')?.addEventListener('click', (event) => {
+        copyAddressToClipboard('rawData', event);
+    });
+}
 
 async function refreshAddressData() {
     if (addressRefreshInFlight) return;
@@ -812,12 +825,6 @@ function getWalletStateFromStorage() {
     }
 }
 
-function getActiveWalletFromStorage() {
-    const state = getWalletStateFromStorage();
-    if (!state || !Array.isArray(state.wallets)) return null;
-    return state.wallets.find(wallet => wallet.id === state.activeWalletId) || null;
-}
-
 function getConnectedSharedWallet() {
     try {
         const raw = localStorage.getItem('lichen_wallet');
@@ -874,19 +881,6 @@ async function getConnectedExtensionWallet() {
     };
 }
 
-function getLocalWalletSession() {
-    const wallet = getActiveWalletFromStorage();
-    if (!wallet || !wallet.address || !wallet.encryptedKey) {
-        return null;
-    }
-    return {
-        mode: 'local',
-        address: wallet.address,
-        encryptedKey: wallet.encryptedKey,
-        wallet,
-    };
-}
-
 async function requestExtensionWalletSession() {
     const provider = await getInjectedWalletProvider(800);
     if (!provider || typeof provider.requestAccounts !== 'function') {
@@ -907,19 +901,12 @@ async function requestExtensionWalletSession() {
 
 async function ensureWalletAvailable() {
     const extensionWallet = await getConnectedExtensionWallet();
-    const localWallet = getLocalWalletSession();
 
     if (extensionWallet && extensionWallet.address === currentAddress) {
         return extensionWallet;
     }
-    if (localWallet && localWallet.address === currentAddress) {
-        return localWallet;
-    }
     if (extensionWallet) {
         return extensionWallet;
-    }
-    if (localWallet) {
-        return localWallet;
     }
 
     try {
@@ -931,50 +918,8 @@ async function ensureWalletAvailable() {
         console.warn('Extension wallet connection failed:', error);
     }
 
-    showAddressToast('No active wallet found. Connect the extension or open Wallet to create/import and unlock.');
+    showAddressToast('No active wallet found. Connect the extension to continue.');
     return null;
-}
-
-async function requestWalletPassword(actionText) {
-    return new Promise((resolve) => {
-        openActionModal({
-            title: 'Sign Transaction',
-            icon: 'fas fa-key',
-            confirmText: 'Sign & Send',
-            bodyHtml: `
-                <p class="modal-note">${escapeHtml(actionText)}</p>
-                <div class="form-group">
-                    <label for="txPasswordInput">Wallet Password</label>
-                    <input type="password" id="txPasswordInput" placeholder="Enter password to sign">
-                </div>
-            `,
-            onConfirm: async () => {
-                const password = document.getElementById('txPasswordInput')?.value || '';
-                if (!password) {
-                    showAddressToast('Password is required.');
-                    return false;
-                }
-                resolve(password);
-                return true;
-            }
-        });
-
-        const cancel = document.getElementById('addressModalCancelBtn');
-        const close = document.getElementById('addressModalCloseBtn');
-        const overlay = document.getElementById('addressActionModal');
-        cancel?.addEventListener('click', () => resolve(null), { once: true });
-        close?.addEventListener('click', () => resolve(null), { once: true });
-        overlay?.addEventListener('click', (event) => {
-            if (event.target === overlay) resolve(null);
-        }, { once: true });
-    });
-}
-
-async function requestWalletPasswordIfNeeded(wallet, actionText) {
-    if (wallet?.mode !== 'local') {
-        return null;
-    }
-    return requestWalletPassword(actionText);
 }
 
 async function getLichenIdProgramAddress() {
@@ -982,7 +927,7 @@ async function getLichenIdProgramAddress() {
     const symbols = ['YID', 'yid', 'LICHENID'];
     for (const symbol of symbols) {
         try {
-            const result = await rpcCall('getSymbolRegistry', [symbol]);
+            const result = await trustedRpcCall('getSymbolRegistry', [symbol]);
             const program = result?.program || result?.address || result?.pubkey;
             if (program) {
                 lichenIdProgramAddress = program;
@@ -1033,47 +978,28 @@ function buildContractCallInstruction({ callerAddress, contractAddress, function
     };
 }
 
-function bytesToBase64(bytes) {
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-    return btoa(binary);
-}
-
-async function signAndSendInstructions(wallet, password, instructions) {
+async function signAndSendInstructions(wallet, instructions) {
     const latestBlock = await rpcCall('getLatestBlock', []);
     const message = {
         instructions,
         blockhash: latestBlock.hash
     };
 
-    if (wallet?.mode === 'extension') {
-        const provider = wallet.provider || await getInjectedWalletProvider(800);
-        if (!provider || typeof provider.sendTransaction !== 'function') {
-            throw new Error('Wallet extension signing unavailable. Reconnect the extension and try again.');
-        }
-
-        const result = await provider.sendTransaction({
-            signatures: [],
-            message,
-        });
-
-        return result?.txHash || result?.signature || result;
+    if (wallet?.mode !== 'extension') {
+        throw new Error('Explorer only supports extension-backed signing. Connect the Lichen wallet extension and try again.');
     }
 
-    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
-    const messageBytes = serializeMessageBincode(message);
-    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+    const provider = wallet.provider || await getInjectedWalletProvider(800);
+    if (!provider || typeof provider.sendTransaction !== 'function') {
+        throw new Error('Wallet extension signing unavailable. Reconnect the extension and try again.');
+    }
 
-    const transaction = {
-        signatures: [signature],
+    const result = await provider.sendTransaction({
+        signatures: [],
         message
-    };
-    const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-    const txBase64 = bytesToBase64(txBytes);
-    return rpcCall('sendTransaction', [txBase64]);
+    });
+
+    return result?.txHash || result?.signature || result;
 }
 
 async function resolveRecipient(value) {
@@ -1119,12 +1045,9 @@ async function openSendModal() {
                 if (!amount || amount <= 0) throw new Error('Enter a valid amount');
 
                 const recipient = await resolveRecipient(recipientInput);
-                const password = await requestWalletPasswordIfNeeded(wallet, `Send ${amount} LICN to ${recipient.display}`);
-                if (wallet.mode === 'local' && !password) return false;
-
                 const instruction = buildTransferInstruction(wallet.address, recipient.address, amount);
                 showAddressToast('Sending transaction...');
-                const signature = await signAndSendInstructions(wallet, password, [instruction]);
+                const signature = await signAndSendInstructions(wallet, [instruction]);
                 showAddressToast(`Sent successfully: ${String(signature).slice(0, 16)}...`);
                 await loadAddressData();
                 return true;
@@ -1187,8 +1110,6 @@ async function openRegisterIdentityModal() {
                 }
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPasswordIfNeeded(wallet, `Register identity for ${wallet.address}`);
-                if (wallet.mode === 'local' && !password) return false;
 
                 const registerInstruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1203,7 +1124,7 @@ async function openRegisterIdentityModal() {
                 });
 
                 showAddressToast('Submitting identity registration...');
-                await signAndSendInstructions(wallet, password, [registerInstruction]);
+                await signAndSendInstructions(wallet, [registerInstruction]);
 
                 if (optionalName) {
                     // Name cost: 20 LICN/yr for 5+ chars, 100 for 4, 500 for ≤3
@@ -1222,7 +1143,7 @@ async function openRegisterIdentityModal() {
                         value: totalCostSpores
                     });
                     showAddressToast(`Registering ${optionalName}.lichen...`);
-                    await signAndSendInstructions(wallet, password, [nameInstruction]);
+                    await signAndSendInstructions(wallet, [nameInstruction]);
                 }
 
                 showAddressToast('Identity action submitted successfully.');
@@ -1276,8 +1197,6 @@ async function openRegisterNameModal() {
                 if (availability?.owner) throw new Error(`${label}.lichen is already registered`);
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPasswordIfNeeded(wallet, `Register ${label}.lichen`);
-                if (wallet.mode === 'local' && !password) return false;
 
                 // Name cost: 20 LICN/yr for 5+ chars, 100 for 4, 500 for ≤3
                 const nameLen = label.length;
@@ -1295,7 +1214,7 @@ async function openRegisterNameModal() {
                     value: totalCostSpores
                 });
 
-                await signAndSendInstructions(wallet, password, [instruction]);
+                await signAndSendInstructions(wallet, [instruction]);
                 showAddressToast(`Submitted registration for ${label}.lichen`);
                 await loadAddressData();
                 return true;
@@ -1343,8 +1262,6 @@ async function openVouchModal() {
         onConfirm: async () => {
             try {
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPasswordIfNeeded(wallet, 'Sign vouch transaction');
-                if (wallet.mode === 'local' && !password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1357,7 +1274,7 @@ async function openVouchModal() {
                     value: 0
                 });
 
-                await signAndSendInstructions(wallet, password, [instruction]);
+                await signAndSendInstructions(wallet, [instruction]);
                 showAddressToast('Vouch submitted.');
                 await loadAddressData();
                 return true;
@@ -1402,8 +1319,6 @@ async function openAttestSkillModal(initialSkillName = '') {
                 if (level < 1 || level > 5) throw new Error('Level must be between 1 and 5');
 
                 const lichenIdAddress = await getLichenIdProgramAddress();
-                const password = await requestWalletPasswordIfNeeded(wallet, `Attest ${skill} at level ${level}`);
-                if (wallet.mode === 'local' && !password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
@@ -1418,7 +1333,7 @@ async function openAttestSkillModal(initialSkillName = '') {
                     value: 0
                 });
 
-                await signAndSendInstructions(wallet, password, [instruction]);
+                await signAndSendInstructions(wallet, [instruction]);
                 showAddressToast('Skill attestation submitted.');
                 await loadAddressData();
                 return true;
@@ -1531,12 +1446,8 @@ async function openEditProfileModal() {
                     args: { owner: wallet.address, rate: Math.floor(rateLicn * 1_000_000_000) },
                     value: 0
                 }));
-
-                const password = await requestWalletPasswordIfNeeded(wallet, 'Sign profile update transaction');
-                if (wallet.mode === 'local' && !password) return false;
-
                 for (const instruction of instructions) {
-                    await signAndSendInstructions(wallet, password, [instruction]);
+                    await signAndSendInstructions(wallet, [instruction]);
                 }
 
                 showAddressToast('Profile updates submitted.');
@@ -1616,7 +1527,7 @@ function formatRegistryMetadata(entry) {
 }
 async function loadRegistryInfo(programId) {
     try {
-        const entry = await rpcCall('getSymbolRegistryByProgram', [programId]);
+        const entry = await trustedRpcCall('getSymbolRegistryByProgram', [programId]);
         setRegistryRowsVisible(true);
         if (!entry) {
             document.getElementById('registrySymbol').textContent = 'Not registered';
@@ -2054,14 +1965,17 @@ function updateTxPagination() {
     const hasNext = !!txNextCursor;
 
     paginationEl.innerHTML = `
-        <button class="btn btn-sm" onclick="prevTxPage()" ${hasPrev ? '' : 'disabled'}>
+        <button class="btn btn-sm" id="addressTxPrevBtn" ${hasPrev ? '' : 'disabled'}>
             <i class="fas fa-chevron-left"></i> Prev
         </button>
         <span style="color: var(--text-secondary);">Page ${pageNum}</span>
-        <button class="btn btn-sm" onclick="nextTxPage()" ${hasNext ? '' : 'disabled'}>
+        <button class="btn btn-sm" id="addressTxNextBtn" ${hasNext ? '' : 'disabled'}>
             Next <i class="fas fa-chevron-right"></i>
         </button>
     `;
+
+    document.getElementById('addressTxPrevBtn')?.addEventListener('click', prevTxPage);
+    document.getElementById('addressTxNextBtn')?.addEventListener('click', nextTxPage);
 }
 
 function nextTxPage() {

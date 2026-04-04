@@ -748,6 +748,13 @@ pub struct StateBatch {
     governed_proposal_overlay: std::collections::HashMap<u64, crate::multisig::GovernedProposal>,
     /// AUDIT-FIX H-1: Governed proposal counter override (set on first alloc in this batch).
     governed_proposal_counter: Option<u64>,
+    /// Daily governed transfer volume overlay for batch-consistent velocity limits.
+    governed_transfer_volume_overlay: std::collections::HashMap<String, u64>,
+    /// Governance proposal overlay so protocol-governance actions commit atomically.
+    governance_proposal_overlay:
+        std::collections::HashMap<u64, crate::governance::GovernanceProposal>,
+    /// Governance proposal counter override (set on first alloc in this batch).
+    governance_proposal_counter: Option<u64>,
     /// Track newly indexed programs in this batch (applied on commit)
     new_programs: i64,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
@@ -4487,6 +4494,9 @@ impl StateStore {
             spent_nullifier_overlay: std::collections::HashSet::new(),
             governed_proposal_overlay: std::collections::HashMap::new(),
             governed_proposal_counter: None,
+            governed_transfer_volume_overlay: std::collections::HashMap::new(),
+            governance_proposal_overlay: std::collections::HashMap::new(),
+            governance_proposal_counter: None,
             new_programs: 0,
             event_seq: 0,
             dirty_contract_keys: Vec::new(),
@@ -5411,6 +5421,135 @@ impl StateBatch {
         }
     }
 
+    /// Read the executed governed-transfer volume for a wallet on a UTC day.
+    pub fn get_governed_transfer_day_volume(
+        &self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+    ) -> Result<u64, String> {
+        let key = format!(
+            "governed_transfer_volume:{}:{}",
+            wallet_pubkey.to_base58(),
+            day_start
+        );
+        if let Some(volume) = self.governed_transfer_volume_overlay.get(&key) {
+            return Ok(*volume);
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Ok(u64::from_le_bytes(data[..8].try_into().unwrap()))
+            }
+            Ok(Some(_)) | Ok(None) => Ok(0),
+            Err(e) => Err(format!("DB error loading governed transfer volume: {}", e)),
+        }
+    }
+
+    /// Store the executed governed-transfer volume for a wallet on a UTC day.
+    pub fn set_governed_transfer_day_volume(
+        &mut self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+        volume: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!(
+            "governed_transfer_volume:{}:{}",
+            wallet_pubkey.to_base58(),
+            day_start
+        );
+        self.batch.put_cf(&cf, key.as_bytes(), volume.to_le_bytes());
+        self.governed_transfer_volume_overlay.insert(key, volume);
+        Ok(())
+    }
+
+    /// Queue a governance parameter change through the active batch.
+    pub fn queue_governance_param_change(
+        &mut self,
+        param_id: u8,
+        value: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("pending_gov_{}", param_id);
+        self.batch.put_cf(&cf, key.as_bytes(), value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Allocate the next governance proposal ID through the batch.
+    pub fn next_governance_proposal_id(&mut self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let current = if let Some(c) = self.governance_proposal_counter {
+            c
+        } else {
+            match self.db.get_cf(&cf, b"governance_proposal_counter") {
+                Ok(Some(data)) if data.len() == 8 => {
+                    u64::from_le_bytes(data[..8].try_into().unwrap())
+                }
+                _ => 0,
+            }
+        };
+        let next = current + 1;
+        self.governance_proposal_counter = Some(next);
+        self.batch
+            .put_cf(&cf, b"governance_proposal_counter", next.to_le_bytes());
+        Ok(next)
+    }
+
+    /// Store a governance proposal into the batch overlay + WriteBatch.
+    pub fn set_governance_proposal(
+        &mut self,
+        proposal: &crate::governance::GovernanceProposal,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governance_proposal:{}", proposal.id);
+        let data = serde_json::to_vec(proposal)
+            .map_err(|e| format!("Failed to serialize governance proposal: {}", e))?;
+        self.batch.put_cf(&cf, key.as_bytes(), &data);
+        self.governance_proposal_overlay
+            .insert(proposal.id, proposal.clone());
+        Ok(())
+    }
+
+    /// Read a governance proposal, checking batch overlay first then disk.
+    pub fn get_governance_proposal(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::governance::GovernanceProposal>, String> {
+        if let Some(proposal) = self.governance_proposal_overlay.get(&id) {
+            return Ok(Some(proposal.clone()));
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governance_proposal:{}", id);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let proposal: crate::governance::GovernanceProposal = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize governance proposal: {}", e))?;
+                Ok(Some(proposal))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governance proposal: {}", e)),
+        }
+    }
+
     /// Read-only: get last slot (falls through to disk since batches don't modify this).
     pub fn get_last_slot(&self) -> Result<u64, String> {
         let cf = self
@@ -6137,6 +6276,23 @@ impl StateStore {
         Ok(next)
     }
 
+    /// Get the next governance proposal ID (auto-incrementing counter).
+    pub fn next_governance_proposal_id(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let current = match self.db.get_cf(&cf, b"governance_proposal_counter") {
+            Ok(Some(data)) if data.len() == 8 => u64::from_le_bytes(data[..8].try_into().unwrap()),
+            _ => 0,
+        };
+        let next = current + 1;
+        self.db
+            .put_cf(&cf, b"governance_proposal_counter", next.to_le_bytes())
+            .map_err(|e| format!("Failed to update governance proposal counter: {}", e))?;
+        Ok(next)
+    }
+
     /// Store a governed transfer proposal.
     pub fn set_governed_proposal(
         &self,
@@ -6172,6 +6328,89 @@ impl StateStore {
             }
             Ok(None) => Ok(None),
             Err(e) => Err(format!("DB error loading governed proposal: {}", e)),
+        }
+    }
+
+    /// Load the executed governed-transfer volume for a wallet on a UTC day.
+    pub fn get_governed_transfer_day_volume(
+        &self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+    ) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!(
+            "governed_transfer_volume:{}:{}",
+            wallet_pubkey.to_base58(),
+            day_start
+        );
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Ok(u64::from_le_bytes(data[..8].try_into().unwrap()))
+            }
+            Ok(Some(_)) | Ok(None) => Ok(0),
+            Err(e) => Err(format!("DB error loading governed transfer volume: {}", e)),
+        }
+    }
+
+    /// Store the executed governed-transfer volume for a wallet on a UTC day.
+    pub fn set_governed_transfer_day_volume(
+        &self,
+        wallet_pubkey: &Pubkey,
+        day_start: u64,
+        volume: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!(
+            "governed_transfer_volume:{}:{}",
+            wallet_pubkey.to_base58(),
+            day_start
+        );
+        self.db
+            .put_cf(&cf, key.as_bytes(), volume.to_le_bytes())
+            .map_err(|e| format!("Failed to store governed transfer volume: {}", e))
+    }
+
+    /// Store a governance proposal.
+    pub fn set_governance_proposal(
+        &self,
+        proposal: &crate::governance::GovernanceProposal,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governance_proposal:{}", proposal.id);
+        let data = serde_json::to_vec(proposal)
+            .map_err(|e| format!("Failed to serialize governance proposal: {}", e))?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), data)
+            .map_err(|e| format!("Failed to store governance proposal: {}", e))
+    }
+
+    /// Load a governance proposal by ID.
+    pub fn get_governance_proposal(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::governance::GovernanceProposal>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governance_proposal:{}", id);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let proposal: crate::governance::GovernanceProposal = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize governance proposal: {}", e))?;
+                Ok(Some(proposal))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governance proposal: {}", e)),
         }
     }
 
@@ -6458,6 +6697,189 @@ impl StateStore {
             }
             Ok(_) => Ok(None),
             Err(e) => Err(format!("Failed to load governance authority: {}", e)),
+        }
+    }
+
+    /// Store the treasury executor authority pubkey used for privileged
+    /// treasury-transfer governance approvals.
+    pub fn set_treasury_executor_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"treasury_executor_authority", authority.0)
+            .map_err(|e| format!("Failed to store treasury executor authority: {}", e))
+    }
+
+    /// Load the treasury executor authority pubkey. Returns None if not set.
+    pub fn get_treasury_executor_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"treasury_executor_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load treasury executor authority: {}", e)),
+        }
+    }
+
+    /// Store the incident guardian authority pubkey used for allowlisted fast
+    /// risk-reduction proposals.
+    pub fn set_incident_guardian_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"incident_guardian_authority", authority.0)
+            .map_err(|e| format!("Failed to store incident guardian authority: {}", e))
+    }
+
+    /// Load the incident guardian authority pubkey. Returns None if not set.
+    pub fn get_incident_guardian_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"incident_guardian_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load incident guardian authority: {}", e)),
+        }
+    }
+
+    /// Store the bridge committee admin authority pubkey used for privileged
+    /// bridge control-plane governance proposals.
+    pub fn set_bridge_committee_admin_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"bridge_committee_admin_authority", authority.0)
+            .map_err(|e| format!("Failed to store bridge committee admin authority: {}", e))
+    }
+
+    /// Load the bridge committee admin authority pubkey. Returns None if not set.
+    pub fn get_bridge_committee_admin_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"bridge_committee_admin_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to load bridge committee admin authority: {}",
+                e
+            )),
+        }
+    }
+
+    /// Store the oracle committee admin authority pubkey used for privileged
+    /// oracle control-plane governance proposals.
+    pub fn set_oracle_committee_admin_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"oracle_committee_admin_authority", authority.0)
+            .map_err(|e| format!("Failed to store oracle committee admin authority: {}", e))
+    }
+
+    /// Load the oracle committee admin authority pubkey. Returns None if not set.
+    pub fn get_oracle_committee_admin_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"oracle_committee_admin_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to load oracle committee admin authority: {}",
+                e
+            )),
+        }
+    }
+
+    /// Store the upgrade proposer authority pubkey used for privileged
+    /// upgrade proposal, timelock, and execution governance approvals.
+    pub fn set_upgrade_proposer_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"upgrade_proposer_authority", authority.0)
+            .map_err(|e| format!("Failed to store upgrade proposer authority: {}", e))
+    }
+
+    /// Load the upgrade proposer authority pubkey. Returns None if not set.
+    pub fn get_upgrade_proposer_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"upgrade_proposer_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load upgrade proposer authority: {}", e)),
+        }
+    }
+
+    /// Store the upgrade veto guardian authority pubkey used for privileged
+    /// upgrade veto governance approvals.
+    pub fn set_upgrade_veto_guardian_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"upgrade_veto_guardian_authority", authority.0)
+            .map_err(|e| format!("Failed to store upgrade veto guardian authority: {}", e))
+    }
+
+    /// Load the upgrade veto guardian authority pubkey. Returns None if not set.
+    pub fn get_upgrade_veto_guardian_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"upgrade_veto_guardian_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to load upgrade veto guardian authority: {}",
+                e
+            )),
         }
     }
 

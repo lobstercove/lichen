@@ -25,8 +25,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, get_value,
-    log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, get_caller, get_contract_address, get_slot, get_value, log_info, storage_get,
+    storage_set, transfer_token_or_native, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -718,7 +718,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 }
 
 /// G27-02: Set LICN token address for self-custody transfers. Admin only.
-/// Returns: 0 success, 1 not admin
+/// Returns: 0 success, 1 not admin, 2 already configured
 #[no_mangle]
 pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
@@ -738,6 +738,13 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
     let mut token = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
+    }
+    if storage_get(LICN_TOKEN_KEY)
+        .map(|data| data.len() == 32)
+        .unwrap_or(false)
+    {
+        log_info("LICN token already configured");
+        return 2;
     }
     storage_set(LICN_TOKEN_KEY, &token);
     log_info("LICN token address configured");
@@ -1792,6 +1799,20 @@ mod tests {
         let other = [5u8; 32];
         test_mock::set_caller(other);
         assert_eq!(set_licn_token(other.as_ptr(), token.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_g27_set_licn_token_cannot_reconfigure() {
+        setup();
+        let admin = [9u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let token = [0xDD; 32];
+        let new_token = [0xDE; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(set_licn_token(admin.as_ptr(), new_token.as_ptr()), 2);
+        assert_eq!(test_mock::get_storage(LICN_TOKEN_KEY).unwrap().as_slice(), &token);
     }
 
     #[test]

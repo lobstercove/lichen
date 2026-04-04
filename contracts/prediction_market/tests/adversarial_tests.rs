@@ -761,7 +761,7 @@ fn test_pause_blocks_add_liquidity() {
 }
 
 #[test]
-fn test_pause_blocks_sell() {
+fn test_pause_allows_sell_exit() {
     let (_admin, mid) = setup_active_market_large();
     let t = [2u8; 32];
     lichen_sdk::test_mock::set_caller(t);
@@ -773,10 +773,10 @@ fn test_pause_blocks_sell() {
 
     lichen_sdk::test_mock::set_caller(t);
     let (pos, _) = read_position(mid, &t, 0);
-    assert_eq!(
-        sell_shares(t.as_ptr(), mid, 0, pos),
-        0,
-        "Sell blocked during pause"
+    assert!(pos > 0);
+    assert!(
+        sell_shares(t.as_ptr(), mid, 0, pos) > 0,
+        "Sell should remain available during pause"
     );
 }
 

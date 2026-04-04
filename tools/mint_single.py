@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 
@@ -16,11 +16,10 @@ async def main():
     amount = int(sys.argv[2]) if len(sys.argv) > 2 else 500
 
     conn = Connection('http://127.0.0.1:8899')
-    keys = Path('data/state-testnet/genesis-keys')
-    admin = Keypair.load(keys / 'genesis-primary-lichen-testnet-1.json')
-    reserve = Keypair.load(keys / 'reserve_pool-lichen-testnet-1.json')
-    admin_bytes = bytes(admin.public_key().to_bytes())
-    reserve_bytes = bytes(reserve.public_key().to_bytes())
+    admin = load_genesis_keypair('genesis-primary')
+    reserve = load_genesis_keypair('reserve_pool')
+    admin_bytes = bytes(admin.address().to_bytes())
+    reserve_bytes = bytes(reserve.address().to_bytes())
 
     result = await conn._rpc("getAllSymbolRegistry")
     token_addr = None
@@ -46,7 +45,7 @@ async def main():
 
     await asyncio.sleep(2)
     args_b64 = base64.b64encode(reserve_bytes).decode()
-    r = await conn._rpc('callContract', [token_addr, 'balance_of', args_b64, str(reserve.public_key())])
+    r = await conn._rpc('callContract', [token_addr, 'balance_of', args_b64, str(reserve.address())])
     rc = r.get('returnCode', 0)
     print(f"{symbol} balance: {rc / SPORES:,.3f} tokens")
 

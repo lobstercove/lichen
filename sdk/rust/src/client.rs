@@ -521,6 +521,12 @@ impl ClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     // ── Client::new ─────────────────────────────────────────────────
 
@@ -546,6 +552,7 @@ mod tests {
 
     #[test]
     fn test_client_from_env_defaults_to_localhost() {
+        let _guard = env_lock().lock().unwrap();
         // Clear the env var to ensure fallback
         std::env::remove_var("LICHEN_RPC_URL");
         let client = Client::from_env();
@@ -554,6 +561,7 @@ mod tests {
 
     #[test]
     fn test_client_from_env_uses_var() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("LICHEN_RPC_URL", "http://custom:9999");
         let client = Client::from_env();
         assert_eq!(client.rpc_url, "http://custom:9999");

@@ -141,19 +141,8 @@ function requireLichenPQ() {
     return window.LichenPQ;
 }
 
-function normalizeSeedInput(seed) {
-    if (seed instanceof Uint8Array) {
-        return new Uint8Array(seed);
-    }
-    if (Array.isArray(seed)) {
-        return new Uint8Array(seed);
-    }
-    if (typeof seed === 'string') {
-        return /^(0x)?[0-9a-fA-F]+$/.test(seed)
-            ? hexToBytes(seed)
-            : base58Decode(seed);
-    }
-    throw new Error('Invalid wallet seed');
+function localWalletsDisabledError() {
+    return new Error('Browser-local wallets are disabled in Programs. Use the Lichen wallet extension.');
 }
 
 function normalizePubkeyBytes(pubkey) {
@@ -991,7 +980,7 @@ class LichenWS {
 // ============================================================================
 
 class LichenWallet {
-    constructor({ privateKey, publicKey, publicKeyHex, seed, address }) {
+    constructor({ privateKey = null, publicKey = null, publicKeyHex = null, seed = null, address = null } = {}) {
         this.privateKey = privateKey;
         this.publicKey = publicKey;
         this.publicKeyHex = publicKeyHex;
@@ -999,34 +988,18 @@ class LichenWallet {
         this.address = address;
     }
 
-    static async create(seed = null) {
-        if (seed) {
-            return this.fromSeed(seed);
-        }
-
-        const keypair = await requireLichenPQ().generateKeypair();
-        return new LichenWallet({
-            privateKey: keypair.privateKey,
-            publicKey: new Uint8Array(keypair.publicKey),
-            publicKeyHex: keypair.publicKeyHex,
-            seed: hexToBytes(keypair.privateKey),
-            address: keypair.address,
-        });
+    static async create() {
+        throw localWalletsDisabledError();
     }
 
-    static async fromSeed(seed) {
-        const seedBytes = normalizeSeedInput(seed);
-        const keypair = await requireLichenPQ().keypairFromSeed(seedBytes);
-        return new LichenWallet({
-            privateKey: keypair.privateKey,
-            publicKey: new Uint8Array(keypair.publicKey),
-            publicKeyHex: keypair.publicKeyHex,
-            seed: seedBytes,
-            address: keypair.address,
-        });
+    static async fromSeed() {
+        throw localWalletsDisabledError();
     }
 
     async sign(message) {
+        if (!this.privateKey) {
+            throw localWalletsDisabledError();
+        }
         const payload = message instanceof Uint8Array ? message : new Uint8Array(message || []);
         return requireLichenPQ().signMessage(this.privateKey, payload);
     }
@@ -1035,25 +1008,14 @@ class LichenWallet {
      * Export wallet to JSON (encrypted)
      */
     export(password) {
-        return {
-            version: 2,
-            address: this.address,
-            publicKey: {
-                scheme_version: requireLichenPQ().PQ_SCHEME_ML_DSA_65,
-                bytes: this.publicKeyHex,
-            },
-            seed: base58Encode(this.seed)
-        };
+        throw localWalletsDisabledError();
     }
 
     /**
      * Import wallet from JSON
      */
-    static async import(json, password) {
-        if (!json.seed) {
-            throw new Error('Invalid wallet export: missing seed');
-        }
-        return this.fromSeed(base58Decode(json.seed));
+    static async import() {
+        throw localWalletsDisabledError();
     }
 
     /**
@@ -1124,7 +1086,7 @@ class TransactionBuilder {
             return this;
         }
 
-        throw new Error('Wallet cannot sign transactions. Reconnect the extension or import a local wallet.');
+        throw new Error('Wallet cannot sign transactions. Reconnect the Lichen wallet extension.');
     }
 
     buildRpcMessage() {

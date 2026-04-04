@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+export LICHEN_LOCAL_DEV=1
+
 RPC_URL="http://localhost:8899"
 
 log() {

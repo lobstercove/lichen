@@ -25,9 +25,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_slot, log_info,
-    receive_token_or_native, storage_get, storage_set, transfer_token_or_native, u64_to_bytes,
-    Address, CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_slot, log_info, receive_token_or_native,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -142,6 +141,18 @@ fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
         core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
     }
     Some(out)
+}
+
+fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    storage_get(key).and_then(|bytes| {
+        if bytes.len() != 32 {
+            return None;
+        }
+
+        let mut addr = [0u8; 32];
+        addr.copy_from_slice(&bytes[..32]);
+        Some(addr)
+    })
 }
 
 // ============================================================================
@@ -1031,9 +1042,9 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
 }
 
 /// Set the payment token contract address for escrow operations.
-/// Only callable by admin. Cannot be set to the zero address.
+/// Only callable by admin and only configurable once.
 ///
-/// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
+/// Returns: 0 success, 1 not admin, 2 already configured, 200 caller spoof
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
     let caller = match read_address32(caller_ptr) {
@@ -1054,6 +1065,10 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
         return 1;
     }
 
+    if load_configured_address(CP_TOKEN_ADDR_KEY).is_some() {
+        return 2;
+    }
+
     // NOTE: zero address [0;32] is allowed — it is the native LICN sentinel
     storage_set(CP_TOKEN_ADDR_KEY, &token_addr);
     log_info("Token address configured");
@@ -1061,9 +1076,9 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
 }
 
 /// Set the contract's own deployed address for escrow transfers.
-/// Only callable by admin. Cannot be set to the zero address.
+/// Only callable by admin. Cannot be set to the zero address and is immutable once set.
 ///
-/// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
+/// Returns: 0 success, 1 not admin, 2 zero address, 3 already configured, 200 caller spoof
 #[no_mangle]
 pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
     let caller = match read_address32(caller_ptr) {
@@ -1086,6 +1101,10 @@ pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const 
 
     if self_addr == [0u8; 32] {
         return 2;
+    }
+
+    if load_configured_address(CP_SELF_ADDR_KEY).is_some() {
+        return 3;
     }
 
     storage_set(CP_SELF_ADDR_KEY, &self_addr);
@@ -1204,7 +1223,7 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 }
 
 /// Set LichenID contract address for cross-contract reputation lookups.
-/// Only callable by the identity admin.
+/// Only callable by the identity admin and only configurable once.
 #[no_mangle]
 pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {
     let caller = match read_address32(caller_ptr) {
@@ -1228,6 +1247,14 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
     };
     if caller[..] != admin[..] {
         return 2;
+    }
+
+    if lichenid_addr == [0u8; 32] {
+        return 3;
+    }
+
+    if load_configured_address(LICHENID_ADDR_KEY).is_some() {
+        return 4;
     }
 
     storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
@@ -1932,6 +1959,21 @@ mod tests {
     }
 
     #[test]
+    fn test_set_token_address_cannot_reconfigure_after_zero_sentinel() {
+        setup();
+        let admin = [10u8; 32];
+        let token = [0xAAu8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        assert_eq!(set_token_address(admin.as_ptr(), [0u8; 32].as_ptr()), 0);
+        assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 2);
+
+        let stored = test_mock::get_storage(CP_TOKEN_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &[0u8; 32]);
+    }
+
+    #[test]
     fn test_set_self_address_admin_only() {
         setup();
         let admin = [10u8; 32];
@@ -1965,6 +2007,58 @@ mod tests {
         let zero = [0u8; 32];
         let result = set_self_address(admin.as_ptr(), zero.as_ptr());
         assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn test_set_self_address_cannot_reconfigure() {
+        setup();
+        let admin = [10u8; 32];
+        let first = [0xBBu8; 32];
+        let second = [0xCCu8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        assert_eq!(set_self_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_self_address(admin.as_ptr(), second.as_ptr()), 3);
+
+        let stored = test_mock::get_storage(CP_SELF_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
+    }
+
+    #[test]
+    fn test_set_lichenid_address_admin_only() {
+        setup();
+        let admin = [10u8; 32];
+        let other = [11u8; 32];
+        let lichenid = [0x42u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        test_mock::set_caller(other);
+        assert_eq!(set_lichenid_address(other.as_ptr(), lichenid.as_ptr()), 2);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
+
+        let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &lichenid);
+    }
+
+    #[test]
+    fn test_set_lichenid_address_rejects_zero_and_reconfiguration() {
+        setup();
+        let admin = [10u8; 32];
+        let first = [0x42u8; 32];
+        let second = [0x43u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), second.as_ptr()), 4);
+
+        let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
     }
 
     #[test]

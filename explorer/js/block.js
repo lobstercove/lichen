@@ -14,6 +14,40 @@ function isShieldedType(typeRaw) {
     return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
 }
 
+function bindStaticControls() {
+    document.getElementById('copyBlockHashBtn')?.addEventListener('click', function () {
+        copyToClipboard((document.getElementById('blockHash')?.dataset?.full) || '');
+    });
+    document.getElementById('copyStateRootBtn')?.addEventListener('click', function () {
+        copyToClipboard((document.getElementById('stateRoot')?.dataset?.full) || '');
+    });
+    document.getElementById('copyTxRootBtn')?.addEventListener('click', function () {
+        copyToClipboard((document.getElementById('txRoot')?.dataset?.full) || '');
+    });
+    document.getElementById('copyBlockRawDataBtn')?.addEventListener('click', function () {
+        copyToClipboard(document.getElementById('rawData')?.textContent || '');
+    });
+    ['prevBlock', 'nextBlock'].forEach(function (id) {
+        document.getElementById(id)?.addEventListener('click', function (event) {
+            var href = event.currentTarget?.dataset?.href || '';
+            if (!href) return;
+            window.location.href = href;
+        });
+    });
+}
+
+function setNavigationHref(buttonId, href) {
+    var button = document.getElementById(buttonId);
+    if (!button) return;
+    if (href) {
+        button.disabled = false;
+        button.dataset.href = href;
+        return;
+    }
+    button.disabled = true;
+    delete button.dataset.href;
+}
+
 function redactShieldedBlockForRaw(blockObj) {
     if (!blockObj || typeof blockObj !== 'object') return blockObj;
     const clone = JSON.parse(JSON.stringify(blockObj));
@@ -148,17 +182,15 @@ async function displayBlock(block) {
 
     // Set links
     if (slot > 0) {
-        document.getElementById('parentLink').href = `block.html?slot=${slot - 1}`;
-        document.getElementById('prevBlock').disabled = false;
-        document.getElementById('prevBlock').onclick = () => {
-            window.location.href = `block.html?slot=${slot - 1}`;
-        };
+        var previousBlockHref = `block.html?slot=${slot - 1}`;
+        document.getElementById('parentLink').href = previousBlockHref;
+        setNavigationHref('prevBlock', previousBlockHref);
+    } else {
+        document.getElementById('parentLink').href = '#';
+        setNavigationHref('prevBlock', '');
     }
 
-    document.getElementById('nextBlock').disabled = false;
-    document.getElementById('nextBlock').onclick = () => {
-        window.location.href = `block.html?slot=${slot + 1}`;
-    };
+    setNavigationHref('nextBlock', `block.html?slot=${slot + 1}`);
 
     document.getElementById('validatorLink').href = `address.html?address=${validator}`;
 
@@ -304,5 +336,6 @@ document.getElementById('searchInput')?.addEventListener('keypress', async (e) =
 
 // Initialize
 window.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     loadBlock();
 });

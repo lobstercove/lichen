@@ -34,6 +34,7 @@ let startTime = Date.now();
 let eventLog = [];
 let rejectedTxCount = 0;
 let alertCount = 0;
+const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
 
 // ── RPC Client ──────────────────────────────────────────────
 
@@ -62,6 +63,32 @@ async function rpc(method, params = [], url = null) {
         console.warn(`RPC ${method}: fetch failed`, e.message);
         return null;
     }
+}
+
+function getTrustedMonitoringNetwork() {
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
+        return LICHEN_CONFIG.currentNetwork('lichen_mon_network');
+    }
+    return localStorage.getItem('lichen_mon_network') || _monDefaultNetwork;
+}
+
+async function trustedMonitoringRpc(method, params = []) {
+    if (typeof signedMetadataRpcCall === 'function') {
+        return signedMetadataRpcCall(method, params, getTrustedMonitoringNetwork(), function (resolvedMethod, resolvedParams) {
+            if (typeof trustedLichenRpcCall === 'function') {
+                return trustedLichenRpcCall(resolvedMethod, resolvedParams, getTrustedMonitoringNetwork());
+            }
+            return rpc(resolvedMethod, resolvedParams, typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function'
+                ? LICHEN_CONFIG.rpc(getTrustedMonitoringNetwork())
+                : null);
+        });
+    }
+    if (typeof trustedLichenRpcCall === 'function') {
+        return trustedLichenRpcCall(method, params, getTrustedMonitoringNetwork());
+    }
+    return rpc(method, params, typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function'
+        ? LICHEN_CONFIG.rpc(getTrustedMonitoringNetwork())
+        : null);
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -139,6 +166,7 @@ function clearEvents() {
 function switchNetwork(network) {
     localStorage.setItem('lichen_mon_network', network);
     rpcUrl = NETWORKS[network] || NETWORKS[_monDefaultNetwork];
+    void LICHEN_CONFIG.refreshIncidentStatusBanner(network);
     addEvent('info', 'exchange-alt', `Switched to ${network}`);
     refresh();
 }
@@ -590,6 +618,28 @@ function setBar(id, pct) {
     if (pctEl) pctEl.textContent = pct + '%';
 }
 
+function bindStaticControls() {
+    document.getElementById('networkSelect')?.addEventListener('change', (event) => {
+        switchNetwork(event.target.value);
+    });
+    document.getElementById('alertDismissBtn')?.addEventListener('click', dismissAlert);
+    document.getElementById('clearEventsBtn')?.addEventListener('click', clearEvents);
+    document.getElementById('clearThreatsBtn')?.addEventListener('click', clearThreats);
+
+    document.querySelectorAll('[data-tps-range]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            setTPSRange(button.dataset.tpsRange, event);
+        });
+    });
+
+    document.getElementById('killswitchBanIpBtn')?.addEventListener('click', killswitchBanIP);
+    document.getElementById('killswitchRateLimitBtn')?.addEventListener('click', killswitchRateLimit);
+    document.getElementById('killswitchBlockMethodBtn')?.addEventListener('click', killswitchBlockMethod);
+    document.getElementById('killswitchFreezeAccountBtn')?.addEventListener('click', killswitchFreezeAccount);
+    document.getElementById('killswitchEmergencyShutdownBtn')?.addEventListener('click', killswitchEmergencyShutdown);
+    document.getElementById('killswitchDenyAllBtn')?.addEventListener('click', killswitchDenyAll);
+}
+
 // ── Recent Blocks ───────────────────────────────────────────
 
 let displayedBlocks = [];
@@ -641,7 +691,7 @@ async function updateContracts() {
     const rows = [];
 
     for (const sym of SYMBOLS) {
-        const info = await rpc('getSymbolRegistry', [sym]);
+        const info = await trustedMonitoringRpc('getSymbolRegistry', [sym]);
         if (info && info.program) {
             rows.push({
                 symbol: info.symbol || sym,
@@ -777,68 +827,68 @@ function clearThreats() {
 }
 
 // ── Kill Switches ───────────────────────────────────────────
-// AUDIT-FIX I8-01: All admin actions require authentication via admin_token.
-// Token is prompted once per session and passed in every admin RPC call.
+// AUDIT-FIX I8-01 / P0-7: All admin actions require per-action authentication
+// via admin_token. Tokens are never persisted in browser storage.
 
-function getAdminToken() {
-    let token = sessionStorage.getItem('lichen_admin_token');
-    if (!token) {
-        token = prompt('Admin authentication required.\nEnter admin token:');
-        if (!token) return null;
-        sessionStorage.setItem('lichen_admin_token', token);
+function purgeLegacyAdminToken() {
+    try {
+        sessionStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
+    } catch (e) {
+        // Ignore storage access failures.
     }
-    return token;
 }
 
-function clearAdminSession() {
-    sessionStorage.removeItem('lichen_admin_token');
-    addEvent('warning', 'sign-out-alt', 'Admin session cleared');
+function promptAdminToken(actionLabel) {
+    const label = actionLabel ? ` for ${actionLabel}` : '';
+    const token = prompt(`Admin authentication required${label}.\nEnter admin token:`);
+    const normalized = String(token || '').trim();
+    return normalized || null;
 }
 
 async function killswitchBanIP() {
-    const token = getAdminToken(); if (!token) return;
     const ip = prompt('Enter IP address to ban:');
     if (!ip) return;
+    const token = promptAdminToken(`ban IP ${ip}`); if (!token) return;
     const result = await rpc('admin_banIP', [ip, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
     addBan('ip-ban', ip, result?.error ? 'Local ban (admin RPC pending)' : 'IP banned via admin RPC');
     addEvent('danger', 'ban', `Banned IP: ${ip}`);
 }
 
 async function killswitchRateLimit() {
-    const token = getAdminToken(); if (!token) return;
     const target = prompt('Enter IP or method to throttle:');
     if (!target) return;
     const limit = prompt('Requests per minute:', '10');
     if (!limit) return;
+    const token = promptAdminToken(`throttle ${target}`); if (!token) return;
     addBan('throttle', target, `Rate limited to ${limit} rpm`);
     addEvent('warning', 'tachometer-alt', `Throttled: ${target} @ ${limit} rpm`);
 }
 
 async function killswitchBlockMethod() {
-    const token = getAdminToken(); if (!token) return;
     const method = prompt('Enter RPC method to block (e.g. sendTransaction):');
     if (!method) return;
+    const token = promptAdminToken(`block method ${method}`); if (!token) return;
     const result = await rpc('admin_blockMethod', [method, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
     addBan('method-block', method, 'Method blocked');
     addEvent('danger', 'lock', `Blocked method: ${method}`);
 }
 
 async function killswitchFreezeAccount() {
-    const token = getAdminToken(); if (!token) return;
     const address = prompt('Enter account address to freeze:');
     if (!address) return;
+    const token = promptAdminToken(`freeze account ${truncAddr(address)}`); if (!token) return;
     const result = await rpc('admin_freezeAccount', [address, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
     addBan('freeze', truncAddr(address), `Account frozen: ${address}`);
     addEvent('danger', 'snowflake', `Frozen account: ${truncAddr(address)}`);
 }
 
 async function killswitchEmergencyShutdown() {
-    const token = getAdminToken(); if (!token) return;
     if (!confirm('EMERGENCY SHUTDOWN\n\nThis will halt ALL validator nodes immediately.\nAre you absolutely sure?')) return;
     if (!confirm('FINAL CONFIRMATION\n\nThis action cannot be undone remotely.\nProceed with emergency shutdown?')) return;
+    const token = promptAdminToken('emergency shutdown'); if (!token) return;
     addEvent('danger', 'power-off', 'EMERGENCY SHUTDOWN initiated across all nodes');
     // Dynamically discover validators via cluster info (no hardcoded list)
     const cluster = await rpc('getClusterInfo');
@@ -856,8 +906,8 @@ async function killswitchEmergencyShutdown() {
 }
 
 async function killswitchDenyAll() {
-    const token = getAdminToken(); if (!token) return;
     if (!confirm('DENY ALL TRAFFIC\n\nThis will reject ALL incoming RPC requests.\nContinue?')) return;
+    const token = promptAdminToken('deny all traffic'); if (!token) return;
     addBan('deny-all', 'ALL TRAFFIC', 'Emergency deny-all active');
     addEvent('danger', 'shield-alt', 'DENY ALL mode activated');
     showAlert('DENY ALL mode active - all requests blocked');
@@ -865,14 +915,14 @@ async function killswitchDenyAll() {
 
 function quickBan(source) {
     if (!source || source === 'System' || source === 'Network') return;
-    const token = getAdminToken(); if (!token) return;
+    const token = promptAdminToken(`quick ban ${source}`); if (!token) return;
     addBan('ip-ban', source, 'Quick ban from threat log');
     addEvent('danger', 'ban', `Quick ban: ${source}`);
 }
 
 function quickThrottle(source) {
     if (!source || source === 'System' || source === 'Network') return;
-    const token = getAdminToken(); if (!token) return;
+    const token = promptAdminToken(`quick throttle ${source}`); if (!token) return;
     addBan('throttle', source, 'Quick throttle from threat log');
     addEvent('warning', 'tachometer-alt', `Quick throttle: ${source}`);
 }
@@ -1032,7 +1082,7 @@ async function updateDexMonitor() {
 
         // Check if contract is deployed
         if (sub.symbol) {
-            const info = await rpc('getSymbolRegistry', [sub.symbol]);
+            const info = await trustedMonitoringRpc('getSymbolRegistry', [sub.symbol]);
             if (info && info.program) {
                 deployed = true;
                 program = info.program;
@@ -1242,7 +1292,7 @@ async function updateContractMonitor() {
     const cards = [];
 
     for (const c of ALL_CONTRACTS) {
-        const info = await rpc('getSymbolRegistry', [c.symbol]);
+        const info = await trustedMonitoringRpc('getSymbolRegistry', [c.symbol]);
         const deployed = !!(info && info.program);
         if (deployed) deployedCount++;
 
@@ -1697,6 +1747,8 @@ function updateClock() {
 // ── Init ────────────────────────────────────────────────────
 
 async function init() {
+    purgeLegacyAdminToken();
+    bindStaticControls();
     addEvent('info', 'power-off', 'Mission Control initializing...');
 
     // Set network selector — rebuild options, hide local-* in production
@@ -1714,6 +1766,7 @@ async function init() {
         }
         sel.value = savedNet;
     }
+    void LICHEN_CONFIG.refreshIncidentStatusBanner(savedNet);
 
     // Clock
     setInterval(updateClock, 1000);

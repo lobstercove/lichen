@@ -47,6 +47,50 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 cd "$REPO_ROOT" || exit 1
 
+is_local_dev_mode() {
+    [ "${LICHEN_LOCAL_DEV:-0}" = "1" ]
+}
+
+generate_local_token() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+        return 0
+    fi
+
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 24
+        return 0
+    fi
+
+    echo -e "${RED}Error: python3 or openssl is required to generate local custody auth tokens.${NC}" >&2
+    return 1
+}
+
+ensure_generated_token() {
+    local var_name="$1"
+    local label="$2"
+    local token
+
+    if [ -n "${!var_name:-}" ]; then
+        return 0
+    fi
+
+    token="$(generate_local_token)" || return 1
+    export "$var_name=$token"
+    echo -e "  ${YELLOW}Using generated local ${label}.${NC}"
+}
+
+configure_local_custody_auth() {
+    ensure_generated_token LICHEN_SIGNER_AUTH_TOKEN "validator signer auth token" || return 1
+    if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
+        export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
+    fi
+    ensure_generated_token CUSTODY_API_AUTH_TOKEN "custody API auth token" || return 1
+}
+
 # ── Defaults ──
 NETWORK=""
 BOOTSTRAP_PEERS=""
@@ -112,6 +156,12 @@ if [ -z "$NETWORK" ]; then
     exit 1
 fi
 
+if $START_CUSTODY && ! is_local_dev_mode; then
+    echo -e "${RED}Error: --custody is restricted to explicit local development.${NC}"
+    echo "Export LICHEN_LOCAL_DEV=1 to use the local custody helper, or deploy custody via deploy/setup.sh and systemd for non-dev environments."
+    exit 1
+fi
+
 # ── Port assignments (canonical: testnet P2P=7001, mainnet P2P=8001) ──
 case $NETWORK in
     testnet)
@@ -129,6 +179,10 @@ case $NETWORK in
         CHAIN_ID="lichen-mainnet-1"
         ;;
 esac
+
+if $START_CUSTODY; then
+    configure_local_custody_auth || exit 1
+fi
 
 DB_PATH="./data/state-${NETWORK}"
 LOG_DIR="/tmp/lichen-${NETWORK}"
@@ -222,7 +276,7 @@ if [ ! -x "$SUPERVISOR_PATH" ]; then
 fi
 
 # ── Set environment ──
-export LICHEN_SIGNER_BIND="0.0.0.0:${SIGNER_PORT}"
+export LICHEN_SIGNER_BIND="127.0.0.1:${SIGNER_PORT}"
 
 # ── Build validator command ──
 VALIDATOR_CMD=("$BIN_PATH"
@@ -426,6 +480,7 @@ if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ]; then
         RPC_URL="http://127.0.0.1:${RPC_PORT}" \
         NETWORK="$NETWORK" \
         PORT="$FAUCET_PORT" \
+        TRUSTED_PROXY="127.0.0.1,::1" \
         RUST_LOG=info \
             "$FAUCET_BIN" >"${LOG_DIR}/faucet.log" 2>&1 &
         FAUCET_PID=$!
@@ -446,9 +501,6 @@ if $START_CUSTODY; then
     echo -e "${CYAN}[4/4]${NC} Starting custody service..."
     export CUSTODY_LICHEN_RPC_URL="http://127.0.0.1:${RPC_PORT}"
     export CUSTODY_TREASURY_KEYPAIR="$TREASURY_KEYPAIR"
-    export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
-    export CUSTODY_SIGNER_AUTH_TOKEN="${CUSTODY_SIGNER_AUTH_TOKEN:-lichen-dev-token}"
-    export CUSTODY_API_AUTH_TOKEN="${CUSTODY_API_AUTH_TOKEN:-lichen-custody-api-token}"
     "${REPO_ROOT}/scripts/run-custody.sh" "$NETWORK" \
         >"${LOG_DIR}/custody.log" 2>&1 &
     CUSTODY_PID=$!

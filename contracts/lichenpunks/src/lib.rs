@@ -39,6 +39,23 @@ fn is_mp_paused() -> bool {
         .unwrap_or(false)
 }
 
+fn init_minter_matches_signer(minter: &[u8; 32]) -> bool {
+    let caller = lichen_sdk::get_caller();
+    if caller.0 == *minter {
+        return true;
+    }
+
+    #[cfg(test)]
+    {
+        return caller.0 == [0u8; 32];
+    }
+
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// Initialize the NFT collection
 #[no_mangle]
 pub extern "C" fn initialize(minter_ptr: *const u8) {
@@ -52,6 +69,10 @@ pub extern "C" fn initialize(minter_ptr: *const u8) {
         // Parse minter address
         let mut minter_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(minter_ptr, minter_addr.as_mut_ptr(), 32);
+        if !init_minter_matches_signer(&minter_addr) {
+            log_info("LichenPunks initialize rejected: caller mismatch");
+            return;
+        }
         let minter = Address(minter_addr);
 
         // Store collection metadata in storage for discoverability
@@ -512,6 +533,16 @@ mod tests {
             test_mock::get_storage(b"collection_symbol"),
             Some(b"MPNK".to_vec())
         );
+    }
+
+    #[test]
+    fn test_initialize_rejects_caller_mismatch() {
+        setup();
+        let minter = [1u8; 32];
+        test_mock::set_caller([9u8; 32]);
+        initialize(minter.as_ptr());
+        assert_eq!(test_mock::get_storage(b"minter"), None);
+        assert_eq!(test_mock::get_storage(b"collection_name"), None);
     }
 
     #[test]

@@ -128,6 +128,10 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![b'0'];
@@ -584,6 +588,12 @@ pub fn set_oracle_contract(caller: *const u8, oracle_addr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(oracle_addr, addr.as_mut_ptr(), 32);
+    }
+    if is_zero(&addr) {
+        return 2;
+    }
+    if has_configured_address(ORACLE_ADDRESS_KEY) {
+        return 3;
     }
     storage_set(ORACLE_ADDRESS_KEY, &addr);
     log_info("Oracle contract address set");
@@ -1662,6 +1672,9 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     }
     if is_zero(&a) {
         return 2;
+    }
+    if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
+        return 3;
     }
     storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
@@ -2793,6 +2806,23 @@ mod tests {
     }
 
     #[test]
+    fn test_close_position_still_works_when_paused() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(trader);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_CLOSED);
+    }
+
+    #[test]
     fn test_close_not_owner() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -2846,6 +2876,23 @@ mod tests {
         // 2x: maint margin = 25% → need 250M for 1B notional
         // Start with 500M (50%) and remove 100M → still above 25%
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 100_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 400_000_000);
+    }
+
+    #[test]
+    fn test_remove_margin_still_works_when_paused() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(trader);
         assert_eq!(remove_margin(trader.as_ptr(), 1, 100_000_000), 0);
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_margin(&data), 400_000_000);
@@ -3226,6 +3273,16 @@ mod tests {
         let licn = [10u8; 32];
         test_mock::set_caller(rando);
         assert_eq!(set_lichencoin_address(rando.as_ptr(), licn.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_lichencoin_address_reconfiguration_rejected() {
+        let admin = setup();
+        let first = [10u8; 32];
+        let second = [11u8; 32];
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), first);
     }
 
     #[test]
@@ -3741,7 +3798,7 @@ mod tests {
     #[test]
     fn test_close_position_rejects_stale_oracle() {
         // G6-03: close_position must reject when oracle price is stale
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -3903,7 +3960,7 @@ mod tests {
     #[test]
     fn test_remove_margin_rejects_stale_oracle() {
         // G6-03: remove_margin must reject when oracle is stale
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -3922,7 +3979,7 @@ mod tests {
     #[test]
     fn test_partial_close_rejects_stale_oracle() {
         // G6-03: partial_close_position must reject when oracle is stale
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -3945,7 +4002,7 @@ mod tests {
 
     #[test]
     fn test_query_user_open_position_found() {
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -3962,7 +4019,7 @@ mod tests {
 
     #[test]
     fn test_query_user_open_position_wrong_pair() {
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -3980,7 +4037,7 @@ mod tests {
 
     #[test]
     fn test_query_user_open_position_closed() {
-        let admin = setup();
+        let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
@@ -4037,8 +4094,25 @@ mod tests {
     }
 
     #[test]
-    fn test_update_mark_price_no_oracle_configured() {
+    fn test_set_oracle_contract_zero_and_reconfiguration_rejected() {
         let admin = setup();
+        let first = [0xAA; 32];
+        let second = [0xAB; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), first.as_ptr()), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_oracle_contract(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_addr(ORACLE_ADDRESS_KEY), first);
+    }
+
+    #[test]
+    fn test_update_mark_price_no_oracle_configured() {
+        let _admin = setup();
         let caller = [2u8; 32];
         let asset = b"LICN/USD";
 

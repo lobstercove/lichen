@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Check AMM pool liquidity and LP positions after seeding."""
-import sys, os, json, urllib.request
+import sys, os, json, urllib.parse, urllib.request
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
 from lichen import Keypair
+from deploy_dex import load_genesis_keypair
 
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
 NETWORK = os.environ.get('LICHEN_NETWORK', 'testnet')
 
-repo = Path(__file__).resolve().parent.parent
-rp_path = repo / f'data/state-{NETWORK}/genesis-keys/reserve_pool-lichen-{NETWORK}-1.json'
-reserve = Keypair.load(rp_path)
-reserve_hex = reserve.public_key().to_bytes().hex()
+reserve = load_genesis_keypair('reserve_pool', NETWORK)
+reserve_hex = reserve.address().to_bytes().hex()
+reserve_address = str(reserve.address())
 
-print(f"Reserve: {reserve.public_key()}")
+print(f"Reserve: {reserve_address}")
 print(f"Reserve hex: {reserve_hex}")
 
 # Check all pools
@@ -29,27 +29,12 @@ for p in pools.get('data', []):
     status = "✅ HAS LIQ" if liq > 0 else "❌ EMPTY"
     print(f"  Pool {pid}: {ta}/{tb}  liq={liq:>20,}  {status}")
 
-# Check position count via RPC
-print("\n=== LP Positions (RPC) ===")
-import asyncio
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-from lichen import Connection
-
-async def check_positions():
-    conn = Connection(RPC)
-    # Try getting positions via RPC
-    try:
-        result = await conn._rpc('getPositions', [str(reserve.public_key())])
-        print(f"  getPositions result: {json.dumps(result)[:400]}")
-    except Exception as e:
-        print(f"  getPositions error: {e}")
-
-    # Try getting via the pool positions endpoint
-    for pid in range(1, 8):
-        try:
-            result = await conn._rpc('getPoolPositions', [pid])
-            print(f"  Pool {pid} positions: {json.dumps(result)[:200]}")
-        except Exception as e:
-            print(f"  Pool {pid} positions error: {e}")
-
-asyncio.run(check_positions())
+print("\n=== LP Positions ===")
+positions_url = f"{RPC}/api/v1/pools/positions?owner={urllib.parse.quote(reserve_address, safe='')}"
+positions_payload = json.loads(urllib.request.urlopen(positions_url).read())
+positions = positions_payload.get('data', []) if positions_payload.get('success') else []
+print(f"  Positions found: {len(positions)}")
+for pos in positions:
+    print(
+        f"  Position {pos['positionId']}: pool={pos['poolId']} ticks=[{pos['lowerTick']}, {pos['upperTick']}] liq={pos['liquidity']:,}"
+    )

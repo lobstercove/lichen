@@ -19,10 +19,11 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_value, is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes,
-    Address, CrossCall,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, is_native_token,
+    log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
 };
+#[cfg(target_arch = "wasm32")]
+use lichen_sdk::{call_contract, get_value, CrossCall};
 
 // ============================================================================
 // CONSTANTS
@@ -486,6 +487,10 @@ fn is_paused() -> bool {
 
 fn require_not_paused() -> bool {
     !is_paused()
+}
+
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
 }
 
 fn require_admin(caller: &[u8; 32]) -> bool {
@@ -1900,6 +1905,9 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     if is_zero(&t) {
         return 3;
     }
+    if has_configured_address(FEE_TREASURY_ADDR_KEY) {
+        return 4;
+    }
     storage_set(FEE_TREASURY_ADDR_KEY, &t);
     0
 }
@@ -2500,6 +2508,24 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_liquidity_still_works_when_paused() {
+        let (admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+
+        let pos_data = storage_get(&position_key(1)).unwrap();
+        let liq = decode_pos_liquidity(&pos_data);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(provider);
+        assert_eq!(remove_liquidity(provider.as_ptr(), 1, liq / 2), 0);
+    }
+
+    #[test]
     fn test_remove_liquidity_not_owner() {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
@@ -2639,6 +2665,24 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_fees_still_works_when_paused() {
+        let (admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
+        swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(provider);
+        assert_eq!(collect_fees(provider.as_ptr(), 1), 0);
+    }
+
+    #[test]
     fn test_collect_fees_not_owner() {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
@@ -2687,6 +2731,23 @@ mod tests {
         let rando = [99u8; 32];
         test_mock::set_caller(rando);
         assert_eq!(set_fee_treasury_address(rando.as_ptr(), rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_fee_treasury_address_zero_and_reconfiguration_rejected() {
+        let (admin, _pool_id) = setup_with_pool();
+        let first = [42u8; 32];
+        let second = [43u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_fee_treasury_address(admin.as_ptr(), [0u8; 32].as_ptr()),
+            3
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), first.as_ptr()), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), second.as_ptr()), 4);
+        assert_eq!(load_addr(FEE_TREASURY_ADDR_KEY), first);
     }
 
     #[test]

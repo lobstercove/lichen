@@ -83,13 +83,49 @@ function getSelectedNetwork() {
     return LICHEN_CONFIG.currentNetwork('lichen_wallet_network');
 }
 
-function getRpcEndpoint() {
-    // AUDIT-FIX W-7: Use custom RPC URLs from settings if configured
-    const net = getSelectedNetwork();
+function getNetworkLabel(network = getSelectedNetwork()) {
+    return LICHEN_CONFIG.networks?.[network]?.label || network;
+}
+
+function isLocalNetwork(network = getSelectedNetwork()) {
+    return Boolean(LICHEN_CONFIG.networks?.[network]?.local);
+}
+
+function getConfiguredRpcOverride(network = getSelectedNetwork()) {
     const settings = walletState.settings || {};
-    if (net === 'mainnet' && settings.mainnetRPC) return settings.mainnetRPC;
-    if (net === 'testnet' && settings.testnetRPC) return settings.testnetRPC;
-    return LICHEN_CONFIG.rpc(net);
+    if (network === 'mainnet') return String(settings.mainnetRPC || '').trim();
+    if (network === 'testnet') return String(settings.testnetRPC || '').trim();
+    return '';
+}
+
+function getTrustedRpcEndpoint(network = getSelectedNetwork()) {
+    return LICHEN_CONFIG.rpc(network);
+}
+
+function getRpcEndpoint() {
+    const net = getSelectedNetwork();
+    const override = getConfiguredRpcOverride(net);
+    return override || getTrustedRpcEndpoint(net);
+}
+
+function normalizeRpcOverride(value, network) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch (_) {
+        throw new Error(`${getNetworkLabel(network)} RPC must be a valid http(s) URL`);
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(`${getNetworkLabel(network)} RPC must use http:// or https://`);
+    }
+
+    const normalized = parsed.toString().replace(/\/+$/, '');
+    const trusted = getTrustedRpcEndpoint(network).replace(/\/+$/, '');
+    return normalized === trusted ? '' : normalized;
 }
 
 function getWsEndpoint() {
@@ -439,6 +475,21 @@ class LichenRPC {
 }
 
 const rpc = new LichenRPC(getRpcEndpoint());
+const trustedRpc = new LichenRPC(getTrustedRpcEndpoint());
+
+function getTrustedRpcClient() {
+    trustedRpc.url = getTrustedRpcEndpoint();
+    return trustedRpc;
+}
+
+async function trustedRpcCall(method, params = []) {
+    if (typeof signedMetadataRpcCall === 'function') {
+        return signedMetadataRpcCall(method, params, getSelectedNetwork(), function (resolvedMethod, resolvedParams) {
+            return getTrustedRpcClient().call(resolvedMethod, resolvedParams);
+        });
+    }
+    return getTrustedRpcClient().call(method, params);
+}
 
 let _networkBaseFeeLicn = typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001;
 
@@ -474,72 +525,77 @@ async function refreshDynamicFeeConfig() {
 
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
-const TOKEN_REGISTRY = {
+const DEFAULT_TOKEN_REGISTRY = {
     lUSD: { symbol: 'lUSD', name: 'Licn USD', decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://lichen.network/assets/img/coins/128x128/lusd.png' },
     wSOL: { symbol: 'wSOL', name: 'Wrapped SOL', decimals: 9, icon: 'fab fa-solana', address: null, color: '#9945FF', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png' },
     wETH: { symbol: 'wETH', name: 'Wrapped ETH', decimals: 9, icon: 'fab fa-ethereum', address: null, color: '#627EEA', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png' },
     wBNB: { symbol: 'wBNB', name: 'Wrapped BNB', decimals: 9, icon: 'fas fa-coins', address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },
 };
 
+const TOKEN_REGISTRY = {};
+
+function resetTokenRegistry() {
+    for (const symbol of Object.keys(TOKEN_REGISTRY)) {
+        delete TOKEN_REGISTRY[symbol];
+    }
+    for (const [symbol, token] of Object.entries(DEFAULT_TOKEN_REGISTRY)) {
+        TOKEN_REGISTRY[symbol] = { ...token };
+    }
+}
+
+resetTokenRegistry();
+
 const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
 
-// Load deploy manifest to get token contract addresses
+// Load signed registry metadata to get token contract addresses
 async function loadTokenRegistry() {
+    resetTokenRegistry();
+
     try {
-        // Try loading from the RPC node's manifest endpoint
-        const endpoint = getRpcEndpoint().replace(/\/+$/, '');
-        const manifestUrl = `${endpoint}/deploy-manifest.json`;
-        const response = await fetch(manifestUrl).catch(() => null);
-        if (response && response.ok) {
-            const manifest = await response.json();
-            if (manifest.token_contracts) {
-                for (const [symbol, addr] of Object.entries(manifest.token_contracts)) {
+        const registryResult = await trustedRpcCall('getAllSymbolRegistry', [{ limit: 2000 }]);
+        const entries = Array.isArray(registryResult?.entries) ? registryResult.entries : [];
+        const registryKeyBySymbol = {
+            LUSD: 'lUSD',
+            WSOL: 'wSOL',
+            WETH: 'wETH',
+            WBNB: 'wBNB',
+        };
+
+        entries.forEach((entry) => {
+            const registryKey = registryKeyBySymbol[String(entry?.symbol || '').toUpperCase()];
+            if (!registryKey || !TOKEN_REGISTRY[registryKey]) return;
+            const token = TOKEN_REGISTRY[registryKey];
+            if (entry.program) token.address = entry.program;
+            if (entry.name) token.name = entry.name;
+            if (entry.decimals !== undefined && entry.decimals !== null) {
+                const decimals = Number(entry.decimals);
+                if (Number.isFinite(decimals)) token.decimals = decimals;
+            }
+            if (entry.metadata) {
+                if (entry.metadata.icon_class) token.icon = entry.metadata.icon_class;
+                if (entry.metadata.logo_url) token.logoUrl = entry.metadata.logo_url;
+                if (entry.metadata.name) token.name = entry.metadata.name;
+            }
+        });
+    } catch (e) {
+        // Silently fall through to local-network override fallback
+    }
+
+    // Local token address overrides stay available only on explicit local networks.
+    if (isLocalNetwork()) {
+        try {
+            const stored = localStorage.getItem('lichen_token_addresses');
+            if (stored) {
+                const addrs = JSON.parse(stored);
+                for (const [symbol, addr] of Object.entries(addrs)) {
                     if (TOKEN_REGISTRY[symbol] && addr) {
                         TOKEN_REGISTRY[symbol].address = addr;
                     }
                 }
             }
-        } else if (response && response.status !== 404) {
-            console.warn(`Could not load deploy manifest from ${manifestUrl}: HTTP ${response.status}`);
+        } catch (e) {
+            console.warn('Could not load stored token addresses:', e);
         }
-    } catch (e) {
-        // Silently fall through to localStorage fallback
-    }
-
-    // Fallback: try localStorage (user can paste addresses in settings)
-    try {
-        const stored = localStorage.getItem('lichen_token_addresses');
-        if (stored) {
-            const addrs = JSON.parse(stored);
-            for (const [symbol, addr] of Object.entries(addrs)) {
-                if (TOKEN_REGISTRY[symbol] && addr) {
-                    TOKEN_REGISTRY[symbol].address = addr;
-                }
-            }
-        }
-    } catch (e) {
-        console.warn('Could not load stored token addresses:', e);
-    }
-
-    // Enrich from on-chain symbol registry (icon_class, logo_url, metadata)
-    try {
-        const symbols = Object.keys(TOKEN_REGISTRY);
-        const results = await Promise.allSettled(
-            symbols.map(s => rpc.call('getSymbolRegistry', [s]))
-        );
-        results.forEach((res, i) => {
-            if (res.status === 'fulfilled' && res.value) {
-                const entry = res.value;
-                const token = TOKEN_REGISTRY[symbols[i]];
-                if (!token.address && entry.program) token.address = entry.program;
-                if (entry.metadata) {
-                    if (entry.metadata.icon_class) token.icon = entry.metadata.icon_class;
-                    if (entry.metadata.logo_url) token.logoUrl = entry.metadata.logo_url;
-                }
-            }
-        });
-    } catch (e) {
-        // Symbol registry unavailable — use defaults
     }
 }
 
@@ -578,12 +634,98 @@ document.addEventListener('DOMContentLoaded', () => {
     const welcomeContainer = document.querySelector('.welcome-container');
     if (welcomeContainer) _originalWelcomeHTML = welcomeContainer.innerHTML;
 
+    bindStaticControls();
     loadWalletState();
     loadTokenRegistry();
     checkWalletStatus();
     setupEventListeners();
     initNetworkSelector();
 });
+
+function normalizeWalletActionArg(actionName, rawValue) {
+    if (rawValue === undefined) return undefined;
+    if (rawValue === 'true') return true;
+    if (rawValue === 'false') return false;
+    if (actionName === 'removeWordAt') return Number(rawValue);
+    return rawValue;
+}
+
+function invokeWalletAction(actionName, actionArg, triggerEl) {
+    const fn = actionName ? window[actionName] : null;
+    if (typeof fn !== 'function') return;
+
+    if (actionArg !== undefined && triggerEl) {
+        fn(actionArg, triggerEl);
+        return;
+    }
+
+    if (actionArg !== undefined) {
+        fn(actionArg);
+        return;
+    }
+
+    if (triggerEl) {
+        fn(triggerEl);
+        return;
+    }
+
+    fn();
+}
+
+function bindStaticControls() {
+    if (bindStaticControls.bound) return;
+    bindStaticControls.bound = true;
+
+    document.addEventListener('click', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) return;
+
+        const actionEl = target.closest('[data-wallet-action], [data-wallet-trigger]');
+        if (!actionEl) return;
+
+        if (actionEl.tagName === 'A') {
+            event.preventDefault();
+        }
+
+        const triggerId = actionEl.dataset.walletTrigger;
+        if (triggerId) {
+            document.getElementById(triggerId)?.click();
+            return;
+        }
+
+        const actionName = actionEl.dataset.walletAction;
+        if (!actionName) return;
+
+        if (actionName === 'fillShieldMax') {
+            const shieldAmountInput = document.getElementById('shieldAmount');
+            if (shieldAmountInput) shieldAmountInput.value = (window.walletBalance || 0).toFixed(4);
+            return;
+        }
+
+        const actionArg = normalizeWalletActionArg(actionName, actionEl.dataset.walletArg);
+        const passElement = actionEl.dataset.walletPassEl === 'true';
+        invokeWalletAction(actionName, actionArg, passElement ? actionEl : null);
+    });
+
+    document.addEventListener('change', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) return;
+
+        const changeEl = target.closest('[data-wallet-change]');
+        if (!changeEl) return;
+        invokeWalletAction(changeEl.dataset.walletChange);
+    });
+
+    document.addEventListener('keydown', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+
+        if (target.id === 'unlockPassword' && event.key === 'Enter') {
+            event.preventDefault();
+            unlockWallet();
+        }
+    });
+}
 
 // WL-09: Load wallet state from localStorage.
 // Private keys are encrypted at rest; the lock screen gates access on reopen.
@@ -642,20 +784,21 @@ function showUnlockScreen() {
             
             <div class="unlock-form">
                 <label class="unlock-label">Enter Password</label>
-                <input type="password" id="unlockPassword" class="form-input unlock-input" placeholder="Password" 
-                       onkeypress="if(event.key==='Enter') unlockWallet()" autofocus>
+                <input type="password" id="unlockPassword" class="form-input unlock-input" placeholder="Password" autofocus>
             </div>
             
-            <button class="btn btn-primary unlock-btn" onclick="unlockWallet()">
+            <button class="btn btn-primary unlock-btn" data-wallet-action="unlockWallet">
                 <i class="fas fa-unlock"></i> Unlock Wallet
             </button>
             <div class="unlock-logout">
-                <button class="btn btn-danger btn-small" onclick="logoutWallet()">
+                <button class="btn btn-danger btn-small" data-wallet-action="logoutWallet">
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
             </div>
         </div>
     `;
+
+    document.getElementById('unlockPassword')?.focus();
 }
 
 // Unlock wallet with password
@@ -756,10 +899,10 @@ async function createWalletStep2() {
     `).join('');
 
     seedActions.innerHTML = `
-        <button class="btn btn-sm btn-secondary" onclick="copyMnemonic()">
+        <button class="btn btn-sm btn-secondary" data-wallet-action="copyMnemonic">
             <i class="fas fa-copy"></i> Copy
         </button>
-        <button class="btn btn-sm btn-secondary" onclick="downloadMnemonic()">
+        <button class="btn btn-sm btn-secondary" data-wallet-action="downloadMnemonic">
             <i class="fas fa-download"></i> Download
         </button>
     `;
@@ -812,7 +955,7 @@ function createWalletStep3() {
             <p class="confirm-section-label">Select your seed words in the correct order (1-12):</p>
             <div class="confirm-slots-grid" id="confirmedWords">
                 ${Array.from({ length: 12 }, (_, i) => `
-                    <div class="confirm-slot" data-index="${i}" onclick="removeWordAt(${i})">
+                    <div class="confirm-slot" data-index="${i}" data-wallet-action="removeWordAt" data-wallet-arg="${i}">
                         <span class="slot-number">${i + 1}.</span>
                     </div>
                 `).join('')}
@@ -822,8 +965,8 @@ function createWalletStep3() {
             <p class="confirm-section-label">Available words:</p>
             <div class="seed-word-pool">
                 ${shuffled.map(word => `
-                    <button class="confirm-word" onclick="selectWord('${word}')" data-word="${word}">
-                        ${word}
+                    <button class="confirm-word" data-wallet-action="selectWord" data-wallet-arg="${escapeHtml(word)}" data-word="${escapeHtml(word)}">
+                        ${escapeHtml(word)}
                     </button>
                 `).join('')}
             </div>
@@ -1324,15 +1467,15 @@ function setupWalletSelector() {
         const safeName = escapeHtml(w.name);
         const safeId = escapeHtml(w.id);
         return `
-        <div class="wallet-dropdown-item" onclick="switchWallet('${safeId}')" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
+        <div class="wallet-dropdown-item" data-wallet-action="switchWallet" data-wallet-arg="${safeId}" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
             <strong style="flex-shrink: 0;">${safeName}</strong>
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis;">${shortAddr}</span>
         </div>`;
     }).join('') + `
-        <div class="wallet-dropdown-item" onclick="showCreateWalletFromDashboard()" style="color: var(--primary); font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
+        <div class="wallet-dropdown-item" data-wallet-action="showCreateWalletFromDashboard" style="color: var(--primary); font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
             <i class="fas fa-plus"></i> Create New Wallet
         </div>
-        <div class="wallet-dropdown-item" onclick="showImportWalletFromDashboard()" style="color: var(--success); font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
+        <div class="wallet-dropdown-item" data-wallet-action="showImportWalletFromDashboard" style="color: var(--success); font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
             <i class="fas fa-download"></i> Import Wallet
         </div>
     `;
@@ -1766,7 +1909,7 @@ async function loadActivity(reset = true) {
         if (_activityHasMore) {
             activityList.innerHTML += `
                 <div style="text-align: center; padding: 1rem;">
-                    <button onclick="loadActivity(false)" class="btn btn-small btn-secondary" style="padding: 0.5rem 1.5rem; font-size: 0.85rem;">
+                    <button class="btn btn-small btn-secondary" data-wallet-action="loadActivity" data-wallet-arg="false" style="padding: 0.5rem 1.5rem; font-size: 0.85rem;">
                         <i class="fas fa-chevron-down"></i> Load More
                     </button>
                 </div>
@@ -1850,10 +1993,10 @@ async function loadStaking() {
                     </div>
 
                     <div class="staking-actions">
-                        <button onclick="showMossStakeModal()" class="btn btn-primary">
+                        <button class="btn btn-primary" data-wallet-action="showMossStakeModal">
                             <i class="fas fa-arrow-down"></i> Stake LICN
                         </button>
-                        <button id="mossUnstakeBtn" onclick="showMossUnstakeModal()" class="btn btn-secondary">
+                        <button id="mossUnstakeBtn" class="btn btn-secondary" data-wallet-action="showMossUnstakeModal">
                             <i class="fas fa-arrow-up"></i> Unstake stLICN
                         </button>
                     </div>
@@ -2104,7 +2247,7 @@ async function loadMossStakePosition(address) {
                         <span class="staking-unstake-amount">${fmtToken(req.licn_to_receive / SPORES_PER_LICN)} LICN</span>
                         <span class="staking-unstake-status">
                             ${isClaimable
-                        ? `<button onclick="claimMossStake()" class="btn btn-small btn-claim">
+                        ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
                         : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
@@ -2543,6 +2686,63 @@ function switchReceiveTab(tabName) {
 
 // ===== BRIDGE DEPOSIT =====
 
+const BRIDGE_AUTH_TTL_SECS = 24 * 60 * 60;
+let activeBridgeAuth = null;
+
+function buildBridgeAccessMessage(userId, issuedAt, expiresAt) {
+    return `LICHEN_BRIDGE_ACCESS_V1\nuser_id=${userId}\nissued_at=${issuedAt}\nexpires_at=${expiresAt}\n`;
+}
+
+function hasValidBridgeAuth(wallet) {
+    if (!wallet || !activeBridgeAuth) return false;
+    const now = Math.floor(Date.now() / 1000);
+    return activeBridgeAuth.user_id === wallet.address && activeBridgeAuth.expires_at > now + 30;
+}
+
+function currentBridgeAuthPayload(wallet) {
+    if (!hasValidBridgeAuth(wallet)) return null;
+    return {
+        issued_at: activeBridgeAuth.issued_at,
+        expires_at: activeBridgeAuth.expires_at,
+        signature: activeBridgeAuth.signature
+    };
+}
+
+async function ensureBridgeAccessAuth(wallet) {
+    if (hasValidBridgeAuth(wallet)) return activeBridgeAuth;
+
+    const values = await showPasswordModal({
+        title: 'Authorize Bridge Access',
+        icon: 'fas fa-link',
+        message: 'Sign a bridge access authorization for this wallet. The authorization stays only in memory and is used to request a deposit address and poll its status without exposing custody credentials.',
+        confirmText: 'Sign Authorization',
+        fields: [
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
+        ]
+    });
+
+    if (!values || !values.password) {
+        throw new Error('Bridge authorization cancelled');
+    }
+
+    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const expiresAt = issuedAt + BRIDGE_AUTH_TTL_SECS;
+    const messageBytes = new TextEncoder().encode(
+        buildBridgeAccessMessage(wallet.address, issuedAt, expiresAt)
+    );
+    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+
+    activeBridgeAuth = {
+        user_id: wallet.address,
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+        signature
+    };
+
+    return activeBridgeAuth;
+}
+
 async function showDepositInfo(chain) {
     const wallet = getActiveWallet();
     if (!wallet) return;
@@ -2606,6 +2806,14 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     if (!validAssets.includes(asset)) { showToast('Invalid asset selected', 'error'); return; }
     if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) { showToast('Invalid wallet address', 'error'); return; }
 
+    let bridgeAuth;
+    try {
+        bridgeAuth = await ensureBridgeAccessAuth(wallet);
+    } catch (error) {
+        showToast(error.message || 'Bridge authorization failed', 'error');
+        return;
+    }
+
     // Show loading state in the CURRENT modal (don't close it)
     const tokenSelect = document.getElementById('bridgeTokenSelect');
     const loadingState = document.getElementById('bridgeLoadingState');
@@ -2617,11 +2825,16 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     if (helpText) helpText.style.display = 'none';
 
     try {
-        // Route through RPC bridge proxy — custody auth handled server-side
-        const data = await rpc.call('createBridgeDeposit', [{
+        // Route through authenticated RPC bridge proxy — custody auth stays server-side
+        const data = await trustedRpcCall('createBridgeDeposit', [{
             user_id: wallet.address,
             chain: chain,
-            asset: asset
+            asset: asset,
+            auth: {
+                issued_at: bridgeAuth.issued_at,
+                expires_at: bridgeAuth.expires_at,
+                signature: bridgeAuth.signature
+            }
         }]);
 
         const depositAddress = data.address;
@@ -2715,8 +2928,22 @@ function startDepositPolling(depositId) {
 
     depositPollInterval = setInterval(async () => {
         try {
-            // Route through RPC bridge proxy — custody auth handled server-side
-            const deposit = await rpc.call('getBridgeDeposit', [depositId]);
+            const wallet = getActiveWallet();
+            const auth = currentBridgeAuthPayload(wallet);
+            if (!wallet || !auth) {
+                stopDepositPolling();
+                const statusEl = document.getElementById('depositStatus');
+                if (statusEl) {
+                    statusEl.innerHTML = '<i class="fas fa-lock" style="color: #EF476F;"></i> <span>Bridge authorization expired. Re-open the bridge flow to continue status checks.</span>';
+                }
+                return;
+            }
+
+            const deposit = await trustedRpcCall('getBridgeDeposit', [{
+                deposit_id: depositId,
+                user_id: wallet.address,
+                auth
+            }]);
             consecutiveErrors = 0; // reset on success
             const statusEl = document.getElementById('depositStatus');
             if (!statusEl) {
@@ -2810,7 +3037,7 @@ async function refreshNFTs() {
                 const rawImage = String(nft.image || '');
                 const safeImage = /^https?:\/\//i.test(rawImage) ? escapeHtml(rawImage) : '';
                 return `
-                <div class="nft-card" onclick="showNFTDetail('${safeMint}')">
+                <div class="nft-card" data-wallet-action="showNFTDetail" data-wallet-arg="${safeMint}">
                     <div class="nft-image">
                         ${safeImage
                         ? `<img src="${safeImage}" alt="${safeName}" loading="lazy">`
@@ -4023,24 +4250,35 @@ function initNetworkSelector() {
     walletState.network = savedNetwork;
 }
 
-function switchNetwork(network) {
+async function switchNetwork(network) {
     localStorage.setItem('lichen_wallet_network', network);
     walletState.network = network;
     saveWalletState();
 
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
+    await LICHEN_CONFIG.refreshIncidentStatusBanner(network);
+
+    if (typeof window.resetIdentityNetworkCaches === 'function') {
+        window.resetIdentityNetworkCaches();
+    }
 
     // Tear down old connections — showDashboard() will re-establish them
     stopBalancePolling();
     disconnectBalanceWebSocket();
     _wsReconnectDelay = 1000;  // Reset backoff for intentional switch
 
+    try {
+        await loadTokenRegistry();
+    } catch (error) {
+        console.warn('Failed to reload trusted wallet metadata on network switch:', error);
+    }
+
     showToast(`Switched to ${NETWORK_LABELS[network] || network}`);
 
     // Refresh wallet data after network switch (this re-connects WS + polling)
     if (typeof showDashboard === 'function') {
-        showDashboard();
+        await showDashboard();
     }
 }
 
@@ -4055,20 +4293,33 @@ function updateNetworkDisplay() {
 // ===== SETTINGS FUNCTIONS =====
 
 function saveNetworkSettings() {
-    const mainnetRPC = document.getElementById('mainnetRPC').value;
-    const testnetRPC = document.getElementById('testnetRPC').value;
+    let mainnetRPC;
+    let testnetRPC;
 
-    if (!mainnetRPC || !testnetRPC) {
-        showToast('❌ Please fill in all RPC URLs');
+    try {
+        mainnetRPC = normalizeRpcOverride(document.getElementById('mainnetRPC').value, 'mainnet');
+        testnetRPC = normalizeRpcOverride(document.getElementById('testnetRPC').value, 'testnet');
+    } catch (error) {
+        showToast(`❌ ${error.message}`);
         return;
     }
 
     walletState.settings = walletState.settings || {};
-    walletState.settings.mainnetRPC = mainnetRPC;
-    walletState.settings.testnetRPC = testnetRPC;
+    if (mainnetRPC) walletState.settings.mainnetRPC = mainnetRPC;
+    else delete walletState.settings.mainnetRPC;
+    if (testnetRPC) walletState.settings.testnetRPC = testnetRPC;
+    else delete walletState.settings.testnetRPC;
 
     saveWalletState();
-    showToast('✅ Network settings saved!');
+    loadSettingsValues();
+
+    rpc.url = getRpcEndpoint();
+
+    if (mainnetRPC || testnetRPC) {
+        showToast('✅ Custom RPC transport saved. Bridge routing stays pinned to trusted endpoints, and token or contract metadata is verified against signed manifests.');
+    } else {
+        showToast('✅ Network settings reset to official endpoints and signed metadata sources.');
+    }
 }
 
 function saveAutoLockTimer() {
@@ -4329,11 +4580,13 @@ function loadSettingsValues() {
     }
 
     if (document.getElementById('mainnetRPC')) {
-        document.getElementById('mainnetRPC').value = settings.mainnetRPC || LICHEN_CONFIG.rpc('mainnet');
+        document.getElementById('mainnetRPC').placeholder = LICHEN_CONFIG.rpc('mainnet');
+        document.getElementById('mainnetRPC').value = settings.mainnetRPC || '';
     }
 
     if (document.getElementById('testnetRPC')) {
-        document.getElementById('testnetRPC').value = settings.testnetRPC || LICHEN_CONFIG.rpc('testnet');
+        document.getElementById('testnetRPC').placeholder = LICHEN_CONFIG.rpc('testnet');
+        document.getElementById('testnetRPC').value = settings.testnetRPC || '';
     }
 
     if (document.getElementById('autoLockTimer')) {

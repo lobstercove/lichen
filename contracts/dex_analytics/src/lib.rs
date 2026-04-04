@@ -104,6 +104,10 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn has_configured_address(key: &[u8]) -> bool {
+    !is_zero(&load_addr(key))
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![b'0'];
@@ -816,6 +820,12 @@ pub fn set_authorized_caller(caller: *const u8, authorized: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    if is_zero(&a) {
+        return 2;
+    }
+    if has_configured_address(AUTHORIZED_CALLER_KEY) {
+        return 3;
+    }
     storage_set(AUTHORIZED_CALLER_KEY, &a);
     log_info("DEX Analytics: authorized caller set");
     0
@@ -1170,6 +1180,19 @@ mod tests {
         let rando = [99u8; 32];
         test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_authorized_caller_zero_rejected_and_cannot_reconfigure() {
+        let admin = setup();
+        let first = [7u8; 32];
+        let second = [8u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_authorized_caller(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+        assert_eq!(set_authorized_caller(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_authorized_caller(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_addr(AUTHORIZED_CALLER_KEY), first);
     }
 
     #[test]

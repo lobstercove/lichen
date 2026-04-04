@@ -18,9 +18,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
-    get_value, log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
-    CrossCall,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_slot, get_value, log_info,
+    storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -92,6 +91,18 @@ fn is_bb_paused() -> bool {
     storage_get(b"bb_paused")
         .map(|v| v.first().copied() == Some(1))
         .unwrap_or(false)
+}
+
+fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    storage_get(key).and_then(|bytes| {
+        if bytes.len() != 32 {
+            return None;
+        }
+
+        let mut addr = [0u8; 32];
+        addr.copy_from_slice(&bytes[..32]);
+        Some(addr)
+    })
 }
 
 // ============================================================================
@@ -512,11 +523,6 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
 #[no_mangle]
 pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
     log_info("Cancelling bounty...");
-    // AUDIT-FIX P2: Enforce pause
-    if is_bb_paused() {
-        log_info("BountyBoard is paused");
-        return 0;
-    }
     if !reentrancy_enter() {
         return 100;
     }
@@ -713,6 +719,16 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
         return 2;
     }
 
+    if lichenid_addr.iter().all(|&b| b == 0) {
+        reentrancy_exit();
+        return 3;
+    }
+
+    if load_configured_address(LICHENID_ADDR_KEY).is_some() {
+        reentrancy_exit();
+        return 4;
+    }
+
     storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
     log_info("LichenID address configured");
     reentrancy_exit();
@@ -793,6 +809,11 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
     if token_addr.iter().all(|&b| b == 0) {
         reentrancy_exit();
         return 3; // zero address
+    }
+
+    if load_configured_address(TOKEN_ADDRESS_KEY).is_some() {
+        reentrancy_exit();
+        return 4;
     }
 
     storage_set(TOKEN_ADDRESS_KEY, &token_addr);
@@ -1264,6 +1285,44 @@ mod tests {
     }
 
     #[test]
+    fn test_set_token_address_cannot_reconfigure() {
+        setup();
+        let admin = [1u8; 32];
+        let first = [0xDD; 32];
+        let second = [0xEE; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+
+        assert_eq!(set_token_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_token_address(admin.as_ptr(), second.as_ptr()), 4);
+
+        let stored = test_mock::get_storage(TOKEN_ADDRESS_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
+    }
+
+    #[test]
+    fn test_set_lichenid_address_rejects_zero_and_reconfiguration() {
+        setup();
+        let admin = [1u8; 32];
+        let other = [9u8; 32];
+        let first = [0x42u8; 32];
+        let second = [0x43u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+
+        test_mock::set_caller(other);
+        assert_eq!(set_lichenid_address(other.as_ptr(), first.as_ptr()), 2);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), second.as_ptr()), 4);
+
+        let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
+    }
+
+    #[test]
     fn test_approve_work_with_token_transfer() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
@@ -1387,6 +1446,47 @@ mod tests {
         test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_cancel_bounty_still_works_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let contract_addr = [0xCC; 32];
+        test_mock::set_contract_address(contract_addr);
+
+        let admin = [5u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+        let token = [0xDD; 32];
+        assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 0);
+
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(300_000);
+        assert_eq!(
+            create_bounty(creator.as_ptr(), title_hash.as_ptr(), 300_000, 1000),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        assert_eq!(bb_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(creator);
+        assert_eq!(cancel_bounty(creator.as_ptr(), 0), 0);
+
+        let bounty = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(bounty[80], BOUNTY_CANCELLED);
+
+        let (target, function, args, value) = test_mock::get_last_cross_call()
+            .expect("cancel_bounty should refund even while paused");
+        assert_eq!(target, token);
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &contract_addr);
+        assert_eq!(&args[32..64], &creator);
+        assert_eq!(bytes_to_u64(&args[64..72]), 300_000);
     }
 
     // ========================================================================

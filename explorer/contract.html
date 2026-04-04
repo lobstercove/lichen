@@ -460,7 +460,7 @@
             </div>
             <div class="contract-address-bar">
                 <span id="contractAddress" class="mono-text"></span>
-                <button onclick="copyAddress()" class="copy-btn"><i class="fas fa-copy"></i> Copy</button>
+                <button id="copyContractAddressBtn" class="copy-btn"><i class="fas fa-copy"></i> Copy</button>
                 <span id="contractBadge"></span>
             </div>
 
@@ -530,13 +530,13 @@
 
             <!-- Tab Navigation -->
             <div class="tab-nav">
-                <button class="tab-btn active" onclick="switchTab('abi')" id="tab-abi"><i class="fas fa-sitemap"></i>
+                <button class="tab-btn active" data-contract-tab="abi" id="tab-abi"><i class="fas fa-sitemap"></i>
                     ABI</button>
-                <button class="tab-btn" onclick="switchTab('storage')" id="tab-storage"><i class="fas fa-database"></i>
+                <button class="tab-btn" data-contract-tab="storage" id="tab-storage"><i class="fas fa-database"></i>
                     Storage</button>
-                <button class="tab-btn" onclick="switchTab('calls')" id="tab-calls"><i class="fas fa-terminal"></i>
+                <button class="tab-btn" data-contract-tab="calls" id="tab-calls"><i class="fas fa-terminal"></i>
                     Calls</button>
-                <button class="tab-btn" onclick="switchTab('events')" id="tab-events"><i class="fas fa-bell"></i>
+                <button class="tab-btn" data-contract-tab="events" id="tab-events"><i class="fas fa-bell"></i>
                     Events</button>
             </div>
 
@@ -656,7 +656,8 @@
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Docs</a></li>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Docs</a>
+                        </li>
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API</a></li>
                     </ul>
                 </div>

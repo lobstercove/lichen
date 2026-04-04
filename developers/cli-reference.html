@@ -2770,18 +2770,6 @@ Total: 2 active proposals</code></pre>
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        (function () {
-            // Wire up nav search input to open ⌘K overlay
-            const navInput = document.getElementById('searchInput');
-            if (navInput) {
-                navInput.addEventListener('focus', () => {
-                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                    navInput.blur();
-                });
-            }
-        })();
-    </script>
 </body>
 
 </html>

@@ -2,6 +2,7 @@
 // Real-time event subscriptions for blocks, transactions, accounts, and logs
 
 use crate::dex_ws::{DexChannel, DexEventBroadcaster};
+use crate::parse_governance_event;
 use axum::{
     extract::{
         connect_info::ConnectInfo,
@@ -146,7 +147,7 @@ impl PredictionEventBroadcaster {
         });
     }
 }
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -287,9 +288,21 @@ pub enum Event {
     },
     GovernanceEvent {
         proposal_id: u64,
-        event_kind: String, // "created" | "voted" | "executed" | "cancelled"
-        voter: Option<Pubkey>,
-        vote_weight: Option<u64>,
+        event_kind: String, // "created" | "approved" | "executed" | "cancelled"
+        action: String,
+        authority: Pubkey,
+        proposer: Pubkey,
+        actor: Pubkey,
+        approvals: u64,
+        threshold: u8,
+        execute_after_epoch: u64,
+        executed: bool,
+        cancelled: bool,
+        metadata: String,
+        target_contract: Option<Pubkey>,
+        target_function: Option<String>,
+        call_args_len: Option<u64>,
+        call_value_spores: Option<u64>,
         slot: u64,
     },
 }
@@ -811,6 +824,98 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         }
     });
 
+    let tx_governance = tx.clone();
+    let governance_subscription_manager = subscription_manager.clone();
+    let governance_state = state.state.clone();
+    let governance_event_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut next_scan_slot = governance_state.get_last_slot().unwrap_or(0);
+        let mut delivered_keys: HashSet<String> = HashSet::new();
+        let mut delivered_order: VecDeque<String> = VecDeque::new();
+
+        loop {
+            interval.tick().await;
+
+            let sub_ids: Vec<u64> = {
+                let subs = governance_subscription_manager.subscriptions.read().await;
+                subs.iter()
+                    .filter_map(|(sub_id, sub_type)| {
+                        if matches!(sub_type, SubscriptionType::Governance) {
+                            Some(*sub_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            if sub_ids.is_empty() {
+                continue;
+            }
+
+            let last_slot = match governance_state.get_last_slot() {
+                Ok(slot) => slot,
+                Err(_) => continue,
+            };
+
+            for slot in next_scan_slot..=last_slot {
+                let events = match governance_state.get_events_by_slot(slot, 256) {
+                    Ok(events) => events,
+                    Err(_) => continue,
+                };
+
+                for event in events.iter().filter_map(parse_governance_event) {
+                    let dedupe_key = format!(
+                        "{}:{}:{}:{}",
+                        event.slot,
+                        event.proposal_id,
+                        event.event_kind,
+                        event.actor.to_base58()
+                    );
+                    if !delivered_keys.insert(dedupe_key.clone()) {
+                        continue;
+                    }
+                    delivered_order.push_back(dedupe_key);
+                    while delivered_order.len() > 1024 {
+                        if let Some(oldest) = delivered_order.pop_front() {
+                            delivered_keys.remove(&oldest);
+                        }
+                    }
+
+                    let ws_event = Event::GovernanceEvent {
+                        proposal_id: event.proposal_id,
+                        event_kind: event.event_kind,
+                        action: event.action,
+                        authority: event.authority,
+                        proposer: event.proposer,
+                        actor: event.actor,
+                        approvals: event.approvals,
+                        threshold: event.threshold,
+                        execute_after_epoch: event.execute_after_epoch,
+                        executed: event.executed,
+                        cancelled: event.cancelled,
+                        metadata: event.metadata,
+                        target_contract: event.target_contract,
+                        target_function: event.target_function,
+                        call_args_len: event.call_args_len,
+                        call_value_spores: event.call_value_spores,
+                        slot: event.slot,
+                    };
+
+                    for sub_id in &sub_ids {
+                        let notification = create_notification(*sub_id, &ws_event);
+                        if let Ok(json) = serde_json::to_string(&notification) {
+                            let _ = tx_governance.send(json).await;
+                        }
+                    }
+                }
+            }
+
+            next_scan_slot = last_slot;
+        }
+    });
+
     // AUDIT-FIX H15: Per-connection message rate limiter
     let mut msg_count: u32 = 0;
     let mut msg_window_start = std::time::Instant::now();
@@ -869,6 +974,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     dex_event_task.abort();
     prediction_event_task.abort();
     signature_event_task.abort();
+    governance_event_task.abort();
     // DDoS protection: decrement active connection counter
     conn_guard.fetch_sub(1, Ordering::SeqCst);
 
@@ -1760,15 +1866,39 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
         Event::GovernanceEvent {
             proposal_id,
             event_kind,
-            voter,
-            vote_weight,
+            action,
+            authority,
+            proposer,
+            actor,
+            approvals,
+            threshold,
+            execute_after_epoch,
+            executed,
+            cancelled,
+            metadata,
+            target_contract,
+            target_function,
+            call_args_len,
+            call_value_spores,
             slot,
         } => serde_json::json!({
             "event": "GovernanceEvent",
             "proposal_id": proposal_id,
             "kind": event_kind,
-            "voter": voter.as_ref().map(|p| p.to_base58()),
-            "vote_weight": vote_weight,
+            "action": action,
+            "authority": authority.to_base58(),
+            "proposer": proposer.to_base58(),
+            "actor": actor.to_base58(),
+            "approvals": approvals,
+            "threshold": threshold,
+            "execute_after_epoch": execute_after_epoch,
+            "executed": executed,
+            "cancelled": cancelled,
+            "metadata": metadata,
+            "target_contract": target_contract.as_ref().map(Pubkey::to_base58),
+            "target_function": target_function,
+            "call_args_len": call_args_len,
+            "call_value_spores": call_value_spores,
             "slot": slot,
         }),
     };
@@ -2226,16 +2356,33 @@ mod tests {
             4,
             &Event::GovernanceEvent {
                 proposal_id: 7,
-                event_kind: "voted".to_string(),
-                voter: Some(Pubkey([0xDDu8; 32])),
-                vote_weight: Some(1000),
+                event_kind: "approved".to_string(),
+                action: "contract_call".to_string(),
+                authority: Pubkey([0xAAu8; 32]),
+                proposer: Pubkey([0xBBu8; 32]),
+                actor: Pubkey([0xDDu8; 32]),
+                approvals: 2,
+                threshold: 2,
+                execute_after_epoch: 9,
+                executed: false,
+                cancelled: false,
+                metadata: "contract=abc function=pause args_len=0 value_spores=0".to_string(),
+                target_contract: Some(Pubkey([0x11u8; 32])),
+                target_function: Some("pause".to_string()),
+                call_args_len: Some(0),
+                call_value_spores: Some(0),
                 slot: 100,
             },
         );
         let result = &notif.params.result;
         assert_eq!(result["event"], "GovernanceEvent");
         assert_eq!(result["proposal_id"], 7);
-        assert_eq!(result["kind"], "voted");
+        assert_eq!(result["kind"], "approved");
+        assert_eq!(result["action"], "contract_call");
+        assert_eq!(result["approvals"], 2);
+        assert_eq!(result["target_function"], "pause");
+        assert_eq!(result["call_args_len"], 0);
+        assert_eq!(result["call_value_spores"], 0);
     }
 
     #[test]

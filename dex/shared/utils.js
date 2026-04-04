@@ -372,6 +372,325 @@ function bs58decode(str) {
 var base58Encode = bs58encode;
 var base58Decode = bs58decode;
 
+var SHARED_UTILS_BASE_URL = null;
+if (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) {
+    try {
+        SHARED_UTILS_BASE_URL = new URL('.', document.currentScript.src).href;
+    } catch (_) {
+        SHARED_UTILS_BASE_URL = null;
+    }
+}
+
+var SIGNED_METADATA_MANIFEST_SCHEMA_VERSION = 1;
+var LICHEN_SIGNED_METADATA_SIGNERS = Object.freeze({
+    mainnet: '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    testnet: '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    'local-testnet': '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+    'local-mainnet': '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk',
+});
+
+var _signedMetadataManifestCache = new Map();
+var _signedMetadataVerifierPromise = null;
+var _sharedDynamicImport = null;
+
+function normalizeSignedMetadataNetworkKey(networkKey) {
+    return String(networkKey || '').trim().toLowerCase();
+}
+
+function getSignedMetadataSignerAddress(networkKey) {
+    var normalized = normalizeSignedMetadataNetworkKey(networkKey);
+    return LICHEN_SIGNED_METADATA_SIGNERS[normalized] || LICHEN_SIGNED_METADATA_SIGNERS.mainnet;
+}
+
+function utf8Encode(text) {
+    var value = String(text == null ? '' : text);
+    if (typeof TextEncoder !== 'undefined') {
+        return new TextEncoder().encode(value);
+    }
+    if (typeof Buffer !== 'undefined') {
+        return Uint8Array.from(Buffer.from(value, 'utf8'));
+    }
+    var encoded = unescape(encodeURIComponent(value));
+    var bytes = new Uint8Array(encoded.length);
+    for (var i = 0; i < encoded.length; i++) bytes[i] = encoded.charCodeAt(i);
+    return bytes;
+}
+
+function stableJsonStringify(value) {
+    if (value === null) return 'null';
+
+    var valueType = typeof value;
+    if (valueType === 'number') return Number.isFinite(value) ? String(value) : 'null';
+    if (valueType === 'boolean') return value ? 'true' : 'false';
+    if (valueType === 'string') return JSON.stringify(value);
+    if (valueType !== 'object') return 'null';
+
+    if (Array.isArray(value)) {
+        var items = value.map(function (item) {
+            var itemType = typeof item;
+            if (itemType === 'undefined' || itemType === 'function' || itemType === 'symbol') {
+                return 'null';
+            }
+            return stableJsonStringify(item);
+        });
+        return '[' + items.join(',') + ']';
+    }
+
+    var keys = Object.keys(value)
+        .filter(function (key) {
+            var entryType = typeof value[key];
+            return entryType !== 'undefined' && entryType !== 'function' && entryType !== 'symbol';
+        })
+        .sort();
+    var parts = keys.map(function (key) {
+        return JSON.stringify(key) + ':' + stableJsonStringify(value[key]);
+    });
+    return '{' + parts.join(',') + '}';
+}
+
+function cloneSignedRegistryEntry(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    return {
+        symbol: entry.symbol || null,
+        program: entry.program || null,
+        owner: entry.owner || null,
+        name: entry.name || null,
+        template: entry.template || null,
+        metadata: entry.metadata && typeof entry.metadata === 'object'
+            ? JSON.parse(JSON.stringify(entry.metadata))
+            : (entry.metadata == null ? null : entry.metadata),
+        decimals: entry.decimals == null ? null : entry.decimals,
+    };
+}
+
+function buildSignedMetadataIndexes(payload) {
+    var sourceEntries = Array.isArray(payload && payload.symbol_registry) ? payload.symbol_registry : [];
+    var entries = sourceEntries
+        .map(cloneSignedRegistryEntry)
+        .filter(function (entry) { return entry && entry.symbol && entry.program; })
+        .sort(function (left, right) {
+            return String(left.symbol).localeCompare(String(right.symbol));
+        });
+    var bySymbol = Object.create(null);
+    var byProgram = Object.create(null);
+
+    entries.forEach(function (entry) {
+        bySymbol[String(entry.symbol).toUpperCase()] = entry;
+        byProgram[String(entry.program)] = entry;
+    });
+
+    return {
+        entries: entries,
+        bySymbol: bySymbol,
+        byProgram: byProgram,
+    };
+}
+
+function parseSignedMetadataListRequest(params) {
+    var request = { limit: 500, cursor: null };
+    var candidates = Array.isArray(params) ? params : [params];
+
+    candidates.forEach(function (candidate) {
+        if (candidate === null || candidate === undefined) return;
+        if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+            request.limit = candidate;
+            return;
+        }
+        if (typeof candidate === 'string') {
+            if (!request.cursor) request.cursor = candidate;
+            return;
+        }
+        if (typeof candidate !== 'object') return;
+        if (typeof candidate.limit === 'number' && Number.isFinite(candidate.limit)) {
+            request.limit = candidate.limit;
+        }
+        if (!request.cursor) {
+            request.cursor = candidate.cursor || candidate.after || candidate.after_symbol || null;
+        }
+    });
+
+    request.limit = Math.max(1, Math.min(2000, Math.floor(Number(request.limit) || 500)));
+    if (request.cursor != null) request.cursor = String(request.cursor);
+    return request;
+}
+
+function shapeSignedMetadataListResponse(entries, params) {
+    var request = parseSignedMetadataListRequest(params);
+    var startIndex = 0;
+    var cursorMatched = !request.cursor;
+
+    if (request.cursor) {
+        for (var i = 0; i < entries.length; i++) {
+            if (String(entries[i].symbol) > request.cursor || String(entries[i].symbol) === request.cursor) {
+                startIndex = i;
+                if (String(entries[i].symbol) === request.cursor) startIndex = i + 1;
+                cursorMatched = true;
+                break;
+            }
+        }
+        if (!cursorMatched) startIndex = entries.length;
+    }
+
+    var sliced = entries.slice(startIndex, startIndex + request.limit + 1);
+    var hasMore = sliced.length > request.limit;
+    if (hasMore) sliced = sliced.slice(0, request.limit);
+
+    return {
+        entries: sliced.map(cloneSignedRegistryEntry),
+        count: sliced.length,
+        has_more: hasMore,
+        next_cursor: hasMore && sliced.length ? sliced[sliced.length - 1].symbol : null,
+    };
+}
+
+function importSharedModule(specifier) {
+    if (!_sharedDynamicImport) {
+        _sharedDynamicImport = Function('specifier', 'return import(specifier);');
+    }
+    return _sharedDynamicImport(specifier);
+}
+
+function getSharedPqModuleUrl() {
+    if (SHARED_UTILS_BASE_URL) {
+        try {
+            return new URL('pq.js', SHARED_UTILS_BASE_URL).href;
+        } catch (_) {
+            return 'shared/pq.js';
+        }
+    }
+    return 'shared/pq.js';
+}
+
+async function resolveSignedMetadataVerifier() {
+    if (typeof window !== 'undefined' && window.LichenPQ && typeof window.LichenPQ.verifySignature === 'function') {
+        return window.LichenPQ.verifySignature.bind(window.LichenPQ);
+    }
+    if (_signedMetadataVerifierPromise) return _signedMetadataVerifierPromise;
+
+    _signedMetadataVerifierPromise = importSharedModule(getSharedPqModuleUrl())
+        .then(function (module) {
+            var verifier = module && typeof module.verifySignature === 'function'
+                ? module.verifySignature
+                : (module && module.default && typeof module.default.verifySignature === 'function'
+                    ? module.default.verifySignature
+                    : (typeof window !== 'undefined' && window.LichenPQ
+                        ? window.LichenPQ.verifySignature
+                        : null));
+            if (typeof verifier !== 'function') {
+                throw new Error('Shared PQ verifier did not expose verifySignature');
+            }
+            return verifier;
+        })
+        .catch(function (error) {
+            _signedMetadataVerifierPromise = null;
+            throw error;
+        });
+
+    return _signedMetadataVerifierPromise;
+}
+
+async function verifySignedMetadataEnvelope(envelope, networkKey, verifyFn, expectedSignerAddress) {
+    if (!envelope || typeof envelope !== 'object') {
+        throw new Error('Missing signed metadata manifest envelope');
+    }
+
+    var envelopeSchema = Number(envelope.schema_version || envelope.schemaVersion || SIGNED_METADATA_MANIFEST_SCHEMA_VERSION);
+    if (envelopeSchema !== SIGNED_METADATA_MANIFEST_SCHEMA_VERSION) {
+        throw new Error('Unsupported signed metadata manifest schema version');
+    }
+
+    var payload = envelope.payload;
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('Signed metadata manifest is missing a payload');
+    }
+    if (!envelope.signature || typeof envelope.signature !== 'object') {
+        throw new Error('Signed metadata manifest is missing a signature');
+    }
+
+    var payloadSchema = Number(payload.schema_version || payload.schemaVersion || SIGNED_METADATA_MANIFEST_SCHEMA_VERSION);
+    if (payloadSchema !== SIGNED_METADATA_MANIFEST_SCHEMA_VERSION) {
+        throw new Error('Unsupported signed metadata payload schema version');
+    }
+
+    var requestedNetwork = normalizeSignedMetadataNetworkKey(networkKey);
+    var payloadNetwork = normalizeSignedMetadataNetworkKey(payload.network);
+    if (requestedNetwork && payloadNetwork && requestedNetwork !== payloadNetwork) {
+        throw new Error('Signed metadata manifest network does not match the requested network');
+    }
+
+    var verifier = verifyFn || await resolveSignedMetadataVerifier();
+    var expectedAddress = expectedSignerAddress || getSignedMetadataSignerAddress(payloadNetwork || requestedNetwork);
+    var payloadBytes = utf8Encode(stableJsonStringify(payload));
+    var verified = await verifier(envelope.signature, payloadBytes, expectedAddress);
+    if (!verified) {
+        throw new Error('Signed metadata manifest verification failed');
+    }
+
+    var indexes = buildSignedMetadataIndexes(payload);
+    return {
+        envelope: envelope,
+        payload: payload,
+        network: payloadNetwork || requestedNetwork || '',
+        registryEntries: indexes.entries,
+        registryBySymbol: indexes.bySymbol,
+        registryByProgram: indexes.byProgram,
+    };
+}
+
+async function getSignedMetadataManifest(networkKey, options) {
+    var normalizedNetwork = normalizeSignedMetadataNetworkKey(networkKey);
+    var cacheKey = normalizedNetwork || '__default__';
+    var forceRefresh = Boolean(options && options.forceRefresh);
+    if (!forceRefresh && _signedMetadataManifestCache.has(cacheKey)) {
+        return _signedMetadataManifestCache.get(cacheKey);
+    }
+
+    var envelope = await trustedLichenRpcCall('getSignedMetadataManifest', [], normalizedNetwork || undefined);
+    var manifest = await verifySignedMetadataEnvelope(envelope, normalizedNetwork);
+    _signedMetadataManifestCache.set(cacheKey, manifest);
+    return manifest;
+}
+
+function clearSignedMetadataManifestCache(networkKey) {
+    var normalizedNetwork = normalizeSignedMetadataNetworkKey(networkKey);
+    if (!normalizedNetwork) {
+        _signedMetadataManifestCache.clear();
+        return;
+    }
+    _signedMetadataManifestCache.delete(normalizedNetwork);
+}
+
+async function getSignedRegistryEntry(symbol, networkKey) {
+    var manifest = await getSignedMetadataManifest(networkKey);
+    var key = String(symbol || '').trim().toUpperCase();
+    return key && manifest.registryBySymbol[key] ? cloneSignedRegistryEntry(manifest.registryBySymbol[key]) : null;
+}
+
+async function getSignedRegistryEntryByProgram(programId, networkKey) {
+    var manifest = await getSignedMetadataManifest(networkKey);
+    var key = String(programId || '').trim();
+    return key && manifest.registryByProgram[key] ? cloneSignedRegistryEntry(manifest.registryByProgram[key]) : null;
+}
+
+async function signedMetadataRpcCall(method, params, networkKey, fallbackRpcCall) {
+    switch (String(method || '')) {
+        case 'getSignedMetadataManifest':
+            return (await getSignedMetadataManifest(networkKey)).payload;
+        case 'getAllSymbolRegistry':
+        case 'getAllSymbols':
+            return shapeSignedMetadataListResponse((await getSignedMetadataManifest(networkKey)).registryEntries, params);
+        case 'getSymbolRegistry':
+            return getSignedRegistryEntry(Array.isArray(params) ? params[0] : params, networkKey);
+        case 'getSymbolRegistryByProgram':
+            return getSignedRegistryEntryByProgram(Array.isArray(params) ? params[0] : params, networkKey);
+        default:
+            if (typeof fallbackRpcCall === 'function') {
+                return fallbackRpcCall(method, params || []);
+            }
+            return trustedLichenRpcCall(method, params || [], networkKey);
+    }
+}
+
 // ── RPC Client ──
 
 function getLichenRpcUrl() {
@@ -385,6 +704,14 @@ function getLichenRpcUrl() {
         if (window.lichenExplorerConfig && window.lichenExplorerConfig.rpcUrl) return window.lichenExplorerConfig.rpcUrl;
     }
     return 'http://localhost:8899';
+}
+
+function getTrustedLichenRpcUrl(networkKey) {
+    if (typeof window !== 'undefined') {
+        if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') return LICHEN_CONFIG.rpc(networkKey);
+        if (window.LICHEN_CONFIG && typeof window.LICHEN_CONFIG.rpc === 'function') return window.LICHEN_CONFIG.rpc(networkKey);
+    }
+    return getLichenRpcUrl();
 }
 
 async function lichenRpcCall(method, params, rpcUrl) {
@@ -404,6 +731,10 @@ async function lichenRpcCall(method, params, rpcUrl) {
         throw new Error(data.error.message || 'RPC error');
     }
     return data.result;
+}
+
+async function trustedLichenRpcCall(method, params, networkKey) {
+    return lichenRpcCall(method, params, getTrustedLichenRpcUrl(networkKey));
 }
 
 // Legacy alias used by some files
@@ -590,6 +921,15 @@ if (typeof module !== 'undefined' && module.exports) {
         updatePagination,
         bs58encode, bs58decode, base58Encode, base58Decode,
         readLeU64, serializeMessageBincode,
-        getLichenRpcUrl, lichenRpcCall, rpcCall,
+        getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall, rpcCall,
+        SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
+        LICHEN_SIGNED_METADATA_SIGNERS,
+        stableJsonStringify,
+        verifySignedMetadataEnvelope,
+        getSignedMetadataManifest,
+        clearSignedMetadataManifestCache,
+        getSignedRegistryEntry,
+        getSignedRegistryEntryByProgram,
+        signedMetadataRpcCall,
     };
 }

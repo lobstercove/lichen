@@ -1,0 +1,245 @@
+[
+    {
+        "id": "bridge",
+        "symbol": "BRIDGE",
+        "display_name": "Lichen Bridge",
+        "pause_function": "mb_pause",
+        "component_message": "Lichen Bridge is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "lichen bridge",
+            "bridge"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "auction",
+        "symbol": "AUCTION",
+        "display_name": "Lichen Auction",
+        "pause_function": "ma_pause",
+        "component_message": "Lichen Auction is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "lichen auction",
+            "auction"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "market",
+        "symbol": "MARKET",
+        "display_name": "Lichen Market",
+        "pause_function": "mm_pause",
+        "component_message": "Lichen Market is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "lichen market",
+            "marketplace",
+            "market"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "sporevault",
+        "symbol": "SPOREVAULT",
+        "display_name": "SporeVault",
+        "pause_function": "cv_pause",
+        "component_message": "SporeVault is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "vault",
+            "spore vault",
+            "sporevault"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "lichenswap",
+        "symbol": "LICHENSWAP",
+        "display_name": "LichenSwap",
+        "pause_function": "ms_pause",
+        "component_message": "LichenSwap is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "swap",
+            "lichen swap",
+            "lichenswap"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "shielded",
+        "symbol": "SHIELDED",
+        "display_name": "Shielded Pool",
+        "pause_function": "pause",
+        "component_message": "Shielded Pool is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "shielded pool",
+            "shielded"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "lend",
+        "symbol": "LEND",
+        "display_name": "ThallLend",
+        "pause_function": "pause",
+        "component_message": "ThallLend is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "thalllend",
+            "lend",
+            "lending"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "sporepay",
+        "symbol": "SPOREPAY",
+        "display_name": "SporePay",
+        "pause_function": "pause",
+        "component_message": "SporePay is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "spore pay",
+            "payments",
+            "sporepay"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "bounty",
+        "symbol": "BOUNTY",
+        "display_name": "Bounty Board",
+        "pause_function": "bb_pause",
+        "component_message": "Bounty Board is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "bountyboard",
+            "bounty board",
+            "bounty"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "compute",
+        "symbol": "COMPUTE",
+        "display_name": "Compute Market",
+        "pause_function": "cm_pause",
+        "component_message": "Compute Market is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "compute",
+            "compute market"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dex",
+        "symbol": "DEX",
+        "display_name": "SporeSwap Core",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap Core is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "dex",
+            "sporeswap core",
+            "dex core"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dex-pair",
+        "symbol": "DEX",
+        "display_name": "SporeSwap Pair",
+        "pause_function": "pause_pair",
+        "component_message": "A specific SporeSwap pair is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "dex pair",
+            "pair pause",
+            "sporeswap pair"
+        ],
+        "preset_enabled": false
+    },
+    {
+        "id": "dexamm",
+        "symbol": "DEXAMM",
+        "display_name": "SporeSwap AMM",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap AMM is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "amm",
+            "dex amm",
+            "sporeswap amm"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dexmargin",
+        "symbol": "DEXMARGIN",
+        "display_name": "SporeSwap Margin",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap Margin is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "margin",
+            "dex margin",
+            "sporeswap margin"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dexrewards",
+        "symbol": "DEXREWARDS",
+        "display_name": "SporeSwap Rewards",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap Rewards is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "rewards",
+            "dex rewards",
+            "sporeswap rewards"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dexrouter",
+        "symbol": "DEXROUTER",
+        "display_name": "SporeSwap Router",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap Router is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "router",
+            "dex router",
+            "sporeswap router"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "predict",
+        "symbol": "PREDICT",
+        "display_name": "Prediction Markets",
+        "pause_function": "emergency_pause",
+        "component_message": "Prediction Markets are under an active contract-specific circuit breaker.",
+        "aliases": [
+            "predict",
+            "prediction market",
+            "prediction markets"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "sporepump",
+        "symbol": "SPOREPUMP",
+        "display_name": "SporePump Launchpad",
+        "pause_function": "pause",
+        "component_message": "SporePump Launchpad is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "sporepump",
+            "pump",
+            "launchpad"
+        ],
+        "preset_enabled": true
+    },
+    {
+        "id": "dexgov",
+        "symbol": "DEXGOV",
+        "display_name": "SporeSwap Governance",
+        "pause_function": "emergency_pause",
+        "component_message": "SporeSwap Governance is under an active contract-specific circuit breaker.",
+        "aliases": [
+            "dex governance",
+            "sporeswap governance",
+            "dexgov"
+        ],
+        "preset_enabled": true
+    }
+]

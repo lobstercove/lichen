@@ -183,6 +183,12 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
         .unwrap_or([0u8; 32])
 }
 
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|d| d.len() >= 32 && d[..32].iter().any(|&b| b != 0))
+        .unwrap_or(false)
+}
+
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
@@ -1417,6 +1423,11 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
     }
+    let caller = lichen_sdk::get_caller();
+    if caller.0 != admin {
+        log_info("Prediction Market initialize rejected: caller mismatch");
+        return 0;
+    }
     let admin = &admin[..];
     storage_set(ADMIN_KEY, admin);
     save_u64(MARKET_COUNT_KEY, 0);
@@ -2121,10 +2132,6 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     if !reentrancy_enter() {
         return 0;
     }
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 0;
-    }
 
     let mut trader = [0u8; 32];
     unsafe {
@@ -2395,10 +2402,6 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
 /// Returns lUSD amount returned, 0 on failure.
 pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> u32 {
     if !reentrancy_enter() {
-        return 0;
-    }
-    if !require_not_paused() {
-        reentrancy_exit();
         return 0;
     }
 
@@ -3161,10 +3164,6 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
     if !reentrancy_enter() {
         return 0;
     }
-    if !require_not_paused() {
-        reentrancy_exit();
-        return 0;
-    }
 
     let mut provider = [0u8; 32];
     unsafe {
@@ -3329,6 +3328,14 @@ pub fn set_lichenid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u3
     unsafe {
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
     }
+    if is_zero(&address) {
+        log_info("set_lichenid_address: zero address rejected");
+        return 0;
+    }
+    if has_configured_address(LICHENID_ADDR_KEY) {
+        log_info("set_lichenid_address: already configured");
+        return 0;
+    }
     let address = &address[..];
     storage_set(LICHENID_ADDR_KEY, address);
     1
@@ -3356,6 +3363,14 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
     unsafe {
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
     }
+    if is_zero(&address) {
+        log_info("set_oracle_address: zero address rejected");
+        return 0;
+    }
+    if has_configured_address(ORACLE_ADDR_KEY) {
+        log_info("set_oracle_address: already configured");
+        return 0;
+    }
     let address = &address[..];
     storage_set(ORACLE_ADDR_KEY, address);
     1
@@ -3382,6 +3397,14 @@ pub fn set_lusd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
     }
+    if is_zero(&address) {
+        log_info("set_lusd_address: zero address rejected");
+        return 0;
+    }
+    if has_configured_address(LUSD_ADDR_KEY) {
+        log_info("set_lusd_address: already configured");
+        return 0;
+    }
     let address = &address[..];
     storage_set(LUSD_ADDR_KEY, address);
     1
@@ -3407,6 +3430,14 @@ pub fn set_dex_gov_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
     let mut address = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
+    if is_zero(&address) {
+        log_info("set_dex_gov_address: zero address rejected");
+        return 0;
+    }
+    if has_configured_address(DEX_GOV_ADDR_KEY) {
+        log_info("set_dex_gov_address: already configured");
+        return 0;
     }
     let address = &address[..];
     storage_set(DEX_GOV_ADDR_KEY, address);
@@ -3436,6 +3467,10 @@ pub fn set_self_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     }
     if address.iter().all(|&b| b == 0) {
         log_info("set_self_address: zero address rejected");
+        return 0;
+    }
+    if has_configured_address(SELF_ADDR_KEY) {
+        log_info("set_self_address: already configured");
         return 0;
     }
     storage_set(SELF_ADDR_KEY, &address);
@@ -4134,6 +4169,15 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
+    }
+
+    #[test]
+    fn test_initialize_rejects_caller_mismatch() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller([9u8; 32]);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        assert_eq!(storage_get(ADMIN_KEY), None);
     }
 
     /// Configure lUSD and self addresses for token transfers.
@@ -4940,6 +4984,42 @@ mod tests {
     }
 
     #[test]
+    fn test_set_dependency_addresses_zero_rejected_and_cannot_reconfigure() {
+        setup();
+        let admin = init_contract();
+        let zero = [0u8; 32];
+        let lichenid = [0x11; 32];
+        let oracle = [0x22; 32];
+        let lusd = [0x33; 32];
+        let dex_gov = [0x44; 32];
+        let self_addr = [0x55; 32];
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 1);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), [0x12; 32].as_ptr()), 0);
+        assert_eq!(load_addr(LICHENID_ADDR_KEY), lichenid);
+
+        assert_eq!(set_oracle_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(set_oracle_address(admin.as_ptr(), oracle.as_ptr()), 1);
+        assert_eq!(set_oracle_address(admin.as_ptr(), [0x23; 32].as_ptr()), 0);
+        assert_eq!(load_addr(ORACLE_ADDR_KEY), oracle);
+
+        assert_eq!(set_lusd_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(set_lusd_address(admin.as_ptr(), lusd.as_ptr()), 1);
+        assert_eq!(set_lusd_address(admin.as_ptr(), [0x34; 32].as_ptr()), 0);
+        assert_eq!(load_addr(LUSD_ADDR_KEY), lusd);
+
+        assert_eq!(set_dex_gov_address(admin.as_ptr(), zero.as_ptr()), 0);
+        assert_eq!(set_dex_gov_address(admin.as_ptr(), dex_gov.as_ptr()), 1);
+        assert_eq!(set_dex_gov_address(admin.as_ptr(), [0x45; 32].as_ptr()), 0);
+        assert_eq!(load_addr(DEX_GOV_ADDR_KEY), dex_gov);
+
+        assert_eq!(set_self_address(admin.as_ptr(), self_addr.as_ptr()), 1);
+        assert_eq!(set_self_address(admin.as_ptr(), [0x56; 32].as_ptr()), 0);
+        assert_eq!(load_self_addr(), self_addr);
+    }
+
+    #[test]
     fn test_set_lusd_address() {
         setup();
         let admin = init_contract();
@@ -5000,6 +5080,68 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(2000);
         assert_eq!(buy_shares(trader.as_ptr(), mid, 0, 1_000_000), 0);
+    }
+    #[test]
+    fn test_pause_allows_sell_shares_exit() {
+        setup();
+        init_contract();
+        configure_escrow();
+
+        let creator = [2u8; 32];
+        let trader = [3u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2_000);
+        test_mock::set_value(2_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 2_000_000) as u64;
+        assert!(shares > 0);
+
+        storage_set(PAUSED_KEY, &[1]);
+
+        let sold = sell_shares(trader.as_ptr(), mid, 0, shares / 2);
+        assert!(sold > 0, "sell_shares should remain available while paused");
+    }
+
+    #[test]
+    fn test_pause_allows_redeem_complete_set() {
+        setup();
+        init_contract();
+        configure_escrow();
+
+        let creator = [2u8; 32];
+        let user = [4u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(user);
+        test_mock::set_value(3_000_000);
+        assert_eq!(mint_complete_set(user.as_ptr(), mid, 3_000_000), 1);
+
+        storage_set(PAUSED_KEY, &[1]);
+
+        let redeemed = redeem_complete_set(user.as_ptr(), mid, 3_000_000);
+        assert_eq!(redeemed, 3_000_000u32);
+    }
+
+    #[test]
+    fn test_pause_allows_withdraw_liquidity() {
+        setup();
+        init_contract();
+        configure_escrow();
+
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        storage_set(PAUSED_KEY, &[1]);
+
+        let withdrawn = withdraw_liquidity(creator.as_ptr(), mid, 2_000_000);
+        assert!(
+            withdrawn > 0,
+            "withdraw_liquidity should remain available while paused"
+        );
     }
 
     // ========================================================================

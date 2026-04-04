@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, find_genesis_keypair_path
 
 SPORES = 1_000_000_000
 RPC = os.environ.get('LICHEN_RPC_URL', 'http://127.0.0.1:8899')
@@ -19,7 +19,7 @@ async def main():
     repo = Path(__file__).resolve().parent.parent
 
     # Load reserve_pool keypair
-    rp_path = repo / f"data/state-{NETWORK}/genesis-keys/reserve_pool-lichen-{NETWORK}-1.json"
+    rp_path = find_genesis_keypair_path('reserve_pool', NETWORK)
     reserve = Keypair.load(rp_path)
     print(f"Reserve: {reserve.public_key()}")
 
@@ -35,7 +35,7 @@ async def main():
     print(f"dex_core: {dex_core}")
     print(f"lusd:     {lusd}")
 
-    caller_bytes = bytes(reserve.public_key().to_bytes())
+    caller_bytes = bytes(reserve.address().to_bytes())
 
     # Step 1: Approve DEX to spend reserve_pool's lUSD (for BUY side)
     print("\n--- Step 1: Approve lUSD for DEX ---")

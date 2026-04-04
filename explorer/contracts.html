@@ -105,14 +105,14 @@
 
             <!-- Category Tabs -->
             <div class="filters-bar">
-                <button class="tab-btn active" onclick="filterContracts('all')" id="tab-all">All</button>
-                <button class="tab-btn" onclick="filterContracts('token')" id="tab-token">Tokens</button>
-                <button class="tab-btn" onclick="filterContracts('wrapped')" id="tab-wrapped">Wrapped</button>
-                <button class="tab-btn" onclick="filterContracts('nft')" id="tab-nft">NFT</button>
-                <button class="tab-btn" onclick="filterContracts('dex')" id="tab-dex">DEX</button>
-                <button class="tab-btn" onclick="filterContracts('defi')" id="tab-defi">DeFi</button>
-                <button class="tab-btn" onclick="filterContracts('governance')" id="tab-governance">Governance</button>
-                <button class="tab-btn" onclick="filterContracts('infra')" id="tab-infra">Infrastructure</button>
+                <button class="tab-btn active" data-contract-filter="all" id="tab-all">All</button>
+                <button class="tab-btn" data-contract-filter="token" id="tab-token">Tokens</button>
+                <button class="tab-btn" data-contract-filter="wrapped" id="tab-wrapped">Wrapped</button>
+                <button class="tab-btn" data-contract-filter="nft" id="tab-nft">NFT</button>
+                <button class="tab-btn" data-contract-filter="dex" id="tab-dex">DEX</button>
+                <button class="tab-btn" data-contract-filter="defi" id="tab-defi">DeFi</button>
+                <button class="tab-btn" data-contract-filter="governance" id="tab-governance">Governance</button>
+                <button class="tab-btn" data-contract-filter="infra" id="tab-infra">Infrastructure</button>
             </div>
 
             <!-- Contract Table -->
@@ -140,11 +140,11 @@
                     </table>
                 </div>
                 <div class="pagination">
-                    <button class="btn btn-secondary" id="prevPage" onclick="previousPage()" disabled>
+                    <button class="btn btn-secondary" id="prevPage" disabled>
                         <i class="fas fa-chevron-left"></i> Previous
                     </button>
                     <span class="pagination-info" id="paginationInfo">Page 1</span>
-                    <button class="btn btn-secondary" id="nextPage" onclick="nextPage()" disabled>
+                    <button class="btn btn-secondary" id="nextPage" disabled>
                         Next <i class="fas fa-chevron-right"></i>
                     </button>
                 </div>
@@ -187,7 +187,8 @@
                     <ul class="footer-links">
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Getting
                                 Started</a></li>
-                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/architecture.html">Architecture</a>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Architecture</a>
                         </li>
                         <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API Docs</a>
                         </li>

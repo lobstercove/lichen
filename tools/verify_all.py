@@ -7,15 +7,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'
 from lichen import Connection, Keypair, PublicKey
 
 sys.path.insert(0, os.path.dirname(__file__))
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 
 async def main():
     conn = Connection('http://127.0.0.1:8899')
-    keys = Path('data/state-testnet/genesis-keys')
-    reserve = Keypair.load(keys / 'reserve_pool-lichen-testnet-1.json')
-    caller_bytes = bytes(reserve.public_key().to_bytes())
+    reserve = load_genesis_keypair('reserve_pool')
+    caller_bytes = bytes(reserve.address().to_bytes())
 
     result = await conn._rpc("getAllSymbolRegistry")
     dex_core_addr = dex_amm_addr = None

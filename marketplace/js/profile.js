@@ -16,6 +16,7 @@
     var allListings = [];
     var marketplaceProgram = null;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
@@ -106,6 +107,12 @@
         setTimeout(function () { toast.remove(); }, 5000);
     }
 
+    function getItemHref(nft) {
+        return 'item.html?id=' + encodeURIComponent(nft.id || '') +
+            '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') +
+            '&token=' + encodeURIComponent(nft.token_id || '');
+    }
+
     function buildContractCallData(functionName, args, value) {
         var argBytes = Array.from(new TextEncoder().encode(JSON.stringify(args || [])));
         return JSON.stringify({ Call: { function: functionName, args: argBytes, value: value || 0 } });
@@ -123,7 +130,7 @@
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
         try {
-            var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
+            var entry = await marketTrustedRpcCall('getSymbolRegistry', ['LICHENMARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
             if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
         } catch (_) { }
@@ -251,23 +258,22 @@
             if (isOwnProfile) {
                 if (isListed) {
                     actionHtml = '<div style="display:flex;gap:6px;">' +
-                        '<button class="nft-action" onclick="event.stopPropagation();window._profileUpdatePrice(' + idx + ')" style="background:var(--accent-color);color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Update Price</button>' +
-                        '<button class="nft-action" onclick="event.stopPropagation();window._profileCancelListing(' + idx + ')" style="background:#ef4444;color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Cancel Listing</button>' +
+                        '<button class="nft-action" data-profile-action="update-price" data-profile-index="' + idx + '" style="background:var(--accent-color);color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Update Price</button>' +
+                        '<button class="nft-action" data-profile-action="cancel-listing" data-profile-index="' + idx + '" style="background:#ef4444;color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Cancel Listing</button>' +
                         '</div>';
                 } else {
                     actionHtml = '<div style="display:flex;gap:6px;">' +
-                        '<button class="nft-action" onclick="event.stopPropagation();window._profileListNFT(' + idx + ')" style="background:var(--accent-color);color:white;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;">List for Sale</button>' +
-                        '<button class="nft-action" onclick="event.stopPropagation();window._profileCreateAuction(' + idx + ')" style="background:var(--bg-tertiary);color:var(--text-primary);border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Create Auction</button>' +
+                        '<button class="nft-action" data-profile-action="list-nft" data-profile-index="' + idx + '" style="background:var(--accent-color);color:white;border:none;padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;">List for Sale</button>' +
+                        '<button class="nft-action" data-profile-action="create-auction" data-profile-index="' + idx + '" style="background:var(--bg-tertiary);color:var(--text-primary);border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Create Auction</button>' +
                         '</div>';
                 }
             } else {
-                actionHtml = '<button class="nft-action" onclick="event.stopPropagation();window._profilePlaceBid(' + idx + ')" style="background:var(--accent-color);color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Place Bid</button>';
+                actionHtml = '<button class="nft-action" data-profile-action="place-bid" data-profile-index="' + idx + '" style="background:var(--accent-color);color:white;border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Place Bid</button>';
             }
 
-            return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+            return '<div class="nft-card" data-profile-href="' + escapeHtml(getItemHref(nft)) + '">' +
                 '<div class="nft-image">' + imgHtml + '</div>' +
                 '<div class="nft-info">' +
-                '<div class="nft-token" style="display:none;" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || nft.token || '') + '\'"></div>' +
                 '<div class="nft-collection">' + escapeHtml(nft.collection || nft.collection_name || 'Unknown') + '</div>' +
                 '<div class="nft-name">' + escapeHtml(name) + '</div>' +
                 '<div class="nft-footer">' +
@@ -321,15 +327,14 @@
             var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' LICN' : 'Not Listed';
             var name = nft.name || ('NFT #' + (nft.token_id || ''));
 
-            return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+            return '<div class="nft-card" data-profile-href="' + escapeHtml(getItemHref(nft)) + '">' +
                 '<div class="nft-image">' + imgHtml + '</div>' +
                 '<div class="nft-info">' +
-                '<div class="nft-token" style="display:none;" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || nft.token || '') + '\'"></div>' +
                 '<div class="nft-collection">' + escapeHtml(nft.collection || nft.collection_name || 'Unknown') + '</div>' +
                 '<div class="nft-name">' + escapeHtml(name) + '</div>' +
                 '<div class="nft-footer">' +
                 '<div class="nft-price"><span class="nft-price-value">' + escapeHtml(price) + '</span></div>' +
-                (isOwnProfile ? '<button class="nft-action" onclick="event.stopPropagation();window._profileMakeCollectionOffer(' + idx + ')" style="background:var(--bg-tertiary);color:var(--text-primary);border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Collection Offer</button>' : '') +
+                (isOwnProfile ? '<button class="nft-action" data-profile-action="collection-offer" data-profile-index="' + idx + '" style="background:var(--bg-tertiary);color:var(--text-primary);border:none;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Collection Offer</button>' : '') +
                 '</div></div></div>';
         }).join('');
     }
@@ -401,10 +406,9 @@
             var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' LICN' : 'Not Listed';
             var name = nft.name || ('NFT #' + (nft.token_id || ''));
 
-            return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
+            return '<div class="nft-card" data-profile-href="' + escapeHtml(getItemHref(nft)) + '">' +
                 '<div class="nft-image">' + imgHtml + '</div>' +
                 '<div class="nft-info">' +
-                '<div class="nft-token" style="display:none;" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || nft.token || '') + '\'"></div>' +
                 '<div class="nft-collection">' + escapeHtml(nft.collection || nft.collection_name || 'Unknown') + '</div>' +
                 '<div class="nft-name">' + escapeHtml(name) + '</div>' +
                 '<div class="nft-footer">' +
@@ -461,9 +465,9 @@
 
                 var actionHtml = '';
                 if (dir === 'incoming' && isOwnProfile && !expired) {
-                    actionHtml = '<button onclick="window._profileAcceptOffer(\'' + escapeJsAttr(offer.offerer || offer.buyer || '') + '\',\'' + escapeJsAttr(offer.nft_contract || offer.collection || '') + '\',\'' + escapeJsAttr(String(offer.token_id || '')) + '\')" style="background:var(--accent-color);color:white;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">Accept</button>';
+                    actionHtml = '<button data-profile-action="accept-offer" data-offerer="' + escapeHtml(offer.offerer || offer.buyer || '') + '" data-nft-contract="' + escapeHtml(offer.nft_contract || offer.collection || '') + '" data-token-id="' + escapeHtml(String(offer.token_id || '')) + '" style="background:var(--accent-color);color:white;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">Accept</button>';
                 } else if (dir === 'outgoing' && isOwnProfile && !expired) {
-                    actionHtml = '<button onclick="window._profileCancelOffer(\'' + escapeJsAttr(offer.nft_contract || offer.collection || '') + '\',\'' + escapeJsAttr(String(offer.token_id || '')) + '\')" style="background:#ef4444;color:white;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">Cancel</button>';
+                    actionHtml = '<button data-profile-action="cancel-offer" data-nft-contract="' + escapeHtml(offer.nft_contract || offer.collection || '') + '" data-token-id="' + escapeHtml(String(offer.token_id || '')) + '" style="background:#ef4444;color:white;border:none;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;">Cancel</button>';
                 }
 
                 return '<tr data-dir="' + dir + '">' +
@@ -887,12 +891,87 @@
     }
 
     // ===== Copy Address =====
-    window.copyAddress = function () {
+    function copyAddress() {
         var addr = profileAddress || '';
         if (navigator.clipboard) {
             navigator.clipboard.writeText(addr).then(function () { showToast('Address copied!', 'success'); });
         }
-    };
+    }
+
+    function bindRenderedControls() {
+        var copyProfileAddressBtn = document.getElementById('copyProfileAddressBtn');
+        if (copyProfileAddressBtn) {
+            copyProfileAddressBtn.addEventListener('click', copyAddress);
+        }
+
+        function bindGrid(gridId, actionHandler) {
+            var grid = document.getElementById(gridId);
+            if (!grid) return;
+            grid.addEventListener('click', function (event) {
+                var actionButton = event.target.closest('[data-profile-action]');
+                if (actionButton) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    actionHandler(actionButton);
+                    return;
+                }
+
+                var card = event.target.closest('[data-profile-href]');
+                if (!card) return;
+                window.location.href = card.getAttribute('data-profile-href');
+            });
+        }
+
+        bindGrid('collectedGrid', function (actionButton) {
+            var index = parseInt(actionButton.getAttribute('data-profile-index'), 10);
+            if (!Number.isFinite(index)) return;
+
+            var action = actionButton.getAttribute('data-profile-action');
+            if (action === 'update-price') {
+                window._profileUpdatePrice(index);
+            } else if (action === 'cancel-listing') {
+                window._profileCancelListing(index);
+            } else if (action === 'list-nft') {
+                window._profileListNFT(index);
+            } else if (action === 'create-auction') {
+                window._profileCreateAuction(index);
+            } else if (action === 'place-bid') {
+                window._profilePlaceBid(index);
+            }
+        });
+
+        bindGrid('createdGrid', function (actionButton) {
+            var index = parseInt(actionButton.getAttribute('data-profile-index'), 10);
+            if (!Number.isFinite(index)) return;
+            if (actionButton.getAttribute('data-profile-action') === 'collection-offer') {
+                window._profileMakeCollectionOffer(index);
+            }
+        });
+
+        bindGrid('favoritedGrid', function () { });
+
+        var offersTable = document.getElementById('offersTable');
+        if (offersTable) {
+            offersTable.addEventListener('click', function (event) {
+                var actionButton = event.target.closest('[data-profile-action]');
+                if (!actionButton) return;
+
+                var action = actionButton.getAttribute('data-profile-action');
+                if (action === 'accept-offer') {
+                    window._profileAcceptOffer(
+                        actionButton.getAttribute('data-offerer') || '',
+                        actionButton.getAttribute('data-nft-contract') || '',
+                        actionButton.getAttribute('data-token-id') || ''
+                    );
+                } else if (action === 'cancel-offer') {
+                    window._profileCancelOffer(
+                        actionButton.getAttribute('data-nft-contract') || '',
+                        actionButton.getAttribute('data-token-id') || ''
+                    );
+                }
+            });
+        }
+    }
 
     // ===== Events =====
     function setupEvents() {
@@ -1048,6 +1127,7 @@
     document.addEventListener('DOMContentLoaded', function () {
         console.log('Lichen Market Profile loading...');
         setupEvents();
+        bindRenderedControls();
         updateNav();
         loadProfile();
         console.log('Lichen Market Profile ready');

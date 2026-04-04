@@ -110,6 +110,7 @@ const ORDER_COUNT_KEY: &[u8] = b"dex_order_count";
 const TRADE_COUNT_KEY: &[u8] = b"dex_trade_count";
 const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
 const FEE_TREASURY_ADDR_KEY: &[u8] = b"dex_fee_treasury_addr";
+const FEE_TREASURY_EXPLICIT_KEY: &[u8] = b"dex_fee_treasury_explicit";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
@@ -148,6 +149,10 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
 
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
+}
+
+fn has_configured_address(key: &[u8]) -> bool {
+    storage_get(key).map(|d| d.len() >= 32).unwrap_or(false)
 }
 
 fn fee_recipient_addr() -> [u8; 32] {
@@ -977,7 +982,7 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
 }
 
 /// Set the fee treasury address (admin only).
-/// Returns: 0=success, 1=not admin, 200=caller mismatch
+/// Returns: 0=success, 1=not admin, 3=zero address, 4=already configured, 200=caller mismatch
 pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut t = [0u8; 32];
@@ -996,7 +1001,11 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     if is_zero(&t) {
         return 3;
     }
+    if storage_get(FEE_TREASURY_EXPLICIT_KEY).is_some() {
+        return 4;
+    }
     storage_set(FEE_TREASURY_ADDR_KEY, &t);
+    storage_set(FEE_TREASURY_EXPLICIT_KEY, &[1u8]);
     0
 }
 
@@ -2657,6 +2666,12 @@ pub fn set_analytics_address(caller: *const u8, analytics: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    if is_zero(&a) {
+        return 2;
+    }
+    if has_configured_address(ANALYTICS_ADDRESS_KEY.as_bytes()) {
+        return 3;
+    }
     storage_set(ANALYTICS_ADDRESS_KEY.as_bytes(), &a);
     log_info("DEX Core: analytics address set");
     0
@@ -2676,6 +2691,12 @@ pub fn set_margin_address(caller: *const u8, margin: *const u8) -> u32 {
     }
     if !require_admin(&c) {
         return 1;
+    }
+    if is_zero(&m) {
+        return 2;
+    }
+    if has_configured_address(MARGIN_ADDRESS_KEY.as_bytes()) {
+        return 3;
     }
     storage_set(MARGIN_ADDRESS_KEY.as_bytes(), &m);
     log_info("DEX Core: margin address set");
@@ -3362,6 +3383,18 @@ mod tests {
     }
 
     #[test]
+    fn test_set_fee_treasury_address_reconfiguration_rejected() {
+        let admin = setup();
+        let first = [42u8; 32];
+        let second = [43u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), first.as_ptr()), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(set_fee_treasury_address(admin.as_ptr(), second.as_ptr()), 4);
+        assert_eq!(fee_recipient_addr(), first);
+    }
+
+    #[test]
     fn test_claim_rebate_nothing() {
         let (admin, _pair_id) = setup_with_pair();
         let trader = [7u8; 32];
@@ -3383,6 +3416,22 @@ mod tests {
         test_mock::set_caller(trader);
         assert_eq!(claim_rebate(trader.as_ptr(), pair_id), 0);
         assert_eq!(load_u64(&rk), 0); // cleared after claim
+    }
+
+    #[test]
+    fn test_claim_rebate_still_works_when_paused() {
+        let (admin, pair_id) = setup_with_pair();
+        let trader = [7u8; 32];
+        let mut rk = Vec::from(&b"dex_rebate_"[..]);
+        rk.extend_from_slice(&pair_id.to_le_bytes());
+        rk.push(b'_');
+        rk.extend_from_slice(&trader);
+        save_u64(&rk, 500);
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+        test_mock::set_caller(trader);
+        assert_eq!(claim_rebate(trader.as_ptr(), pair_id), 0);
+        assert_eq!(load_u64(&rk), 0);
     }
 
     #[test]
@@ -4053,6 +4102,61 @@ mod tests {
     }
 
     #[test]
+    fn test_set_margin_address_zero_and_reconfiguration_rejected() {
+        let admin = setup();
+        let first_margin = [42u8; 32];
+        let second_margin = [43u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_margin_address(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+        test_mock::set_caller(admin);
+        assert_eq!(set_margin_address(admin.as_ptr(), first_margin.as_ptr()), 0);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_margin_address(admin.as_ptr(), second_margin.as_ptr()),
+            3
+        );
+        assert_eq!(load_addr(MARGIN_ADDRESS_KEY.as_bytes()), first_margin);
+    }
+
+    #[test]
+    fn test_set_analytics_address() {
+        let admin = setup();
+        let analytics = [44u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_analytics_address(admin.as_ptr(), analytics.as_ptr()), 0);
+        assert_eq!(load_addr(ANALYTICS_ADDRESS_KEY.as_bytes()), analytics);
+    }
+
+    #[test]
+    fn test_set_analytics_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let analytics = [44u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_analytics_address(rando.as_ptr(), analytics.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_analytics_address_zero_and_reconfiguration_rejected() {
+        let admin = setup();
+        let first_analytics = [44u8; 32];
+        let second_analytics = [45u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_analytics_address(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_analytics_address(admin.as_ptr(), first_analytics.as_ptr()),
+            0
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_analytics_address(admin.as_ptr(), second_analytics.as_ptr()),
+            3
+        );
+        assert_eq!(load_addr(ANALYTICS_ADDRESS_KEY.as_bytes()), first_analytics);
+    }
+
+    #[test]
     fn test_normal_order_unaffected_by_reduce_only_feature() {
         // Standard limit order (no reduce-only flag) should still work normally
         let (_admin, pair_id) = setup_with_pair();
@@ -4095,6 +4199,28 @@ mod tests {
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         let data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&data), STATUS_CANCELLED);
+    }
+
+    #[test]
+    fn test_cancel_order_still_works_when_paused() {
+        let (admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+            0,
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+        test_mock::set_caller(trader);
+        assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
     }
 
     #[test]
@@ -4169,6 +4295,38 @@ mod tests {
         let d2 = storage_get(&order_key(2)).unwrap();
         assert_eq!(decode_order_status(&d1), STATUS_CANCELLED);
         assert_eq!(decode_order_status(&d2), STATUS_CANCELLED);
+    }
+
+    #[test]
+    fn test_cancel_all_orders_still_work_when_paused() {
+        let (admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+            0,
+        );
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            2_000_000_000,
+            1000,
+            0,
+            0,
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(emergency_pause(admin.as_ptr()), 0);
+        test_mock::set_caller(trader);
+        assert_eq!(cancel_all_orders(trader.as_ptr(), pair_id), 0);
     }
 
     #[test]

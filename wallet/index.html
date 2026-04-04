@@ -23,80 +23,19 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+        integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#00C9DB">
     <script src="shared/utils.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"></script>
-    <script>
-        // Native Base58 implementation (Bitcoin alphabet, compatible with Rust bs58 crate)
-        const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-        const bs58 = {
-            encode: function (buffer) {
-                if (!buffer || buffer.length === 0) return '';
-
-                const digits = [0];
-                for (let i = 0; i < buffer.length; i++) {
-                    let carry = buffer[i];
-                    for (let j = 0; j < digits.length; j++) {
-                        carry += digits[j] << 8;
-                        digits[j] = carry % 58;
-                        carry = (carry / 58) | 0;
-                    }
-                    while (carry > 0) {
-                        digits.push(carry % 58);
-                        carry = (carry / 58) | 0;
-                    }
-                }
-
-                let output = '';
-                // Leading zeros
-                for (let i = 0; buffer[i] === 0 && i < buffer.length - 1; i++) {
-                    output += BASE58_ALPHABET[0];
-                }
-                // Encode digits
-                for (let i = digits.length - 1; i >= 0; i--) {
-                    output += BASE58_ALPHABET[digits[i]];
-                }
-
-                return output;
-            },
-
-            decode: function (string) {
-                if (!string || string.length === 0) return new Uint8Array(0);
-
-                const bytes = [0];
-                for (let i = 0; i < string.length; i++) {
-                    const value = BASE58_ALPHABET.indexOf(string[i]);
-                    if (value === -1) {
-                        throw new Error(`Invalid base58 character: ${string[i]}`);
-                    }
-
-                    let carry = value;
-                    for (let j = 0; j < bytes.length; j++) {
-                        carry += bytes[j] * 58;
-                        bytes[j] = carry & 0xff;
-                        carry >>= 8;
-                    }
-                    while (carry > 0) {
-                        bytes.push(carry & 0xff);
-                        carry >>= 8;
-                    }
-                }
-
-                // Leading zeros
-                for (let i = 0; string[i] === BASE58_ALPHABET[0] && i < string.length - 1; i++) {
-                    bytes.push(0);
-                }
-
-                return new Uint8Array(bytes.reverse());
-            }
-        };
-
-        // Base58 implementation loaded (compatible with Rust bs58 crate)
-    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"
+        integrity="sha512-CNgIRecGo7nphbeZ04Sc13ka07paqdeTu0WR1IM4kNcpmBAUSHSQX0FslNhTDadL4O5SAGapGt4FodqL8My0mA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"
+        integrity="sha512-l8ZGwlcmmNhyMXRweX0SqrZHIdfK3UgOSJsdSK5ozqlXOsZDogZFYp+TUzzI7pFYGUmzTCKZjS1q0nHiWOvs0g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="js/base58.js?v=20260403"></script>
 </head>
 
 <body class="wallet-body">
@@ -157,10 +96,10 @@
             </div>
 
             <div class="welcome-actions">
-                <button class="btn btn-primary btn-large" onclick="showCreateWallet()">
+                <button class="btn btn-primary btn-large" data-wallet-action="showCreateWallet">
                     <i class="fas fa-plus"></i> Create New Wallet
                 </button>
-                <button class="btn btn-secondary btn-large" onclick="showImportWallet()">
+                <button class="btn btn-secondary btn-large" data-wallet-action="showImportWallet">
                     <i class="fas fa-download"></i> Import Existing Wallet
                 </button>
             </div>
@@ -205,7 +144,7 @@
                         <input type="password" id="confirmPassword" class="form-input" placeholder="Confirm password">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="createWalletStep2()">
+                    <button class="btn btn-primary btn-large" data-wallet-action="createWalletStep2">
                         Continue <i class="fas fa-arrow-right"></i>
                     </button>
                 </div>
@@ -231,7 +170,7 @@
                         </div>
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="createWalletStep3()">
+                    <button class="btn btn-primary btn-large" data-wallet-action="createWalletStep3">
                         I've Written It Down <i class="fas fa-check"></i>
                     </button>
                 </div>
@@ -245,14 +184,15 @@
                         <!-- Confirm interface -->
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="finishCreateWallet()" id="confirmBtn" disabled>
+                    <button class="btn btn-primary btn-large" data-wallet-action="finishCreateWallet" id="confirmBtn"
+                        disabled>
                         Create Wallet <i class="fas fa-check-circle"></i>
                     </button>
                 </div>
             </div>
 
             <div class="wallet-footer">
-                <a href="#" onclick="showWelcome(); return false;"><i class="fas fa-arrow-left"></i> Back</a>
+                <a href="#" data-wallet-action="showWelcome"><i class="fas fa-arrow-left"></i> Back</a>
             </div>
         </div>
     </div>
@@ -291,7 +231,7 @@
                         <input type="password" id="importPassword" class="form-input" placeholder="Encrypt wallet">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletSeed()">
+                    <button class="btn btn-primary btn-large" data-wallet-action="importWalletSeed">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
@@ -309,7 +249,7 @@
                             placeholder="Encrypt wallet">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletPrivateKey()">
+                    <button class="btn btn-primary btn-large" data-wallet-action="importWalletPrivateKey">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
@@ -321,8 +261,7 @@
 
                     <div class="file-upload">
                         <input type="file" id="importJsonFile" accept=".json" style="display: none;">
-                        <button class="btn btn-secondary btn-large"
-                            onclick="document.getElementById('importJsonFile').click()">
+                        <button class="btn btn-secondary btn-large" data-wallet-trigger="importJsonFile">
                             <i class="fas fa-upload"></i> Choose File
                         </button>
                         <span id="fileName" class="file-name"></span>
@@ -334,14 +273,14 @@
                             placeholder="Decrypt keystore">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletJson()">
+                    <button class="btn btn-primary btn-large" data-wallet-action="importWalletJson">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
             </div>
 
             <div class="wallet-footer">
-                <a href="#" onclick="showWelcome(); return false;"><i class="fas fa-arrow-left"></i> Back</a>
+                <a href="#" data-wallet-action="showWelcome"><i class="fas fa-arrow-left"></i> Back</a>
             </div>
         </div>
     </div>
@@ -372,13 +311,13 @@
                 </div>
 
                 <div class="nav-actions">
-                    <button class="btn btn-small btn-secondary" onclick="showSettings()">
+                    <button class="btn btn-small btn-secondary" data-wallet-action="showSettings">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <button class="btn btn-small btn-primary" onclick="lockWallet()">
+                    <button class="btn btn-small btn-primary" data-wallet-action="lockWallet">
                         <i class="fas fa-lock"></i> <span>Lock</span>
                     </button>
-                    <button class="btn btn-small btn-danger" onclick="logoutWallet()">
+                    <button class="btn btn-small btn-danger" data-wallet-action="logoutWallet">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
                 </div>
@@ -392,7 +331,7 @@
                 <div class="balance-card">
                     <div class="balance-header">
                         <span class="balance-label">Total Balance</span>
-                        <button class="btn-icon" onclick="refreshBalance()">
+                        <button class="btn-icon" data-wallet-action="refreshBalance">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
@@ -401,15 +340,15 @@
                     <div id="balanceBreakdown" class="balance-breakdown"></div>
 
                     <div class="balance-actions">
-                        <button class="action-btn" onclick="showSend()">
+                        <button class="action-btn" data-wallet-action="showSend">
                             <i class="fas fa-arrow-up"></i>
                             <span>Send</span>
                         </button>
-                        <button class="action-btn" onclick="showReceive()">
+                        <button class="action-btn" data-wallet-action="showReceive">
                             <i class="fas fa-arrow-down"></i>
                             <span>Receive</span>
                         </button>
-                        <button class="action-btn" onclick="showReceive('deposit')">
+                        <button class="action-btn" data-wallet-action="showReceive" data-wallet-arg="deposit">
                             <i class="fas fa-plus-circle"></i>
                             <span>Deposit</span>
                         </button>
@@ -465,7 +404,7 @@
                             <span id="nftCount">0 NFTs</span>
                         </div>
                         <div class="nfts-header-right">
-                            <button class="btn-icon" onclick="refreshNFTs()">
+                            <button class="btn-icon" data-wallet-action="refreshNFTs">
                                 <i class="fas fa-sync-alt"></i>
                             </button>
                         </div>
@@ -480,7 +419,7 @@
                         <h3>No NFTs Yet</h3>
                         <p>Your collection will appear here once you mint or receive NFTs.</p>
                         <div class="nfts-empty-actions">
-                            <a href="#" class="btn btn-small btn-primary" onclick="openMarketplace(); return false;">
+                            <a href="#" class="btn btn-small btn-primary" data-wallet-action="openMarketplace">
                                 <i class="fas fa-store"></i> Browse Marketplace
                             </a>
                         </div>
@@ -522,15 +461,16 @@
                                 <div class="shield-balance-sub" id="shieldedBalanceSporesValue">0 spores</div>
                             </div>
                             <div class="shield-balance-actions">
-                                <button class="btn btn-shield btn-small" onclick="openShieldModal()">
+                                <button class="btn btn-shield btn-small" data-wallet-action="openShieldModal">
                                     <i class="fas fa-arrow-down"></i> Shield
                                 </button>
-                                <button class="btn btn-unshield btn-small" onclick="openUnshieldModal()">
+                                <button class="btn btn-unshield btn-small" data-wallet-action="openUnshieldModal">
                                     <i class="fas fa-arrow-up"></i> Unshield
                                 </button>
                             </div>
                         </div>
-                        <button class="btn btn-primary shield-transfer-btn" onclick="openShieldedTransferModal()">
+                        <button class="btn btn-primary shield-transfer-btn"
+                            data-wallet-action="openShieldedTransferModal">
                             <i class="fas fa-paper-plane"></i> Private Transfer
                         </button>
                     </div>
@@ -544,8 +484,8 @@
                             <label class="shield-key-label">Shielded Address</label>
                             <div class="address-display">
                                 <code id="shieldedAddressDisplay" class="shield-key-value">Not initialized</code>
-                                <button class="btn-icon" onclick="copyShieldedAddress(this)"
-                                    title="Copy shielded address">
+                                <button class="btn-icon" data-wallet-action="copyShieldedAddress"
+                                    data-wallet-pass-el="true" title="Copy shielded address">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -554,11 +494,12 @@
                             <label class="shield-key-label">Viewing Key</label>
                             <div class="address-display">
                                 <code id="viewingKeyDisplay" class="shield-key-value">Click eye icon to reveal</code>
-                                <button class="btn-icon" onclick="toggleViewingKey(this)"
-                                    title="Show / hide viewing key">
+                                <button class="btn-icon" data-wallet-action="toggleViewingKey"
+                                    data-wallet-pass-el="true" title="Show / hide viewing key">
                                     <i class="fas fa-eye-slash"></i>
                                 </button>
-                                <button class="btn-icon" onclick="copyViewingKey(this)" title="Copy viewing key">
+                                <button class="btn-icon" data-wallet-action="copyViewingKey" data-wallet-pass-el="true"
+                                    title="Copy viewing key">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -623,14 +564,14 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-up"></i> Send</h3>
-                <button class="modal-close" onclick="closeModal('sendModal')">
+                <button class="modal-close" data-wallet-action="closeModal" data-wallet-arg="sendModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label>Token</label>
-                    <select id="sendToken" class="form-input" onchange="updateSendTokenUI()">
+                    <select id="sendToken" class="form-input" data-wallet-change="updateSendTokenUI">
                         <option value="LICN">LICN</option>
                     </select>
                 </div>
@@ -643,7 +584,7 @@
                     <label>Amount</label>
                     <div class="amount-input">
                         <input type="number" id="sendAmount" class="form-input" placeholder="0.00">
-                        <span class="amount-max" onclick="setMaxAmount()">MAX</span>
+                        <span class="amount-max" data-wallet-action="setMaxAmount">MAX</span>
                     </div>
                     <div id="sendAvailableBalance" class="send-available-balance"></div>
                 </div>
@@ -653,8 +594,9 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('sendModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="confirmSend()">Send</button>
+                <button class="btn btn-secondary" data-wallet-action="closeModal"
+                    data-wallet-arg="sendModal">Cancel</button>
+                <button class="btn btn-primary" data-wallet-action="confirmSend">Send</button>
             </div>
         </div>
     </div>
@@ -663,17 +605,19 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-down"></i> Receive Assets</h3>
-                <button class="modal-close" onclick="closeModal('receiveModal')">
+                <button class="modal-close" data-wallet-action="closeModal" data-wallet-arg="receiveModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div class="modal-body receive-modal">
                 <!-- Tabs: Receive | Deposit -->
                 <div class="receive-tabs" id="receiveTabs">
-                    <button class="receive-tab active" data-tab="receive" onclick="switchReceiveTab('receive')">
+                    <button class="receive-tab active" data-tab="receive" data-wallet-action="switchReceiveTab"
+                        data-wallet-arg="receive">
                         <i class="fas fa-qrcode"></i> Receive
                     </button>
-                    <button class="receive-tab" data-tab="deposit" onclick="switchReceiveTab('deposit')">
+                    <button class="receive-tab" data-tab="deposit" data-wallet-action="switchReceiveTab"
+                        data-wallet-arg="deposit">
                         <i class="fas fa-plus-circle"></i> Deposit
                     </button>
                 </div>
@@ -698,8 +642,8 @@
                         <div class="address-display">
                             <input type="text" id="walletAddress" class="form-input" readonly
                                 style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('native', this)"
-                                title="Copy native address">
+                            <button class="btn-circle" data-wallet-action="copyAddress" data-wallet-arg="native"
+                                data-wallet-pass-el="true" title="Copy native address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -714,7 +658,8 @@
                         <div class="address-display">
                             <input type="text" id="walletAddressEVM" class="form-input" readonly
                                 style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('evm', this)" title="Copy EVM address">
+                            <button class="btn-circle" data-wallet-action="copyAddress" data-wallet-arg="evm"
+                                data-wallet-pass-el="true" title="Copy EVM address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -741,7 +686,7 @@
                     </p>
 
                     <div class="deposit-options">
-                        <div class="deposit-card" onclick="showDepositInfo('SOL')">
+                        <div class="deposit-card" data-wallet-action="showDepositInfo" data-wallet-arg="SOL">
                             <div class="deposit-card-icon"
                                 style="background: rgba(153, 69, 255, 0.12); color: #9945FF;">
                                 <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" alt="Solana"
@@ -754,7 +699,7 @@
                             <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
                         </div>
 
-                        <div class="deposit-card" onclick="showDepositInfo('ETH')">
+                        <div class="deposit-card" data-wallet-action="showDepositInfo" data-wallet-arg="ETH">
                             <div class="deposit-card-icon"
                                 style="background: rgba(98, 126, 234, 0.12); color: #627EEA;">
                                 <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" alt="Ethereum"
@@ -767,7 +712,7 @@
                             <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
                         </div>
 
-                        <div class="deposit-card" onclick="showDepositInfo('BNB')">
+                        <div class="deposit-card" data-wallet-action="showDepositInfo" data-wallet-arg="BNB">
                             <div class="deposit-card-icon"
                                 style="background: rgba(240, 185, 11, 0.12); color: #F0B90B;">
                                 <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" alt="BNB"
@@ -807,7 +752,7 @@
         <div class="modal-content settings-modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-cog"></i> Settings</h3>
-                <button class="modal-close" onclick="closeSettingsModal()">
+                <button class="modal-close" data-wallet-action="closeSettingsModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
@@ -823,7 +768,7 @@
                         <p>Backup your wallet securely</p>
                     </div>
                     <div class="settings-card-body">
-                        <button class="settings-btn" onclick="showExportPrivateKey()">
+                        <button class="settings-btn" data-wallet-action="showExportPrivateKey">
                             <div class="settings-btn-content">
                                 <i class="fas fa-key"></i>
                                 <div>
@@ -833,7 +778,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="showExportJSON()">
+                        <button class="settings-btn" data-wallet-action="showExportJSON">
                             <div class="settings-btn-content">
                                 <i class="fas fa-file-code"></i>
                                 <div>
@@ -843,7 +788,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="showExportMnemonic()">
+                        <button class="settings-btn" data-wallet-action="showExportMnemonic">
                             <div class="settings-btn-content">
                                 <i class="fas fa-list-ol"></i>
                                 <div>
@@ -885,7 +830,14 @@
                             <input type="text" id="testnetRPC" class="form-input"
                                 placeholder="https://testnet-rpc.lichen.network">
                         </div>
-                        <button class="btn btn-primary" onclick="saveNetworkSettings()">
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.5;">
+                            Custom RPC overrides only affect transaction transport and generic account reads. Token
+                            contracts and contract resolution are verified against signed metadata manifests, while
+                            bridge
+                            routing stays pinned to trusted network endpoints.
+                            Leave a field blank to use the official endpoint.
+                        </p>
+                        <button class="btn btn-primary" data-wallet-action="saveNetworkSettings">
                             <i class="fas fa-save"></i> Save Changes
                         </button>
                     </div>
@@ -903,7 +855,7 @@
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Auto-Lock Timer</label>
-                            <select id="autoLockTimer" class="form-input" onchange="saveAutoLockTimer()">
+                            <select id="autoLockTimer" class="form-input" data-wallet-change="saveAutoLockTimer">
                                 <option value="0">Never</option>
                                 <option value="5">5 minutes</option>
                                 <option value="15" selected>15 minutes</option>
@@ -911,7 +863,7 @@
                                 <option value="60">1 hour</option>
                             </select>
                         </div>
-                        <button class="settings-btn" onclick="showChangePassword()">
+                        <button class="settings-btn" data-wallet-action="showChangePassword">
                             <div class="settings-btn-content">
                                 <i class="fas fa-lock"></i>
                                 <div>
@@ -936,7 +888,7 @@
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Currency Display</label>
-                            <select id="currencyDisplay" class="form-input" onchange="saveCurrencyDisplay()">
+                            <select id="currencyDisplay" class="form-input" data-wallet-change="saveCurrencyDisplay">
                                 <option value="USD" selected>USD ($)</option>
                                 <option value="EUR">EUR (€)</option>
                                 <option value="GBP">GBP (£)</option>
@@ -950,7 +902,7 @@
                                     title="Lichen uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i
                                         class="fas fa-info-circle"></i></span>
                             </label>
-                            <select id="decimalPlaces" class="form-input" onchange="saveDecimalPlaces()">
+                            <select id="decimalPlaces" class="form-input" data-wallet-change="saveDecimalPlaces">
                                 <option value="2">2 decimals (0.00)</option>
                                 <option value="4">4 decimals (0.0000)</option>
                                 <option value="6" selected>6 decimals (0.000000)</option>
@@ -971,7 +923,7 @@
                         <p>Manage current wallet</p>
                     </div>
                     <div class="settings-card-body">
-                        <button class="settings-btn" onclick="showRenameWallet()">
+                        <button class="settings-btn" data-wallet-action="showRenameWallet">
                             <div class="settings-btn-content">
                                 <i class="fas fa-edit"></i>
                                 <div>
@@ -981,7 +933,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="clearTransactionHistory()">
+                        <button class="settings-btn" data-wallet-action="clearTransactionHistory">
                             <div class="settings-btn-content">
                                 <i class="fas fa-eraser"></i>
                                 <div>
@@ -991,7 +943,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn danger" onclick="showDeleteWallet()">
+                        <button class="settings-btn danger" data-wallet-action="showDeleteWallet">
                             <div class="settings-btn-content">
                                 <i class="fas fa-trash"></i>
                                 <div>
@@ -1042,7 +994,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-down"></i> Shield LICN</h3>
-                <button class="modal-close" onclick="closeModal('shieldModal')">
+                <button class="modal-close" data-wallet-action="closeModal" data-wallet-arg="shieldModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
@@ -1057,8 +1009,7 @@
                     <div class="amount-input">
                         <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001"
                             min="0">
-                        <span class="amount-max"
-                            onclick="document.getElementById('shieldAmount').value = (window.walletBalance || 0).toFixed(4)">MAX</span>
+                        <span class="amount-max" data-wallet-action="fillShieldMax">MAX</span>
                     </div>
                 </div>
                 <div class="fee-estimate">
@@ -1067,8 +1018,9 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('shieldModal')">Cancel</button>
-                <button class="btn btn-shield" onclick="confirmShield()">
+                <button class="btn btn-secondary" data-wallet-action="closeModal"
+                    data-wallet-arg="shieldModal">Cancel</button>
+                <button class="btn btn-shield" data-wallet-action="confirmShield">
                     <i class="fas fa-shield-alt"></i> Shield
                 </button>
             </div>
@@ -1080,7 +1032,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-up"></i> Unshield LICN</h3>
-                <button class="modal-close" onclick="closeModal('unshieldModal')">
+                <button class="modal-close" data-wallet-action="closeModal" data-wallet-arg="unshieldModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
@@ -1108,8 +1060,9 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('unshieldModal')">Cancel</button>
-                <button class="btn btn-unshield" onclick="confirmUnshield()">
+                <button class="btn btn-secondary" data-wallet-action="closeModal"
+                    data-wallet-arg="unshieldModal">Cancel</button>
+                <button class="btn btn-unshield" data-wallet-action="confirmUnshield">
                     <i class="fas fa-unlock"></i> Unshield
                 </button>
             </div>
@@ -1121,7 +1074,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-paper-plane"></i> Private Transfer</h3>
-                <button class="modal-close" onclick="closeModal('shieldedTransferModal')">
+                <button class="modal-close" data-wallet-action="closeModal" data-wallet-arg="shieldedTransferModal">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
@@ -1153,8 +1106,9 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('shieldedTransferModal')">Cancel</button>
-                <button class="btn btn-shield" onclick="confirmShieldedTransfer()">
+                <button class="btn btn-secondary" data-wallet-action="closeModal"
+                    data-wallet-arg="shieldedTransferModal">Cancel</button>
+                <button class="btn btn-shield" data-wallet-action="confirmShieldedTransfer">
                     <i class="fas fa-paper-plane"></i> Send Privately
                 </button>
             </div>
@@ -1168,78 +1122,7 @@
     <script src="js/identity.js?v=20260306"></script>
     <script src="js/crypto.js?v=20260306"></script>
     <script src="js/shielded.js?v=20260306"></script>
-    <script>
-        /* Welcome carousel */
-        (function () {
-            const slides = document.querySelectorAll('.carousel-slide');
-            const dots = document.querySelectorAll('.carousel-dot');
-            if (!slides.length) return;
-
-            let current = 0;
-            let timer = null;
-            const INTERVAL = 4000;
-
-            function goTo(idx) {
-                slides[current].classList.remove('active');
-                dots[current].classList.remove('active');
-                current = (idx + slides.length) % slides.length;
-                slides[current].classList.add('active');
-                dots[current].classList.add('active');
-            }
-
-            function startAuto() { timer = setInterval(function () { goTo(current + 1); }, INTERVAL); }
-            function stopAuto() { clearInterval(timer); }
-
-            dots.forEach(function (dot) {
-                dot.addEventListener('click', function () {
-                    stopAuto();
-                    goTo(Number(this.dataset.slide));
-                    startAuto();
-                });
-            });
-
-            var track = document.querySelector('.carousel-track');
-            if (track) {
-                track.addEventListener('mouseenter', stopAuto);
-                track.addEventListener('mouseleave', startAuto);
-            }
-
-            startAuto();
-        })();
-    </script>
-    <script>
-        // Service Worker registration with auto-update
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('./sw.js').then(function (reg) {
-                // Check for updates every 30 minutes
-                setInterval(function () { reg.update(); }, 30 * 60 * 1000);
-                reg.addEventListener('updatefound', function () {
-                    var newWorker = reg.installing;
-                    if (newWorker) {
-                        newWorker.addEventListener('statechange', function () {
-                            if (newWorker.state === 'activated') {
-                                // New version installed — reload to apply
-                                window.location.reload();
-                            }
-                        });
-                    }
-                });
-            });
-            // Listen for SW update notifications
-            navigator.serviceWorker.addEventListener('message', function (e) {
-                if (e.data && e.data.type === 'SW_UPDATED') {
-                    // Clear any stale application caches
-                    if (window.caches) {
-                        window.caches.keys().then(function (keys) {
-                            keys.forEach(function (k) {
-                                if (k !== e.data.version) window.caches.delete(k);
-                            });
-                        });
-                    }
-                }
-            });
-        }
-    </script>
+    <script src="js/wallet-bootstrap.js?v=20260403"></script>
 </body>
 
 </html>

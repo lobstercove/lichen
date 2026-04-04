@@ -16,6 +16,28 @@ function normalizeHexString(value) {
     return value.startsWith('0x') ? value : `0x${value}`;
 }
 
+function bindStaticControls() {
+    document.getElementById('copyTxHashBtn')?.addEventListener('click', () => {
+        copyToClipboard((document.getElementById('txHash')?.dataset?.full) || '');
+    });
+    document.getElementById('copyProofRootBtn')?.addEventListener('click', () => {
+        copyToClipboard((document.getElementById('proofRoot')?.dataset?.full) || '');
+    });
+    document.getElementById('copyTxRawDataBtn')?.addEventListener('click', () => {
+        copyToClipboard(document.getElementById('rawData')?.textContent || '');
+    });
+}
+
+function bindSignatureCopyButtons() {
+    document.querySelectorAll('#signaturesList .copy-icon[data-copy]').forEach((button) => {
+        if (button.dataset.bound === '1') return;
+        button.addEventListener('click', () => {
+            safeCopy(button);
+        });
+        button.dataset.bound = '1';
+    });
+}
+
 function describeSignature(signature) {
     if (!signature) {
         return { signatureText: 'N/A', copyText: 'N/A', schemeVersion: null, publicKeyText: null };
@@ -656,7 +678,7 @@ async function displayTransaction(tx) {
                             <div class="detail-label">Signature #${idx + 1}</div>
                             <div class="detail-value">
                                 <code title="${safeSignature}">${formatHash(signatureInfo.signatureText)}</code>
-                                <button class="copy-icon" data-copy="${safeCopy}" onclick="safeCopy(this)">
+                                <button class="copy-icon" data-copy="${safeCopy}">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -668,6 +690,8 @@ async function displayTransaction(tx) {
             `;
         }).join('');
     }
+
+    bindSignatureCopyButtons();
 
     // Raw data
     const rawTx = shieldedTx ? redactShieldedTransaction(tx) : tx;
@@ -733,5 +757,6 @@ document.getElementById('searchInput')?.addEventListener('keypress', async (e) =
 
 // Initialize
 window.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     loadTransaction();
 });

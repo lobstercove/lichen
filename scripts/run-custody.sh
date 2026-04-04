@@ -14,9 +14,38 @@ case $NETWORK in
     ;;
 esac
 
+require_local_dev() {
+  if [ "${LICHEN_LOCAL_DEV:-0}" != "1" ]; then
+    echo "run-custody.sh is restricted to explicit local development." >&2
+    echo "Export LICHEN_LOCAL_DEV=1 to continue, or run lichen-custody directly with explicit production configuration." >&2
+    exit 1
+  fi
+}
+
+generate_local_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+    return 0
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+    return 0
+  fi
+
+  echo "python3 or openssl is required to generate a local custody auth token" >&2
+  return 1
+}
+
+require_local_dev
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 cd "$REPO_ROOT" || exit 1
+LOCAL_CUSTODY_TOKEN_FILE="$REPO_ROOT/tests/artifacts/local_cluster/custody-api-auth-token"
 
 # In dev/insecure mode skip remote signers entirely (single-key local custody).
 if [ "${CUSTODY_ALLOW_INSECURE_SEED:-0}" = "1" ]; then
@@ -35,6 +64,16 @@ else
       CUSTODY_SIGNER_THRESHOLD=2
     fi
     export CUSTODY_SIGNER_THRESHOLD
+  fi
+
+  if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
+    if [ -n "${LICHEN_SIGNER_AUTH_TOKEN:-}" ]; then
+      export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
+    else
+      echo "CUSTODY_SIGNER_AUTH_TOKEN or CUSTODY_SIGNER_AUTH_TOKENS must be set for multi-signer local custody." >&2
+      echo "Export LICHEN_SIGNER_AUTH_TOKEN before starting validators and custody so both sides share the same signer auth secret." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -60,6 +99,16 @@ fi
 
 if [ -z "${CUSTODY_TREASURY_KEYPAIR:-}" ]; then
   export CUSTODY_TREASURY_KEYPAIR="./data/state-${NETWORK}/genesis-keys/treasury-lichen-${NETWORK}-1.json"
+fi
+
+if [ -z "${CUSTODY_API_AUTH_TOKEN:-}" ]; then
+  if [ -f "$LOCAL_CUSTODY_TOKEN_FILE" ]; then
+    export CUSTODY_API_AUTH_TOKEN="$(cat "$LOCAL_CUSTODY_TOKEN_FILE")"
+    echo "Loaded local CUSTODY_API_AUTH_TOKEN from $LOCAL_CUSTODY_TOKEN_FILE"
+  else
+    export CUSTODY_API_AUTH_TOKEN="$(generate_local_token)"
+    echo "Generated an ephemeral local CUSTODY_API_AUTH_TOKEN for this run"
+  fi
 fi
 
 echo "🦞 Starting Lichen Custody"

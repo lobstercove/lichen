@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 
 from lichen import Connection, Keypair, PublicKey
-from deploy_dex import call_contract_raw
+from deploy_dex import call_contract_raw, load_genesis_keypair
 
 SPORES = 1_000_000_000
 
@@ -16,13 +16,13 @@ def price_to_tick(p, tick_spacing=60):
     return (raw // tick_spacing) * tick_spacing
 
 async def approve_token(conn, caller, token_contract, spender_pubkey, amount):
-    owner_bytes = bytes(caller.public_key().to_bytes())
+    owner_bytes = bytes(caller.address().to_bytes())
     spender_bytes = bytes(spender_pubkey.to_bytes())
     args = list(owner_bytes + spender_bytes + struct.pack('<Q', amount))
     return await call_contract_raw(conn, caller, token_contract, 'approve', args)
 
 async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_tick, amount_a, amount_b, value=0):
-    caller_bytes = bytes(caller.public_key().to_bytes())
+    caller_bytes = bytes(caller.address().to_bytes())
     args = (
         bytes([3]) +
         caller_bytes +
@@ -36,7 +36,7 @@ async def add_amm_liquidity(conn, caller, dex_amm, pool_id, lower_tick, upper_ti
 
 async def main():
     conn = Connection('http://127.0.0.1:8899')
-    reserve = Keypair.load(Path('data/state-testnet/genesis-keys/reserve_pool-lichen-testnet-1.json'))
+    reserve = load_genesis_keypair('reserve_pool')
     print(f"Reserve: {reserve.public_key()}")
 
     r = await conn._rpc('getAllSymbolRegistry')

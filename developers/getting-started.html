@@ -66,6 +66,7 @@
                 <a href="#prerequisites" class="sidebar-link">Prerequisites</a>
                 <a href="#install-cli" class="sidebar-link">Install CLI</a>
                 <a href="#create-wallet" class="sidebar-link">Create Wallet</a>
+                <a href="#browser-wallet-safety" class="sidebar-link">Browser Wallet Safety</a>
                 <a href="#get-tokens" class="sidebar-link">Get Testnet Tokens</a>
                 <a href="#first-transfer" class="sidebar-link">First Transfer</a>
                 <a href="#deploy-contract" class="sidebar-link">Deploy a Contract</a>
@@ -273,6 +274,19 @@ command -v lichen</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen wallet import my-wallet --keypair ~/backup/wallet.json</code></pre>
+            </div>
+
+            <h3 id="browser-wallet-safety">Browser Wallet Safety</h3>
+
+            <p>If you later switch from the CLI to the browser wallet or the developer portals, treat custom RPC
+                endpoints as transport only.</p>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-shield-alt"></i> Trusted Metadata Paths</div>
+                Token registry, contract resolution, and other browser control-plane metadata are loaded through
+                <code>getSignedMetadataManifest</code> and verified against the pinned release signer before the UI
+                trusts them. Generic chain reads can still use your selected RPC, but high-trust metadata and bridge
+                control-plane reads do not downgrade to arbitrary endpoints.
             </div>
 
             <!-- ========== 4. GET TESTNET TOKENS ========== -->
@@ -507,18 +521,6 @@ pub struct GreetingAccount {
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        (function () {
-            // Wire up nav search input to open ⌘K overlay
-            const navInput = document.getElementById('searchInput');
-            if (navInput) {
-                navInput.addEventListener('focus', () => {
-                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                    navInput.blur();
-                });
-            }
-        })();
-    </script>
 </body>
 
 </html>

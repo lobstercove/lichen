@@ -15,9 +15,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
-    get_timestamp, get_value, log_info, storage_get, storage_set, transfer_token_or_native,
-    u64_to_bytes, Address, CrossCall, Pool,
+    bytes_to_u64, call_contract, get_caller, get_contract_address, get_timestamp, get_value,
+    log_info, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    Pool,
 };
 
 // ============================================================================
@@ -68,6 +68,18 @@ fn is_ms_admin(caller: &[u8]) -> bool {
     storage_get(MS_ADMIN_KEY)
         .map(|d| d.as_slice() == caller)
         .unwrap_or(false)
+}
+
+fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
+    storage_get(key).and_then(|bytes| {
+        if bytes.len() != 32 {
+            return None;
+        }
+
+        let mut addr = [0u8; 32];
+        addr.copy_from_slice(&bytes[..32]);
+        Some(addr)
+    })
 }
 
 fn reentrancy_enter() -> bool {
@@ -999,6 +1011,16 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
         return 2;
     }
 
+    if lichenid_addr == [0u8; 32] {
+        log_info("set_lichenid_address rejected: zero address");
+        return 3;
+    }
+
+    if load_configured_address(LICHENID_ADDR_KEY).is_some() {
+        log_info("set_lichenid_address rejected: already configured");
+        return 4;
+    }
+
     storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
     log_info("LichenID address configured");
     0
@@ -1473,6 +1495,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_set_lichenid_address_rejects_zero_and_reconfiguration() {
+        setup();
+
+        let admin = [1u8; 32];
+        let first = [0x42u8; 32];
+        let second = [0x43u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        assert_eq!(set_lichenid_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), first.as_ptr()), 0);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), second.as_ptr()), 4);
+
+        let stored = test_mock::get_storage(LICHENID_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &first);
+    }
+
     // =============================================
     // v2 TESTS: TWAP ORACLE
     // =============================================
@@ -1788,6 +1828,45 @@ mod tests {
         let amount_b = u64::from_le_bytes(out_b);
         assert!(amount_a > 0, "Should receive token A back");
         assert!(amount_b > 0, "Should receive token B back");
+    }
+
+    #[test]
+    fn test_remove_liquidity_still_works_when_paused() {
+        setup();
+        let admin = [1u8; 32];
+        let token_a = [2u8; 32];
+        let token_b = [3u8; 32];
+
+        test_mock::set_caller(admin);
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [4u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        let liq = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+        assert!(liq > 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(ms_pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(provider);
+        let mut out_a = [0u8; 8];
+        let mut out_b = [0u8; 8];
+        let result = remove_liquidity(
+            provider.as_ptr(),
+            liq,
+            0,
+            0,
+            out_a.as_mut_ptr(),
+            out_b.as_mut_ptr(),
+        );
+        assert_eq!(
+            result, 1,
+            "Remove liquidity should remain available while paused"
+        );
+
+        assert!(u64::from_le_bytes(out_a) > 0);
+        assert!(u64::from_le_bytes(out_b) > 0);
     }
 
     #[test]

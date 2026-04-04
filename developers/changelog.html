@@ -654,49 +654,6 @@
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
-    <script>
-        (function () {
-            // Wire up nav search input to open ⌘K overlay
-            const navInput = document.getElementById('searchInput');
-            if (navInput) {
-                navInput.addEventListener('focus', () => {
-                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                    navInput.blur();
-                });
-            }
-
-            // Filter buttons
-            const filterBtns = document.querySelectorAll('.changelog-filter-btn');
-            const entries = document.querySelectorAll('.changelog-entry');
-
-            filterBtns.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    filterBtns.forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    const filter = btn.dataset.filter;
-
-                    entries.forEach(entry => {
-                        if (filter === 'all') {
-                            entry.style.display = '';
-                            entry.querySelectorAll('.changelog-section').forEach(s => s.style.display = '');
-                            return;
-                        }
-                        const sections = entry.querySelectorAll('.changelog-section');
-                        let hasMatch = false;
-                        sections.forEach(s => {
-                            if (s.dataset.type === filter) {
-                                s.style.display = '';
-                                hasMatch = true;
-                            } else {
-                                s.style.display = 'none';
-                            }
-                        });
-                        entry.style.display = hasMatch ? '' : 'none';
-                    });
-                });
-            });
-        })();
-    </script>
 </body>
 
 </html>

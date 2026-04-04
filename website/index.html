@@ -4,17 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage</title>
+    <title>Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage</title>
     <meta name="description"
-        content="Lichen is a post-quantum Layer 1 for agents, payments, commerce, communication, programs, storage, and markets. ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost finality.">
+        content="Lichen is a Post-quantum L1 for agents, payments, commerce, communication, programs, storage, and markets. ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost finality.">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage">
+    <meta property="og:title" content="Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage">
     <meta property="og:description"
         content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta property="og:image" content="Lichen_Logo_256.png">
     <meta property="og:url" content="https://lichen.network">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Lichen — Post-Quantum Layer 1 for Agents, Payments, Commerce, and Storage">
+    <meta name="twitter:title" content="Lichen — Post-quantum L1 for Agents, Payments, Commerce, and Storage">
     <meta name="twitter:description"
         content="ML-DSA-65 signing, transparent STARK privacy, dual WASM + EVM execution, and low-cost infrastructure for agents, payments, commerce, communication, storage, and markets.">
     <meta name="twitter:image" content="Lichen_Logo_256.png">
@@ -96,7 +96,7 @@
                         <i class="fas fa-layer-group"></i> Post-Quantum Security · WASM + EVM · Payments · Storage
                     </div>
                     <h1 class="hero-title">
-                        Post-quantum Layer 1 for<br>
+                        Post-quantum L1 for<br>
                         <span class="hero-rotating-text"
                             aria-label="agents, payments, programs, commerce, storage, markets, communication">
                             <span id="heroRotatingWord" class="gradient-text hero-rotating-word">agents</span><span
@@ -1673,8 +1673,8 @@
                         <h3>Step 1: Install CLI</h3>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i
-                                        class="fas fa-copy"></i></button>
+                                <button class="copy-btn" data-website-action="copy-code"
+                                    aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">terminal</span>
                             </div>
                             <div class="code-content">
@@ -1695,8 +1695,8 @@ cargo build --release --bin lichen
                         <h3>Step 2: Create Your Identity</h3>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i
-                                        class="fas fa-copy"></i></button>
+                                <button class="copy-btn" data-website-action="copy-code"
+                                    aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">terminal</span>
                             </div>
                             <div class="code-content">
@@ -1719,8 +1719,8 @@ cargo build --release --bin lichen
                         <h3>Step 3: Write a Contract (Rust → WASM)</h3>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i
-                                        class="fas fa-copy"></i></button>
+                                <button class="copy-btn" data-website-action="copy-code"
+                                    aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">contracts/counter/src/lib.rs</span>
                             </div>
                             <div class="code-content">
@@ -1754,8 +1754,8 @@ pub extern "C" fn reset() {
                         <h3>Step 4: Build &amp; Deploy</h3>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i
-                                        class="fas fa-copy"></i></button>
+                                <button class="copy-btn" data-website-action="copy-code"
+                                    aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">terminal</span>
                             </div>
                             <div class="code-content">
@@ -1780,8 +1780,8 @@ python3 tools/deploy_contract.py counter.wasm
                         <h3>Step 5: Call via JSON-RPC</h3>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i
-                                        class="fas fa-copy"></i></button>
+                                <button class="copy-btn" data-website-action="copy-code"
+                                    aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">JavaScript</span>
                             </div>
                             <div class="code-content">
@@ -1847,7 +1847,7 @@ console.log('Balance:', result); // { spores, licn }</code></pre>
                             </div>
                             <div class="code-example">
                                 <div class="code-header">
-                                    <button class="copy-btn" onclick="copyCode(this)"
+                                    <button class="copy-btn" data-website-action="copy-code"
                                         aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                     <span class="code-title">Response</span>
                                 </div>
@@ -1921,7 +1921,7 @@ console.log('Balance:', result); // { spores, licn }</code></pre>
                             </div>
                             <div class="code-example">
                                 <div class="code-header">
-                                    <button class="copy-btn" onclick="copyCode(this)"
+                                    <button class="copy-btn" data-website-action="copy-code"
                                         aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                     <span class="code-title">Response</span>
                                 </div>

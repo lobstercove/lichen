@@ -54,6 +54,7 @@ function initProgramsNetworkSelector() {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('✅ Landing page initialized');
     initProgramsNetworkSelector();
+    bindStaticControls();
 
     // Setup event listeners
     setupWizardTabs();
@@ -113,6 +114,28 @@ function setupLanguageTabs() {
                 targetContent.classList.add('active');
             }
         });
+    });
+}
+
+function bindStaticControls() {
+    document.addEventListener('click', (event) => {
+        const control = event.target.closest('[data-programs-action]');
+        if (!control) {
+            return;
+        }
+
+        switch (control.dataset.programsAction) {
+            case 'copy-code':
+                copyCode(control);
+                break;
+            case 'view-code':
+                if (control.dataset.example) {
+                    viewCode(control.dataset.example);
+                }
+                break;
+            default:
+                break;
+        }
     });
 }
 

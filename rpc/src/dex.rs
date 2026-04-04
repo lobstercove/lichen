@@ -19,6 +19,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use crate::RpcState;
+use lichen_core::account::Pubkey;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -499,6 +500,21 @@ fn read_addr_hex(state: &crate::RpcState, program: &str, key: &str) -> String {
 /// Get current slot
 fn current_slot(state: &crate::RpcState) -> u64 {
     state.state.get_last_slot().unwrap_or(0)
+}
+
+fn normalize_account_lookup(addr: &str) -> String {
+    let trimmed = addr.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.len() == 64 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return trimmed.to_lowercase();
+    }
+
+    Pubkey::from_base58(trimmed)
+        .map(|pubkey| hex::encode(pubkey.0))
+        .unwrap_or_else(|_| trimmed.to_lowercase())
 }
 
 /// Symbol map cache: (last_refresh, cached_map). Refreshes every 30 seconds.
@@ -1237,8 +1253,8 @@ async fn get_trades(
     Query(q): Query<LimitQuery>,
 ) -> Response {
     let limit = q.limit.unwrap_or(50).min(200);
-    // F4.4: Support optional trader filter (hex-encoded pubkey)
-    let trader_filter = q.trader.as_deref().unwrap_or("").to_lowercase();
+    // F4.4: Support optional trader filter using either hex or base58 addresses.
+    let trader_filter = normalize_account_lookup(q.trader.as_deref().unwrap_or(""));
     let slot = current_slot(&state);
     let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
 
@@ -1603,7 +1619,7 @@ async fn get_orders(State(state): State<Arc<RpcState>>, Query(q): Query<TraderQu
     let slot = current_slot(&state);
 
     let trader_hex = match &q.trader {
-        Some(t) => t.to_lowercase(),
+        Some(t) => normalize_account_lookup(t),
         None => return api_err("trader parameter required"),
     };
 
@@ -1697,7 +1713,7 @@ async fn get_lp_positions(
     let slot = current_slot(&state);
 
     let owner_hex = match &q.owner {
-        Some(o) => o.to_lowercase(),
+        Some(o) => normalize_account_lookup(o),
         None => return api_err("owner parameter required"),
     };
 
@@ -2200,7 +2216,7 @@ async fn get_margin_positions(
     let slot = current_slot(&state);
 
     let trader_hex = match &q.trader {
-        Some(t) => t.to_lowercase(),
+        Some(t) => normalize_account_lookup(t),
         None => return api_err("trader parameter required"),
     };
 
@@ -2399,7 +2415,7 @@ async fn get_leaderboard(
 /// GET /api/v1/rewards/:addr — Pending rewards
 async fn get_rewards(State(state): State<Arc<RpcState>>, Path(addr): Path<String>) -> Response {
     let slot = current_slot(&state);
-    let addr_hex = addr.to_lowercase();
+    let addr_hex = normalize_account_lookup(&addr);
 
     let info = RewardInfoJson {
         pending: read_u64(
@@ -2485,7 +2501,7 @@ async fn get_trader_stats(
     Path(addr): Path<String>,
 ) -> Response {
     let slot = current_slot(&state);
-    let addr_hex = addr.to_lowercase();
+    let addr_hex = normalize_account_lookup(&addr);
     let key = format!("ana_ts_{}", addr_hex);
 
     let (volume, trade_count, pnl) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
@@ -2501,7 +2517,7 @@ async fn get_trader_stats(
     ApiResponse::ok(
         LeaderboardEntryJson {
             rank: 0,
-            address: addr_hex,
+            address: addr,
             total_volume: volume,
             trade_count,
             total_pnl: pnl,
@@ -2519,7 +2535,7 @@ async fn get_trader_trades(
 ) -> Response {
     let limit = q.limit.unwrap_or(50).min(200);
     let slot = current_slot(&state);
-    let addr_hex = addr.to_lowercase();
+    let addr_hex = normalize_account_lookup(&addr);
     let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
 
     let now_ms = std::time::SystemTime::now()
@@ -3007,6 +3023,24 @@ mod tests {
     #[test]
     fn decode_pair_too_short() {
         assert!(decode_pair(&[0u8; 111]).is_none());
+    }
+
+    #[test]
+    fn normalize_account_lookup_keeps_hex() {
+        let input = "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899";
+        assert_eq!(
+            normalize_account_lookup(input),
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        );
+    }
+
+    #[test]
+    fn normalize_account_lookup_decodes_base58() {
+        let pubkey = Pubkey::new([0x11; 32]);
+        assert_eq!(
+            normalize_account_lookup(&pubkey.to_base58()),
+            hex::encode([0x11; 32])
+        );
     }
 
     #[test]

@@ -50,6 +50,23 @@ var currentFilter = 'all';
 var CONTRACTS_PER_PAGE = 25;
 var currentPage = 1;
 
+function bindStaticControls() {
+    document.querySelectorAll('.tab-btn[data-contract-filter]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            filterContracts(button.dataset.contractFilter || 'all');
+        });
+    });
+
+    document.getElementById('prevPage')?.addEventListener('click', previousPage);
+    document.getElementById('nextPage')?.addEventListener('click', nextPage);
+    document.getElementById('contractsTableBody')?.addEventListener('click', function (event) {
+        if (event.target.closest('a, button')) return;
+        var row = event.target.closest('tr[data-contract-link]');
+        if (!row || !row.dataset.contractLink) return;
+        window.location.href = row.dataset.contractLink;
+    });
+}
+
 // ── Fetch real on-chain data ───────────────────────────────────────
 
 async function loadContracts() {
@@ -59,8 +76,8 @@ async function loadContracts() {
     try {
         // Fetch all deployed programs + symbol registry in parallel
         var results = await Promise.all([
-            rpc.call('getAllContracts', []).catch(function () { return null; }),
-            rpc.call('getAllSymbolRegistry', []).catch(function () { return null; }),
+            trustedRpcCall('getAllContracts', []).catch(function () { return null; }),
+            trustedRpcCall('getAllSymbolRegistry', []).catch(function () { return null; }),
         ]);
 
         var programs = (results[0] && results[0].contracts) ? results[0].contracts : [];
@@ -82,7 +99,7 @@ async function loadContracts() {
 
             try {
                 var fetched = await Promise.all([
-                    rpc.call('getContractInfo', [pid]).catch(function () { return null; }),
+                    trustedRpcCall('getContractInfo', [pid]).catch(function () { return null; }),
                     rpc.call('getContractAbi', [pid]).catch(function () { return null; }),
                 ]);
                 info = fetched[0];
@@ -167,22 +184,24 @@ function renderContracts() {
             : {};
 
         tbody.innerHTML = paged.map(function (c) {
-            var link = 'contract.html?address=' + c.address;
-            var addr = '<a href="' + link + '" class="hash-link hash-short" title="' + c.address + '">' + formatHash(c.address) + '</a>';
+            var link = 'contract.html?address=' + encodeURIComponent(c.address);
+            var addr = '<a href="' + link + '" class="hash-link hash-short" title="' + escapeHtml(c.address) + '">' + formatHash(c.address) + '</a>';
             var codeSize = c.codeSize > 0 ? formatBytes(c.codeSize) : '<span class="text-muted">\u2014</span>';
             var abiFuncs = c.abiFuncs > 0 ? c.abiFuncs : '<span class="text-muted">\u2014</span>';
             var ownerName = c.owner ? nameMap[c.owner] : null;
             var ownerLabel = ownerName ? (ownerName + '.lichen') : formatHash(c.owner);
             var owner = c.owner
-                ? '<a href="address.html?address=' + c.owner + '" class="hash-link" title="' + c.owner + '">' + ownerLabel + '</a>'
+                ? '<a href="address.html?address=' + encodeURIComponent(c.owner) + '" class="hash-link" title="' + escapeHtml(c.owner) + '">' + escapeHtml(ownerLabel) + '</a>'
                 : '<span class="text-muted">\u2014</span>';
-            var catLabel = CATEGORY_LABELS[c.category] || c.category;
+            var catLabel = escapeHtml(CATEGORY_LABELS[c.category] || c.category);
+            var display = escapeHtml(c.display);
+            var symbol = c.symbol ? escapeHtml(c.symbol) : '';
 
-            return '<tr onclick="window.location=\'' + link + '\'" style="cursor:pointer;">' +
+            return '<tr data-contract-link="' + link + '" style="cursor:pointer;">' +
                 '<td><div class="contract-name-cell">' +
                 '<span class="contract-icon-fa"><i class="fas ' + c.iconClass + '"></i></span>' +
-                '<div><div class="contract-display">' + c.display + '</div>' +
-                (c.symbol ? '<div class="contract-symbol">$' + c.symbol + '</div>' : '') +
+                '<div><div class="contract-display">' + display + '</div>' +
+                (symbol ? '<div class="contract-symbol">$' + symbol + '</div>' : '') +
                 '</div></div></td>' +
                 '<td><span class="badge-cat badge-' + c.category + '">' + catLabel + '</span></td>' +
                 '<td>' + addr + '</td>' +
@@ -276,6 +295,7 @@ function initSearch() {
 document.addEventListener('DOMContentLoaded', function () {
     if (typeof initExplorerNetworkSelector === 'function') initExplorerNetworkSelector();
     initSearch();
+    bindStaticControls();
     var navToggle = document.getElementById('navToggle');
     var navMenu = document.querySelector('.nav-menu');
     var navActions = document.querySelector('.nav-actions');

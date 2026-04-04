@@ -17,6 +17,7 @@ pub mod contract_instruction;
 pub mod event_stream;
 pub mod evm;
 pub mod genesis;
+pub mod governance;
 pub mod hash;
 pub mod marketplace;
 pub mod mempool;
@@ -71,6 +72,7 @@ pub use genesis::{
     ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisPrices, GenesisValidator,
     NetworkConfig,
 };
+pub use governance::{GovernanceAction, GovernanceProposal};
 pub use hash::Hash;
 pub use marketplace::{
     decode_market_activity, encode_market_activity, MarketActivity, MarketActivityKind,

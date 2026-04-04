@@ -21,11 +21,20 @@ function switchNetwork(network) {
     localStorage.setItem('lichen_website_network', network);
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
+    void LICHEN_CONFIG.refreshIncidentStatusBanner(network);
     // Reconnect WebSocket to new network
     disconnectWebsiteWS();
     connectWebsiteWS();
     // Refresh stats with new endpoint
     updateStats();
+}
+
+function bindStaticControls() {
+    document.querySelectorAll('.copy-btn[data-website-action="copy-code"]').forEach((button) => {
+        button.addEventListener('click', () => {
+            copyCode(button);
+        });
+    });
 }
 
 // Copy code to clipboard
@@ -554,6 +563,8 @@ document.addEventListener('DOMContentLoaded', () => {
     LICHEN_CONFIG.initNetworkSelector('websiteNetworkSelect', 'lichen_website_network', (network) => {
         switchNetwork(network);
     });
+    void LICHEN_CONFIG.refreshIncidentStatusBanner(getSelectedNetwork());
+    bindStaticControls();
 
     // Initial stats update
     updateStats();

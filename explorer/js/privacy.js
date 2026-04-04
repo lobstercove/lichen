@@ -6,19 +6,34 @@
 let shieldedTxs = [];
 let poolStats = null;
 
+function bindStaticControls() {
+    document.querySelectorAll('.address-tab[data-tab]').forEach((tab) => {
+        tab.addEventListener('click', () => {
+            switchPrivacyTab(tab.dataset.tab);
+        });
+    });
+
+    document.getElementById('refreshShieldedTxsBtn')?.addEventListener('click', refreshShieldedTxs);
+    document.getElementById('lookupNullifierBtn')?.addEventListener('click', lookupNullifier);
+    document.getElementById('nullifierInput')?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        lookupNullifier();
+    });
+
+    document.addEventListener('click', (event) => {
+        const btn = event.target.closest('.copy-hash-btn');
+        if (!btn || !btn.dataset.hash) return;
+        copyToClipboard(btn.dataset.hash);
+    });
+}
+
 // ===== Initialization =====
 document.addEventListener('DOMContentLoaded', () => {
+    bindStaticControls();
     loadPrivacyData();
     // Refresh every 10 seconds
     setInterval(loadPrivacyData, 10000);
-
-    // EX-14: Delegated click handler for copy buttons — no inline onclick (XSS safe)
-    document.addEventListener('click', (e) => {
-        const btn = e.target.closest('.copy-hash-btn');
-        if (btn && btn.dataset.hash) {
-            copyToClipboard(btn.dataset.hash);
-        }
-    });
 });
 
 // ===== Data Loading =====
