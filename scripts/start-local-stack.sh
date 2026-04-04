@@ -44,6 +44,16 @@ PY
   exit 1
 }
 
+clear_local_peer_trust_state() {
+  local p2p_port
+  for p2p_port in "$BASE_P2P" "$((BASE_P2P + 1))" "$((BASE_P2P + 2))"; do
+    local state_dir="$REPO_ROOT/data/state-${p2p_port}"
+    rm -f "$state_dir/known-peers.json" 2>/dev/null || true
+    rm -f "$state_dir/home/.lichen/peer_identities.json" 2>/dev/null || true
+    rm -rf "$state_dir/home/.lichen/validators" 2>/dev/null || true
+  done
+}
+
 export LICHEN_LOCAL_DEV=1
 export LICHEN_SIGNER_AUTH_TOKEN="${LICHEN_SIGNER_AUTH_TOKEN:-$(generate_local_token)}"
 if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
@@ -74,6 +84,8 @@ fi
 if [ ! -x "./target/release/lichen-validator" ] || [ ! -x "./target/release/lichen-custody" ] || [ ! -x "./target/release/lichen-faucet" ]; then
   cargo build --release
 fi
+
+clear_local_peer_trust_state
 
 wait_for_file() {
   local file_path=$1

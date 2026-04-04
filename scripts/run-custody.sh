@@ -51,7 +51,9 @@ LOCAL_CUSTODY_TOKEN_FILE="$REPO_ROOT/tests/artifacts/local_cluster/custody-api-a
 if [ "${CUSTODY_ALLOW_INSECURE_SEED:-0}" = "1" ]; then
   CUSTODY_SIGNER_ENDPOINTS=""
   export CUSTODY_SIGNER_ENDPOINTS
-  export CUSTODY_SIGNER_THRESHOLD=1
+  if [ -z "${CUSTODY_SIGNER_THRESHOLD:-}" ]; then
+    export CUSTODY_SIGNER_THRESHOLD=0
+  fi
 else
   if [ -z "${CUSTODY_SIGNER_ENDPOINTS:-}" ]; then
     CUSTODY_SIGNER_ENDPOINTS="http://127.0.0.1:9201,http://127.0.0.1:9202,http://127.0.0.1:9203"
