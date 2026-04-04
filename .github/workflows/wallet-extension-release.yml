@@ -1,0 +1,91 @@
+name: Wallet Extension Release
+
+on:
+    workflow_dispatch:
+        inputs:
+            release_tag:
+                description: Release tag to validate against the manifest version (for example wallet-extension-v0.1.0)
+                required: false
+                type: string
+    push:
+        tags:
+            - "wallet-extension-v*"
+
+permissions:
+    contents: write
+
+jobs:
+    package:
+        name: Package Wallet Extension
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - name: Run wallet release validation
+              run: |
+                  node tests/test_wallet_extension_audit.js
+                  node tests/test_wallet_audit.js
+
+            - name: Package extension release artifacts
+              run: |
+                  if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.release_tag }}" ]; then
+                    node scripts/package-wallet-extension.mjs --release-tag "${{ github.event.inputs.release_tag }}"
+                  elif [[ "${GITHUB_REF_NAME}" == wallet-extension-v* ]]; then
+                    node scripts/package-wallet-extension.mjs --release-tag "${GITHUB_REF_NAME}"
+                  else
+                    node scripts/package-wallet-extension.mjs
+                  fi
+
+            - name: Upload packaged artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: lichen-wallet-extension-release
+                  path: dist/wallet-extension/*
+                  if-no-files-found: error
+
+    release:
+        name: Draft Wallet Extension Release
+        needs: package
+        if: startsWith(github.ref, 'refs/tags/wallet-extension-v')
+        runs-on: ubuntu-latest
+        steps:
+            - name: Download packaged artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  name: lichen-wallet-extension-release
+
+            - name: Create draft release
+              uses: softprops/action-gh-release@v2
+              with:
+                  draft: true
+                  generate_release_notes: true
+                  files: |
+                      LichenWallet-extension-*.zip
+                      LichenWallet-extension-store-submission-*.zip
+                      SHA256SUMS
+                      latest.json
+                  body: |
+                      ## LichenWallet Extension ${{ github.ref_name }}
+
+                      This release packages the browser-store submission bundle and the signed review ZIP for the wallet extension.
+
+                      ### Included Artifacts
+
+                      - `LichenWallet-extension-v*.zip`: runtime extension ZIP for review and store submission
+                      - `LichenWallet-extension-store-submission-v*.zip`: listing copy, permissions rationale, update policy, and submission checklist
+                      - `latest.json`: machine-readable release metadata for the wallet install page
+                      - `SHA256SUMS`: release checksums
+
+                      ### Auto Update
+
+                      - Chrome Web Store: automatic updates after this version is published
+                      - Microsoft Edge Add-ons: automatic updates after this version is published
+                      - Unpacked or direct ZIP installs: manual updates only
+
+                      ### Store Submission
+
+                      Use the store submission bundle attached to this release when filling the Chrome Web Store and Edge Add-ons listings.

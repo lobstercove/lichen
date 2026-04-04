@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LichenWallet</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <link rel="stylesheet" href="../styles/shared-base-styles.css" />
+  <link rel="stylesheet" href="../styles/shared-theme.css" />
+  <link rel="stylesheet" href="../styles/wallet.css" />
+  <link rel="stylesheet" href="../styles/extension-overrides.css" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body class="wallet-body">
+  <main class="popup-root">
+    <header class="popup-header">
+      <div class="popup-logo">
+        <img src="../../LichenWallet_Logo_256.png" alt="LichenWallet" class="popup-logo-icon" />
+        <span>LichenWallet</span>
+      </div>
+      <button id="openFullPage" class="btn btn-secondary btn-small">Open Full</button>
+    </header>
+
+    <section id="welcomeScreen" class="wallet-content popup-card screen active">
+      <div class="legacy-welcome">
+        <h3 style="margin-bottom: 0.5rem;">Welcome to LichenWallet</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Create a new wallet or import an existing seed phrase.
+        </p>
+        <button data-action="goCreate" class="btn btn-primary btn-large popup-btn-block">Create New Wallet</button>
+        <button data-action="goImport" class="btn btn-secondary btn-large popup-btn-block">Import Wallet</button>
+      </div>
+
+      <div class="web-welcome wallet-container welcome-container">
+        <div class="welcome-logo">
+          <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet" />
+          <h1>LichenWallet</h1>
+        </div>
+        <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
+
+        <div class="welcome-carousel">
+          <div class="carousel-track">
+            <div class="carousel-slide active">
+              <div class="carousel-card">
+                <div class="carousel-icon"><i class="fas fa-shield-alt"></i></div>
+                <h3>Secure &amp; Open Source</h3>
+                <p>AES-256-GCM encrypted keys, ML-DSA-65 signatures, fully auditable code</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon"><i class="fas fa-bolt"></i></div>
+                <h3>Ultra-Fast Transactions</h3>
+                <p>400ms finality, $0.0001 per transaction, 10,000 tx per block</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon"><i class="fas fa-robot"></i></div>
+                <h3>Agent-Native</h3>
+                <p>Built for autonomous agents with on-chain identity and reputation</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
+                <h3>LichenID Identity</h3>
+                <p>.lichen naming, skill attestations, 0–100K reputation score</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon"><i class="fas fa-eye-slash"></i></div>
+                <h3>Privacy Layer</h3>
+                <p>Shielded transactions with ZK proofs, Pedersen commitments, nullifiers</p>
+              </div>
+            </div>
+          </div>
+          <div class="carousel-dots">
+            <span class="carousel-dot active" data-slide="0"></span>
+            <span class="carousel-dot" data-slide="1"></span>
+            <span class="carousel-dot" data-slide="2"></span>
+            <span class="carousel-dot" data-slide="3"></span>
+            <span class="carousel-dot" data-slide="4"></span>
+          </div>
+        </div>
+
+        <div class="welcome-actions">
+          <button data-action="goCreate" class="btn btn-primary btn-large"><i class="fas fa-plus"></i> Create New
+            Wallet</button>
+          <button data-action="goImport" class="btn btn-secondary btn-large"><i class="fas fa-download"></i> Import
+            Existing Wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="createScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.75rem;">Create New Wallet</h3>
+
+      <div class="wizard-steps" style="margin-bottom: 1rem;">
+        <div class="wizard-step-item active" data-create-step="1">
+          <div class="step-circle">1</div>
+          <div class="step-label">Password</div>
+        </div>
+        <div class="wizard-step-item" data-create-step="2">
+          <div class="step-circle">2</div>
+          <div class="step-label">Seed Phrase</div>
+        </div>
+        <div class="wizard-step-item" data-create-step="3">
+          <div class="step-circle">3</div>
+          <div class="step-label">Confirm</div>
+        </div>
+      </div>
+
+      <div class="create-step active" data-create-step-content="1">
+        <h3 style="margin-bottom: 0.35rem;">Set a Password</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">This password encrypts your wallet on this device.</p>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="createPassword" type="password" class="form-input" placeholder="Enter password" />
+        </div>
+        <div class="form-group">
+          <label>Confirm Password</label>
+          <input id="createPasswordConfirm" type="password" class="form-input" placeholder="Confirm password" />
+        </div>
+        <button id="createStep1Continue" class="btn btn-primary popup-btn-block">Continue →</button>
+      </div>
+
+      <div class="create-step" data-create-step-content="2">
+        <h3 style="margin-bottom: 0.35rem;">Your Recovery Phrase</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Write down these 12 words in order. Keep them safe and
+          secret!</p>
+        <div class="form-group" style="margin-top: 0.75rem;">
+          <label>Recovery Phrase (save this safely)</label>
+          <textarea id="createMnemonic" class="form-textarea" rows="3" readonly></textarea>
+        </div>
+        <button id="createStep2Continue" class="btn btn-primary popup-btn-block">I've Written It Down</button>
+      </div>
+
+      <div class="create-step" data-create-step-content="3">
+        <h3 style="margin-bottom: 0.35rem;">Confirm Your Phrase</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Select the words in the correct order to verify.</p>
+        <div class="confirm-section" style="margin-bottom: 0.75rem;">
+          <div id="createConfirmSlots" class="confirm-slots-grid"></div>
+        </div>
+        <div class="confirm-section" style="margin-bottom: 0.75rem;">
+          <div id="createConfirmPool" class="seed-word-pool"></div>
+        </div>
+        <button id="createFinish" class="btn btn-primary popup-btn-block" disabled>Create Wallet</button>
+      </div>
+
+      <a href="#" id="backFromCreate" class="popup-back-link">← Back</a>
+    </section>
+
+    <section id="importScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.5rem;">Import Wallet</h3>
+      <div class="import-tabs">
+        <button type="button" class="import-tab active" data-import-type="mnemonic">Seed Phrase</button>
+        <button type="button" class="import-tab" data-import-type="privateKey">Private Key</button>
+        <button type="button" class="import-tab" data-import-type="json">JSON File</button>
+      </div>
+      <input id="importType" type="hidden" value="mnemonic" />
+
+      <div class="form-group" id="importMnemonicRow">
+        <label>Recovery Phrase</label>
+        <div id="importMnemonicGrid" class="mnemonic-import-grid compact"></div>
+        <p class="step-description mnemonic-import-hint">Paste full phrase into any word box to auto-fill.</p>
+      </div>
+      <div class="form-group" id="importPrivateKeyRow" style="display: none;">
+        <label>Private Key (hex format)</label>
+        <textarea id="importPrivateKey" class="form-textarea" rows="2" placeholder="0x..."></textarea>
+      </div>
+      <div class="form-group" id="importJsonRow" style="display: none;">
+        <label>JSON Keystore</label>
+        <textarea id="importJson" class="form-textarea" rows="4"
+          placeholder='{"name":"...","encryptedSeed":{"encrypted":"..."},"publicKey":{"scheme_version":1,"bytes":"..."}}'></textarea>
+      </div>
+      <div class="form-group">
+        <label>Set Password</label>
+        <input id="importPassword" type="password" class="form-input" placeholder="Min 8 characters" />
+      </div>
+      <button id="importSave" class="btn btn-primary popup-btn-block">Import Wallet</button>
+      <a href="#" id="backFromImport" class="popup-back-link">← Back</a>
+    </section>
+
+    <section id="unlockScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.5rem;">Unlock Wallet</h3>
+      <p class="step-description" style="margin-bottom: 0.25rem;">Welcome back!</p>
+      <p id="unlockWalletName" class="step-description" style="margin-bottom: 1rem;"></p>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="unlockPassword" type="password" class="form-input" placeholder="Password" />
+      </div>
+      <button id="unlockSubmit" class="btn btn-primary popup-btn-block"><i class="fas fa-unlock"></i> Unlock
+        Wallet</button>
+      <div class="unlock-logout" style="margin-top: 1.2rem; text-align: center;">
+        <button id="unlockLogoutBtn" class="btn btn-danger btn-small" style="opacity:0.75;font-size:0.78rem;">
+          <i class="fas fa-sign-out-alt"></i> Logout
+        </button>
+      </div>
+    </section>
+
+    <section id="dashboardScreen" class="wallet-content popup-card screen">
+      <!-- Dashboard Nav -->
+      <div class="popup-dash-nav">
+        <div class="popup-dash-nav-left">
+          <div class="popup-wallet-selector">
+            <select id="walletSelector" class="popup-wallet-select"></select>
+          </div>
+          <select id="networkSelector" class="popup-network-select">
+            <option value="mainnet">Mainnet</option>
+            <option value="testnet">Testnet</option>
+            <option value="local-testnet">Local Testnet</option>
+            <option value="local-mainnet">Local Mainnet</option>
+          </select>
+        </div>
+        <div class="popup-dash-nav-right">
+          <button id="showSettingsPanel" class="btn btn-small btn-secondary"><i class="fas fa-cog"></i></button>
+          <button id="lockWallet" class="btn btn-small btn-primary"><i class="fas fa-lock"></i></button>
+          <button id="logoutWallet" class="btn btn-small btn-danger"><i class="fas fa-sign-out-alt"></i></button>
+        </div>
+      </div>
+
+      <!-- Balance Card -->
+      <div class="popup-balance-card">
+        <div class="popup-balance-header">
+          <span class="popup-balance-label">Total Balance</span>
+          <button id="refreshBalance" class="popup-btn-icon"><i class="fas fa-sync-alt"></i></button>
+        </div>
+        <div class="popup-balance-amount" id="walletBalance">0.00 LICN</div>
+        <div class="popup-balance-usd" id="balanceUsd">$0.00 USD</div>
+        <div class="popup-balance-breakdown" id="balanceBreakdown"></div>
+        <div class="popup-balance-actions">
+          <button class="popup-action-btn" id="showSendPanel"><i class="fas fa-arrow-up"></i><span>Send</span></button>
+          <button class="popup-action-btn" id="showReceivePanel"><i
+              class="fas fa-arrow-down"></i><span>Receive</span></button>
+          <button class="popup-action-btn" id="showDepositPanel"><i
+              class="fas fa-plus-circle"></i><span>Deposit</span></button>
+        </div>
+      </div>
+
+      <!-- Dashboard Tabs -->
+      <div class="popup-dashboard-tabs">
+        <button class="popup-dash-tab active" data-tab="assets"><i class="fas fa-coins"></i> Assets</button>
+        <button class="popup-dash-tab" data-tab="activity"><i class="fas fa-history"></i> Activity</button>
+        <button class="popup-dash-tab" data-tab="nfts"><i class="fas fa-image"></i> NFTs</button>
+        <button class="popup-dash-tab" data-tab="staking"><i class="fas fa-layer-group"></i> Staking</button>
+        <button class="popup-dash-tab" data-tab="identity"><i class="fas fa-fingerprint"></i> Identity</button>
+        <button class="popup-dash-tab" data-tab="shield"><i class="fas fa-shield-alt"></i> Shield</button>
+      </div>
+
+      <!-- Tab Content: Assets -->
+      <div class="popup-tab-content active" data-tab="assets" id="assetsPanel">
+        <div class="popup-assets-list" id="assetsList"></div>
+      </div>
+
+      <!-- Tab Content: Send -->
+      <div class="popup-tab-content" data-tab="send" id="sendPanel">
+        <div class="form-group">
+          <label>Recipient</label>
+          <input id="sendTo" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)" />
+        </div>
+        <div class="form-group">
+          <label>Amount (LICN)</label>
+          <div style="position:relative">
+            <input id="sendAmount" type="number" class="form-input" placeholder="0.00" style="padding-right:3.5rem" />
+            <button id="sendMaxBtn" type="button"
+              style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:#0891B2;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;font-weight:600;cursor:pointer;">MAX</button>
+          </div>
+          <div id="sendAvailableBalance" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;"></div>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem;"><i class="fas fa-info-circle"></i>
+          Network Fee: 0.001 LICN</div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="sendPassword" type="password" class="form-input" placeholder="Unlock to sign" />
+        </div>
+        <button id="sendNow" class="btn btn-primary popup-btn-block"><i class="fas fa-paper-plane"></i> Send</button>
+        <button id="cancelSend" class="btn btn-secondary popup-btn-block" style="margin-top:0.35rem;">Cancel</button>
+      </div>
+
+      <!-- Tab Content: Receive -->
+      <div class="popup-tab-content" data-tab="receive" id="receivePanel">
+        <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
+          Receive LICN and all Lichen tokens
+        </p>
+        <div id="receiveQrCode" style="text-align:center;margin-bottom:0.75rem;"></div>
+        <div class="form-group">
+          <label><i class="fas fa-fingerprint"></i> Native Address (Base58)</label>
+          <div class="popup-address-row">
+            <input id="receiveAddress" class="form-input" readonly />
+            <button id="copyAddress" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-ethereum"></i> EVM Address (MetaMask Compatible)</label>
+          <div class="popup-address-row">
+            <input id="receiveEvmAddress" class="form-input" readonly />
+            <button id="copyEvmAddress" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
+        <div class="popup-receive-info">
+          <i class="fas fa-info-circle" style="color:#4ade80;"></i>
+          Both addresses work! Use Base58 for Lichen/Solana wallets, 0x for MetaMask/Ethereum wallets
+        </div>
+      </div>
+
+      <!-- Tab Content: Activity -->
+      <div class="popup-tab-content" data-tab="activity" id="activityPanel">
+        <div id="activityList" class="popup-activity-list"></div>
+      </div>
+
+      <!-- Tab Content: NFTs -->
+      <div class="popup-tab-content" data-tab="nfts" id="nftsPanel">
+        <div class="popup-nft-header">
+          <span id="nftCount">0 NFTs</span>
+          <button id="refreshNfts" class="popup-btn-icon" title="Refresh NFTs"><i class="fas fa-sync-alt"></i></button>
+        </div>
+        <div class="nfts-grid" id="nftsGrid"></div>
+        <div class="nfts-empty" id="nftsEmpty">
+          <div class="nfts-empty-icon"><i class="fas fa-gem"></i></div>
+          <h3>No NFTs Yet</h3>
+          <p>Your collection will appear here once you mint or receive NFTs.</p>
+          <button id="browseMarketplace" class="btn btn-secondary btn-small" style="margin-top:0.5rem;">
+            <i class="fas fa-store"></i> Browse Marketplace
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Content: Staking -->
+      <div class="popup-tab-content" data-tab="staking" id="stakingPanel">
+        <div id="stakingValidatorInfo"></div>
+        <div id="mossStakePanel">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+            <i class="fas fa-water" style="color:#3b82f6;"></i>
+            <strong style="font-size:0.9rem;">Liquid Staking</strong>
+          </div>
+          <div id="mossStakeStats"
+            style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
+          <div id="mossTiersGrid"
+            style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
+          <div
+            style="font-size:0.72rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);">
+            <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
+            Stake LICN → receive stLICN. Rewards auto-compound. Flexible tier: 7-day cooldown. Locked tiers: boosted
+            APY.
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+            <button id="extStakeBtn" class="btn btn-primary btn-small"><i class="fas fa-arrow-down"></i> Stake
+              LICN</button>
+            <button id="extUnstakeBtn" class="btn btn-secondary btn-small"><i class="fas fa-arrow-up"></i> Unstake
+              stLICN</button>
+          </div>
+          <div id="extPendingUnstakes" style="margin-top:0.75rem;display:none;"></div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Identity -->
+      <div class="popup-tab-content" data-tab="identity" id="identityPanel">
+        <div id="identityContent">
+          <!-- LichenID identity loaded dynamically -->
+        </div>
+      </div>
+
+      <!-- Tab Content: Shield (ZK Privacy) -->
+      <div class="popup-tab-content" data-tab="shield" id="shieldPanel">
+        <div id="shieldStatusMsg" class="shield-status-msg"></div>
+
+        <!-- ZK Privacy Banner -->
+        <div class="popup-shield-banner">
+          <i class="fas fa-user-shield"></i>
+          <div>
+            <strong>Shielded Privacy <span class="shield-badge">Plonky3 STARK</span></strong>
+            <p style="font-size:0.75rem;margin:0;">Shield LICN with transparent STARK proofs and private note-based
+              transfers.</p>
+          </div>
+        </div>
+
+        <!-- Shielded Balance Card -->
+        <div class="popup-shield-card">
+          <div class="popup-shield-balance-row">
+            <div>
+              <div class="popup-shield-label">Shielded Balance</div>
+              <div class="popup-shield-balance-value" id="extShieldedBalance">0.0000 LICN</div>
+              <div class="popup-shield-balance-sub" id="extShieldedSpores">0 spores</div>
+            </div>
+            <div class="popup-shield-actions">
+              <button class="btn btn-primary btn-small" id="extShieldBtn"><i class="fas fa-arrow-down"></i>
+                Shield</button>
+              <button class="btn btn-secondary btn-small" id="extUnshieldBtn"><i class="fas fa-arrow-up"></i>
+                Unshield</button>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-small popup-btn-block" id="extPrivateTransferBtn"
+            style="margin-top:0.5rem;">
+            <i class="fas fa-paper-plane"></i> Private Transfer
+          </button>
+        </div>
+
+        <!-- Shielded Keys -->
+        <div class="popup-shield-card">
+          <h4 style="font-size:0.82rem;margin-bottom:0.5rem;"><i class="fas fa-key"></i> Shielded Keys</h4>
+          <div class="popup-shield-key-row">
+            <label>Shielded Address</label>
+            <div class="popup-address-row">
+              <input id="extShieldedAddress" class="form-input" readonly value="Not initialized" />
+              <button id="copyShieldedAddr" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+            </div>
+          </div>
+          <div class="popup-shield-key-row">
+            <label>Viewing Key</label>
+            <div class="popup-address-row">
+              <input id="extViewingKey" class="form-input" type="password" readonly value="Click eye to reveal" />
+              <button id="toggleViewingKey" class="btn btn-secondary btn-small"><i
+                  class="fas fa-eye-slash"></i></button>
+              <button id="copyViewingKey" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+            </div>
+          </div>
+          <div class="popup-shield-info">
+            <i class="fas fa-info-circle"></i>
+            Spending key never leaves this device. Viewing key enables auditors to see activity.
+          </div>
+        </div>
+
+        <!-- Pool Statistics -->
+        <div class="popup-shield-card">
+          <h4 style="font-size:0.82rem;margin-bottom:0.5rem;"><i class="fas fa-chart-pie"></i> Pool Statistics</h4>
+          <div class="popup-shield-stats">
+            <div class="popup-shield-stat">
+              <span class="popup-shield-stat-label">Total Shielded</span>
+              <span class="popup-shield-stat-value" id="extPoolShielded">&mdash;</span>
+            </div>
+            <div class="popup-shield-stat">
+              <span class="popup-shield-stat-label">Commitments</span>
+              <span class="popup-shield-stat-value" id="extPoolCommitments">&mdash;</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Owned Notes -->
+        <div class="popup-shield-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+            <h4 style="font-size:0.82rem;margin:0;"><i class="fas fa-file-invoice"></i> Shielded Notes</h4>
+            <span id="extNoteCount" style="font-size:0.72rem;color:var(--text-muted);">0 unspent / 0 total</span>
+          </div>
+          <div id="extShieldedNotes">
+            <div class="popup-shield-empty">
+              <i class="fas fa-shield-alt"></i>
+              <p>No shielded notes yet</p>
+              <p style="font-size:0.72rem;color:var(--text-muted);">Shield LICN to create your first private note</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Bridge/Deposit -->
+      <div class="popup-tab-content" data-tab="deposit" id="depositPanel">
+        <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
+          Bridge tokens from other chains to Lichen
+        </p>
+        <div class="popup-deposit-chains">
+          <button class="popup-deposit-chain-btn" data-bridge-chain="SOL">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" width="24" height="24"
+              alt="SOL" />
+            <span>Solana</span>
+          </button>
+          <button class="popup-deposit-chain-btn" data-bridge-chain="ETH">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" width="24" height="24"
+              alt="ETH" />
+            <span>Ethereum</span>
+          </button>
+          <button class="popup-deposit-chain-btn" data-bridge-chain="BNB">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" width="24" height="24"
+              alt="BNB" />
+            <span>BNB Chain</span>
+          </button>
+        </div>
+        <div id="extBridgeTokenSelect" style="display:none;margin-top:0.75rem;"></div>
+        <div id="extBridgeLoading" style="display:none;text-align:center;padding:1rem;">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.2rem;color:var(--primary);"></i>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-top:0.5rem;">Generating deposit address...</p>
+        </div>
+        <div id="extBridgeResult" style="display:none;"></div>
+        <div id="extBridgeStatus" style="display:none;margin-top:0.75rem;"></div>
+      </div>
+
+      <!-- Tab Content: Settings -->
+      <div class="popup-tab-content" data-tab="settings" id="settingsPanel">
+        <!-- Network RPC -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-server"></i> Network</h4>
+          <div class="form-group"><label>Mainnet RPC</label><input id="settingsMainnetRpc" class="form-input"
+              placeholder="https://rpc.lichen.network" /></div>
+          <div class="form-group"><label>Testnet RPC</label><input id="settingsTestnetRpc" class="form-input"
+              placeholder="https://testnet-rpc.lichen.network" /></div>
+          <div class="form-group"><label>Local Testnet RPC</label><input id="settingsLocalTestnetRpc" class="form-input"
+              placeholder="http://localhost:8899" /></div>
+          <div class="form-group"><label>Local Mainnet RPC</label><input id="settingsLocalMainnetRpc" class="form-input"
+              placeholder="http://localhost:9899" /></div>
+          <div class="form-group"><label>Mainnet Custody</label><input id="settingsMainnetCustody" class="form-input"
+              placeholder="https://custody.lichen.network" /></div>
+          <div class="form-group"><label>Testnet Custody</label><input id="settingsTestnetCustody" class="form-input"
+              placeholder="https://testnet-custody.lichen.network" /></div>
+          <div class="form-group"><label>Local Custody</label><input id="settingsLocalCustody" class="form-input"
+              placeholder="http://localhost:9105" /></div>
+          <p style="font-size:0.75rem;color:var(--text-muted);line-height:1.5;margin:0 0 0.85rem;">
+            Custom RPC overrides only affect transaction transport and generic account reads. Bridge routing and
+            contract resolution stay pinned to trusted network endpoints.
+          </p>
+          <button id="saveRpcSettings" class="btn btn-secondary btn-small popup-btn-block">Save RPC Endpoints</button>
+        </div>
+
+        <!-- Security -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-shield-alt"></i> Security</h4>
+          <div class="form-group"><label>Auto-lock timeout</label>
+            <select id="settingsLockTimeout" class="form-input">
+              <option value="0">Never</option>
+              <option value="1">1 min</option>
+              <option value="5">5 min</option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="60">60 min</option>
+            </select>
+          </div>
+          <button id="saveLockTimeout" class="btn btn-secondary btn-small popup-btn-block">Save Auto-lock</button>
+          <div class="form-group" style="margin-top:0.5rem;"><label>Current Password</label><input
+              id="settingsCurrentPassword" type="password" class="form-input" placeholder="Current password" /></div>
+          <div class="form-group"><label>New Password</label><input id="settingsNewPassword" type="password"
+              class="form-input" placeholder="Min 8 chars" /></div>
+          <div class="form-group"><label>Confirm New Password</label><input id="settingsNewPasswordConfirm"
+              type="password" class="form-input" placeholder="Confirm" /></div>
+          <button id="changePasswordBtn" class="btn btn-secondary btn-small popup-btn-block">Change Password</button>
+        </div>
+
+        <!-- Display -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-palette"></i> Display</h4>
+          <div class="form-group"><label>Currency</label>
+            <select id="settingsCurrency" class="form-input">
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="JPY">JPY</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Decimal Precision</label>
+            <select id="settingsDecimals" class="form-input">
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="9">9</option>
+            </select>
+          </div>
+          <button id="saveDisplaySettings" class="btn btn-secondary btn-small popup-btn-block">Save Display</button>
+        </div>
+
+        <!-- Export -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-key"></i> Export</h4>
+          <div class="form-group"><label>Password (required)</label><input id="settingsPassword" type="password"
+              class="form-input" placeholder="Wallet password" /></div>
+          <div class="popup-export-grid">
+            <button id="exportPrivateKey" class="btn btn-secondary btn-small">Private Key</button>
+            <button id="exportMnemonic" class="btn btn-secondary btn-small">Seed Phrase</button>
+            <button id="exportKeystoreJson" class="btn btn-secondary btn-small">JSON Keystore</button>
+            <button id="downloadPrivateKey" class="btn btn-secondary btn-small">DL Key</button>
+            <button id="downloadMnemonic" class="btn btn-secondary btn-small">DL Seed</button>
+          </div>
+          <div class="form-group" style="margin-top:0.5rem;">
+            <label>Output</label>
+            <textarea id="settingsExportOutput" class="form-textarea" rows="2" readonly
+              placeholder="Sensitive output here"></textarea>
+          </div>
+          <button id="copyExportOutput" class="btn btn-secondary btn-small popup-btn-block">Copy Output</button>
+        </div>
+
+        <!-- Wallet Management -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-wallet"></i> Wallet Management</h4>
+          <div class="form-group">
+            <label>Rename Wallet</label>
+            <div class="popup-address-row">
+              <input id="settingsRenameInput" class="form-input" placeholder="New wallet name" />
+              <button id="renameWalletBtn" class="btn btn-secondary btn-small">Rename</button>
+            </div>
+          </div>
+          <button id="clearHistoryBtn" class="btn btn-secondary btn-small popup-btn-block" style="margin-top:0.5rem;">
+            <i class="fas fa-eraser"></i> Clear Transaction History
+          </button>
+          <button id="deleteWalletBtn" class="btn btn-danger btn-small popup-btn-block" style="margin-top:0.5rem;">
+            <i class="fas fa-trash-alt"></i> Delete Wallet
+          </button>
+        </div>
+
+        <!-- About -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-info-circle"></i> About</h4>
+          <div class="popup-about-info">
+            <div><strong>Version:</strong> <span id="aboutVersion">1.0.0</span></div>
+            <div><strong>Network:</strong> <span id="aboutNetwork">—</span></div>
+            <div><strong>License:</strong> MIT</div>
+            <div><a href="https://github.com/lobstercove/lichen" target="_blank" rel="noopener"><i
+                  class="fab fa-github"></i> GitHub Repository</a></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hidden address field for wallet.js compat -->
+      <input id="walletAddress" type="hidden" />
+
+      <div id="statusField" class="popup-status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <!-- Chain Status Bar -->
+  <div class="popup-chain-status" id="chainStatusBar">
+    <span class="popup-chain-dot" id="chainDot"></span>
+    <span id="chainBlockHeight">Connecting...</span>
+    <span style="opacity:0.5;">|</span>
+    <span id="chainLatency"></span>
+  </div>
+
+  <script src="../../shared/utils.js"></script>
+  <script type="module" src="popup.js"></script>
+</body>
+
+</html>

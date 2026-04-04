@@ -1,0 +1,14 @@
+body { min-height: 100vh; }
+.nfts-shell { max-width: 1000px; padding-top: 2rem; padding-bottom: 2rem; }
+.nfts-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; }
+.meta { color: var(--text-secondary); font-size:0.9rem; margin-bottom:0.9rem; }
+.nfts-status { color: var(--text-secondary); font-size:0.88rem; min-height:1.2rem; margin-bottom:0.8rem; }
+.nfts-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0.8rem; }
+.nft-card { border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,0.02); overflow:hidden; }
+.nft-image { height:140px; background:linear-gradient(135deg, rgba(168,85,247,0.18), rgba(0,78,137,0.2)); display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
+.nft-body { padding:0.7rem; font-size:0.88rem; color:var(--text-secondary); }
+.nft-title { font-weight:700; color:var(--text-primary); margin-bottom:0.35rem; }
+.nft-actions { margin-top:0.9rem; display:flex; gap:0.65rem; }
+.nft-card-actions { margin-top:0.6rem; display:grid; grid-template-columns:1fr 1fr; gap:0.45rem; }
+@media (max-width: 980px){ .nfts-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 680px){ .nfts-grid{ grid-template-columns:1fr; } }

@@ -179,6 +179,27 @@ jobs:
           done
           if [ $FAIL -ne 0 ]; then echo "❌ WASM build failed"; exit 1; fi
 
+  wallet-extension:
+    name: Wallet Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run wallet audits
+        run: |
+          node tests/test_wallet_extension_audit.js
+          node tests/test_wallet_audit.js
+      - name: Package wallet extension
+        run: node scripts/package-wallet-extension.mjs
+      - name: Upload wallet extension artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lichen-wallet-extension-package
+          path: dist/wallet-extension/*
+          if-no-files-found: error
+
   build-docker:
     name: Docker Build
     runs-on: ubuntu-latest

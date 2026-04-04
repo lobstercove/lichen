@@ -55,10 +55,21 @@ self.addEventListener('activate', (event) => {
 
 // Fetch: cache-first for same-origin assets, network-first for API calls
 self.addEventListener('fetch', (event) => {
-    const url = new URL(event.request.url);
+    let url;
+
+    try {
+        url = new URL(event.request.url);
+    } catch {
+        return;
+    }
 
     // Skip non-GET requests
     if (event.request.method !== 'GET') {
+        return;
+    }
+
+    // Cache storage only supports HTTP(S) requests.
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         return;
     }
 
@@ -74,7 +85,7 @@ self.addEventListener('fetch', (event) => {
                 return cached || fetch(event.request).then((response) => {
                     if (response && response.status === 200) {
                         const clone = response.clone();
-                        caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
+                        caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                     }
                     return response;
                 }).catch(() => cached);
@@ -89,7 +100,7 @@ self.addEventListener('fetch', (event) => {
             const fetchPromise = fetch(event.request).then((response) => {
                 if (response && response.status === 200 && response.type === 'basic') {
                     const clone = response.clone();
-                    caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
+                    caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                 }
                 return response;
             }).catch(() => cached);

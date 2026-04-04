@@ -160,8 +160,14 @@
    2. WELCOME SCREEN
    ──────────────────────────────────────────────────────────── */
 
+:root {
+    --wallet-safe-top: env(safe-area-inset-top, 0px);
+    --wallet-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 .wallet-body {
     min-height: 100vh;
+    min-height: 100dvh;
     background: var(--bg-dark);
     color: var(--text-primary);
 }
@@ -253,6 +259,9 @@
     align-items: center;
     position: relative;
     overflow: hidden;
+    box-sizing: border-box;
+    padding-top: max(1rem, var(--wallet-safe-top));
+    padding-bottom: max(1rem, var(--wallet-safe-bottom));
     background:
         radial-gradient(ellipse 80% 60% at 20% 80%, rgba(0, 201, 219, 0.12) 0%, transparent 60%),
         radial-gradient(ellipse 60% 50% at 80% 20%, rgba(0, 229, 255, 0.08) 0%, transparent 55%),
@@ -274,6 +283,8 @@
     position: relative;
     z-index: 1;
     text-align: center;
+    padding-top: 1rem;
+    padding-bottom: 1rem;
     animation: fadeInUp 0.7s ease-out;
 }
 
@@ -470,6 +481,7 @@
 
 .wallet-screen {
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     flex-direction: column;
     background: var(--bg-dark);
@@ -479,7 +491,7 @@
     max-width: 560px;
     width: 100%;
     margin: 0 auto;
-    padding: 2rem 1.5rem 3rem;
+    padding: calc(2rem + var(--wallet-safe-top)) 1.5rem calc(3rem + var(--wallet-safe-bottom));
     flex: 1;
 }
 

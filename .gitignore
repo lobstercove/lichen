@@ -159,8 +159,6 @@ dex/charting_library/
 dex/sdk/
 dex/loadtest/
 dex/market-maker/
-# Wallet browser extension source
-wallet/extension/
 # Deployment scripts in frontend dirs
 programs/deploy-services.sh
 # Test files across all frontends

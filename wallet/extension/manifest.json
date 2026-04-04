@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "LichenWallet",
+  "short_name": "LichenWallet",
+  "description": "Secure, fast, and agent-friendly wallet for Lichen.",
+  "version": "0.1.0",
+  "homepage_url": "https://wallet.lichen.network",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "LichenWallet_Logo_256.png",
+    "48": "LichenWallet_Logo_256.png",
+    "128": "LichenWallet_Logo_256.png"
+  },
+  "action": {
+    "default_title": "LichenWallet",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "LichenWallet_Logo_256.png",
+      "24": "LichenWallet_Logo_256.png",
+      "32": "LichenWallet_Logo_256.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' data: https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data: blob: http: https:; connect-src https://rpc.lichen.network https://testnet-rpc.lichen.network http://localhost:8899 https://custody.lichen.network https://testnet-custody.lichen.network http://localhost:9105 wss://ws.lichen.network wss://testnet-ws.lichen.network ws://localhost:8900 ws://localhost:9900"
+  },
+  "options_page": "src/pages/full.html",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://rpc.lichen.network/*",
+    "https://testnet-rpc.lichen.network/*",
+    "http://localhost:8899/*",
+    "https://custody.lichen.network/*",
+    "https://testnet-custody.lichen.network/*",
+    "http://localhost:9105/*",
+    "wss://ws.lichen.network/*",
+    "wss://testnet-ws.lichen.network/*",
+    "ws://localhost:8900/*",
+    "ws://localhost:9900/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content/content-script.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/inpage-provider.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
+}

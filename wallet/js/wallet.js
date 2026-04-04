@@ -698,7 +698,10 @@ function bindStaticControls() {
 
         if (actionName === 'fillShieldMax') {
             const shieldAmountInput = document.getElementById('shieldAmount');
-            if (shieldAmountInput) shieldAmountInput.value = (window.walletBalance || 0).toFixed(4);
+            if (shieldAmountInput) {
+                const maxShieldable = Math.max(0, (window.walletBalance || 0) - getNetworkBaseFeeLicn());
+                shieldAmountInput.value = maxShieldable.toFixed(4);
+            }
             return;
         }
 
@@ -1514,7 +1517,10 @@ async function refreshBalance() {
     try {
         const balance = await rpc.getBalance(wallet.address);
         const licn = parseFloat(balance.licn) || 0;
-        window.walletBalance = licn;
+        const parsedSpendable = parseFloat(balance.spendable_licn);
+        const spendableLicn = Number.isFinite(parsedSpendable) ? parsedSpendable : licn;
+        window.totalWalletBalance = licn;
+        window.walletBalance = spendableLicn;
 
         // Fetch all token balances in parallel
         const tokenBalances = await getAllTokenBalances(wallet.address);
@@ -1560,6 +1566,7 @@ async function refreshBalance() {
         const currency = settings.currency || 'USD';
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
+        window.totalWalletBalance = 0;
         window.walletBalance = 0;
         document.getElementById('totalBalance').textContent = '0.00 LICN';
         document.getElementById('balanceUsd').textContent = `${sym}0.00 ${currency}`;
@@ -3319,8 +3326,9 @@ async function updateSendTokenUI() {
     try {
         if (selectedToken === 'LICN') {
             const balance = await rpc.getBalance(wallet.address);
-            const licn = parseFloat(balance.licn) || 0;
-            balanceHint.textContent = `Available: ${fmtToken(licn)} LICN`;
+            const parsedSpendable = parseFloat(balance.spendable_licn);
+            const spendableLicn = Number.isFinite(parsedSpendable) ? parsedSpendable : (parseFloat(balance.licn) || 0);
+            balanceHint.textContent = `Available: ${fmtToken(spendableLicn)} LICN`;
         } else if (selectedToken === 'stLICN') {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
             const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LichenWallet — NFT Details</title>
+  <link rel="stylesheet" href="../styles/shared-base-styles.css" />
+  <link rel="stylesheet" href="../styles/shared-theme.css" />
+  <link rel="stylesheet" href="../styles/wallet.css" />
+  <link rel="stylesheet" href="../styles/extension-overrides.css" />
+  <link rel="stylesheet" href="nfts.css" />
+</head>
+<body class="wallet-body">
+  <main class="nfts-shell container">
+    <section class="wallet-content">
+      <div class="nfts-top">
+        <h2>NFT Details</h2>
+        <button id="refreshNfts" class="btn btn-secondary btn-small">Refresh</button>
+      </div>
+      <div id="nftsMeta" class="meta"></div>
+      <div id="nftsStatus" class="nfts-status">Ready</div>
+      <div id="nftsGrid" class="nfts-grid"></div>
+      <div class="nft-actions">
+        <button id="openMarketplace" class="btn btn-secondary">Open Marketplace</button>
+        <button id="backHome" class="btn btn-secondary">Back to Dashboard</button>
+      </div>
+    </section>
+  </main>
+  <script src="../../shared/utils.js"></script>
+  <script type="module" src="nfts.js"></script>
+</body>
+</html>
