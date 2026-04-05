@@ -119,12 +119,17 @@ EOF
 
 assert_start_local_stack_clears_peer_trust_state() {
     local fixture_root
+    local expected_signing_key
     fixture_root="$(make_fixture_dir start-local-stack-cleanup)"
 
     copy_repo_script "scripts/start-local-stack.sh" "$fixture_root"
     seed_peer_trust_state "$fixture_root" 7001 7002 7003
     mkdir -p "$fixture_root/data/state-7001/genesis-keys"
+    mkdir -p "$fixture_root/keypairs"
+    printf '{}' >"$fixture_root/data/state-7001/genesis-keys/genesis-primary-lichen-testnet-1.json"
     printf '{}' >"$fixture_root/data/state-7001/genesis-keys/treasury-lichen-testnet-1.json"
+    printf '{"privateKey":[0]}' >"$fixture_root/keypairs/release-signing-key.json"
+    expected_signing_key="$(cd "$fixture_root/keypairs" && pwd)/release-signing-key.json"
 
     write_file_from_stdin "$fixture_root/run-validator.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -138,6 +143,7 @@ EOF
     chmod +x "$fixture_root/scripts/run-custody.sh"
     write_file_from_stdin "$fixture_root/scripts/first-boot-deploy.sh" <<'EOF'
 #!/usr/bin/env bash
+printf '%s' "${SIGNED_METADATA_KEYPAIR:-}" > "$PWD/bootstrap-keypair-path.txt"
 exit 0
 EOF
     chmod +x "$fixture_root/scripts/first-boot-deploy.sh"
@@ -165,6 +171,7 @@ EOF
     ) >"$output_file" 2>&1
 
     assert_peer_trust_state_removed "start-local-stack cleanup" "$fixture_root" 7001 7002 7003
+    assert_output_contains "start-local-stack metadata signer default" "$expected_signing_key" "$fixture_root/bootstrap-keypair-path.txt"
     echo "✅ start-local-stack peer trust cleanup"
 }
 

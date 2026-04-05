@@ -25,8 +25,10 @@ case $NETWORK in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="${SCRIPT_DIR}/.."
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+
+LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT="$REPO_ROOT/keypairs/release-signing-key.json"
 
 generate_local_token() {
   if command -v python3 >/dev/null 2>&1; then
@@ -131,8 +133,12 @@ export LICHEN_SIGNER_AUTH_TOKEN="${LICHEN_SIGNER_AUTH_TOKEN:-$(generate_local_to
 if [ -z "${CUSTODY_SIGNER_AUTH_TOKENS:-}" ] && [ -z "${CUSTODY_SIGNER_AUTH_TOKEN:-}" ]; then
   export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
 fi
+if [ -z "${SIGNED_METADATA_KEYPAIR:-}" ] && [ -f "$LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT" ]; then
+  export SIGNED_METADATA_KEYPAIR="$LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT"
+fi
 export CUSTODY_API_AUTH_TOKEN="${CUSTODY_API_AUTH_TOKEN:-$(generate_local_token)}"
 export CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:${CUSTODY_PORT}}"
+LOCAL_HEALTH_TIMEOUT_SECS="${LICHEN_LOCAL_HEALTH_TIMEOUT_SECS:-900}"
 
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
@@ -207,6 +213,13 @@ refresh_changed_contract_wasm
 
 clear_local_peer_trust_state
 
+cleanup_started_processes() {
+  kill "$V1_PID" "$V2_PID" "$V3_PID" "$CUSTODY_PID" 2>/dev/null || true
+  if [ -n "${FAUCET_PID:-}" ]; then
+    kill "$FAUCET_PID" 2>/dev/null || true
+  fi
+}
+
 wait_for_file() {
   local file_path=$1
   local label=$2
@@ -266,7 +279,7 @@ mkdir -p ./keypairs
 cp "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
 export CUSTODY_TREASURY_KEYPAIR="${CUSTODY_TREASURY_KEYPAIR:-$LOCAL_DEPLOYER_KEYPAIR}"
 
-CLUSTER_RPC_URL="$(wait_for_healthy_rpc 90)"
+CLUSTER_RPC_URL="$(wait_for_healthy_rpc "$LOCAL_HEALTH_TIMEOUT_SECS")"
 export CUSTODY_LICHEN_RPC_URL="$CLUSTER_RPC_URL"
 export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
 
@@ -285,11 +298,17 @@ if [ "$NETWORK" = "testnet" ]; then
 fi
 
 # ── First-boot contract deployment ──
-# Wait 5s for validators to stabilize, then deploy all contracts if not yet deployed
+# Wait 5s for validators to stabilize, then rebuild manifest + signed metadata.
+# The local stack is not DEX-ready until this completes.
 echo "🔧 Running post-genesis bootstrap..."
 sleep 5
-"${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1 &
-DEPLOY_PID=$!
+if "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1; then
+  echo "✅ Post-genesis bootstrap complete"
+else
+  echo "❌ Post-genesis bootstrap failed; see ${LOG_DIR}/first-boot-deploy.log" >&2
+  cleanup_started_processes
+  exit 1
+fi
 
 echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"
@@ -299,7 +318,6 @@ echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"
 fi
-echo "Bootstrap PID: $DEPLOY_PID"
 if [ -n "$SOLANA_RPC_URL" ]; then
   echo "Solana RPC: $SOLANA_RPC_URL"
 fi

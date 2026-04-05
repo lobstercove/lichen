@@ -6,6 +6,12 @@ cd "$ROOT_DIR"
 LICHEN_BIN="${LICHEN_BIN:-$ROOT_DIR/target/release/lichen}"
 RPC_URL="${RPC_URL:-http://localhost:8899}"
 WS_URL="${WS_URL:-ws://localhost:8900}"
+PUBLIC_EDGE_REQUIRED="${PUBLIC_EDGE_REQUIRED:-auto}"
+PUBLIC_EDGE_RPC_URL="${PUBLIC_EDGE_RPC_URL:-}"
+PUBLIC_EDGE_WS_URL="${PUBLIC_EDGE_WS_URL:-}"
+PUBLIC_EDGE_FAUCET_URL="${PUBLIC_EDGE_FAUCET_URL:-}"
+PUBLIC_EDGE_CUSTODY_URL="${PUBLIC_EDGE_CUSTODY_URL:-}"
+PUBLIC_EDGE_ORIGIN="${PUBLIC_EDGE_ORIGIN:-https://dex.lichen.network}"
 TREASURY_KEYPAIR="${TREASURY_KEYPAIR:-}"
 if [[ -z "$TREASURY_KEYPAIR" || ! -f "$TREASURY_KEYPAIR" ]]; then
   # Auto-discover treasury keypair from any state directory
@@ -41,7 +47,7 @@ STRICT_WRITE_ASSERTIONS="${STRICT_WRITE_ASSERTIONS:-0}"
 TX_CONFIRM_TIMEOUT_SECS="${TX_CONFIRM_TIMEOUT_SECS:-25}"
 REQUIRE_FULL_WRITE_ACTIVITY="${REQUIRE_FULL_WRITE_ACTIVITY:-0}"
 MIN_CONTRACT_ACTIVITY_DELTA="${MIN_CONTRACT_ACTIVITY_DELTA:-0}"
-ENFORCE_DOMAIN_ASSERTIONS="${ENFORCE_DOMAIN_ASSERTIONS:-0}"
+ENFORCE_DOMAIN_ASSERTIONS="${ENFORCE_DOMAIN_ASSERTIONS:-auto}"
 ENABLE_NEGATIVE_ASSERTIONS="${ENABLE_NEGATIVE_ASSERTIONS:-1}"
 REQUIRE_NEGATIVE_REASON_MATCH="${REQUIRE_NEGATIVE_REASON_MATCH:-1}"
 REQUIRE_NEGATIVE_CODE_MATCH="${REQUIRE_NEGATIVE_CODE_MATCH:-0}"
@@ -116,6 +122,230 @@ rpc_has_result() {
   local out
   out="$(rpc_call "$method" "$params" || true)"
   echo "$out" | jq -e '.result' >/dev/null 2>&1
+}
+
+rpc_call_at_url() {
+  local url="$1"
+  local method="$2"
+  local params="$3"
+  curl -sS --max-time 8 -X POST "$url" \
+    -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$method\",\"params\":$params}"
+}
+
+rpc_has_result_at_url() {
+  local url="$1"
+  local method="$2"
+  local params="$3"
+  local out
+  out="$(rpc_call_at_url "$url" "$method" "$params" || true)"
+  echo "$out" | jq -e '.result' >/dev/null 2>&1
+}
+
+url_host() {
+  local url="$1"
+  printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#'
+}
+
+url_is_public() {
+  local host
+  host="$(url_host "$1")"
+
+  [[ -n "$host" \
+    && "$host" != "localhost" \
+    && "$host" != "127.0.0.1" \
+    && "$host" != "::1" \
+    && "$host" != "0.0.0.0" ]]
+}
+
+derive_ws_url_from_rpc() {
+  local rpc_url="$1"
+  local normalized="${rpc_url%/}"
+
+  case "$normalized" in
+    wss://*|ws://*)
+      echo "$normalized"
+      ;;
+    https://*/ws|http://*/ws)
+      echo "${normalized/https:/wss:}" | sed 's#^http:#ws:#'
+      ;;
+    https://*)
+      echo "${normalized/https:/wss:}/ws"
+      ;;
+    http://*)
+      echo "${normalized/http:/ws:}/ws"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+resolve_public_edge_defaults() {
+  if [[ -z "$PUBLIC_EDGE_RPC_URL" ]] && url_is_public "$RPC_URL"; then
+    PUBLIC_EDGE_RPC_URL="${RPC_URL%/}"
+  fi
+
+  if [[ -z "$PUBLIC_EDGE_WS_URL" ]]; then
+    if url_is_public "$WS_URL"; then
+      PUBLIC_EDGE_WS_URL="${WS_URL%/}"
+    elif [[ -n "$PUBLIC_EDGE_RPC_URL" ]]; then
+      PUBLIC_EDGE_WS_URL="$(derive_ws_url_from_rpc "$PUBLIC_EDGE_RPC_URL")"
+    fi
+  fi
+
+  if [[ -z "$PUBLIC_EDGE_FAUCET_URL" ]] && url_is_public "$FAUCET_URL"; then
+    PUBLIC_EDGE_FAUCET_URL="${FAUCET_URL%/}"
+  fi
+
+  if [[ -z "$PUBLIC_EDGE_CUSTODY_URL" ]] && url_is_public "$CUSTODY_URL"; then
+    PUBLIC_EDGE_CUSTODY_URL="${CUSTODY_URL%/}"
+  fi
+
+  if [[ "$PUBLIC_EDGE_REQUIRED" == "auto" ]]; then
+    if [[ -n "$PUBLIC_EDGE_RPC_URL" || -n "$PUBLIC_EDGE_WS_URL" || -n "$PUBLIC_EDGE_FAUCET_URL" || -n "$PUBLIC_EDGE_CUSTODY_URL" ]]; then
+      PUBLIC_EDGE_REQUIRED=1
+    else
+      PUBLIC_EDGE_REQUIRED=0
+    fi
+  fi
+
+  if [[ "$ENFORCE_DOMAIN_ASSERTIONS" == "auto" ]]; then
+    ENFORCE_DOMAIN_ASSERTIONS="$PUBLIC_EDGE_REQUIRED"
+  fi
+}
+
+check_public_preflight() {
+  local url="$1"
+  local origin="$2"
+  local label="$3"
+  local response=""
+  local status_line=""
+  local allow_origin=""
+
+  response="$(curl -si --max-time 10 -X OPTIONS "$url" \
+    -H "Origin: $origin" \
+    -H 'Access-Control-Request-Method: POST' \
+    -H 'Access-Control-Request-Headers: content-type' || true)"
+  response="$(printf '%s' "$response" | tr -d '\r')"
+  status_line="$(printf '%s' "$response" | head -n 1)"
+  allow_origin="$(printf '%s' "$response" | awk -F': ' 'tolower($1)=="access-control-allow-origin" {print $2; exit}')"
+
+  if printf '%s' "$status_line" | grep -Eq 'HTTP/[0-9.]+ (200|204)'; then
+    pass "$label CORS preflight returned ${status_line#HTTP/* }"
+  else
+    fail "$label CORS preflight failed: ${status_line:-no response}"
+    return 1
+  fi
+
+  if [[ "$allow_origin" == "$origin" ]]; then
+    pass "$label CORS origin allows $origin"
+  else
+    fail "$label CORS origin mismatch (wanted $origin, got ${allow_origin:-<missing>})"
+    return 1
+  fi
+}
+
+check_public_rpc_method() {
+  local url="$1"
+  local method="$2"
+
+  if rpc_has_result_at_url "$url" "$method" '[]'; then
+    pass "Public RPC $method succeeded via $url"
+  else
+    fail "Public RPC $method failed via $url"
+    return 1
+  fi
+}
+
+check_public_http_health() {
+  local url="$1"
+  local label="$2"
+  local response=""
+  local health_url="${url%/}/health"
+
+  response="$(curl -sS --max-time 8 "$health_url" || true)"
+  if echo "$response" | jq -e '.status == "ok"' >/dev/null 2>&1 || echo "$response" | grep -qi 'ok'; then
+    pass "$label public health endpoint succeeded via $health_url"
+  else
+    fail "$label public health endpoint failed via $health_url"
+    return 1
+  fi
+}
+
+check_public_websocket() {
+  local url="$1"
+
+  if "$PYTHON_BIN" - "$url" <<'PY' >/dev/null 2>&1
+import asyncio
+import json
+import sys
+
+import websockets
+
+url = sys.argv[1]
+
+
+async def main() -> None:
+    async with websockets.connect(url, open_timeout=10, close_timeout=5, ping_interval=None) as ws:
+        await ws.send(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "subscribeSlots", "params": []}))
+        message = await asyncio.wait_for(ws.recv(), timeout=10)
+        payload = json.loads(message)
+        if payload.get("id") == 1 and "result" in payload:
+            return
+        if payload.get("method") == "subscription":
+            return
+        raise SystemExit(1)
+
+
+asyncio.run(main())
+PY
+  then
+    pass "Public WebSocket subscription succeeded via $url"
+  else
+    fail "Public WebSocket subscription failed via $url"
+    return 1
+  fi
+}
+
+run_public_edge_checks() {
+  if [[ "$PUBLIC_EDGE_REQUIRED" != "1" ]]; then
+    pass "Public edge checks not required for local gate target"
+    return 0
+  fi
+
+  if [[ -z "$PUBLIC_EDGE_RPC_URL" ]]; then
+    fail "Public edge checks required but PUBLIC_EDGE_RPC_URL could not be resolved"
+    return 1
+  fi
+
+  log "Public edge RPC: $PUBLIC_EDGE_RPC_URL"
+  check_public_preflight "$PUBLIC_EDGE_RPC_URL" "$PUBLIC_EDGE_ORIGIN" "Public RPC"
+  check_public_rpc_method "$PUBLIC_EDGE_RPC_URL" "getHealth"
+  check_public_rpc_method "$PUBLIC_EDGE_RPC_URL" "getIncidentStatus"
+  check_public_rpc_method "$PUBLIC_EDGE_RPC_URL" "getSignedMetadataManifest"
+
+  if [[ -n "$PUBLIC_EDGE_WS_URL" ]]; then
+    check_public_websocket "$PUBLIC_EDGE_WS_URL"
+  else
+    fail "Public edge checks required but PUBLIC_EDGE_WS_URL could not be resolved"
+  fi
+
+  if [[ "$REQUIRE_FAUCET" == "1" ]]; then
+    if [[ -n "$PUBLIC_EDGE_FAUCET_URL" ]]; then
+      check_public_http_health "$PUBLIC_EDGE_FAUCET_URL" "Faucet"
+    else
+      fail "Public faucet checks required but PUBLIC_EDGE_FAUCET_URL was not set"
+    fi
+  fi
+
+  if [[ "$REQUIRE_CUSTODY" == "1" ]]; then
+    if [[ -n "$PUBLIC_EDGE_CUSTODY_URL" ]]; then
+      check_public_http_health "$PUBLIC_EDGE_CUSTODY_URL" "Custody"
+    else
+      fail "Public custody checks required but PUBLIC_EDGE_CUSTODY_URL was not set"
+    fi
+  fi
 }
 
 wait_for_rpc_health() {
@@ -583,6 +813,8 @@ if [[ ! -x "$LICHEN_BIN" ]]; then
   fi
 fi
 
+resolve_public_edge_defaults
+
 if rpc_has_result "getHealth" "[]"; then
   pass "Primary RPC healthy"
 else
@@ -609,6 +841,8 @@ if ! python_can_import_modules "$PYTHON_BIN"; then
     fail "Python runtime missing required modules (httpx/base58/websockets): $PYTHON_BIN"
   fi
 fi
+
+run_public_edge_checks
 
 if [[ "$REQUIRE_CUSTODY" == "1" && "$RUN_CUSTODY_WITHDRAWAL_E2E" == "1" ]]; then
   if ! resolve_custody_withdrawal_fixtures; then

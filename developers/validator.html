@@ -191,13 +191,13 @@ grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
     --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply</code></pre>
             </div>
 
@@ -215,13 +215,13 @@ grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
     --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply</code></pre>
             </div>
 
@@ -236,13 +236,13 @@ mkdir -p "$HOME/.lichen/state-mainnet"
 Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
+Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 .\lichen-validator.exe `
     --network mainnet `
     --rpc-port 9899 `
     --ws-port 9900 `
     --p2p-port 8001 `
     --db-path "$HOME\.lichen\state-mainnet" `
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 `
     --auto-update=apply</code></pre>
             </div>
 
@@ -257,6 +257,7 @@ New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Nu
                 <pre><code>mkdir -p "$HOME/.lichen/state-mainnet"
 
 mkdir -p "$HOME/.lichen/state-mainnet/home"
+                cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 
 env HOME="$HOME/.lichen/state-mainnet/home" \
 lichen-validator \
@@ -264,13 +265,14 @@ lichen-validator \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
+                    --db-path "$HOME/.lichen/state-mainnet" \
     --auto-update=apply</code></pre>
             </div>
 
-            <p>This is the fastest operational path for agents: binary, ports, state directory, bootstrap domains. If
+            <p>This is the fastest operational path for agents: binary, ports, state directory, bundled seed file. If
                 the state directory already exists, the validator resumes with the same identity and local chain state.
+                In apply mode, auto-update also refreshes <code>{db-path}/seeds.json</code> from newer release
+                archives.
             </p>
 
             <h4>What happens when the validator starts?</h4>
@@ -279,8 +281,10 @@ lichen-validator \
                 <li>It creates the chosen state directory if needed.</li>
                 <li>It generates or reuses the validator identity in that directory.</li>
                 <li>It stores signer material, peer cache, and chain state under the same path.</li>
-                <li>It connects to <code>seed-01.lichen.network</code> and <code>seed-02.lichen.network</code>,
-                    and <code>seed-03.lichen.network</code>.</li>
+                <li>It loads seed peers from <code>{db-path}/seeds.json</code>,
+                    <code>/etc/lichen/seeds.json</code>, or <code>./seeds.json</code>, then falls back to the
+                    embedded DNS seed defaults if none are present.
+                </li>
                 <li>It syncs the network, then resumes or starts validating from the preserved local state.</li>
                 <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background, stages
                     a newer signed binary, and requests a restart to apply it.</li>
@@ -299,9 +303,10 @@ lichen-validator \
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Why domains instead of IPs?</div>
-                Use <code>seed-01.lichen.network</code> and <code>seed-02.lichen.network</code>, and
-                <code>seed-03.lichen.network</code> for bootstrap peers. Domains let Lichen rotate seed
-                infrastructure without forcing operators or agents to change commands or wait for a new binary.
+                The bundled <code>seeds.json</code> uses <code>seed-01.lichen.network</code>,
+                <code>seed-02.lichen.network</code>, and <code>seed-03.lichen.network</code> so Lichen can rotate seed
+                infrastructure through normal release and auto-update flows without forcing operators or agents to
+                rewrite start commands.
             </div>
 
             <h3>Option B: Repo Workflow</h3>
@@ -418,13 +423,11 @@ cargo build --release
     --rpc-port 8899 \
     --ws-port 8900 \
     --p2p-port 7001 \
-    --db-path ./data/state-testnet \
-    --bootstrap-peers seed-01.lichen.network:7001,seed-02.lichen.network:7001,seed-03.lichen.network:7001
+    --db-path ./data/state-testnet
 
 # Disable the supervisor (e.g. when using systemd Restart=on-failure)
 ./target/release/lichen-validator --no-watchdog \
-    --network testnet --rpc-port 8899 --p2p-port 7001 \
-    --bootstrap-peers seed-01.lichen.network:7001,seed-02.lichen.network:7001</code></pre>
+    --network testnet --rpc-port 8899 --p2p-port 7001</code></pre>
             </div>
 
             <h3>Option D: Docker</h3>
@@ -1485,6 +1488,7 @@ print(releases[0]['tag_name'])
     tar xzf "$ASSET" --strip-components=1
     mv lichen-validator "$BINARY"
     chmod +x "$BINARY"
+    cp seeds.json "$STATE_DIR/seeds.json"
 
     cd /
 
@@ -1501,7 +1505,6 @@ exec "$BINARY" \
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$STATE_DIR" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply
 WRAPPER
 
@@ -1640,7 +1643,8 @@ tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
 
 # 3. Create the service
 nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
-nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 --auto-update=apply"
+Copy-Item "$InstallDir\bin\seeds.json" "$InstallDir\state-mainnet\seeds.json" -Force
+nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --auto-update=apply"
 nssm set LichenValidator AppDirectory "$InstallDir"
 nssm set LichenValidator AppStdout "$InstallDir\logs\validator.log"
 nssm set LichenValidator AppStderr "$InstallDir\logs\validator.log"
@@ -1662,7 +1666,7 @@ nssm start LichenValidator</code></pre>
                 <pre><code>$InstallDir = "$env:LOCALAPPDATA\Lichen"
 $Action = New-ScheduledTaskAction `
     -Execute "$InstallDir\bin\lichen-validator.exe" `
-    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 --auto-update=apply" `
+                    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --auto-update=apply" `
     -WorkingDirectory "$InstallDir"
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds 15)

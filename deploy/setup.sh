@@ -33,6 +33,8 @@ DRILL_REGISTER_FILE="$CONFIG_DIR/drill-register.md"
 DATA_DIR="/var/lib/lichen"
 LOG_DIR="/var/log/lichen"
 SHARE_DIR="/usr/local/share/lichen"
+CADDY_CONFIG_DIR="/etc/caddy"
+CADDY_CONFIG_FILE="$CADDY_CONFIG_DIR/Caddyfile"
 USER="lichen"
 GROUP="lichen"
 
@@ -87,6 +89,84 @@ ensure_ufw_allow_rule() {
 
     ufw allow "$rule" comment "$comment" >/dev/null
     echo "   ✅ Ensured ufw allows $rule ($comment)"
+}
+
+ensure_ufw_remove_allow_rule() {
+    local rule="$1"
+    local removed=0
+
+    if ! ufw_is_active; then
+        return 0
+    fi
+
+    while ufw status 2>/dev/null | grep -Fq "$rule"; do
+        if ! ufw --force delete allow "$rule" >/dev/null 2>&1; then
+            break
+        fi
+        removed=1
+    done
+
+    if [ "$removed" -eq 1 ]; then
+        echo "   ✅ Removed legacy ufw allow $rule"
+    fi
+}
+
+host_is_us_vps() {
+    [ "$(primary_ipv4)" = "15.204.229.189" ]
+}
+
+append_caddy_fragment() {
+    local source_file="$1"
+    local target_file="$2"
+
+    cat "$source_file" >> "$target_file"
+    printf '\n' >> "$target_file"
+}
+
+ensure_caddy_installed() {
+    if command -v caddy >/dev/null 2>&1; then
+        echo "✅ Caddy already installed"
+        return 0
+    fi
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y >/dev/null
+    apt-get install -y caddy >/dev/null
+    echo "✅ Installed Caddy"
+}
+
+install_caddy_config() {
+    local tmp_file=""
+    local net=""
+
+    tmp_file="$(mktemp)"
+    append_caddy_fragment "deploy/Caddyfile.common" "$tmp_file"
+
+    for net in "$@"; do
+        case "$net" in
+            testnet)
+                append_caddy_fragment "deploy/Caddyfile.testnet" "$tmp_file"
+                if host_is_us_vps; then
+                    append_caddy_fragment "deploy/Caddyfile.testnet-us" "$tmp_file"
+                fi
+                ;;
+            mainnet)
+                append_caddy_fragment "deploy/Caddyfile.mainnet" "$tmp_file"
+                if host_is_us_vps; then
+                    append_caddy_fragment "deploy/Caddyfile.mainnet-us" "$tmp_file"
+                fi
+                ;;
+        esac
+    done
+
+    mkdir -p "$CADDY_CONFIG_DIR"
+    caddy validate --config "$tmp_file" --adapter caddyfile >/dev/null
+    install -m 644 "$tmp_file" "$CADDY_CONFIG_FILE"
+    rm -f "$tmp_file"
+
+    systemctl enable caddy >/dev/null 2>&1 || true
+    systemctl restart caddy
+    echo "✅ Installed repo-managed Caddy ingress → $CADDY_CONFIG_FILE"
 }
 
 hash_contract_bundle() {
@@ -406,6 +486,8 @@ write_key_hierarchy_template
 write_drill_register_template
 echo "✅ Directories created"
 
+ensure_caddy_installed
+
 # ── 3. Copy binaries ──
 for bin in lichen-validator lichen-genesis lichen-faucet lichen-custody; do
     if [ -f "target/release/$bin" ]; then
@@ -482,6 +564,7 @@ for net in "${NETWORKS[@]}"; do
     SIGNER_AUTH_TOKEN=""
     INCIDENT_STATUS_FILE=""
     SIGNED_METADATA_MANIFEST_FILE=""
+    SIGNED_METADATA_KEYPAIR_FILE=""
     SERVICE_FLEET_CONFIG_FILE=""
     SERVICE_FLEET_UPSTREAM_RPC_URL=""
     SERVICE_FLEET_STATUS_FILE=""
@@ -490,6 +573,7 @@ for net in "${NETWORKS[@]}"; do
         SIGNER_AUTH_TOKEN="$(read_env_value "$ENV_FILE" "LICHEN_SIGNER_AUTH_TOKEN")"
         INCIDENT_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_INCIDENT_STATUS_FILE")"
         SIGNED_METADATA_MANIFEST_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SIGNED_METADATA_MANIFEST_FILE")"
+        SIGNED_METADATA_KEYPAIR_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SIGNED_METADATA_KEYPAIR_FILE")"
         SERVICE_FLEET_CONFIG_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_CONFIG_FILE")"
         SERVICE_FLEET_UPSTREAM_RPC_URL="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL")"
         SERVICE_FLEET_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_STATUS_FILE")"
@@ -502,6 +586,9 @@ for net in "${NETWORKS[@]}"; do
     fi
     if [ -z "$SIGNED_METADATA_MANIFEST_FILE" ]; then
         SIGNED_METADATA_MANIFEST_FILE="$CONFIG_DIR/signed-metadata-manifest-${net}.json"
+    fi
+    if [ -z "$SIGNED_METADATA_KEYPAIR_FILE" ]; then
+        SIGNED_METADATA_KEYPAIR_FILE="$SECRETS_DIR/release-signing-keypair-${net}.json"
     fi
     if [ -z "$SERVICE_FLEET_CONFIG_FILE" ]; then
         SERVICE_FLEET_CONFIG_FILE="$CONFIG_DIR/service-fleet-${net}.json"
@@ -530,6 +617,7 @@ RUST_LOG=info
 LICHEN_BOOTSTRAP_PEERS=
 LICHEN_INCIDENT_STATUS_FILE=$INCIDENT_STATUS_FILE
 LICHEN_SIGNED_METADATA_MANIFEST_FILE=$SIGNED_METADATA_MANIFEST_FILE
+LICHEN_SIGNED_METADATA_KEYPAIR_FILE=$SIGNED_METADATA_KEYPAIR_FILE
 LICHEN_SERVICE_FLEET_CONFIG_FILE=$SERVICE_FLEET_CONFIG_FILE
 LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL=$SERVICE_FLEET_UPSTREAM_RPC_URL
 LICHEN_SERVICE_FLEET_STATUS_FILE=$SERVICE_FLEET_STATUS_FILE
@@ -541,6 +629,7 @@ LICHEN_EXTRA_ARGS=--auto-update=off
 EOF
     chmod 600 "$ENV_FILE"
     echo "   ✅ Created $ENV_FILE"
+    echo "   ⚠  Provision offline release signing key → $SIGNED_METADATA_KEYPAIR_FILE before first-boot deploy"
 
     write_incident_status_template "$INCIDENT_STATUS_FILE" "$net"
     write_service_fleet_config_template "$SERVICE_FLEET_CONFIG_FILE" "$net"
@@ -652,16 +741,20 @@ CUSTEOF
         echo "   ✅ $CONFIG_DIR/$CUSTODY_ENV_NAME already exists (updated treasury key path, signer auth token, incident manifest path, and file-backed seed paths)"
     fi
 
-    ensure_ufw_allow_rule "${RPC_PORT}/tcp" "${NETWORK_LABEL} RPC"
-    ensure_ufw_allow_rule "${WS_PORT}/tcp" "${NETWORK_LABEL} WebSocket"
+    ensure_ufw_allow_rule "80/tcp" "Caddy HTTP"
+    ensure_ufw_allow_rule "443/tcp" "Caddy HTTPS"
     ensure_ufw_allow_rule "${P2P_PORT}/tcp" "${NETWORK_LABEL} P2P"
     ensure_ufw_allow_rule "${P2P_PORT}/udp" "${NETWORK_LABEL} P2P QUIC"
-    if [ "$net" = "testnet" ]; then
-        ensure_ufw_allow_rule "9100/tcp" "Testnet Faucet"
-    fi
+    ensure_ufw_remove_allow_rule "${RPC_PORT}/tcp"
+    ensure_ufw_remove_allow_rule "${WS_PORT}/tcp"
+    ensure_ufw_remove_allow_rule "9100/tcp"
+    ensure_ufw_remove_allow_rule "9105/tcp"
+    ensure_ufw_remove_allow_rule "9106/tcp"
 
     systemctl daemon-reload
 done
+
+install_caddy_config "${NETWORKS[@]}"
 
 echo ""
 echo "=== Setup Complete ==="
@@ -669,24 +762,21 @@ echo ""
 echo "Quick reference:"
 for net in "${NETWORKS[@]}"; do
     case $net in
-        testnet) echo "  $net → RPC :8899  WS :8900  P2P :7001  STATUS $CONFIG_DIR/incident-status-testnet.json  METADATA $CONFIG_DIR/signed-metadata-manifest-testnet.json" ;;
-        mainnet) echo "  $net → RPC :9899  WS :9900  P2P :8001  STATUS $CONFIG_DIR/incident-status-mainnet.json  METADATA $CONFIG_DIR/signed-metadata-manifest-mainnet.json" ;;
+        testnet) echo "  $net → EDGE https://testnet-rpc.lichen.network  P2P :7001  STATUS $CONFIG_DIR/incident-status-testnet.json  METADATA $CONFIG_DIR/signed-metadata-manifest-testnet.json  KEY $SECRETS_DIR/release-signing-keypair-testnet.json" ;;
+        mainnet) echo "  $net → EDGE https://rpc.lichen.network  P2P :8001  STATUS $CONFIG_DIR/incident-status-mainnet.json  METADATA $CONFIG_DIR/signed-metadata-manifest-mainnet.json  KEY $SECRETS_DIR/release-signing-keypair-mainnet.json" ;;
     esac
 done
 echo ""
 echo "Firewall (auto-opened when ufw is active; otherwise allow manually):"
+echo "  sudo ufw allow 80/tcp    # Caddy HTTP -> HTTPS"
+echo "  sudo ufw allow 443/tcp   # Caddy HTTPS"
 for net in "${NETWORKS[@]}"; do
     case $net in
         testnet)
-            echo "  sudo ufw allow 8899/tcp  # testnet RPC"
-            echo "  sudo ufw allow 8900/tcp  # testnet WebSocket"
             echo "  sudo ufw allow 7001/tcp  # testnet P2P"
             echo "  sudo ufw allow 7001/udp  # testnet P2P QUIC"
-            echo "  sudo ufw allow 9100/tcp  # testnet faucet"
             ;;
         mainnet)
-            echo "  sudo ufw allow 9899/tcp  # mainnet RPC"
-            echo "  sudo ufw allow 9900/tcp  # mainnet WebSocket"
             echo "  sudo ufw allow 8001/tcp  # mainnet P2P"
             echo "  sudo ufw allow 8001/udp  # mainnet P2P QUIC"
             ;;
@@ -727,14 +817,17 @@ echo ""
 echo "   6. Install post-genesis key material from the live state:"
 echo "      cd ~/lichen && bash scripts/vps-post-genesis.sh <net>"
 echo ""
-echo "   7. Run post-genesis bootstrap from the repo checkout (auto-bootstraps Python deps if needed):"
+echo "   7. Provision the offline release-signing key on the validator host:"
+echo "      sudo install -m 640 -o root -g lichen /secure/offline-mounted/release-signing-keypair-<net>.json $SECRETS_DIR/release-signing-keypair-<net>.json"
+echo ""
+echo "   8. Run post-genesis bootstrap from the repo checkout (auto-bootstraps Python deps if needed):"
 echo "      cd ~/lichen && DEPLOY_NETWORK=<net> ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:<rpc-port> --skip-build"
 echo "      testnet rpc-port=8899, mainnet rpc-port=9899"
 echo ""
-echo "   8. If signed metadata was generated into the repo checkout, install it into /etc/lichen:"
+echo "   9. If signed metadata was generated into the repo checkout, install it into /etc/lichen:"
 echo "      sudo install -m 640 -o root -g lichen ~/lichen/signed-metadata-manifest-<net>.json /etc/lichen/signed-metadata-manifest-<net>.json"
 echo ""
-echo "   9. Start custody and faucet after post-genesis key setup + first-boot deploy complete:"
+echo "   10. Start custody and faucet after post-genesis key setup + first-boot deploy complete:"
 echo "      testnet: sudo systemctl start lichen-custody && sudo systemctl start lichen-faucet"
 echo "      mainnet: sudo systemctl start lichen-custody-mainnet"
 echo ""

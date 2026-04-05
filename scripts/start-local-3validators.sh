@@ -14,6 +14,7 @@ STAGGER_SECS="${LICN_LOCAL_STAGGER_SECS:-15}"
 NETWORK="${LICN_LOCAL_NETWORK:-testnet}"
 MANIFEST_FILE="$ROOT/signed-metadata-manifest-${NETWORK}.json"
 SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-$ROOT/keypairs/release-signing-key.json}"
+RPC_WAIT_SECS="${LICN_LOCAL_RPC_WAIT_SECS:-900}"
 
 export LICHEN_LOCAL_DEV=1
 
@@ -224,7 +225,7 @@ start_cluster() {
   LICHEN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
   V3PID=$!
 
-  if ! wait_rpc "$RPC1" 90 1 || ! wait_rpc "$RPC2" 90 1 || ! wait_rpc "$RPC3" 90 1; then
+  if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
     echo "[local-3validators] ERROR: cluster did not become healthy"
     stop_cluster
     exit 1

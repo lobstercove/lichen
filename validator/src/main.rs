@@ -378,6 +378,41 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
     resolved
 }
 
+fn derive_rpc_url_from_peer(peer_addr: &str) -> Option<String> {
+    let (host, peer_p2p) = if let Some((host, port)) = peer_addr.rsplit_once(':') {
+        (host.to_string(), port.parse::<u16>().ok()?)
+    } else {
+        (peer_addr.to_string(), 7001u16)
+    };
+
+    let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
+    let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
+    let offset = peer_p2p.saturating_sub(base_p2p);
+    let rpc_port = base_rpc.saturating_add(offset.saturating_mul(2));
+
+    Some(format!("http://{}:{}", host, rpc_port))
+}
+
+fn needs_bootstrap_slot_catch_up(current_slot: u64, bootstrap_slot: u64, tolerance: u64) -> bool {
+    current_slot.saturating_add(tolerance) < bootstrap_slot
+}
+
+async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<u64> {
+    let response = http_client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSlot",
+            "params": []
+        }))
+        .send()
+        .await
+        .ok()?;
+    let body = response.json::<serde_json::Value>().await.ok()?;
+    body["result"].as_u64()
+}
+
 /// Discover companion binaries (faucet, custody, cli) installed alongside
 /// the validator.  Only returns entries for binaries that actually exist on
 /// disk — this way an agent running just the validator won't try to update
@@ -410,6 +445,10 @@ fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
         }
     }
     found
+}
+
+fn discover_companion_assets(data_dir: &Path) -> Vec<(String, PathBuf)> {
+    vec![("seeds.json".to_string(), data_dir.join("seeds.json"))]
 }
 
 fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
@@ -5277,6 +5316,7 @@ async fn run_validator() {
         .to_string();
 
     let no_auto_restart = has_flag(&args, "--no-auto-restart");
+    let data_dir_path = Path::new(&data_dir);
 
     let update_config = updater::UpdateConfig {
         mode: auto_update_mode,
@@ -5286,13 +5326,12 @@ async fn run_validator() {
         jitter_max_secs: 60,
         target_binary: "lichen-validator".to_string(),
         companion_binaries: discover_companion_binaries(),
+        companion_assets: discover_companion_assets(data_dir_path),
     };
 
     // Spawn auto-updater background task
     info!("🔄 Validator version: v{}", updater::VERSION);
     let _updater_handle = updater::spawn_update_checker(update_config);
-
-    let data_dir_path = Path::new(&data_dir);
     let validator_runtime_home = resolve_validator_runtime_home(data_dir_path);
     if let Err(err) = std::fs::create_dir_all(&validator_runtime_home) {
         warn!(
@@ -6778,10 +6817,9 @@ async fn run_validator() {
                             let sync_end = end;
                             tokio::spawn(async move {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                let progress = sync_mgr_complete.get_last_progress_slot().await;
-                                if progress > sync_start_slot {
+                                let current = state_for_sync_check.get_last_slot().unwrap_or(0);
+                                if current > sync_start_slot {
                                     sync_mgr_complete.record_sync_success().await;
-                                    let current = state_for_sync_check.get_last_slot().unwrap_or(0);
                                     if current < sync_end {
                                         info!(
                                             "🔄 Periodic sync progress: {} → {} (target {})",
@@ -8038,13 +8076,14 @@ async fn run_validator() {
                             chunk_idx += 1;
                         }
 
-                        // Progress-based sync completion (same as main sync path)
+                        // State-slot-based sync completion (same as main sync path)
                         let sync_mgr_complete = sync_mgr.clone();
+                        let state_for_sync_check = state_for_blocks.clone();
                         let sync_start_slot = post_genesis_slot;
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                            let progress = sync_mgr_complete.get_last_progress_slot().await;
-                            if progress > sync_start_slot {
+                            let current = state_for_sync_check.get_last_slot().unwrap_or(0);
+                            if current > sync_start_slot {
                                 sync_mgr_complete.record_sync_success().await;
                             } else {
                                 sync_mgr_complete.record_sync_failure().await;
@@ -8472,6 +8511,9 @@ async fn run_validator() {
                     } else {
                         // Parent doesn't match current tip — store as pending
                         // and let sync fill in intermediate blocks.
+                        let mut request_alternative_tip = false;
+                        let mut missing_gap = None;
+
                         if block_slot <= current_slot + 2 {
                             // Close-ahead block that doesn't chain — may indicate fork
                             warn!(
@@ -8490,6 +8532,7 @@ async fn run_validator() {
                                     "🔄 Fork detected at slot {} — requesting alternative chain",
                                     current_slot
                                 );
+                                request_alternative_tip = true;
                             }
                         }
 
@@ -8503,17 +8546,40 @@ async fn run_validator() {
                                 "🔗 Requesting missing blocks {} to {} (parent gap for slot {})",
                                 gap_start, gap_end, block_slot
                             );
+                            missing_gap = Some((gap_start, gap_end));
+                        }
+
+                        sync_mgr.add_pending_block(block).await;
+
+                        if request_alternative_tip {
                             let request_msg = P2PMessage::new(
                                 MessageType::BlockRangeRequest {
-                                    start_slot: gap_start,
-                                    end_slot: gap_end,
+                                    start_slot: current_slot,
+                                    end_slot: current_slot,
                                 },
                                 local_addr,
                             );
                             peer_mgr_for_sync.broadcast(request_msg).await;
                         }
 
-                        sync_mgr.add_pending_block(block).await;
+                        if let Some((gap_start, gap_end)) = missing_gap {
+                            let mut chunk_start = gap_start;
+                            while chunk_start <= gap_end {
+                                let chunk_end = std::cmp::min(
+                                    chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
+                                    gap_end,
+                                );
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: chunk_start,
+                                        end_slot: chunk_end,
+                                    },
+                                    local_addr,
+                                );
+                                peer_mgr_for_sync.broadcast(request_msg).await;
+                                chunk_start = chunk_end + 1;
+                            }
+                        }
                     }
 
                     // Check if we should start sync
@@ -8658,8 +8724,7 @@ async fn run_validator() {
                             };
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            let progress = sync_mgr_complete.get_last_progress_slot().await;
-                            if progress > sync_start_slot {
+                            if current > sync_start_slot {
                                 // Made progress — reset backoff even if not at target
                                 sync_mgr_complete.record_sync_success().await;
                                 if current < sync_end {
@@ -8681,12 +8746,6 @@ async fn run_validator() {
                         });
                     }
                 } else if block_slot <= current_slot {
-                    // During InitialSync, skip fork choice entirely — we trust
-                    // sequential blocks from the peer.  Fork choice only
-                    // activates during LiveSync for competing blocks at the tip.
-                    if sync_mgr.get_sync_phase().await == sync::SyncPhase::InitialSync {
-                        continue;
-                    }
                     // BUG #5 FIX: Never replace a block at a PAST slot.
                     // Blocks at slots < current_slot already have descendants
                     // (blocks slot+1..current_slot) that reference the existing
@@ -8696,6 +8755,15 @@ async fn run_validator() {
                     // Fork choice is only safe at the CURRENT TIP.
                     if block_slot < current_slot {
                         continue;
+                    }
+                    let sync_phase = sync_mgr.get_sync_phase().await;
+                    if sync_phase == sync::SyncPhase::InitialSync {
+                        // InitialSync normally trusts the sequential chain from peers.
+                        // The exception is the current tip when pending descendants are
+                        // waiting on an alternative parent.
+                        if sync_mgr.pending_count().await == 0 {
+                            continue;
+                        }
                     }
                     if let Ok(Some(existing)) = state_for_blocks.get_block_by_slot(block_slot) {
                         if existing.hash() != block.hash() {
@@ -11944,18 +12012,15 @@ async fn run_validator() {
         tokio::spawn(async move {
             // ── Derive bootstrap peer's RPC URL from its P2P address ──
             let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
-                let parts: Vec<&str> = peer_addr.rsplitn(2, ':').collect();
-                let (host, peer_p2p) = if parts.len() == 2 {
-                    let port = parts[0].parse::<u16>().unwrap_or(7001);
-                    (parts[1].to_string(), port)
+                if let Some(url) = derive_rpc_url_from_peer(peer_addr) {
+                    url
                 } else {
-                    (peer_addr.clone(), 7001u16)
-                };
-                let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
-                let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
-                let offset = peer_p2p.saturating_sub(base_p2p);
-                let rpc_port = base_rpc.saturating_add(offset.saturating_mul(2));
-                format!("http://{}:{}", host, rpc_port)
+                    warn!(
+                        "⚠️  Could not derive bootstrap RPC URL from peer address: {}",
+                        peer_addr
+                    );
+                    return;
+                }
             } else {
                 warn!("⚠️  No bootstrap peers — cannot submit RegisterValidator via RPC");
                 return;
@@ -12005,32 +12070,20 @@ async fn run_validator() {
                 // much higher slots (different network), polluting highest_seen_slot.
                 // If we're within 5 slots of our bootstrap peer, we're synced enough.
                 if current_slot > 0 && sync_wait_start.elapsed() > Duration::from_secs(30) {
-                    if let Ok(resp) = http_client
-                        .post(&bootstrap_rpc_url)
-                        .json(&serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "getSlot",
-                            "params": []
-                        }))
-                        .send()
-                        .await
+                    if let Some(bootstrap_slot) =
+                        fetch_rpc_slot(&http_client, &bootstrap_rpc_url).await
                     {
-                        if let Ok(body) = resp.json::<serde_json::Value>().await {
-                            if let Some(bootstrap_slot) = body["result"].as_u64() {
-                                if current_slot + 5 >= bootstrap_slot {
-                                    info!(
-                                        "✅ Caught up with bootstrap peer (local={}, bootstrap={}) — proceeding with registration",
-                                        current_slot, bootstrap_slot
-                                    );
-                                    break;
-                                } else {
-                                    info!(
-                                        "⏳ Syncing to bootstrap peer: slot {} / {}",
-                                        current_slot, bootstrap_slot
-                                    );
-                                }
-                            }
+                        if !needs_bootstrap_slot_catch_up(current_slot, bootstrap_slot, 5) {
+                            info!(
+                                "✅ Caught up with bootstrap peer (local={}, bootstrap={}) — proceeding with registration",
+                                current_slot, bootstrap_slot
+                            );
+                            break;
+                        } else {
+                            info!(
+                                "⏳ Syncing to bootstrap peer: slot {} / {}",
+                                current_slot, bootstrap_slot
+                            );
                         }
                     }
                 }
@@ -12354,6 +12407,15 @@ async fn run_validator() {
         let sync_manager_join = sync_manager.clone();
         let vs_join = validator_set.clone();
         let sp_join = stake_pool.clone();
+        let bootstrap_rpc_url_for_join = explicit_seed_peer_strings
+            .first()
+            .and_then(|peer| derive_rpc_url_from_peer(peer));
+        let bootstrap_http_client_for_join = bootstrap_rpc_url_for_join.as_ref().map(|_| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .expect("Failed to build bootstrap sync HTTP client")
+        });
         loop {
             let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
             if !has_genesis {
@@ -12443,6 +12505,25 @@ async fn run_validator() {
                 );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
+            }
+
+            if let (Some(bootstrap_rpc_url), Some(bootstrap_http_client)) = (
+                bootstrap_rpc_url_for_join.as_ref(),
+                bootstrap_http_client_for_join.as_ref(),
+            ) {
+                if let Some(bootstrap_slot) =
+                    fetch_rpc_slot(bootstrap_http_client, bootstrap_rpc_url).await
+                {
+                    sync_manager_join.note_seen(bootstrap_slot).await;
+                    if needs_bootstrap_slot_catch_up(current_slot, bootstrap_slot, 5) {
+                        info!(
+                            "⏳ Syncing to bootstrap peer (current: {}, bootstrap: {}, {} validators)",
+                            current_slot, bootstrap_slot, validator_count
+                        );
+                        time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                }
             }
 
             info!(
@@ -14883,6 +14964,38 @@ mod tests {
         let result = resolve_peer_list(&peers);
         // invalid hostname without port won't resolve
         assert!(!result.is_empty(), "should have at least the valid peer");
+    }
+
+    #[test]
+    fn derive_rpc_url_from_peer_maps_local_ports() {
+        assert_eq!(
+            derive_rpc_url_from_peer("127.0.0.1:7001").as_deref(),
+            Some("http://127.0.0.1:8899")
+        );
+        assert_eq!(
+            derive_rpc_url_from_peer("127.0.0.1:7002").as_deref(),
+            Some("http://127.0.0.1:8901")
+        );
+        assert_eq!(
+            derive_rpc_url_from_peer("127.0.0.1:8003").as_deref(),
+            Some("http://127.0.0.1:9903")
+        );
+        assert_eq!(
+            derive_rpc_url_from_peer("[::1]:7002").as_deref(),
+            Some("http://[::1]:8901")
+        );
+    }
+
+    #[test]
+    fn derive_rpc_url_from_peer_rejects_invalid_port() {
+        assert!(derive_rpc_url_from_peer("127.0.0.1:not-a-port").is_none());
+    }
+
+    #[test]
+    fn bootstrap_slot_catch_up_requires_actual_tip() {
+        assert!(needs_bootstrap_slot_catch_up(2528, 4899, 5));
+        assert!(!needs_bootstrap_slot_catch_up(4897, 4899, 5));
+        assert!(!needs_bootstrap_slot_catch_up(4900, 4899, 5));
     }
 
     // ── constants sanity ────────────────────────────────────────────

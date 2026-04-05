@@ -36,10 +36,11 @@ impl NetworkType {
 }
 
 /// Seed node information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeedNode {
     pub id: String,
     pub address: String,
+    #[serde(default)]
     pub pubkey: String,
     pub region: String,
     pub operator: String,
@@ -47,7 +48,7 @@ pub struct SeedNode {
 }
 
 /// Network configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub network_id: String,
     pub chain_id: String,
@@ -59,7 +60,7 @@ pub struct NetworkConfig {
 }
 
 /// Seeds configuration for all networks
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeedsConfig {
     pub testnet: NetworkConfig,
     pub mainnet: NetworkConfig,
@@ -344,5 +345,13 @@ mod tests {
 
         // Should have both seeds and bootstrap peers
         assert!(peers.len() > 3);
+    }
+
+    #[test]
+    fn test_repo_seeds_json_matches_embedded_defaults() {
+        let tracked: SeedsConfig =
+            serde_json::from_str(include_str!("../../seeds.json")).expect("valid tracked seeds");
+
+        assert_eq!(tracked, SeedsConfig::default_embedded());
     }
 }

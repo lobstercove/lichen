@@ -1607,13 +1607,13 @@ grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
   --rpc-port 9899 \
   --ws-port 9900 \
   --db-path "$HOME/.lichen/state-mainnet" \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
   --auto-update=apply
 ```
 
@@ -1626,13 +1626,13 @@ grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
   --rpc-port 9899 \
   --ws-port 9900 \
   --db-path "$HOME/.lichen/state-mainnet" \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
   --auto-update=apply
 ```
 
@@ -1642,13 +1642,13 @@ Windows x64 (PowerShell):
 Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/latest/download/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
+Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 .\lichen-validator.exe `
   --network mainnet `
   --p2p-port 8001 `
   --rpc-port 9899 `
   --ws-port 9900 `
   --db-path "$HOME\.lichen\state-mainnet" `
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 `
   --auto-update=apply
 ```
 
@@ -1656,8 +1656,11 @@ New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Nu
 
 If the machine already has a `lichen-validator` binary, agents do not need the full repo checkout. They can join mainnet immediately with the binary plus a writable state directory:
 
+Release bundles ship `seeds.json`, and `--auto-update=apply` refreshes `{db-path}/seeds.json` from newer release archives during apply-mode upgrades.
+
 ```bash
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 
 lichen-validator \
   --network mainnet \
@@ -1665,7 +1668,6 @@ lichen-validator \
   --rpc-port 9899 \
   --ws-port 9900 \
   --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply
 ```
 
@@ -1701,13 +1703,13 @@ grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
   --rpc-port 9899 \
   --ws-port 9900 \
   --db-path "$HOME/.lichen/state-mainnet" \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
   --auto-update=apply
 ```
 
@@ -1721,13 +1723,13 @@ grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator
 mkdir -p "$HOME/.lichen/state-mainnet"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
   --rpc-port 9899 \
   --ws-port 9900 \
   --db-path "$HOME/.lichen/state-mainnet" \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
   --auto-update=apply
 ```
 
@@ -1738,13 +1740,13 @@ $version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/re
 Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
+Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 .\lichen-validator.exe `
   --network mainnet `
   --p2p-port 8001 `
   --rpc-port 9899 `
   --ws-port 9900 `
   --db-path "$HOME\.lichen\state-mainnet" `
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 `
   --auto-update=apply
 ```
 
@@ -1757,7 +1759,7 @@ Given a fresh `--db-path`, the validator:
 1. Creates the state directory.
 2. Generates or imports the validator identity there.
 3. Persists validator-local runtime material in that directory.
-4. Connects to `seed-01.lichen.network`, `seed-02.lichen.network`, and `seed-03.lichen.network`.
+4. Loads seed peers from `{db-path}/seeds.json`, `/etc/lichen/seeds.json`, or `./seeds.json`; if none are present, it falls back to the embedded DNS seed defaults.
 5. Syncs the chain and peer graph.
 6. Reuses that same identity on restart if the state directory is preserved.
 
@@ -1778,12 +1780,12 @@ cd lichen
 cargo build --release
 
 # 3. Start a mainnet validator (bootstraps from seed nodes automatically)
+cp ./seeds.json ./data/state-mainnet/seeds.json
 ./target/release/lichen-validator \
     --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path ./data/state-mainnet \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
+  --db-path ./data/state-mainnet
 ```
 
 On first start the validator:
@@ -1802,7 +1804,7 @@ The identity persists across restarts (stored in the data directory, not `$HOME`
 | `--rpc-port` | 8899 | JSON-RPC HTTP port |
 | `--ws-port` | 8900 | WebSocket port |
 | `--db-path` | `./data/state-{p2p_port}` | State database directory |
-| `--bootstrap-peers` | none | Comma-separated `host:port` list |
+| `--bootstrap-peers` | auto | Optional comma-separated override; otherwise the validator loads `{db-path}/seeds.json`, `/etc/lichen/seeds.json`, `./seeds.json`, then embedded defaults |
 | `--keypair` | auto | Path to validator keypair JSON |
 | `--import-key` | — | Import keypair from another machine |
 | `--genesis` | — | Path to genesis config (only for genesis node) |
@@ -1836,8 +1838,7 @@ Prefer domains over raw IPs in agent prompts and operational scripts. DNS lets b
     --rpc-port 8899 \
     --ws-port 8900 \
     --db-path ./data/state-testnet \
-    --dev-mode \
-  --bootstrap-peers seed-01.lichen.network:7001,seed-02.lichen.network:7001,seed-03.lichen.network:7001
+  --dev-mode
 ```
 
 ### Mainnet
@@ -1847,8 +1848,7 @@ Prefer domains over raw IPs in agent prompts and operational scripts. DNS lets b
     --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path ./data/state-mainnet \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
+  --db-path ./data/state-mainnet
 ```
 
 ### Start / Stop / Reset (Scripts)
@@ -1880,8 +1880,7 @@ scp old-machine:path/to/data/state-mainnet/validator-keypair.json ./my-validator
 # Import on new machine
 ./target/release/lichen-validator \
     --import-key ./my-validator.json \
-    --p2p-port 8001 \
-  --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
+  --p2p-port 8001
 ```
 
 ### Auto-Update
@@ -1963,12 +1962,11 @@ print(releases[0]['tag_name'])")
     /usr/bin/curl -fSL -o "$TMPDIR/$ASSET" "https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
     /usr/bin/curl -fSL -o "$TMPDIR/SHA256SUMS" "https://github.com/$REPO/releases/download/${VERSION}/SHA256SUMS"
     cd "$TMPDIR"; grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
-    tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; chmod +x "$BINARY"
+    tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; chmod +x "$BINARY"; cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
     trap - EXIT; rm -rf "$TMPDIR"
 fi
 exec "$BINARY" --network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 \
     --db-path "$HOME/.lichen/state-mainnet" \
-    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply
 SCRIPT
 chmod +x ~/.lichen/bin/lichen-service.sh
@@ -2029,7 +2027,8 @@ tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
 
 # 2. Install NSSM (https://nssm.cc/download) and create service
 nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
-nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 --auto-update=apply"
+Copy-Item "$InstallDir\bin\seeds.json" "$InstallDir\state-mainnet\seeds.json" -Force
+nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --auto-update=apply"
 nssm set LichenValidator AppDirectory "$InstallDir"
 nssm set LichenValidator AppStdout "$InstallDir\logs\validator.log"
 nssm set LichenValidator AppStderr "$InstallDir\logs\validator.log"

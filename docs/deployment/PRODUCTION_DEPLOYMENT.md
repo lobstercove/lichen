@@ -20,6 +20,8 @@ This runbook intentionally prefers the scripts that are verified in the current 
 | Local validator development | `scripts/start-local-3validators.sh` |
 | VPS validator deployment | `deploy/setup.sh` |
 
+`deploy/setup.sh` is now responsible for the public edge as well: it installs the checked-in Caddy config from `deploy/Caddyfile.*`, enables the `caddy` service, uses internal TLS for Cloudflare-origin traffic, and keeps raw RPC, WebSocket, faucet, and custody ports off the public firewall surface.
+
 ## Supporting scripts
 
 | Task | Supporting script |
@@ -542,10 +544,12 @@ curl -s http://127.0.0.1:8899 -X POST -H 'Content-Type: application/json' \
 
 Firewall minimums:
 
+- HTTP ingress: `80/tcp`
+- HTTPS ingress: `443/tcp`
 - testnet P2P: `7001/tcp`
 - mainnet P2P: `8001/tcp`
 
-Expose RPC and WS only through the reverse proxy layout you actually operate.
+Expose RPC, WS, faucet, and custody only through the reverse proxy layout you actually operate. The supported repo-managed layout lives in `deploy/Caddyfile.common`, `deploy/Caddyfile.testnet`, `deploy/Caddyfile.testnet-us`, `deploy/Caddyfile.mainnet`, and `deploy/Caddyfile.mainnet-us`, uses internal TLS at the VPS edge for Cloudflare-origin traffic, and is installed by `deploy/setup.sh`.
 
 ## Manual single-node debugging
 
@@ -589,10 +593,12 @@ This writes `SHA256SUMS.sig` next to `SHA256SUMS`.
 Local example:
 
 ```bash
+export SIGNED_METADATA_KEYPAIR=/secure/local-signing/release-signing-keypair.json
+
 node scripts/generate-signed-metadata-manifest.js \
   --rpc http://127.0.0.1:8899 \
   --network local-testnet \
-  --keypair ./keypairs/release-signing-key.json \
+  --keypair "$SIGNED_METADATA_KEYPAIR" \
   --out ./signed-metadata-manifest-testnet.json
 ```
 
@@ -609,6 +615,8 @@ node scripts/generate-signed-metadata-manifest.js \
 The local 3-validator launcher generates this manifest automatically.
 
 On VPS deploys, `first-boot-deploy.sh` must now regenerate the manifest, install it into the configured `/etc/lichen/` target, and verify that the validator serves the expected DEX-related symbol registry entries back through `getSignedMetadataManifest`. If Node.js, the release-signing keypair, or the install step is missing, the deploy fails instead of continuing half-configured.
+
+`first-boot-deploy.sh` no longer assumes a repo-local signing key. Set `LICHEN_SIGNED_METADATA_KEYPAIR_FILE` in `/etc/lichen/env-<net>` via `deploy/setup.sh`, or export `SIGNED_METADATA_KEYPAIR` explicitly for local-only workflows.
 
 ## ZK proof generation
 
@@ -653,14 +661,25 @@ Important behavior:
 | programs | `lichen-network-programs` | `programs/` |
 | developers | `lichen-network-developers` | `developers/` |
 | monitoring | `lichen-network-monitoring` | `monitoring/` |
+| faucet | `lichen-network-faucet` | `faucet/` |
 
-Deploy command pattern:
+Supported repo deploy command:
+
+```bash
+./scripts/deploy-cloudflare-pages.sh <portal>
+```
+
+The wrapper runs the frontend asset audit, stages the selected portal into a clean temp directory, verifies required staged assets such as the DEX TradingView bundle, and then calls Wrangler from that staged `--cwd`.
+
+Raw CLI pattern for reference only:
 
 ```bash
 npx wrangler pages deploy <dir> --project-name lichen-network-<portal> --commit-dirty=true
 ```
 
-The faucet is not a Pages deployment. It is served from the VPS-side faucet service.
+Do not use the raw command as the normal repo workflow. It can silently omit git-ignored runtime assets that the staged deploy wrapper preserves.
+
+`faucet-service` is the VPS/API backend. The browser faucet portal in `faucet/` is a separate Cloudflare Pages project: `lichen-network-faucet`.
 
 ## Final operator checklist
 
