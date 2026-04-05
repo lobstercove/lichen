@@ -3,7 +3,7 @@ import {
   isValidAddress as isValidPqAddress,
   publicKeyToAddress as pqPublicKeyToAddress,
   signMessage as signPqMessage,
-} from '../../shared/pq.js';
+} from '../../shared/pq.mjs';
 
 // BIP39 wordlist (full 2048 words) — must match website's crypto.js exactly
 const BIP39_WORDLIST = [

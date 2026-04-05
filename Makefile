@@ -269,6 +269,8 @@ sync-shared:
 	done
 	@cp monitoring/shared/pq.js wallet/extension/shared/pq.js
 	@echo "  ✓ wallet/extension/shared/pq.js"
+	@cp monitoring/shared/pq.mjs wallet/extension/shared/pq.mjs
+	@echo "  ✓ wallet/extension/shared/pq.mjs"
 	@for dir in explorer dex wallet faucet programs developers; do \
 		cp monitoring/shared/wallet-connect.js $$dir/shared/wallet-connect.js; \
 		echo "  ✓ $$dir/shared/wallet-connect.js"; \

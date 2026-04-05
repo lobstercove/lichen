@@ -4,7 +4,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
 
-import * as pq from '../monitoring/shared/pq.js';
+import * as pq from '../monitoring/shared/pq.mjs';
 import * as extCrypto from './extension/src/core/crypto-service.js';
 import { buildSignedNativeTransferTransaction } from './extension/src/core/tx-service.js';
 

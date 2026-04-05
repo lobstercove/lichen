@@ -8,7 +8,7 @@ const path = require('path');
 const { stableJsonStringify } = require('../monitoring/shared/utils.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const PQ_MODULE_PATH = path.join(REPO_ROOT, 'monitoring', 'shared', 'pq.js');
+const PQ_MODULE_PATH = path.join(REPO_ROOT, 'monitoring', 'shared', 'pq.mjs');
 
 let pqModulePromise = null;
 

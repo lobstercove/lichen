@@ -53,7 +53,7 @@ const LICHEN_CONFIG = (() => {
     }
 
     // ── Default Network ─────────────────────────────────────────────────
-    const defaultNetwork = isProduction ? 'mainnet' : 'local-testnet';
+    const defaultNetwork = isProduction ? 'testnet' : 'local-testnet';
 
     const INCIDENT_STATUS_RPC_METHOD = 'getIncidentStatus';
     const INCIDENT_BANNER_ID = 'lichen-incident-banner';
@@ -71,6 +71,11 @@ const LICHEN_CONFIG = (() => {
     let incidentBannerRequestId = 0;
 
     function hasSavedIncidentNetworkSelection() {
+        const faucetNetwork = localStorage.getItem('lichen_faucet_network');
+        if (faucetNetwork) {
+            return true;
+        }
+
         if (window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY) {
             const stored = localStorage.getItem(window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY);
             if (stored) {
@@ -186,6 +191,10 @@ const LICHEN_CONFIG = (() => {
     function incidentBannerNetwork(explicitNetwork) {
         if (explicitNetwork) {
             return resolveNetwork(explicitNetwork);
+        }
+
+        if (isProduction) {
+            return currentNetwork('lichen_faucet_network');
         }
 
         if (window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY) {

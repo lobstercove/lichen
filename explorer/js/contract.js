@@ -149,6 +149,54 @@ function formatMetadataValue(value) {
     return escapeHtml(String(value));
 }
 
+function coerceBooleanMetadata(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === 'true') return true;
+        if (normalized === 'false') return false;
+    }
+
+    return null;
+}
+
+function pickBooleanMetadata() {
+    for (const value of arguments) {
+        const coerced = coerceBooleanMetadata(value);
+        if (coerced !== null) {
+            return coerced;
+        }
+    }
+
+    return null;
+}
+
+function coerceIntegerMetadata(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.trunc(value);
+    }
+
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+        return Number.parseInt(value.trim(), 10);
+    }
+
+    return null;
+}
+
+function pickIntegerMetadata() {
+    for (const value of arguments) {
+        const coerced = coerceIntegerMetadata(value);
+        if (coerced !== null) {
+            return coerced;
+        }
+    }
+
+    return null;
+}
+
 function normalizeProfileMetadata(registryMetadata, tokenMetadata) {
     const reg = registryMetadata && typeof registryMetadata === 'object' ? registryMetadata : {};
     const token = tokenMetadata && typeof tokenMetadata === 'object' ? tokenMetadata : {};
@@ -250,11 +298,11 @@ async function loadContract() {
         // Token metadata: primary source is getContractInfo token_metadata (backed by registry)
         const regMeta = registry?.metadata || {};
         const infoMeta = info?.token_metadata || {};
-        const decimals = registry?.decimals ?? infoMeta.decimals ?? 9;
-        let supply = infoMeta.total_supply ?? null;
+        const decimals = pickIntegerMetadata(registry?.decimals, regMeta.decimals, infoMeta.decimals) ?? 9;
+        let supply = pickIntegerMetadata(infoMeta.total_supply, regMeta.total_supply);
 
         // Fallback: if supply is 0 or null, try calling the contract's total_supply view
-        const isNative = info?.is_native || regMeta.is_native || (symbol === 'LICN');
+        const isNative = pickBooleanMetadata(info?.is_native, regMeta.is_native) ?? (symbol === 'LICN');
         if ((!supply || supply === 0) && !isNative) {
             try {
                 const viewResult = await rpc.call('callContract', [contractAddress, 'total_supply']);
@@ -299,9 +347,9 @@ async function loadContract() {
         }
 
         // Mintable/burnable: check registry metadata first, then contract info, then ABI
-        const mintable = regMeta.mintable ?? infoMeta.mintable
+        const mintable = pickBooleanMetadata(regMeta.mintable, infoMeta.mintable)
             ?? (abi?.functions?.some(f => f.name === 'mint') || false);
-        const burnable = regMeta.burnable ?? infoMeta.burnable
+        const burnable = pickBooleanMetadata(regMeta.burnable, infoMeta.burnable)
             ?? (abi?.functions?.some(f => f.name === 'burn') || false);
 
         document.getElementById('tokenMintable').innerHTML =
