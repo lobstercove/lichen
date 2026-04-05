@@ -137,6 +137,56 @@ export CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:${CUSTODY_PORT}}"
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 
+SERVICE_FLEET_CONFIG_FILE="${LOG_DIR}/service-fleet-config.json"
+SERVICE_FLEET_STATUS_FILE="${LOG_DIR}/service-fleet-status.json"
+export LICHEN_SERVICE_FLEET_CONFIG_FILE="$SERVICE_FLEET_CONFIG_FILE"
+export LICHEN_SERVICE_FLEET_STATUS_FILE="$SERVICE_FLEET_STATUS_FILE"
+
+write_local_service_fleet_config() {
+  local expected_faucet=true
+  if [ "$NETWORK" != "testnet" ]; then
+    expected_faucet=false
+  fi
+
+  cat > "$SERVICE_FLEET_CONFIG_FILE" <<EOF
+{
+  "schema_version": 1,
+  "network": "local-${NETWORK}",
+  "probe_timeout_ms": 1500,
+  "hosts": [
+    {
+      "id": "local",
+      "label": "Local Stack",
+      "services": [
+        {
+          "id": "custody",
+          "label": "Custody",
+          "service": "custody",
+          "probe": {
+            "kind": "http",
+            "url": "http://127.0.0.1:${CUSTODY_PORT}/health",
+            "body_contains_any": ["\"status\":\"ok\"", "\"status\": \"ok\""]
+          }
+        },
+        {
+          "id": "faucet",
+          "label": "Faucet",
+          "service": "faucet",
+          "expected": ${expected_faucet},
+          "intentionally_absent_message": "The faucet only runs on local testnet.",
+          "probe": {
+            "kind": "http",
+            "url": "http://127.0.0.1:9100/health",
+            "body_contains_any": ["OK", "\"status\":\"ok\"", "\"status\": \"ok\""]
+          }
+        }
+      ]
+    }
+  ]
+}
+EOF
+}
+
 CHAIN_ID="lichen-${NETWORK}-1"
 GENESIS_KEYS_DIR="./data/state-${BASE_P2P}/genesis-keys"
 GENESIS_PRIMARY_KEYPAIR="${GENESIS_KEYS_DIR}/genesis-primary-${CHAIN_ID}.json"
@@ -149,6 +199,8 @@ fi
 if [ -n "$EVM_RPC_URL" ]; then
   export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
 fi
+
+write_local_service_fleet_config
 
 ensure_runtime_binaries
 refresh_changed_contract_wasm

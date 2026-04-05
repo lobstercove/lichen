@@ -157,6 +157,25 @@ function formatLicn(spores) {
     return licn.toFixed(2);
 }
 
+function trimTrailingZeros(value) {
+    return String(value).replace(/(?:\.0+|(?:(\.[0-9]*?)0+))$/, '$1');
+}
+
+function formatLicnPrecise(spores) {
+    const numeric = Number(spores);
+    if (!Number.isFinite(numeric)) return '--';
+
+    const licn = numeric / SPORES_PER_LICN;
+    const absLicn = Math.abs(licn);
+
+    if (absLicn === 0) return '0';
+    if (absLicn >= 1e3) return formatLicn(numeric);
+    if (absLicn >= 1) return trimTrailingZeros(licn.toFixed(3));
+    if (absLicn >= 0.01) return trimTrailingZeros(licn.toFixed(4));
+    if (absLicn >= 0.000001) return trimTrailingZeros(licn.toFixed(6));
+    return trimTrailingZeros(licn.toFixed(9));
+}
+
 function formatNum(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
@@ -199,6 +218,142 @@ function formatDateTime(value) {
         minute: '2-digit',
         hour12: false,
     });
+}
+
+function normalizeTimestampMs(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return numeric > 1e12 ? numeric : numeric * 1000;
+}
+
+function timeAgoFromTimestamp(value) {
+    const ms = normalizeTimestampMs(value);
+    if (!ms) return '--';
+    return timeAgo(Math.floor(ms / 1000));
+}
+
+function formatSignedPercent(value, digits = 1) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '--';
+    const prefix = numeric > 0 ? '+' : '';
+    return `${prefix}${numeric.toFixed(digits)}%`;
+}
+
+function clampPercentage(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.max(0, Math.min(100, numeric));
+}
+
+function parseGovernanceMetadata(metadata) {
+    const result = {};
+    const text = String(metadata || '').trim();
+    if (!text) return result;
+
+    text.split(/\s+/).forEach((token) => {
+        const separator = token.indexOf('=');
+        if (separator <= 0) return;
+        const key = token.slice(0, separator);
+        const value = token.slice(separator + 1);
+        result[key] = value;
+    });
+
+    return result;
+}
+
+function governanceSeverityForMonitoring(ruleId, event, metadata) {
+    const kind = String(event.kind || '').toLowerCase();
+    if (ruleId === 'treasury-transfer') {
+        const amount = Number(metadata.amount_spores || 0);
+        if (kind === 'executed' && amount >= GOVERNANCE_LARGE_TRANSFER_SPORES) return 'critical';
+        return kind === 'executed' ? 'high' : 'warning';
+    }
+    if (ruleId === 'insurance-withdrawal') {
+        return kind === 'executed' ? 'critical' : 'high';
+    }
+    if (kind === 'executed') return 'critical';
+    if (kind === 'approved') return 'high';
+    if (kind === 'cancelled') return 'warning';
+    return 'high';
+}
+
+function classifyGovernanceEventForMonitoring(event) {
+    if (!event) return [];
+    const metadata = parseGovernanceMetadata(event.metadata);
+    const matches = [];
+
+    const pushAlert = (ruleId, title) => {
+        matches.push({
+            ruleId,
+            title,
+            severity: governanceSeverityForMonitoring(ruleId, event, metadata),
+            event,
+            metadata,
+        });
+    };
+
+    if (['contract_upgrade', 'execute_contract_upgrade', 'veto_contract_upgrade'].includes(event.action)) {
+        pushAlert('contract-upgrade', 'Contract upgrade activity');
+    }
+    if (event.action === 'set_contract_upgrade_timelock') {
+        pushAlert('timelock-change', 'Contract upgrade timelock change');
+    }
+    if (event.action === 'treasury_transfer') {
+        pushAlert('treasury-transfer', 'Treasury transfer proposal');
+    }
+    if (event.action === 'contract_call' && GOVERNANCE_OWNERSHIP_FUNCTIONS.has(event.target_function)) {
+        pushAlert('ownership-change', 'Contract ownership or admin change');
+    }
+    if (event.action === 'contract_call' && GOVERNANCE_BRIDGE_FUNCTIONS.has(event.target_function)) {
+        pushAlert('bridge-control-change', 'Bridge validator or timeout control change');
+    }
+    if (event.action === 'contract_call' && GOVERNANCE_ORACLE_FUNCTIONS.has(event.target_function)) {
+        pushAlert('oracle-control-change', 'Oracle committee change');
+    }
+    if (event.action === 'contract_call' && event.target_function === 'withdraw_insurance') {
+        pushAlert('insurance-withdrawal', 'Insurance withdrawal');
+    }
+    if (event.action === 'contract_call' && /(?:^|_)(?:pause|unpause)$/.test(event.target_function || '')) {
+        pushAlert('pause-change', 'Pause or unpause change');
+    }
+
+    return matches;
+}
+
+function buildGovernedWalletEntries(rewardInfo) {
+    const wallets = rewardInfo?.wallets || {};
+    return Object.entries(wallets)
+        .filter(([label, info]) => GOVERNANCE_WATCH_GOVERNED_LABELS.has(label) && info?.pubkey && info.pubkey !== 'unknown')
+        .map(([label, info]) => ({
+            label,
+            pubkey: info.pubkey,
+            balance: Number(info.balance_spores ?? info.balance ?? 0),
+        }));
+}
+
+function buildGovernanceAlertMeta(alert) {
+    const metadata = alert.metadata || {};
+    const event = alert.event || {};
+    const target = event.target_function || metadata.function || metadata.contract || 'watch';
+    const amount = metadata.amount_spores ? ` · ${formatLicn(Number(metadata.amount_spores || 0))} LICN` : '';
+    return `${String(event.kind || 'unknown').toUpperCase()} · ${target} · proposal ${formatNum(Number(event.proposal_id || 0))}${amount}`;
+}
+
+function buildSolanaCompatUrl(baseUrl) {
+    return String(baseUrl || '').replace(/\/$/, '') + '/solana-compat';
+}
+
+async function solanaCompatRpc(method, params = []) {
+    return rpc(method, params, buildSolanaCompatUrl(rpcUrl));
+}
+
+function renderOperatorTierCard(label, value, meta, icon, color, barPct = null) {
+    return `<div class="tier-card">
+        <div class="tier-label"><i class="fas fa-${icon}" style="margin-right:4px;color:${color}"></i>${escapeHtml(label)}</div>
+        <div class="tier-value">${escapeHtml(value)}</div>
+        <div class="tier-meta">${escapeHtml(meta)}</div>
+        ${barPct === null ? '' : `<div class="tier-bar"><div class="tier-fill" style="width:${clampPercentage(barPct)}%;background:${color}"></div></div>`}
+    </div>`;
 }
 
 function uptime() {
@@ -441,6 +596,8 @@ function resetMonitoringCaches() {
     ecosystemMonitorLoaded = false;
     controlPlaneMonitorLoaded = false;
     controlPlaneMonitorLoadedAt = 0;
+    missionControlExpansionLoaded = false;
+    missionControlExpansionLoadedAt = 0;
     lastRpcLatencyMs = null;
     lastMetricsSnapshot = null;
     lastPeersSnapshot = null;
@@ -793,6 +950,11 @@ async function refresh() {
         // ─ Protocol Control Plane (every 30s) ─
         if (!controlPlaneMonitorLoaded || Date.now() - controlPlaneMonitorLoadedAt >= CONTRACT_REFRESH_MS) {
             await updateControlPlaneMonitor();
+        }
+
+        // ─ Mission Control Expansion Boards (every 30s) ─
+        if (!missionControlExpansionLoaded || Date.now() - missionControlExpansionLoadedAt >= CONTRACT_REFRESH_MS) {
+            await updateMissionControlExpansionBoards();
         }
 
         // ─ Footer ─
@@ -2131,7 +2293,7 @@ async function updateControlPlaneMonitor() {
 
     if (element('controlPlaneBaseFee')) {
         element('controlPlaneBaseFee').textContent = feeConfig
-            ? `${formatLicn(feeConfig.base_fee_spores || 0)} LICN`
+            ? `${formatLicnPrecise(feeConfig.base_fee_spores || 0)} LICN`
             : '--';
     }
     if (element('controlPlaneRentRate')) {
@@ -2176,9 +2338,9 @@ async function updateControlPlaneMonitor() {
                 'percent',
                 'var(--accent-blue)'
             );
-            addCard('Deploy Fee', `${formatLicn(feeConfig.contract_deploy_fee_spores || 0)} LICN`, 'Per contract deployment', 'upload', 'var(--accent-purple)');
-            addCard('Upgrade Fee', `${formatLicn(feeConfig.contract_upgrade_fee_spores || 0)} LICN`, 'Per contract upgrade', 'wrench', 'var(--cyan-accent)');
-            addCard('NFT Mint Fee', `${formatLicn(feeConfig.nft_mint_fee_spores || 0)} LICN`, 'Per NFT mint', 'image', 'var(--accent-green)');
+            addCard('Deploy Fee', `${formatLicnPrecise(feeConfig.contract_deploy_fee_spores || 0)} LICN`, 'Per contract deployment', 'upload', 'var(--accent-purple)');
+            addCard('Upgrade Fee', `${formatLicnPrecise(feeConfig.contract_upgrade_fee_spores || 0)} LICN`, 'Per contract upgrade', 'wrench', 'var(--cyan-accent)');
+            addCard('NFT Mint Fee', `${formatLicnPrecise(feeConfig.nft_mint_fee_spores || 0)} LICN`, 'Per NFT mint', 'image', 'var(--accent-green)');
         }
 
         if (rentParams) {
@@ -2225,6 +2387,764 @@ async function updateControlPlaneMonitor() {
 
     controlPlaneMonitorLoaded = true;
     controlPlaneMonitorLoadedAt = Date.now();
+}
+
+// ── Mission Control Expansion Boards ───────────────────────
+
+const GOVERNANCE_WATCH_GOVERNED_LABELS = new Set([
+    'community_treasury',
+    'ecosystem_partnerships',
+    'reserve_pool',
+]);
+const GOVERNANCE_WATCH_LIMIT = 25;
+const GOVERNANCE_LARGE_TRANSFER_SPORES = 1000 * SPORES_PER_LICN;
+const GOVERNANCE_OWNERSHIP_FUNCTIONS = new Set([
+    'transfer_admin',
+    'accept_admin',
+    'transfer_owner',
+    'transfer_ownership',
+    'accept_owner',
+    'set_owner',
+    'set_admin',
+    'set_identity_admin',
+]);
+const GOVERNANCE_BRIDGE_FUNCTIONS = new Set([
+    'add_bridge_validator',
+    'remove_bridge_validator',
+    'set_required_confirmations',
+    'set_request_timeout',
+]);
+const GOVERNANCE_ORACLE_FUNCTIONS = new Set([
+    'add_price_feeder',
+    'set_authorized_attester',
+]);
+
+const TREASURY_WATCH_BUCKETS = [
+    { key: 'validator_rewards', label: 'Validator Rewards', pct: 10, warningRatio: 0.35, icon: 'coins', color: 'var(--primary)' },
+    { key: 'community_treasury', label: 'Community Treasury', pct: 25, warningRatio: 0.35, icon: 'landmark', color: 'var(--accent-blue)' },
+    { key: 'builder_grants', label: 'Builder Grants', pct: 35, warningRatio: 0.30, icon: 'hammer', color: 'var(--accent-purple)' },
+    { key: 'founding_symbionts', label: 'Founding Symbionts', pct: 10, warningRatio: 0.20, icon: 'seedling', color: 'var(--accent)' },
+    { key: 'ecosystem_partnerships', label: 'Ecosystem Partners', pct: 10, warningRatio: 0.20, icon: 'handshake', color: 'var(--accent-green)' },
+    { key: 'reserve_pool', label: 'Reserve Pool', pct: 10, warningRatio: 0.20, icon: 'shield-alt', color: 'var(--cyan-accent)' },
+];
+
+const PROGRAM_HOTSPOT_WINDOW_MS = 15 * 60 * 1000;
+const PROGRAM_HOTSPOT_LIMIT = 8;
+
+let missionControlExpansionLoaded = false;
+let missionControlExpansionLoadedAt = 0;
+
+async function updateMissionControlExpansionBoards(force = false) {
+    if (!force && missionControlExpansionLoaded && Date.now() - missionControlExpansionLoadedAt < CONTRACT_REFRESH_MS) {
+        return;
+    }
+
+    await Promise.allSettled([
+        updateTreasuryDistributionBoard(),
+        updateNetworkInfrastructureBoard(),
+        updateProgramHotspotsBoard(),
+        updateOracleBridgeHealthBoard(),
+        updatePrivacyPoolAuditBoard(),
+        updateGovernanceWatchBoard(),
+        updateServiceFleetBoard(),
+    ]);
+
+    missionControlExpansionLoaded = true;
+    missionControlExpansionLoadedAt = Date.now();
+}
+
+async function updateTreasuryDistributionBoard() {
+    const badge = document.getElementById('treasuryBoardBadge');
+    const grid = document.getElementById('treasuryDetailGrid');
+    const rewardInfo = await rpc('getRewardAdjustmentInfo').catch(() => null);
+
+    if (!rewardInfo) {
+        setText('treasuryTrackedBalance', '--');
+        setText('treasuryTrackedShare', '--');
+        setText('treasuryLargestDrift', '--');
+        setText('treasuryWatchAlerts', '--');
+        setText('treasuryHealthyWallets', '--');
+        setText('treasuryWatchSummary', 'Reward-distribution state is unavailable from RPC.');
+        if (grid) grid.innerHTML = '';
+        if (badge) {
+            badge.textContent = 'UNAVAILABLE';
+            badge.className = 'panel-badge warning';
+        }
+        return;
+    }
+
+    const wallets = rewardInfo.wallets || {};
+    const genesisSupply = Number(rewardInfo.genesisSupply || 0);
+    const totalSupply = Number(rewardInfo.totalSupply || 0);
+
+    let totalTracked = 0;
+    let belowFloorCount = 0;
+    let tightCount = 0;
+    let largestDriftLabel = '--';
+    let largestDriftPct = 0;
+    const cards = [];
+
+    TREASURY_WATCH_BUCKETS.forEach((bucket) => {
+        const wallet = wallets[bucket.key] || {};
+        const balance = Number(wallet.balance_spores ?? wallet.balance ?? 0);
+        const baseline = Math.round(genesisSupply * (bucket.pct / 100));
+        const driftPct = baseline > 0 ? ((balance - baseline) / baseline) * 100 : 0;
+        const remainingPct = baseline > 0 ? (balance / baseline) * 100 : 0;
+        const floorAmount = baseline * bucket.warningRatio;
+
+        totalTracked += balance;
+
+        if (Math.abs(driftPct) >= Math.abs(largestDriftPct)) {
+            largestDriftPct = driftPct;
+            largestDriftLabel = bucket.label;
+        }
+
+        let color = bucket.color;
+        let status = 'Nominal';
+        if (balance <= floorAmount) {
+            belowFloorCount++;
+            color = 'var(--danger)';
+            status = 'Below floor';
+        } else if (remainingPct < 70) {
+            tightCount++;
+            color = 'var(--warning)';
+            status = 'Tight';
+        }
+
+        const meta = `${status} · ${truncAddr(wallet.pubkey || 'unknown')} · Drift ${formatSignedPercent(driftPct, 1)} · Floor ${formatLicn(floorAmount)} LICN`;
+        cards.push(renderOperatorTierCard(
+            bucket.label,
+            `${formatLicn(balance)} LICN`,
+            meta,
+            bucket.icon,
+            color,
+            remainingPct
+        ));
+    });
+
+    const aboveFloorCount = TREASURY_WATCH_BUCKETS.length - belowFloorCount;
+    const trackedSharePct = totalSupply > 0 ? (totalTracked / totalSupply) * 100 : 0;
+    const alertLabel = belowFloorCount > 0
+        ? `${belowFloorCount} below floor`
+        : tightCount > 0
+            ? `${tightCount} tight`
+            : 'Clear';
+
+    setText('treasuryTrackedBalance', `${formatLicn(totalTracked)} LICN`);
+    setText('treasuryTrackedShare', formatPercent(trackedSharePct, 1));
+    setText('treasuryLargestDrift', `${largestDriftLabel} ${formatSignedPercent(largestDriftPct, 1)}`);
+    setText('treasuryWatchAlerts', alertLabel);
+    setText('treasuryHealthyWallets', `${aboveFloorCount}/${TREASURY_WATCH_BUCKETS.length}`);
+    setText(
+        'treasuryWatchSummary',
+        `Governed wallet watch floors are configured from genesis allocation. Baseline tracked balance is ${formatLicn(genesisSupply)} LICN across ${TREASURY_WATCH_BUCKETS.length} treasury buckets.`
+    );
+
+    if (grid) {
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        badge.textContent = belowFloorCount > 0
+            ? `${belowFloorCount} Below Floor`
+            : tightCount > 0
+                ? `${tightCount} Tight`
+                : 'All Guarded';
+        badge.className = `panel-badge ${belowFloorCount > 0 ? 'danger' : tightCount > 0 ? 'warning' : 'success'}`;
+    }
+}
+
+async function updateNetworkInfrastructureBoard() {
+    const badge = document.getElementById('networkInfrastructureBadge');
+    const grid = document.getElementById('networkInfrastructureGrid');
+
+    const [networkInfo, clusterInfo, versionInfo, genesisBlock] = await Promise.all([
+        rpc('getNetworkInfo').catch(() => null),
+        rpc('getClusterInfo').catch(() => null),
+        solanaCompatRpc('getVersion').catch(() => null),
+        rpc('getBlock', [0]).catch(() => null),
+    ]);
+
+    const currentSlot = Number(networkInfo?.current_slot ?? clusterInfo?.current_slot ?? 0);
+    const nodes = Array.isArray(clusterInfo?.cluster_nodes) ? clusterInfo.cluster_nodes.slice() : [];
+    const peerCount = Number(networkInfo?.peer_count ?? clusterInfo?.peer_count ?? clusterInfo?.connected_peers?.length ?? 0);
+    const validatorCount = Number(networkInfo?.validator_count ?? clusterInfo?.validator_count ?? nodes.length ?? 0);
+    const version = versionInfo?.['solana-core'] || networkInfo?.version || '--';
+    const genesisHash = genesisBlock?.hash || genesisBlock?.blockhash || '--';
+    const maxDelta = nodes.reduce((maxDeltaSoFar, node) => {
+        const delta = currentSlot > 0 ? Math.max(0, currentSlot - Number(node.last_active_slot || 0)) : 0;
+        return Math.max(maxDeltaSoFar, delta);
+    }, 0);
+
+    setText('networkChainId', networkInfo?.chain_id || '--');
+    setText('networkNetworkId', networkInfo?.network_id || '--');
+    setText('networkNodeVersion', version);
+    setText('networkPeerCount', formatNum(peerCount));
+    setText('networkClusterMembers', formatNum(validatorCount));
+    setText('networkGenesisHash', genesisHash !== '--' ? truncAddr(genesisHash) : '--');
+    setText(
+        'networkInfrastructureNote',
+        `Genesis hash is derived from block 0. Connected peers: ${formatNum(peerCount)}. Largest validator liveness delta is ${formatNum(maxDelta)} slots.`
+    );
+
+    if (grid) {
+        const cards = [];
+        const peersPreview = Array.isArray(clusterInfo?.connected_peers) && clusterInfo.connected_peers.length > 0
+            ? clusterInfo.connected_peers.slice(0, 3).join(', ')
+            : 'No peer addresses published';
+
+        cards.push(renderOperatorTierCard(
+            'Peer Mesh',
+            `${formatNum(peerCount)} peers`,
+            peersPreview,
+            'share-nodes',
+            peerCount > 0 ? 'var(--primary)' : 'var(--warning)',
+            peerCount > 0 ? 100 : 0
+        ));
+
+        if (nodes.length === 0) {
+            cards.push(renderOperatorTierCard(
+                'Cluster Membership',
+                'Unavailable',
+                'Validator membership is not currently visible from getClusterInfo.',
+                'triangle-exclamation',
+                'var(--warning)',
+                0
+            ));
+        } else {
+            nodes
+                .sort((left, right) => Number(right.stake || 0) - Number(left.stake || 0))
+                .forEach((node, index) => {
+                    const delta = currentSlot > 0 ? Math.max(0, currentSlot - Number(node.last_active_slot || 0)) : 0;
+                    const active = node.active !== false && delta <= 100;
+                    const color = delta <= 2
+                        ? 'var(--success)'
+                        : delta <= 10
+                            ? 'var(--warning)'
+                            : 'var(--danger)';
+                    const label = `Validator ${index + 1}`;
+                    const value = active ? `${formatNum(delta)} slot delta` : 'STALE';
+                    const meta = `${formatLicn(Number(node.stake || 0))} LICN · ${formatNum(Number(node.blocks_proposed || 0))} blocks · ${truncAddr(node.pubkey || '--')}`;
+                    const healthPct = active ? Math.max(6, 100 - clampPercentage(delta * 8)) : 4;
+
+                    cards.push(renderOperatorTierCard(label, value, meta, active ? 'server' : 'triangle-exclamation', color, healthPct));
+                });
+        }
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        const badgeState = validatorCount === 0
+            ? 'warning'
+            : maxDelta <= 2 && peerCount > 0
+                ? 'success'
+                : maxDelta <= 10
+                    ? 'warning'
+                    : 'danger';
+        badge.textContent = validatorCount === 0
+            ? 'PARTIAL'
+            : maxDelta <= 2 && peerCount > 0
+                ? 'SYNCED'
+                : `DELTA ${formatNum(maxDelta)}`;
+        badge.className = `panel-badge ${badgeState}`;
+    }
+}
+
+async function updateProgramHotspotsBoard() {
+    const badge = document.getElementById('programHotspotsBadge');
+    const grid = document.getElementById('programHotspotGrid');
+
+    const registryEntries = (await Promise.all(ALL_CONTRACTS.map(async (contract) => {
+        const info = await trustedMonitoringRpc('getSymbolRegistry', [contract.symbol]);
+        if (!info || !info.program) return null;
+        return { contract, program: info.program };
+    }))).filter(Boolean);
+
+    const statEntries = (await Promise.all(registryEntries.map(async (entry) => {
+        const stats = await rpc('getProgramStats', [entry.program]).catch(() => null);
+        if (!stats) return null;
+        return { ...entry, stats };
+    }))).filter(Boolean);
+
+    if (statEntries.length === 0) {
+        setText('programTrackedCount', '--');
+        setText('programTotalCalls', '--');
+        setText('programRecentCalls', '--');
+        setText('programHottest', '--');
+        setText('programActiveFunctions', '--');
+        setText('programLastActivity', '--');
+        setText('programHotspotNote', 'Program call telemetry is unavailable from RPC.');
+        if (grid) grid.innerHTML = '';
+        if (badge) {
+            badge.textContent = 'UNAVAILABLE';
+            badge.className = 'panel-badge warning';
+        }
+        return;
+    }
+
+    statEntries.sort((left, right) => Number(right.stats.call_count || 0) - Number(left.stats.call_count || 0));
+    const topEntries = statEntries.slice(0, PROGRAM_HOTSPOT_LIMIT);
+
+    const enrichedEntries = await Promise.all(topEntries.map(async (entry) => {
+        const callsEnvelope = await rpc('getProgramCalls', [entry.program, { limit: 25 }]).catch(() => null);
+        const calls = Array.isArray(callsEnvelope?.calls) ? callsEnvelope.calls : [];
+        const recentCalls = calls.filter((call) => normalizeTimestampMs(call.timestamp) >= Date.now() - PROGRAM_HOTSPOT_WINDOW_MS);
+        const functionCounts = recentCalls.reduce((counts, call) => {
+            const functionName = call.function || 'call';
+            counts[functionName] = (counts[functionName] || 0) + 1;
+            return counts;
+        }, {});
+        const topFunction = Object.entries(functionCounts).sort((left, right) => right[1] - left[1])[0] || null;
+        const lastCallMs = calls.reduce((latest, call) => Math.max(latest, normalizeTimestampMs(call.timestamp)), 0);
+
+        return {
+            ...entry,
+            calls,
+            recentCalls,
+            topFunction: topFunction ? topFunction[0] : 'n/a',
+            topFunctionCount: topFunction ? topFunction[1] : 0,
+            lastCallMs,
+        };
+    }));
+
+    const totalCalls = statEntries.reduce((sum, entry) => sum + Number(entry.stats.call_count || 0), 0);
+    const recentCallsTotal = enrichedEntries.reduce((sum, entry) => sum + entry.recentCalls.length, 0);
+    const distinctFunctions = new Set(enrichedEntries.flatMap((entry) => entry.recentCalls.map((call) => call.function || 'call')));
+    const hottestEntry = enrichedEntries
+        .slice()
+        .sort((left, right) => {
+            const recentDelta = right.recentCalls.length - left.recentCalls.length;
+            if (recentDelta !== 0) return recentDelta;
+            return Number(right.stats.call_count || 0) - Number(left.stats.call_count || 0);
+        })[0] || null;
+    const lastActivityMs = enrichedEntries.reduce((latest, entry) => Math.max(latest, entry.lastCallMs), 0);
+    const maxCallCount = enrichedEntries.reduce((maxCalls, entry) => Math.max(maxCalls, Number(entry.stats.call_count || 0)), 0);
+    const maxRecentCount = enrichedEntries.reduce((maxCalls, entry) => Math.max(maxCalls, entry.recentCalls.length), 0);
+
+    setText('programTrackedCount', formatNum(statEntries.length));
+    setText('programTotalCalls', formatNum(totalCalls));
+    setText('programRecentCalls', formatNum(recentCallsTotal));
+    setText('programHottest', hottestEntry ? hottestEntry.contract.symbol : '--');
+    setText('programActiveFunctions', formatNum(distinctFunctions.size));
+    setText('programLastActivity', lastActivityMs ? timeAgo(Math.floor(lastActivityMs / 1000)) : 'No recent calls');
+    setText(
+        'programHotspotNote',
+        `Hotspots rank all-time call volume and a 15 minute recent call window from getProgramCalls. RPC does not expose failed call rates yet.`
+    );
+
+    if (grid) {
+        const cards = enrichedEntries.map((entry) => {
+            const totalCallCount = Number(entry.stats.call_count || 0);
+            const recentCount = entry.recentCalls.length;
+            const burstPct = totalCallCount > 0 ? (recentCount / totalCallCount) * 100 : 0;
+            const barPct = maxRecentCount > 0
+                ? (recentCount / maxRecentCount) * 100
+                : maxCallCount > 0
+                    ? (totalCallCount / maxCallCount) * 100
+                    : 0;
+            const color = recentCount > 0 ? 'var(--primary)' : 'var(--text-muted)';
+            const meta = `Recent ${formatNum(recentCount)} · Burst ${formatPercent(burstPct, 1)} · Last ${entry.lastCallMs ? timeAgo(Math.floor(entry.lastCallMs / 1000)) : 'none'} · Top fn ${entry.topFunction}`;
+            return renderOperatorTierCard(
+                `${entry.contract.symbol} · ${entry.contract.name}`,
+                `${formatNum(totalCallCount)} calls`,
+                meta,
+                'microchip',
+                color,
+                barPct
+            );
+        });
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        badge.textContent = recentCallsTotal > 0 ? `${formatNum(recentCallsTotal)} Hot` : `${formatNum(statEntries.length)} Tracked`;
+        badge.className = `panel-badge ${recentCallsTotal > 0 ? 'success' : 'info'}`;
+    }
+}
+
+async function updateOracleBridgeHealthBoard() {
+    const badge = document.getElementById('oracleBridgeBadge');
+    const grid = document.getElementById('oracleBridgeDetailGrid');
+
+    const [bridge, oracle] = await Promise.all([
+        rpc('getLichenBridgeStats').catch(() => null),
+        rpc('getLichenOracleStats').catch(() => null),
+    ]);
+
+    setText('oracleFeedCount', oracle ? formatNum(Number(oracle.feeds || 0)) : '--');
+    setText('oracleQueryCount', oracle ? formatNum(Number(oracle.queries || 0)) : '--');
+    setText('oracleAttestationCount', oracle ? formatNum(Number(oracle.attestations || 0)) : '--');
+    setText('bridgeValidatorCount', bridge ? formatNum(Number(bridge.validator_count || 0)) : '--');
+    setText('bridgeRequiredConfirms', bridge ? formatNum(Number(bridge.required_confirms || 0)) : '--');
+    setText('bridgeLockedAmount', bridge ? `${formatLicn(Number(bridge.locked_amount || 0))} LICN` : '--');
+
+    const oraclePaused = Boolean(oracle?.paused);
+    const bridgePaused = Boolean(bridge?.paused);
+    const requestTimeout = Number(bridge?.request_timeout || 0);
+    setText(
+        'oracleBridgeNote',
+        `Oracle is ${oraclePaused ? 'paused' : 'live'} and bridge is ${bridgePaused ? 'paused' : 'live'}. Bridge request timeout is ${formatNum(requestTimeout)} seconds.`
+    );
+
+    if (grid) {
+        const cards = [];
+
+        if (oracle) {
+            const feeds = Number(oracle.feeds || 0);
+            const queries = Number(oracle.queries || 0);
+            const attestations = Number(oracle.attestations || 0);
+            const queriesPerFeed = feeds > 0 ? queries / feeds : 0;
+            const attestationsPerFeed = feeds > 0 ? attestations / feeds : 0;
+            const oracleColor = oraclePaused ? 'var(--warning)' : 'var(--success)';
+
+            cards.push(renderOperatorTierCard(
+                'Oracle Feed Coverage',
+                `${formatNum(feeds)} feeds`,
+                `${formatNum(queries)} queries · ${formatNum(attestations)} attestations`,
+                'satellite-dish',
+                oracleColor,
+                feeds > 0 ? 100 : 0
+            ));
+            cards.push(renderOperatorTierCard(
+                'Oracle Density',
+                `${queriesPerFeed.toFixed(1)} queries / feed`,
+                `${attestationsPerFeed.toFixed(1)} attestations / feed`,
+                'chart-line',
+                oracleColor,
+                clampPercentage(attestationsPerFeed * 10)
+            ));
+        }
+
+        if (bridge) {
+            const validators = Number(bridge.validator_count || 0);
+            const confirms = Number(bridge.required_confirms || 0);
+            const lockedAmount = Number(bridge.locked_amount || 0);
+            const nonce = Number(bridge.nonce || 0);
+            const bridgeColor = bridgePaused ? 'var(--warning)' : 'var(--primary)';
+            const lockedPerValidator = validators > 0 ? lockedAmount / validators : 0;
+
+            cards.push(renderOperatorTierCard(
+                'Bridge Finality',
+                `${formatNum(confirms)} confirms`,
+                `${formatNum(validators)} validators · nonce ${formatNum(nonce)}`,
+                'bridge',
+                bridgeColor,
+                validators > 0 ? clampPercentage((confirms / validators) * 100) : 0
+            ));
+            cards.push(renderOperatorTierCard(
+                'Bridge Liquidity',
+                `${formatLicn(lockedAmount)} LICN`,
+                `${formatLicn(lockedPerValidator)} LICN / validator · timeout ${formatNum(requestTimeout)}s`,
+                'vault',
+                bridgeColor,
+                validators > 0 ? 100 : 0
+            ));
+        }
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        const allAvailable = Boolean(bridge) && Boolean(oracle);
+        const healthy = allAvailable && !bridgePaused && !oraclePaused;
+        badge.textContent = !allAvailable
+            ? 'PARTIAL'
+            : healthy
+                ? 'ACTIVE'
+                : 'PAUSED';
+        badge.className = `panel-badge ${!allAvailable ? 'warning' : healthy ? 'success' : 'warning'}`;
+    }
+}
+
+async function updatePrivacyPoolAuditBoard() {
+    const badge = document.getElementById('privacyAuditBadge');
+    const grid = document.getElementById('privacyAuditGrid');
+
+    const shieldedState = await rpc('getShieldedPoolState').catch(() => null);
+    const metrics = lastMetricsSnapshot || await rpc('getMetrics').catch(() => null);
+
+    const merkleRoot = shieldedState?.merkleRoot || shieldedState?.merkle_root || '--';
+    const commitmentCount = Number(shieldedState?.commitmentCount ?? shieldedState?.commitment_count ?? shieldedState?.pool_size ?? 0);
+    const nullifierCount = Number(shieldedState?.nullifierCount ?? shieldedState?.nullifier_count ?? 0);
+    const shieldCount = Number(shieldedState?.shieldCount ?? shieldedState?.shield_count ?? 0);
+    const unshieldCount = Number(shieldedState?.unshieldCount ?? shieldedState?.unshield_count ?? 0);
+    const transferCount = Number(shieldedState?.transferCount ?? shieldedState?.transfer_count ?? 0);
+    const totalShielded = Number(shieldedState?.totalShielded ?? shieldedState?.total_shielded ?? shieldedState?.pool_balance ?? 0);
+    const liveNotes = Math.max(0, commitmentCount - nullifierCount);
+    const effectiveSupply = Math.max(0, Number(metrics?.total_supply || 0) - Number(metrics?.total_burned || 0));
+    const shieldedSharePct = effectiveSupply > 0 ? (totalShielded / effectiveSupply) * 100 : 0;
+    const zkScheme = shieldedState?.zkScheme || shieldedState?.zk_scheme || '--';
+
+    setText('privacyMerkleRoot', merkleRoot !== '--' ? truncAddr(merkleRoot) : '--');
+    setText('privacyCommitmentCount', formatNum(commitmentCount));
+    setText('privacyNullifierCount', formatNum(nullifierCount));
+    setText('privacyLiveNotes', formatNum(liveNotes));
+    setText('privacyShieldedBalance', `${formatLicn(totalShielded)} LICN`);
+    setText('privacySupplyShare', formatPercent(shieldedSharePct, 2));
+    setText(
+        'privacyAuditNote',
+        `Balance share uses effective supply. Live notes are commitments minus nullifiers. ZK scheme: ${zkScheme}.`
+    );
+
+    if (grid) {
+        const cards = [
+            renderOperatorTierCard(
+                'Commitment Set',
+                `${formatNum(commitmentCount)} commitments`,
+                `${formatNum(nullifierCount)} nullifiers · root ${truncAddr(merkleRoot)}`,
+                'database',
+                'var(--primary)',
+                commitmentCount > 0 ? 100 : 0
+            ),
+            renderOperatorTierCard(
+                'Shield Flow',
+                `${formatNum(shieldCount)} shield`,
+                `${formatNum(unshieldCount)} unshield · ${formatNum(transferCount)} private transfers`,
+                'eye-slash',
+                'var(--accent-purple)',
+                commitmentCount > 0 ? clampPercentage((shieldCount / commitmentCount) * 100) : 0
+            ),
+            renderOperatorTierCard(
+                'Live Notes',
+                formatNum(liveNotes),
+                `${formatPercent(commitmentCount > 0 ? (liveNotes / commitmentCount) * 100 : 0, 1)} of commitments remain live`,
+                'layer-group',
+                'var(--accent-green)',
+                commitmentCount > 0 ? (liveNotes / commitmentCount) * 100 : 0
+            ),
+            renderOperatorTierCard(
+                'Shielded Share',
+                formatPercent(shieldedSharePct, 2),
+                `${formatLicn(totalShielded)} LICN shielded against ${formatLicn(effectiveSupply)} LICN effective supply`,
+                'percent',
+                'var(--cyan-accent)',
+                shieldedSharePct
+            ),
+        ];
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        badge.textContent = commitmentCount > 0 ? `${formatNum(commitmentCount)} Commitments` : 'IDLE';
+        badge.className = `panel-badge ${commitmentCount > 0 ? 'success' : 'info'}`;
+    }
+}
+
+async function updateGovernanceWatchBoard() {
+    const badge = document.getElementById('governanceWatchBadge');
+    const grid = document.getElementById('governanceWatchGrid');
+
+    const [incidentStatus, governanceEnvelope, rewardInfo] = await Promise.all([
+        rpc('getIncidentStatus').catch(() => null),
+        rpc('getGovernanceEvents', [GOVERNANCE_WATCH_LIMIT]).catch(() => null),
+        rpc('getRewardAdjustmentInfo').catch(() => null),
+    ]);
+
+    const wallets = buildGovernedWalletEntries(rewardInfo);
+    const tokenWatchEntries = (await Promise.all(wallets.map(async (wallet) => {
+        const envelope = await solanaCompatRpc('getTokenAccountsByOwner', [wallet.pubkey]).catch(() => null);
+        const values = Array.isArray(envelope?.value) ? envelope.value : [];
+        const discovered = [];
+        const seen = new Set();
+
+        values.forEach((entry) => {
+            const info = entry?.account?.data?.parsed?.info;
+            const mint = typeof info?.mint === 'string' ? info.mint : '';
+            if (!mint || seen.has(mint)) return;
+            seen.add(mint);
+            discovered.push({
+                owner: wallet.pubkey,
+                ownerLabel: wallet.label,
+                mint,
+                amount: Number(info?.tokenAmount?.amount || 0),
+            });
+        });
+
+        return discovered;
+    }))).flat();
+
+    const governanceAlerts = (Array.isArray(governanceEnvelope?.events) ? governanceEnvelope.events : [])
+        .flatMap(classifyGovernanceEventForMonitoring)
+        .sort((left, right) => Number(right.event?.slot || 0) - Number(left.event?.slot || 0))
+        .slice(0, GOVERNANCE_WATCH_LIMIT);
+    const criticalOrHigh = governanceAlerts.filter((alert) => ['critical', 'high'].includes(alert.severity)).length;
+    const latestAlert = governanceAlerts[0] || null;
+    const incidentMode = String(incidentStatus?.mode || '--').toUpperCase();
+
+    setText('governanceIncidentMode', incidentMode);
+    setText('governanceAlertCount', formatNum(governanceAlerts.length));
+    setText('governanceCriticalCount', governanceAlerts.length > 0 ? `${formatNum(criticalOrHigh)}/${formatNum(governanceAlerts.length)}` : '0/0');
+    setText('governanceWalletWatchCount', formatNum(wallets.length));
+    setText('governanceTokenWatchCount', formatNum(tokenWatchEntries.length));
+    const lastAlertTime = latestAlert ? timeAgoFromTimestamp(latestAlert.event?.slot_time || latestAlert.event?.timestamp) : '--';
+    setText('governanceLastAlert', latestAlert ? (lastAlertTime !== '--' ? lastAlertTime : `slot ${formatNum(Number(latestAlert.event?.slot || 0))}`) : 'Clear');
+    setText(
+        'governanceWatchNote',
+        rewardInfo
+            ? `Recent governance-sensitive alerts are classified from getGovernanceEvents. Guarded wallet coverage auto-discovers governed native wallets and current token pairs.`
+            : 'Governance watch coverage is unavailable from RPC.'
+    );
+
+    if (grid) {
+        const cards = [];
+
+        if (governanceAlerts.length === 0) {
+            cards.push(renderOperatorTierCard(
+                'Governance Alerts',
+                'No sensitive events',
+                'No recent contract upgrade, pause, bridge, oracle, treasury, or ownership alerts were detected.',
+                'shield-alt',
+                'var(--success)',
+                100
+            ));
+        } else {
+            governanceAlerts.slice(0, 4).forEach((alert) => {
+                const color = alert.severity === 'critical'
+                    ? 'var(--danger)'
+                    : alert.severity === 'high'
+                        ? 'var(--warning)'
+                        : 'var(--accent-blue)';
+                cards.push(renderOperatorTierCard(
+                    alert.title,
+                    String(alert.severity || 'info').toUpperCase(),
+                    buildGovernanceAlertMeta(alert),
+                    alert.ruleId === 'treasury-transfer' ? 'landmark' : 'gavel',
+                    color,
+                    alert.severity === 'critical' ? 100 : alert.severity === 'high' ? 72 : 48
+                ));
+            });
+        }
+
+        wallets.forEach((wallet) => {
+            const tokenPairs = tokenWatchEntries.filter((entry) => entry.owner === wallet.pubkey);
+            cards.push(renderOperatorTierCard(
+                wallet.label.replace(/_/g, ' '),
+                `${formatLicn(wallet.balance)} LICN`,
+                `${formatNum(tokenPairs.length)} token pairs watched · ${truncAddr(wallet.pubkey)}`,
+                'wallet',
+                wallet.balance > 0 ? 'var(--primary)' : 'var(--text-muted)',
+                tokenPairs.length > 0 ? clampPercentage(tokenPairs.length * 25) : 12
+            ));
+        });
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        const badgeState = governanceAlerts.length === 0
+            ? 'success'
+            : criticalOrHigh > 0
+                ? 'warning'
+                : 'info';
+        badge.textContent = governanceAlerts.length === 0
+            ? 'ARMED'
+            : `${formatNum(governanceAlerts.length)} WATCHED`;
+        badge.className = `panel-badge ${badgeState}`;
+    }
+}
+
+async function updateServiceFleetBoard() {
+    const badge = document.getElementById('serviceFleetBadge');
+    const grid = document.getElementById('serviceFleetGrid');
+    const fleet = await rpc('getServiceFleetStatus').catch(() => null);
+
+    if (!fleet) {
+        setText('serviceFleetHostCount', '--');
+        setText('serviceFleetHealthyServices', '--');
+        setText('serviceFleetDegradedServices', '--');
+        setText('serviceFleetIntentionalAbsence', '--');
+        setText('serviceFleetLastSuccess', '--');
+        setText('serviceFleetNote', 'Service fleet probes are unavailable from RPC.');
+        if (grid) grid.innerHTML = '';
+        if (badge) {
+            badge.textContent = 'UNAVAILABLE';
+            badge.className = 'panel-badge warning';
+        }
+        return;
+    }
+
+    const summary = fleet.summary || {};
+    const hosts = Array.isArray(fleet.hosts) ? fleet.hosts : [];
+    const services = hosts.flatMap((host) => {
+        const hostLabel = host.label || host.id || '--';
+        return (Array.isArray(host.services) ? host.services : []).map((service) => ({
+            ...service,
+            hostLabel,
+        }));
+    });
+    const healthyServices = Number(summary.healthy_services ?? services.filter((service) => service.state === 'healthy').length);
+    const degradedServices = Number(summary.degraded_services ?? services.filter((service) => !service.intentionally_absent && service.state !== 'healthy').length);
+    const intentionallyAbsent = Number(summary.intentionally_absent_services ?? services.filter((service) => service.intentionally_absent).length);
+    const lastSuccessAt = summary.last_success_at;
+
+    setText('serviceFleetHostCount', formatNum(Number(summary.host_count ?? hosts.length)));
+    setText('serviceFleetHealthyServices', formatNum(healthyServices));
+    setText('serviceFleetDegradedServices', formatNum(degradedServices));
+    setText('serviceFleetIntentionalAbsence', formatNum(intentionallyAbsent));
+    setText('serviceFleetLastSuccess', lastSuccessAt ? timeAgoFromTimestamp(lastSuccessAt) : 'No successful probes');
+    setText(
+        'serviceFleetNote',
+        fleet.state === 'probe_error'
+            ? (services[0]?.message || 'Service fleet probing is not configured on this RPC node.')
+            : `Probe timeout is ${formatNum(Number(fleet.probe_timeout_ms || 0))}ms. Intentionally absent services stay explicit instead of appearing unhealthy.`
+    );
+
+    if (grid) {
+        const cards = services.length === 0
+            ? [renderOperatorTierCard(
+                'Service Fleet',
+                'Not configured',
+                'No fleet probe targets are configured for this RPC node yet.',
+                'server',
+                'var(--warning)',
+                0
+            )]
+            : services.map((service) => {
+                const state = String(service.state || 'unknown').toLowerCase();
+                const intentionallyAbsentService = Boolean(service.intentionally_absent);
+                const color = intentionallyAbsentService
+                    ? 'var(--text-muted)'
+                    : state === 'healthy'
+                        ? 'var(--success)'
+                        : 'var(--danger)';
+                const icon = service.service === 'custody'
+                    ? 'shield-alt'
+                    : service.service === 'faucet'
+                        ? 'faucet'
+                        : 'server';
+                const value = intentionallyAbsentService
+                    ? 'ABSENT BY DESIGN'
+                    : state.toUpperCase();
+                const meta = `${service.message || 'No probe message'} · ${service.last_success_at ? `last ok ${timeAgoFromTimestamp(service.last_success_at)}` : 'no successful probe yet'} · ${service.hostLabel}`;
+                return renderOperatorTierCard(
+                    `${service.hostLabel} · ${service.label || service.id}`,
+                    value,
+                    meta,
+                    icon,
+                    color,
+                    intentionallyAbsentService ? 0 : state === 'healthy' ? 100 : 18
+                );
+            });
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        const badgeState = degradedServices > 0
+            ? 'danger'
+            : healthyServices > 0
+                ? 'success'
+                : 'warning';
+        badge.textContent = degradedServices > 0
+            ? `${formatNum(degradedServices)} DEGRADED`
+            : healthyServices > 0
+                ? 'CLEAR'
+                : 'PARTIAL';
+        badge.className = `panel-badge ${badgeState}`;
+    }
 }
 
 // ── Clock ───────────────────────────────────────────────────

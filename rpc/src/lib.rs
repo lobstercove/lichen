@@ -72,6 +72,7 @@ const TX_LIST_MAX_LIMIT: usize = TX_LIST_MAX_DB_READS / TX_LIST_DB_READS_PER_TX_
 const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
 const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
 const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
+const SERVICE_FLEET_CACHE_TTL_MS: u128 = 10_000;
 
 /// P9-RPC-02: Maximum size for bincode transaction deserialization.
 /// Prevents OOM/DoS from maliciously large payloads.  4 MiB matches
@@ -479,6 +480,694 @@ fn load_signed_metadata_manifest_value(state: &RpcState) -> Result<serde_json::V
     Ok(manifest)
 }
 
+fn default_service_expected() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetProbeConfig {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    body_contains_any: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetServiceConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default = "default_service_expected")]
+    expected: bool,
+    #[serde(default)]
+    intentionally_absent_message: String,
+    #[serde(default)]
+    probe: ServiceFleetProbeConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetHostConfig {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    services: Vec<ServiceFleetServiceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetConfigRecord {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    network: String,
+    #[serde(default)]
+    probe_timeout_ms: Option<u64>,
+    #[serde(default)]
+    hosts: Vec<ServiceFleetHostConfig>,
+}
+
+impl ServiceFleetConfigRecord {
+    fn normalize(mut self, network_id: &str) -> Self {
+        if self.schema_version == 0 {
+            self.schema_version = 1;
+        }
+        if self.network.trim().is_empty() {
+            self.network = network_id.to_string();
+        }
+
+        self.hosts = self
+            .hosts
+            .into_iter()
+            .filter_map(|mut host| {
+                host.id = host.id.trim().to_string();
+                host.label = host.label.trim().to_string();
+                if host.id.is_empty() {
+                    return None;
+                }
+                if host.label.is_empty() {
+                    host.label = host.id.clone();
+                }
+
+                host.services = host
+                    .services
+                    .into_iter()
+                    .filter_map(|mut service| {
+                        service.id = service.id.trim().to_string();
+                        service.label = service.label.trim().to_string();
+                        service.service = service.service.trim().to_string();
+                        service.probe.kind = service.probe.kind.trim().to_string();
+                        service.probe.url = service.probe.url.trim().to_string();
+                        service.probe.method = service
+                            .probe
+                            .method
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty());
+                        service.probe.body_contains_any = service
+                            .probe
+                            .body_contains_any
+                            .into_iter()
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                            .collect();
+                        service.intentionally_absent_message =
+                            service.intentionally_absent_message.trim().to_string();
+
+                        if service.id.is_empty() {
+                            return None;
+                        }
+                        if service.label.is_empty() {
+                            service.label = service.id.clone();
+                        }
+                        if service.service.is_empty() {
+                            service.service = service.id.clone();
+                        }
+
+                        Some(service)
+                    })
+                    .collect();
+
+                Some(host)
+            })
+            .collect();
+
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetServiceStatusRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default)]
+    host_id: String,
+    #[serde(default)]
+    host_label: String,
+    #[serde(default)]
+    expected: bool,
+    #[serde(default)]
+    intentionally_absent: bool,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    last_checked_at: Option<u64>,
+    #[serde(default)]
+    last_success_at: Option<u64>,
+    #[serde(default)]
+    latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetHostStatusRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    healthy_services: u64,
+    #[serde(default)]
+    degraded_services: u64,
+    #[serde(default)]
+    intentionally_absent_services: u64,
+    #[serde(default)]
+    services: Vec<ServiceFleetServiceStatusRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ServiceFleetSummaryRecord {
+    #[serde(default)]
+    host_count: u64,
+    #[serde(default)]
+    total_services: u64,
+    #[serde(default)]
+    healthy_services: u64,
+    #[serde(default)]
+    degraded_services: u64,
+    #[serde(default)]
+    intentionally_absent_services: u64,
+    #[serde(default)]
+    last_success_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ServiceFleetStatusRecord {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    network: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    updated_at: Option<u64>,
+    #[serde(default)]
+    probe_timeout_ms: Option<u64>,
+    #[serde(default)]
+    summary: ServiceFleetSummaryRecord,
+    #[serde(default)]
+    hosts: Vec<ServiceFleetHostStatusRecord>,
+}
+
+impl ServiceFleetStatusRecord {
+    fn unconfigured(network_id: &str) -> Self {
+        Self {
+            schema_version: 1,
+            source: "default".to_string(),
+            network: network_id.to_string(),
+            state: "unconfigured".to_string(),
+            updated_at: Some(now_unix_ms()),
+            probe_timeout_ms: None,
+            summary: ServiceFleetSummaryRecord::default(),
+            hosts: Vec::new(),
+        }
+    }
+
+    fn probe_error(network_id: &str, message: &str) -> Self {
+        let mut record = Self::unconfigured(network_id);
+        record.source = "error".to_string();
+        record.hosts = vec![ServiceFleetHostStatusRecord {
+            id: "service-fleet".to_string(),
+            label: "Service Fleet".to_string(),
+            healthy_services: 0,
+            degraded_services: 1,
+            intentionally_absent_services: 0,
+            services: vec![ServiceFleetServiceStatusRecord {
+                id: "service-fleet".to_string(),
+                label: "Service Fleet".to_string(),
+                service: "service-fleet".to_string(),
+                host_id: "service-fleet".to_string(),
+                host_label: "Service Fleet".to_string(),
+                expected: true,
+                intentionally_absent: false,
+                state: "degraded".to_string(),
+                message: message.to_string(),
+                kind: "internal".to_string(),
+                url: String::new(),
+                last_checked_at: record.updated_at,
+                last_success_at: None,
+                latency_ms: None,
+            }],
+        }];
+        record.recompute_summary();
+        record.state = "probe_error".to_string();
+        record
+    }
+
+    fn recompute_summary(&mut self) {
+        let mut summary = ServiceFleetSummaryRecord {
+            host_count: self.hosts.len() as u64,
+            total_services: 0,
+            healthy_services: 0,
+            degraded_services: 0,
+            intentionally_absent_services: 0,
+            last_success_at: None,
+        };
+
+        for host in &mut self.hosts {
+            host.healthy_services = 0;
+            host.degraded_services = 0;
+            host.intentionally_absent_services = 0;
+
+            for service in &host.services {
+                summary.total_services += 1;
+                if service.intentionally_absent {
+                    summary.intentionally_absent_services += 1;
+                    host.intentionally_absent_services += 1;
+                } else if service.state == "healthy" {
+                    summary.healthy_services += 1;
+                    host.healthy_services += 1;
+                } else {
+                    summary.degraded_services += 1;
+                    host.degraded_services += 1;
+                }
+
+                if let Some(last_success_at) = service.last_success_at {
+                    summary.last_success_at = Some(
+                        summary
+                            .last_success_at
+                            .map(|current| current.max(last_success_at))
+                            .unwrap_or(last_success_at),
+                    );
+                }
+            }
+        }
+
+        self.summary = summary;
+        self.state = if self.summary.total_services == 0 {
+            "unconfigured".to_string()
+        } else if self.summary.degraded_services > 0 {
+            "degraded".to_string()
+        } else {
+            "healthy".to_string()
+        };
+    }
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn write_json_file_atomic<T: Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    fs::write(&temp_path, bytes)?;
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
+fn load_service_fleet_config_record(state: &RpcState) -> Result<ServiceFleetConfigRecord, String> {
+    let Some(path) = state.service_fleet_config_path.as_ref() else {
+        return Err("Service fleet config is not configured on this RPC node".to_string());
+    };
+
+    let raw = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read service fleet config from {}: {}",
+            path.display(),
+            error
+        )
+    })?;
+
+    serde_json::from_str::<ServiceFleetConfigRecord>(&raw)
+        .map(|record| record.normalize(&state.network_id))
+        .map_err(|error| {
+            format!(
+                "Failed to parse service fleet config from {}: {}",
+                path.display(),
+                error
+            )
+        })
+}
+
+fn load_service_fleet_previous_status(
+    path: Option<&PathBuf>,
+) -> HashMap<String, ServiceFleetServiceStatusRecord> {
+    let Some(path) = path else {
+        return HashMap::new();
+    };
+
+    let Ok(raw) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(status) = serde_json::from_str::<ServiceFleetStatusRecord>(&raw) else {
+        return HashMap::new();
+    };
+
+    status
+        .hosts
+        .into_iter()
+        .flat_map(|host| {
+            host.services.into_iter().map(move |service| {
+                (
+                    format!("{}:{}", host.id, service.id),
+                    ServiceFleetServiceStatusRecord {
+                        host_id: host.id.clone(),
+                        host_label: host.label.clone(),
+                        ..service
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+async fn fetch_upstream_service_fleet_status(
+    upstream_rpc_url: &str,
+) -> Result<ServiceFleetStatusRecord, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(3_000))
+        .build()
+        .map_err(|error| {
+            format!(
+                "Failed to construct service-fleet upstream HTTP client: {}",
+                error
+            )
+        })?;
+
+    let response = client
+        .post(upstream_rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getServiceFleetStatus",
+            "params": []
+        }))
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "Failed to request upstream service fleet status from {}: {}",
+                upstream_rpc_url, error
+            )
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            format!(
+                "Upstream service fleet status request to {} returned an error: {}",
+                upstream_rpc_url, error
+            )
+        })?;
+
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| {
+            format!(
+                "Failed to decode upstream service fleet response from {}: {}",
+                upstream_rpc_url, error
+            )
+        })?;
+
+    if let Some(error) = payload.get("error") {
+        return Err(format!(
+            "Upstream service fleet RPC {} returned an error payload: {}",
+            upstream_rpc_url, error
+        ));
+    }
+
+    let mut status = serde_json::from_value::<ServiceFleetStatusRecord>(
+        payload.get("result").cloned().ok_or_else(|| {
+            format!(
+                "Upstream service fleet RPC {} did not include a result field",
+                upstream_rpc_url
+            )
+        })?,
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to decode upstream service fleet status from {}: {}",
+            upstream_rpc_url, error
+        )
+    })?;
+
+    status.source = "upstream".to_string();
+    Ok(status)
+}
+
+fn service_fleet_health_from_rpc_result(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::String(text) => {
+            matches!(text.trim().to_ascii_lowercase().as_str(), "ok" | "healthy")
+        }
+        serde_json::Value::Object(map) => map
+            .get("status")
+            .and_then(|status| status.as_str())
+            .map(|status| {
+                matches!(
+                    status.trim().to_ascii_lowercase().as_str(),
+                    "ok" | "healthy"
+                )
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+async fn probe_service_fleet_service(
+    client: &reqwest::Client,
+    host: &ServiceFleetHostConfig,
+    service: &ServiceFleetServiceConfig,
+    previous: Option<&ServiceFleetServiceStatusRecord>,
+) -> ServiceFleetServiceStatusRecord {
+    let checked_at = now_unix_ms();
+    let mut record = ServiceFleetServiceStatusRecord {
+        id: service.id.clone(),
+        label: service.label.clone(),
+        service: service.service.clone(),
+        host_id: host.id.clone(),
+        host_label: host.label.clone(),
+        expected: service.expected,
+        intentionally_absent: !service.expected,
+        state: if service.expected {
+            "degraded".to_string()
+        } else {
+            "absent".to_string()
+        },
+        message: if service.expected {
+            "Probe pending".to_string()
+        } else if !service.intentionally_absent_message.is_empty() {
+            service.intentionally_absent_message.clone()
+        } else {
+            "Not deployed on this host by design.".to_string()
+        },
+        kind: service.probe.kind.clone(),
+        url: service.probe.url.clone(),
+        last_checked_at: Some(checked_at),
+        last_success_at: previous.and_then(|status| status.last_success_at),
+        latency_ms: None,
+    };
+
+    if !service.expected {
+        return record;
+    }
+
+    if service.probe.kind.is_empty() || service.probe.url.is_empty() {
+        record.message = "Probe kind and URL must be configured for expected services.".to_string();
+        return record;
+    }
+
+    let started_at = Instant::now();
+    let result = if service.probe.kind.eq_ignore_ascii_case("jsonrpc") {
+        client
+            .post(&service.probe.url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": service.probe.method.as_deref().unwrap_or("getHealth"),
+                "params": []
+            }))
+            .send()
+            .await
+            .and_then(|response| response.error_for_status())
+    } else {
+        client
+            .get(&service.probe.url)
+            .send()
+            .await
+            .and_then(|response| response.error_for_status())
+    };
+
+    match result {
+        Ok(response) => {
+            let latency_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            record.latency_ms = Some(latency_ms);
+
+            if service.probe.kind.eq_ignore_ascii_case("jsonrpc") {
+                match response.json::<serde_json::Value>().await {
+                    Ok(payload) => {
+                        let healthy = payload
+                            .get("result")
+                            .map(service_fleet_health_from_rpc_result)
+                            .unwrap_or(false);
+                        if healthy {
+                            record.state = "healthy".to_string();
+                            record.message = "JSON-RPC health probe passed.".to_string();
+                            record.last_success_at = Some(checked_at);
+                        } else {
+                            record.message =
+                                "JSON-RPC health probe returned an unhealthy result.".to_string();
+                        }
+                    }
+                    Err(error) => {
+                        record.message =
+                            format!("Failed to decode JSON-RPC probe response: {}", error);
+                    }
+                }
+            } else {
+                match response.text().await {
+                    Ok(body) => {
+                        let matched = service.probe.body_contains_any.is_empty()
+                            || service
+                                .probe
+                                .body_contains_any
+                                .iter()
+                                .any(|fragment| body.contains(fragment));
+                        if matched {
+                            record.state = "healthy".to_string();
+                            record.message = "HTTP health probe passed.".to_string();
+                            record.last_success_at = Some(checked_at);
+                        } else {
+                            record.message =
+                                "HTTP health probe response did not match the expected body."
+                                    .to_string();
+                        }
+                    }
+                    Err(error) => {
+                        record.message =
+                            format!("Failed to read HTTP probe response body: {}", error);
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            record.message = format!("Probe request failed: {}", error);
+        }
+    }
+
+    record
+}
+
+async fn refresh_service_fleet_status(state: &RpcState) -> ServiceFleetStatusRecord {
+    if let Some(upstream_rpc_url) = state.service_fleet_upstream_rpc_url.as_deref() {
+        match fetch_upstream_service_fleet_status(upstream_rpc_url).await {
+            Ok(status) => {
+                if let Some(path) = state.service_fleet_status_path.as_ref() {
+                    if let Err(error) = write_json_file_atomic(path, &status) {
+                        warn!(
+                            "Failed to persist upstream service fleet status to {}: {}",
+                            path.display(),
+                            error
+                        );
+                    }
+                }
+                return status;
+            }
+            Err(error) => {
+                warn!(
+                    "Failed to fetch upstream service fleet status from {}: {}",
+                    upstream_rpc_url, error
+                );
+            }
+        }
+    }
+
+    let config = match load_service_fleet_config_record(state) {
+        Ok(config) => config,
+        Err(message) => return ServiceFleetStatusRecord::probe_error(&state.network_id, &message),
+    };
+
+    if config.hosts.is_empty() {
+        return ServiceFleetStatusRecord::unconfigured(&config.network);
+    }
+
+    let timeout_ms = config.probe_timeout_ms.unwrap_or(3_000).max(250);
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return ServiceFleetStatusRecord::probe_error(
+                &config.network,
+                &format!("Failed to construct service-fleet HTTP client: {}", error),
+            )
+        }
+    };
+
+    let previous_statuses =
+        load_service_fleet_previous_status(state.service_fleet_status_path.as_ref());
+    let mut hosts = Vec::with_capacity(config.hosts.len());
+
+    for host in &config.hosts {
+        let mut services = Vec::with_capacity(host.services.len());
+        for service in &host.services {
+            let key = format!("{}:{}", host.id, service.id);
+            services.push(
+                probe_service_fleet_service(&client, host, service, previous_statuses.get(&key))
+                    .await,
+            );
+        }
+        hosts.push(ServiceFleetHostStatusRecord {
+            id: host.id.clone(),
+            label: host.label.clone(),
+            healthy_services: 0,
+            degraded_services: 0,
+            intentionally_absent_services: 0,
+            services,
+        });
+    }
+
+    let mut status = ServiceFleetStatusRecord {
+        schema_version: 1,
+        source: "probe".to_string(),
+        network: config.network,
+        state: "healthy".to_string(),
+        updated_at: Some(now_unix_ms()),
+        probe_timeout_ms: Some(timeout_ms),
+        summary: ServiceFleetSummaryRecord::default(),
+        hosts,
+    };
+    status.recompute_summary();
+
+    if let Some(path) = state.service_fleet_status_path.as_ref() {
+        if let Err(error) = write_json_file_atomic(path, &status) {
+            warn!(
+                "Failed to persist service fleet status to {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+
+    status
+}
+
 fn incident_mode_matches(status: &IncidentStatusRecord, modes: &[&str]) -> bool {
     modes
         .iter()
@@ -854,6 +1543,14 @@ struct RpcState {
     incident_status_path: Option<PathBuf>,
     /// Optional signed metadata manifest consumed by getSignedMetadataManifest.
     signed_metadata_manifest_path: Option<PathBuf>,
+    /// Optional service-fleet probe config consumed by getServiceFleetStatus.
+    service_fleet_config_path: Option<PathBuf>,
+    /// Optional authoritative RPC endpoint used to proxy service fleet status.
+    service_fleet_upstream_rpc_url: Option<String>,
+    /// Optional cached service-fleet status persisted by getServiceFleetStatus.
+    service_fleet_status_path: Option<PathBuf>,
+    /// Cached service-fleet probe results to avoid re-probing on every request.
+    service_fleet_status_cache: Arc<RwLock<(Instant, Option<ServiceFleetStatusRecord>)>>,
     /// Treasury keypair for signing consensus-based airdrop transactions.
     /// Loaded from the treasury keypair file at startup.
     treasury_keypair: Option<Arc<TreasuryKeypair>>,
@@ -1263,6 +1960,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getPredictionLeaderboard"
         | "batchReverseLichenNames"
         | "searchLichenNames"
+        | "getServiceFleetStatus"
         | "getUnstakingQueue" => MethodTier::Moderate,
 
         // Everything else is a cheap point lookup
@@ -2655,6 +3353,21 @@ pub fn build_rpc_router_with_min_validator_stake(
             .ok()
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty()),
+        service_fleet_config_path: std::env::var("LICHEN_SERVICE_FLEET_CONFIG_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty()),
+        service_fleet_upstream_rpc_url: std::env::var("LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty()),
+        service_fleet_status_path: std::env::var("LICHEN_SERVICE_FLEET_STATUS_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty()),
+        service_fleet_status_cache: Arc::new(RwLock::new((
+            Instant::now() - std::time::Duration::from_secs(60),
+            None,
+        ))),
         treasury_keypair: treasury_keypair.map(Arc::new),
     };
 
@@ -2850,6 +3563,7 @@ async fn handle_rpc(
         "getMetrics" => handle_get_metrics(&state).await,
         "getIncidentStatus" => handle_get_incident_status(&state).await,
         "getSignedMetadataManifest" => handle_get_signed_metadata_manifest(&state).await,
+        "getServiceFleetStatus" => handle_get_service_fleet_status(&state).await,
         "getTreasuryInfo" => handle_get_treasury_info(&state).await,
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
@@ -12879,6 +13593,32 @@ async fn handle_get_signed_metadata_manifest(
     load_signed_metadata_manifest_value(state)
 }
 
+async fn handle_get_service_fleet_status(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    {
+        let guard = state.service_fleet_status_cache.read().await;
+        if guard.0.elapsed().as_millis() < SERVICE_FLEET_CACHE_TTL_MS {
+            if let Some(cached) = guard.1.clone() {
+                return serde_json::to_value(cached).map_err(|error| RpcError {
+                    code: -32000,
+                    message: format!("Failed to serialize cached service fleet status: {}", error),
+                });
+            }
+        }
+    }
+
+    let status = refresh_service_fleet_status(state).await;
+
+    {
+        let mut guard = state.service_fleet_status_cache.write().await;
+        *guard = (Instant::now(), Some(status.clone()));
+    }
+
+    serde_json::to_value(status).map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Failed to serialize service fleet status: {}", error),
+    })
+}
+
 /// Testnet-only airdrop: creates a signed consensus transaction (type 19)
 /// that transfers LICN from treasury to a given address.
 /// Usage: requestAirdrop [address, amount_in_licn]
@@ -14402,7 +15142,7 @@ mod tests {
     use super::{
         bridge_access_message, classify_method, classify_solana_method_tier, encode_rpc_response,
         filter_signatures_for_address, handle_create_bridge_deposit, handle_get_bridge_deposit,
-        handle_get_governance_events, handle_get_incident_status,
+        handle_get_governance_events, handle_get_incident_status, handle_get_service_fleet_status,
         handle_get_signed_metadata_manifest, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
         pq_signature_json, validate_incoming_transaction_limits, validate_solana_encoding,
@@ -14448,6 +15188,13 @@ mod tests {
             custody_auth_token: None,
             incident_status_path: None,
             signed_metadata_manifest_path: None,
+            service_fleet_config_path: None,
+            service_fleet_upstream_rpc_url: None,
+            service_fleet_status_path: None,
+            service_fleet_status_cache: Arc::new(RwLock::new((
+                Instant::now() - std::time::Duration::from_secs(60),
+                None,
+            ))),
             treasury_keypair: None,
         }
     }
@@ -15156,6 +15903,284 @@ mod tests {
             .message
             .contains("Failed to parse signed metadata manifest"));
         assert!(error.message.contains(&manifest_path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fleet_status_returns_probe_error_without_config() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let result = handle_get_service_fleet_status(&rpc_state)
+            .await
+            .expect("service fleet status should serialize without config");
+
+        assert_eq!(result["state"], "probe_error");
+        assert_eq!(result["source"], "error");
+        assert_eq!(result["summary"]["degraded_services"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fleet_status_probes_services_and_tracks_absence() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let healthy_url = spawn_mock_server(Router::new().route(
+            "/health",
+            axum::routing::get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
+        ))
+        .await;
+        let unhealthy_url = spawn_mock_server(Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "status": "down" })),
+                )
+            }),
+        ))
+        .await;
+
+        let config_path = tmp.path().join("service-fleet.json");
+        let status_path = tmp.path().join("service-fleet-status.json");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "schema_version": 1,
+                "network": "local-testnet",
+                "probe_timeout_ms": 1500,
+                "hosts": [
+                    {
+                        "id": "local",
+                        "label": "Local Host",
+                        "services": [
+                            {
+                                "id": "custody",
+                                "label": "Custody",
+                                "service": "custody",
+                                "probe": {
+                                    "kind": "http",
+                                    "url": format!("{}/health", healthy_url),
+                                    "body_contains_any": ["\"status\": \"ok\"", "\"status\":\"ok\""]
+                                }
+                            },
+                            {
+                                "id": "faucet",
+                                "label": "Faucet",
+                                "service": "faucet",
+                                "probe": {
+                                    "kind": "http",
+                                    "url": format!("{}/health", unhealthy_url),
+                                    "body_contains_any": ["OK"]
+                                }
+                            },
+                            {
+                                "id": "custody-eu",
+                                "label": "Custody EU",
+                                "service": "custody",
+                                "expected": false,
+                                "intentionally_absent_message": "Custody is only deployed on the US footprint."
+                            }
+                        ]
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.service_fleet_config_path = Some(config_path);
+        rpc_state.service_fleet_status_path = Some(status_path.clone());
+
+        let result = handle_get_service_fleet_status(&rpc_state)
+            .await
+            .expect("service fleet status should serialize");
+
+        assert_eq!(result["state"], "degraded");
+        assert_eq!(result["summary"]["host_count"], 1);
+        assert_eq!(result["summary"]["healthy_services"], 1);
+        assert_eq!(result["summary"]["degraded_services"], 1);
+        assert_eq!(result["summary"]["intentionally_absent_services"], 1);
+        assert_eq!(result["hosts"][0]["services"][0]["state"], "healthy");
+        assert_eq!(result["hosts"][0]["services"][1]["state"], "degraded");
+        assert_eq!(result["hosts"][0]["services"][2]["state"], "absent");
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(status_path).expect("read persisted service fleet status"),
+        )
+        .expect("decode persisted service fleet status");
+        assert_eq!(persisted["summary"]["healthy_services"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fleet_status_preserves_last_success_timestamp() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let config_path = tmp.path().join("service-fleet.json");
+        let status_path = tmp.path().join("service-fleet-status.json");
+
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "schema_version": 1,
+                "network": "local-testnet",
+                "hosts": [
+                    {
+                        "id": "local",
+                        "label": "Local Host",
+                        "services": [
+                            {
+                                "id": "custody",
+                                "label": "Custody",
+                                "service": "custody",
+                                "probe": {
+                                    "kind": "http",
+                                    "url": "http://127.0.0.1:9/health",
+                                    "body_contains_any": ["OK"]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &status_path,
+            serde_json::json!({
+                "schema_version": 1,
+                "source": "probe",
+                "network": "local-testnet",
+                "state": "healthy",
+                "updated_at": 123456789,
+                "summary": {
+                    "host_count": 1,
+                    "total_services": 1,
+                    "healthy_services": 1,
+                    "degraded_services": 0,
+                    "intentionally_absent_services": 0,
+                    "last_success_at": 123456789
+                },
+                "hosts": [
+                    {
+                        "id": "local",
+                        "label": "Local Host",
+                        "healthy_services": 1,
+                        "degraded_services": 0,
+                        "intentionally_absent_services": 0,
+                        "services": [
+                            {
+                                "id": "custody",
+                                "label": "Custody",
+                                "service": "custody",
+                                "host_id": "local",
+                                "host_label": "Local Host",
+                                "expected": true,
+                                "intentionally_absent": false,
+                                "state": "healthy",
+                                "message": "HTTP health probe passed.",
+                                "kind": "http",
+                                "url": "http://127.0.0.1:9/health",
+                                "last_checked_at": 123456789,
+                                "last_success_at": 123456789,
+                                "latency_ms": 5
+                            }
+                        ]
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.service_fleet_config_path = Some(config_path);
+        rpc_state.service_fleet_status_path = Some(status_path);
+
+        let result = handle_get_service_fleet_status(&rpc_state)
+            .await
+            .expect("service fleet status should serialize on failures");
+
+        assert_eq!(result["state"], "degraded");
+        assert_eq!(result["hosts"][0]["services"][0]["state"], "degraded");
+        assert_eq!(
+            result["hosts"][0]["services"][0]["last_success_at"],
+            123456789
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fleet_status_uses_upstream_rpc_when_configured() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let upstream_url = spawn_mock_server(Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "schema_version": 1,
+                        "source": "probe",
+                        "network": "testnet",
+                        "state": "healthy",
+                        "updated_at": 123456789,
+                        "probe_timeout_ms": 3000,
+                        "summary": {
+                            "host_count": 1,
+                            "total_services": 1,
+                            "healthy_services": 1,
+                            "degraded_services": 0,
+                            "intentionally_absent_services": 0,
+                            "last_success_at": 123456789
+                        },
+                        "hosts": [
+                            {
+                                "id": "us",
+                                "label": "US VPS",
+                                "healthy_services": 1,
+                                "degraded_services": 0,
+                                "intentionally_absent_services": 0,
+                                "services": [
+                                    {
+                                        "id": "custody",
+                                        "label": "Custody",
+                                        "service": "custody",
+                                        "host_id": "us",
+                                        "host_label": "US VPS",
+                                        "expected": true,
+                                        "intentionally_absent": false,
+                                        "state": "healthy",
+                                        "message": "HTTP health probe passed.",
+                                        "kind": "http",
+                                        "url": "http://127.0.0.1:9105/health",
+                                        "last_checked_at": 123456789,
+                                        "last_success_at": 123456789,
+                                        "latency_ms": 5
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }))
+            }),
+        ))
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.service_fleet_upstream_rpc_url = Some(upstream_url);
+
+        let result = handle_get_service_fleet_status(&rpc_state)
+            .await
+            .expect("service fleet status should serialize when upstream is configured");
+
+        assert_eq!(result["source"], "upstream");
+        assert_eq!(result["state"], "healthy");
+        assert_eq!(result["summary"]["healthy_services"], 1);
+        assert_eq!(result["hosts"][0]["services"][0]["state"], "healthy");
     }
 
     #[tokio::test]

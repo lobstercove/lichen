@@ -83,7 +83,7 @@
         </section>
 
         <!-- Row 1: Validator Status + Network Health -->
-        <div class="grid grid-2">
+        <div class="grid mission-board-stack">
             <!-- Validator Panel -->
             <div class="panel">
                 <div class="panel-header">
@@ -172,7 +172,7 @@
         </div>
 
         <!-- Row 2: Supply Economics + Contract Status -->
-        <div class="grid grid-2">
+        <div class="grid mission-board-stack">
             <!-- Supply Panel -->
             <div class="panel">
                 <div class="panel-header">
@@ -281,8 +281,8 @@
                     </div>
                     <span class="panel-badge" id="contractCount">--</span>
                 </div>
-                <div class="panel-body">
-                    <div class="contract-list" id="contractList">
+                <div class="panel-body scroll-body">
+                    <div class="contract-list panel-scroll-region" id="contractList">
                         <!-- Filled by JS -->
                     </div>
                 </div>
@@ -290,7 +290,7 @@
         </div>
 
         <!-- Row 3: Recent Blocks + Live Event Feed -->
-        <div class="grid grid-2">
+        <div class="grid mission-board-stack">
             <!-- Recent Blocks -->
             <div class="panel stretch-panel">
                 <div class="panel-header">
@@ -298,8 +298,8 @@
                         <i class="fas fa-cubes"></i> Recent Blocks
                     </div>
                 </div>
-                <div class="panel-body">
-                    <div class="block-list" id="blockList">
+                <div class="panel-body scroll-body">
+                    <div class="block-list panel-scroll-region" id="blockList">
                         <!-- Filled by JS -->
                     </div>
                 </div>
@@ -315,8 +315,8 @@
                         <i class="fas fa-trash-alt"></i> Clear
                     </button>
                 </div>
-                <div class="panel-body">
-                    <div class="event-feed" id="eventFeed">
+                <div class="panel-body scroll-body">
+                    <div class="event-feed panel-scroll-region" id="eventFeed">
                         <div class="event-item info">
                             <span class="event-time">--:--:--</span>
                             <span class="event-icon"><i class="fas fa-plug"></i></span>
@@ -547,7 +547,7 @@
                 </div>
                 <span class="panel-badge" id="contractMonitorBadge">--</span>
             </div>
-            <div class="panel-body">
+            <div class="panel-body scroll-body">
                 <!-- Deployment progress -->
                 <div style="margin-bottom:1rem;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
@@ -573,7 +573,7 @@
                     <button class="contract-cat-btn" data-cat="identity">Identity</button>
                 </div>
                 <!-- Contracts Grid -->
-                <div class="contract-monitor-grid" id="contractMonitorGrid">
+                <div class="contract-monitor-grid panel-scroll-grid" id="contractMonitorGrid">
                     <!-- Filled by JS -->
                 </div>
             </div>
@@ -793,108 +793,110 @@
                 <span class="panel-badge" id="ecosystemBadge">--</span>
             </div>
             <div class="panel-body">
-                <!-- Token Stats -->
-                <div class="dex-stats-bar" id="tokenStatsBar">
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">lUSD Supply</span>
-                        <span class="dex-stat-value" id="ecoLusdSupply">--</span>
+                <div class="metric-card-grid metric-card-grid--6 ecosystem-summary-grid">
+                    <!-- Token Stats -->
+                    <div class="metric-card-group" id="tokenStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">lUSD Supply</span>
+                            <span class="dex-stat-value" id="ecoLusdSupply">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">lUSD Minted</span>
+                            <span class="dex-stat-value" id="ecoLusdMinted">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">lUSD Transfers</span>
+                            <span class="dex-stat-value" id="ecoLusdTransfers">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">wETH Supply</span>
+                            <span class="dex-stat-value" id="ecoWethSupply">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">wSOL Supply</span>
+                            <span class="dex-stat-value" id="ecoWsolSupply">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">wBNB Supply</span>
+                            <span class="dex-stat-value" id="ecoWbnbSupply">--</span>
+                        </div>
                     </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">lUSD Minted</span>
-                        <span class="dex-stat-value" id="ecoLusdMinted">--</span>
+                    <!-- Platform Services -->
+                    <div class="metric-card-group" id="platformStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">ThallLend Deposits</span>
+                            <span class="dex-stat-value" id="ecoLendDeposits">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">ThallLend Borrows</span>
+                            <span class="dex-stat-value" id="ecoLendBorrows">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">SporePay Streams</span>
+                            <span class="dex-stat-value" id="ecoSporePayStreams">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">SporeVault Assets</span>
+                            <span class="dex-stat-value" id="ecoVaultAssets">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">SporePump Tokens</span>
+                            <span class="dex-stat-value" id="ecoPumpTokens">--</span>
+                        </div>
                     </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">lUSD Transfers</span>
-                        <span class="dex-stat-value" id="ecoLusdTransfers">--</span>
+                    <!-- Infrastructure -->
+                    <div class="metric-card-group" id="infraStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Bridge TXs</span>
+                            <span class="dex-stat-value" id="ecoBridgeTxs">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Bridge Locked</span>
+                            <span class="dex-stat-value" id="ecoBridgeLocked">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">DAO Proposals</span>
+                            <span class="dex-stat-value" id="ecoDaoProposals">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Oracle Feeds</span>
+                            <span class="dex-stat-value" id="ecoOracleFeeds">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Moss Data Blobs</span>
+                            <span class="dex-stat-value" id="ecoMossData">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Shielded Balance</span>
+                            <span class="dex-stat-value" id="ecoShieldedBalance">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Shielded Commitments</span>
+                            <span class="dex-stat-value" id="ecoShieldedCommitments">--</span>
+                        </div>
                     </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">wETH Supply</span>
-                        <span class="dex-stat-value" id="ecoWethSupply">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">wSOL Supply</span>
-                        <span class="dex-stat-value" id="ecoWsolSupply">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">wBNB Supply</span>
-                        <span class="dex-stat-value" id="ecoWbnbSupply">--</span>
-                    </div>
-                </div>
-                <!-- Platform Services -->
-                <div class="dex-stats-bar" style="margin-top:0.75rem;" id="platformStatsBar">
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">ThallLend Deposits</span>
-                        <span class="dex-stat-value" id="ecoLendDeposits">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">ThallLend Borrows</span>
-                        <span class="dex-stat-value" id="ecoLendBorrows">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">SporePay Streams</span>
-                        <span class="dex-stat-value" id="ecoSporePayStreams">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">SporeVault Assets</span>
-                        <span class="dex-stat-value" id="ecoVaultAssets">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">SporePump Tokens</span>
-                        <span class="dex-stat-value" id="ecoPumpTokens">--</span>
-                    </div>
-                </div>
-                <!-- Infrastructure -->
-                <div class="dex-stats-bar" style="margin-top:0.75rem;" id="infraStatsBar">
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Bridge TXs</span>
-                        <span class="dex-stat-value" id="ecoBridgeTxs">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Bridge Locked</span>
-                        <span class="dex-stat-value" id="ecoBridgeLocked">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">DAO Proposals</span>
-                        <span class="dex-stat-value" id="ecoDaoProposals">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Oracle Feeds</span>
-                        <span class="dex-stat-value" id="ecoOracleFeeds">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Moss Data Blobs</span>
-                        <span class="dex-stat-value" id="ecoMossData">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Shielded Balance</span>
-                        <span class="dex-stat-value" id="ecoShieldedBalance">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Shielded Commitments</span>
-                        <span class="dex-stat-value" id="ecoShieldedCommitments">--</span>
-                    </div>
-                </div>
-                <!-- NFT & Marketplace -->
-                <div class="dex-stats-bar" style="margin-top:0.75rem;" id="nftStatsBar">
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">NFT Listings</span>
-                        <span class="dex-stat-value" id="ecoMarketListings">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Auction Volume</span>
-                        <span class="dex-stat-value" id="ecoAuctionVolume">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">LichenPunks Minted</span>
-                        <span class="dex-stat-value" id="ecoPunksMinted">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Bounties Posted</span>
-                        <span class="dex-stat-value" id="ecoBounties">--</span>
-                    </div>
-                    <div class="dex-stat-item">
-                        <span class="dex-stat-label">Compute Jobs</span>
-                        <span class="dex-stat-value" id="ecoComputeJobs">--</span>
+                    <!-- NFT & Marketplace -->
+                    <div class="metric-card-group" id="nftStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">NFT Listings</span>
+                            <span class="dex-stat-value" id="ecoMarketListings">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Auction Volume</span>
+                            <span class="dex-stat-value" id="ecoAuctionVolume">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">LichenPunks Minted</span>
+                            <span class="dex-stat-value" id="ecoPunksMinted">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Bounties Posted</span>
+                            <span class="dex-stat-value" id="ecoBounties">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Compute Jobs</span>
+                            <span class="dex-stat-value" id="ecoComputeJobs">--</span>
+                        </div>
                     </div>
                 </div>
                 <!-- Platform ecosystem detail grid -->
@@ -939,8 +941,298 @@
                         <span class="dex-stat-value" id="controlPlaneRegistryEntries">--</span>
                     </div>
                 </div>
-                <div class="identity-tier-grid" id="controlPlaneDetailGrid">
+                <div class="identity-tier-grid control-plane-grid" id="controlPlaneDetailGrid">
                     <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 13: Treasury + Network Infrastructure -->
+        <div class="grid grid-2">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-landmark"></i> Treasury & Distribution Board
+                    </div>
+                    <span class="panel-badge" id="treasuryBoardBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="dex-stats-bar" id="treasuryStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Tracked Balance</span>
+                            <span class="dex-stat-value" id="treasuryTrackedBalance">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Share Of Supply</span>
+                            <span class="dex-stat-value" id="treasuryTrackedShare">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Largest Drift</span>
+                            <span class="dex-stat-value" id="treasuryLargestDrift">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Watch Alerts</span>
+                            <span class="dex-stat-value" id="treasuryWatchAlerts">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Above Floor</span>
+                            <span class="dex-stat-value" id="treasuryHealthyWallets">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="treasuryWatchSummary">Loading governed wallet watch state...</div>
+                    <div class="identity-tier-grid" id="treasuryDetailGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-network-wired"></i> Network Infrastructure Board
+                    </div>
+                    <span class="panel-badge" id="networkInfrastructureBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="dex-stats-bar" id="networkInfrastructureStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Chain ID</span>
+                            <span class="dex-stat-value" id="networkChainId">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Network ID</span>
+                            <span class="dex-stat-value" id="networkNetworkId">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Node Version</span>
+                            <span class="dex-stat-value" id="networkNodeVersion">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Peers</span>
+                            <span class="dex-stat-value" id="networkPeerCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Validators</span>
+                            <span class="dex-stat-value" id="networkClusterMembers">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Genesis Hash</span>
+                            <span class="dex-stat-value" id="networkGenesisHash">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="networkInfrastructureNote">Loading chain identity and liveness data...
+                    </div>
+                    <div class="identity-tier-grid" id="networkInfrastructureGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 14: Program Hotspots -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-fire"></i> Program Hotspots Board
+                </div>
+                <span class="panel-badge" id="programHotspotsBadge">--</span>
+            </div>
+            <div class="panel-body scroll-body">
+                <div class="dex-stats-bar" id="programHotspotStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Programs Tracked</span>
+                        <span class="dex-stat-value" id="programTrackedCount">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">All-Time Calls</span>
+                        <span class="dex-stat-value" id="programTotalCalls">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Recent 15m</span>
+                        <span class="dex-stat-value" id="programRecentCalls">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Hottest Contract</span>
+                        <span class="dex-stat-value" id="programHottest">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Active Functions</span>
+                        <span class="dex-stat-value" id="programActiveFunctions">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Last Activity</span>
+                        <span class="dex-stat-value" id="programLastActivity">--</span>
+                    </div>
+                </div>
+                <div class="supply-note" id="programHotspotNote">Loading program call telemetry...</div>
+                <div class="identity-tier-grid panel-scroll-grid" id="programHotspotGrid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 15: Oracle/Bridge + Privacy -->
+        <div class="grid grid-2">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-bridge"></i> Oracle & Bridge Deep Health
+                    </div>
+                    <span class="panel-badge" id="oracleBridgeBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="dex-stats-bar" id="oracleBridgeStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Oracle Feeds</span>
+                            <span class="dex-stat-value" id="oracleFeedCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Oracle Queries</span>
+                            <span class="dex-stat-value" id="oracleQueryCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Attestations</span>
+                            <span class="dex-stat-value" id="oracleAttestationCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Bridge Validators</span>
+                            <span class="dex-stat-value" id="bridgeValidatorCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Required Confirms</span>
+                            <span class="dex-stat-value" id="bridgeRequiredConfirms">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Locked Amount</span>
+                            <span class="dex-stat-value" id="bridgeLockedAmount">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="oracleBridgeNote">Loading oracle and bridge health...</div>
+                    <div class="identity-tier-grid" id="oracleBridgeDetailGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-user-shield"></i> Privacy Pool Audit Board
+                    </div>
+                    <span class="panel-badge" id="privacyAuditBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="dex-stats-bar" id="privacyAuditStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Merkle Root</span>
+                            <span class="dex-stat-value" id="privacyMerkleRoot">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Commitments</span>
+                            <span class="dex-stat-value" id="privacyCommitmentCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Nullifiers</span>
+                            <span class="dex-stat-value" id="privacyNullifierCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Live Notes</span>
+                            <span class="dex-stat-value" id="privacyLiveNotes">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Shielded Balance</span>
+                            <span class="dex-stat-value" id="privacyShieldedBalance">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Supply Share</span>
+                            <span class="dex-stat-value" id="privacySupplyShare">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="privacyAuditNote">Loading shielded-pool state...</div>
+                    <div class="identity-tier-grid" id="privacyAuditGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 16: Governance Watch + Service Fleet -->
+        <div class="grid grid-2">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-gavel"></i> Treasury &amp; Governance Watch Surface
+                    </div>
+                    <span class="panel-badge" id="governanceWatchBadge">--</span>
+                </div>
+                <div class="panel-body scroll-body">
+                    <div class="dex-stats-bar" id="governanceWatchStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Incident Mode</span>
+                            <span class="dex-stat-value" id="governanceIncidentMode">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Recent Alerts</span>
+                            <span class="dex-stat-value" id="governanceAlertCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Critical / High</span>
+                            <span class="dex-stat-value" id="governanceCriticalCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Wallet Watches</span>
+                            <span class="dex-stat-value" id="governanceWalletWatchCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Token Watches</span>
+                            <span class="dex-stat-value" id="governanceTokenWatchCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Last Alert</span>
+                            <span class="dex-stat-value" id="governanceLastAlert">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="governanceWatchNote">Loading governance watch coverage...</div>
+                    <div class="identity-tier-grid panel-scroll-grid" id="governanceWatchGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-server"></i> Service Fleet Board
+                    </div>
+                    <span class="panel-badge" id="serviceFleetBadge">--</span>
+                </div>
+                <div class="panel-body scroll-body">
+                    <div class="dex-stats-bar" id="serviceFleetStatsBar">
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Hosts</span>
+                            <span class="dex-stat-value" id="serviceFleetHostCount">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Healthy Services</span>
+                            <span class="dex-stat-value" id="serviceFleetHealthyServices">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Degraded Services</span>
+                            <span class="dex-stat-value" id="serviceFleetDegradedServices">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Intentional Absence</span>
+                            <span class="dex-stat-value" id="serviceFleetIntentionalAbsence">--</span>
+                        </div>
+                        <div class="dex-stat-item">
+                            <span class="dex-stat-label">Last Success</span>
+                            <span class="dex-stat-value" id="serviceFleetLastSuccess">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-note" id="serviceFleetNote">Loading faucet and custody footprint health...</div>
+                    <div class="identity-tier-grid panel-scroll-grid" id="serviceFleetGrid">
+                        <!-- Filled by JS -->
+                    </div>
                 </div>
             </div>
         </div>
