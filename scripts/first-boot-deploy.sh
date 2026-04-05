@@ -38,7 +38,7 @@ SKIP_BUILD=false
 MAX_RETRIES=30
 RETRY_DELAY=2
 SIGNED_METADATA_MANIFEST="${SIGNED_METADATA_MANIFEST:-${LICHEN_SIGNED_METADATA_MANIFEST_FILE:-}}"
-SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-${REPO_ROOT}/keypairs/release-signing-key.json}"
+SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-${LICHEN_SIGNED_METADATA_KEYPAIR_FILE:-}}"
 SIGNED_METADATA_NETWORK="${SIGNED_METADATA_NETWORK:-}"
 SIGNED_METADATA_TARGET_HINT=""
 SIGNED_METADATA_REQUIRED=false
@@ -186,15 +186,20 @@ PY
 resolve_signed_metadata_defaults() {
     local env_file="/etc/lichen/env-${DEPLOY_NETWORK}"
     local configured_manifest=""
+    local configured_keypair=""
 
     if [[ -f "$env_file" ]]; then
         SIGNED_METADATA_REQUIRED=true
         configured_manifest="$(read_env_file_value "$env_file" "LICHEN_SIGNED_METADATA_MANIFEST_FILE")"
+        configured_keypair="$(read_env_file_value "$env_file" "LICHEN_SIGNED_METADATA_KEYPAIR_FILE")"
         if [[ -n "$configured_manifest" ]]; then
             SIGNED_METADATA_TARGET_HINT="$configured_manifest"
             if [[ -z "$SIGNED_METADATA_MANIFEST" && -w "$(dirname "$configured_manifest")" ]]; then
                 SIGNED_METADATA_MANIFEST="$configured_manifest"
             fi
+        fi
+        if [[ -z "$SIGNED_METADATA_KEYPAIR" && -n "$configured_keypair" ]]; then
+            SIGNED_METADATA_KEYPAIR="$configured_keypair"
         fi
     fi
 
@@ -497,6 +502,11 @@ echo -e "${CYAN}╚════════════════════�
 echo -e "  RPC:      ${RPC_URL}"
 echo -e "  Manifest: ${MANIFEST}"
 echo -e "  Metadata: ${SIGNED_METADATA_MANIFEST}"
+if [[ -n "$SIGNED_METADATA_KEYPAIR" ]]; then
+    echo -e "  Signer:   ${SIGNED_METADATA_KEYPAIR}"
+else
+    echo -e "  Signer:   <not configured>"
+fi
 
 # ─────────────────────────────────────────────────────────
 # Step 1: Check if already deployed
@@ -572,7 +582,7 @@ fi
 # ─────────────────────────────────────────────────────────
 # Final verification
 # ─────────────────────────────────────────────────────────
-if [ -f "$SIGNED_METADATA_KEYPAIR" ] && command -v node >/dev/null 2>&1; then
+if [[ -n "$SIGNED_METADATA_KEYPAIR" && -f "$SIGNED_METADATA_KEYPAIR" ]] && command -v node >/dev/null 2>&1; then
     echo -e "\n${CYAN}[4b/4]${NC} Generating signed metadata manifest..."
     if node "${SCRIPT_DIR}/generate-signed-metadata-manifest.js" \
         --rpc "$RPC_URL" \
@@ -587,6 +597,12 @@ if [ -f "$SIGNED_METADATA_KEYPAIR" ] && command -v node >/dev/null 2>&1; then
             exit 1
         fi
     fi
+elif [[ -z "$SIGNED_METADATA_KEYPAIR" ]]; then
+    if $SIGNED_METADATA_REQUIRED; then
+        echo -e "\n  ${RED}❌ Deployment aborted: LICHEN_SIGNED_METADATA_KEYPAIR_FILE or SIGNED_METADATA_KEYPAIR must be set${NC}"
+        exit 1
+    fi
+    echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because no signing keypair was configured${NC}"
 elif ! command -v node >/dev/null 2>&1; then
     if $SIGNED_METADATA_REQUIRED; then
         echo -e "\n  ${RED}❌ Deployment aborted: Node.js is required to generate signed metadata on VPS deploys${NC}"

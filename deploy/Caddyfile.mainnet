@@ -1,0 +1,19 @@
+rpc.lichen.network {
+    tls internal
+    import common_headers
+
+    @ws path /ws*
+    handle @ws {
+        reverse_proxy 127.0.0.1:9900
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:9899
+    }
+}
+
+ws.lichen.network {
+    tls internal
+    import common_headers
+    reverse_proxy 127.0.0.1:9900
+}

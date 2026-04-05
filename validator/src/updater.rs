@@ -116,6 +116,10 @@ pub struct UpdateConfig {
     /// successfully. Companion update failures are logged but don't block
     /// the primary update.
     pub companion_binaries: Vec<(String, PathBuf)>,
+    /// Optional non-binary assets to refresh from the same release archive.
+    /// Used for runtime data such as `seeds.json` that should track the
+    /// release bundle alongside the validator binary.
+    pub companion_assets: Vec<(String, PathBuf)>,
 }
 
 impl Default for UpdateConfig {
@@ -128,6 +132,7 @@ impl Default for UpdateConfig {
             jitter_max_secs: 60,
             target_binary: "lichen-validator".to_string(),
             companion_binaries: Vec::new(),
+            companion_assets: Vec::new(),
         }
     }
 }
@@ -411,6 +416,35 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
         }
     }
 
+    // 13. Refresh companion assets (seeds.json, etc.) from the same archive.
+    for (asset_name, install_path) in &config.companion_assets {
+        let asset_staging = install_path.with_extension("staging");
+        match extract_named_file_from_archive(&archive_data, &asset_staging, asset_name) {
+            Ok(()) => {
+                if install_path.exists() {
+                    let _ = fs::remove_file(install_path);
+                }
+                match fs::rename(&asset_staging, install_path) {
+                    Ok(()) => info!(
+                        "✅ Companion asset updated: {} at {}",
+                        asset_name,
+                        install_path.display()
+                    ),
+                    Err(e) => warn!(
+                        "⚠️  Failed to install companion asset {} at {}: {}",
+                        asset_name,
+                        install_path.display(),
+                        e
+                    ),
+                }
+            }
+            Err(e) => warn!(
+                "⚠️  Failed to extract companion asset {} from archive: {}",
+                asset_name, e
+            ),
+        }
+    }
+
     Ok(Some(remote_version.to_string()))
 }
 
@@ -627,14 +661,23 @@ fn extract_binary_from_archive(
     output_path: &Path,
     target_binary: &str,
 ) -> Result<()> {
-    let decoder = flate2::read::GzDecoder::new(archive_data);
-    let mut archive = tar::Archive::new(decoder);
-
     let binary_name = if cfg!(target_os = "windows") {
         format!("{}.exe", target_binary)
     } else {
         target_binary.to_string()
     };
+
+    extract_named_file_from_archive(archive_data, output_path, &binary_name)
+}
+
+/// Extract an arbitrary file from a .tar.gz archive by basename.
+fn extract_named_file_from_archive(
+    archive_data: &[u8],
+    output_path: &Path,
+    target_name: &str,
+) -> Result<()> {
+    let decoder = flate2::read::GzDecoder::new(archive_data);
+    let mut archive = tar::Archive::new(decoder);
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -651,21 +694,24 @@ fn extract_binary_from_archive(
         // Look for the binary — either at root or in a subdirectory
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        if file_name == binary_name {
+        if file_name == target_name {
             // Extract to output path
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent).context("Failed to create output directory")?;
+            }
             let mut output_file =
                 fs::File::create(output_path).context("Failed to create staging file")?;
 
             io::copy(&mut entry, &mut output_file)
-                .context("Failed to extract binary from archive")?;
+                .context("Failed to extract file from archive")?;
 
             output_file.flush()?;
-            info!("📦 Extracted {} from archive", binary_name);
+            info!("📦 Extracted {} from archive", target_name);
             return Ok(());
         }
     }
 
-    bail!("Binary '{}' not found in archive", binary_name)
+    bail!("Archive entry '{}' not found", target_name)
 }
 
 // ── Platform Detection ──────────────────────────────────────────────────────
@@ -770,6 +816,28 @@ fn load_update_state(exe_path: &Path) -> Result<UpdateState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn build_test_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+
+        for (path, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive
+                .append_data(
+                    &mut header,
+                    format!("bundle/{}", path),
+                    Cursor::new(*contents),
+                )
+                .unwrap();
+        }
+
+        archive.into_inner().unwrap().finish().unwrap()
+    }
 
     #[test]
     fn test_parse_version() {
@@ -869,6 +937,36 @@ mod tests {
         let loaded: UpdateState = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.last_update_version, "0.2.0");
         assert_eq!(loaded.crash_count, 1);
+    }
+
+    #[test]
+    fn test_extract_named_file_from_archive() {
+        let archive = build_test_archive(&[("seeds.json", br#"{"network":"mainnet"}"#)]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output = temp_dir.path().join("state-mainnet/seeds.json");
+
+        extract_named_file_from_archive(&archive, &output, "seeds.json").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output).unwrap(),
+            "{\"network\":\"mainnet\"}"
+        );
+    }
+
+    #[test]
+    fn test_extract_binary_from_archive() {
+        let binary_entry = if cfg!(target_os = "windows") {
+            "lichen-validator.exe"
+        } else {
+            "lichen-validator"
+        };
+        let archive = build_test_archive(&[(binary_entry, b"validator-binary")]);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output = temp_dir.path().join(binary_entry);
+
+        extract_binary_from_archive(&archive, &output, "lichen-validator").unwrap();
+
+        assert_eq!(fs::read(output).unwrap(), b"validator-binary");
     }
 
     #[test]

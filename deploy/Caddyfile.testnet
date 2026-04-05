@@ -1,0 +1,19 @@
+testnet-rpc.lichen.network {
+    tls internal
+    import common_headers
+
+    @ws path /ws*
+    handle @ws {
+        reverse_proxy 127.0.0.1:8900
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8899
+    }
+}
+
+testnet-ws.lichen.network {
+    tls internal
+    import common_headers
+    reverse_proxy 127.0.0.1:8900
+}

@@ -90,6 +90,7 @@ jobs:
           cp target/${{ matrix.target }}/release/lichen-faucet ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-custody ${{ matrix.artifact }}/
+          cp seeds.json ${{ matrix.artifact }}/
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Create archive (Windows)
@@ -102,6 +103,7 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/lichen-faucet.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-custody.exe ${{ matrix.artifact }}/
+          Copy-Item seeds.json ${{ matrix.artifact }}/
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Upload artifact
@@ -174,7 +176,14 @@ jobs:
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
             chmod +x lichen-validator
+            mkdir -p "$HOME/.lichen/state-mainnet"
+            cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
             ```
+
+            Each archive also includes `seeds.json`. Install it under your chosen
+            `--db-path` (or `/etc/lichen/seeds.json`) so seed-set updates can flow
+            through normal release upgrades. `--bootstrap-peers` remains an override,
+            not the default install path.
 
             Windows artifact:
 

@@ -249,8 +249,9 @@ impl SyncManager {
     pub async fn should_sync(&self, current_slot: u64) -> Option<(u64, u64)> {
         let highest = *self.highest_seen_slot.lock().await;
         let is_syncing = *self.is_syncing.lock().await;
-        let current_batch = self.current_sync_batch.lock().await;
+        let current_batch = *self.current_sync_batch.lock().await;
         let phase = *self.sync_phase.lock().await;
+        let has_pending = !self.pending_blocks.lock().await.is_empty();
 
         // Cooldown: don't re-trigger sync within the adaptive cooldown period.
         // InitialSync uses a short fixed cooldown (500ms) for fast catch-up.
@@ -286,8 +287,9 @@ impl SyncManager {
         // (FIX-FORK-2: lowered from +2 to +1 to catch forks earlier)
         if highest > current_slot + 1 {
             // Determine start slot.
-            // InitialSync: request current_slot + 1 (no overlap) to avoid
-            //   triggering fork choice on blocks we already have.
+            // InitialSync: normally request current_slot + 1 (no overlap).
+            // If pending blocks already exist, include the current tip so we
+            // can recover from a divergent parent and drain the pending chain.
             // LiveSync: include current_slot (overlap) for fork resolution —
             //   the peer's version of our tip may replace ours if theirs has
             //   more weight.
@@ -304,7 +306,11 @@ impl SyncManager {
                     0
                 }
             } else if phase == SyncPhase::InitialSync {
-                current_slot + 1 // No overlap — never trigger fork choice during catch-up
+                if has_pending {
+                    current_slot
+                } else {
+                    current_slot + 1
+                }
             } else {
                 current_slot // Include overlap for fork resolution
             };
@@ -682,6 +688,19 @@ mod tests {
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
         assert_eq!(start, 51); // No overlap during initial sync
+        assert!(end <= 100);
+    }
+
+    #[tokio::test]
+    async fn test_should_sync_overlap_initial_sync_when_pending() {
+        let sm = SyncManager::new();
+        sm.note_seen(100).await;
+        sm.add_pending_block(test_block(75)).await;
+
+        let batch = sm.should_sync(50).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 50); // Overlap tip to recover a divergent parent
         assert!(end <= 100);
     }
 

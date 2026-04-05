@@ -6,25 +6,28 @@
       {
         "id": "seed-01",
         "address": "seed-01.lichen.network:7001",
+        "pubkey": "",
         "region": "us-east",
         "operator": "Lichen Foundation",
-        "rpc": "https://rpc.lichen.network",
+        "rpc": "https://testnet-rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-02",
         "address": "seed-02.lichen.network:7001",
+        "pubkey": "",
         "region": "eu-west",
         "operator": "Lichen Foundation",
-        "rpc": "https://rpc.lichen.network",
+        "rpc": "https://testnet-rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-03",
         "address": "seed-03.lichen.network:7001",
+        "pubkey": "",
         "region": "ap-southeast",
         "operator": "Lichen Foundation",
-        "rpc": "https://rpc.lichen.network",
+        "rpc": "https://testnet-rpc.lichen.network",
         "role": "seed"
       }
     ],
@@ -34,7 +37,6 @@
       "seed-03.lichen.network:7001"
     ],
     "rpc_endpoints": [
-      "https://rpc.lichen.network",
       "https://testnet-rpc.lichen.network"
     ],
     "explorers": [
@@ -51,6 +53,7 @@
       {
         "id": "seed-01",
         "address": "seed-01.lichen.network:8001",
+        "pubkey": "",
         "region": "us-east",
         "operator": "Lichen Foundation",
         "rpc": "https://rpc.lichen.network",
@@ -59,6 +62,7 @@
       {
         "id": "seed-02",
         "address": "seed-02.lichen.network:8001",
+        "pubkey": "",
         "region": "eu-west",
         "operator": "Lichen Foundation",
         "rpc": "https://rpc.lichen.network",
@@ -67,6 +71,7 @@
       {
         "id": "seed-03",
         "address": "seed-03.lichen.network:8001",
+        "pubkey": "",
         "region": "ap-southeast",
         "operator": "Lichen Foundation",
         "rpc": "https://rpc.lichen.network",
@@ -91,16 +96,12 @@
     "chain_id": "lichen-devnet-1",
     "seeds": [],
     "bootstrap_peers": [
-      "127.0.0.1:8000"
+      "127.0.0.1:7001"
     ],
     "rpc_endpoints": [
       "http://localhost:8899"
     ],
-    "explorers": [
-      "http://localhost:3007"
-    ],
-    "faucets": [
-      "http://localhost:9100"
-    ]
+    "explorers": [],
+    "faucets": []
   }
 }
