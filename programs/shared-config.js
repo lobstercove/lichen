@@ -70,6 +70,21 @@ const LICHEN_CONFIG = (() => {
     ];
     let incidentBannerRequestId = 0;
 
+    function hasSavedIncidentNetworkSelection() {
+        if (window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY) {
+            const stored = localStorage.getItem(window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY);
+            if (stored) {
+                return true;
+            }
+        }
+
+        return INCIDENT_NETWORK_STORAGE_KEYS.some((key) => Boolean(localStorage.getItem(key)));
+    }
+
+    function shouldAutoRefreshIncidentStatusBanner() {
+        return !isProduction || hasSavedIncidentNetworkSelection();
+    }
+
     // ── Cross-App URLs ──────────────────────────────────────────────────
     let apps;
     if (isLocalhost) {
@@ -455,6 +470,7 @@ const LICHEN_CONFIG = (() => {
         currentNetwork,
         initNetworkSelector,
         refreshIncidentStatusBanner,
+        shouldAutoRefreshIncidentStatusBanner,
 
         // Cross-app URLs
         ...apps,
@@ -471,5 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    void LICHEN_CONFIG.refreshIncidentStatusBanner();
+    if (LICHEN_CONFIG.shouldAutoRefreshIncidentStatusBanner()) {
+        void LICHEN_CONFIG.refreshIncidentStatusBanner();
+    }
 });
