@@ -83,88 +83,90 @@
         </section>
 
         <!-- Row 1: Validator Status + Network Health -->
-        <div class="grid mission-board-stack">
+        <div class="grid mission-board-inline mission-board-capped">
             <!-- Validator Panel -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-server"></i> Validator Cluster
                     </div>
                     <span class="panel-badge" id="valClusterBadge">--</span>
                 </div>
-                <div class="panel-body">
-                    <div class="validator-grid" id="validatorGrid">
+                <div class="panel-body scroll-body">
+                    <div class="validator-grid panel-scroll-region" id="validatorGrid">
                         <!-- Filled by JS -->
                     </div>
                 </div>
             </div>
 
             <!-- Network Health -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-heartbeat"></i> Network Health
                     </div>
                     <span class="panel-badge health-badge" id="healthBadge">--</span>
                 </div>
-                <div class="panel-body">
-                    <div class="health-grid">
-                        <div class="health-item">
-                            <span class="health-label">Consensus</span>
-                            <div class="health-bar-wrap">
-                                <div class="health-bar" id="healthConsensus" style="width:0%"></div>
+                <div class="panel-body scroll-body">
+                    <div class="panel-scroll-region panel-stack-region">
+                        <div class="health-grid">
+                            <div class="health-item">
+                                <span class="health-label">Consensus</span>
+                                <div class="health-bar-wrap">
+                                    <div class="health-bar" id="healthConsensus" style="width:0%"></div>
+                                </div>
+                                <span class="health-pct" id="healthConsensusPct">--</span>
                             </div>
-                            <span class="health-pct" id="healthConsensusPct">--</span>
-                        </div>
-                        <div class="health-item">
-                            <span class="health-label">Block Production</span>
-                            <div class="health-bar-wrap">
-                                <div class="health-bar success" id="healthBlocks" style="width:0%"></div>
+                            <div class="health-item">
+                                <span class="health-label">Block Production</span>
+                                <div class="health-bar-wrap">
+                                    <div class="health-bar success" id="healthBlocks" style="width:0%"></div>
+                                </div>
+                                <span class="health-pct" id="healthBlocksPct">--</span>
                             </div>
-                            <span class="health-pct" id="healthBlocksPct">--</span>
-                        </div>
-                        <div class="health-item">
-                            <span class="health-label">Transaction Rate</span>
-                            <div class="health-bar-wrap">
-                                <div class="health-bar info" id="healthTxRate" style="width:0%"></div>
+                            <div class="health-item">
+                                <span class="health-label">Transaction Rate</span>
+                                <div class="health-bar-wrap">
+                                    <div class="health-bar info" id="healthTxRate" style="width:0%"></div>
+                                </div>
+                                <span class="health-pct" id="healthTxRatePct">--</span>
                             </div>
-                            <span class="health-pct" id="healthTxRatePct">--</span>
-                        </div>
-                        <div class="health-item">
-                            <span class="health-label">P2P Connectivity</span>
-                            <div class="health-bar-wrap">
-                                <div class="health-bar accent" id="healthP2P" style="width:0%"></div>
+                            <div class="health-item">
+                                <span class="health-label">P2P Connectivity</span>
+                                <div class="health-bar-wrap">
+                                    <div class="health-bar accent" id="healthP2P" style="width:0%"></div>
+                                </div>
+                                <span class="health-pct" id="healthP2PPct">--</span>
                             </div>
-                            <span class="health-pct" id="healthP2PPct">--</span>
-                        </div>
-                        <div class="health-item">
-                            <span class="health-label">Memory Usage</span>
-                            <div class="health-bar-wrap">
-                                <div class="health-bar warning" id="healthMemory" style="width:0%"></div>
+                            <div class="health-item">
+                                <span class="health-label">Memory Usage</span>
+                                <div class="health-bar-wrap">
+                                    <div class="health-bar warning" id="healthMemory" style="width:0%"></div>
+                                </div>
+                                <span class="health-pct" id="healthMemoryPct">--</span>
                             </div>
-                            <span class="health-pct" id="healthMemoryPct">--</span>
                         </div>
-                    </div>
-                    <div class="endpoint-grid">
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">RPC Batch</span>
-                            <span class="endpoint-value" id="endpointRpcLatency">--</span>
-                            <span class="endpoint-meta" id="endpointRpcStatus">Waiting for sample</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">WS Slot Feed</span>
-                            <span class="endpoint-value" id="endpointWsStatus">--</span>
-                            <span class="endpoint-meta" id="endpointWsLastPush">No subscription yet</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">WS Last Slot</span>
-                            <span class="endpoint-value" id="endpointWsSlot">--</span>
-                            <span class="endpoint-meta" id="endpointWsHost">--</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">Peers</span>
-                            <span class="endpoint-value" id="endpointPeerCount">--</span>
-                            <span class="endpoint-meta" id="endpointRpcHost">--</span>
+                        <div class="endpoint-grid">
+                            <div class="endpoint-item">
+                                <span class="endpoint-label">RPC Batch</span>
+                                <span class="endpoint-value" id="endpointRpcLatency">--</span>
+                                <span class="endpoint-meta" id="endpointRpcStatus">Waiting for sample</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="endpoint-label">WS Slot Feed</span>
+                                <span class="endpoint-value" id="endpointWsStatus">--</span>
+                                <span class="endpoint-meta" id="endpointWsLastPush">No subscription yet</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="endpoint-label">WS Last Slot</span>
+                                <span class="endpoint-value" id="endpointWsSlot">--</span>
+                                <span class="endpoint-meta" id="endpointWsHost">--</span>
+                            </div>
+                            <div class="endpoint-item">
+                                <span class="endpoint-label">Peers</span>
+                                <span class="endpoint-value" id="endpointPeerCount">--</span>
+                                <span class="endpoint-meta" id="endpointRpcHost">--</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -172,102 +174,108 @@
         </div>
 
         <!-- Row 2: Supply Economics + Contract Status -->
-        <div class="grid mission-board-stack">
+        <div class="grid mission-board-inline mission-board-capped">
             <!-- Supply Panel -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-coins"></i> Supply Economics
                     </div>
                 </div>
-                <div class="panel-body">
-                    <div class="supply-grid">
-                        <div class="supply-item">
-                            <span class="supply-label">Total Supply (Minted)</span>
-                            <span class="supply-value" id="supplyTotal">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Effective Supply <small style="opacity:0.5;">(Minted −
-                                    Burned)</small></span>
-                            <span class="supply-value success" id="supplyEffective">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Circulating <small style="opacity:0.5;">(Minted − Burned −
-                                    Genesis − Staked)</small></span>
-                            <span class="supply-value" id="supplyCirculating">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Stake-Locked</span>
-                            <span class="supply-value accent" id="supplyStaked">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Total Burned</span>
-                            <span class="supply-value warning" id="supplyBurned">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Non-Circulating <small style="opacity:0.5;">(Genesis +
-                                    Staked)</small></span>
-                            <span class="supply-value info" id="supplyNonCirculating">--</span>
-                        </div>
-                    </div>
-                    <div class="supply-divider"></div>
-                    <div class="supply-section-label"><i class="fas fa-landmark"></i> Distribution</div>
-                    <div class="supply-grid supply-grid-3">
-                        <div class="supply-item">
-                            <span class="supply-label">Validator Rewards (10%)</span>
-                            <span class="supply-value info" id="supplyValidatorRewards">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Community Treasury (25%)</span>
-                            <span class="supply-value info" id="supplyCommunityTreasury">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Builder Grants (35%)</span>
-                            <span class="supply-value info" id="supplyBuilderGrants">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Founding Symbionts (10%)</span>
-                            <span class="supply-value accent" id="supplyFoundingSymbionts">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Ecosystem Partners (10%)</span>
-                            <span class="supply-value accent" id="supplyEcosystemPartnerships">--</span>
-                        </div>
-                        <div class="supply-item">
-                            <span class="supply-label">Reserve Pool (10%)</span>
-                            <span class="supply-value accent" id="supplyReservePool">--</span>
-                        </div>
-                    </div>
-                    <div class="supply-divider"></div>
-                    <div class="supply-grid">
-                        <div class="supply-item">
-                            <span class="supply-label">Genesis Signer Balance</span>
-                            <span class="supply-value" id="supplyGenesis" style="opacity:0.5">--</span>
-                        </div>
-                    </div>
-                    <div class="supply-note" id="supplyFormulaNote">Circulating = minted − burned − genesis balance −
-                        active stake.</div>
-                    <div class="supply-bar-container">
-                        <div class="supply-bar">
-                            <div class="supply-segment treasury" id="segTreasury" style="width:10%"
-                                title="Validator Rewards"></div>
-                            <div class="supply-segment community" id="segCommunity" style="width:25%"
-                                title="Community Treasury"></div>
-                            <div class="supply-segment builder" id="segBuilder" style="width:35%"
-                                title="Builder Grants"></div>
-                            <div class="supply-segment founding" id="segFounding" style="width:10%"
-                                title="Founding Symbionts"></div>
-                            <div class="supply-segment ecosystem" id="segEcosystem" style="width:10%" title="Ecosystem">
+                <div class="panel-body scroll-body">
+                    <div class="panel-scroll-region panel-stack-region">
+                        <div class="supply-grid">
+                            <div class="supply-item">
+                                <span class="supply-label">Total Supply (Minted)</span>
+                                <span class="supply-value" id="supplyTotal">--</span>
                             </div>
-                            <div class="supply-segment reserve" id="segReserve" style="width:10%" title="Reserve"></div>
+                            <div class="supply-item">
+                                <span class="supply-label">Effective Supply <small style="opacity:0.5;">(Minted −
+                                        Burned)</small></span>
+                                <span class="supply-value success" id="supplyEffective">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Circulating <small style="opacity:0.5;">(Minted − Burned −
+                                        Genesis − Staked)</small></span>
+                                <span class="supply-value" id="supplyCirculating">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Stake-Locked</span>
+                                <span class="supply-value accent" id="supplyStaked">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Total Burned</span>
+                                <span class="supply-value warning" id="supplyBurned">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Non-Circulating <small style="opacity:0.5;">(Genesis +
+                                        Staked)</small></span>
+                                <span class="supply-value info" id="supplyNonCirculating">--</span>
+                            </div>
                         </div>
-                        <div class="supply-legend">
-                            <span class="legend-item"><span class="legend-dot treasury"></span>Validator Rewards</span>
-                            <span class="legend-item"><span class="legend-dot community"></span>Community</span>
-                            <span class="legend-item"><span class="legend-dot builder"></span>Builders</span>
-                            <span class="legend-item"><span class="legend-dot founding"></span>Founders</span>
-                            <span class="legend-item"><span class="legend-dot ecosystem"></span>Ecosystem</span>
-                            <span class="legend-item"><span class="legend-dot reserve"></span>Reserve</span>
+                        <div class="supply-divider"></div>
+                        <div class="supply-section-label"><i class="fas fa-landmark"></i> Distribution</div>
+                        <div class="supply-grid supply-grid-3">
+                            <div class="supply-item">
+                                <span class="supply-label">Validator Rewards (10%)</span>
+                                <span class="supply-value info" id="supplyValidatorRewards">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Community Treasury (25%)</span>
+                                <span class="supply-value info" id="supplyCommunityTreasury">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Builder Grants (35%)</span>
+                                <span class="supply-value info" id="supplyBuilderGrants">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Founding Symbionts (10%)</span>
+                                <span class="supply-value accent" id="supplyFoundingSymbionts">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Ecosystem Partners (10%)</span>
+                                <span class="supply-value accent" id="supplyEcosystemPartnerships">--</span>
+                            </div>
+                            <div class="supply-item">
+                                <span class="supply-label">Reserve Pool (10%)</span>
+                                <span class="supply-value accent" id="supplyReservePool">--</span>
+                            </div>
+                        </div>
+                        <div class="supply-divider"></div>
+                        <div class="supply-grid">
+                            <div class="supply-item">
+                                <span class="supply-label">Genesis Signer Balance</span>
+                                <span class="supply-value" id="supplyGenesis" style="opacity:0.5">--</span>
+                            </div>
+                        </div>
+                        <div class="supply-note" id="supplyFormulaNote">Circulating = minted − burned − genesis balance
+                            −
+                            active stake.</div>
+                        <div class="supply-bar-container">
+                            <div class="supply-bar">
+                                <div class="supply-segment treasury" id="segTreasury" style="width:10%"
+                                    title="Validator Rewards"></div>
+                                <div class="supply-segment community" id="segCommunity" style="width:25%"
+                                    title="Community Treasury"></div>
+                                <div class="supply-segment builder" id="segBuilder" style="width:35%"
+                                    title="Builder Grants"></div>
+                                <div class="supply-segment founding" id="segFounding" style="width:10%"
+                                    title="Founding Symbionts"></div>
+                                <div class="supply-segment ecosystem" id="segEcosystem" style="width:10%"
+                                    title="Ecosystem">
+                                </div>
+                                <div class="supply-segment reserve" id="segReserve" style="width:10%" title="Reserve">
+                                </div>
+                            </div>
+                            <div class="supply-legend">
+                                <span class="legend-item"><span class="legend-dot treasury"></span>Validator
+                                    Rewards</span>
+                                <span class="legend-item"><span class="legend-dot community"></span>Community</span>
+                                <span class="legend-item"><span class="legend-dot builder"></span>Builders</span>
+                                <span class="legend-item"><span class="legend-dot founding"></span>Founders</span>
+                                <span class="legend-item"><span class="legend-dot ecosystem"></span>Ecosystem</span>
+                                <span class="legend-item"><span class="legend-dot reserve"></span>Reserve</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -290,7 +298,7 @@
         </div>
 
         <!-- Row 3: Recent Blocks + Live Event Feed -->
-        <div class="grid mission-board-stack">
+        <div class="grid mission-board-inline mission-board-capped">
             <!-- Recent Blocks -->
             <div class="panel stretch-panel">
                 <div class="panel-header">

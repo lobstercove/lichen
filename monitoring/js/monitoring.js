@@ -198,6 +198,12 @@ function formatNum(n) {
     return n.toLocaleString();
 }
 
+function formatExactNum(n) {
+    const numeric = Number(n);
+    if (!Number.isFinite(numeric)) return '--';
+    return Math.trunc(numeric).toLocaleString();
+}
+
 function formatPercent(value, digits = 2) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return '--';
@@ -1064,7 +1070,7 @@ async function renderValidators() {
                 <div class="val-addr">${p.pubkey ? escapeHtml(truncAddr(p.pubkey)) : (p.online ? 'Unstaked' : 'Offline')}</div>
             </div>
             <div class="val-meta">
-                <span><i class="fas fa-cube"></i> ${p.slot !== null ? formatNum(p.slot) : 'N/A'}</span>
+                <span><i class="fas fa-cube"></i> ${p.slot !== null ? formatExactNum(p.slot) : 'N/A'}</span>
                 <span><i class="fas fa-coins"></i> ${p.stake ? formatLicn(p.stake) : '--'}</span>
                 <span title="Blocks proposed"><i class="fas fa-hammer"></i> ${formatNum(p.blocks_proposed)}</span>
             </div>
