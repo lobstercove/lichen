@@ -101,6 +101,8 @@ assert(dexHtml.includes('integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c
 assert(dexHeaders.includes('/index.html'), 'P4-2 DEX has a page-specific CSP header rule');
 assert(dexHeaders.includes("script-src 'self'"), 'P4-2 DEX CSP restricts script sources to self');
 assert(!dexHeaders.includes("script-src 'self' 'unsafe-inline'"), 'P4-2 DEX CSP does not allow inline scripts');
+assert(dexHeaders.includes("frame-src 'self' blob:"), 'P4-2 DEX CSP allows blob-backed chart frames required by the hosted TradingView bundle');
+assert(dexHeaders.includes("worker-src 'self' blob:"), 'P4-2 DEX CSP allows blob-backed chart workers required by the hosted TradingView bundle');
 
 console.log('\n── Monitoring Trust Boundary ──');
 
