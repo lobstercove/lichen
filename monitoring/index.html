@@ -145,6 +145,28 @@
                             <span class="health-pct" id="healthMemoryPct">--</span>
                         </div>
                     </div>
+                    <div class="endpoint-grid">
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">RPC Batch</span>
+                            <span class="endpoint-value" id="endpointRpcLatency">--</span>
+                            <span class="endpoint-meta" id="endpointRpcStatus">Waiting for sample</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">WS Slot Feed</span>
+                            <span class="endpoint-value" id="endpointWsStatus">--</span>
+                            <span class="endpoint-meta" id="endpointWsLastPush">No subscription yet</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">WS Last Slot</span>
+                            <span class="endpoint-value" id="endpointWsSlot">--</span>
+                            <span class="endpoint-meta" id="endpointWsHost">--</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">Peers</span>
+                            <span class="endpoint-value" id="endpointPeerCount">--</span>
+                            <span class="endpoint-meta" id="endpointRpcHost">--</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -170,16 +192,22 @@
                             <span class="supply-value success" id="supplyEffective">--</span>
                         </div>
                         <div class="supply-item">
-                            <span class="supply-label">Circulating</span>
+                            <span class="supply-label">Circulating <small style="opacity:0.5;">(Minted − Burned −
+                                    Genesis − Staked)</small></span>
                             <span class="supply-value" id="supplyCirculating">--</span>
                         </div>
                         <div class="supply-item">
-                            <span class="supply-label">Total Staked</span>
+                            <span class="supply-label">Stake-Locked</span>
                             <span class="supply-value accent" id="supplyStaked">--</span>
                         </div>
                         <div class="supply-item">
                             <span class="supply-label">Total Burned</span>
                             <span class="supply-value warning" id="supplyBurned">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Non-Circulating <small style="opacity:0.5;">(Genesis +
+                                    Staked)</small></span>
+                            <span class="supply-value info" id="supplyNonCirculating">--</span>
                         </div>
                     </div>
                     <div class="supply-divider"></div>
@@ -213,10 +241,12 @@
                     <div class="supply-divider"></div>
                     <div class="supply-grid">
                         <div class="supply-item">
-                            <span class="supply-label">Genesis Signer</span>
+                            <span class="supply-label">Genesis Signer Balance</span>
                             <span class="supply-value" id="supplyGenesis" style="opacity:0.5">--</span>
                         </div>
                     </div>
+                    <div class="supply-note" id="supplyFormulaNote">Circulating = minted − burned − genesis balance −
+                        active stake.</div>
                     <div class="supply-bar-container">
                         <div class="supply-bar">
                             <div class="supply-segment treasury" id="segTreasury" style="width:10%"
@@ -244,7 +274,7 @@
             </div>
 
             <!-- Contract Status -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-file-contract"></i> Contract Registry
@@ -262,7 +292,7 @@
         <!-- Row 3: Recent Blocks + Live Event Feed -->
         <div class="grid grid-2">
             <!-- Recent Blocks -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-cubes"></i> Recent Blocks
@@ -276,7 +306,7 @@
             </div>
 
             <!-- Live Event Feed -->
-            <div class="panel">
+            <div class="panel stretch-panel">
                 <div class="panel-header">
                     <div class="panel-title">
                         <i class="fas fa-rss"></i> Live Event Feed
@@ -325,7 +355,7 @@
                 </div>
                 <div class="panel-body">
                     <div class="perf-grid">
-                        <div class="perf-item" title="TPS relative to theoretical 500 TPS maximum">
+                        <div class="perf-item" title="Current TPS relative to observed peak TPS">
                             <div class="perf-ring" id="perfCPU">
                                 <svg viewBox="0 0 36 36">
                                     <path class="ring-bg"
@@ -335,7 +365,7 @@
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
-                            <span class="perf-label">TPS Load</span>
+                            <span class="perf-label">TPS vs Peak</span>
                         </div>
                         <div class="perf-item" title="Account count relative to 100k capacity">
                             <div class="perf-ring" id="perfMem">
@@ -347,9 +377,9 @@
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
-                            <span class="perf-label">Accounts</span>
+                            <span class="perf-label">Account Load</span>
                         </div>
-                        <div class="perf-item" title="Chain size derived from slot height (~1.2M slots = 100%)">
+                        <div class="perf-item" title="Slot progress on the monitoring scale (~1.2M slots = 100%)">
                             <div class="perf-ring" id="perfDisk">
                                 <svg viewBox="0 0 36 36">
                                     <path class="ring-bg"
@@ -359,9 +389,9 @@
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
-                            <span class="perf-label">Chain Size</span>
+                            <span class="perf-label">Slot Progress</span>
                         </div>
-                        <div class="perf-item" title="Block production rate (3s target = 100%)">
+                        <div class="perf-item" title="Block production pace versus configured slot duration">
                             <div class="perf-ring" id="perfNet">
                                 <svg viewBox="0 0 36 36">
                                     <path class="ring-bg"
@@ -371,7 +401,7 @@
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
-                            <span class="perf-label">Block Rate</span>
+                            <span class="perf-label">Block Pace</span>
                         </div>
                     </div>
                     <div class="perf-stats">
@@ -537,6 +567,7 @@
                     <button class="contract-cat-btn" data-cat="defi">DeFi</button>
                     <button class="contract-cat-btn" data-cat="dex">DEX</button>
                     <button class="contract-cat-btn" data-cat="token">Tokens</button>
+                    <button class="contract-cat-btn" data-cat="privacy">Privacy</button>
                     <button class="contract-cat-btn" data-cat="nft">NFT/Market</button>
                     <button class="contract-cat-btn" data-cat="infra">Infrastructure</button>
                     <button class="contract-cat-btn" data-cat="identity">Identity</button>
@@ -784,6 +815,10 @@
                         <span class="dex-stat-label">wSOL Supply</span>
                         <span class="dex-stat-value" id="ecoWsolSupply">--</span>
                     </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">wBNB Supply</span>
+                        <span class="dex-stat-value" id="ecoWbnbSupply">--</span>
+                    </div>
                 </div>
                 <!-- Platform Services -->
                 <div class="dex-stats-bar" style="margin-top:0.75rem;" id="platformStatsBar">
@@ -830,6 +865,14 @@
                         <span class="dex-stat-label">Moss Data Blobs</span>
                         <span class="dex-stat-value" id="ecoMossData">--</span>
                     </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Shielded Balance</span>
+                        <span class="dex-stat-value" id="ecoShieldedBalance">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Shielded Commitments</span>
+                        <span class="dex-stat-value" id="ecoShieldedCommitments">--</span>
+                    </div>
                 </div>
                 <!-- NFT & Marketplace -->
                 <div class="dex-stats-bar" style="margin-top:0.75rem;" id="nftStatsBar">
@@ -856,6 +899,47 @@
                 </div>
                 <!-- Platform ecosystem detail grid -->
                 <div class="identity-tier-grid" id="ecosystemDetailGrid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 12: Protocol Control Plane -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-sliders-h"></i> Protocol Control Plane
+                </div>
+                <span class="panel-badge" id="controlPlaneBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <div class="dex-stats-bar" id="controlPlaneStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Base Fee</span>
+                        <span class="dex-stat-value" id="controlPlaneBaseFee">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Rent Rate</span>
+                        <span class="dex-stat-value" id="controlPlaneRentRate">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">MossStake TVL</span>
+                        <span class="dex-stat-value" id="controlPlaneStakeTvl">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Flexible APY</span>
+                        <span class="dex-stat-value" id="controlPlaneApy">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Incident Mode</span>
+                        <span class="dex-stat-value" id="controlPlaneIncidentMode">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Registry Entries</span>
+                        <span class="dex-stat-value" id="controlPlaneRegistryEntries">--</span>
+                    </div>
+                </div>
+                <div class="identity-tier-grid" id="controlPlaneDetailGrid">
                     <!-- Filled by JS -->
                 </div>
             </div>

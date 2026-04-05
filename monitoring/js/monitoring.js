@@ -15,26 +15,78 @@ const NETWORKS = {
 // and validator rendering all use live cluster data, never a hardcoded list.
 
 const SYMBOLS = [
-    'LICN', 'LUSD', 'WETH', 'WSOL', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
+    'LUSD', 'WETH', 'WSOL', 'WBNB', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
     'DEXREWARDS', 'DEXROUTER', 'BRIDGE', 'DAO', 'SPOREVAULT', 'SPOREPAY',
     'SPOREPUMP', 'ORACLE', 'LEND', 'MARKET', 'AUCTION', 'BOUNTY', 'ANALYTICS',
-    'COMPUTE', 'LICHENSWAP', 'PUNKS', 'MOSS', 'PREDMKT', 'YID'
+    'COMPUTE', 'LICHENSWAP', 'PUNKS', 'MOSS', 'SHIELDED', 'PREDICT', 'YID'
 ];
 
 const REFRESH_MS = 3000;
+const CONTRACT_REFRESH_MS = 30000;
+const WS_STALE_MS = 12000;
+const WS_RECONNECT_MS = 3000;
 // SPORES_PER_LICN loaded from ../shared/utils.js
 
 const _monIsProduction = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.isProduction) ||
     (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1');
-const _monDefaultNetwork = _monIsProduction ? 'mainnet' : 'local-testnet';
-let rpcUrl = NETWORKS[localStorage.getItem('lichen_mon_network') || _monDefaultNetwork];
+const _monProductionNetwork = 'testnet';
+const _monDefaultNetwork = _monIsProduction ? _monProductionNetwork : 'local-testnet';
+
+function normalizeMonitoringNetwork(network) {
+    const resolved = NETWORKS[network] ? network : _monDefaultNetwork;
+    if (_monIsProduction && resolved === 'mainnet') {
+        return _monProductionNetwork;
+    }
+    return resolved;
+}
+
+function currentMonitoringNetwork() {
+    const stored = localStorage.getItem('lichen_mon_network');
+    const normalized = normalizeMonitoringNetwork(stored || _monDefaultNetwork);
+    if (stored !== normalized) {
+        localStorage.setItem('lichen_mon_network', normalized);
+    }
+    return normalized;
+}
+
+function resolveRpcUrl(network) {
+    const selected = normalizeMonitoringNetwork(network || currentMonitoringNetwork());
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') {
+        return LICHEN_CONFIG.rpc(selected);
+    }
+    return NETWORKS[selected] || NETWORKS[_monDefaultNetwork];
+}
+
+function resolveWsUrl(network) {
+    const selected = normalizeMonitoringNetwork(network || currentMonitoringNetwork());
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.ws === 'function') {
+        return LICHEN_CONFIG.ws(selected);
+    }
+    const rpc = resolveRpcUrl(selected);
+    return rpc.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws';
+}
+
+let rpcUrl = resolveRpcUrl(currentMonitoringNetwork());
 let tpsHistory = [];
 let lastSlot = 0;
 let startTime = Date.now();
 let eventLog = [];
 let rejectedTxCount = 0;
 let alertCount = 0;
+let lastRpcLatencyMs = null;
+let lastMetricsSnapshot = null;
+let lastPeersSnapshot = null;
 const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
+const wsProbe = {
+    socket: null,
+    reconnectTimer: null,
+    subscriptionRequestId: null,
+    subscriptionId: null,
+    status: 'connecting',
+    lastMessageAt: 0,
+    lastSlot: null,
+    url: '',
+};
 
 // ── RPC Client ──────────────────────────────────────────────
 
@@ -69,7 +121,7 @@ function getTrustedMonitoringNetwork() {
     if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
         return LICHEN_CONFIG.currentNetwork('lichen_mon_network');
     }
-    return localStorage.getItem('lichen_mon_network') || _monDefaultNetwork;
+    return currentMonitoringNetwork();
 }
 
 async function trustedMonitoringRpc(method, params = []) {
@@ -111,6 +163,12 @@ function formatNum(n) {
     return n.toLocaleString();
 }
 
+function formatPercent(value, digits = 2) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '--';
+    return `${numeric.toFixed(digits)}%`;
+}
+
 function truncAddr(addr) {
     if (!addr || addr.length < 12) return addr || '--';
     return addr.slice(0, 6) + '...' + addr.slice(-4);
@@ -128,12 +186,265 @@ function now() {
     return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
+function formatDateTime(value) {
+    if (!value) return '--';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        return String(value);
+    }
+    return parsed.toLocaleString('en-US', {
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    });
+}
+
 function uptime() {
     const s = Math.floor((Date.now() - startTime) / 1000);
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
     return `${h}h ${m}m ${sec}s`;
+}
+
+function setText(id, text) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+}
+
+function formatLatency(ms) {
+    return Number.isFinite(ms) ? `${Math.round(ms)} ms` : '--';
+}
+
+function endpointHost(url) {
+    try {
+        return new URL(url).host;
+    } catch (_) {
+        return url || '--';
+    }
+}
+
+function currentWsState() {
+    if (wsProbe.status === 'online' && wsProbe.lastMessageAt && Date.now() - wsProbe.lastMessageAt > WS_STALE_MS) {
+        return 'stale';
+    }
+    return wsProbe.status;
+}
+
+function updateStatusBeacon(rpcOnline) {
+    const beacon = document.getElementById('statusBeacon');
+    const beaconText = document.getElementById('beaconText');
+    if (!beacon || !beaconText) return;
+
+    const beaconDot = beacon.querySelector('.beacon-dot');
+    if (!beaconDot) return;
+
+    if (!rpcOnline) {
+        beaconDot.className = 'beacon-dot offline';
+        beaconText.textContent = 'RPC offline';
+        return;
+    }
+
+    const wsState = currentWsState();
+    const rpcLabel = formatLatency(lastRpcLatencyMs);
+
+    if (wsState === 'online') {
+        beaconDot.className = 'beacon-dot online';
+        beaconText.textContent = `RPC ${rpcLabel} · WS live`;
+        return;
+    }
+
+    beaconDot.className = 'beacon-dot degraded';
+    if (wsState === 'connecting' || wsState === 'subscribing') {
+        beaconText.textContent = `RPC ${rpcLabel} · WS connecting`;
+    } else if (wsState === 'stale') {
+        beaconText.textContent = `RPC ${rpcLabel} · WS stale`;
+    } else {
+        beaconText.textContent = `RPC ${rpcLabel} · WS down`;
+    }
+}
+
+function updateEndpointTelemetry(peers = lastPeersSnapshot) {
+    const peerCount = peers?.peer_count || peers?.count || 0;
+    const wsState = currentWsState();
+    const wsStatusText = wsState === 'online'
+        ? 'LIVE'
+        : wsState === 'stale'
+            ? 'STALE'
+            : wsState === 'connecting' || wsState === 'subscribing'
+                ? 'CONNECTING'
+                : 'DOWN';
+
+    setText('endpointRpcLatency', formatLatency(lastRpcLatencyMs));
+    setText('endpointRpcStatus', lastRpcLatencyMs !== null ? 'READY' : 'UNREACHABLE');
+    setText('endpointWsStatus', wsStatusText);
+    setText(
+        'endpointWsLastPush',
+        wsProbe.lastMessageAt ? timeAgo(Math.floor(wsProbe.lastMessageAt / 1000)) : 'No slot push yet'
+    );
+    setText('endpointWsSlot', wsProbe.lastSlot !== null ? formatNum(wsProbe.lastSlot) : '--');
+    setText('endpointWsHost', endpointHost(resolveWsUrl(currentMonitoringNetwork())));
+    setText('endpointPeerCount', formatNum(peerCount));
+    setText('endpointRpcHost', endpointHost(rpcUrl));
+}
+
+function clearWsProbeReconnect() {
+    if (wsProbe.reconnectTimer) {
+        clearTimeout(wsProbe.reconnectTimer);
+        wsProbe.reconnectTimer = null;
+    }
+}
+
+function scheduleWsProbeReconnect() {
+    if (wsProbe.reconnectTimer) return;
+    wsProbe.reconnectTimer = setTimeout(() => {
+        wsProbe.reconnectTimer = null;
+        connectWsProbe();
+    }, WS_RECONNECT_MS);
+}
+
+function teardownWsProbe(reconnect = false) {
+    clearWsProbeReconnect();
+    const socket = wsProbe.socket;
+    wsProbe.socket = null;
+    wsProbe.subscriptionId = null;
+    wsProbe.subscriptionRequestId = null;
+
+    if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                socket.close();
+            }
+        } catch (_) {
+            // Ignore teardown errors on stale sockets.
+        }
+    }
+
+    if (reconnect) {
+        scheduleWsProbeReconnect();
+    }
+}
+
+function connectWsProbe() {
+    if (typeof WebSocket === 'undefined') return;
+
+    const network = currentMonitoringNetwork();
+    const url = resolveWsUrl(network);
+    if (
+        wsProbe.socket &&
+        wsProbe.url === url &&
+        (wsProbe.socket.readyState === WebSocket.OPEN || wsProbe.socket.readyState === WebSocket.CONNECTING)
+    ) {
+        return;
+    }
+
+    teardownWsProbe(false);
+    wsProbe.url = url;
+    wsProbe.status = 'connecting';
+    wsProbe.lastSlot = null;
+    updateEndpointTelemetry();
+    updateStatusBeacon(lastRpcLatencyMs !== null);
+
+    const socket = new WebSocket(url);
+    const subscriptionRequestId = Date.now();
+    wsProbe.socket = socket;
+    wsProbe.subscriptionRequestId = subscriptionRequestId;
+
+    socket.onopen = () => {
+        if (wsProbe.socket !== socket) return;
+        wsProbe.status = 'subscribing';
+        socket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: subscriptionRequestId,
+            method: 'subscribeSlots',
+            params: [],
+        }));
+        updateEndpointTelemetry();
+        updateStatusBeacon(lastRpcLatencyMs !== null);
+    };
+
+    socket.onmessage = (event) => {
+        if (wsProbe.socket !== socket) return;
+
+        let msg;
+        try {
+            msg = JSON.parse(event.data);
+        } catch (_) {
+            return;
+        }
+
+        if (msg.id === subscriptionRequestId) {
+            if (msg.error) {
+                wsProbe.status = 'offline';
+                updateEndpointTelemetry();
+                updateStatusBeacon(lastRpcLatencyMs !== null);
+                teardownWsProbe(true);
+                return;
+            }
+
+            wsProbe.subscriptionId = msg.result;
+            wsProbe.status = 'online';
+            wsProbe.lastMessageAt = Date.now();
+            updateEndpointTelemetry();
+            updateStatusBeacon(lastRpcLatencyMs !== null);
+            return;
+        }
+
+        if (msg.method === 'subscription' && msg.params) {
+            const result = msg.params.result || {};
+            if (typeof result.slot === 'number') {
+                wsProbe.lastSlot = result.slot;
+            }
+            wsProbe.lastMessageAt = Date.now();
+            wsProbe.status = 'online';
+            updateEndpointTelemetry();
+            updateStatusBeacon(lastRpcLatencyMs !== null);
+        }
+    };
+
+    socket.onerror = () => {
+        if (wsProbe.socket !== socket) return;
+        wsProbe.status = 'offline';
+        updateEndpointTelemetry();
+        updateStatusBeacon(lastRpcLatencyMs !== null);
+    };
+
+    socket.onclose = () => {
+        if (wsProbe.socket !== socket) return;
+        wsProbe.socket = null;
+        wsProbe.subscriptionId = null;
+        wsProbe.subscriptionRequestId = null;
+        wsProbe.status = 'offline';
+        updateEndpointTelemetry();
+        updateStatusBeacon(lastRpcLatencyMs !== null);
+        scheduleWsProbeReconnect();
+    };
+}
+
+function resetMonitoringCaches() {
+    tpsHistory = [];
+    displayedBlocks = [];
+    contractsLoaded = false;
+    contractsLoadedAt = 0;
+    contractMonitorLoaded = false;
+    contractMonitorLoadedAt = 0;
+    dexDataLoaded = false;
+    identityMonitorLoaded = false;
+    tradingMetricsLoaded = false;
+    predictionMonitorLoaded = false;
+    ecosystemMonitorLoaded = false;
+    controlPlaneMonitorLoaded = false;
+    controlPlaneMonitorLoadedAt = 0;
+    lastRpcLatencyMs = null;
+    lastMetricsSnapshot = null;
+    lastPeersSnapshot = null;
+    lastSlot = 0;
 }
 
 // ── Event Feed ──────────────────────────────────────────────
@@ -164,10 +475,13 @@ function clearEvents() {
 // ── Network Switch ──────────────────────────────────────────
 
 function switchNetwork(network) {
-    localStorage.setItem('lichen_mon_network', network);
-    rpcUrl = NETWORKS[network] || NETWORKS[_monDefaultNetwork];
-    void LICHEN_CONFIG.refreshIncidentStatusBanner(network);
-    addEvent('info', 'exchange-alt', `Switched to ${network}`);
+    const normalized = normalizeMonitoringNetwork(network);
+    localStorage.setItem('lichen_mon_network', normalized);
+    rpcUrl = resolveRpcUrl(normalized);
+    resetMonitoringCaches();
+    connectWsProbe();
+    void LICHEN_CONFIG.refreshIncidentStatusBanner(normalized);
+    addEvent('info', 'exchange-alt', `Switched to ${normalized}`);
     refresh();
 }
 
@@ -307,11 +621,13 @@ function setRing(id, pct) {
 // ── Refresh Logic ───────────────────────────────────────────
 
 async function refresh() {
-    const beacon = document.getElementById('statusBeacon');
-    const beaconDot = beacon.querySelector('.beacon-dot');
-    const beaconText = document.getElementById('beaconText');
-
     try {
+        if (!wsProbe.socket) {
+            connectWsProbe();
+        }
+
+        const refreshStartedAt = performance.now();
+
         // Fetch all data in parallel
         const [slot, metrics, peers] = await Promise.all([
             rpc('getSlot'),
@@ -319,13 +635,14 @@ async function refresh() {
             rpc('getPeers'),
         ]);
 
+        lastRpcLatencyMs = Math.round(performance.now() - refreshStartedAt);
+        lastMetricsSnapshot = metrics;
+        lastPeersSnapshot = peers;
+        updateStatusBeacon(slot !== null);
+        updateEndpointTelemetry(peers);
+
         // Online status
-        if (slot !== null) {
-            beaconDot.className = 'beacon-dot online';
-            beaconText.textContent = 'Online';
-        } else {
-            beaconDot.className = 'beacon-dot offline';
-            beaconText.textContent = 'Offline';
+        if (slot === null) {
             addEvent('danger', 'plug', 'Lost connection to RPC');
             return;
         }
@@ -353,15 +670,21 @@ async function refresh() {
             // Supply
             const totalSupply = metrics.total_supply || 0;
             const totalBurned = metrics.total_burned || 0;
+            const totalStaked = metrics.total_staked || 0;
             const effectiveSupply = totalSupply - totalBurned;
+            const genesisSpores = metrics.genesis_balance || 0;
+            const circulating = metrics.circulating_supply || 0;
+            const nonCirculating = Math.max(0, effectiveSupply - circulating);
             document.getElementById('supplyTotal').textContent = formatLicn(totalSupply) + ' LICN';
             document.getElementById('supplyEffective').textContent = formatLicn(effectiveSupply) + ' LICN';
-            document.getElementById('supplyStaked').textContent = formatLicn(metrics.total_staked || 0) + ' LICN';
+            document.getElementById('supplyStaked').textContent = formatLicn(totalStaked) + ' LICN';
             document.getElementById('supplyBurned').textContent = formatLicn(totalBurned) + ' LICN';
-
-            // Genesis signer
-            const genesisSpores = metrics.genesis_balance || 0;
+            document.getElementById('supplyNonCirculating').textContent = formatLicn(nonCirculating) + ' LICN';
             document.getElementById('supplyGenesis').textContent = formatLicn(genesisSpores) + ' LICN';
+            setText(
+                'supplyFormulaNote',
+                `Circulating = minted − burned − genesis (${formatLicn(genesisSpores)} LICN) − staked (${formatLicn(totalStaked)} LICN).`
+            );
 
             // Whitepaper distribution wallets from getMetrics.distribution_wallets
             const dw = metrics.distribution_wallets || {};
@@ -380,10 +703,6 @@ async function refresh() {
             document.getElementById('supplyReservePool').textContent = formatLicn(rpBal) + ' LICN';
 
             // Circulating supply from RPC
-            const total = metrics.total_supply || 1;
-            const burned = metrics.total_burned || 0;
-            const staked = metrics.total_staked || 0;
-            const circulating = metrics.circulating_supply || 0;
             document.getElementById('supplyCirculating').textContent = formatLicn(circulating) + ' LICN';
 
             // Supply bar: distribution wallets proportional segments
@@ -408,9 +727,13 @@ async function refresh() {
             // INF-05: Performance rings are heuristic proxies derived from
             // on-chain metrics, NOT real OS-level CPU/Memory/Disk stats.
             // Labels updated to reflect what each ring actually measures.
-            const blockRate = metrics.average_block_time > 0 ? Math.min(100, Math.round(3 / metrics.average_block_time * 100)) : 0;
-            // TPS Load: current TPS relative to theoretical max (~500 TPS = 100%)
-            const tpsLoadPct = Math.min(100, Math.round((metrics.tps || 0) / 5));
+            const targetBlockTimeSeconds = Math.max(0.4, (metrics.slot_duration_ms || 800) / 1000);
+            const blockRate = metrics.average_block_time > 0
+                ? Math.min(100, Math.round((targetBlockTimeSeconds / metrics.average_block_time) * 100))
+                : 0;
+            // TPS vs Peak: current TPS relative to observed peak TPS.
+            const peakTps = Math.max(1, metrics.peak_tps || metrics.tps || 1);
+            const tpsLoadPct = Math.min(100, Math.round(((metrics.tps || 0) / peakTps) * 100));
             // Accounts: on-chain account count relative to capacity (~100k = 100%)
             const accountsPct = Math.min(100, Math.round((metrics.total_accounts || 0) / 1000));
             // Chain Size: slot height as proxy for data growth (~1.2M slots = 100%)
@@ -443,7 +766,7 @@ async function refresh() {
         }
 
         // ─ Smart Contracts Monitor (once) ─
-        if (!contractMonitorLoaded) {
+        if (!contractMonitorLoaded || Date.now() - contractMonitorLoadedAt >= CONTRACT_REFRESH_MS) {
             await updateContractMonitor();
         }
 
@@ -467,12 +790,20 @@ async function refresh() {
             await updateEcosystemMonitor();
         }
 
+        // ─ Protocol Control Plane (every 30s) ─
+        if (!controlPlaneMonitorLoaded || Date.now() - controlPlaneMonitorLoadedAt >= CONTRACT_REFRESH_MS) {
+            await updateControlPlaneMonitor();
+        }
+
         // ─ Footer ─
         document.getElementById('lastUpdate').textContent = now();
 
     } catch (e) {
-        beaconDot.className = 'beacon-dot offline';
-        beaconText.textContent = 'Error';
+        lastRpcLatencyMs = null;
+        lastMetricsSnapshot = null;
+        lastPeersSnapshot = null;
+        updateStatusBeacon(false);
+        updateEndpointTelemetry();
         console.error('Refresh error:', e);
     }
 }
@@ -573,11 +904,14 @@ async function updateHealth(metrics, probes, peers) {
     const slotDiff = slots.length >= 2 ? Math.max(...slots) - Math.min(...slots) : 0;
     const consensusPct = onlineProbes.length >= 2
         ? (slotDiff <= 1 ? 100 : slotDiff <= 3 ? 75 : 50)
-        : (onlineProbes.length === 1 ? 50 : 0);
+        : (onlineProbes.length === 1 ? 100 : 0);
     setBar('healthConsensus', consensusPct);
 
     // Block production: based on block time
-    const blockPct = metrics?.average_block_time > 0 ? Math.min(100, Math.round(5 / metrics.average_block_time * 100)) : 0;
+    const targetBlockTimeSeconds = Math.max(0.4, (metrics?.slot_duration_ms || 800) / 1000);
+    const blockPct = metrics?.average_block_time > 0
+        ? Math.min(100, Math.round((targetBlockTimeSeconds / metrics.average_block_time) * 100))
+        : 0;
     setBar('healthBlocks', blockPct);
 
     // TX Rate
@@ -683,26 +1017,25 @@ function renderBlocks() {
 // ── Contract Registry ───────────────────────────────────────
 
 let contractsLoaded = false;
+let contractsLoadedAt = 0;
 
-async function updateContracts() {
-    if (contractsLoaded) return; // Only load once
+async function updateContracts(force = false) {
+    if (!force && contractsLoaded && Date.now() - contractsLoadedAt < CONTRACT_REFRESH_MS) return;
 
     const list = document.getElementById('contractList');
-    const rows = [];
-
-    for (const sym of SYMBOLS) {
+    const rows = (await Promise.all(SYMBOLS.map(async (sym) => {
         const info = await trustedMonitoringRpc('getSymbolRegistry', [sym]);
-        if (info && info.program) {
-            rows.push({
-                symbol: info.symbol || sym,
-                template: info.template || '?',
-                program: info.program,
-            });
-        }
-    }
+        if (!info || !info.program) return null;
+        return {
+            symbol: info.symbol || sym,
+            template: info.template || '?',
+            program: info.program,
+        };
+    }))).filter(Boolean);
 
     if (rows.length > 0) {
         contractsLoaded = true;
+        contractsLoadedAt = Date.now();
         // F17.5 fix: escape RPC-derived contract metadata
         list.innerHTML = rows.map(c => `
             <div class="contract-row">
@@ -713,6 +1046,9 @@ async function updateContracts() {
             </div>
         `).join('');
         addEvent('success', 'file-contract', `Loaded ${rows.length} contracts`);
+    } else {
+        contractsLoaded = false;
+        contractsLoadedAt = Date.now();
     }
 }
 
@@ -1252,10 +1588,10 @@ async function updateDexMonitor() {
 // ── Smart Contracts Monitor ─────────────────────────────────
 
 const ALL_CONTRACTS = [
-    { symbol: 'LICN', name: 'LichenCoin', cat: 'token', icon: 'fas fa-coins', color: '#f59e0b' },
     { symbol: 'LUSD', name: 'lUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
     { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
     { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
+    { symbol: 'WBNB', name: 'Wrapped BNB', cat: 'token', icon: 'fas fa-cubes', color: '#fbbf24' },
     { symbol: 'DEX', name: 'DEX Core', cat: 'dex', icon: 'fas fa-exchange-alt', color: '#4ea8de' },
     { symbol: 'DEXAMM', name: 'DEX AMM', cat: 'dex', icon: 'fas fa-water', color: '#06d6a0' },
     { symbol: 'DEXROUTER', name: 'DEX Router', cat: 'dex', icon: 'fas fa-route', color: '#ffd166' },
@@ -1276,48 +1612,77 @@ const ALL_CONTRACTS = [
     { symbol: 'BOUNTY', name: 'BountyBoard', cat: 'infra', icon: 'fas fa-bullhorn', color: '#fbbf24' },
     { symbol: 'COMPUTE', name: 'Compute Market', cat: 'infra', icon: 'fas fa-microchip', color: '#94a3b8' },
     { symbol: 'MOSS', name: 'Moss Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
+    { symbol: 'SHIELDED', name: 'Shielded Pool', cat: 'privacy', icon: 'fas fa-user-shield', color: '#14b8a6' },
     { symbol: 'PUNKS', name: 'LichenPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
     { symbol: 'YID', name: 'LichenID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
     { symbol: 'PREDICT', name: 'Prediction Markets', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
 ];
 
 let contractMonitorLoaded = false;
+let contractMonitorLoadedAt = 0;
+let contractMonitorFiltersBound = false;
+let activeContractCategory = 'all';
 
-async function updateContractMonitor() {
+function bindContractMonitorFilters() {
+    if (contractMonitorFiltersBound) return;
+    document.querySelectorAll('.contract-cat-btn').forEach(btn => {
+        btn.addEventListener('click', () => applyContractMonitorFilter(btn.dataset.cat || 'all'));
+    });
+    contractMonitorFiltersBound = true;
+}
+
+function applyContractMonitorFilter(category) {
+    activeContractCategory = category || 'all';
+    document.querySelectorAll('.contract-cat-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.cat === activeContractCategory);
+    });
+    document.querySelectorAll('.contract-monitor-card').forEach(card => {
+        card.style.display = (activeContractCategory === 'all' || card.dataset.cat === activeContractCategory) ? '' : 'none';
+    });
+}
+
+async function updateContractMonitor(force = false) {
     const grid = document.getElementById('contractMonitorGrid');
     const badge = document.getElementById('contractMonitorBadge');
     if (!grid) return;
+    if (!force && contractMonitorLoaded && Date.now() - contractMonitorLoadedAt < CONTRACT_REFRESH_MS) {
+        return;
+    }
+
+    const entries = await Promise.all(ALL_CONTRACTS.map(async (contract) => {
+        const info = await trustedMonitoringRpc('getSymbolRegistry', [contract.symbol]);
+        return { contract, info };
+    }));
 
     let deployedCount = 0;
-    const cards = [];
-
-    for (const c of ALL_CONTRACTS) {
-        const info = await trustedMonitoringRpc('getSymbolRegistry', [c.symbol]);
+    const cards = entries.map(({ contract, info }) => {
         const deployed = !!(info && info.program);
         if (deployed) deployedCount++;
 
         const program = info?.program || '';
         const template = info?.template || '—';
-        const statusClass = deployed ? 'success' : 'warning';
         const statusText = deployed ? 'LIVE' : 'PENDING';
 
-        cards.push(`
-            <div class="contract-monitor-card" data-cat="${c.cat}">
+        return `
+            <div class="contract-monitor-card" data-cat="${contract.cat}">
                 <div class="cm-header">
-                    <div class="cm-icon" style="background:${c.color}18;color:${c.color};"><i class="${c.icon}"></i></div>
+                    <div class="cm-icon" style="background:${contract.color}18;color:${contract.color};"><i class="${contract.icon}"></i></div>
                     <div>
-                        <div class="cm-name">${c.name}</div>
-                        <div class="cm-symbol">${c.symbol} · ${template}</div>
+                        <div class="cm-name">${contract.name}</div>
+                        <div class="cm-symbol">${contract.symbol} · ${template}</div>
                     </div>
                     <span class="cm-badge" style="background:${deployed ? 'rgba(74,222,128,0.12)' : 'rgba(245,158,11,0.12)'};color:${deployed ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
                 ${program ? `<div class="cm-addr" title="${escapeHtml(program)}">${escapeHtml(program)}</div>` : ''}
             </div>
-        `);
-    }
+        `;
+    });
 
     grid.innerHTML = cards.join('');
     contractMonitorLoaded = true;
+    contractMonitorLoadedAt = Date.now();
+    bindContractMonitorFilters();
+    applyContractMonitorFilter(activeContractCategory);
 
     if (badge) {
         badge.textContent = `${deployedCount}/${ALL_CONTRACTS.length} Deployed`;
@@ -1333,18 +1698,6 @@ async function updateContractMonitor() {
     }
     const progressText = document.getElementById('contractDeployText');
     if (progressText) progressText.textContent = `${deployedCount} of ${ALL_CONTRACTS.length} contracts deployed (${Math.round((deployedCount / ALL_CONTRACTS.length) * 100)}%)`;
-
-    // Wire category filter buttons
-    document.querySelectorAll('.contract-cat-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.contract-cat-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const cat = btn.dataset.cat;
-            document.querySelectorAll('.contract-monitor-card').forEach(card => {
-                card.style.display = (cat === 'all' || card.dataset.cat === cat) ? '' : 'none';
-            });
-        });
-    });
 }
 
 // ── LichenID Identity Monitor ────────────────────────────────
@@ -1586,11 +1939,12 @@ async function updateEcosystemMonitor() {
     const el = id => document.getElementById(id);
 
     // Fetch all platform contract stats in parallel
-    const [lusd, weth, wsol, lend, sporepay, vault, bridge, dao, oracle,
-        mossStorage, market, auction, punks, bounty, compute] = await Promise.all([
+    const [lusd, weth, wsol, wbnb, lend, sporepay, vault, bridge, dao, oracle,
+        mossStorage, market, auction, punks, bounty, compute, shieldedState] = await Promise.all([
             rpc('getLusdStats').catch(() => null),
             rpc('getWethStats').catch(() => null),
             rpc('getWsolStats').catch(() => null),
+            rpc('getWbnbStats').catch(() => null),
             rpc('getThallLendStats').catch(() => null),
             rpc('getSporePayStats').catch(() => null),
             rpc('getSporeVaultStats').catch(() => null),
@@ -1603,6 +1957,7 @@ async function updateEcosystemMonitor() {
             rpc('getLichenPunksStats').catch(() => null),
             rpc('getBountyBoardStats').catch(() => null),
             rpc('getComputeMarketStats').catch(() => null),
+            rpc('getShieldedPoolState').catch(() => null),
         ]);
 
     let activeFeeds = 0;
@@ -1621,6 +1976,10 @@ async function updateEcosystemMonitor() {
     if (wsol) {
         activeFeeds++;
         if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatLicn(wsol.supply || 0);
+    }
+    if (wbnb) {
+        activeFeeds++;
+        if (el('ecoWbnbSupply')) el('ecoWbnbSupply').textContent = formatLicn(wbnb.total_supply || wbnb.supply || 0);
     }
 
     // Platform services
@@ -1662,6 +2021,11 @@ async function updateEcosystemMonitor() {
     if (mossStorage) {
         activeFeeds++;
         if (el('ecoMossData')) el('ecoMossData').textContent = formatNum(mossStorage.data_count || 0);
+    }
+    if (shieldedState) {
+        activeFeeds++;
+        if (el('ecoShieldedBalance')) el('ecoShieldedBalance').textContent = formatLicn(shieldedState.total_shielded || 0);
+        if (el('ecoShieldedCommitments')) el('ecoShieldedCommitments').textContent = formatNum(shieldedState.pool_size || 0);
     }
 
     // NFT & Marketplace
@@ -1725,16 +2089,142 @@ async function updateEcosystemMonitor() {
             addCard('Storage Bytes', formatNum(mossStorage.total_bytes || 0), 'database', 'var(--accent-purple)');
             addCard('Challenges', formatNum(mossStorage.challenge_count || 0), 'shield-alt', 'var(--cyan-accent)');
         }
+        if (shieldedState) {
+            addCard('Shielded Root', truncAddr(shieldedState.merkle_root || '--'), 'user-shield', 'var(--accent-purple)');
+            addCard('Shielded Pool Size', formatNum(shieldedState.pool_size || 0), 'eye-slash', 'var(--cyan-accent)');
+        }
 
         grid.innerHTML = cards.join('');
     }
 
     if (badge) {
-        badge.textContent = `${activeFeeds}/15 Contracts`;
+        badge.textContent = `${activeFeeds}/17 Contracts`;
         badge.className = 'panel-badge ' + (activeFeeds >= 12 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
     }
 
     ecosystemMonitorLoaded = true;
+}
+
+// ── Protocol Control Plane ──────────────────────────────────
+
+let controlPlaneMonitorLoaded = false;
+let controlPlaneMonitorLoadedAt = 0;
+
+async function updateControlPlaneMonitor() {
+    const badge = document.getElementById('controlPlaneBadge');
+    const grid = document.getElementById('controlPlaneDetailGrid');
+    const element = id => document.getElementById(id);
+
+    const [feeConfig, rentParams, mossStakePool, rewardInfo, incidentStatus, signedManifest] = await Promise.all([
+        rpc('getFeeConfig').catch(() => null),
+        rpc('getRentParams').catch(() => null),
+        rpc('getMossStakePoolInfo').catch(() => null),
+        rpc('getRewardAdjustmentInfo').catch(() => null),
+        rpc('getIncidentStatus').catch(() => null),
+        rpc('getSignedMetadataManifest').catch(() => null),
+    ]);
+
+    const registryEntries = signedManifest?.payload?.symbol_registry?.length || 0;
+    const metadataHealthy = Boolean(signedManifest?.signer && registryEntries > 0);
+    const incidentMode = String(incidentStatus?.mode || 'unknown').toUpperCase();
+    const incidentSeverity = incidentStatus?.severity || 'warning';
+
+    if (element('controlPlaneBaseFee')) {
+        element('controlPlaneBaseFee').textContent = feeConfig
+            ? `${formatLicn(feeConfig.base_fee_spores || 0)} LICN`
+            : '--';
+    }
+    if (element('controlPlaneRentRate')) {
+        element('controlPlaneRentRate').textContent = rentParams
+            ? `${formatNum(rentParams.rent_rate_spores_per_kb_month || 0)} spores`
+            : '--';
+    }
+    if (element('controlPlaneStakeTvl')) {
+        element('controlPlaneStakeTvl').textContent = mossStakePool
+            ? `${formatLicn(mossStakePool.total_licn_staked || 0)} LICN`
+            : '--';
+    }
+    if (element('controlPlaneApy')) {
+        element('controlPlaneApy').textContent = mossStakePool
+            ? formatPercent(mossStakePool.average_apy_percent || 0)
+            : '--';
+    }
+    if (element('controlPlaneIncidentMode')) {
+        element('controlPlaneIncidentMode').textContent = incidentMode;
+    }
+    if (element('controlPlaneRegistryEntries')) {
+        element('controlPlaneRegistryEntries').textContent = metadataHealthy
+            ? formatNum(registryEntries)
+            : '--';
+    }
+
+    if (grid) {
+        const cards = [];
+        const addCard = (label, value, meta, icon, color) => {
+            cards.push(`<div class="tier-card">
+                <div class="tier-label"><i class="fas fa-${icon}" style="margin-right:4px;color:${color}"></i>${escapeHtml(label)}</div>
+                <div class="tier-value">${escapeHtml(value)}</div>
+                <div class="tier-meta">${escapeHtml(meta)}</div>
+            </div>`);
+        };
+
+        if (feeConfig) {
+            addCard(
+                'Fee Split',
+                `${feeConfig.fee_burn_percent}/${feeConfig.fee_producer_percent}/${feeConfig.fee_voters_percent}/${feeConfig.fee_treasury_percent}/${feeConfig.fee_community_percent}`,
+                'Burn / Producer / Voters / Treasury / Community',
+                'percent',
+                'var(--accent-blue)'
+            );
+            addCard('Deploy Fee', `${formatLicn(feeConfig.contract_deploy_fee_spores || 0)} LICN`, 'Per contract deployment', 'upload', 'var(--accent-purple)');
+            addCard('Upgrade Fee', `${formatLicn(feeConfig.contract_upgrade_fee_spores || 0)} LICN`, 'Per contract upgrade', 'wrench', 'var(--cyan-accent)');
+            addCard('NFT Mint Fee', `${formatLicn(feeConfig.nft_mint_fee_spores || 0)} LICN`, 'Per NFT mint', 'image', 'var(--accent-green)');
+        }
+
+        if (rentParams) {
+            addCard(
+                'Rent-Free Tier',
+                `${formatNum(rentParams.rent_free_kb || 0)} KB`,
+                `${formatNum(rentParams.rent_rate_spores_per_kb_month || 0)} spores / KB / month`,
+                'warehouse',
+                'var(--accent-blue)'
+            );
+        }
+
+        if (rewardInfo) {
+            addCard('Inflation Rate', formatPercent(rewardInfo.inflationRatePercent, 4), `Est. APY ${rewardInfo.estimatedApy || '--'}%`, 'chart-line', 'var(--accent-green)');
+            addCard('Min Validator Stake', `${formatLicn(rewardInfo.minValidatorStake || 0)} LICN`, `${formatNum(rewardInfo.activeValidators || 0)} active validators`, 'shield-alt', 'var(--accent-red)');
+        }
+
+        if (mossStakePool) {
+            addCard('stLICN Exchange', `${Number(mossStakePool.exchange_rate || 0).toFixed(4)}x`, `${formatNum(mossStakePool.total_stakers || 0)} stakers · ${mossStakePool.cooldown_days || 0} day cooldown`, 'seedling', 'var(--accent-purple)');
+            addCard('MossStake Tiers', `${formatNum((mossStakePool.tiers || []).length)} tiers`, `${formatNum(mossStakePool.total_validators || 0)} validators routing rewards`, 'layer-group', 'var(--cyan-accent)');
+        }
+
+        if (signedManifest) {
+            addCard('Metadata Signer', truncAddr(signedManifest.signer || '--'), `${formatDateTime(signedManifest.signed_at)} · ${signedManifest.payload?.network || '--'}`, 'signature', 'var(--accent-green)');
+            addCard('Manifest Scope', formatNum(registryEntries), `${signedManifest.payload?.source_rpc || '--'}`, 'file-signature', 'var(--accent-blue)');
+        }
+
+        if (incidentStatus) {
+            addCard('Incident Summary', incidentStatus.headline || incidentMode, incidentStatus.summary || 'No operator incident summary available.', 'triangle-exclamation', 'var(--accent-red)');
+        }
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        const badgeState = incidentMode === 'NORMAL'
+            ? (metadataHealthy ? 'success' : 'info')
+            : (incidentSeverity === 'critical' || incidentSeverity === 'high' ? 'danger' : 'warning');
+        badge.textContent = metadataHealthy
+            ? `${incidentMode} · ${formatNum(registryEntries)} Trusted`
+            : `${incidentMode} · Partial`;
+        badge.className = `panel-badge ${badgeState}`;
+    }
+
+    controlPlaneMonitorLoaded = true;
+    controlPlaneMonitorLoadedAt = Date.now();
 }
 
 // ── Clock ───────────────────────────────────────────────────
@@ -1752,13 +2242,13 @@ async function init() {
     addEvent('info', 'power-off', 'Mission Control initializing...');
 
     // Set network selector — rebuild options, hide local-* in production
-    const savedNet = localStorage.getItem('lichen_mon_network') || _monDefaultNetwork;
+    const savedNet = currentMonitoringNetwork();
     const sel = document.getElementById('networkSelect');
     if (sel) {
         sel.innerHTML = '';
         const labels = { mainnet: 'Mainnet', testnet: 'Testnet', 'local-testnet': 'Local Testnet', 'local-mainnet': 'Local Mainnet' };
         for (const key of Object.keys(NETWORKS)) {
-            if (_monIsProduction && (key === 'local-testnet' || key === 'local-mainnet')) continue;
+            if (_monIsProduction && (key === 'mainnet' || key === 'local-testnet' || key === 'local-mainnet')) continue;
             const opt = document.createElement('option');
             opt.value = key;
             opt.textContent = labels[key] || key;
@@ -1767,6 +2257,8 @@ async function init() {
         sel.value = savedNet;
     }
     void LICHEN_CONFIG.refreshIncidentStatusBanner(savedNet);
+    updateEndpointTelemetry();
+    connectWsProbe();
 
     // Clock
     setInterval(updateClock, 1000);
