@@ -212,6 +212,11 @@ body {
     grid-template-columns: 1fr;
 }
 
+.mission-board-inline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+}
+
 /* ─── Vitals Bar ───────────────────────────────────────────── */
 .vitals-bar {
     display: flex;
@@ -1954,6 +1959,19 @@ body {
     margin-top: 0.75rem;
 }
 
+.mission-card-grid-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.inline-mission-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mission-card-grid-4 .tier-card,
+.inline-mission-card-grid .tier-card {
+    height: 100%;
+}
+
 .control-plane-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -1965,6 +1983,10 @@ body {
 @media (max-width: 1500px) {
     .metric-card-grid--6 {
         grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .mission-card-grid-4 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .control-plane-grid {
@@ -2120,7 +2142,8 @@ body {
 @media (max-width: 900px) {
 
     .grid-2,
-    .grid-3 {
+    .grid-3,
+    .mission-board-inline {
         grid-template-columns: 1fr;
     }
 
@@ -2158,6 +2181,11 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .mission-card-grid-4,
+    .inline-mission-card-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .dex-stats-bar {
         gap: 0.35rem;
     }
@@ -2179,6 +2207,8 @@ body {
 
 @media (max-width: 640px) {
 
+    .mission-card-grid-4,
+    .inline-mission-card-grid,
     .metric-card-grid--6,
     .control-plane-grid {
         grid-template-columns: 1fr;
