@@ -259,7 +259,7 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::r1cs_bn254::{Bn254MerkleTree, poseidon_hash_fr};
+    use crate::zk::r1cs_bn254::{poseidon_hash_fr, Bn254MerkleTree};
     use ark_ff::UniformRand;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;
