@@ -259,9 +259,8 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::merkle::MerkleTree;
-    use crate::zk::r1cs_bn254::{fr_to_bytes, poseidon_hash_fr};
-    use ark_ff::{PrimeField, UniformRand};
+    use crate::zk::r1cs_bn254::{Bn254MerkleTree, poseidon_hash_fr};
+    use ark_ff::UniformRand;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;
 
@@ -276,21 +275,14 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let commitment_bytes = fr_to_bytes(&commitment_fr);
-
         // Insert into Merkle tree and get proof
-        let mut tree = MerkleTree::new();
-        tree.insert(commitment_bytes);
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
         let merkle_root = tree.root();
         let proof = tree.proof(0).expect("proof for index 0");
 
-        // Convert proof to Fr
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root);
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_root_fr = merkle_root;
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -335,15 +327,11 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(real_value), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let mut tree = MerkleTree::new();
-        tree.insert(fr_to_bytes(&commitment_fr));
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
+        let merkle_root_fr = tree.root();
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -377,15 +365,11 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let wrong_nullifier = Fr::from(12345u64); // doesn't match Poseidon(serial, sk)
 
-        let mut tree = MerkleTree::new();
-        tree.insert(fr_to_bytes(&commitment_fr));
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
+        let merkle_root_fr = tree.root();
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -418,14 +402,10 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let mut tree = MerkleTree::new();
-        tree.insert(fr_to_bytes(&commitment_fr));
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let wrong_root = Fr::from(99999u64); // wrong root
 
@@ -462,15 +442,11 @@ mod tests {
         // Nullifier was computed with the real spending_key
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let mut tree = MerkleTree::new();
-        tree.insert(fr_to_bytes(&commitment_fr));
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
+        let merkle_root_fr = tree.root();
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -520,20 +496,16 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let mut tree = MerkleTree::new();
+        let mut tree = Bn254MerkleTree::new();
         // Insert 2 dummy leaves before ours
-        tree.insert(fr_to_bytes(&Fr::from(111u64)));
-        tree.insert(fr_to_bytes(&Fr::from(222u64)));
+        tree.insert(Fr::from(111u64));
+        tree.insert(Fr::from(222u64));
         // Our leaf at index 2
-        tree.insert(fr_to_bytes(&commitment_fr));
+        tree.insert(commitment_fr);
 
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let merkle_root_fr = tree.root();
         let proof = tree.proof(2).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -569,15 +541,11 @@ mod tests {
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
 
-        let mut tree = MerkleTree::new();
-        tree.insert(fr_to_bytes(&commitment_fr));
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let mut tree = Bn254MerkleTree::new();
+        tree.insert(commitment_fr);
+        let merkle_root_fr = tree.root();
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof
-            .siblings
-            .iter()
-            .map(|s| Fr::from_le_bytes_mod_order(s))
-            .collect();
+        let merkle_path: Vec<Fr> = proof.siblings;
 
         let recipient_preimage = Fr::from(1u64);
         let wrong_recipient = poseidon_hash_fr(Fr::from(2u64), Fr::from(0u64));

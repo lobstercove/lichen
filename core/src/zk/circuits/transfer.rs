@@ -330,9 +330,8 @@ impl ConstraintSynthesizer<Fr> for TransferCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zk::merkle::MerkleTree;
-    use crate::zk::r1cs_bn254::{fr_to_bytes, poseidon_hash_fr};
-    use ark_ff::{PrimeField, UniformRand};
+    use crate::zk::r1cs_bn254::{Bn254MerkleTree, poseidon_hash_fr};
+    use ark_ff::UniformRand;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::rand::rngs::OsRng;
 
@@ -350,7 +349,7 @@ mod tests {
     }
 
     fn build_inputs_and_tree(values: [u64; 2]) -> (Fr, [TestInput; 2]) {
-        let mut tree = MerkleTree::new();
+        let mut tree = Bn254MerkleTree::new();
 
         let inputs: Vec<TestInput> = values
             .iter()
@@ -360,7 +359,7 @@ mod tests {
                 let sk = Fr::rand(&mut OsRng);
                 let commitment_fr = poseidon_hash_fr(Fr::from(val), blinding);
                 let nullifier_fr = poseidon_hash_fr(serial, sk);
-                tree.insert(fr_to_bytes(&commitment_fr));
+                tree.insert(commitment_fr);
                 TestInput {
                     value: val,
                     blinding,
@@ -374,17 +373,13 @@ mod tests {
             })
             .collect();
 
-        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let merkle_root_fr = tree.root();
 
         let mut result: Vec<TestInput> = Vec::with_capacity(2);
         for (idx, input) in inputs.into_iter().enumerate() {
             let proof = tree.proof(idx as u64).unwrap();
             result.push(TestInput {
-                merkle_path: proof
-                    .siblings
-                    .iter()
-                    .map(|s| Fr::from_le_bytes_mod_order(s))
-                    .collect(),
+                merkle_path: proof.siblings,
                 path_bits: proof.path_bits,
                 ..input
             });
