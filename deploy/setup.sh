@@ -65,6 +65,10 @@ delete_env_value() {
     sed -i "/^${key}=/d" "$env_file"
 }
 
+primary_ipv4() {
+    hostname -I 2>/dev/null | awk '{print $1}'
+}
+
 ufw_is_active() {
     if ! command -v ufw >/dev/null 2>&1; then
         return 1
@@ -250,6 +254,117 @@ EOF
         echo "   ✅ Created incident status manifest → $status_file"
 }
 
+write_service_fleet_config_template() {
+        local config_file="$1"
+        local network="$2"
+
+        if [ -f "$config_file" ]; then
+                chmod 640 "$config_file"
+                chown root:"$GROUP" "$config_file"
+                echo "   ✅ Service fleet config already exists → $config_file"
+                return 0
+        fi
+
+        case "$network" in
+                testnet)
+                        cat > "$config_file" <<EOF
+{
+    "schema_version": 1,
+    "network": "testnet",
+    "probe_timeout_ms": 3000,
+    "hosts": [
+        {
+            "id": "us",
+            "label": "US VPS",
+            "services": [
+                {
+                    "id": "custody",
+                    "label": "Custody",
+                    "service": "custody",
+                    "probe": {
+                        "kind": "http",
+                        "url": "http://127.0.0.1:9105/health",
+                        "body_contains_any": ["\"status\":\"ok\"", "\"status\": \"ok\""]
+                    }
+                },
+                {
+                    "id": "faucet",
+                    "label": "Faucet",
+                    "service": "faucet",
+                    "probe": {
+                        "kind": "http",
+                        "url": "http://127.0.0.1:9100/health",
+                        "body_contains_any": ["OK", "\"status\":\"ok\"", "\"status\": \"ok\""]
+                    }
+                }
+            ]
+        },
+        {
+            "id": "eu",
+            "label": "EU VPS",
+            "services": [
+                {
+                    "id": "custody",
+                    "label": "Custody",
+                    "service": "custody",
+                    "expected": false,
+                    "intentionally_absent_message": "Custody is only deployed on the US testnet footprint."
+                },
+                {
+                    "id": "faucet",
+                    "label": "Faucet",
+                    "service": "faucet",
+                    "probe": {
+                        "kind": "http",
+                        "url": "http://37.59.97.61:9100/health",
+                        "body_contains_any": ["OK", "\"status\":\"ok\"", "\"status\": \"ok\""]
+                    }
+                }
+            ]
+        },
+        {
+            "id": "sea",
+            "label": "SEA VPS",
+            "services": [
+                {
+                    "id": "custody",
+                    "label": "Custody",
+                    "service": "custody",
+                    "expected": false,
+                    "intentionally_absent_message": "Custody is only deployed on the US testnet footprint."
+                },
+                {
+                    "id": "faucet",
+                    "label": "Faucet",
+                    "service": "faucet",
+                    "probe": {
+                        "kind": "http",
+                        "url": "http://15.235.142.253:9100/health",
+                        "body_contains_any": ["OK", "\"status\":\"ok\"", "\"status\": \"ok\""]
+                    }
+                }
+            ]
+        }
+    ]
+}
+EOF
+                        ;;
+                mainnet)
+                        cat > "$config_file" <<EOF
+{
+    "schema_version": 1,
+    "network": "mainnet",
+    "hosts": []
+}
+EOF
+                        ;;
+        esac
+
+        chmod 640 "$config_file"
+        chown root:"$GROUP" "$config_file"
+        echo "   ✅ Created service fleet config → $config_file"
+}
+
 # Parse network(s)
 NETWORKS=()
 for arg in "$@"; do
@@ -294,8 +409,9 @@ echo "✅ Directories created"
 # ── 3. Copy binaries ──
 for bin in lichen-validator lichen-genesis lichen-faucet lichen-custody; do
     if [ -f "target/release/$bin" ]; then
-        cp "target/release/$bin" "$INSTALL_DIR/$bin"
-        chmod +x "$INSTALL_DIR/$bin"
+        tmp_bin="$(mktemp "$INSTALL_DIR/.${bin}.XXXXXX")"
+        install -m 755 "target/release/$bin" "$tmp_bin"
+        mv "$tmp_bin" "$INSTALL_DIR/$bin"
         echo "   Installed: $bin → $INSTALL_DIR"
     else
         echo "   ⚠  $bin not found in target/release/ (skipping)"
@@ -304,8 +420,9 @@ done
 
 # Install CLI binary (built as 'lichen', installed as 'lichen-cli')
 if [ -f "target/release/lichen" ]; then
-    cp "target/release/lichen" "$INSTALL_DIR/lichen-cli"
-    chmod +x "$INSTALL_DIR/lichen-cli"
+    tmp_cli="$(mktemp "$INSTALL_DIR/.lichen-cli.XXXXXX")"
+    install -m 755 "target/release/lichen" "$tmp_cli"
+    mv "$tmp_cli" "$INSTALL_DIR/lichen-cli"
     echo "   Installed: lichen → $INSTALL_DIR/lichen-cli"
 else
     echo "   ⚠  lichen CLI not found in target/release/ (skipping)"
@@ -365,10 +482,17 @@ for net in "${NETWORKS[@]}"; do
     SIGNER_AUTH_TOKEN=""
     INCIDENT_STATUS_FILE=""
     SIGNED_METADATA_MANIFEST_FILE=""
+    SERVICE_FLEET_CONFIG_FILE=""
+    SERVICE_FLEET_UPSTREAM_RPC_URL=""
+    SERVICE_FLEET_STATUS_FILE=""
+    CURRENT_HOST_IPV4="$(primary_ipv4)"
     if [ -f "$ENV_FILE" ]; then
         SIGNER_AUTH_TOKEN="$(read_env_value "$ENV_FILE" "LICHEN_SIGNER_AUTH_TOKEN")"
         INCIDENT_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_INCIDENT_STATUS_FILE")"
         SIGNED_METADATA_MANIFEST_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SIGNED_METADATA_MANIFEST_FILE")"
+        SERVICE_FLEET_CONFIG_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_CONFIG_FILE")"
+        SERVICE_FLEET_UPSTREAM_RPC_URL="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL")"
+        SERVICE_FLEET_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_STATUS_FILE")"
     fi
     if [ -z "$SIGNER_AUTH_TOKEN" ]; then
         SIGNER_AUTH_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
@@ -378,6 +502,15 @@ for net in "${NETWORKS[@]}"; do
     fi
     if [ -z "$SIGNED_METADATA_MANIFEST_FILE" ]; then
         SIGNED_METADATA_MANIFEST_FILE="$CONFIG_DIR/signed-metadata-manifest-${net}.json"
+    fi
+    if [ -z "$SERVICE_FLEET_CONFIG_FILE" ]; then
+        SERVICE_FLEET_CONFIG_FILE="$CONFIG_DIR/service-fleet-${net}.json"
+    fi
+    if [ -z "$SERVICE_FLEET_STATUS_FILE" ]; then
+        SERVICE_FLEET_STATUS_FILE="$DATA_DIR/service-fleet-status-${net}.json"
+    fi
+    if [ -z "$SERVICE_FLEET_UPSTREAM_RPC_URL" ] && [ "$net" = "testnet" ] && [ "$CURRENT_HOST_IPV4" != "15.204.229.189" ]; then
+        SERVICE_FLEET_UPSTREAM_RPC_URL="http://15.204.229.189:8899"
     fi
     cat > "$ENV_FILE" <<EOF
 # Lichen $net environment — auto-generated by deploy/setup.sh
@@ -397,6 +530,9 @@ RUST_LOG=info
 LICHEN_BOOTSTRAP_PEERS=
 LICHEN_INCIDENT_STATUS_FILE=$INCIDENT_STATUS_FILE
 LICHEN_SIGNED_METADATA_MANIFEST_FILE=$SIGNED_METADATA_MANIFEST_FILE
+LICHEN_SERVICE_FLEET_CONFIG_FILE=$SERVICE_FLEET_CONFIG_FILE
+LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL=$SERVICE_FLEET_UPSTREAM_RPC_URL
+LICHEN_SERVICE_FLEET_STATUS_FILE=$SERVICE_FLEET_STATUS_FILE
 # Extra CLI args passed to the validator (legacy — prefer LICHEN_BOOTSTRAP_PEERS).
 # Production default stays fail-closed with auto-update disabled until signed
 # canary rollout is proven.
@@ -407,10 +543,14 @@ EOF
     echo "   ✅ Created $ENV_FILE"
 
     write_incident_status_template "$INCIDENT_STATUS_FILE" "$net"
+    write_service_fleet_config_template "$SERVICE_FLEET_CONFIG_FILE" "$net"
 
     # Create network-specific state dir
     mkdir -p "$DATA_DIR/state-${net}"
     chown "$USER":"$GROUP" "$DATA_DIR/state-${net}"
+    touch "$SERVICE_FLEET_STATUS_FILE"
+    chown "$USER":"$GROUP" "$SERVICE_FLEET_STATUS_FILE"
+    chmod 640 "$SERVICE_FLEET_STATUS_FILE"
 
     # Create custody DB directory for this network
     CUSTODY_DB_NAME="custody-db"

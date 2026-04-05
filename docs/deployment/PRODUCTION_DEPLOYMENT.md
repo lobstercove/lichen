@@ -1,0 +1,688 @@
+# Lichen Deployment Runbook
+
+This is the current operator runbook for the repo as it exists today.
+
+Use this document as the canonical workflow for:
+
+- local validator development via `scripts/start-local-3validators.sh`
+- VPS validator deployment via `deploy/setup.sh`
+- local full-stack extension when custody, faucet, and browser flows are needed
+- genesis DB creation and post-genesis bootstrap
+- signed release and signed metadata generation
+- local ZK proof generation
+
+This runbook intentionally prefers the scripts that are verified in the current tree over older narrative docs.
+
+## Supported operator paths
+
+| Workflow | Supported entrypoint |
+| --- | --- |
+| Local validator development | `scripts/start-local-3validators.sh` |
+| VPS validator deployment | `deploy/setup.sh` |
+
+## Supporting scripts
+
+| Task | Supporting script |
+| --- | --- |
+| Local full stack extension | `scripts/start-local-stack.sh` |
+| Local full-stack stop/status | `scripts/stop-local-stack.sh`, `scripts/status-local-stack.sh` |
+| Genesis wallet + DB creation | `scripts/generate-genesis.sh` |
+| Post-genesis bootstrap | `scripts/first-boot-deploy.sh` |
+| VPS post-genesis keypair copy | `scripts/vps-post-genesis.sh` |
+| Manual single-node debugging | `lichen-start.sh` |
+| Release signing | `scripts/generate-release-keys.sh`, `scripts/sign-release.sh` |
+| Signed metadata manifest | `scripts/generate-signed-metadata-manifest.js` |
+| ZK proof generation | `target/release/zk-prove` |
+
+Important distinctions:
+
+- `run-validator.sh` is a local-development helper behind the 3-validator launcher, not a supported operator entrypoint on its own.
+- `scripts/start-local-stack.sh` extends the supported local validator path with custody, faucet, and post-genesis bootstrap.
+- `scripts/first-boot-deploy.sh` is post-genesis bootstrap only. Genesis itself deploys the contract catalog.
+- `lichen-start.sh` is for manual foreground debugging only, not part of the supported operator runbook.
+
+## Network selection and public ingress
+
+- Local browser workflows default to `local-testnet`.
+- Production portals default to `mainnet` and call `https://rpc.lichen.network` unless the operator or user explicitly selects `testnet`.
+- Public testnet RPC lives at `https://testnet-rpc.lichen.network`.
+- A healthy testnet redeploy does not make the production portals healthy if `rpc.lichen.network` or its Cloudflare/Caddy/origin path is down.
+- Browser CORS, incident-status, signed-metadata, and symbol-registry errors on the portals can be caused by an ingress failure first. A Cloudflare `502` is surfaced by browsers as a CORS-style failure because the error page is not the RPC app.
+
+## Prerequisites
+
+Install these before running any of the workflows below:
+
+- Rust toolchain with `wasm32-unknown-unknown`
+- Node.js for signed metadata manifest generation
+- Python 3 with `venv` support for the repo Python tools
+- `curl` and `python3`
+- On VPSes, a Rust install that can be loaded in non-login shells via `. "$HOME/.cargo/env"`
+
+Deployment helper note:
+
+- `scripts/first-boot-deploy.sh` now bootstraps `.venv` from `sdk/python/requirements.txt` if the required Python modules are missing, but it still requires `python3 -m venv` to work.
+
+Recommended setup from repo root:
+
+```bash
+rustup target add wasm32-unknown-unknown
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt 2>/dev/null || true
+cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen
+cargo build --release -p lichen-cli --bin zk-prove
+./scripts/build-all-contracts.sh
+```
+
+If you want the repo-wide convenience build instead:
+
+```bash
+make build
+```
+
+## Paths and outputs
+
+Know the path conventions before you start:
+
+| Environment | Validator state |
+| --- | --- |
+| Local validator 1 | `data/state-7001` on testnet, `data/state-8001` on mainnet |
+| Local validator 2 | `data/state-7002` on testnet, `data/state-8002` on mainnet |
+| Local validator 3 | `data/state-7003` on testnet, `data/state-8003` on mainnet |
+| VPS / systemd | `/var/lib/lichen/state-testnet` or `/var/lib/lichen/state-mainnet` |
+
+Other important outputs:
+
+- local signed metadata manifest: `signed-metadata-manifest-testnet.json` or `signed-metadata-manifest-mainnet.json`
+- local full-stack logs: `/tmp/lichen-local-testnet` or `/tmp/lichen-local-mainnet`
+- deploy manifest: `deploy-manifest.json`
+- VPS validator envs: `/etc/lichen/env-testnet` and `/etc/lichen/env-mainnet`
+- VPS custody envs: `/etc/lichen/custody-env` and `/etc/lichen/custody-env-mainnet`
+
+## Local Runbook
+
+### Local 3-validator cluster
+
+Use this when you want the verified multi-validator path with signed metadata generation.
+
+Start from a clean state:
+
+```bash
+./scripts/start-local-3validators.sh start-reset
+```
+
+Reuse an existing cluster without resetting state:
+
+```bash
+./scripts/start-local-3validators.sh start
+```
+
+Check health:
+
+```bash
+./scripts/start-local-3validators.sh status
+curl -s http://127.0.0.1:8899 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+curl -s http://127.0.0.1:8901 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+curl -s http://127.0.0.1:8903 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+```
+
+Stop the cluster:
+
+```bash
+./scripts/start-local-3validators.sh stop
+```
+
+What this launcher does:
+
+- starts 3 validators through `run-validator.sh`
+- creates local genesis state on validator 1 when needed
+- writes validator state under `data/state-7001`, `data/state-7002`, `data/state-7003`
+- generates a signed metadata manifest once the cluster is healthy
+
+What it does not do:
+
+- it does not start custody or faucet
+- it does not manage local stack status outside validator health
+
+### Local full stack
+
+Use this when you want validators plus custody, faucet, and first-boot deploy.
+
+Start:
+
+```bash
+./scripts/start-local-stack.sh testnet
+```
+
+Status:
+
+```bash
+./scripts/status-local-stack.sh testnet
+```
+
+Stop:
+
+```bash
+./scripts/stop-local-stack.sh testnet
+```
+
+What the full-stack launcher starts:
+
+- 3 local validators
+- custody service
+- faucet service on testnet
+- `scripts/first-boot-deploy.sh` after validator health
+
+Where to look for logs:
+
+```bash
+ls /tmp/lichen-local-testnet
+```
+
+### Local verification checklist
+
+After starting either local flow, verify the chain before moving on:
+
+```bash
+bash tests/local-multi-validator-test.sh
+curl -s http://127.0.0.1:8899/api/v1/pairs | python3 -m json.tool
+ls -l signed-metadata-manifest-testnet.json
+```
+
+If you want to reuse an already-running cluster in the validator test harness:
+
+```bash
+LICHEN_REUSE_EXISTING_CLUSTER=1 bash tests/local-multi-validator-test.sh
+```
+
+## Genesis Runbook
+
+Use `scripts/generate-genesis.sh` instead of hand-building a `genesis.json` file.
+
+### Step 1: prepare wallet artifacts
+
+Example for testnet:
+
+```bash
+./scripts/generate-genesis.sh \
+  --network testnet \
+  --prepare-wallet \
+  --output-dir ./artifacts/testnet
+```
+
+This writes the wallet artifacts used for the next step, including `genesis-wallet.json`.
+
+### Step 2: create the genesis DB
+
+Example for local validator 1:
+
+```bash
+./scripts/generate-genesis.sh \
+  --network testnet \
+  --db-path ./data/state-7001 \
+  --wallet-file ./artifacts/testnet/genesis-wallet.json \
+  --validator-keypair ./data/state-7001/validator-keypair.json
+```
+
+Equivalent mainnet example:
+
+```bash
+./scripts/generate-genesis.sh \
+  --network mainnet \
+  --db-path ./data/state-8001 \
+  --wallet-file ./artifacts/mainnet/genesis-wallet.json \
+  --validator-keypair ./data/state-8001/validator-keypair.json
+```
+
+Important rules:
+
+- local state directories are keyed by P2P port, not by network name
+- VPS systemd state directories are keyed by network name
+- use `--validator-keypair` or explicit `--initial-validator` inputs; the wrapper rejects the legacy handwritten flow
+
+## Contract deployment and post-genesis bootstrap
+
+Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set.
+
+After a supported local or VPS genesis node is healthy, the canonical post-genesis bootstrap step is `scripts/first-boot-deploy.sh`.
+
+Run it manually against a healthy validator when needed:
+
+```bash
+./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
+```
+
+Use `http://127.0.0.1:9899` for mainnet, or set `DEPLOY_NETWORK=mainnet` explicitly when bootstrapping against a mainnet RPC.
+
+Use it without `--skip-build` if WASM artifacts are missing:
+
+```bash
+./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899
+```
+
+What it does:
+
+- waits for validator health
+- rebuilds `deploy-manifest.json` from the live genesis-deployed symbol registry
+- keeps local helper key material aligned with the genesis admin key
+- generates a signed metadata manifest when Node.js and the release-signing key are present
+
+For VPSes, run `scripts/vps-post-genesis.sh` after genesis creation to copy the genesis admin and faucet keypairs into the system paths expected by custody and faucet before you start those services.
+
+Outputs to verify:
+
+- `deploy-manifest.json`
+- signed metadata manifest file
+- healthy DEX pair list from `/api/v1/pairs`
+
+Operational notes:
+
+- On VPSes, run `scripts/first-boot-deploy.sh` from the operator-owned repo checkout, not from the `lichen` service account, unless the repo path is traversable by that account.
+- The script now refuses to trust a stale `deploy-manifest.json` unless it matches the live symbol registry. Older copies of the repo can still carry stale manifests, so a clean-slate redeploy should treat that file as disposable.
+- If the script generates the signed metadata file in the repo checkout, install it into `/etc/lichen/signed-metadata-manifest-<net>.json` before relying on public browser flows.
+
+Local convenience wrapper:
+
+```bash
+make deploy-local
+```
+
+## VPS Runbook
+
+### Step 1: stage the repo correctly
+
+Do not use `git archive` for VPS staging in this repo. Ignored directories in this tree still matter for deployment.
+
+Use a full repo sync into `~/lichen` instead:
+
+```bash
+rsync -az --delete \
+  --exclude '.git' \
+  --exclude 'target' \
+  --exclude 'compiler/target' \
+  --exclude 'data' \
+  --exclude 'logs' \
+  --exclude 'node_modules' \
+  --exclude 'dist' \
+  ./ <host>:~/lichen/
+```
+
+For a clean-slate redeploy, also remove stale repo-generated artifacts on the host before first boot:
+
+```bash
+rm -f ~/lichen/deploy-manifest.json
+rm -f ~/lichen/signed-metadata-manifest-testnet.json ~/lichen/signed-metadata-manifest-mainnet.json
+```
+
+### Step 2: build release binaries on the host
+
+If the host was updated via `rsync` hotfixes, force Cargo to see fresh source mtimes before rebuilding. `rsync -a` preserves timestamps, and stale remote artifact mtimes can otherwise cause `cargo build` to reuse old validator binaries even when the new Rust source is present.
+
+From the staged repo:
+
+```bash
+find . \
+  \( -path './target' -o -path './compiler/target' -o -path './node_modules' \) -prune -o \
+  -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -exec touch {} +
+```
+
+From the staged repo:
+
+```bash
+. "$HOME/.cargo/env"
+cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen
+./scripts/build-all-contracts.sh
+```
+
+Critical contract artifact invariant:
+
+- Genesis replay reads the top-level tracked files `contracts/<name>/<name>.wasm`.
+- `./scripts/build-all-contracts.sh` rewrites those top-level files.
+- Never rebuild contracts on only the genesis host after staging the repo to joining validators. That changes deterministic program addresses and guarantees a genesis state-root mismatch.
+- Choose one path per rollout and keep it consistent across every validator:
+  - stage one identical prebuilt repo bundle to every host and do not rebuild contracts on any host, or
+  - run `./scripts/build-all-contracts.sh` on every host before `deploy/setup.sh`.
+- `deploy/setup.sh` now prints the installed top-level contract bundle hash. Verify that hash matches on every VPS before creating genesis or starting joining validators.
+
+Example verification command:
+
+```bash
+command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs shasum -a 256 | shasum -a 256
+```
+
+Why the explicit `cargo` env load matters:
+
+- `ssh <host> 'cd ~/lichen && cargo build ...'` uses a non-login shell on many VPSes, and `cargo` will be missing from `PATH` unless you source `~/.cargo/env` yourself.
+
+### Step 3: install services and env files
+
+On each VPS:
+
+```bash
+sudo bash deploy/setup.sh testnet
+```
+
+Or for mainnet:
+
+```bash
+sudo bash deploy/setup.sh mainnet
+```
+
+This creates:
+
+- system user `lichen`
+- `/etc/lichen`
+- `/var/lib/lichen`
+- `/var/log/lichen`
+- `/etc/lichen/env-testnet` or `/etc/lichen/env-mainnet`
+- validator, custody, and faucet systemd units
+
+Service names:
+
+- `lichen-validator-testnet`
+- `lichen-validator-mainnet`
+- `lichen-custody`
+- `lichen-custody-mainnet`
+- `lichen-faucet` on testnet only
+
+### Step 4: bootstrap the genesis VPS
+
+Run these steps on the first validator only.
+
+1. Start the validator once so it generates `validator-keypair.json`.
+2. Record `publicKeyBase58` from that file.
+3. Stop the service and clear any temporary state.
+4. Prepare wallet artifacts.
+5. Create the genesis DB.
+6. Start the validator again.
+
+Concrete sequence for testnet:
+
+```bash
+sudo systemctl start lichen-validator-testnet
+sudo python3 -c "import json; print(json.load(open('/var/lib/lichen/state-testnet/validator-keypair.json'))['publicKeyBase58'])"
+sudo systemctl stop lichen-validator-testnet
+sudo rm -rf /var/lib/lichen/state-testnet
+sudo rm -rf /var/lib/lichen/.lichen
+
+sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
+  lichen-genesis --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
+
+PRICE_JSON=$(curl -sf 'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]')
+export GENESIS_SOL_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t['price']) for t in json.load(sys.stdin) if t['symbol']=='SOLUSDT']")
+export GENESIS_ETH_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t['price']) for t in json.load(sys.stdin) if t['symbol']=='ETHUSDT']")
+export GENESIS_BNB_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t['price']) for t in json.load(sys.stdin) if t['symbol']=='BNBUSDT']")
+
+sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
+  GENESIS_SOL_USD=$GENESIS_SOL_USD GENESIS_ETH_USD=$GENESIS_ETH_USD GENESIS_BNB_USD=$GENESIS_BNB_USD \
+  lichen-genesis --network testnet \
+  --db-path /var/lib/lichen/state-testnet \
+  --wallet-file /var/lib/lichen/genesis-keys-testnet/genesis-wallet.json \
+  --initial-validator <VALIDATOR_PUBKEY>
+
+sudo systemctl start lichen-validator-testnet
+```
+
+If `api.binance.com` is blocked or returns `451` on the host, export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, and `GENESIS_BNB_USD` from a trusted fallback source before running `lichen-genesis`.
+
+### Step 5: run post-genesis deploy on the genesis VPS
+
+After the validator is healthy, run the post-genesis deploy from the repo checkout on the genesis host as the checkout owner:
+
+```bash
+cd ~/lichen
+DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
+```
+
+For mainnet, run:
+
+```bash
+cd ~/lichen
+DEPLOY_NETWORK=mainnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:9899 --skip-build
+```
+
+This is the cleanest way to refresh the deploy manifest, helper key alignment, and signed metadata manifest in the current repo state.
+
+If the script generated the signed metadata file under `~/lichen/`, install it into the RPC-configured path before continuing:
+
+```bash
+sudo install -m 640 -o root -g lichen \
+  ~/lichen/signed-metadata-manifest-testnet.json \
+  /etc/lichen/signed-metadata-manifest-testnet.json
+```
+
+### Step 6: join additional validators
+
+On every joining VPS, set bootstrap peers in `/etc/lichen/env-testnet` or `/etc/lichen/env-mainnet`:
+
+```bash
+LICHEN_BOOTSTRAP_PEERS=<genesis-ip>:7001
+```
+
+Use `8001` instead of `7001` for mainnet.
+
+Then start the service:
+
+```bash
+sudo systemctl start lichen-validator-testnet
+```
+
+### Step 7: custody and faucet
+
+`deploy/setup.sh` creates the custody env files, but you still need to provision the secret material.
+
+Provision before starting custody:
+
+- `/etc/lichen/secrets/custody-master-seed-testnet.txt`
+- `/etc/lichen/secrets/custody-deposit-seed-testnet.txt`
+
+Or the mainnet equivalents.
+
+Permission model for those files matters:
+
+- `/etc/lichen/secrets` must be `root:lichen` with mode `750`.
+- Seed files must be `root:lichen` with mode `640`.
+- If you provision them as `root:root 600`, `lichen-custody` will fail with `Permission denied`.
+
+Then start the services:
+
+```bash
+sudo systemctl start lichen-custody
+sudo systemctl start lichen-faucet
+```
+
+For mainnet, start custody only:
+
+```bash
+sudo systemctl start lichen-custody-mainnet
+```
+
+Mainnet uses `lichen-custody-mainnet` and has no faucet.
+
+### Step 8: external ingress and browser smoke tests
+
+Do not stop after internal `127.0.0.1` health checks. Validate the public path that browsers will actually use.
+
+For public testnet:
+
+```bash
+curl -si -X OPTIONS https://testnet-rpc.lichen.network/ \
+  -H 'Origin: https://dex.lichen.network' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+
+curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+
+curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getIncidentStatus","params":[]}'
+
+curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}'
+```
+
+If production portals are expected to stay usable, run the same checks against `https://rpc.lichen.network` too. Production portals default to `mainnet`, so a dead mainnet origin will surface as frontend CORS, incident-status, signed-metadata, and missing-contract-address errors even while `testnet-rpc.lichen.network` is healthy.
+
+### Step 9: day-2 operations
+
+Useful commands:
+
+```bash
+sudo systemctl status lichen-validator-testnet
+sudo journalctl -u lichen-validator-testnet -n 200 --no-pager
+sudo systemctl status lichen-custody
+sudo journalctl -u lichen-custody -n 200 --no-pager
+curl -s http://127.0.0.1:8899 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+```
+
+Firewall minimums:
+
+- testnet P2P: `7001/tcp`
+- mainnet P2P: `8001/tcp`
+
+Expose RPC and WS only through the reverse proxy layout you actually operate.
+
+## Manual single-node debugging
+
+Use `lichen-start.sh` only when you need a manual, foreground, or one-off debugging flow instead of the supported local launcher or VPS systemd path.
+
+Examples:
+
+```bash
+./lichen-start.sh testnet --foreground
+./lichen-start.sh mainnet --bootstrap seed-01.lichen.network:8001
+```
+
+Notes:
+
+- `--custody` is restricted to explicit local development
+- this script is useful for manual debugging, but not the canonical steady-state service model
+
+## Release signing and signed metadata
+
+### Generate an offline release signing key
+
+```bash
+./scripts/generate-release-keys.sh ./offline-release
+```
+
+This prints the trusted signer address. Embed that address in `validator/src/updater.rs` before relying on signed release verification.
+
+Keep the generated keypair offline.
+
+### Sign a release artifact set
+
+```bash
+sha256sum <files...> > SHA256SUMS
+./scripts/sign-release.sh SHA256SUMS ./offline-release/release-signing-keypair.json
+```
+
+This writes `SHA256SUMS.sig` next to `SHA256SUMS`.
+
+### Generate a signed metadata manifest
+
+Local example:
+
+```bash
+node scripts/generate-signed-metadata-manifest.js \
+  --rpc http://127.0.0.1:8899 \
+  --network local-testnet \
+  --keypair ./keypairs/release-signing-key.json \
+  --out ./signed-metadata-manifest-testnet.json
+```
+
+VPS example:
+
+```bash
+node scripts/generate-signed-metadata-manifest.js \
+  --rpc http://127.0.0.1:8899 \
+  --network testnet \
+  --keypair /secure/offline-mounted/release-signing-keypair.json \
+  --out /etc/lichen/signed-metadata-manifest-testnet.json
+```
+
+The local 3-validator launcher generates this manifest automatically.
+
+On VPS deploys, `first-boot-deploy.sh` must now regenerate the manifest, install it into the configured `/etc/lichen/` target, and verify that the validator serves the expected DEX-related symbol registry entries back through `getSignedMetadataManifest`. If Node.js, the release-signing keypair, or the install step is missing, the deploy fails instead of continuing half-configured.
+
+## ZK proof generation
+
+Build the proof CLI:
+
+```bash
+cargo build --release -p lichen-cli --bin zk-prove
+```
+
+Generate proofs:
+
+```bash
+./target/release/zk-prove shield --amount 1000000000
+./target/release/zk-prove unshield --amount 1000000000 --merkle-root <hex> --recipient <hex> --blinding <hex> --serial <hex>
+./target/release/zk-prove transfer --transfer-json ./transfer-witness.json
+```
+
+The proof CLI writes JSON to stdout. That JSON is the input for the transaction-building side of the shielded flow.
+
+Verifier note:
+
+- Lichen uses transparent STARK proofs
+- there is no separate trusted setup ceremony to ship to operators
+- the verifier lives in the validator runtime; operators do not manually distribute a static trusted verifier key bundle as part of the normal deployment path
+
+## Frontend and portal deployment
+
+Static portals deploy through Cloudflare Pages. Current project names use the `lichen-network-` prefix.
+
+Important behavior:
+
+- In production, the portals default to `mainnet` until the user selects another network.
+- A successful testnet rollout only makes the portals work if either the user switches to `testnet` or `rpc.lichen.network` is also healthy.
+
+| Portal | Project name | Directory |
+| --- | --- | --- |
+| website | `lichen-network-website` | `website/` |
+| explorer | `lichen-network-explorer` | `explorer/` |
+| wallet | `lichen-network-wallet` | `wallet/` |
+| dex | `lichen-network-dex` | `dex/` |
+| marketplace | `lichen-network-marketplace` | `marketplace/` |
+| programs | `lichen-network-programs` | `programs/` |
+| developers | `lichen-network-developers` | `developers/` |
+| monitoring | `lichen-network-monitoring` | `monitoring/` |
+
+Deploy command pattern:
+
+```bash
+npx wrangler pages deploy <dir> --project-name lichen-network-<portal> --commit-dirty=true
+```
+
+The faucet is not a Pages deployment. It is served from the VPS-side faucet service.
+
+## Final operator checklist
+
+Before you call a deployment complete, verify all of the following:
+
+- validator health returns `ok`
+- expected contracts are present
+- signed metadata manifest exists and is current
+- local or VPS DEX pair list is populated
+- custody and faucet health endpoints respond if those services are enabled
+- external CORS preflight and JSON-RPC checks succeed for every public RPC hostname you expect browsers to use
+- `getIncidentStatus` and `getSignedMetadataManifest` succeed through the public edge, not just on `127.0.0.1`
+- release artifacts are signed if you are cutting an upgrade
+- `zk-prove` builds and runs if you are validating privacy flows
+
+Useful checks:
+
+```bash
+curl -s http://127.0.0.1:8899/api/v1/pairs | python3 -m json.tool
+curl -s http://127.0.0.1:9105/health | python3 -m json.tool
+curl -s http://127.0.0.1:9100/health | python3 -m json.tool
+ls -l deploy-manifest.json signed-metadata-manifest-testnet.json
+```
+
+If this document and the scripts ever disagree, trust the scripts first and then update this runbook immediately.
