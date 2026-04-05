@@ -143,6 +143,22 @@ async function trustedMonitoringRpc(method, params = []) {
         : null);
 }
 
+function isLocalMonitoringNetwork(network) {
+    const normalized = normalizeMonitoringNetwork(network || getTrustedMonitoringNetwork());
+    return normalized === 'local-testnet' || normalized === 'local-mainnet';
+}
+
+async function getMonitoringSymbolRegistryEntry(symbol) {
+    if (isLocalMonitoringNetwork()) {
+        const liveEntry = await rpc('getSymbolRegistry', [symbol]).catch(() => null);
+        if (liveEntry && liveEntry.program) {
+            return liveEntry;
+        }
+    }
+
+    return trustedMonitoringRpc('getSymbolRegistry', [symbol]).catch(() => null);
+}
+
 // ── Helpers ─────────────────────────────────────────────────
 
 function sporesToLicn(spores) {
@@ -1186,7 +1202,7 @@ async function updateContracts(force = false) {
 
     const list = document.getElementById('contractList');
     const rows = (await Promise.all(SYMBOLS.map(async (sym) => {
-        const info = await trustedMonitoringRpc('getSymbolRegistry', [sym]);
+        const info = await getMonitoringSymbolRegistryEntry(sym);
         if (!info || !info.program) return null;
         return {
             symbol: info.symbol || sym,
@@ -1580,7 +1596,7 @@ async function updateDexMonitor() {
 
         // Check if contract is deployed
         if (sub.symbol) {
-            const info = await trustedMonitoringRpc('getSymbolRegistry', [sub.symbol]);
+            const info = await getMonitoringSymbolRegistryEntry(sub.symbol);
             if (info && info.program) {
                 deployed = true;
                 program = info.program;
@@ -1812,7 +1828,7 @@ async function updateContractMonitor(force = false) {
     }
 
     const entries = await Promise.all(ALL_CONTRACTS.map(async (contract) => {
-        const info = await trustedMonitoringRpc('getSymbolRegistry', [contract.symbol]);
+        const info = await getMonitoringSymbolRegistryEntry(contract.symbol);
         return { contract, info };
     }));
 
@@ -2656,16 +2672,25 @@ async function updateProgramHotspotsBoard() {
     const grid = document.getElementById('programHotspotGrid');
 
     const registryEntries = (await Promise.all(ALL_CONTRACTS.map(async (contract) => {
-        const info = await trustedMonitoringRpc('getSymbolRegistry', [contract.symbol]);
+        const info = await getMonitoringSymbolRegistryEntry(contract.symbol);
         if (!info || !info.program) return null;
         return { contract, program: info.program };
     }))).filter(Boolean);
 
-    const statEntries = (await Promise.all(registryEntries.map(async (entry) => {
+    let statEntries = (await Promise.all(registryEntries.map(async (entry) => {
         const stats = await rpc('getProgramStats', [entry.program]).catch(() => null);
         if (!stats) return null;
         return { ...entry, stats };
     }))).filter(Boolean);
+
+    const hasProgramStats = statEntries.length > 0;
+
+    if (!hasProgramStats && registryEntries.length > 0) {
+        statEntries = registryEntries.map((entry) => ({
+            ...entry,
+            stats: { call_count: 0 },
+        }));
+    }
 
     if (statEntries.length === 0) {
         setText('programTrackedCount', '--');
@@ -2683,7 +2708,11 @@ async function updateProgramHotspotsBoard() {
         return;
     }
 
-    statEntries.sort((left, right) => Number(right.stats.call_count || 0) - Number(left.stats.call_count || 0));
+    if (hasProgramStats) {
+        statEntries.sort((left, right) => Number(right.stats.call_count || 0) - Number(left.stats.call_count || 0));
+    } else {
+        statEntries.sort((left, right) => String(left.contract.symbol || '').localeCompare(String(right.contract.symbol || '')));
+    }
     const topEntries = statEntries.slice(0, PROGRAM_HOTSPOT_LIMIT);
 
     const enrichedEntries = await Promise.all(topEntries.map(async (entry) => {
@@ -2725,12 +2754,16 @@ async function updateProgramHotspotsBoard() {
     setText('programTrackedCount', formatNum(statEntries.length));
     setText('programTotalCalls', formatNum(totalCalls));
     setText('programRecentCalls', formatNum(recentCallsTotal));
-    setText('programHottest', hottestEntry ? hottestEntry.contract.symbol : '--');
+    setText('programHottest', hasProgramStats && hottestEntry ? hottestEntry.contract.symbol : '--');
     setText('programActiveFunctions', formatNum(distinctFunctions.size));
-    setText('programLastActivity', lastActivityMs ? timeAgo(Math.floor(lastActivityMs / 1000)) : 'No recent calls');
+    setText('programLastActivity', hasProgramStats
+        ? (lastActivityMs ? timeAgo(Math.floor(lastActivityMs / 1000)) : 'No recent calls')
+        : '--');
     setText(
         'programHotspotNote',
-        `Hotspots rank all-time call volume and a 15 minute recent call window from getProgramCalls. RPC does not expose failed call rates yet.`
+        hasProgramStats
+            ? `Hotspots rank all-time call volume and a 15 minute recent call window from getProgramCalls. RPC does not expose failed call rates yet.`
+            : 'Program registry is wired, but this RPC has not returned program call counters yet. Showing tracked program coverage only.'
     );
 
     if (grid) {
@@ -2759,8 +2792,10 @@ async function updateProgramHotspotsBoard() {
     }
 
     if (badge) {
-        badge.textContent = recentCallsTotal > 0 ? `${formatNum(recentCallsTotal)} Hot` : `${formatNum(statEntries.length)} Tracked`;
-        badge.className = `panel-badge ${recentCallsTotal > 0 ? 'success' : 'info'}`;
+        badge.textContent = hasProgramStats
+            ? (recentCallsTotal > 0 ? `${formatNum(recentCallsTotal)} Hot` : `${formatNum(statEntries.length)} Tracked`)
+            : `${formatNum(statEntries.length)} Tracked`;
+        badge.className = `panel-badge ${hasProgramStats ? (recentCallsTotal > 0 ? 'success' : 'info') : 'info'}`;
     }
 }
 
