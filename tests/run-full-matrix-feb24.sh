@@ -118,6 +118,27 @@ resolve_signers() {
   fi
 }
 
+keypair_pubkey() {
+  python3 - "$1" <<'PY'
+import json, sys
+
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+for key in ("pubkey", "address", "publicKeyBase58", "address_base58"):
+    value = payload.get(key)
+    if isinstance(value, str) and value:
+        print(value)
+        raise SystemExit(0)
+
+print("")
+PY
+}
+
 get_spendable_spores() {
   local pubkey="$1"
   python3 - "$pubkey" <<'PY'
@@ -139,8 +160,8 @@ PY
 ensure_funded_signers() {
   local min_spores="${MIN_FUNDED_SPORES:-20000000000}"
   local agent_pub human_pub agent_spores human_spores
-  agent_pub="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pubkey",""))' "$MATRIX_AGENT_KEYPAIR" 2>/dev/null || true)"
-  human_pub="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("pubkey",""))' "$MATRIX_HUMAN_KEYPAIR" 2>/dev/null || true)"
+  agent_pub="$(keypair_pubkey "$MATRIX_AGENT_KEYPAIR" 2>/dev/null || true)"
+  human_pub="$(keypair_pubkey "$MATRIX_HUMAN_KEYPAIR" 2>/dev/null || true)"
 
   if [[ -n "$agent_pub" ]]; then
     agent_spores="$(get_spendable_spores "$agent_pub")"
@@ -387,7 +408,7 @@ for i in "${!commands[@]}"; do
   attempt=1
   while [[ "$attempt" -le "$attempts" ]]; do
     set +e
-    bash -lc "$cmd" >> "$LOG" 2>&1
+    bash -lc "PATH=\"$PWD/.venv/bin:\$PATH\" $cmd" >> "$LOG" 2>&1
     code=$?
     set -e
     if [[ "$code" -eq 0 ]]; then

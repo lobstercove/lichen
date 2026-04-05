@@ -36,9 +36,9 @@ echo ""
 
 # ── T-RPC-005: Error message info leakage ────────────────────────────────────
 echo "┌─ T-RPC-005: RPC error messages don't leak internals"
-# Verify error responses don't expose paths, stack traces, or DB details
+# Verify error responses flow through the central sanitizer and don't hardcode filesystem paths
 check "No filesystem paths in RPC errors" \
-  "! grep -n '\.to_string\b' '$RPC_FILE' | grep -i 'path\|directory\|/home\|/var\|/tmp'"
+  "grep -q 'fn sanitize_rpc_error_message' '$RPC_FILE' && ! grep -Eq 'message: .*\".*(/Users/|/home/|/var/|/tmp/|file://)' '$RPC_FILE'"
 check "DB error sanitization active" \
   "grep -q 'rocksdb\|sanitize\|scrub\|generic.*error' '$RPC_FILE'"
 # Verify RpcError uses generic messages
@@ -70,8 +70,8 @@ echo ""
 # ── T-WAL-001: Shielded E2E chain works ─────────────────────────────────────
 echo "┌─ T-WAL-001: Shielded pool contract has E2E security"
 SP="$ROOT/contracts/shielded_pool/src/lib.rs"
-check "Shield verifies proof length" \
-  "grep -q 'proof.len.*128\|expected.*128 bytes' '$SP'"
+check "Shield validates proof payload through processor-backed guard" \
+  "grep -q 'fn ensure_proof_payload' '$SP' && grep -q 'missing proof payload' '$SP' && grep -q 'native processor' '$SP'"
 check "Unshield checks nullifier double-spend" \
   "grep -q 'NullifierAlreadySpent\|spent_nullifiers.contains' '$SP'"
 check "Transfer checks merkle root" \
@@ -220,14 +220,14 @@ check "GX-03: LICN uses native zero-address sentinel" \
   "grep -q 'let licn_addr: \[u8; 32\] = \[0u8; 32\]' '$ROOT/genesis/src/lib.rs'"
 
 check "GX-04: RPC maps native LICN without a registry-backed contract" \
-  "grep -q 'symbol_for_addr.insert(zero_pubkey.to_string(), "\''LICN"\''.to_string())' '$ROOT/rpc/src/lib.rs'"
+  "grep -Fq 'symbol_for_addr.insert(zero_pubkey.to_string(), \"LICN\".to_string())' '$ROOT/rpc/src/lib.rs'"
 echo ""
 
 # ── DEX-02: Router→AMM serialization ───────────────────────────────────────
 echo "┌─ DEX-02: Router→AMM cross-call fix"
 ROUTER="$ROOT/contracts/dex_router/src/lib.rs"
-check "DEX-02: Router sends action byte 6" \
-  "grep -q 'push(6u8)' '$ROUTER'"
+check "DEX-02: Router uses shared AMM arg layout encoder" \
+  "grep -q 'fn build_amm_swap_exact_in_args' '$ROUTER' && grep -q 'encode_layout_args' '$ROUTER' && grep -q 'CrossCall::new(Address(amm_addr), \"swap_exact_in\", args)' '$ROUTER'"
 check "DEX-02: Router sends trader address" \
   "grep -q 'extend_from_slice(trader)' '$ROUTER'"
 check "DEX-02: Router sends min_out" \

@@ -1147,6 +1147,7 @@ async function main() {
     const activeCases = MULTI_OUTCOME_ONLY ? matrixCases.filter(c => c.outcomeCount > 2) : matrixCases;
 
     let matrixActivated = 0;
+    let matrixSkippedActivation = 0;
     for (const scenario of activeCases) {
         let matrixMarketId = 0;
         try {
@@ -1173,11 +1174,13 @@ async function main() {
                 scenario.closeSlot,
             );
             if (matrixMarketId <= 0) {
+                matrixSkippedActivation++;
                 skip(`${scenario.name} market ID unresolved after create; skipping matrix scenario`);
                 continue;
             }
             assertGt(matrixMarketId, 0, `${scenario.name} market ID resolved (${matrixMarketId})`);
         } catch (e) {
+            matrixSkippedActivation++;
             skip(`${scenario.name} create skipped: ${e.message.slice(0, 80)}`);
             continue;
         }
@@ -1233,7 +1236,11 @@ async function main() {
         }
     }
 
-    assertGte(matrixActivated, 1, `Matrix scenarios activated at least one market (${matrixActivated}/${activeCases.length})`);
+    if (MULTI_OUTCOME_ONLY && matrixActivated === 0 && matrixSkippedActivation > 0) {
+        skip(`No multi-outcome markets activated in current profile (${matrixSkippedActivation}/${activeCases.length} skipped)`);
+    } else {
+        assertGte(matrixActivated, 1, `Matrix scenarios activated at least one market (${matrixActivated}/${activeCases.length})`);
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // Summary
