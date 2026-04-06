@@ -218,7 +218,7 @@ body {
 }
 
 .mission-board-capped {
-    --paired-panel-height: clamp(28rem, 52vh, 34rem);
+    --paired-panel-height: clamp(24rem, 44vh, 30rem);
 }
 
 .mission-board-capped > .panel {
