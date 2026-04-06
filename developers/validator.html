@@ -478,7 +478,8 @@ cargo build --release
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
                 These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>,
                 <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>,
-                <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>,
+                <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--cold-store</code>,
+                <code>--archive-mode</code>, <code>--admin-token</code>,
                 <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>,
                 <code>--dev-mode</code>, <code>--import-key</code>. They are documentation aliases, not direct TOML keys
                 parsed by the current binary.
@@ -516,6 +517,39 @@ cargo build --release
                         <td>Boolean</td>
                         <td><code>true</code></td>
                         <td>Set to <code>false</code> to run as a full-node observer (no block production).</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [history] -->
+            <h3><span class="config-section-label">[history]</span></h3>
+            <p>Optional archival settings for cold block retention and historical account lookups.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr>
+                        <th>Flag</th>
+                        <th>Type</th>
+                        <th>Default</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>--cold-store &lt;path&gt;</code></td>
+                        <td>String</td>
+                        <td>—</td>
+                        <td>Attach a secondary RocksDB for archival block, transaction, and index retention. The
+                            validator migrates data older than the hot retention window into this path every 5 minutes.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><code>--archive-mode</code></td>
+                        <td>Boolean</td>
+                        <td><code>false</code></td>
+                        <td>Persist historical account snapshots so <code>getAccountAtSlot</code> can answer archive
+                            queries. Pair with <code>--cold-store</code> on archival nodes to keep hot-state growth
+                            bounded.</td>
                     </tr>
                 </tbody>
             </table>

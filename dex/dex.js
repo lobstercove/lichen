@@ -544,9 +544,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── DEX AMM instruction builders ──
-    // Opcode 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
-    function buildAddLiquidityArgs(provider, poolId, lowerTick, upperTick, amountA, amountB) {
-        const buf = new ArrayBuffer(65);
+    // Opcode 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b, deadline)
+    function buildAddLiquidityArgs(provider, poolId, lowerTick, upperTick, amountA, amountB, deadline) {
+        const buf = new ArrayBuffer(73);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 3); // opcode
@@ -556,19 +556,34 @@ document.addEventListener('DOMContentLoaded', () => {
         writeI32LE(view, 45, upperTick);
         writeU64LE(view, 49, amountA);
         writeU64LE(view, 57, amountB);
+        writeU64LE(view, 65, deadline);
         return arr;
     }
 
-    // Opcode 4: remove_liquidity(provider, position_id, liquidity_amount)
-    function buildRemoveLiquidityArgs(provider, positionId, liquidityAmount) {
-        const buf = new ArrayBuffer(49);
+    // Opcode 4: remove_liquidity(provider, position_id, liquidity_amount, deadline)
+    function buildRemoveLiquidityArgs(provider, positionId, liquidityAmount, deadline) {
+        const buf = new ArrayBuffer(57);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 4); // opcode
         writePubkey(arr, 1, provider);
         writeU64LE(view, 33, positionId);
         writeU64LE(view, 41, liquidityAmount);
+        writeU64LE(view, 49, deadline);
         return arr;
+    }
+
+    async function getDexDeadline(offsetSlots = 120) {
+        const anchoredSlot = getRealtimePredictSlot(0);
+        if (anchoredSlot > 0) return anchoredSlot + offsetSlots;
+
+        const slot = await api.rpc('getSlot', []);
+        if (typeof slot === 'number' && slot > 0) {
+            setPredictSlotAnchor(slot);
+            return slot + offsetSlots;
+        }
+
+        throw new Error('Unable to determine current slot for liquidity deadline');
     }
 
     // Opcode 5: collect_fees(provider, position_id)
@@ -3526,7 +3541,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!confirm(`Remove all liquidity from position #${posId}? This cannot be undone.`)) return;
             removeBtn.disabled = true; const origText = removeBtn.innerHTML; removeBtn.textContent = 'Removing...';
             try {
-                await wallet.sendTransaction([contractIx(contracts.dex_amm, buildRemoveLiquidityArgs(wallet.address, posId, rawLiq))]);
+                const deadline = await getDexDeadline();
+                await wallet.sendTransaction([contractIx(contracts.dex_amm, buildRemoveLiquidityArgs(wallet.address, posId, rawLiq, deadline))]);
                 showNotification('Liquidity removed successfully!', 'success');
                 await loadLPPositions();
             } catch (err) { showNotification(`Remove failed: ${err.message}`, 'error'); }
@@ -3569,10 +3585,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const spacing = FEE_TIER_SPACING[state.selectedFeeTier] || 60;
             const lt = fullRange ? MIN_TICK : alignTickToSpacing(priceToTick(minPrice), spacing);
             const ut = fullRange ? MAX_TICK : alignTickToSpacing(priceToTick(maxPrice), spacing);
+            const deadline = await getDexDeadline();
             // AUDIT-FIX F10.10: Use real contract address from symbol registry (not hardcoded hex placeholder)
             await wallet.sendTransaction([contractIx(
                 contracts.dex_amm,
-                buildAddLiquidityArgs(wallet.address, poolId, lt, ut, Math.round(amtA * 1e9), Math.round(amtB * 1e9))
+                buildAddLiquidityArgs(wallet.address, poolId, lt, ut, Math.round(amtA * 1e9), Math.round(amtB * 1e9), deadline)
             )]);
             showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
             // F24.10 FIX: Refresh LP positions and pools after adding liquidity

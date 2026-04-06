@@ -183,6 +183,13 @@
                     <p><strong>Local development:</strong> <code>http://localhost:8899</code></p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
+                <div class="callout callout-warning">
+                    <p><strong>Security model:</strong> Production TLS terminates at the repo-managed Caddy reverse
+                        proxy. Raw RPC and WebSocket listeners on <code>8899/8900</code> or <code>9899/9900</code> are
+                        internal-only and direct public exposure is unsupported.</p>
+                    <p><strong>Admin token rotation:</strong> <code>LICHEN_ADMIN_TOKEN</code> hot-reloads every 30
+                        seconds, so operator rotation does not require an RPC restart.</p>
+                </div>
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">JSON</span>
@@ -573,7 +580,9 @@
             <div class="method-card" id="getAccountAtSlot">
                 <h3 class="method-name">getAccountAtSlot</h3>
                 <p class="method-desc">Returns historical account state at or before the given slot. Requires archive
-                    mode to be enabled on the node.</p>
+                    mode to be enabled on the validator via <code>--archive-mode</code>. Pair archival nodes with
+                    <code>--cold-store &lt;path&gt;</code> to keep old block and transaction history off the hot DB.
+                </p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -2178,9 +2187,10 @@
                 <h3>Bridge</h3>
                 <ul>
                     <li><code>createBridgeDeposit</code> — initiate a cross-chain bridge deposit with a wallet-signed
-                        bridge access auth object</li>
+                        bridge access auth object; each new deposit request must use a freshly signed auth envelope,
+                        while exact retries with the same request remain idempotent</li>
                     <li><code>getBridgeDeposit</code> — query a bridge deposit by ID for the authenticated wallet
-                        address</li>
+                        address using the current unexpired bridge auth</li>
                 </ul>
 
                 <h3>Shielded Pool (Privacy)</h3>

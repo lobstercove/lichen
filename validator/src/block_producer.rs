@@ -7,6 +7,20 @@
 use lichen_core::{Block, FeeConfig, Hash, Mempool, Pubkey, StateStore, TxProcessor};
 use tracing::{debug, info};
 
+fn resolve_parent_timestamp(state: &StateStore, parent_hash: &Hash) -> Option<u64> {
+    let parent_slot = state.get_last_slot().ok()?;
+    let parent_block = if parent_slot == 0 {
+        state.get_block_by_slot(0).ok().flatten()
+    } else {
+        match state.get_block_by_slot(parent_slot).ok().flatten() {
+            Some(block) if block.hash() == *parent_hash => Some(block),
+            _ => None,
+        }
+    }?;
+
+    Some(parent_block.header.timestamp)
+}
+
 /// Build a new block from pending mempool transactions.
 ///
 /// `bft_timestamp`: If `Some`, use this BFT-derived timestamp (weighted
@@ -144,10 +158,15 @@ pub fn build_block(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let min_block_timestamp = resolve_parent_timestamp(state, &parent_hash)
+        .map(|timestamp| timestamp.saturating_add(1))
+        .unwrap_or(0);
 
     // Use BFT timestamp (weighted median of parent commit) if available,
     // falling back to wall clock for genesis or solo validator scenarios.
-    let block_timestamp = bft_timestamp.unwrap_or(wall_clock_timestamp);
+    let block_timestamp = bft_timestamp
+        .unwrap_or(wall_clock_timestamp)
+        .max(min_block_timestamp);
 
     let mut block = Block::new_with_timestamp(
         height,
@@ -171,4 +190,42 @@ pub fn build_block(
     }
 
     (block, processed_hashes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn build_block_fallback_timestamp_advances_past_parent() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let wall_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let parent_timestamp = wall_now.saturating_add(10);
+        let parent = Block::genesis(Hash::hash(b"parent-state"), parent_timestamp, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            None,
+        );
+
+        assert!(processed.is_empty());
+        assert_eq!(block.header.timestamp, parent_timestamp.saturating_add(1));
+    }
 }

@@ -8,9 +8,10 @@ use axum::{
     routing::post,
     Router,
 };
+use lichen_core::MAX_CONTRACT_CODE;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,21 +32,34 @@ struct AppState {
     api_key: Arc<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApiKeyError {
+    Missing,
+    Invalid,
+}
+
+impl IntoResponse for ApiKeyError {
+    fn into_response(self) -> Response {
+        let message = match self {
+            Self::Missing => "Missing X-API-Key header",
+            Self::Invalid => "Invalid API key",
+        };
+
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": message})),
+        )
+            .into_response()
+    }
+}
+
 /// P9-INF-01: Validate the X-API-Key header against the configured key.
 /// Returns Ok(()) on success, or an error response on failure.
-fn validate_api_key(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
+fn validate_api_key(headers: &HeaderMap, state: &AppState) -> Result<(), ApiKeyError> {
     match headers.get(API_KEY_HEADER).and_then(|v| v.to_str().ok()) {
         Some(provided) if provided == state.api_key.as_str() => Ok(()),
-        Some(_) => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid API key"})),
-        )
-            .into_response()),
-        None => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Missing X-API-Key header"})),
-        )
-            .into_response()),
+        Some(_) => Err(ApiKeyError::Invalid),
+        None => Err(ApiKeyError::Missing),
     }
 }
 
@@ -82,7 +96,7 @@ struct CompileResponse {
 #[derive(Debug, Serialize)]
 struct WasmExport {
     name: String,
-    kind: String,  // "function", "memory", "global", "table"
+    kind: String, // "function", "memory", "global", "table"
 }
 
 #[derive(Debug, Serialize)]
@@ -120,12 +134,15 @@ async fn main() {
 
     // Build router — health is unauthenticated; compile requires API key
     let app = Router::new()
-        .route("/compile", post({
-            let state = state.clone();
-            move |headers: HeaderMap, body: Json<CompileRequest>| {
-                compile_handler_authed(headers, body, state)
-            }
-        }))
+        .route(
+            "/compile",
+            post({
+                let state = state.clone();
+                move |headers: HeaderMap, body: Json<CompileRequest>| {
+                    compile_handler_authed(headers, body, state)
+                }
+            }),
+        )
         .route("/health", axum::routing::get(health_handler))
         // P9-INF-08: Restrict CORS to known developer portal origins instead of
         // permissive wildcard. In production, set COMPILER_CORS_ORIGIN env var.
@@ -133,23 +150,38 @@ async fn main() {
             let allowed_origin = std::env::var("COMPILER_CORS_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string());
             CorsLayer::new()
-                .allow_origin(allowed_origin.parse::<axum::http::HeaderValue>()
-                    .unwrap_or_else(|e| {
-                        eprintln!("Invalid COMPILER_CORS_ORIGIN value: {}", e);
-                        std::process::exit(1);
-                    }))
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
-                .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION,
-                    axum::http::HeaderName::from_static("x-api-key")])
+                .allow_origin(
+                    allowed_origin
+                        .parse::<axum::http::HeaderValue>()
+                        .unwrap_or_else(|e| {
+                            eprintln!("Invalid COMPILER_CORS_ORIGIN value: {}", e);
+                            std::process::exit(1);
+                        }),
+                )
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::HeaderName::from_static("x-api-key"),
+                ])
         });
 
     let addr = format!("0.0.0.0:{}", port);
-    info!("🔨 Lichen Compiler Service starting on {} (auth: enabled)", addr);
+    info!(
+        "🔨 Lichen Compiler Service starting on {} (auth: enabled)",
+        addr
+    );
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
-        eprintln!("❌ Failed to bind to {}: {}", addr, e);
-        std::process::exit(1);
-    });
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("❌ Failed to bind to {}: {}", addr, e);
+            std::process::exit(1);
+        });
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("❌ Server error: {}", e);
         std::process::exit(1);
@@ -167,9 +199,9 @@ async fn compile_handler_authed(
     body: Json<CompileRequest>,
     state: AppState,
 ) -> Response {
-    if let Err(resp) = validate_api_key(&headers, &state) {
+    if let Err(err) = validate_api_key(&headers, &state) {
         warn!("🔒 Compile request rejected: missing or invalid API key");
-        return resp;
+        return err.into_response();
     }
     compile_handler(body).await
 }
@@ -236,6 +268,31 @@ async fn compile_handler(Json(req): Json<CompileRequest>) -> Response {
 
     match result {
         Ok((wasm_bytes, warnings)) => {
+            if let Err(errors) = validate_wasm_output_size(wasm_bytes.len()) {
+                warn!(
+                    "⚠️ Compiled WASM output rejected: {} bytes exceeds {} byte limit",
+                    wasm_bytes.len(),
+                    MAX_CONTRACT_CODE
+                );
+                return (
+                    StatusCode::OK,
+                    Json(CompileResponse {
+                        success: false,
+                        wasm: None,
+                        size: None,
+                        time_ms: Some(time_ms),
+                        warnings: if warnings.is_empty() {
+                            None
+                        } else {
+                            Some(warnings)
+                        },
+                        errors: Some(errors),
+                        exports: None,
+                    }),
+                )
+                    .into_response();
+            }
+
             use base64::Engine;
             let wasm_base64 = base64::engine::general_purpose::STANDARD.encode(&wasm_bytes);
             let size = wasm_bytes.len();
@@ -243,7 +300,12 @@ async fn compile_handler(Json(req): Json<CompileRequest>) -> Response {
             // Extract WASM exports for ABI hints
             let exports = extract_wasm_exports(&wasm_bytes);
 
-            info!("✅ Compilation successful: {} bytes in {}ms, {} exports", size, time_ms, exports.as_ref().map(|e| e.len()).unwrap_or(0));
+            info!(
+                "✅ Compilation successful: {} bytes in {}ms, {} exports",
+                size,
+                time_ms,
+                exports.as_ref().map(|e| e.len()).unwrap_or(0)
+            );
 
             (
                 StatusCode::OK,
@@ -281,6 +343,22 @@ async fn compile_handler(Json(req): Json<CompileRequest>) -> Response {
                 .into_response()
         }
     }
+}
+
+fn validate_wasm_output_size(size: usize) -> Result<(), Vec<CompileError>> {
+    if size > MAX_CONTRACT_CODE {
+        return Err(vec![CompileError {
+            file: "output".to_string(),
+            line: 0,
+            col: 0,
+            message: format!(
+                "Compiled WASM output too large: {} bytes (max {} bytes / 512 KB)",
+                size, MAX_CONTRACT_CODE
+            ),
+        }]);
+    }
+
+    Ok(())
 }
 
 /// Extract exported function names from WASM bytecode (lightweight, no full WASM runtime)
@@ -467,12 +545,7 @@ panic = "abort"
 
     // Run cargo build with timeout (F7.10)
     let mut child = Command::new("cargo")
-        .args(&[
-            "build",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--release",
-        ])
+        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
         .current_dir(project_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -486,14 +559,16 @@ panic = "abort"
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
-        vec![CompileError {
-            file: "cargo".to_string(),
-            line: 0,
-            col: 0,
-            message: e,
-        }]
-    })?;
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT)
+        .await
+        .map_err(|e| {
+            vec![CompileError {
+                file: "cargo".to_string(),
+                line: 0,
+                col: 0,
+                message: e,
+            }]
+        })?;
 
     if !output.status.success() {
         // Parse cargo errors
@@ -503,8 +578,7 @@ panic = "abort"
     }
 
     // Read WASM file
-    let wasm_path = project_dir
-        .join("target/wasm32-unknown-unknown/release/wasm_contract.wasm");
+    let wasm_path = project_dir.join("target/wasm32-unknown-unknown/release/wasm_contract.wasm");
 
     let wasm_bytes = fs::read(&wasm_path).map_err(|e| {
         vec![CompileError {
@@ -591,14 +665,16 @@ async fn compile_c(
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
-        vec![CompileError {
-            file: "clang".to_string(),
-            line: 0,
-            col: 0,
-            message: e,
-        }]
-    })?;
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT)
+        .await
+        .map_err(|e| {
+            vec![CompileError {
+                file: "clang".to_string(),
+                line: 0,
+                col: 0,
+                message: e,
+            }]
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -678,14 +754,16 @@ async fn compile_assemblyscript(
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
-        vec![CompileError {
-            file: "asc".to_string(),
-            line: 0,
-            col: 0,
-            message: e,
-        }]
-    })?;
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT)
+        .await
+        .map_err(|e| {
+            vec![CompileError {
+                file: "asc".to_string(),
+                line: 0,
+                col: 0,
+                message: e,
+            }]
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -722,7 +800,7 @@ fn optimize_wasm(wasm: &[u8]) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "Non-UTF8 temp path for wasm-opt output".to_string())?;
 
     let output = Command::new("wasm-opt")
-        .args(&[
+        .args([
             "-Oz", // Optimize for size
             "--strip-debug",
             "--strip-producers",
@@ -733,12 +811,12 @@ fn optimize_wasm(wasm: &[u8]) -> Result<Vec<u8>, String> {
         .output();
 
     match output {
-        Ok(out) if out.status.success() => {
-            fs::read(&output_file).map_err(|e| e.to_string())
-        }
+        Ok(out) if out.status.success() => fs::read(&output_file).map_err(|e| e.to_string()),
         Ok(out) => {
-            warn!("wasm-opt failed, returning unoptimized WASM: {}",
-                  String::from_utf8_lossy(&out.stderr));
+            warn!(
+                "wasm-opt failed, returning unoptimized WASM: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             Ok(wasm.to_vec())
         }
         Err(e) => {
@@ -776,7 +854,7 @@ fn parse_cargo_errors_with_locations(stderr: &str) -> Vec<CompileError> {
                     if parts.len() == 3 {
                         err_col = parts[0].parse().unwrap_or(1);
                         err_line = parts[1].parse().unwrap_or(1);
-                        file = parts[2].to_string();
+                        file = sanitize_reported_path(parts[2]);
                     }
                 }
             }
@@ -825,7 +903,7 @@ fn parse_clang_errors(stderr: &str) -> Vec<CompileError> {
         if line.contains("error:") {
             let parts: Vec<&str> = line.splitn(4, ':').collect();
             if parts.len() >= 4 {
-                let file = parts[0].to_string();
+                let file = sanitize_reported_path(parts[0]);
                 let err_line = parts[1].parse().unwrap_or(1);
                 let err_col = parts[2].parse().unwrap_or(1);
                 let message = parts[3..].join(":").trim().to_string();
@@ -836,11 +914,15 @@ fn parse_clang_errors(stderr: &str) -> Vec<CompileError> {
                     message,
                 });
             } else {
+                let message = line
+                    .split_once("error:")
+                    .map(|(_, detail)| format!("error: {}", detail.trim()))
+                    .unwrap_or_else(|| "Compilation failed (see compiler logs)".to_string());
                 errors.push(CompileError {
                     file: "contract.c".to_string(),
                     line: 1,
                     col: 1,
-                    message: line.to_string(),
+                    message,
                 });
             }
         }
@@ -851,7 +933,7 @@ fn parse_clang_errors(stderr: &str) -> Vec<CompileError> {
             file: "contract.c".to_string(),
             line: 1,
             col: 1,
-            message: stderr.to_string(),
+            message: "Compilation failed (see compiler logs)".to_string(),
         });
     }
 
@@ -869,11 +951,13 @@ fn parse_asc_errors(stderr: &str) -> Vec<CompileError> {
             let mut file = "contract.ts".to_string();
             let mut err_line: usize = 1;
             let mut err_col: usize = 1;
+            let mut message = line.trim().to_string();
 
             if let Some(in_pos) = line.rfind(" in ") {
                 let loc_part = &line[in_pos + 4..];
+                message = line[..in_pos].trim().to_string();
                 if let Some(paren) = loc_part.find('(') {
-                    file = loc_part[..paren].to_string();
+                    file = sanitize_reported_path(&loc_part[..paren]);
                     let coords = &loc_part[paren + 1..loc_part.len().saturating_sub(1)];
                     let coord_parts: Vec<&str> = coords.split(',').collect();
                     if coord_parts.len() >= 2 {
@@ -887,7 +971,7 @@ fn parse_asc_errors(stderr: &str) -> Vec<CompileError> {
                 file,
                 line: err_line,
                 col: err_col,
-                message: line.to_string(),
+                message,
             });
         }
     }
@@ -897,21 +981,53 @@ fn parse_asc_errors(stderr: &str) -> Vec<CompileError> {
             file: "contract.ts".to_string(),
             line: 1,
             col: 1,
-            message: stderr.to_string(),
+            message: "Compilation failed (see compiler logs)".to_string(),
         });
     }
 
     errors
 }
 
-/// Convert a PathBuf to &str, returning a compile error if the path contains non-UTF8.
-fn path_to_str(path: &PathBuf) -> Result<String, Vec<CompileError>> {
+fn sanitize_reported_path(raw: &str) -> String {
+    let trimmed = raw
+        .trim()
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '`'));
+    if trimmed.is_empty() {
+        return "source".to_string();
+    }
+
+    let components: Vec<String> = Path::new(trimmed)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str().map(|s| s.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    if components.is_empty() {
+        return trimmed.to_string();
+    }
+
+    for anchor in ["src", "tests", "examples"] {
+        if let Some(index) = components.iter().rposition(|part| part == anchor) {
+            return components[index..].join("/");
+        }
+    }
+
+    components
+        .last()
+        .cloned()
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+/// Convert a path to a UTF-8 string, returning a compile error if the path contains non-UTF8.
+fn path_to_str(path: &Path) -> Result<String, Vec<CompileError>> {
     path.to_str().map(|s| s.to_string()).ok_or_else(|| {
         vec![CompileError {
             file: "system".to_string(),
             line: 0,
             col: 0,
-            message: format!("Non-UTF8 path: {:?}", path),
+            message: "Non-UTF8 temporary path".to_string(),
         }]
     })
 }
@@ -973,6 +1089,7 @@ async fn wait_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     // ── LEB128 ──────────────────────────────────────────────
 
@@ -1091,6 +1208,14 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_cargo_errors_redacts_absolute_temp_path() {
+        let stderr = "error[E0308]: mismatched types\n  --> /tmp/compiler-123/src/lib.rs:10:5\n  |\n";
+        let errors = parse_cargo_errors_with_locations(stderr);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "src/lib.rs");
+    }
+
+    #[test]
     fn test_parse_clang_errors_with_location() {
         let stderr = "contract.c:15:3: error: expected ';'\n";
         let errors = parse_clang_errors(stderr);
@@ -1101,6 +1226,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_clang_errors_redacts_absolute_temp_path() {
+        let stderr = "/tmp/compiler-123/contract.c:15:3: error: expected ';'\n";
+        let errors = parse_clang_errors(stderr);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "contract.c");
+        assert!(!errors[0].message.contains("/tmp/compiler-123"));
+    }
+
+    #[test]
+    fn test_parse_clang_errors_fallback_avoids_raw_stderr() {
+        let stderr = "/tmp/private/project/contract.c: note: build failed\n";
+        let errors = parse_clang_errors(stderr);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "Compilation failed (see compiler logs)");
+    }
+
+    #[test]
     fn test_parse_asc_errors_with_location() {
         let stderr = "ERROR TS2322: Type mismatch in contract.ts(10,5)\n";
         let errors = parse_asc_errors(stderr);
@@ -1108,6 +1250,23 @@ mod tests {
         assert_eq!(errors[0].file, "contract.ts");
         assert_eq!(errors[0].line, 10);
         assert_eq!(errors[0].col, 5);
+    }
+
+    #[test]
+    fn test_parse_asc_errors_redacts_absolute_temp_path() {
+        let stderr = "ERROR TS2322: Type mismatch in /tmp/compiler-123/contract.ts(10,5)\n";
+        let errors = parse_asc_errors(stderr);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "contract.ts");
+        assert_eq!(errors[0].message, "ERROR TS2322: Type mismatch");
+    }
+
+    #[test]
+    fn test_parse_asc_errors_fallback_avoids_raw_stderr() {
+        let stderr = "/tmp/private/project/contract.ts failed\n";
+        let errors = parse_asc_errors(stderr);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "Compilation failed (see compiler logs)");
     }
 
     #[test]
@@ -1126,6 +1285,20 @@ mod tests {
         assert_eq!(MAX_SOURCE_SIZE, 512 * 1024);
     }
 
+    #[test]
+    fn test_validate_wasm_output_size_accepts_limit() {
+        assert!(validate_wasm_output_size(MAX_CONTRACT_CODE).is_ok());
+    }
+
+    #[test]
+    fn test_validate_wasm_output_size_rejects_oversized_artifacts() {
+        let errors = validate_wasm_output_size(MAX_CONTRACT_CODE + 1)
+            .expect_err("oversized compiler output must be rejected");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "output");
+        assert!(errors[0].message.contains("too large"));
+    }
+
     // ── path_to_str ─────────────────────────────────────────
 
     #[test]
@@ -1134,6 +1307,18 @@ mod tests {
         let result = path_to_str(&p);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "/tmp/foo.wasm");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_to_str_redacts_non_utf8_path() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(vec![0x66, 0x6f, 0x80]));
+        let errors = path_to_str(&path).expect_err("non-utf8 path must fail");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "Non-UTF8 temporary path");
     }
 
     // ── P9-INF-01: API key authentication ───────────────────

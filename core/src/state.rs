@@ -43,6 +43,192 @@ fn num_cpus() -> i32 {
         .min(8) // Cap at 8 to avoid over-subscribing
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RocksDbCompressionProfile {
+    Lz4,
+    Zstd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RocksDbGlobalTuningProfile {
+    max_open_files: i32,
+    keep_log_file_num: usize,
+    max_total_wal_size: u64,
+    wal_bytes_per_sync: u64,
+    bytes_per_sync: u64,
+    max_background_jobs: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RocksDbCfTuningProfile {
+    compression: RocksDbCompressionProfile,
+    block_size: usize,
+    write_buffer_size: usize,
+    max_write_buffer_number: i32,
+    min_write_buffer_number_to_merge: i32,
+    dynamic_level_bytes: bool,
+    target_file_size_base: u64,
+    prefix_len: usize,
+    enable_bloom_filter: bool,
+    cache_index_and_filter_blocks: bool,
+    pin_l0_filter_and_index_blocks_in_cache: bool,
+    memtable_prefix_bloom_ratio_per_mille: u16,
+}
+
+fn hot_db_tuning_profile() -> RocksDbGlobalTuningProfile {
+    RocksDbGlobalTuningProfile {
+        max_open_files: 4096,
+        keep_log_file_num: 5,
+        max_total_wal_size: 256 * 1024 * 1024,
+        wal_bytes_per_sync: 1024 * 1024,
+        bytes_per_sync: 1024 * 1024,
+        max_background_jobs: 4,
+    }
+}
+
+fn point_lookup_tuning_profile(prefix_len: usize) -> RocksDbCfTuningProfile {
+    RocksDbCfTuningProfile {
+        compression: RocksDbCompressionProfile::Lz4,
+        block_size: 16 * 1024,
+        write_buffer_size: 64 * 1024 * 1024,
+        max_write_buffer_number: 3,
+        min_write_buffer_number_to_merge: 2,
+        dynamic_level_bytes: true,
+        target_file_size_base: 64 * 1024 * 1024,
+        prefix_len,
+        enable_bloom_filter: true,
+        cache_index_and_filter_blocks: true,
+        pin_l0_filter_and_index_blocks_in_cache: true,
+        memtable_prefix_bloom_ratio_per_mille: 0,
+    }
+}
+
+fn prefix_scan_tuning_profile(prefix_len: usize) -> RocksDbCfTuningProfile {
+    RocksDbCfTuningProfile {
+        compression: RocksDbCompressionProfile::Lz4,
+        block_size: 16 * 1024,
+        write_buffer_size: 32 * 1024 * 1024,
+        max_write_buffer_number: 3,
+        min_write_buffer_number_to_merge: 2,
+        dynamic_level_bytes: true,
+        target_file_size_base: 64 * 1024 * 1024,
+        prefix_len,
+        enable_bloom_filter: true,
+        cache_index_and_filter_blocks: true,
+        pin_l0_filter_and_index_blocks_in_cache: true,
+        memtable_prefix_bloom_ratio_per_mille: 100,
+    }
+}
+
+fn write_heavy_tuning_profile(prefix_len: usize) -> RocksDbCfTuningProfile {
+    RocksDbCfTuningProfile {
+        compression: RocksDbCompressionProfile::Lz4,
+        block_size: 16 * 1024,
+        write_buffer_size: 128 * 1024 * 1024,
+        max_write_buffer_number: 4,
+        min_write_buffer_number_to_merge: 2,
+        dynamic_level_bytes: true,
+        target_file_size_base: 128 * 1024 * 1024,
+        prefix_len,
+        enable_bloom_filter: true,
+        cache_index_and_filter_blocks: true,
+        pin_l0_filter_and_index_blocks_in_cache: false,
+        memtable_prefix_bloom_ratio_per_mille: 0,
+    }
+}
+
+fn small_cf_tuning_profile() -> RocksDbCfTuningProfile {
+    RocksDbCfTuningProfile {
+        compression: RocksDbCompressionProfile::Lz4,
+        block_size: 0,
+        write_buffer_size: 4 * 1024 * 1024,
+        max_write_buffer_number: 2,
+        min_write_buffer_number_to_merge: 0,
+        dynamic_level_bytes: false,
+        target_file_size_base: 0,
+        prefix_len: 0,
+        enable_bloom_filter: false,
+        cache_index_and_filter_blocks: false,
+        pin_l0_filter_and_index_blocks_in_cache: false,
+        memtable_prefix_bloom_ratio_per_mille: 0,
+    }
+}
+
+fn archival_tuning_profile(prefix_len: usize) -> RocksDbCfTuningProfile {
+    RocksDbCfTuningProfile {
+        compression: RocksDbCompressionProfile::Zstd,
+        block_size: 32 * 1024,
+        write_buffer_size: 32 * 1024 * 1024,
+        max_write_buffer_number: 2,
+        min_write_buffer_number_to_merge: 0,
+        dynamic_level_bytes: true,
+        target_file_size_base: 128 * 1024 * 1024,
+        prefix_len,
+        enable_bloom_filter: true,
+        cache_index_and_filter_blocks: true,
+        pin_l0_filter_and_index_blocks_in_cache: false,
+        memtable_prefix_bloom_ratio_per_mille: 0,
+    }
+}
+
+fn apply_global_tuning(opts: &mut Options, tuning: RocksDbGlobalTuningProfile) {
+    opts.set_max_open_files(tuning.max_open_files);
+    opts.set_keep_log_file_num(tuning.keep_log_file_num);
+    opts.set_max_total_wal_size(tuning.max_total_wal_size);
+    opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
+    opts.set_wal_bytes_per_sync(tuning.wal_bytes_per_sync);
+    opts.set_bytes_per_sync(tuning.bytes_per_sync);
+    opts.set_max_background_jobs(tuning.max_background_jobs);
+}
+
+fn apply_cf_tuning(opts: &mut Options, shared_cache: &Cache, tuning: RocksDbCfTuningProfile) {
+    match tuning.compression {
+        RocksDbCompressionProfile::Lz4 => {
+            opts.set_compression_type(rocksdb::DBCompressionType::Lz4)
+        }
+        RocksDbCompressionProfile::Zstd => {
+            opts.set_compression_type(rocksdb::DBCompressionType::Zstd)
+        }
+    }
+
+    let mut bbo = BlockBasedOptions::default();
+    if tuning.enable_bloom_filter {
+        bbo.set_bloom_filter(10.0, false);
+    }
+    bbo.set_block_cache(shared_cache);
+    if tuning.block_size > 0 {
+        bbo.set_block_size(tuning.block_size);
+    }
+    if tuning.cache_index_and_filter_blocks {
+        bbo.set_cache_index_and_filter_blocks(true);
+    }
+    if tuning.pin_l0_filter_and_index_blocks_in_cache {
+        bbo.set_pin_l0_filter_and_index_blocks_in_cache(true);
+    }
+    opts.set_block_based_table_factory(&bbo);
+
+    if tuning.prefix_len > 0 {
+        opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(tuning.prefix_len));
+    }
+    if tuning.memtable_prefix_bloom_ratio_per_mille > 0 {
+        opts.set_memtable_prefix_bloom_ratio(
+            tuning.memtable_prefix_bloom_ratio_per_mille as f64 / 1000.0,
+        );
+    }
+
+    opts.set_write_buffer_size(tuning.write_buffer_size);
+    opts.set_max_write_buffer_number(tuning.max_write_buffer_number);
+    if tuning.min_write_buffer_number_to_merge > 0 {
+        opts.set_min_write_buffer_number_to_merge(tuning.min_write_buffer_number_to_merge);
+    }
+    if tuning.dynamic_level_bytes {
+        opts.set_level_compaction_dynamic_level_bytes(true);
+    }
+    if tuning.target_file_size_base > 0 {
+        opts.set_target_file_size_base(tuning.target_file_size_base);
+    }
+}
+
 /// Column family names
 const CF_ACCOUNTS: &str = "accounts";
 const CF_BLOCKS: &str = "blocks";
@@ -694,6 +880,9 @@ pub struct StateStore {
     /// PHASE1-FIX S-2: Mutex to serialize next_tx_slot_seq read-modify-write operations,
     /// preventing duplicate tx sequence numbers under concurrent block processing.
     tx_slot_seq_lock: Arc<std::sync::Mutex<()>>,
+    /// Serialize canonical block writes so tip metadata cannot move backward
+    /// when adjacent heights are persisted by competing runtime paths.
+    block_write_lock: Arc<std::sync::Mutex<()>>,
     /// P10-CORE-01: Mutex to serialize add_burned read-modify-write operations,
     /// preventing lost updates under concurrent access.
     burned_lock: Arc<std::sync::Mutex<()>>,
@@ -744,6 +933,12 @@ pub struct StateBatch {
     symbol_overlay: std::collections::HashSet<String>,
     /// Track nullifiers marked spent inside this batch so reads are batch-consistent.
     spent_nullifier_overlay: std::collections::HashSet<[u8; 32]>,
+    /// Track shielded commitments inserted inside this batch so reads and
+    /// Merkle rebuilds stay batch-consistent.
+    shielded_commitment_overlay: std::collections::BTreeMap<u64, [u8; 32]>,
+    /// Track singleton shielded pool state updates inside this batch so
+    /// repeated shielded ops see prior in-flight pool mutations.
+    shielded_pool_overlay: Option<crate::zk::ShieldedPoolState>,
     /// AUDIT-FIX H-1: Governed proposal overlay so proposals participate in batch atomicity.
     governed_proposal_overlay: std::collections::HashMap<u64, crate::multisig::GovernedProposal>,
     /// AUDIT-FIX H-1: Governed proposal counter override (set on first alloc in this batch).
@@ -755,6 +950,11 @@ pub struct StateBatch {
         std::collections::HashMap<u64, crate::governance::GovernanceProposal>,
     /// Governance proposal counter override (set on first alloc in this batch).
     governance_proposal_counter: Option<u64>,
+    /// Pending governance parameter changes queued inside this batch.
+    pending_governance_change_overlay: std::collections::HashMap<u8, u64>,
+    /// Per-deployer contract deploy nonce overlay for batch-safe address
+    /// allocation.
+    contract_deploy_nonce_overlay: std::collections::HashMap<Pubkey, u64>,
     /// Track newly indexed programs in this batch (applied on commit)
     new_programs: i64,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
@@ -952,14 +1152,8 @@ impl StateStore {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
-        db_opts.set_max_open_files(4096);
-        db_opts.set_keep_log_file_num(5);
-        db_opts.set_max_total_wal_size(256 * 1024 * 1024); // 256MB WAL limit
-        db_opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
-        db_opts.set_wal_bytes_per_sync(1024 * 1024);
-        db_opts.set_bytes_per_sync(1024 * 1024); // 1MB sync granularity
+        apply_global_tuning(&mut db_opts, hot_db_tuning_profile());
         db_opts.increase_parallelism(num_cpus());
-        db_opts.set_max_background_jobs(4);
 
         // ── Shared block cache: configurable LRU ─────────────────────
         let cache_size_mb = cache_mb.unwrap_or_else(|| {
@@ -1005,96 +1199,51 @@ impl StateStore {
         // Point-lookup CF: bloom filter, large blocks, shared cache
         let point_lookup_opts = |prefix_len: usize| -> Options {
             let mut opts = Options::default();
-            opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-            let mut bbo = BlockBasedOptions::default();
-            bbo.set_bloom_filter(10.0, false);
-            bbo.set_block_cache(&shared_cache);
-            bbo.set_block_size(16 * 1024); // 16KB blocks
-            bbo.set_cache_index_and_filter_blocks(true);
-            bbo.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            opts.set_block_based_table_factory(&bbo);
-            opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
-            opts.set_max_write_buffer_number(3);
-            opts.set_min_write_buffer_number_to_merge(2);
-            opts.set_level_compaction_dynamic_level_bytes(true);
-            opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB SST files
-            if prefix_len > 0 {
-                opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(prefix_len));
-            }
+            apply_cf_tuning(
+                &mut opts,
+                &shared_cache,
+                point_lookup_tuning_profile(prefix_len),
+            );
             opts
         };
 
         // Prefix-scan CF: prefix bloom + extractor for efficient prefix iteration
         let prefix_scan_opts = |prefix_len: usize| -> Options {
             let mut opts = Options::default();
-            opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-            let mut bbo = BlockBasedOptions::default();
-            bbo.set_bloom_filter(10.0, false);
-            bbo.set_block_cache(&shared_cache);
-            bbo.set_block_size(16 * 1024);
-            bbo.set_cache_index_and_filter_blocks(true);
-            bbo.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            opts.set_block_based_table_factory(&bbo);
-            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(prefix_len));
-            opts.set_memtable_prefix_bloom_ratio(0.1);
-            opts.set_write_buffer_size(32 * 1024 * 1024); // 32MB
-            opts.set_max_write_buffer_number(3);
-            opts.set_min_write_buffer_number_to_merge(2);
-            opts.set_level_compaction_dynamic_level_bytes(true);
-            opts.set_target_file_size_base(64 * 1024 * 1024);
+            apply_cf_tuning(
+                &mut opts,
+                &shared_cache,
+                prefix_scan_tuning_profile(prefix_len),
+            );
             opts
         };
 
         // Write-heavy CF: larger write buffers, universal compaction
         let write_heavy_opts = |prefix_len: usize| -> Options {
             let mut opts = Options::default();
-            opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-            let mut bbo = BlockBasedOptions::default();
-            bbo.set_bloom_filter(10.0, false);
-            bbo.set_block_cache(&shared_cache);
-            bbo.set_block_size(16 * 1024);
-            bbo.set_cache_index_and_filter_blocks(true);
-            opts.set_block_based_table_factory(&bbo);
-            opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
-            opts.set_max_write_buffer_number(4);
-            opts.set_min_write_buffer_number_to_merge(2);
-            opts.set_level_compaction_dynamic_level_bytes(true);
-            opts.set_target_file_size_base(128 * 1024 * 1024); // 128MB SSTs
-            if prefix_len > 0 {
-                opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(prefix_len));
-            }
+            apply_cf_tuning(
+                &mut opts,
+                &shared_cache,
+                write_heavy_tuning_profile(prefix_len),
+            );
             opts
         };
 
         // Small/singleton CF: minimal resources
         let small_cf_opts = || -> Options {
             let mut opts = Options::default();
-            opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-            let mut bbo = BlockBasedOptions::default();
-            bbo.set_block_cache(&shared_cache);
-            opts.set_block_based_table_factory(&bbo);
-            opts.set_write_buffer_size(4 * 1024 * 1024); // 4MB
-            opts.set_max_write_buffer_number(2);
+            apply_cf_tuning(&mut opts, &shared_cache, small_cf_tuning_profile());
             opts
         };
 
         // Cold/archival CF: Zstd compression for space efficiency
         let archival_opts = |prefix_len: usize| -> Options {
             let mut opts = Options::default();
-            opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
-            let mut bbo = BlockBasedOptions::default();
-            bbo.set_bloom_filter(10.0, false);
-            bbo.set_block_cache(&shared_cache);
-            bbo.set_block_size(32 * 1024); // 32KB blocks (compress better)
-            bbo.set_cache_index_and_filter_blocks(true);
-            opts.set_block_based_table_factory(&bbo);
-            opts.set_write_buffer_size(32 * 1024 * 1024);
-            opts.set_max_write_buffer_number(2);
-            opts.set_level_compaction_dynamic_level_bytes(true);
-            opts.set_target_file_size_base(128 * 1024 * 1024);
-            if prefix_len > 0 {
-                opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(prefix_len));
-            }
+            apply_cf_tuning(
+                &mut opts,
+                &shared_cache,
+                archival_tuning_profile(prefix_len),
+            );
             opts
         };
 
@@ -1169,6 +1318,7 @@ impl StateStore {
             event_seq_lock: Arc::new(std::sync::Mutex::new(())),
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
             tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            block_write_lock: Arc::new(std::sync::Mutex::new(())),
             burned_lock: Arc::new(std::sync::Mutex::new(())),
             minted_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
@@ -1363,6 +1513,11 @@ impl StateStore {
         confirmed_slot: Option<u64>,
         finalized_slot: Option<u64>,
     ) -> Result<(), String> {
+        let _block_write_guard = self
+            .block_write_lock
+            .lock()
+            .map_err(|_| "Block write lock poisoned".to_string())?;
+
         let cf = self
             .db
             .cf_handle(CF_BLOCKS)
@@ -1398,18 +1553,33 @@ impl StateStore {
             .is_none();
 
         let mut batch = WriteBatch::default();
+        let current_last_slot = self.get_last_slot().unwrap_or(0);
+        let current_confirmed_slot = self.get_last_confirmed_slot().unwrap_or(0);
+        let current_finalized_slot = self.get_last_finalized_slot().unwrap_or(0);
 
         // Block data + slot index
         batch.put_cf(&cf, block_hash.0, &value);
         batch.put_cf(&slot_cf, block.header.slot.to_be_bytes(), block_hash.0);
         if let Some(slot) = last_slot {
-            batch.put_cf(&slot_cf, b"last_slot", slot.to_be_bytes());
+            batch.put_cf(
+                &slot_cf,
+                b"last_slot",
+                slot.max(current_last_slot).to_be_bytes(),
+            );
         }
         if let Some(slot) = confirmed_slot {
-            batch.put_cf(&slot_cf, b"confirmed_slot", slot.to_be_bytes());
+            batch.put_cf(
+                &slot_cf,
+                b"confirmed_slot",
+                slot.max(current_confirmed_slot).to_be_bytes(),
+            );
         }
         if let Some(slot) = finalized_slot {
-            batch.put_cf(&slot_cf, b"finalized_slot", slot.to_be_bytes());
+            batch.put_cf(
+                &slot_cf,
+                b"finalized_slot",
+                slot.max(current_finalized_slot).to_be_bytes(),
+            );
         }
 
         // Per-transaction writes: tx body + tx→slot + slot→tx indexes
@@ -4492,11 +4662,15 @@ impl StateStore {
             nft_token_id_overlay: std::collections::HashSet::new(),
             symbol_overlay: std::collections::HashSet::new(),
             spent_nullifier_overlay: std::collections::HashSet::new(),
+            shielded_commitment_overlay: std::collections::BTreeMap::new(),
+            shielded_pool_overlay: None,
             governed_proposal_overlay: std::collections::HashMap::new(),
             governed_proposal_counter: None,
             governed_transfer_volume_overlay: std::collections::HashMap::new(),
             governance_proposal_overlay: std::collections::HashMap::new(),
             governance_proposal_counter: None,
+            pending_governance_change_overlay: std::collections::HashMap::new(),
+            contract_deploy_nonce_overlay: std::collections::HashMap::new(),
             new_programs: 0,
             event_seq: 0,
             dirty_contract_keys: Vec::new(),
@@ -5482,7 +5656,62 @@ impl StateBatch {
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let key = format!("pending_gov_{}", param_id);
         self.batch.put_cf(&cf, key.as_bytes(), value.to_le_bytes());
+        self.pending_governance_change_overlay
+            .insert(param_id, value);
         Ok(())
+    }
+
+    /// Retrieve pending governance parameter changes including any values
+    /// queued inside the current batch.
+    pub fn get_pending_governance_changes(&self) -> Result<Vec<(u8, u64)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut changes = Vec::new();
+        for param_id in 0..=7u8 {
+            if let Some(value) = self.pending_governance_change_overlay.get(&param_id) {
+                changes.push((param_id, *value));
+                continue;
+            }
+
+            let key = format!("pending_gov_{}", param_id);
+            if let Ok(Some(data)) = self.db.get_cf(&cf, key.as_bytes()) {
+                if data.len() == 8 {
+                    let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
+                    changes.push((param_id, u64::from_le_bytes(bytes)));
+                }
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Allocate the next per-deployer contract deploy nonce through the active
+    /// batch so failed transactions do not consume future addresses.
+    pub fn next_contract_deploy_nonce(&mut self, deployer: &Pubkey) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("contract_deploy_nonce:{}", deployer.to_base58());
+        let current = if let Some(next_nonce) = self.contract_deploy_nonce_overlay.get(deployer) {
+            *next_nonce
+        } else {
+            match self.db.get_cf(&cf, key.as_bytes()) {
+                Ok(Some(data)) if data.len() == 8 => {
+                    u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
+                }
+                Ok(_) => 0,
+                Err(e) => return Err(format!("Database error loading deploy nonce: {}", e)),
+            }
+        };
+
+        let next = current
+            .checked_add(1)
+            .ok_or_else(|| "Contract deploy nonce overflow".to_string())?;
+        self.contract_deploy_nonce_overlay.insert(*deployer, next);
+        self.batch.put_cf(&cf, key.as_bytes(), next.to_le_bytes());
+        Ok(current)
     }
 
     /// Allocate the next governance proposal ID through the batch.
@@ -5578,7 +5807,48 @@ impl StateBatch {
             .cf_handle(CF_SHIELDED_COMMITMENTS)
             .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
         self.batch.put_cf(&cf, index.to_be_bytes(), commitment);
+        self.shielded_commitment_overlay.insert(index, *commitment);
         Ok(())
+    }
+
+    /// Collect all commitment leaves [0..count), including any uncommitted
+    /// inserts from the active batch overlay.
+    pub fn get_all_shielded_commitments(&self, count: u64) -> Result<Vec<[u8; 32]>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_COMMITMENTS)
+            .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
+        let mut out = Vec::with_capacity(count as usize);
+
+        for i in 0..count {
+            if let Some(commitment) = self.shielded_commitment_overlay.get(&i) {
+                out.push(*commitment);
+                continue;
+            }
+
+            match self.db.get_cf(&cf, i.to_be_bytes()) {
+                Ok(Some(bytes)) if bytes.len() == 32 => {
+                    let mut leaf = [0u8; 32];
+                    leaf.copy_from_slice(&bytes);
+                    out.push(leaf);
+                }
+                Ok(Some(_)) => {
+                    return Err(format!(
+                        "Shielded commitments entry {} had invalid length",
+                        i
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Database error loading shielded commitment {}: {}",
+                        i, e
+                    ));
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     /// Check whether a nullifier has been spent (checks disk only — batch
@@ -5613,6 +5883,10 @@ impl StateBatch {
     /// Load the singleton `ShieldedPoolState` from disk.
     #[cfg(feature = "zk")]
     pub fn get_shielded_pool_state(&self) -> Result<crate::zk::ShieldedPoolState, String> {
+        if let Some(pool) = &self.shielded_pool_overlay {
+            return Ok(pool.clone());
+        }
+
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_POOL)
@@ -5638,6 +5912,7 @@ impl StateBatch {
         let data = serde_json::to_vec(state)
             .map_err(|e| format!("Failed to serialize ShieldedPoolState: {}", e))?;
         self.batch.put_cf(&cf, b"state", &data);
+        self.shielded_pool_overlay = Some(state.clone());
         Ok(())
     }
 }
@@ -6496,6 +6771,8 @@ impl StateStore {
     /// Store complete fee configuration including distribution percentages
     /// PHASE1-FIX S-5: Single atomic WriteBatch for all 9 fee config keys.
     pub fn set_fee_config_full(&self, config: &crate::FeeConfig) -> Result<(), String> {
+        config.validate_distribution()?;
+
         let cf = self
             .db
             .cf_handle(CF_STATS)
@@ -6897,6 +7174,28 @@ impl StateStore {
             .map_err(|e| format!("Failed to queue governance param change: {}", e))
     }
 
+    pub fn next_contract_deploy_nonce(&self, deployer: &Pubkey) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("contract_deploy_nonce:{}", deployer.to_base58());
+        let current = match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
+            }
+            Ok(_) => 0,
+            Err(e) => return Err(format!("Database error loading deploy nonce: {}", e)),
+        };
+        let next = current
+            .checked_add(1)
+            .ok_or_else(|| "Contract deploy nonce overflow".to_string())?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), next.to_le_bytes())
+            .map_err(|e| format!("Failed to store deploy nonce: {}", e))?;
+        Ok(current)
+    }
+
     /// Retrieve all pending governance parameter changes.
     /// Returns a list of (param_id, value) tuples.
     pub fn get_pending_governance_changes(&self) -> Result<Vec<(u8, u64)>, String> {
@@ -6949,38 +7248,18 @@ impl StateStore {
         let mut count = 0;
 
         for (param_id, value) in &changes {
-            match *param_id {
-                crate::processor::GOV_PARAM_BASE_FEE => {
-                    fee_config.base_fee = *value;
-                    fee_changed = true;
+            if fee_config.apply_governance_param(*param_id, *value) {
+                fee_changed = true;
+            } else {
+                match *param_id {
+                    crate::processor::GOV_PARAM_MIN_VALIDATOR_STAKE => {
+                        self.set_min_validator_stake(*value)?;
+                    }
+                    crate::processor::GOV_PARAM_EPOCH_SLOTS => {
+                        self.set_epoch_slots(*value)?;
+                    }
+                    _ => {}
                 }
-                crate::processor::GOV_PARAM_FEE_BURN_PERCENT => {
-                    fee_config.fee_burn_percent = *value;
-                    fee_changed = true;
-                }
-                crate::processor::GOV_PARAM_FEE_PRODUCER_PERCENT => {
-                    fee_config.fee_producer_percent = *value;
-                    fee_changed = true;
-                }
-                crate::processor::GOV_PARAM_FEE_VOTERS_PERCENT => {
-                    fee_config.fee_voters_percent = *value;
-                    fee_changed = true;
-                }
-                crate::processor::GOV_PARAM_FEE_TREASURY_PERCENT => {
-                    fee_config.fee_treasury_percent = *value;
-                    fee_changed = true;
-                }
-                crate::processor::GOV_PARAM_FEE_COMMUNITY_PERCENT => {
-                    fee_config.fee_community_percent = *value;
-                    fee_changed = true;
-                }
-                crate::processor::GOV_PARAM_MIN_VALIDATOR_STAKE => {
-                    self.set_min_validator_stake(*value)?;
-                }
-                crate::processor::GOV_PARAM_EPOCH_SLOTS => {
-                    self.set_epoch_slots(*value)?;
-                }
-                _ => {} // Unknown param_id — skip silently
             }
             count += 1;
         }
@@ -9402,6 +9681,56 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn test_hot_db_tuning_profile_pins_wal_and_background_settings() {
+        let tuning = hot_db_tuning_profile();
+
+        assert_eq!(tuning.max_open_files, 4096);
+        assert_eq!(tuning.keep_log_file_num, 5);
+        assert_eq!(tuning.max_total_wal_size, 256 * 1024 * 1024);
+        assert_eq!(tuning.wal_bytes_per_sync, 1024 * 1024);
+        assert_eq!(tuning.bytes_per_sync, 1024 * 1024);
+        assert_eq!(tuning.max_background_jobs, 4);
+    }
+
+    #[test]
+    fn test_cf_tuning_profiles_pin_compaction_presets() {
+        let point_lookup = point_lookup_tuning_profile(32);
+        assert_eq!(point_lookup.compression, RocksDbCompressionProfile::Lz4);
+        assert_eq!(point_lookup.block_size, 16 * 1024);
+        assert_eq!(point_lookup.write_buffer_size, 64 * 1024 * 1024);
+        assert_eq!(point_lookup.max_write_buffer_number, 3);
+        assert_eq!(point_lookup.min_write_buffer_number_to_merge, 2);
+        assert!(point_lookup.dynamic_level_bytes);
+        assert_eq!(point_lookup.target_file_size_base, 64 * 1024 * 1024);
+        assert!(point_lookup.enable_bloom_filter);
+        assert!(point_lookup.cache_index_and_filter_blocks);
+        assert!(point_lookup.pin_l0_filter_and_index_blocks_in_cache);
+
+        let prefix_scan = prefix_scan_tuning_profile(32);
+        assert_eq!(prefix_scan.write_buffer_size, 32 * 1024 * 1024);
+        assert_eq!(prefix_scan.memtable_prefix_bloom_ratio_per_mille, 100);
+        assert_eq!(prefix_scan.prefix_len, 32);
+
+        let write_heavy = write_heavy_tuning_profile(0);
+        assert_eq!(write_heavy.write_buffer_size, 128 * 1024 * 1024);
+        assert_eq!(write_heavy.max_write_buffer_number, 4);
+        assert_eq!(write_heavy.target_file_size_base, 128 * 1024 * 1024);
+        assert!(write_heavy.dynamic_level_bytes);
+
+        let archival = archival_tuning_profile(32);
+        assert_eq!(archival.compression, RocksDbCompressionProfile::Zstd);
+        assert_eq!(archival.block_size, 32 * 1024);
+        assert_eq!(archival.write_buffer_size, 32 * 1024 * 1024);
+        assert_eq!(archival.target_file_size_base, 128 * 1024 * 1024);
+
+        let small_cf = small_cf_tuning_profile();
+        assert_eq!(small_cf.write_buffer_size, 4 * 1024 * 1024);
+        assert_eq!(small_cf.max_write_buffer_number, 2);
+        assert!(!small_cf.dynamic_level_bytes);
+        assert_eq!(small_cf.target_file_size_base, 0);
+    }
+
+    #[test]
     fn test_state_store() {
         let temp_dir = tempdir().unwrap();
         let state = StateStore::open(temp_dir.path()).unwrap();
@@ -9482,6 +9811,49 @@ mod tests {
             root1, root2,
             "Changed balance should produce different state root"
         );
+    }
+
+    #[test]
+    fn test_invalidate_merkle_cache_forces_rebuild() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let account_pk = Pubkey([7u8; 32]);
+        let contract_pk = Pubkey([8u8; 32]);
+        state
+            .put_account(&account_pk, &Account::new(100, account_pk))
+            .unwrap();
+        state
+            .put_contract_storage(&contract_pk, b"vault:key", b"value")
+            .unwrap();
+
+        let initial_root = state.compute_state_root();
+        let cf_stats = state.db.cf_handle(CF_STATS).expect("stats column family");
+        let read_count = |key: &[u8]| -> u64 {
+            state
+                .db
+                .get_cf(&cf_stats, key)
+                .expect("read stats key")
+                .map(|value| {
+                    let raw: &[u8] = value.as_ref();
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&raw[..8]);
+                    u64::from_le_bytes(bytes)
+                })
+                .unwrap_or(0)
+        };
+
+        assert!(read_count(b"merkle_leaf_count") > 0);
+        assert!(read_count(b"contract_merkle_leaf_count") > 0);
+
+        state.invalidate_merkle_cache();
+        assert_eq!(read_count(b"merkle_leaf_count"), 0);
+        assert_eq!(read_count(b"contract_merkle_leaf_count"), 0);
+
+        let rebuilt_root = state.compute_state_root();
+        assert_eq!(rebuilt_root, initial_root);
+        assert!(read_count(b"merkle_leaf_count") > 0);
+        assert!(read_count(b"contract_merkle_leaf_count") > 0);
     }
 
     #[test]
@@ -10011,6 +10383,22 @@ mod tests {
         assert!(state.is_nullifier_spent(&nullifier).unwrap());
     }
 
+    #[test]
+    fn test_shielded_batch_get_all_commitments_includes_overlay() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let committed = [0x11u8; 32];
+        state.insert_shielded_commitment(0, &committed).unwrap();
+
+        let mut batch = state.begin_batch();
+        let pending = [0x22u8; 32];
+        batch.insert_shielded_commitment(1, &pending).unwrap();
+
+        let leaves = batch.get_all_shielded_commitments(2).unwrap();
+        assert_eq!(leaves, vec![committed, pending]);
+    }
+
     #[cfg(feature = "zk")]
     #[test]
     fn test_shielded_batch_pool_state() {
@@ -10030,6 +10418,23 @@ mod tests {
         let loaded = state.get_shielded_pool_state().unwrap();
         assert_eq!(loaded.commitment_count, 10);
         assert_eq!(loaded.total_shielded, 5_000);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_batch_pool_state_reads_overlay() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let mut batch = state.begin_batch();
+        let mut pool = batch.get_shielded_pool_state().unwrap();
+        pool.commitment_count = 2;
+        pool.total_shielded = 300;
+        batch.put_shielded_pool_state(&pool).unwrap();
+
+        let reread = batch.get_shielded_pool_state().unwrap();
+        assert_eq!(reread.commitment_count, 2);
+        assert_eq!(reread.total_shielded, 300);
     }
 
     // ── P2-3: Cold storage tests ──
@@ -10067,6 +10472,34 @@ mod tests {
         assert_eq!(state.get_last_confirmed_slot().unwrap(), 7);
         assert_eq!(state.get_last_finalized_slot().unwrap(), 7);
         assert_eq!(state.get_block_by_slot(7).unwrap().unwrap().header.slot, 7);
+    }
+
+    #[test]
+    fn test_put_block_atomic_does_not_regress_tip_metadata() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let newer_block = make_test_block(11);
+        state
+            .put_block_atomic(&newer_block, Some(11), Some(11))
+            .unwrap();
+
+        let older_block = make_test_block(10);
+        state
+            .put_block_atomic(&older_block, Some(10), Some(10))
+            .unwrap();
+
+        assert_eq!(state.get_last_slot().unwrap(), 11);
+        assert_eq!(state.get_last_confirmed_slot().unwrap(), 11);
+        assert_eq!(state.get_last_finalized_slot().unwrap(), 11);
+        assert_eq!(
+            state.get_block_by_slot(10).unwrap().unwrap().header.slot,
+            10
+        );
+        assert_eq!(
+            state.get_block_by_slot(11).unwrap().unwrap().header.slot,
+            11
+        );
     }
 
     #[test]

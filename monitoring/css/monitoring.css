@@ -221,19 +221,19 @@ body {
     --paired-panel-height: clamp(24rem, 44vh, 30rem);
 }
 
-.mission-board-capped > .panel {
+.mission-board-capped>.panel {
     block-size: var(--paired-panel-height);
     min-block-size: 0;
 }
 
-.mission-board-inline > .panel {
+.mission-board-inline>.panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
     height: 100%;
 }
 
-.mission-board-inline > .panel > .panel-body {
+.mission-board-inline>.panel>.panel-body {
     flex: 1;
     min-height: 0;
 }
@@ -2240,7 +2240,7 @@ body {
         max-height: 320px;
     }
 
-    .mission-board-capped > .panel {
+    .mission-board-capped>.panel {
         block-size: auto;
     }
 

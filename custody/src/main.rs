@@ -11,17 +11,19 @@ use axum::{
 };
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
-use hmac::Mac;
 use lichen_core::{
     Hash, Instruction, Keypair, Message, PqSignature, Pubkey, Transaction, SYSTEM_PROGRAM_ID,
 };
-use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, DB};
+use rocksdb::{
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, WriteBatch, DB,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -42,6 +44,7 @@ struct HealthResponse {
 struct CustodyState {
     db: Arc<DB>,
     next_index_lock: Arc<Mutex<()>>,
+    bridge_auth_replay_lock: Arc<Mutex<()>>,
     config: CustodyConfig,
     http: reqwest::Client,
     /// AUDIT-FIX 1.20: Global withdrawal rate limiter
@@ -76,7 +79,7 @@ struct WithdrawalVelocityMetrics {
     max_value_per_hour: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 enum WithdrawalWarningLevel {
     HalfUsed,
     ThreeQuartersUsed,
@@ -121,6 +124,72 @@ impl WithdrawalRateState {
             per_address: std::collections::HashMap::new(),
         }
     }
+
+    fn snapshot(
+        &self,
+        reference_now: std::time::Instant,
+        reference_secs: u64,
+    ) -> WithdrawalRateStateSnapshot {
+        WithdrawalRateStateSnapshot {
+            minute_window_start_secs: instant_to_unix_secs(
+                self.window_start,
+                reference_now,
+                reference_secs,
+            ),
+            count_this_minute: self.count_this_minute,
+            count_warning_level: self.count_warning_level,
+            hour_window_start_secs: instant_to_unix_secs(
+                self.hour_start,
+                reference_now,
+                reference_secs,
+            ),
+            value_this_hour: self.value_this_hour,
+            value_warning_level: self.value_warning_level,
+            per_address: self
+                .per_address
+                .iter()
+                .map(|(address, instant)| {
+                    (
+                        address.clone(),
+                        instant_to_unix_secs(*instant, reference_now, reference_secs),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn from_snapshot(
+        snapshot: WithdrawalRateStateSnapshot,
+        reference_now: std::time::Instant,
+        reference_secs: u64,
+    ) -> Self {
+        Self {
+            window_start: unix_secs_to_instant(
+                snapshot.minute_window_start_secs,
+                reference_now,
+                reference_secs,
+            ),
+            count_this_minute: snapshot.count_this_minute,
+            count_warning_level: snapshot.count_warning_level,
+            value_this_hour: snapshot.value_this_hour,
+            hour_start: unix_secs_to_instant(
+                snapshot.hour_window_start_secs,
+                reference_now,
+                reference_secs,
+            ),
+            value_warning_level: snapshot.value_warning_level,
+            per_address: snapshot
+                .per_address
+                .into_iter()
+                .map(|(address, secs)| {
+                    (
+                        address,
+                        unix_secs_to_instant(secs, reference_now, reference_secs),
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 /// AUDIT-FIX W-H4: Deposit rate limiting state
@@ -140,6 +209,178 @@ impl DepositRateState {
             per_user: std::collections::HashMap::new(),
         }
     }
+
+    fn snapshot(
+        &self,
+        reference_now: std::time::Instant,
+        reference_secs: u64,
+    ) -> DepositRateStateSnapshot {
+        DepositRateStateSnapshot {
+            minute_window_start_secs: instant_to_unix_secs(
+                self.window_start,
+                reference_now,
+                reference_secs,
+            ),
+            count_this_minute: self.count_this_minute,
+            per_user: self
+                .per_user
+                .iter()
+                .map(|(user, instant)| {
+                    (
+                        user.clone(),
+                        instant_to_unix_secs(*instant, reference_now, reference_secs),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn from_snapshot(
+        snapshot: DepositRateStateSnapshot,
+        reference_now: std::time::Instant,
+        reference_secs: u64,
+    ) -> Self {
+        Self {
+            window_start: unix_secs_to_instant(
+                snapshot.minute_window_start_secs,
+                reference_now,
+                reference_secs,
+            ),
+            count_this_minute: snapshot.count_this_minute,
+            per_user: snapshot
+                .per_user
+                .into_iter()
+                .map(|(user, secs)| {
+                    (
+                        user,
+                        unix_secs_to_instant(secs, reference_now, reference_secs),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WithdrawalRateStateSnapshot {
+    minute_window_start_secs: u64,
+    count_this_minute: u64,
+    count_warning_level: Option<WithdrawalWarningLevel>,
+    hour_window_start_secs: u64,
+    value_this_hour: u64,
+    value_warning_level: Option<WithdrawalWarningLevel>,
+    per_address: std::collections::HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DepositRateStateSnapshot {
+    minute_window_start_secs: u64,
+    count_this_minute: u64,
+    per_user: std::collections::HashMap<String, u64>,
+}
+
+const CURSOR_WITHDRAWAL_RATE_STATE: &str = "withdrawal_rate_state";
+const CURSOR_DEPOSIT_RATE_STATE: &str = "deposit_rate_state";
+const CURSOR_NEXT_DERIVATION_ACCOUNT: &str = "next_derivation_account";
+const INDEX_KEY_DERIVATION_ACCOUNT_PREFIX: &str = "derivation_account:";
+const MAX_BIP44_ACCOUNT_INDEX: u32 = 0x7FFF_FFFF;
+
+fn current_unix_secs_lossy() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn instant_to_unix_secs(
+    instant: std::time::Instant,
+    reference_now: std::time::Instant,
+    reference_secs: u64,
+) -> u64 {
+    reference_secs.saturating_sub(reference_now.duration_since(instant).as_secs())
+}
+
+fn unix_secs_to_instant(
+    saved_secs: u64,
+    reference_now: std::time::Instant,
+    reference_secs: u64,
+) -> std::time::Instant {
+    reference_now
+        .checked_sub(std::time::Duration::from_secs(
+            reference_secs.saturating_sub(saved_secs),
+        ))
+        .unwrap_or(reference_now)
+}
+
+fn load_cursor_snapshot<T: serde::de::DeserializeOwned>(
+    db: &DB,
+    key: &str,
+) -> Result<Option<T>, String> {
+    let cf = db
+        .cf_handle(CF_CURSORS)
+        .ok_or_else(|| "missing cursors cf".to_string())?;
+    match db.get_cf(cf, key.as_bytes()) {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("decode {}: {}", key, e)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("db get {}: {}", key, e)),
+    }
+}
+
+fn save_cursor_snapshot<T: Serialize>(db: &DB, key: &str, value: &T) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_CURSORS)
+        .ok_or_else(|| "missing cursors cf".to_string())?;
+    let bytes = serde_json::to_vec(value).map_err(|e| format!("encode {}: {}", key, e))?;
+    db.put_cf(cf, key.as_bytes(), bytes)
+        .map_err(|e| format!("db put {}: {}", key, e))
+}
+
+fn load_withdrawal_rate_state(db: &DB) -> Result<WithdrawalRateState, String> {
+    let reference_now = std::time::Instant::now();
+    let reference_secs = current_unix_secs_lossy();
+    match load_cursor_snapshot::<WithdrawalRateStateSnapshot>(db, CURSOR_WITHDRAWAL_RATE_STATE)? {
+        Some(snapshot) => Ok(WithdrawalRateState::from_snapshot(
+            snapshot,
+            reference_now,
+            reference_secs,
+        )),
+        None => Ok(WithdrawalRateState::new()),
+    }
+}
+
+fn persist_withdrawal_rate_state(db: &DB, state: &WithdrawalRateState) -> Result<(), String> {
+    let reference_now = std::time::Instant::now();
+    let reference_secs = current_unix_secs_lossy();
+    save_cursor_snapshot(
+        db,
+        CURSOR_WITHDRAWAL_RATE_STATE,
+        &state.snapshot(reference_now, reference_secs),
+    )
+}
+
+fn load_deposit_rate_state(db: &DB) -> Result<DepositRateState, String> {
+    let reference_now = std::time::Instant::now();
+    let reference_secs = current_unix_secs_lossy();
+    match load_cursor_snapshot::<DepositRateStateSnapshot>(db, CURSOR_DEPOSIT_RATE_STATE)? {
+        Some(snapshot) => Ok(DepositRateState::from_snapshot(
+            snapshot,
+            reference_now,
+            reference_secs,
+        )),
+        None => Ok(DepositRateState::new()),
+    }
+}
+
+fn persist_deposit_rate_state(db: &DB, state: &DepositRateState) -> Result<(), String> {
+    let reference_now = std::time::Instant::now();
+    let reference_secs = current_unix_secs_lossy();
+    save_cursor_snapshot(
+        db,
+        CURSOR_DEPOSIT_RATE_STATE,
+        &state.snapshot(reference_now, reference_secs),
+    )
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -275,6 +516,7 @@ struct CustodyConfig {
     /// Set via CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS (default: 50 = 0.5%).
     rebalance_max_slippage_bps: u64,
     deposit_ttl_secs: i64,
+    pending_burn_ttl_secs: i64,
     /// Optional incident-response manifest shared with RPC/operator banners.
     incident_status_path: Option<String>,
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
@@ -340,12 +582,46 @@ struct CreateDepositResponse {
 const BRIDGE_ACCESS_DOMAIN: &str = "LICHEN_BRIDGE_ACCESS_V1";
 const BRIDGE_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
 const BRIDGE_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
+const BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT: &str = "createBridgeDeposit";
+const BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL: &str = "createWithdrawal";
+const BRIDGE_AUTH_REPLAY_PRUNE_BATCH: usize = 128;
+const WITHDRAWAL_ACCESS_DOMAIN: &str = "LICHEN_WITHDRAWAL_ACCESS_V1";
+const WITHDRAWAL_ACCESS_MAX_TTL_SECS: u64 = 24 * 60 * 60;
+const WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BridgeAccessAuth {
     issued_at: u64,
     expires_at: u64,
     signature: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WithdrawalAccessAuth {
+    issued_at: u64,
+    expires_at: u64,
+    nonce: String,
+    signature: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BridgeAuthReplayRecord {
+    deposit_id: String,
+    expires_at: u64,
+    chain: String,
+    asset: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WithdrawalAuthReplayRecord {
+    job_id: String,
+    expires_at: u64,
+    user_id: String,
+    asset: String,
+    amount: u64,
+    dest_chain: String,
+    dest_address: String,
+    preferred_stablecoin: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -424,7 +700,7 @@ struct CreditJob {
     created_at: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WithdrawalRequest {
     user_id: String,
     asset: String, // "lUSD", "wSOL", "wETH"
@@ -434,6 +710,8 @@ struct WithdrawalRequest {
     /// For lUSD withdrawals: which stablecoin to receive ("usdt" or "usdc"). Defaults to "usdt".
     #[serde(default = "default_preferred_stablecoin")]
     preferred_stablecoin: String,
+    #[serde(default)]
+    auth: Option<Value>,
 }
 
 fn default_preferred_stablecoin() -> String {
@@ -470,7 +748,7 @@ struct RebalanceJob {
     created_at: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WithdrawalJob {
     job_id: String,
     user_id: String,
@@ -503,7 +781,7 @@ struct WithdrawalJob {
     burn_confirmed_at: Option<i64>,
     #[serde(default)]
     operator_confirmations: Vec<WithdrawalOperatorConfirmation>,
-    status: String, // "pending_burn" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
+    status: String, // "pending_burn" | "expired" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
     #[serde(default)]
     attempts: u32,
     #[serde(default)]
@@ -572,6 +850,7 @@ const CF_AUDIT_EVENTS_BY_TX_TIME: &str = "audit_events_by_tx_time";
 const CF_CURSORS: &str = "cursors";
 const CF_RESERVE_LEDGER: &str = "reserve_ledger";
 const CF_REBALANCE_JOBS: &str = "rebalance_jobs";
+const CF_BRIDGE_AUTH_REPLAY: &str = "bridge_auth_replay";
 /// AUDIT-FIX M1: Secondary status index for O(active) queries.
 /// Keys: "status:{table}:{status}:{job_id}" → empty value.
 /// Full-table scans replaced with prefix iteration on this CF.
@@ -904,6 +1183,21 @@ async fn main() {
         tracing::warn!("audit event index backfill failed: {}", e);
     }
 
+    let withdrawal_rate_state = load_withdrawal_rate_state(&db).unwrap_or_else(|error| {
+        warn!(
+            "failed to restore withdrawal rate limiter state; starting with empty window: {}",
+            error
+        );
+        WithdrawalRateState::new()
+    });
+    let deposit_rate_state = load_deposit_rate_state(&db).unwrap_or_else(|error| {
+        warn!(
+            "failed to restore deposit rate limiter state; starting with empty window: {}",
+            error
+        );
+        DepositRateState::new()
+    });
+
     // Webhook/WebSocket event broadcast channel (1024-event buffer)
     let (event_tx, _event_rx) = broadcast::channel::<CustodyWebhookEvent>(1024);
 
@@ -918,6 +1212,7 @@ async fn main() {
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
+        bridge_auth_replay_lock: Arc::new(Mutex::new(())),
         // Auto-discover contract addresses from Lichen before creating state.
         // This ensures all workers see the correct contract addresses from genesis.
         config: {
@@ -935,9 +1230,9 @@ async fn main() {
             .build()
             .expect("Failed to build HTTP client"),
         // AUDIT-FIX 1.20: Withdrawal rate limiter
-        withdrawal_rate: Arc::new(Mutex::new(WithdrawalRateState::new())),
+        withdrawal_rate: Arc::new(Mutex::new(withdrawal_rate_state)),
         // AUDIT-FIX W-H4: Deposit rate limiter
-        deposit_rate: Arc::new(Mutex::new(DepositRateState::new())),
+        deposit_rate: Arc::new(Mutex::new(deposit_rate_state)),
         event_tx: event_tx.clone(),
         webhook_delivery_limiter: Arc::new(Semaphore::new(webhook_max_inflight)),
     };
@@ -1097,6 +1392,8 @@ async fn status(
 
     let sweep_counts = count_sweep_jobs(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
     let credit_counts = count_credit_jobs(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
+    let withdrawal_counts =
+        count_withdrawal_jobs(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
 
     Ok(Json(json!({
         "signers": {
@@ -1105,6 +1402,7 @@ async fn status(
         },
         "sweeps": sweep_counts,
         "credits": credit_counts,
+        "withdrawals": withdrawal_counts,
     })))
 }
 
@@ -1120,13 +1418,14 @@ async fn create_deposit(
 
     let chain = payload.chain.to_lowercase();
     let asset = payload.asset.to_lowercase();
+    let user_id = payload.user_id.clone();
     if chain.is_empty() || asset.is_empty() || payload.user_id.is_empty() {
         return Err(ErrorResponse::invalid("Missing user_id/chain/asset"));
     }
 
     // Validate user_id is a valid Lichen base58 pubkey (32 bytes).
     // Reject early so build_credit_job never silently drops a credit.
-    if Pubkey::from_base58(&payload.user_id).is_err() {
+    if Pubkey::from_base58(&user_id).is_err() {
         return Err(ErrorResponse::invalid(
             "user_id must be a valid Lichen base58 public key (32 bytes)",
         ));
@@ -1138,7 +1437,13 @@ async fn create_deposit(
         ))
     })?;
     let bridge_auth = parse_bridge_access_auth_value(bridge_auth_value)?;
-    verify_bridge_access_auth(&payload.user_id, &bridge_auth)?;
+    let now = current_unix_secs()?;
+    verify_bridge_access_auth_at(&user_id, &bridge_auth, now)?;
+    let replay_digest = bridge_access_replay_digest(
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+        &user_id,
+        &bridge_auth,
+    )?;
 
     ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
 
@@ -1160,26 +1465,42 @@ async fn create_deposit(
                 "rate_limited: too many deposit requests, try again later",
             ));
         }
-        if let Some(last) = dr.per_user.get(&payload.user_id) {
+        if let Some(last) = dr.per_user.get(&user_id) {
             if now.duration_since(*last).as_secs() < 10 {
                 return Err(ErrorResponse::invalid(
                     "rate_limited: wait 10s between deposit requests",
                 ));
             }
         }
-        dr.per_user.insert(payload.user_id.clone(), now);
+        dr.per_user.insert(user_id.clone(), now);
+        persist_deposit_rate_state(&state.db, &dr).map_err(|e| Json(ErrorResponse::db(&e)))?;
     }
 
     if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
         ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
 
+    let _replay_guard = state.bridge_auth_replay_lock.lock().await;
+    prune_expired_bridge_auth_replays(&state.db, now, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    if let Some(existing) = find_existing_bridge_auth_replay(
+        &state.db,
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+        &replay_digest,
+        &chain,
+        &asset,
+    )? {
+        return Ok(Json(existing));
+    }
+
     let deposit_id = Uuid::new_v4().to_string();
     let _guard = state.next_index_lock.lock().await;
-    let index = next_deposit_index(&state.db, &payload.user_id, &chain, &asset)
+    let derivation_account = get_or_allocate_derivation_account(&state.db, &user_id)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    let index = next_deposit_index(&state.db, &user_id, &chain, &asset)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
 
-    let derivation_path = bip44_derivation_path(&chain, &payload.user_id, index as u64)
+    let derivation_path = bip44_derivation_path(&chain, derivation_account, index as u64)
         .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     let deposit_seed_source = active_deposit_seed_source(&state.config).to_string();
     let deposit_seed = deposit_seed_for_source(&state.config, &deposit_seed_source);
@@ -1206,7 +1527,7 @@ async fn create_deposit(
 
     let record = DepositRequest {
         deposit_id: deposit_id.clone(),
-        user_id: payload.user_id,
+        user_id: user_id.clone(),
         chain,
         asset,
         address: address.clone(),
@@ -1216,11 +1537,14 @@ async fn create_deposit(
         status: "issued".to_string(),
     };
 
-    store_deposit(&state.db, &record).map_err(|e| Json(ErrorResponse::db(&e)))?;
-    store_address_index(&state.db, &record.address, &record.deposit_id)
-        .map_err(|e| Json(ErrorResponse::db(&e)))?;
-    // AUDIT-FIX M1: index initial deposit status
-    let _ = set_status_index(&state.db, "deposits", "issued", &record.deposit_id);
+    persist_new_deposit_with_bridge_auth_replay(
+        &state.db,
+        &record,
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+        &replay_digest,
+        bridge_auth.expires_at,
+    )
+    .map_err(|e| Json(ErrorResponse::db(&e)))?;
 
     emit_custody_event(
         &state,
@@ -1447,6 +1771,7 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
         ColumnFamilyDescriptor::new(CF_CURSORS, small_cf_opts()),
         ColumnFamilyDescriptor::new(CF_RESERVE_LEDGER, write_heavy_opts()),
         ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_BRIDGE_AUTH_REPLAY, point_lookup_opts()),
         ColumnFamilyDescriptor::new(CF_STATUS_INDEX, prefix_scan_opts(7)),
         ColumnFamilyDescriptor::new(CF_TX_INTENTS, prefix_scan_opts(7)),
         ColumnFamilyDescriptor::new(CF_WEBHOOKS, point_lookup_opts()),
@@ -1512,14 +1837,6 @@ fn list_ids_by_status_index(db: &DB, table: &str, status: &str) -> Result<Vec<St
         }
     }
     Ok(ids)
-}
-
-fn store_address_index(db: &DB, address: &str, deposit_id: &str) -> Result<(), String> {
-    let cf = db
-        .cf_handle(CF_ADDRESS_INDEX)
-        .ok_or_else(|| "missing address_index cf".to_string())?;
-    db.put_cf(cf, address.as_bytes(), deposit_id.as_bytes())
-        .map_err(|e| format!("db put: {}", e))
 }
 
 // ── AUDIT-FIX M4: Write-ahead intent log for crash idempotency ──
@@ -1736,6 +2053,130 @@ fn next_deposit_index(db: &DB, user_id: &str, chain: &str, asset: &str) -> Resul
     Ok(next)
 }
 
+fn derivation_account_index_key(user_id: &str) -> String {
+    format!("{}{}", INDEX_KEY_DERIVATION_ACCOUNT_PREFIX, user_id)
+}
+
+fn load_derivation_account(db: &DB, user_id: &str) -> Result<Option<u32>, String> {
+    let cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
+    let key = derivation_account_index_key(user_id);
+    match db.get_cf(cf, key.as_bytes()) {
+        Ok(Some(bytes)) => {
+            if bytes.len() != 4 {
+                return Err(format!(
+                    "invalid derivation account entry for user {}",
+                    user_id
+                ));
+            }
+            let mut buf = [0u8; 4];
+            buf.copy_from_slice(&bytes);
+            Ok(Some(u32::from_le_bytes(buf)))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("db get: {}", e)),
+    }
+}
+
+fn store_derivation_account(db: &DB, user_id: &str, account: u32) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
+    let key = derivation_account_index_key(user_id);
+    db.put_cf(cf, key.as_bytes(), account.to_le_bytes())
+        .map_err(|e| format!("db put: {}", e))
+}
+
+fn parse_bip44_account_index(path: &str) -> Result<u32, String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() != 6 || parts[0] != "m" {
+        return Err(format!("invalid BIP-44 derivation path: {}", path));
+    }
+    let account = parts[3]
+        .strip_suffix('\'')
+        .ok_or_else(|| format!("invalid BIP-44 account segment: {}", path))?
+        .parse::<u32>()
+        .map_err(|e| format!("parse derivation account: {}", e))?;
+    if account > MAX_BIP44_ACCOUNT_INDEX {
+        return Err(format!(
+            "BIP-44 account {} exceeds the 31-bit hardened range",
+            account
+        ));
+    }
+    Ok(account)
+}
+
+fn max_legacy_derivation_account(db: &DB) -> Result<Option<u32>, String> {
+    let cf = db
+        .cf_handle(CF_DEPOSITS)
+        .ok_or_else(|| "missing deposits cf".to_string())?;
+    let mut max_account: Option<u32> = None;
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+        let record: DepositRequest =
+            serde_json::from_slice(&value).map_err(|e| format!("decode deposit: {}", e))?;
+        let account = parse_bip44_account_index(&record.derivation_path)?;
+        max_account = Some(max_account.map_or(account, |current| current.max(account)));
+    }
+    Ok(max_account)
+}
+
+fn find_legacy_user_derivation_account(db: &DB, user_id: &str) -> Result<Option<u32>, String> {
+    let cf = db
+        .cf_handle(CF_DEPOSITS)
+        .ok_or_else(|| "missing deposits cf".to_string())?;
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+        let record: DepositRequest =
+            serde_json::from_slice(&value).map_err(|e| format!("decode deposit: {}", e))?;
+        if record.user_id == user_id {
+            return parse_bip44_account_index(&record.derivation_path).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn initialize_next_derivation_account_cursor(db: &DB) -> Result<u64, String> {
+    if let Some(next_account) = get_last_u64_index(db, CURSOR_NEXT_DERIVATION_ACCOUNT)? {
+        return Ok(next_account);
+    }
+
+    let next_account = max_legacy_derivation_account(db)?
+        .map(|account| u64::from(account).saturating_add(1))
+        .unwrap_or(0);
+    set_last_u64_index(db, CURSOR_NEXT_DERIVATION_ACCOUNT, next_account)?;
+    Ok(next_account)
+}
+
+fn get_or_allocate_derivation_account(db: &DB, user_id: &str) -> Result<u32, String> {
+    if let Some(account) = load_derivation_account(db, user_id)? {
+        return Ok(account);
+    }
+
+    let mut next_account = initialize_next_derivation_account_cursor(db)?;
+    if let Some(account) = find_legacy_user_derivation_account(db, user_id)? {
+        next_account = next_account.max(u64::from(account).saturating_add(1));
+        store_derivation_account(db, user_id, account)?;
+        set_last_u64_index(db, CURSOR_NEXT_DERIVATION_ACCOUNT, next_account)?;
+        return Ok(account);
+    }
+
+    if next_account > u64::from(MAX_BIP44_ACCOUNT_INDEX) {
+        return Err("custody derivation account space exhausted".to_string());
+    }
+
+    let account = u32::try_from(next_account)
+        .map_err(|_| "custody derivation account space exhausted".to_string())?;
+    store_derivation_account(db, user_id, account)?;
+    set_last_u64_index(
+        db,
+        CURSOR_NEXT_DERIVATION_ACCOUNT,
+        next_account.saturating_add(1),
+    )?;
+    Ok(account)
+}
+
 fn get_last_u64_index(db: &DB, key: &str) -> Result<Option<u64>, String> {
     let cf = db
         .cf_handle(CF_CURSORS)
@@ -1792,16 +2233,13 @@ fn is_evm_chain(chain: &str) -> bool {
 }
 
 /// F2-01: Build BIP-44-structured derivation path.
-/// Format: `m/44'/{coin_type}'/{user_hash}'/0/{index}`
-/// The user_id is hashed to a u32 account index for BIP-44 compliance.
-fn bip44_derivation_path(chain: &str, user_id: &str, index: u64) -> Result<String, String> {
+/// Format: `m/44'/{coin_type}'/{account}'/0/{index}`
+/// The account index comes from a durable per-user mapping persisted in custody state.
+fn bip44_derivation_path(chain: &str, account: u32, index: u64) -> Result<String, String> {
     let coin_type = bip44_coin_type(chain)?;
-    // Hash user_id to a deterministic 31-bit account index (BIP-32 max is 2^31-1 for non-hardened)
-    let mut hasher = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"bip44-account")
-        .map_err(|_| "HMAC init failed".to_string())?;
-    hasher.update(user_id.as_bytes());
-    let result = hasher.finalize().into_bytes();
-    let account = u32::from_le_bytes([result[0], result[1], result[2], result[3]]) & 0x7FFF_FFFF;
+    if account > MAX_BIP44_ACCOUNT_INDEX {
+        return Err("derivation account index exceeds BIP-44 hardened range".to_string());
+    }
     Ok(format!("m/44'/{}'/{}'/{}/{}", coin_type, account, 0, index))
 }
 
@@ -2343,6 +2781,10 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(86400); // 24 hours default
+    let pending_burn_ttl_secs = std::env::var("CUSTODY_WITHDRAWAL_PENDING_BURN_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(86400); // 24 hours default
     let incident_status_path = std::env::var("LICHEN_INCIDENT_STATUS_FILE")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2431,6 +2873,7 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
+        pending_burn_ttl_secs,
         incident_status_path,
         master_seed,
         deposit_master_seed,
@@ -2503,15 +2946,25 @@ fn webhook_host_from_url(raw_url: &str) -> Result<String, String> {
         .ok_or_else(|| "webhook url must include a valid host".to_string())
 }
 
+fn is_local_webhook_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn is_local_webhook_destination(raw_url: &str) -> Result<bool, String> {
+    Ok(is_local_webhook_host(&webhook_host_from_url(raw_url)?))
+}
+
 fn validate_webhook_destination(config: &CustodyConfig, raw_url: &str) -> Result<(), String> {
-    if raw_url.starts_with("http://localhost") {
+    let host = webhook_host_from_url(raw_url)?;
+    if is_local_webhook_host(&host) {
         return Ok(());
     }
     if config.webhook_allowed_hosts.is_empty() {
-        return Ok(());
+        return Err(
+            "non-local webhooks require CUSTODY_WEBHOOK_ALLOWED_HOSTS to be configured".to_string(),
+        );
     }
 
-    let host = webhook_host_from_url(raw_url)?;
     if config
         .webhook_allowed_hosts
         .iter()
@@ -5911,6 +6364,44 @@ fn count_credit_jobs(db: &DB) -> Result<StatusCounts, String> {
     Ok(counts)
 }
 
+fn count_withdrawal_jobs(db: &DB) -> Result<StatusCounts, String> {
+    let mut counts = StatusCounts {
+        total: 0,
+        by_status: BTreeMap::new(),
+    };
+    for status in &[
+        "pending_burn",
+        "expired",
+        "burned",
+        "signing",
+        "broadcasting",
+        "confirmed",
+        "permanently_failed",
+        "failed",
+    ] {
+        let ids = list_ids_by_status_index(db, "withdrawal", status)?;
+        let count = ids.len();
+        if count > 0 {
+            counts.total += count;
+            counts.by_status.insert(status.to_string(), count);
+        }
+    }
+    if counts.total == 0 {
+        let cf = db
+            .cf_handle(CF_WITHDRAWAL_JOBS)
+            .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
+        let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+            let record: WithdrawalJob =
+                serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
+            counts.total += 1;
+            *counts.by_status.entry(record.status).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
+}
+
 fn record_audit_event(
     db: &DB,
     event_type: &str,
@@ -6700,11 +7191,12 @@ fn to_be_bytes(value: u64) -> Vec<u8> {
 /// POST /withdrawals — User requests to withdraw wrapped tokens
 ///
 /// Flow:
-///   1. User calls burn() on the wrapped token contract (client-side)
-///   2. User POSTs burn tx signature + dest_chain + dest_address to this endpoint
-///   3. Custody verifies the burn on Lichen
-///   4. For lUSD: checks stablecoin reserves, queues rebalance if needed
-///   5. Custody uses threshold signatures to send native assets on the destination chain
+///   1. User signs a withdrawal authorization bound to asset, amount, and destination
+///   2. User POSTs the signed withdrawal request to create a pending withdrawal job
+///   3. User burns the wrapped asset on Lichen and submits the burn tx signature separately
+///   4. Custody verifies the burn on Lichen
+///   5. For lUSD: checks stablecoin reserves, queues rebalance if needed
+///   6. Custody uses threshold signatures to send native assets on the destination chain
 async fn create_withdrawal(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
@@ -6719,7 +7211,39 @@ async fn create_withdrawal(
         return Json(json!({ "error": reason }));
     }
 
-    let asset_lower = req.asset.to_lowercase();
+    let req = match normalize_withdrawal_request(req) {
+        Ok(req) => req,
+        Err(err) => return Json(json!({ "error": err.0.message })),
+    };
+    let withdrawal_auth_value = match req.auth.as_ref() {
+        Some(value) => value,
+        None => {
+            return Json(json!({
+                "error": "Missing auth: expected wallet-signed withdrawal authorization"
+            }));
+        }
+    };
+    let withdrawal_auth = match parse_withdrawal_access_auth_value(withdrawal_auth_value) {
+        Ok(auth) => auth,
+        Err(err) => return Json(json!({ "error": err.0.message })),
+    };
+    let now_secs = match current_unix_secs() {
+        Ok(now) => now,
+        Err(err) => return Json(json!({ "error": err.0.message })),
+    };
+    if let Err(err) = verify_withdrawal_access_auth_at(&req, &withdrawal_auth, now_secs) {
+        return Json(json!({ "error": err.0.message }));
+    }
+    let replay_digest = match withdrawal_access_replay_digest(
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL,
+        &req,
+        &withdrawal_auth,
+    ) {
+        Ok(digest) => digest,
+        Err(err) => return Json(json!({ "error": err.0.message })),
+    };
+
+    let asset_lower = req.asset.clone();
     let velocity_snapshot =
         match build_withdrawal_velocity_snapshot(&state.config, &asset_lower, req.amount) {
             Ok(snapshot) => snapshot,
@@ -6831,6 +7355,9 @@ async fn create_withdrawal(
         rl.count_this_minute = projected_count_this_minute;
         rl.value_this_hour = projected_value_this_hour;
         rl.per_address.insert(req.dest_address.clone(), now);
+        if let Err(error) = persist_withdrawal_rate_state(&state.db, &rl) {
+            return Json(json!({ "error": format!("db error: {}", error) }));
+        }
     }
 
     // AUDIT-FIX F8.8: Validate dest_address format before processing.
@@ -6895,9 +7422,27 @@ async fn create_withdrawal(
         }));
     }
 
+    let _replay_guard = state.bridge_auth_replay_lock.lock().await;
+    if let Err(err) =
+        prune_expired_bridge_auth_replays(&state.db, now_secs, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
+    {
+        return Json(json!({ "error": format!("db error: {}", err) }));
+    }
+    match find_existing_withdrawal_auth_replay(
+        &state.db,
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL,
+        &replay_digest,
+        &req,
+        &velocity_snapshot,
+    ) {
+        Ok(Some(existing)) => return Json(existing),
+        Ok(None) => {}
+        Err(err) => return Json(json!({ "error": err.0.message })),
+    }
+
     // For lUSD withdrawals: validate and resolve preferred stablecoin
     let preferred = if asset_lower == "musd" {
-        let pref = req.preferred_stablecoin.to_lowercase();
+        let pref = req.preferred_stablecoin.clone();
         if pref != "usdt" && pref != "usdc" {
             return Json(json!({
                 "error": format!("preferred_stablecoin must be 'usdt' or 'usdc', got '{}'", pref)
@@ -6987,7 +7532,13 @@ async fn create_withdrawal(
         created_at: chrono::Utc::now().timestamp(),
     };
 
-    if let Err(e) = store_withdrawal_job(&state.db, &job) {
+    if let Err(e) = persist_new_withdrawal_with_auth_replay(
+        &state.db,
+        &job,
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_WITHDRAWAL,
+        &replay_digest,
+        withdrawal_auth.expires_at,
+    ) {
         return Json(json!({"error": format!("failed to store withdrawal: {}", e)}));
     }
 
@@ -7012,37 +7563,7 @@ async fn create_withdrawal(
         job.job_id
     );
 
-    let stablecoin_info = if asset_lower == "musd" {
-        Some(preferred)
-    } else {
-        None
-    };
-    let velocity_message = if velocity_snapshot.tier == WithdrawalVelocityTier::Standard {
-        "".to_string()
-    } else {
-        format!(
-            " Velocity tier={} applies after burn confirmation: delay={}s, signer_threshold={}, operator_confirmations={}",
-            velocity_snapshot.tier.as_str(),
-            velocity_snapshot.delay_secs,
-            velocity_snapshot.required_signer_threshold,
-            velocity_snapshot.required_operator_confirmations,
-        )
-    };
-
-    Json(json!({
-        "job_id": job.job_id,
-        "status": "pending_burn",
-        "preferred_stablecoin": stablecoin_info,
-        "velocity_tier": velocity_snapshot.tier.as_str(),
-        "daily_cap": velocity_snapshot.daily_cap,
-        "required_signer_threshold": velocity_snapshot.required_signer_threshold,
-        "required_operator_confirmations": velocity_snapshot.required_operator_confirmations,
-        "delay_seconds_after_burn": velocity_snapshot.delay_secs,
-        "message": format!(
-            "Burn {} {} on Lichen, then the outbound transfer to {} will be processed automatically.{}",
-            job.amount, job.asset, job.dest_chain, velocity_message
-        ),
-    }))
+    Json(build_create_withdrawal_response(&job, &velocity_snapshot))
 }
 
 fn store_withdrawal_job(db: &DB, job: &WithdrawalJob) -> Result<(), String> {
@@ -7152,6 +7673,59 @@ fn reset_pending_burn_submission(
     }
 
     store_withdrawal_job(db, job)
+}
+
+fn expire_pending_burn_job(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    ttl_secs: i64,
+    now: i64,
+) -> Result<(), String> {
+    let burn_tx_signature = job.burn_tx_signature.take();
+    if let Some(existing) = burn_tx_signature.as_deref() {
+        let _ = release_burn_signature_reservation(&state.db, existing, &job.job_id);
+    }
+
+    let age_secs = now.saturating_sub(job.created_at).max(0);
+    let last_error = format!(
+        "pending_burn expired after {} seconds without a confirmed burn",
+        age_secs
+    );
+    job.status = "expired".to_string();
+    job.last_error = Some(last_error.clone());
+    job.next_attempt_at = None;
+    store_withdrawal_job(&state.db, job)?;
+
+    record_audit_event(
+        &state.db,
+        "withdrawal_pending_burn_expired",
+        &job.job_id,
+        None,
+        burn_tx_signature.as_deref(),
+    )
+    .ok();
+    emit_custody_event(
+        state,
+        "withdrawal.expired",
+        &job.job_id,
+        None,
+        burn_tx_signature.as_deref(),
+        Some(&serde_json::json!({
+            "asset": job.asset,
+            "amount": job.amount,
+            "dest_chain": job.dest_chain,
+            "ttl_secs": ttl_secs,
+            "created_at": job.created_at,
+            "expired_at": now,
+            "last_error": last_error,
+        })),
+    );
+    info!(
+        "withdrawal pending_burn expired: {} (age={}s ttl={}s)",
+        job.job_id, age_secs, ttl_secs
+    );
+
+    Ok(())
 }
 
 /// AUDIT-FIX C4: Endpoint for clients to submit the Lichen burn tx signature.
@@ -7285,7 +7859,7 @@ async fn confirm_withdrawal_operator(
 
     if matches!(
         job.status.as_str(),
-        "confirmed" | "failed" | "permanently_failed"
+        "confirmed" | "expired" | "failed" | "permanently_failed"
     ) {
         return Err(Json(ErrorResponse::invalid(&format!(
             "withdrawal {} is no longer confirmable (current: {})",
@@ -8603,7 +9177,15 @@ async fn withdrawal_worker_loop(state: CustodyState) {
 async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
     // Phase 1: pending_burn → check if burn tx is confirmed on Lichen
     let pending = list_withdrawal_jobs_by_status(&state.db, "pending_burn")?;
+    let now = chrono::Utc::now().timestamp();
+    let pending_burn_ttl_secs = state.config.pending_burn_ttl_secs;
     for mut job in pending {
+        if pending_burn_ttl_secs > 0 && job.created_at <= now.saturating_sub(pending_burn_ttl_secs)
+        {
+            expire_pending_burn_job(state, &mut job, pending_burn_ttl_secs, now)?;
+            continue;
+        }
+
         if let Some(ref burn_sig) = job.burn_tx_signature {
             if let Some(rpc_url) = state.config.licn_rpc_url.as_ref() {
                 match licn_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await
@@ -9584,9 +10166,13 @@ async fn create_webhook(
             "secret is required (used for HMAC-SHA256 signatures)",
         )));
     }
-    if !payload.url.starts_with("https://") && !payload.url.starts_with("http://localhost") {
+    let is_local_destination =
+        is_local_webhook_destination(&payload.url).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+    let uses_https = payload.url.starts_with("https://");
+    let uses_loopback_http = is_local_destination && payload.url.starts_with("http://");
+    if !uses_https && !uses_loopback_http {
         return Err(Json(ErrorResponse::invalid(
-            "webhook url must use HTTPS (http://localhost allowed for dev)",
+            "webhook url must use HTTPS (loopback HTTP allowed for local dev)",
         )));
     }
     if let Err(e) = validate_webhook_destination(&state.config, &payload.url) {
@@ -10258,6 +10844,53 @@ fn bridge_access_message(user_id: &str, issued_at: u64, expires_at: u64) -> Vec<
     .into_bytes()
 }
 
+fn normalize_withdrawal_request(
+    mut req: WithdrawalRequest,
+) -> Result<WithdrawalRequest, Json<ErrorResponse>> {
+    req.user_id = req.user_id.trim().to_string();
+    req.asset = req.asset.trim().to_lowercase();
+    req.dest_chain = req.dest_chain.trim().to_lowercase();
+    req.dest_address = req.dest_address.trim().to_string();
+    req.preferred_stablecoin = req.preferred_stablecoin.trim().to_lowercase();
+    if req.preferred_stablecoin.is_empty() || req.asset != "musd" {
+        req.preferred_stablecoin = default_preferred_stablecoin();
+    }
+
+    if req.user_id.is_empty()
+        || req.asset.is_empty()
+        || req.dest_chain.is_empty()
+        || req.dest_address.is_empty()
+    {
+        return Err(Json(ErrorResponse::invalid(
+            "Missing user_id/asset/amount/dest_chain/dest_address",
+        )));
+    }
+
+    Ok(req)
+}
+
+fn withdrawal_access_message(
+    req: &WithdrawalRequest,
+    issued_at: u64,
+    expires_at: u64,
+    nonce: &str,
+) -> Vec<u8> {
+    format!(
+        "{}\nuser_id={}\nasset={}\namount={}\ndest_chain={}\ndest_address={}\npreferred_stablecoin={}\nissued_at={}\nexpires_at={}\nnonce={}\n",
+        WITHDRAWAL_ACCESS_DOMAIN,
+        req.user_id,
+        req.asset,
+        req.amount,
+        req.dest_chain,
+        req.dest_address,
+        req.preferred_stablecoin,
+        issued_at,
+        expires_at,
+        nonce,
+    )
+    .into_bytes()
+}
+
 fn current_unix_secs() -> Result<u64, Json<ErrorResponse>> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -10343,7 +10976,7 @@ fn verify_bridge_access_auth_at(
         )));
     }
 
-    if auth.expires_at < now.saturating_sub(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+    if auth.expires_at < now {
         return Err(Json(ErrorResponse::invalid("bridge auth has expired")));
     }
 
@@ -10361,6 +10994,474 @@ fn verify_bridge_access_auth_at(
     }
 
     Ok(())
+}
+
+fn parse_withdrawal_access_auth_value(
+    value: &Value,
+) -> Result<WithdrawalAccessAuth, Json<ErrorResponse>> {
+    serde_json::from_value(value.clone()).map_err(|error| {
+        Json(ErrorResponse::invalid(&format!(
+            "Invalid withdrawal auth object: {}",
+            error
+        )))
+    })
+}
+
+fn verify_withdrawal_access_auth_at(
+    req: &WithdrawalRequest,
+    auth: &WithdrawalAccessAuth,
+    now: u64,
+) -> Result<(), Json<ErrorResponse>> {
+    if auth.expires_at <= auth.issued_at {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal auth expires_at must be greater than issued_at",
+        )));
+    }
+
+    if auth.expires_at - auth.issued_at > WITHDRAWAL_ACCESS_MAX_TTL_SECS {
+        return Err(Json(ErrorResponse::invalid(&format!(
+            "withdrawal auth exceeds max ttl of {} seconds",
+            WITHDRAWAL_ACCESS_MAX_TTL_SECS
+        ))));
+    }
+
+    if auth.issued_at > now.saturating_add(WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS) {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal auth issued_at is too far in the future",
+        )));
+    }
+
+    if auth.expires_at < now {
+        return Err(Json(ErrorResponse::invalid("withdrawal auth has expired")));
+    }
+
+    let nonce = auth.nonce.trim();
+    if nonce.is_empty() {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal auth nonce is required",
+        )));
+    }
+    if nonce.len() > 128 || nonce.contains('\n') {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal auth nonce must be <= 128 chars and contain no newlines",
+        )));
+    }
+
+    let user_pubkey = Pubkey::from_base58(&req.user_id).map_err(|_| {
+        Json(ErrorResponse::invalid(
+            "user_id must be a valid Lichen base58 public key (32 bytes)",
+        ))
+    })?;
+    let signature = parse_bridge_access_signature(&auth.signature)?;
+    let message = withdrawal_access_message(req, auth.issued_at, auth.expires_at, nonce);
+    if !Keypair::verify(&user_pubkey, &message, &signature) {
+        return Err(Json(ErrorResponse::invalid(
+            "Invalid withdrawal auth signature",
+        )));
+    }
+
+    Ok(())
+}
+
+fn bridge_access_replay_digest(
+    action: &str,
+    user_id: &str,
+    auth: &BridgeAccessAuth,
+) -> Result<String, Json<ErrorResponse>> {
+    use sha2::Digest;
+
+    let signature = parse_bridge_access_signature(&auth.signature)?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(action.as_bytes());
+    hasher.update([0]);
+    hasher.update(user_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(auth.issued_at.to_be_bytes());
+    hasher.update(auth.expires_at.to_be_bytes());
+    hasher.update([signature.scheme_version]);
+    hasher.update([signature.public_key.scheme_version]);
+    hasher.update(&signature.public_key.bytes);
+    hasher.update(&signature.sig);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn withdrawal_access_replay_digest(
+    action: &str,
+    req: &WithdrawalRequest,
+    auth: &WithdrawalAccessAuth,
+) -> Result<String, Json<ErrorResponse>> {
+    use sha2::Digest;
+
+    let signature = parse_bridge_access_signature(&auth.signature)?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(action.as_bytes());
+    hasher.update([0]);
+    hasher.update(req.user_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(req.asset.as_bytes());
+    hasher.update([0]);
+    hasher.update(req.amount.to_be_bytes());
+    hasher.update(req.dest_chain.as_bytes());
+    hasher.update([0]);
+    hasher.update(req.dest_address.as_bytes());
+    hasher.update([0]);
+    hasher.update(req.preferred_stablecoin.as_bytes());
+    hasher.update([0]);
+    hasher.update(auth.issued_at.to_be_bytes());
+    hasher.update(auth.expires_at.to_be_bytes());
+    hasher.update(auth.nonce.as_bytes());
+    hasher.update([signature.scheme_version]);
+    hasher.update([signature.public_key.scheme_version]);
+    hasher.update(&signature.public_key.bytes);
+    hasher.update(&signature.sig);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn bridge_auth_replay_lookup_key(action: &str, digest: &str) -> String {
+    format!("1:{}:{}", action, digest)
+}
+
+fn bridge_auth_replay_expiry_key(expires_at: u64, action: &str, digest: &str) -> String {
+    format!("0:{:020}:{}:{}", expires_at, action, digest)
+}
+
+fn delete_auth_replay_record_by_expiry(
+    db: &DB,
+    action: &str,
+    digest: &str,
+    expires_at: u64,
+) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| "missing bridge_auth_replay cf".to_string())?;
+    db.delete_cf(cf, bridge_auth_replay_lookup_key(action, digest).as_bytes())
+        .map_err(|e| format!("db delete: {}", e))?;
+    db.delete_cf(
+        cf,
+        bridge_auth_replay_expiry_key(expires_at, action, digest).as_bytes(),
+    )
+    .map_err(|e| format!("db delete: {}", e))
+}
+
+fn delete_bridge_auth_replay_record(
+    db: &DB,
+    action: &str,
+    digest: &str,
+    replay: &BridgeAuthReplayRecord,
+) -> Result<(), String> {
+    delete_auth_replay_record_by_expiry(db, action, digest, replay.expires_at)
+}
+
+fn find_existing_bridge_auth_replay(
+    db: &DB,
+    action: &str,
+    digest: &str,
+    requested_chain: &str,
+    requested_asset: &str,
+) -> Result<Option<CreateDepositResponse>, Json<ErrorResponse>> {
+    let cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| Json(ErrorResponse::db("missing bridge_auth_replay cf")))?;
+    let lookup_key = bridge_auth_replay_lookup_key(action, digest);
+    let Some(bytes) = db
+        .get_cf(cf, lookup_key.as_bytes())
+        .map_err(|e| Json(ErrorResponse::db(&format!("db get: {}", e))))?
+    else {
+        return Ok(None);
+    };
+
+    let replay: BridgeAuthReplayRecord = serde_json::from_slice(&bytes).map_err(|e| {
+        Json(ErrorResponse::db(&format!(
+            "decode bridge auth replay: {}",
+            e
+        )))
+    })?;
+    if replay.chain != requested_chain || replay.asset != requested_asset {
+        return Err(Json(ErrorResponse::invalid(
+            "bridge auth already used for a different deposit request; sign a new bridge authorization",
+        )));
+    }
+
+    if let Some(record) =
+        fetch_deposit(db, &replay.deposit_id).map_err(|e| Json(ErrorResponse::db(&e)))?
+    {
+        return Ok(Some(CreateDepositResponse {
+            deposit_id: record.deposit_id,
+            address: record.address,
+        }));
+    }
+
+    delete_bridge_auth_replay_record(db, action, digest, &replay)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    Ok(None)
+}
+
+fn prune_expired_bridge_auth_replays(db: &DB, now: u64, limit: usize) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| "missing bridge_auth_replay cf".to_string())?;
+    let mut expired = Vec::new();
+
+    for item in db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+        let (key, _) = item.map_err(|e| format!("db iter: {}", e))?;
+        let key_str = std::str::from_utf8(&key).map_err(|e| format!("utf8: {}", e))?;
+        if !key_str.starts_with("0:") {
+            break;
+        }
+
+        let mut parts = key_str[2..].splitn(3, ':');
+        let expires_at = parts
+            .next()
+            .ok_or_else(|| "missing bridge auth replay expiry".to_string())?
+            .parse::<u64>()
+            .map_err(|e| format!("invalid bridge auth replay expiry: {}", e))?;
+        if expires_at > now {
+            break;
+        }
+
+        let action = parts
+            .next()
+            .ok_or_else(|| "missing bridge auth replay action".to_string())?
+            .to_string();
+        let digest = parts
+            .next()
+            .ok_or_else(|| "missing bridge auth replay digest".to_string())?
+            .to_string();
+        expired.push((key, bridge_auth_replay_lookup_key(&action, &digest)));
+        if expired.len() >= limit {
+            break;
+        }
+    }
+
+    for (expiry_key, lookup_key) in expired {
+        db.delete_cf(cf, &expiry_key)
+            .map_err(|e| format!("db delete: {}", e))?;
+        db.delete_cf(cf, lookup_key.as_bytes())
+            .map_err(|e| format!("db delete: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn persist_new_deposit_with_bridge_auth_replay(
+    db: &DB,
+    record: &DepositRequest,
+    action: &str,
+    digest: &str,
+    expires_at: u64,
+) -> Result<(), String> {
+    let deposits_cf = db
+        .cf_handle(CF_DEPOSITS)
+        .ok_or_else(|| "missing deposits cf".to_string())?;
+    let address_cf = db
+        .cf_handle(CF_ADDRESS_INDEX)
+        .ok_or_else(|| "missing address_index cf".to_string())?;
+    let status_cf = db
+        .cf_handle(CF_STATUS_INDEX)
+        .ok_or_else(|| "missing status_index cf".to_string())?;
+    let replay_cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| "missing bridge_auth_replay cf".to_string())?;
+
+    let deposit_bytes = serde_json::to_vec(record).map_err(|e| format!("encode deposit: {}", e))?;
+    let replay_bytes = serde_json::to_vec(&BridgeAuthReplayRecord {
+        deposit_id: record.deposit_id.clone(),
+        expires_at,
+        chain: record.chain.clone(),
+        asset: record.asset.clone(),
+    })
+    .map_err(|e| format!("encode bridge auth replay: {}", e))?;
+
+    let mut batch = WriteBatch::default();
+    batch.put_cf(deposits_cf, record.deposit_id.as_bytes(), deposit_bytes);
+    batch.put_cf(
+        address_cf,
+        record.address.as_bytes(),
+        record.deposit_id.as_bytes(),
+    );
+    batch.put_cf(
+        status_cf,
+        format!("status:deposits:issued:{}", record.deposit_id).as_bytes(),
+        b"",
+    );
+    batch.put_cf(
+        replay_cf,
+        bridge_auth_replay_lookup_key(action, digest).as_bytes(),
+        replay_bytes,
+    );
+    batch.put_cf(
+        replay_cf,
+        bridge_auth_replay_expiry_key(expires_at, action, digest).as_bytes(),
+        b"",
+    );
+    db.write(batch).map_err(|e| format!("db write: {}", e))
+}
+
+fn build_create_withdrawal_response(
+    job: &WithdrawalJob,
+    velocity_snapshot: &WithdrawalVelocitySnapshot,
+) -> Value {
+    let stablecoin_info = if job.asset.eq_ignore_ascii_case("musd") {
+        Some(job.preferred_stablecoin.clone())
+    } else {
+        None
+    };
+    let velocity_message = if velocity_snapshot.tier == WithdrawalVelocityTier::Standard {
+        String::new()
+    } else {
+        format!(
+            " Velocity tier={} applies after burn confirmation: delay={}s, signer_threshold={}, operator_confirmations={}",
+            velocity_snapshot.tier.as_str(),
+            velocity_snapshot.delay_secs,
+            velocity_snapshot.required_signer_threshold,
+            velocity_snapshot.required_operator_confirmations,
+        )
+    };
+    let message = match job.status.as_str() {
+        "pending_burn" => format!(
+            "Burn {} {} on Lichen, then the outbound transfer to {} will be processed automatically.{}",
+            job.amount, job.asset, job.dest_chain, velocity_message
+        ),
+        "burned" | "signing" | "broadcasting" => format!(
+            "Withdrawal {} already exists and is currently {}. Custody will continue processing it automatically.",
+            job.job_id, job.status
+        ),
+        "confirmed" => format!(
+            "Withdrawal {} has already completed successfully.",
+            job.job_id
+        ),
+        "expired" => format!(
+            "Withdrawal {} expired before a confirmed burn was observed. Submit a new withdrawal request if you still want to continue.",
+            job.job_id
+        ),
+        "failed" | "permanently_failed" => format!(
+            "Withdrawal {} is currently {} and will not progress automatically.",
+            job.job_id, job.status
+        ),
+        _ => format!(
+            "Withdrawal {} already exists and is currently {}.",
+            job.job_id, job.status
+        ),
+    };
+
+    json!({
+        "job_id": job.job_id.clone(),
+        "status": job.status.clone(),
+        "preferred_stablecoin": stablecoin_info,
+        "velocity_tier": velocity_snapshot.tier.as_str(),
+        "daily_cap": velocity_snapshot.daily_cap,
+        "required_signer_threshold": job.required_signer_threshold,
+        "required_operator_confirmations": job.required_operator_confirmations,
+        "delay_seconds_after_burn": velocity_snapshot.delay_secs,
+        "message": message,
+    })
+}
+
+fn find_existing_withdrawal_auth_replay(
+    db: &DB,
+    action: &str,
+    digest: &str,
+    req: &WithdrawalRequest,
+    velocity_snapshot: &WithdrawalVelocitySnapshot,
+) -> Result<Option<Value>, Json<ErrorResponse>> {
+    let cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| Json(ErrorResponse::db("missing bridge_auth_replay cf")))?;
+    let lookup_key = bridge_auth_replay_lookup_key(action, digest);
+    let Some(bytes) = db
+        .get_cf(cf, lookup_key.as_bytes())
+        .map_err(|e| Json(ErrorResponse::db(&format!("db get: {}", e))))?
+    else {
+        return Ok(None);
+    };
+
+    let replay: WithdrawalAuthReplayRecord = serde_json::from_slice(&bytes).map_err(|e| {
+        Json(ErrorResponse::db(&format!(
+            "decode withdrawal auth replay: {}",
+            e
+        )))
+    })?;
+    if replay.user_id != req.user_id
+        || replay.asset != req.asset
+        || replay.amount != req.amount
+        || replay.dest_chain != req.dest_chain
+        || replay.dest_address != req.dest_address
+        || replay.preferred_stablecoin != req.preferred_stablecoin
+    {
+        return Err(Json(ErrorResponse::invalid(
+            "withdrawal auth already used for a different withdrawal request; sign a new withdrawal authorization",
+        )));
+    }
+
+    if let Some(job) =
+        fetch_withdrawal_job(db, &replay.job_id).map_err(|e| Json(ErrorResponse::db(&e)))?
+    {
+        if job.status == "expired" {
+            delete_auth_replay_record_by_expiry(db, action, digest, replay.expires_at)
+                .map_err(|e| Json(ErrorResponse::db(&e)))?;
+            return Ok(None);
+        }
+        return Ok(Some(build_create_withdrawal_response(
+            &job,
+            velocity_snapshot,
+        )));
+    }
+
+    delete_auth_replay_record_by_expiry(db, action, digest, replay.expires_at)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    Ok(None)
+}
+
+fn persist_new_withdrawal_with_auth_replay(
+    db: &DB,
+    job: &WithdrawalJob,
+    action: &str,
+    digest: &str,
+    expires_at: u64,
+) -> Result<(), String> {
+    let withdrawals_cf = db
+        .cf_handle(CF_WITHDRAWAL_JOBS)
+        .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
+    let status_cf = db
+        .cf_handle(CF_STATUS_INDEX)
+        .ok_or_else(|| "missing status_index cf".to_string())?;
+    let replay_cf = db
+        .cf_handle(CF_BRIDGE_AUTH_REPLAY)
+        .ok_or_else(|| "missing bridge_auth_replay cf".to_string())?;
+
+    let withdrawal_bytes =
+        serde_json::to_vec(job).map_err(|e| format!("encode withdrawal: {}", e))?;
+    let replay_bytes = serde_json::to_vec(&WithdrawalAuthReplayRecord {
+        job_id: job.job_id.clone(),
+        expires_at,
+        user_id: job.user_id.clone(),
+        asset: job.asset.clone(),
+        amount: job.amount,
+        dest_chain: job.dest_chain.clone(),
+        dest_address: job.dest_address.clone(),
+        preferred_stablecoin: job.preferred_stablecoin.clone(),
+    })
+    .map_err(|e| format!("encode withdrawal auth replay: {}", e))?;
+
+    let mut batch = WriteBatch::default();
+    batch.put_cf(withdrawals_cf, job.job_id.as_bytes(), withdrawal_bytes);
+    batch.put_cf(
+        status_cf,
+        format!("status:withdrawal:{}:{}", job.status, job.job_id).as_bytes(),
+        b"",
+    );
+    batch.put_cf(
+        replay_cf,
+        bridge_auth_replay_lookup_key(action, digest).as_bytes(),
+        replay_bytes.clone(),
+    );
+    batch.put_cf(
+        replay_cf,
+        bridge_auth_replay_expiry_key(expires_at, action, digest).as_bytes(),
+        replay_bytes,
+    );
+
+    db.write(batch).map_err(|e| format!("db write: {}", e))
 }
 
 fn operator_token_fingerprint(token: &str) -> String {
@@ -10591,6 +11692,7 @@ mod tests {
             jupiter_api_url: None,
             uniswap_router: None,
             deposit_ttl_secs: 86400,
+            pending_burn_ttl_secs: 0,
             incident_status_path: None,
             master_seed: "test_master_seed_for_unit_tests".to_string(),
             deposit_master_seed: "test_deposit_seed_for_unit_tests".to_string(),
@@ -10658,6 +11760,38 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_pq_signer_configuration_requires_matching_address_count() {
+        let mut config = test_config();
+        config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        config.signer_threshold = 2;
+        config.signer_pq_addresses = vec![test_pq_signer(11).0];
+
+        let err = validate_pq_signer_configuration(&config)
+            .expect_err("each signer endpoint must have a pinned PQ signer address");
+
+        assert!(err.contains("CUSTODY_SIGNER_PQ_ADDRESSES"));
+    }
+
+    #[test]
+    fn test_validate_webhook_destination_rejects_non_local_host_without_allowlist() {
+        let config = test_config();
+
+        let err = validate_webhook_destination(&config, "https://hooks.example.com/callback")
+            .expect_err("non-local webhook must fail closed without an allowlist");
+
+        assert!(err.contains("CUSTODY_WEBHOOK_ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn test_validate_webhook_destination_allows_loopback_without_allowlist() {
+        let config = test_config();
+
+        assert!(validate_webhook_destination(&config, "http://localhost:3000/webhook").is_ok());
+        assert!(validate_webhook_destination(&config, "http://127.0.0.1:3000/webhook").is_ok());
+    }
+
+    #[test]
     fn test_local_rebalance_policy_error_rejects_multi_signer_mode() {
         let mut config = test_config();
         config.signer_endpoints =
@@ -10698,14 +11832,17 @@ mod tests {
     }
 
     fn test_withdrawal_request() -> WithdrawalRequest {
-        WithdrawalRequest {
-            user_id: "user-1".to_string(),
+        let mut request = WithdrawalRequest {
+            user_id: String::new(),
             asset: "wSOL".to_string(),
             amount: 1_000_000_000,
             dest_chain: "solana".to_string(),
             dest_address: "11111111111111111111111111111111".to_string(),
             preferred_stablecoin: "usdt".to_string(),
-        }
+            auth: None,
+        };
+        sign_test_withdrawal_request(&mut request, 31);
+        request
     }
 
     fn test_db_path() -> String {
@@ -10723,18 +11860,26 @@ mod tests {
 
     fn test_state() -> CustodyState {
         let db_path = test_db_path();
-        let _ = DB::destroy(&Options::default(), &db_path);
-        let db = open_db(&db_path).unwrap();
+        test_state_with_db_path(&db_path, true)
+    }
+
+    fn test_state_with_db_path(db_path: &str, destroy_existing: bool) -> CustodyState {
+        if destroy_existing {
+            let _ = DB::destroy(&Options::default(), db_path);
+        }
+        let db = open_db(db_path).unwrap();
+        let withdrawal_rate =
+            load_withdrawal_rate_state(&db).unwrap_or_else(|_| WithdrawalRateState::new());
+        let deposit_rate = load_deposit_rate_state(&db).unwrap_or_else(|_| DepositRateState::new());
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
         CustodyState {
             db: std::sync::Arc::new(db),
             next_index_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            bridge_auth_replay_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             config: test_config(),
             http: reqwest::Client::new(),
-            withdrawal_rate: std::sync::Arc::new(tokio::sync::Mutex::new(
-                WithdrawalRateState::new(),
-            )),
-            deposit_rate: std::sync::Arc::new(tokio::sync::Mutex::new(DepositRateState::new())),
+            withdrawal_rate: std::sync::Arc::new(tokio::sync::Mutex::new(withdrawal_rate)),
+            deposit_rate: std::sync::Arc::new(tokio::sync::Mutex::new(deposit_rate)),
             event_tx,
             webhook_delivery_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
@@ -10790,6 +11935,33 @@ mod tests {
         query
     }
 
+    fn sign_test_withdrawal_request(req: &mut WithdrawalRequest, seed: u8) {
+        let keypair = Keypair::from_seed(&[seed; 32]);
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let expires_at = issued_at + 600;
+        let nonce = format!("test-withdrawal-auth-{}", seed);
+
+        req.asset = req.asset.trim().to_lowercase();
+        req.dest_chain = req.dest_chain.trim().to_lowercase();
+        req.dest_address = req.dest_address.trim().to_string();
+        req.preferred_stablecoin = req.preferred_stablecoin.trim().to_lowercase();
+        if req.preferred_stablecoin.is_empty() || req.asset != "musd" {
+            req.preferred_stablecoin = default_preferred_stablecoin();
+        }
+        req.user_id = keypair.pubkey().to_base58();
+        let message = withdrawal_access_message(req, issued_at, expires_at, &nonce);
+        req.auth = Some(json!({
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": nonce,
+            "signature": serde_json::to_value(keypair.sign(&message))
+                .expect("encode withdrawal auth signature"),
+        }));
+    }
+
     #[tokio::test]
     async fn test_create_withdrawal_rate_limit_emits_spike_event() {
         let state = test_state();
@@ -10799,11 +11971,12 @@ mod tests {
             rl.value_this_hour = 5_000_000_000;
         }
         let mut event_rx = state.event_tx.subscribe();
+        let request = test_withdrawal_request();
 
         let response = create_withdrawal(
             State(state.clone()),
             test_auth_headers(),
-            Json(test_withdrawal_request()),
+            Json(request.clone()),
         )
         .await;
 
@@ -10817,7 +11990,7 @@ mod tests {
             .await
             .expect("spike event should be broadcast");
         assert_eq!(event.event_type, "security.withdrawal_spike");
-        assert_eq!(event.entity_id, "user-1");
+        assert_eq!(event.entity_id, request.user_id);
         let data = event.data.expect("spike event should include data");
         assert_eq!(
             data.get("reason").and_then(|value| value.as_str()),
@@ -10869,6 +12042,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_create_deposit_persists_rate_state_across_restart() {
+        let db_path = test_db_path();
+        let state = test_state_with_db_path(&db_path, true);
+        let (user_id, auth) = test_bridge_access_auth_payload(41);
+
+        let _ = create_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: user_id.clone(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(auth),
+            }),
+        )
+        .await
+        .expect("create deposit");
+
+        drop(state);
+
+        let restarted = test_state_with_db_path(&db_path, false);
+        let dr = restarted.deposit_rate.lock().await;
+        assert_eq!(dr.count_this_minute, 1);
+        assert!(dr.per_user.contains_key(&user_id));
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_persists_rate_state_across_restart() {
+        let db_path = test_db_path();
+        let state = test_state_with_db_path(&db_path, true);
+        let request = test_withdrawal_request();
+        let expected_address = request.dest_address.clone();
+        let expected_amount = request.amount;
+
+        let response =
+            create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+
+        assert_eq!(
+            response.0.get("status").and_then(|value| value.as_str()),
+            Some("pending_burn")
+        );
+
+        drop(state);
+
+        let restarted = test_state_with_db_path(&db_path, false);
+        let rl = restarted.withdrawal_rate.lock().await;
+        assert_eq!(rl.count_this_minute, 1);
+        assert_eq!(rl.value_this_hour, expected_amount);
+        assert!(rl.per_address.contains_key(&expected_address));
+    }
+
     #[test]
     fn test_next_withdrawal_warning_level_escalates_and_deduplicates() {
         assert_eq!(
@@ -10898,11 +12123,12 @@ mod tests {
             rl.value_this_hour = 5_000_000_000;
         }
         let mut event_rx = state.event_tx.subscribe();
+        let request = test_withdrawal_request();
 
         let response = create_withdrawal(
             State(state.clone()),
             test_auth_headers(),
-            Json(test_withdrawal_request()),
+            Json(request.clone()),
         )
         .await;
 
@@ -10916,7 +12142,7 @@ mod tests {
             .await
             .expect("velocity warning should be broadcast");
         assert_eq!(event.event_type, "security.withdrawal_velocity_warning");
-        assert_eq!(event.entity_id, "user-1");
+        assert_eq!(event.entity_id, request.user_id);
         let data = event.data.expect("velocity warning should include data");
         assert_eq!(
             data.get("reason").and_then(|value| value.as_str()),
@@ -11073,6 +12299,7 @@ mod tests {
 
         let mut request = test_withdrawal_request();
         request.amount = 101;
+        sign_test_withdrawal_request(&mut request, 31);
 
         let response = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
 
@@ -11107,6 +12334,7 @@ mod tests {
 
         let mut request = test_withdrawal_request();
         request.amount = 750;
+        sign_test_withdrawal_request(&mut request, 31);
 
         let response =
             create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
@@ -11152,6 +12380,138 @@ mod tests {
         assert_eq!(stored_job.velocity_tier, WithdrawalVelocityTier::Elevated);
         assert_eq!(stored_job.required_signer_threshold, 3);
         assert_eq!(stored_job.required_operator_confirmations, 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_rejects_forged_withdrawal_auth() {
+        let state = test_state();
+        let mut request = test_withdrawal_request();
+        request.user_id = Keypair::from_seed(&[32; 32]).pubkey().to_base58();
+
+        let response = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
+
+        assert_eq!(
+            response.0.get("error").and_then(|value| value.as_str()),
+            Some("Invalid withdrawal auth signature")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_reuses_existing_job_for_identical_withdrawal_auth() {
+        let state = test_state();
+        let request = test_withdrawal_request();
+
+        let first = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(request.clone()),
+        )
+        .await;
+        let first_job_id = first
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("first withdrawal creation should succeed")
+            .to_string();
+
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.per_address.clear();
+        }
+
+        let second = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
+        let second_job_id = second
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("identical withdrawal auth replay should be idempotent")
+            .to_string();
+
+        assert_eq!(first_job_id, second_job_id);
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_allows_recreation_after_pending_burn_expiry() {
+        let mut state = test_state();
+        state.config.pending_burn_ttl_secs = 60;
+        let request = test_withdrawal_request();
+
+        let first = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(request.clone()),
+        )
+        .await;
+        let first_job_id = first
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("first withdrawal creation should succeed")
+            .to_string();
+
+        let mut stored = fetch_withdrawal_job(&state.db, &first_job_id)
+            .expect("fetch first withdrawal job")
+            .expect("first withdrawal job exists");
+        stored.created_at = 0;
+        store_withdrawal_job(&state.db, &stored).expect("persist stale withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("expire stale pending_burn job");
+
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.per_address.clear();
+        }
+
+        let second =
+            create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+        let second_job_id = second
+            .0
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .expect("expired withdrawal should allow a fresh request")
+            .to_string();
+
+        assert_ne!(first_job_id, second_job_id);
+
+        let first_job_after = fetch_withdrawal_job(&state.db, &first_job_id)
+            .expect("fetch expired withdrawal job")
+            .expect("expired withdrawal job exists");
+        assert_eq!(first_job_after.status, "expired");
+
+        let second_job_after = fetch_withdrawal_job(&state.db, &second_job_id)
+            .expect("fetch recreated withdrawal job")
+            .expect("recreated withdrawal job exists");
+        assert_eq!(second_job_after.status, "pending_burn");
+    }
+
+    #[tokio::test]
+    async fn test_create_withdrawal_rejects_destination_substitution_with_same_auth() {
+        let state = test_state();
+        let request = test_withdrawal_request();
+
+        let _ = create_withdrawal(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(request.clone()),
+        )
+        .await;
+
+        {
+            let mut rl = state.withdrawal_rate.lock().await;
+            rl.per_address.clear();
+        }
+
+        let mut tampered = request;
+        tampered.dest_address = "11111111111111111111111111111112".to_string();
+
+        let response = create_withdrawal(State(state), test_auth_headers(), Json(tampered)).await;
+
+        assert_eq!(
+            response.0.get("error").and_then(|value| value.as_str()),
+            Some("Invalid withdrawal auth signature")
+        );
     }
 
     #[test]
@@ -12110,6 +13470,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth() {
+        let state = test_state();
+        let (user_id, auth) = test_bridge_access_auth_payload(14);
+
+        let first = create_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: user_id.clone(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(auth.clone()),
+            }),
+        )
+        .await
+        .expect("first deposit creation should succeed");
+
+        {
+            let mut dr = state.deposit_rate.lock().await;
+            dr.per_user.clear();
+        }
+
+        let second = create_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: user_id.clone(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(auth),
+            }),
+        )
+        .await
+        .expect("identical bridge auth replay should be idempotent");
+
+        assert_eq!(first.0.deposit_id, second.0.deposit_id);
+        assert_eq!(first.0.address, second.0.address);
+    }
+
+    #[tokio::test]
+    async fn test_create_deposit_rejects_bridge_auth_reuse_for_different_asset() {
+        let state = test_state();
+        let (user_id, auth) = test_bridge_access_auth_payload(15);
+
+        let _ = create_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: user_id.clone(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(auth.clone()),
+            }),
+        )
+        .await
+        .expect("first deposit creation should succeed");
+
+        {
+            let mut dr = state.deposit_rate.lock().await;
+            dr.per_user.clear();
+        }
+
+        let err = create_deposit(
+            State(state),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id,
+                chain: "solana".to_string(),
+                asset: "sol".to_string(),
+                auth: Some(auth),
+            }),
+        )
+        .await
+        .expect_err("bridge auth replay must not authorize a different deposit request");
+
+        assert_eq!(err.code, "invalid_request");
+        assert_eq!(
+            err.message,
+            "bridge auth already used for a different deposit request; sign a new bridge authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_deposit_accepts_same_bridge_auth_after_create() {
+        let state = test_state();
+        let (user_id, auth) = test_bridge_access_auth_payload(16);
+
+        let created = create_deposit(
+            State(state.clone()),
+            test_auth_headers(),
+            Json(CreateDepositRequest {
+                user_id: user_id.clone(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+                auth: Some(auth.clone()),
+            }),
+        )
+        .await
+        .expect("deposit creation should succeed");
+
+        let lookup = get_deposit(
+            State(state),
+            test_auth_headers(),
+            axum::extract::Path(created.0.deposit_id.clone()),
+            axum::extract::Query(test_bridge_lookup_query(&user_id, &auth)),
+        )
+        .await
+        .expect("read-only deposit lookup should continue to accept the current bridge auth");
+
+        assert_eq!(lookup.0.deposit_id, created.0.deposit_id);
+        assert_eq!(lookup.0.user_id, user_id);
+    }
+
+    #[tokio::test]
     async fn test_get_deposit_requires_matching_bridge_auth_user() {
         let state = test_state();
         let (user_id, auth) = test_bridge_access_auth_payload(21);
@@ -12318,7 +13792,7 @@ mod tests {
     /// F2-01: BIP-44 derivation path format test
     #[test]
     fn test_bip44_derivation_path() {
-        let path_sol = bip44_derivation_path("solana", "user123", 0).unwrap();
+        let path_sol = bip44_derivation_path("solana", 7, 0).unwrap();
         assert!(
             path_sol.starts_with("m/44'/501'/"),
             "Solana path must use coin_type 501: {}",
@@ -12326,7 +13800,7 @@ mod tests {
         );
         assert!(path_sol.ends_with("/0/0"), "Index 0: {}", path_sol);
 
-        let path_eth = bip44_derivation_path("eth", "user123", 5).unwrap();
+        let path_eth = bip44_derivation_path("eth", 7, 5).unwrap();
         assert!(
             path_eth.starts_with("m/44'/60'/"),
             "ETH path must use coin_type 60: {}",
@@ -12334,7 +13808,7 @@ mod tests {
         );
         assert!(path_eth.ends_with("/0/5"), "Index 5: {}", path_eth);
 
-        let path_bnb = bip44_derivation_path("bnb", "user123", 7).unwrap();
+        let path_bnb = bip44_derivation_path("bnb", 7, 7).unwrap();
         assert!(
             path_bnb.starts_with("m/44'/60'/"),
             "BNB path must use coin_type 60: {}",
@@ -12342,24 +13816,80 @@ mod tests {
         );
         assert!(path_bnb.ends_with("/0/7"), "Index 7: {}", path_bnb);
 
-        // Same user on different chains gets different paths (different coin types)
+        // Same account on different chains gets different paths (different coin types)
         assert_ne!(path_sol, path_eth);
 
-        // BNB/BSC reuses EVM derivation coin type (same path given same index/user)
-        let path_bsc = bip44_derivation_path("bsc", "user123", 5).unwrap();
+        // BNB/BSC reuses EVM derivation coin type (same path given same index/account)
+        let path_bsc = bip44_derivation_path("bsc", 7, 5).unwrap();
         assert_eq!(path_eth, path_bsc);
 
-        // Same user, different index
-        let path_sol_1 = bip44_derivation_path("solana", "user123", 1).unwrap();
+        // Same account, different index
+        let path_sol_1 = bip44_derivation_path("solana", 7, 1).unwrap();
         assert_ne!(path_sol, path_sol_1);
 
-        // Different user, same chain
-        let path_other = bip44_derivation_path("solana", "other_user", 0).unwrap();
+        // Different account, same chain
+        let path_other = bip44_derivation_path("solana", 8, 0).unwrap();
         assert_ne!(path_sol, path_other);
 
         // Deterministic
-        let path_again = bip44_derivation_path("solana", "user123", 0).unwrap();
+        let path_again = bip44_derivation_path("solana", 7, 0).unwrap();
         assert_eq!(path_sol, path_again);
+    }
+
+    #[test]
+    fn test_get_or_allocate_derivation_account_is_stable_and_unique() {
+        let db_path = test_db_path();
+        let _ = DB::destroy(&Options::default(), &db_path);
+        let db = open_db(&db_path).expect("open custody db");
+
+        let first = get_or_allocate_derivation_account(&db, "user-1")
+            .expect("allocate derivation account for first user");
+        let repeated = get_or_allocate_derivation_account(&db, "user-1")
+            .expect("reuse derivation account for first user");
+        let second = get_or_allocate_derivation_account(&db, "user-2")
+            .expect("allocate derivation account for second user");
+
+        assert_eq!(first, 0);
+        assert_eq!(repeated, first);
+        assert_eq!(second, first + 1);
+
+        drop(db);
+
+        let reopened = open_db(&db_path).expect("reopen custody db");
+        let reopened_first = get_or_allocate_derivation_account(&reopened, "user-1")
+            .expect("reload derivation account for first user");
+        assert_eq!(reopened_first, first);
+    }
+
+    #[test]
+    fn test_get_or_allocate_derivation_account_reuses_legacy_path_account() {
+        let db_path = test_db_path();
+        let _ = DB::destroy(&Options::default(), &db_path);
+        let db = open_db(&db_path).expect("open custody db");
+
+        store_deposit(
+            &db,
+            &DepositRequest {
+                deposit_id: "legacy-deposit".to_string(),
+                user_id: "legacy-user".to_string(),
+                chain: "solana".to_string(),
+                asset: "sol".to_string(),
+                address: "legacy-address".to_string(),
+                derivation_path: "m/44'/501'/42'/0/0".to_string(),
+                deposit_seed_source: default_deposit_seed_source(),
+                created_at: 0,
+                status: "issued".to_string(),
+            },
+        )
+        .expect("store legacy deposit");
+
+        let legacy_account = get_or_allocate_derivation_account(&db, "legacy-user")
+            .expect("reuse legacy derivation account");
+        let new_account = get_or_allocate_derivation_account(&db, "fresh-user")
+            .expect("allocate next derivation account after legacy max");
+
+        assert_eq!(legacy_account, 42);
+        assert_eq!(new_account, 43);
     }
 
     #[test]
@@ -12444,6 +13974,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reserve_ledger_adjust_decrement() {
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_2");
         let db = open_db("/tmp/test_custody_reserve_2").unwrap();
         adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true)
             .await
@@ -12494,6 +14025,7 @@ mod tests {
 
     #[test]
     fn test_rebalance_job_store_and_list() {
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_rebalance_1");
         let db = open_db("/tmp/test_custody_rebalance_1").unwrap();
         let job = RebalanceJob {
             job_id: "test-rebalance-1".to_string(),
@@ -13852,6 +15384,127 @@ mod tests {
             requests[0].get("method").and_then(|value| value.as_str()),
             Some("getTransaction")
         );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_expires_stale_pending_burn_and_releases_burn_signature() {
+        let mut state = test_state();
+        state.config.pending_burn_ttl_secs = 60;
+        let mut event_rx = state.event_tx.subscribe();
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-pending-burn-expired".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-expired-stale".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 0,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store stale pending_burn withdrawal job");
+
+        let idx_cf = state.db.cf_handle(CF_INDEXES).expect("indexes cf");
+        state
+            .db
+            .put_cf(
+                idx_cf,
+                burn_signature_index_key("burn-expired-stale").as_bytes(),
+                job.job_id.as_bytes(),
+            )
+            .expect("reserve burn signature");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process stale pending_burn expiry");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch expired withdrawal job")
+            .expect("expired withdrawal job exists");
+        assert_eq!(job_after.status, "expired");
+        assert!(job_after.burn_tx_signature.is_none());
+        assert!(job_after
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pending_burn expired"));
+        assert!(job_after.next_attempt_at.is_none());
+
+        assert!(state
+            .db
+            .get_cf(
+                idx_cf,
+                burn_signature_index_key("burn-expired-stale").as_bytes(),
+            )
+            .expect("read released burn reservation")
+            .is_none());
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+            .await
+            .expect("withdrawal expiry event should be emitted")
+            .expect("expiry event should be received");
+        assert_eq!(event.event_type, "withdrawal.expired");
+        assert_eq!(event.entity_id, job.job_id);
+    }
+
+    #[test]
+    fn test_count_withdrawal_jobs_with_index_includes_expired() {
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_withdrawal");
+        let db = open_db("/tmp/test_custody_count_withdrawal").unwrap();
+
+        let pending_job = WithdrawalJob {
+            job_id: "test-withdrawal-count-1".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: None,
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            velocity_tier: WithdrawalVelocityTier::Standard,
+            required_signer_threshold: 0,
+            required_operator_confirmations: 0,
+            release_after: None,
+            burn_confirmed_at: None,
+            operator_confirmations: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&db, &pending_job).unwrap();
+
+        let expired_job = WithdrawalJob {
+            job_id: "test-withdrawal-count-2".to_string(),
+            status: "expired".to_string(),
+            ..pending_job.clone()
+        };
+        store_withdrawal_job(&db, &expired_job).unwrap();
+
+        let counts = count_withdrawal_jobs(&db).unwrap();
+        assert_eq!(counts.total, 2);
+        assert_eq!(*counts.by_status.get("pending_burn").unwrap_or(&0), 1);
+        assert_eq!(*counts.by_status.get("expired").unwrap_or(&0), 1);
+
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_withdrawal");
     }
 
     #[test]

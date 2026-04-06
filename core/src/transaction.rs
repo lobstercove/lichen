@@ -1,8 +1,9 @@
 // Lichen Core - Transaction Model
 
-use crate::account::{PqSignature, Pubkey};
+use crate::account::{Keypair, PqSignature, Pubkey};
 use crate::hash::Hash;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Single instruction in a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +200,65 @@ impl Transaction {
     pub fn hash(&self) -> Hash {
         let data = bincode::serialize(self).expect("Transaction bincode serialization failed");
         Hash::hash(&data)
+    }
+
+    /// Collect the signer accounts required by this transaction.
+    pub fn required_signers(&self) -> Result<HashSet<Pubkey>, String> {
+        if self.message.instructions.is_empty() {
+            return Err("No instructions".to_string());
+        }
+
+        let mut required_signers = HashSet::new();
+        for ix in &self.message.instructions {
+            let Some(first_account) = ix.accounts.first() else {
+                return Err("Instruction has no accounts".to_string());
+            };
+            required_signers.insert(*first_account);
+        }
+
+        Ok(required_signers)
+    }
+
+    /// Verify that every required signer has a valid PQ signature over the
+    /// serialized transaction message.
+    pub fn verify_required_signatures(&self) -> Result<HashSet<Pubkey>, String> {
+        if self.signatures.is_empty() {
+            return Err("No signatures".to_string());
+        }
+
+        let required_signers = self.required_signers()?;
+        if self.signatures.len() < required_signers.len() {
+            return Err(format!(
+                "Insufficient signatures: got {}, need {}",
+                self.signatures.len(),
+                required_signers.len()
+            ));
+        }
+
+        let message_bytes = self.message.serialize();
+        let mut verified_signers = HashSet::with_capacity(required_signers.len());
+
+        for signature in &self.signatures {
+            let signer = signature.signer_address();
+            if !required_signers.contains(&signer) || verified_signers.contains(&signer) {
+                continue;
+            }
+
+            if Keypair::verify(&signer, &message_bytes, signature) {
+                verified_signers.insert(signer);
+            }
+        }
+
+        for signer in &required_signers {
+            if !verified_signers.contains(signer) {
+                return Err(format!(
+                    "Missing or invalid signature for account {}",
+                    signer
+                ));
+            }
+        }
+
+        Ok(verified_signers)
     }
 
     /// Validate transaction structure (size limits, T1.7)

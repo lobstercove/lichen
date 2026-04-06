@@ -242,6 +242,15 @@ fn should_bypass_localhost_peer_limits(local: &IpAddr, peer: &IpAddr) -> bool {
     local.is_loopback() && peer.is_loopback()
 }
 
+fn is_self_connection_addr(peer_addr: SocketAddr, local_addr: SocketAddr) -> bool {
+    let same_port = peer_addr.port() == local_addr.port();
+    let same_ip = peer_addr.ip() == local_addr.ip();
+    let loopback_pair = peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
+    let unspecified_pair = peer_addr.ip().is_unspecified() && local_addr.ip().is_unspecified();
+
+    peer_addr == local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair))
+}
+
 /// M-10: Compute an AS-level bucket ID for eclipse defense.
 /// Uses /16 prefix for IPv4 and /32 prefix for IPv6 as a lightweight
 /// approximation of AS-number grouping (most ASNs own contiguous /16 blocks).
@@ -1130,15 +1139,7 @@ impl PeerManager {
                     match connecting.await {
                         Ok(connection) => {
                             let peer_addr = connection.remote_address();
-                            let same_port = peer_addr.port() == local_addr.port();
-                            let same_ip = peer_addr.ip() == local_addr.ip();
-                            let loopback_pair =
-                                peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
-                            let unspecified_pair =
-                                peer_addr.ip().is_unspecified() && local_addr.ip().is_unspecified();
-                            if peer_addr == local_addr
-                                || (same_port && (same_ip || loopback_pair || unspecified_pair))
-                            {
+                            if is_self_connection_addr(peer_addr, local_addr) {
                                 warn!("P2P: Rejected self inbound connection from {}", peer_addr);
                                 connection.close(quinn::VarInt::from_u32(1), b"self_connection");
                                 return;
@@ -2502,6 +2503,26 @@ mod tests {
     }
 
     #[test]
+    fn test_self_connection_addr_detects_same_socket() {
+        let addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        assert!(is_self_connection_addr(addr, addr));
+    }
+
+    #[test]
+    fn test_self_connection_addr_detects_loopback_alias() {
+        let peer: SocketAddr = "127.0.0.2:7001".parse().unwrap();
+        let local: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        assert!(is_self_connection_addr(peer, local));
+    }
+
+    #[test]
+    fn test_self_connection_addr_allows_distinct_remote_peer() {
+        let peer: SocketAddr = "10.0.1.8:7001".parse().unwrap();
+        let local: SocketAddr = "10.0.2.8:7001".parse().unwrap();
+        assert!(!is_self_connection_addr(peer, local));
+    }
+
+    #[test]
     fn test_localhost_peer_limits_are_bypassed() {
         let local: IpAddr = "127.0.0.1".parse().unwrap();
         let peer: IpAddr = "127.0.0.1".parse().unwrap();
@@ -2551,6 +2572,76 @@ mod tests {
             .err()
             .map(|e| e.contains("Subnet limit"))
             .unwrap_or(false));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_expensive_request_rate_limit_denies_after_window_cap() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-expensive-limit-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.1.99:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+
+        assert!(mgr.check_expensive_rate_limit(&addr, 2));
+        assert!(mgr.check_expensive_rate_limit(&addr, 2));
+        assert!(!mgr.check_expensive_rate_limit(&addr, 2));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_expensive_request_rate_limit_resets_after_window() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-expensive-reset-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.1.100:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+        {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut peer = mgr.peers.get_mut(&addr).unwrap();
+            peer.expensive_request_window = (now.saturating_sub(61), 2);
+        }
+
+        assert!(mgr.check_expensive_rate_limit(&addr, 2));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     // ── Peer Scoring / Latency Tracking ──────────────────────────────

@@ -8,10 +8,16 @@
 
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use lichen_core::zk::{MerkleTree, ShieldedPoolState};
-use lichen_core::StateStore;
+use base64::{engine::general_purpose, Engine as _};
+use lichen_core::zk::{
+    circuits::shield::ShieldCircuit, commitment_hash, MerkleTree, Prover, ShieldedPoolState,
+};
+use lichen_core::{
+    Account, Block, Hash, Instruction, Keypair, Message, StateStore, Transaction, SYSTEM_PROGRAM_ID,
+};
 use lichen_rpc::build_rpc_router;
 use serde_json::json;
+use tokio::sync::mpsc::{self, error::TryRecvError};
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
@@ -165,6 +171,58 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
     )
 }
 
+struct ShieldedSubmissionHarness {
+    app: axum::Router,
+    mempool_rx: mpsc::Receiver<Transaction>,
+    sender_keypair: Keypair,
+    recent_blockhash: Hash,
+}
+
+fn create_submission_harness() -> ShieldedSubmissionHarness {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+
+    let sender_keypair = Keypair::generate();
+    let sender_pubkey = sender_keypair.pubkey();
+    let mut sender_account = Account::new(20, sender_pubkey);
+    sender_account.spendable = sender_account.spores;
+    state.put_account(&sender_pubkey, &sender_account).unwrap();
+
+    let block = Block::new_with_timestamp(
+        1,
+        Hash::default(),
+        Hash::hash(b"shielded-submission-state"),
+        sender_pubkey.0,
+        vec![],
+        1,
+    );
+    state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+
+    let (tx_sender, mempool_rx) = mpsc::channel(4);
+
+    let _ = Box::leak(Box::new(dir));
+    let app = build_rpc_router(
+        state,
+        Some(tx_sender),
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    ShieldedSubmissionHarness {
+        app,
+        mempool_rx,
+        sender_keypair,
+        recent_blockhash: block.hash(),
+    }
+}
+
 /// Generate a deterministic commitment for testing: sha256(index_le_bytes).
 fn test_commitment(index: u64) -> [u8; 32] {
     use sha2::{Digest, Sha256};
@@ -186,6 +244,44 @@ fn test_nullifier(index: u64) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&result);
     out
+}
+
+fn build_valid_shield_transaction(
+    sender_keypair: &Keypair,
+    recent_blockhash: Hash,
+    amount: u64,
+) -> Transaction {
+    let sender_pubkey = sender_keypair.pubkey();
+    let mut blinding = [0u8; 32];
+    blinding[0] = 7;
+    blinding[31] = 9;
+    let commitment = commitment_hash(amount, &blinding);
+
+    let proof = Prover::new()
+        .prove_shield(ShieldCircuit::new_bytes(
+            amount, amount, blinding, commitment,
+        ))
+        .expect("shield proof");
+
+    let mut data = vec![23u8];
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.extend_from_slice(&commitment);
+    data.extend_from_slice(&proof.proof_bytes);
+
+    let instruction = Instruction {
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: vec![sender_pubkey],
+        data,
+    };
+    let message = Message::new(vec![instruction], recent_blockhash);
+    let mut tx = Transaction::new(message);
+    tx.signatures
+        .push(sender_keypair.sign(&tx.message.serialize()));
+    tx
+}
+
+fn encode_tx_base64(tx: &Transaction) -> String {
+    general_purpose::STANDARD.encode(tx.to_wire())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -457,6 +553,27 @@ async fn test_rpc_get_shielded_commitments_limit_capped() {
     assert_eq!(result["limit"], 1000);
 }
 
+#[tokio::test]
+async fn test_rpc_get_shielded_commitments_clamps_old_history() {
+    let app = create_populated_app(10_005, &[]);
+    let resp = rpc_call_with_params(
+        &app,
+        "getShieldedCommitments",
+        json!([{"from": 0, "limit": 2}]),
+    )
+    .await
+    .unwrap();
+    let result = &resp["result"];
+
+    assert_eq!(result["total"], 10_005);
+    assert_eq!(result["from"], 5);
+    assert_eq!(result["limit"], 2);
+    let commitments = result["commitments"].as_array().unwrap();
+    assert_eq!(commitments.len(), 2);
+    assert_eq!(commitments[0]["index"], 5);
+    assert_eq!(commitments[1]["index"], 6);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REST Endpoint Tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -635,6 +752,123 @@ async fn test_rest_submit_shield_invalid_transaction() {
         .as_str()
         .unwrap()
         .contains("Invalid transaction"));
+}
+
+#[tokio::test]
+async fn test_rest_submit_shield_rejects_invalid_signature_before_mempool() {
+    let mut harness = create_submission_harness();
+    let mut tx = build_valid_shield_transaction(
+        &harness.sender_keypair,
+        harness.recent_blockhash,
+        1_000_000_000,
+    );
+    tx.signatures[0] = harness.sender_keypair.sign(b"wrong-message");
+
+    let resp = rest_post(
+        &harness.app,
+        "/api/v1/shielded/shield",
+        json!({"transaction": encode_tx_base64(&tx)}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("Missing or invalid signature"));
+    assert!(matches!(
+        harness.mempool_rx.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn test_rest_submit_shield_rejects_invalid_proof_before_mempool() {
+    let mut harness = create_submission_harness();
+    let mut tx = build_valid_shield_transaction(
+        &harness.sender_keypair,
+        harness.recent_blockhash,
+        1_000_000_000,
+    );
+    let proof_start = 1 + 8 + 32;
+    tx.message.instructions[0].data.truncate(proof_start + 1);
+    tx.message.instructions[0].data[proof_start] = 0;
+    tx.signatures[0] = harness.sender_keypair.sign(&tx.message.serialize());
+
+    let resp = rest_post(
+        &harness.app,
+        "/api/v1/shielded/shield",
+        json!({"transaction": encode_tx_base64(&tx)}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["success"], false);
+    let error = resp["error"].as_str().unwrap();
+    assert!(error.contains("Transaction simulation failed"));
+    assert!(error.to_ascii_lowercase().contains("proof"));
+    assert!(matches!(
+        harness.mempool_rx.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn test_rest_submit_shield_accepts_valid_transaction_and_queues_mempool() {
+    let mut harness = create_submission_harness();
+    let tx = build_valid_shield_transaction(
+        &harness.sender_keypair,
+        harness.recent_blockhash,
+        1_000_000_000,
+    );
+    let expected_signature = tx.signature().to_hex();
+
+    let resp = rest_post(
+        &harness.app,
+        "/api/v1/shielded/shield",
+        json!({"transaction": encode_tx_base64(&tx)}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["signature"], expected_signature);
+    assert_eq!(resp["data"]["shieldedType"], "shield");
+
+    let queued = harness.mempool_rx.try_recv().expect("tx queued");
+    assert_eq!(queued.signature().to_hex(), expected_signature);
+}
+
+#[tokio::test]
+async fn test_rpc_send_transaction_skip_preflight_still_rejects_invalid_shield_proof() {
+    let mut harness = create_submission_harness();
+    let mut tx = build_valid_shield_transaction(
+        &harness.sender_keypair,
+        harness.recent_blockhash,
+        1_000_000_000,
+    );
+    let proof_start = 1 + 8 + 32;
+    tx.message.instructions[0].data.truncate(proof_start + 1);
+    tx.message.instructions[0].data[proof_start] = 0;
+    tx.signatures[0] = harness.sender_keypair.sign(&tx.message.serialize());
+
+    let resp = rpc_call_with_params(
+        &harness.app,
+        "sendTransaction",
+        json!([encode_tx_base64(&tx), {"skipPreflight": true}]),
+    )
+    .await
+    .unwrap();
+
+    assert!(resp["error"].is_object());
+    let error = resp["error"]["message"].as_str().unwrap();
+    assert!(error.contains("Transaction simulation failed"));
+    assert!(error.to_ascii_lowercase().contains("proof"));
+    assert!(matches!(
+        harness.mempool_rx.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
 }
 
 // ── POST /api/v1/shielded/unshield ───────────────────────────────────────────

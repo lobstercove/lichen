@@ -5,6 +5,7 @@
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 #![allow(dead_code)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -107,6 +108,24 @@ fn reentrancy_enter() -> bool {
 
 fn reentrancy_exit() {
     storage_set(CV_REENTRANCY_KEY, &[0u8]);
+}
+
+struct ReentrancyGuard;
+
+impl ReentrancyGuard {
+    fn enter() -> Option<Self> {
+        if reentrancy_enter() {
+            Some(Self)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for ReentrancyGuard {
+    fn drop(&mut self) {
+        reentrancy_exit();
+    }
 }
 
 // ============================================================================
@@ -214,7 +233,7 @@ pub extern "C" fn add_strategy(
         return 2;
     }
 
-    if strategy_type < STRATEGY_LENDING || strategy_type > STRATEGY_STAKING {
+    if !(STRATEGY_LENDING..=STRATEGY_STAKING).contains(&strategy_type) {
         log_info("Invalid strategy type");
         return 3;
     }
@@ -269,9 +288,10 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         log_info("Vault is paused");
         return 0;
     }
-    if !reentrancy_enter() {
-        return 0;
-    }
+    let _guard = match ReentrancyGuard::enter() {
+        Some(guard) => guard,
+        None => return 0,
+    };
 
     // V2: Deposit cap check
     let cap = get_deposit_cap();
@@ -280,7 +300,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         // AUDIT-FIX L6-01: Overflow-safe cap check
         if amount > cap.saturating_sub(total_assets) {
             log_info("Deposit cap exceeded");
-            reentrancy_exit();
             return 0;
         }
     }
@@ -290,7 +309,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     let fee = ((amount as u128) * (fee_bps as u128) / 10_000) as u64;
     let net_amount = amount - fee;
     if net_amount == 0 {
-        reentrancy_exit();
         return 0;
     }
 
@@ -308,7 +326,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != depositor {
-        reentrancy_exit();
         return 200;
     }
 
@@ -361,7 +378,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         total_assets.saturating_add(additional_assets),
     );
 
-    reentrancy_exit();
     log_info("Vault deposit successful");
     shares
 }
@@ -373,9 +389,10 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     if shares_to_burn == 0 {
         return 0;
     }
-    if !reentrancy_enter() {
-        return 0;
-    }
+    let _guard = match ReentrancyGuard::enter() {
+        Some(guard) => guard,
+        None => return 0,
+    };
 
     let mut depositor = [0u8; 32];
     unsafe {
@@ -385,7 +402,6 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != depositor {
-        reentrancy_exit();
         return 200;
     }
 
@@ -406,7 +422,6 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     let gross_amount =
         ((shares_to_burn as u128) * (total_assets as u128) / (total_shares as u128)) as u64;
     if gross_amount == 0 {
-        reentrancy_exit();
         return 0;
     }
 
@@ -440,12 +455,10 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
             let prev_fees = load_u64(b"cv_protocol_fees");
             store_u64(b"cv_protocol_fees", prev_fees.saturating_sub(fee));
         }
-        reentrancy_exit();
         log_info("Withdrawal transfer failed");
         return 0;
     }
 
-    reentrancy_exit();
     log_info("Vault withdrawal successful");
     amount
 }
@@ -505,15 +518,13 @@ fn transfer_licn_out(to: &[u8; 32], amount: u64) -> bool {
     let mut token = [0u8; 32];
     token.copy_from_slice(&token_data.unwrap()[..32]);
     let contract_addr = get_contract_address();
-    match transfer_token_or_native(
+    transfer_token_or_native(
         Address(token),
         Address(contract_addr.0),
         Address(*to),
         amount,
-    ) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    )
+    .is_ok()
 }
 
 /// Set protocol addresses for real yield sources. Admin only.
@@ -609,13 +620,13 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
 /// Can be called by anyone (typically a cron job or keeper)
 #[no_mangle]
 pub extern "C" fn harvest() -> u32 {
-    if !reentrancy_enter() {
-        return 1;
-    }
+    let _guard = match ReentrancyGuard::enter() {
+        Some(guard) => guard,
+        None => return 1,
+    };
     let last_harvest = load_u64(b"cv_last_harvest");
     let now = get_timestamp();
     if now <= last_harvest {
-        reentrancy_exit();
         return 0; // Nothing to harvest
     }
 
@@ -712,12 +723,10 @@ pub extern "C" fn harvest() -> u32 {
     // and the next call can retry once addresses are configured.
     if unavailable_yield_surfaces > 0 && total_yield == 0 && strategy_count > 0 {
         log_info("harvest: no yield collected because connected strategies exposed no usable quote surface");
-        reentrancy_exit();
         return 2; // Distinct code: strategies configured, but no harvestable external yield
     }
 
     store_u64(b"cv_last_harvest", now);
-    reentrancy_exit();
     0
 }
 
@@ -956,7 +965,7 @@ pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
     if !is_cv_admin(&caller) {
         return 1;
     }
-    if tier < RISK_CONSERVATIVE || tier > RISK_AGGRESSIVE {
+    if !(RISK_CONSERVATIVE..=RISK_AGGRESSIVE).contains(&tier) {
         return 2;
     }
     store_u64(b"cv_risk_tier", tier as u64);
@@ -1095,6 +1104,12 @@ mod tests {
         set_licn_token(admin.as_ptr(), licn_token.as_ptr());
         test_mock::set_cross_call_response(Some(alloc::vec![1u8]));
         test_mock::set_caller(prev_caller.0);
+    }
+
+    fn reentrancy_engaged() -> bool {
+        storage_get(CV_REENTRANCY_KEY)
+            .map(|data| data.first().copied() == Some(1))
+            .unwrap_or(false)
     }
 
     #[test]
@@ -1252,6 +1267,76 @@ mod tests {
     }
 
     #[test]
+    fn test_deposit_reentrancy_guard_blocks_nested_entry() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        storage_set(CV_REENTRANCY_KEY, &[1u8]);
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+
+        assert_eq!(deposit(user.as_ptr(), 100_000), 0);
+        assert!(reentrancy_engaged());
+        assert_eq!(load_u64(b"cv_total_assets"), 0);
+    }
+
+    #[test]
+    fn test_deposit_failed_first_deposit_clears_reentrancy_guard() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(MIN_LOCKED_SHARES);
+        assert_eq!(deposit(user.as_ptr(), MIN_LOCKED_SHARES), 0);
+        assert!(!reentrancy_engaged());
+
+        test_mock::set_value(100_000);
+        assert!(deposit(user.as_ptr(), 100_000) > 0);
+    }
+
+    #[test]
+    fn test_withdraw_reentrancy_guard_blocks_nested_entry() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        enable_token_transfers();
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+        let shares = deposit(user.as_ptr(), 100_000);
+
+        storage_set(CV_REENTRANCY_KEY, &[1u8]);
+        assert_eq!(withdraw(user.as_ptr(), shares), 0);
+        assert!(reentrancy_engaged());
+    }
+
+    #[test]
+    fn test_withdraw_failed_burn_clears_reentrancy_guard() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        enable_token_transfers();
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+        let shares = deposit(user.as_ptr(), 100_000);
+
+        assert_eq!(withdraw(user.as_ptr(), shares + 1), 0);
+        assert!(!reentrancy_engaged());
+        assert!(withdraw(user.as_ptr(), shares) > 0);
+    }
+
+    #[test]
     fn test_harvest() {
         setup();
         let admin = [1u8; 32];
@@ -1281,6 +1366,35 @@ mod tests {
         initialize(admin.as_ptr());
         test_mock::set_timestamp(2000);
         assert_eq!(harvest(), 0);
+    }
+
+    #[test]
+    fn test_harvest_reentrancy_guard_blocks_nested_entry() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        storage_set(CV_REENTRANCY_KEY, &[1u8]);
+        assert_eq!(harvest(), 1);
+        assert!(reentrancy_engaged());
+    }
+
+    #[test]
+    fn test_harvest_no_assets_clears_reentrancy_guard() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        test_mock::set_timestamp(2000);
+        assert_eq!(harvest(), 0);
+        assert!(!reentrancy_engaged());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+        assert!(deposit(user.as_ptr(), 100_000) > 0);
     }
 
     #[test]

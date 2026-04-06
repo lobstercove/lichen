@@ -1,6 +1,6 @@
 // Lichen Core - Transaction Processor
 
-use crate::account::{Account, Keypair, Pubkey};
+use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
     ContractAbi, ContractAccount, ContractContext, ContractEvent, ContractRuntime, NativeAccountOp,
@@ -13,7 +13,7 @@ use crate::evm::{
 use crate::governance::{GovernanceAction, GovernanceProposal};
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
 use crate::transaction::{Instruction, Transaction};
-use crate::Hash;
+use crate::{Hash, MAX_CONTRACT_CODE};
 use alloy_primitives::U256;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -71,6 +71,28 @@ struct SymbolRegistrationSpec {
     template: Option<String>,
     metadata: Option<serde_json::Value>,
     decimals: Option<u8>,
+}
+
+const MAX_SYMBOL_REGISTRY_SYMBOL_LEN: usize = 32;
+const MAX_SYMBOL_REGISTRY_NAME_LEN: usize = 128;
+const MAX_SYMBOL_REGISTRY_TEMPLATE_LEN: usize = 32;
+const MAX_SYMBOL_REGISTRY_METADATA_KEY_LEN: usize = 64;
+
+fn validate_symbol_registry_field_length(
+    field: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("RegisterSymbol: '{}' cannot be empty", field));
+    }
+    if value.len() > max_len {
+        return Err(format!(
+            "RegisterSymbol: '{}' exceeds {} bytes",
+            field, max_len
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -469,6 +491,65 @@ impl FeeConfig {
             fee_exempt_contracts: Vec::new(),
         }
     }
+
+    pub fn apply_governance_param(&mut self, param_id: u8, value: u64) -> bool {
+        match param_id {
+            GOV_PARAM_BASE_FEE => {
+                self.base_fee = value;
+                true
+            }
+            GOV_PARAM_FEE_BURN_PERCENT => {
+                self.fee_burn_percent = value;
+                true
+            }
+            GOV_PARAM_FEE_PRODUCER_PERCENT => {
+                self.fee_producer_percent = value;
+                true
+            }
+            GOV_PARAM_FEE_VOTERS_PERCENT => {
+                self.fee_voters_percent = value;
+                true
+            }
+            GOV_PARAM_FEE_TREASURY_PERCENT => {
+                self.fee_treasury_percent = value;
+                true
+            }
+            GOV_PARAM_FEE_COMMUNITY_PERCENT => {
+                self.fee_community_percent = value;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn validate_distribution(&self) -> Result<(), String> {
+        for (label, value) in [
+            ("burn", self.fee_burn_percent),
+            ("producer", self.fee_producer_percent),
+            ("voters", self.fee_voters_percent),
+            ("treasury", self.fee_treasury_percent),
+            ("community", self.fee_community_percent),
+        ] {
+            if value > 100 {
+                return Err(format!("FeeConfig: {} percentage must be 0..=100", label));
+            }
+        }
+
+        let total = self
+            .fee_burn_percent
+            .saturating_add(self.fee_producer_percent)
+            .saturating_add(self.fee_voters_percent)
+            .saturating_add(self.fee_treasury_percent)
+            .saturating_add(self.fee_community_percent);
+        if total != 100 {
+            return Err(format!(
+                "FeeConfig: fee percentages must sum to 100, got {}",
+                total
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// Transaction processor
@@ -501,61 +582,8 @@ impl TxProcessor {
         }
     }
 
-    fn collect_required_signers(tx: &Transaction) -> Result<HashSet<Pubkey>, String> {
-        let mut required_signers = HashSet::new();
-        for ix in &tx.message.instructions {
-            if let Some(first_acc) = ix.accounts.first() {
-                required_signers.insert(*first_acc);
-            } else {
-                return Err("Instruction has no accounts".to_string());
-            }
-        }
-        Ok(required_signers)
-    }
-
-    fn verify_transaction_signatures(tx: &Transaction) -> Result<HashSet<Pubkey>, String> {
-        if tx.signatures.is_empty() {
-            return Err("No signatures".to_string());
-        }
-
-        if tx.message.instructions.is_empty() {
-            return Err("No instructions".to_string());
-        }
-
-        let required_signers = Self::collect_required_signers(tx)?;
-
-        if tx.signatures.len() < required_signers.len() {
-            return Err(format!(
-                "Insufficient signatures: got {}, need {}",
-                tx.signatures.len(),
-                required_signers.len()
-            ));
-        }
-
-        let message_bytes = tx.message.serialize();
-        let mut verified_signers = HashSet::with_capacity(required_signers.len());
-
-        for signature in &tx.signatures {
-            let signer = signature.signer_address();
-            if !required_signers.contains(&signer) || verified_signers.contains(&signer) {
-                continue;
-            }
-
-            if Keypair::verify(&signer, &message_bytes, signature) {
-                verified_signers.insert(signer);
-            }
-        }
-
-        for signer in &required_signers {
-            if !verified_signers.contains(signer) {
-                return Err(format!(
-                    "Missing or invalid signature for account {}",
-                    signer
-                ));
-            }
-        }
-
-        Ok(verified_signers)
+    fn verify_transaction_signatures(tx: &Transaction) -> Result<(), String> {
+        tx.verify_required_signatures().map(|_| ())
     }
 
     /// Drain accumulated contract execution metadata (return_code, logs, return_data).
@@ -1118,6 +1146,17 @@ impl TxProcessor {
         // Rebuild with only string values, stripping control characters
         let mut clean = serde_json::Map::new();
         for (key, val) in obj {
+            validate_symbol_registry_field_length(
+                &format!("metadata key '{}'", key),
+                key,
+                MAX_SYMBOL_REGISTRY_METADATA_KEY_LEN,
+            )?;
+            if key.chars().any(|ch| ch.is_control()) {
+                return Err(format!(
+                    "RegisterSymbol: metadata key '{}' contains control characters",
+                    key
+                ));
+            }
             let s = val.as_str().ok_or_else(|| {
                 format!(
                     "RegisterSymbol: metadata value for '{}' must be a string",
@@ -1193,6 +1232,15 @@ impl TxProcessor {
             batch.next_governance_proposal_id()
         } else {
             self.state.next_governance_proposal_id()
+        }
+    }
+
+    fn b_next_contract_deploy_nonce(&self, deployer: &Pubkey) -> Result<u64, String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.next_contract_deploy_nonce(deployer)
+        } else {
+            self.state.next_contract_deploy_nonce(deployer)
         }
     }
 
@@ -1528,6 +1576,30 @@ impl TxProcessor {
             }
         }
 
+        if Self::tx_updates_governance_fee_distribution(tx) {
+            if let Err(e) = self.validate_pending_governance_fee_distribution() {
+                self.rollback_batch();
+
+                let premium = Self::compute_premium_fee(tx, &fee_config);
+                if premium > 0 {
+                    if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                        eprintln!("Failed to refund deploy premium: {}", refund_err);
+                    }
+                }
+
+                let _ = self.state.put_transaction(tx);
+                let _ = self.store_tx_meta(&tx.signature(), total_cu);
+
+                let actual_fee = total_fee.saturating_sub(premium);
+                return self.make_result(
+                    false,
+                    actual_fee,
+                    Some(format!("Execution error: {}", e)),
+                    total_cu,
+                );
+            }
+        }
+
         // ── Post-execution achievement auto-detection ──────────────────
         // Best-effort: failures here do NOT prevent the transaction from committing.
         let _ = self.detect_and_award_achievements(tx);
@@ -1756,6 +1828,57 @@ impl TxProcessor {
         });
 
         results_mu.into_inner().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Simulate a transaction (dry run) — validates everything without persisting.
+    /// Returns the result with estimated fee, logs, and any errors.
+    pub fn validate_shielded_preflight(&self, tx: &Transaction) -> Result<(), String> {
+        let has_shielded = tx.message.instructions.iter().any(|instruction| {
+            instruction.program_id == SYSTEM_PROGRAM_ID
+                && matches!(instruction.data.first().copied(), Some(23..=25))
+        });
+        if !has_shielded {
+            return Ok(());
+        }
+
+        self.begin_batch();
+        let result =
+            (|| {
+                for instruction in &tx.message.instructions {
+                    if instruction.program_id != SYSTEM_PROGRAM_ID {
+                        continue;
+                    }
+
+                    match instruction.data.first().copied() {
+                        Some(23) => {
+                            #[cfg(feature = "zk")]
+                            self.system_shield_deposit(instruction)?;
+                            #[cfg(not(feature = "zk"))]
+                            return Err("Shielded preflight requires the zk feature to be enabled"
+                                .to_string());
+                        }
+                        Some(24) => {
+                            #[cfg(feature = "zk")]
+                            self.system_unshield_withdraw(instruction)?;
+                            #[cfg(not(feature = "zk"))]
+                            return Err("Shielded preflight requires the zk feature to be enabled"
+                                .to_string());
+                        }
+                        Some(25) => {
+                            #[cfg(feature = "zk")]
+                            self.system_shielded_transfer(instruction)?;
+                            #[cfg(not(feature = "zk"))]
+                            return Err("Shielded preflight requires the zk feature to be enabled"
+                                .to_string());
+                        }
+                        _ => {}
+                    }
+                }
+
+                Ok(())
+            })();
+        self.rollback_batch();
+        result
     }
 
     /// Simulate a transaction (dry run) — validates everything without persisting.
@@ -3568,17 +3691,32 @@ impl TxProcessor {
             .and_then(|s| s.as_str())
             .ok_or_else(|| "RegisterSymbol: missing 'symbol' field".to_string())?
             .to_string();
+        validate_symbol_registry_field_length("symbol", &symbol, MAX_SYMBOL_REGISTRY_SYMBOL_LEN)?;
+
+        let name = payload
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string());
+        if let Some(ref value) = name {
+            validate_symbol_registry_field_length("name", value, MAX_SYMBOL_REGISTRY_NAME_LEN)?;
+        }
+
+        let template = payload
+            .get("template")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+        if let Some(ref value) = template {
+            validate_symbol_registry_field_length(
+                "template",
+                value,
+                MAX_SYMBOL_REGISTRY_TEMPLATE_LEN,
+            )?;
+        }
 
         Ok(SymbolRegistrationSpec {
             symbol,
-            name: payload
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string()),
-            template: payload
-                .get("template")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string()),
+            name,
+            template,
             metadata: payload.get("metadata").cloned(),
             decimals: payload
                 .get("decimals")
@@ -3587,7 +3725,49 @@ impl TxProcessor {
         })
     }
 
-    fn validate_governance_param_change(&self, param_id: u8, value: u64) -> Result<(), String> {
+    fn projected_fee_config_for_governance_change(
+        &self,
+        param_id: u8,
+        value: u64,
+    ) -> Result<FeeConfig, String> {
+        let mut fee_config = self
+            .state
+            .get_fee_config()
+            .unwrap_or_else(|_| FeeConfig::default_from_constants());
+
+        let pending_changes = {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(batch) = guard.as_ref() {
+                batch.get_pending_governance_changes()?
+            } else {
+                self.state.get_pending_governance_changes()?
+            }
+        };
+
+        for (pending_param_id, pending_value) in pending_changes {
+            fee_config.apply_governance_param(pending_param_id, pending_value);
+        }
+
+        fee_config.apply_governance_param(param_id, value);
+        Ok(fee_config)
+    }
+
+    fn is_fee_distribution_param(param_id: u8) -> bool {
+        matches!(
+            param_id,
+            GOV_PARAM_FEE_BURN_PERCENT
+                | GOV_PARAM_FEE_PRODUCER_PERCENT
+                | GOV_PARAM_FEE_VOTERS_PERCENT
+                | GOV_PARAM_FEE_TREASURY_PERCENT
+                | GOV_PARAM_FEE_COMMUNITY_PERCENT
+        )
+    }
+
+    fn validate_governance_param_change_value(
+        &self,
+        param_id: u8,
+        value: u64,
+    ) -> Result<(), String> {
         match param_id {
             GOV_PARAM_BASE_FEE => {
                 if value == 0 || value > 1_000_000_000 {
@@ -3629,6 +3809,51 @@ impl TxProcessor {
         }
 
         Ok(())
+    }
+
+    fn validate_governance_param_change(&self, param_id: u8, value: u64) -> Result<(), String> {
+        self.validate_governance_param_change_value(param_id, value)?;
+
+        if Self::is_fee_distribution_param(param_id) {
+            self.projected_fee_config_for_governance_change(param_id, value)?
+                .validate_distribution()
+                .map_err(|e| format!("GovernanceParamChange: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    fn tx_updates_governance_fee_distribution(tx: &Transaction) -> bool {
+        tx.message.instructions.iter().any(|instruction| {
+            instruction.program_id == SYSTEM_PROGRAM_ID
+                && instruction.data.len() >= 2
+                && instruction.data[0] == 29
+                && Self::is_fee_distribution_param(instruction.data[1])
+        })
+    }
+
+    fn validate_pending_governance_fee_distribution(&self) -> Result<(), String> {
+        let mut fee_config = self
+            .state
+            .get_fee_config()
+            .unwrap_or_else(|_| FeeConfig::default_from_constants());
+
+        let pending_changes = {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(batch) = guard.as_ref() {
+                batch.get_pending_governance_changes()?
+            } else {
+                self.state.get_pending_governance_changes()?
+            }
+        };
+
+        for (param_id, value) in pending_changes {
+            fee_config.apply_governance_param(param_id, value);
+        }
+
+        fee_config
+            .validate_distribution()
+            .map_err(|e| format!("GovernanceParamChange: {}", e))
     }
 
     fn governance_action_uses_immediate_risk_reduction_policy(
@@ -4462,9 +4687,7 @@ impl TxProcessor {
                     .total_shielded
                     .checked_add(amount)
                     .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
-                // Rebuild merkle root: read existing leaves from disk + add new one
-                let mut leaves = self.state.get_all_shielded_commitments(index)?;
-                leaves.push(commitment);
+                let leaves = batch.get_all_shielded_commitments(pool.commitment_count)?;
                 let mut tree = crate::zk::MerkleTree::new();
                 for leaf in &leaves {
                     tree.insert(*leaf);
@@ -4822,10 +5045,7 @@ impl TxProcessor {
                 batch.insert_shielded_commitment(idx0 + 1, &commitment_d)?;
                 pool.commitment_count += 2;
                 // total_shielded unchanged: value conservation enforced by ZK circuit
-                // Rebuild merkle root
-                let mut leaves = self.state.get_all_shielded_commitments(idx0)?;
-                leaves.push(commitment_c);
-                leaves.push(commitment_d);
+                let leaves = batch.get_all_shielded_commitments(pool.commitment_count)?;
                 let mut tree = crate::zk::MerkleTree::new();
                 for leaf in &leaves {
                     tree.insert(*leaf);
@@ -5285,13 +5505,11 @@ impl TxProcessor {
             return Err("DeployContract: code cannot be empty".to_string());
         }
 
-        // AUDIT-FIX A9-03: Enforce maximum contract size (512 KB)
-        const MAX_CONTRACT_SIZE: usize = 512 * 1024; // 512 KB
-        if code_bytes.len() > MAX_CONTRACT_SIZE {
+        if code_bytes.len() > MAX_CONTRACT_CODE {
             return Err(format!(
                 "DeployContract: code size {} exceeds maximum {} bytes",
                 code_bytes.len(),
-                MAX_CONTRACT_SIZE
+                MAX_CONTRACT_CODE
             ));
         }
 
@@ -5313,21 +5531,59 @@ impl TxProcessor {
             return Err("DeployContract: incorrect treasury account".to_string());
         }
 
-        // Derive program address: SHA-256(deployer + optional_name + code)
-        let contract_name: Option<String> = if !init_data_bytes.is_empty() {
-            serde_json::from_slice::<serde_json::Value>(init_data_bytes)
-                .ok()
-                .and_then(|v| {
-                    v.get("name")
-                        .or_else(|| v.get("symbol"))
-                        .and_then(|n| n.as_str().map(|s| s.to_string()))
-                })
+        let init_payload = if init_data_bytes.is_empty() {
+            None
+        } else {
+            serde_json::from_slice::<serde_json::Value>(init_data_bytes).ok()
+        };
+
+        // Derive program address from deployer + explicit salt, or a persisted
+        // per-deployer nonce when deterministic mode is not requested.
+        let contract_name = init_payload.as_ref().and_then(|v| {
+            v.get("name")
+                .or_else(|| v.get("symbol"))
+                .and_then(|n| n.as_str().map(|s| s.to_string()))
+        });
+        let deploy_salt = init_payload.as_ref().and_then(|v| {
+            v.get("deploy_salt")
+                .or_else(|| v.get("deploySalt"))
+                .and_then(|value| value.as_str().map(|s| s.to_string()))
+        });
+        if let Some(ref salt) = deploy_salt {
+            if salt.is_empty() {
+                return Err("DeployContract: deploy_salt cannot be empty".to_string());
+            }
+            if salt.len() > 64 {
+                return Err("DeployContract: deploy_salt exceeds 64 bytes".to_string());
+            }
+        }
+        let deterministic_address = init_payload
+            .as_ref()
+            .and_then(|v| {
+                v.get("deploy_deterministic")
+                    .or_else(|| v.get("deployDeterministic"))
+                    .and_then(|value| value.as_bool())
+            })
+            .unwrap_or(false);
+        let deploy_nonce = if deploy_salt.is_none() && !deterministic_address {
+            Some(self.b_next_contract_deploy_nonce(&deployer)?)
         } else {
             None
         };
 
         let mut addr_hasher = Sha256::new();
+        addr_hasher.update(b"lichen_contract_deploy_v2");
         addr_hasher.update(deployer.0);
+        if let Some(ref salt) = deploy_salt {
+            addr_hasher.update(b"salt");
+            addr_hasher.update((salt.len() as u32).to_le_bytes());
+            addr_hasher.update(salt.as_bytes());
+        } else if let Some(nonce) = deploy_nonce {
+            addr_hasher.update(b"nonce");
+            addr_hasher.update(nonce.to_le_bytes());
+        } else {
+            addr_hasher.update(b"deterministic");
+        }
         if let Some(ref name) = contract_name {
             addr_hasher.update(name.as_bytes());
         }
@@ -5362,32 +5618,28 @@ impl TxProcessor {
         self.b_index_program(&program_pubkey)?;
 
         // Process init_data for symbol registry
-        if !init_data_bytes.is_empty() {
-            if let Ok(raw) = std::str::from_utf8(init_data_bytes) {
-                if let Ok(registry_data) = serde_json::from_str::<serde_json::Value>(raw) {
-                    if let Some(symbol) = registry_data.get("symbol").and_then(|s| s.as_str()) {
-                        let entry = crate::SymbolRegistryEntry {
-                            symbol: symbol.to_string(),
-                            program: program_pubkey,
-                            owner: deployer,
-                            name: registry_data
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .map(|s| s.to_string()),
-                            template: registry_data
-                                .get("template")
-                                .and_then(|t| t.as_str())
-                                .map(|s| s.to_string()),
-                            metadata: registry_data.get("metadata").cloned(),
-                            decimals: registry_data
-                                .get("decimals")
-                                .and_then(|d| d.as_u64())
-                                .map(|d| d as u8),
-                        };
-                        // AUDIT-FIX 2.5: Route through batch
-                        self.b_register_symbol(symbol, entry)?;
-                    }
-                }
+        if let Some(registry_data) = init_payload.as_ref() {
+            if let Some(symbol) = registry_data.get("symbol").and_then(|s| s.as_str()) {
+                let entry = crate::SymbolRegistryEntry {
+                    symbol: symbol.to_string(),
+                    program: program_pubkey,
+                    owner: deployer,
+                    name: registry_data
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string()),
+                    template: registry_data
+                        .get("template")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string()),
+                    metadata: registry_data.get("metadata").cloned(),
+                    decimals: registry_data
+                        .get("decimals")
+                        .and_then(|d| d.as_u64())
+                        .map(|d| d as u8),
+                };
+                // AUDIT-FIX 2.5: Route through batch
+                self.b_register_symbol(symbol, entry)?;
             }
         }
 
@@ -6163,7 +6415,7 @@ impl TxProcessor {
             );
         }
 
-        self.validate_governance_param_change(param_id, value)?;
+        self.validate_governance_param_change_value(param_id, value)?;
 
         // Queue the change
         self.b_queue_governance_param_change(param_id, value)?;
@@ -6317,15 +6569,14 @@ impl TxProcessor {
         }
 
         // AUDIT-FIX A9-02/A9-03: Validate WASM before deploy
-        const MAX_CONTRACT_SIZE: usize = 512 * 1024;
         if code.is_empty() {
             return Err("Deploy: code cannot be empty".to_string());
         }
-        if code.len() > MAX_CONTRACT_SIZE {
+        if code.len() > MAX_CONTRACT_CODE {
             return Err(format!(
                 "Deploy: code size {} exceeds maximum {} bytes",
                 code.len(),
-                MAX_CONTRACT_SIZE
+                MAX_CONTRACT_CODE
             ));
         }
         if code.len() < 8 || code[..4] != [0x00, 0x61, 0x73, 0x6D] {
@@ -8507,6 +8758,129 @@ mod tests {
         assert!(result.success, "Deploy should succeed: {:?}", result.error);
     }
 
+    #[test]
+    fn test_system_deploy_contract_allows_same_code_multiple_times_via_nonce() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct
+            .add_spendable(Account::licn_to_spores(200))
+            .unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        let build_tx = |blockhash| {
+            let mut data = vec![17u8];
+            data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+            data.extend_from_slice(&code);
+            let ix = Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, treasury],
+                data,
+            };
+            let mut tx = Transaction::new(crate::transaction::Message::new(vec![ix], blockhash));
+            tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+            tx
+        };
+
+        let result1 = processor.process_transaction(&build_tx(genesis_hash), &validator);
+        assert!(
+            result1.success,
+            "first deploy should succeed: {:?}",
+            result1.error
+        );
+
+        let recent_block = crate::Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            Hash::hash(b"deploy-second-state"),
+            [0u8; 32],
+            Vec::new(),
+            1,
+        );
+        let second_hash = recent_block.hash();
+        state.put_block(&recent_block).unwrap();
+        state.set_last_slot(1).unwrap();
+        let result2 = processor.process_transaction(&build_tx(second_hash), &validator);
+        assert!(
+            result2.success,
+            "second deploy should succeed: {:?}",
+            result2.error
+        );
+
+        let programs = state.get_programs(10).unwrap();
+        assert_eq!(
+            programs.len(),
+            2,
+            "same code should deploy to two unique addresses"
+        );
+        assert_ne!(programs[0], programs[1]);
+    }
+
+    #[test]
+    fn test_system_deploy_contract_deterministic_mode_rejects_duplicate_address() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct
+            .add_spendable(Account::licn_to_spores(200))
+            .unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        let init = serde_json::json!({
+            "name": "deterministic-demo",
+            "deploy_deterministic": true
+        })
+        .to_string();
+        let build_tx = |blockhash| {
+            let mut data = vec![17u8];
+            data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+            data.extend_from_slice(&code);
+            data.extend_from_slice(init.as_bytes());
+            let ix = Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![alice, treasury],
+                data,
+            };
+            let mut tx = Transaction::new(crate::transaction::Message::new(vec![ix], blockhash));
+            tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+            tx
+        };
+
+        let result1 = processor.process_transaction(&build_tx(genesis_hash), &validator);
+        assert!(
+            result1.success,
+            "first deterministic deploy should succeed: {:?}",
+            result1.error
+        );
+
+        let recent_block = crate::Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            Hash::hash(b"deploy-deterministic-second-state"),
+            [0u8; 32],
+            Vec::new(),
+            1,
+        );
+        let second_hash = recent_block.hash();
+        state.put_block(&recent_block).unwrap();
+        state.set_last_slot(1).unwrap();
+        let result2 = processor.process_transaction(&build_tx(second_hash), &validator);
+        assert!(!result2.success, "duplicate deterministic deploy must fail");
+        assert!(
+            result2
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Contract already exists"),
+            "unexpected: {:?}",
+            result2.error
+        );
+    }
+
     /// AUDIT-FIX B-2: System deploy (type 17) charges contract_deploy_fee.
     #[test]
     fn test_system_deploy_charges_deploy_fee() {
@@ -8801,15 +9175,9 @@ mod tests {
             r.error
         );
 
-        // Find the deployed program address
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(alice.0);
-        hasher.update(&code);
-        let hash = hasher.finalize();
-        let mut addr_bytes = [0u8; 32];
-        addr_bytes.copy_from_slice(&hash[..32]);
-        let program_pubkey = Pubkey(addr_bytes);
+        let programs = state.get_programs(10).unwrap();
+        assert_eq!(programs.len(), 1, "expected a single deployed program");
+        let program_pubkey = programs[0];
 
         // Now set ABI
         let abi = serde_json::json!({
@@ -8864,15 +9232,9 @@ mod tests {
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
         assert!(processor.process_transaction(&tx, &validator).success);
 
-        // Compute program address
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(alice.0);
-        hasher.update(&code);
-        let hash = hasher.finalize();
-        let mut addr_bytes = [0u8; 32];
-        addr_bytes.copy_from_slice(&hash[..32]);
-        let program_pubkey = Pubkey(addr_bytes);
+        let programs = state.get_programs(10).unwrap();
+        assert_eq!(programs.len(), 1, "expected a single deployed program");
+        let program_pubkey = programs[0];
 
         // Try setting ABI as a different user (bob)
         let bob_kp = Keypair::generate();
@@ -10581,6 +10943,43 @@ mod tests {
         assert!(r2.error.unwrap().contains("already registered"));
     }
 
+    #[test]
+    fn test_register_symbol_rejects_overlong_fields() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_id = Pubkey([94u8; 32]);
+
+        deploy_fake_contract(&state, alice, contract_id);
+
+        let payload = serde_json::json!({
+            "symbol": "S".repeat(MAX_SYMBOL_REGISTRY_SYMBOL_LEN + 1),
+            "name": "N".repeat(MAX_SYMBOL_REGISTRY_NAME_LEN + 1),
+            "template": "T".repeat(MAX_SYMBOL_REGISTRY_TEMPLATE_LEN + 1),
+            "metadata": {
+                "k".repeat(MAX_SYMBOL_REGISTRY_METADATA_KEY_LEN + 1): "value"
+            }
+        });
+        let mut data = vec![20u8];
+        data.extend_from_slice(payload.to_string().as_bytes());
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, contract_id],
+            data,
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success, "overlong symbol registration must fail");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exceeds"),
+            "unexpected: {:?}",
+            result.error
+        );
+    }
+
     // ====================================================================
     // UTILITY FUNCTIONS
     // ====================================================================
@@ -11515,6 +11914,83 @@ mod tests {
 
     #[cfg(feature = "zk")]
     #[test]
+    fn test_shield_batch_updates_merkle_root_with_prior_batch_commitments() {
+        use crate::zk::{
+            circuits::shield::ShieldCircuit, commitment_hash, random_scalar_bytes, Prover,
+        };
+
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+
+        let amount_a = 100u64;
+        let blinding_a = random_scalar_bytes();
+        let commitment_a = commitment_hash(amount_a, &blinding_a);
+        let proof_a = Prover::new()
+            .prove_shield(ShieldCircuit::new_bytes(
+                amount_a,
+                amount_a,
+                blinding_a,
+                commitment_a,
+            ))
+            .unwrap();
+
+        let amount_b = 200u64;
+        let blinding_b = random_scalar_bytes();
+        let commitment_b = commitment_hash(amount_b, &blinding_b);
+        let proof_b = Prover::new()
+            .prove_shield(ShieldCircuit::new_bytes(
+                amount_b,
+                amount_b,
+                blinding_b,
+                commitment_b,
+            ))
+            .unwrap();
+
+        let mut data_a = vec![23u8];
+        data_a.extend_from_slice(&amount_a.to_le_bytes());
+        data_a.extend_from_slice(&commitment_a);
+        data_a.extend_from_slice(&proof_a.proof_bytes);
+
+        let mut data_b = vec![23u8];
+        data_b.extend_from_slice(&amount_b.to_le_bytes());
+        data_b.extend_from_slice(&commitment_b);
+        data_b.extend_from_slice(&proof_b.proof_bytes);
+
+        let msg = crate::transaction::Message::new(
+            vec![
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![alice],
+                    data: data_a,
+                },
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![alice],
+                    data: data_b,
+                },
+            ],
+            genesis_hash,
+        );
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(
+            result.success,
+            "batched shield deposits should succeed: {:?}",
+            result.error
+        );
+
+        let pool = state.get_shielded_pool_state().unwrap();
+        assert_eq!(pool.commitment_count, 2);
+        let mut tree = crate::zk::MerkleTree::new();
+        tree.insert(commitment_a);
+        tree.insert(commitment_b);
+        assert_eq!(pool.merkle_root, tree.root());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
     fn test_unshield_rejects_recipient_mismatch() {
         use crate::zk::{recipient_hash, recipient_preimage_from_bytes};
 
@@ -12227,6 +12703,32 @@ mod tests {
             r.error.as_ref().unwrap().contains("fee percentage must be"),
             "unexpected: {:?}",
             r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_fee_split_sum_over_100() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        let burn = make_gov_param_ix(alice, GOV_PARAM_FEE_BURN_PERCENT, 80);
+        let producer = make_gov_param_ix(alice, GOV_PARAM_FEE_PRODUCER_PERCENT, 30);
+        let msg = crate::transaction::Message::new(vec![burn, producer], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "invalid fee split must be rejected");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("sum to 100"),
+            "unexpected: {:?}",
+            result.error
         );
     }
 

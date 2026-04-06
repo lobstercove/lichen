@@ -2715,13 +2715,15 @@ function currentBridgeAuthPayload(wallet) {
     };
 }
 
-async function ensureBridgeAccessAuth(wallet) {
-    if (hasValidBridgeAuth(wallet)) return activeBridgeAuth;
+async function ensureBridgeAccessAuth(wallet, { forceRefresh = false } = {}) {
+    if (!forceRefresh && hasValidBridgeAuth(wallet)) return activeBridgeAuth;
 
     const values = await showPasswordModal({
-        title: 'Authorize Bridge Access',
+        title: forceRefresh ? 'Authorize New Deposit Request' : 'Authorize Bridge Access',
         icon: 'fas fa-link',
-        message: 'Sign a bridge access authorization for this wallet. The authorization stays only in memory and is used to request a deposit address and poll its status without exposing custody credentials.',
+        message: forceRefresh
+            ? 'Each new deposit address request requires a fresh bridge authorization. The latest authorization stays only in memory and continues to power deposit status checks without exposing custody credentials.'
+            : 'Sign a bridge access authorization for this wallet. The authorization stays only in memory and is used to request a deposit address and poll its status without exposing custody credentials.',
         confirmText: 'Sign Authorization',
         fields: [
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
@@ -2815,7 +2817,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
 
     let bridgeAuth;
     try {
-        bridgeAuth = await ensureBridgeAccessAuth(wallet);
+        bridgeAuth = await ensureBridgeAccessAuth(wallet, { forceRefresh: true });
     } catch (error) {
         showToast(error.message || 'Bridge authorization failed', 'error');
         return;

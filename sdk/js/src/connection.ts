@@ -363,7 +363,7 @@ export class Connection {
   /**
    * Create stake transaction
    */
-  async stake(from: Keypair, validator: PublicKey, amount: number): Promise<string> {
+  async stake(from: Keypair, validator: PublicKey, amount: number | bigint): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
     const instruction = TransactionBuilder.stake(from.pubkey(), validator, amount);
     const transaction = new TransactionBuilder()
@@ -376,7 +376,7 @@ export class Connection {
   /**
    * Create unstake transaction
    */
-  async unstake(from: Keypair, validator: PublicKey, amount: number): Promise<string> {
+  async unstake(from: Keypair, validator: PublicKey, amount: number | bigint): Promise<string> {
     const blockhash = await this.getRecentBlockhash();
     const instruction = TransactionBuilder.unstake(from.pubkey(), validator, amount);
     const transaction = new TransactionBuilder()

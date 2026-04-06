@@ -44,7 +44,7 @@ fn test_tick_liquidity_after_remove() {
     );
 
     // Check tick data at lower tick
-    let lower_key = format!("amm_tick_1_n120");
+    let lower_key = "amm_tick_1_n120".to_string();
     let lower_before = lichen_sdk::storage_get(lower_key.as_bytes())
         .map(|d| {
             if d.len() >= 8 {

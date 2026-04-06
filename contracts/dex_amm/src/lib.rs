@@ -115,6 +115,10 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn deadline_is_expired(deadline: u64) -> bool {
+    deadline != 0 && get_slot() > deadline
+}
+
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![b'0'];
@@ -1272,6 +1276,23 @@ pub fn add_liquidity(
     amount_a: u64,
     amount_b: u64,
 ) -> u32 {
+    add_liquidity_with_deadline(
+        provider, pool_id, lower_tick, upper_tick, amount_a, amount_b, 0,
+    )
+}
+
+/// Add liquidity to a pool within a tick range with an execution deadline.
+/// Returns: 0=success, 1=paused, 2=pool not found, 3=invalid range, 4=below min,
+/// 5=reentrancy, 6=token transfer failed, 7=deadline expired
+pub fn add_liquidity_with_deadline(
+    provider: *const u8,
+    pool_id: u64,
+    lower_tick: i32,
+    upper_tick: i32,
+    amount_a: u64,
+    amount_b: u64,
+    deadline: u64,
+) -> u32 {
     if !reentrancy_enter() {
         return 5;
     }
@@ -1289,6 +1310,10 @@ pub fn add_liquidity(
     if real_caller.0 != p {
         reentrancy_exit();
         return 200;
+    }
+    if deadline_is_expired(deadline) {
+        reentrancy_exit();
+        return 7;
     }
 
     let pk = pool_key(pool_id);
@@ -1415,6 +1440,18 @@ pub fn add_liquidity(
 /// Remove liquidity from a position
 /// Returns: 0=success, 1=not found, 2=not owner, 3=insufficient, 4=reentrancy
 pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount: u64) -> u32 {
+    remove_liquidity_with_deadline(provider, position_id, liquidity_amount, 0)
+}
+
+/// Remove liquidity from a position with an execution deadline.
+/// Returns: 0=success, 1=not found, 2=not owner, 3=insufficient, 4=reentrancy,
+/// 5=deadline expired
+pub fn remove_liquidity_with_deadline(
+    provider: *const u8,
+    position_id: u64,
+    liquidity_amount: u64,
+    deadline: u64,
+) -> u32 {
     if !reentrancy_enter() {
         return 4;
     }
@@ -1427,6 +1464,10 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
     if real_caller.0 != p {
         reentrancy_exit();
         return 200;
+    }
+    if deadline_is_expired(deadline) {
+        reentrancy_exit();
+        return 5;
     }
 
     let pk = position_key(position_id);
@@ -2075,8 +2116,7 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
 // WASM ENTRY POINT
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn call() -> u32 {
     let args = lichen_sdk::get_args();
     if args.is_empty() {
@@ -2112,7 +2152,7 @@ pub extern "C" fn call() -> u32 {
         // 2: set_pool_protocol_fee(caller, pool_id, fee_percent)
         2 => {
             // caller(32) + pool_id(8) + fee_percent(1) = 41
-            if args.len() >= 1 + 32 + 8 + 1 {
+            if args.len() > 40 {
                 let r = set_pool_protocol_fee(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
@@ -2123,31 +2163,33 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
-        // 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
+        // 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b, deadline)
         3 => {
-            // provider(32) + pool_id(8) + lower_tick(4) + upper_tick(4) + amount_a(8) + amount_b(8) = 64
-            if args.len() >= 1 + 32 + 8 + 4 + 4 + 8 + 8 {
-                let r = add_liquidity(
+            // provider(32) + pool_id(8) + lower_tick(4) + upper_tick(4) + amount_a(8) + amount_b(8) + deadline(8) = 72
+            if args.len() >= 1 + 32 + 8 + 4 + 4 + 8 + 8 + 8 {
+                let r = add_liquidity_with_deadline(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
                     bytes_to_i32(&args[41..45]),
                     bytes_to_i32(&args[45..49]),
                     bytes_to_u64(&args[49..57]),
                     bytes_to_u64(&args[57..65]),
+                    bytes_to_u64(&args[65..73]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
                 _rc = r as u32;
             }
         }
-        // 4: remove_liquidity(provider, position_id, liquidity_amount)
+        // 4: remove_liquidity(provider, position_id, liquidity_amount, deadline)
         4 => {
-            // provider(32) + position_id(8) + liquidity_amount(8) = 48
-            if args.len() >= 1 + 32 + 8 + 8 {
-                let r = remove_liquidity(
+            // provider(32) + position_id(8) + liquidity_amount(8) + deadline(8) = 56
+            if args.len() >= 1 + 32 + 8 + 8 + 8 {
+                let r = remove_liquidity_with_deadline(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
+                    bytes_to_u64(&args[49..57]),
                 );
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
@@ -2200,7 +2242,7 @@ pub extern "C" fn call() -> u32 {
         }
         // 8: emergency_pause(caller)
         8 => {
-            if args.len() >= 1 + 32 {
+            if args.len() > 32 {
                 let r = emergency_pause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
@@ -2209,7 +2251,7 @@ pub extern "C" fn call() -> u32 {
         }
         // 9: emergency_unpause(caller)
         9 => {
-            if args.len() >= 1 + 32 {
+            if args.len() > 32 {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
@@ -2218,14 +2260,14 @@ pub extern "C" fn call() -> u32 {
         }
         // 10: get_pool_info(pool_id)
         10 => {
-            if args.len() >= 1 + 8 {
+            if args.len() > 8 {
                 let r = get_pool_info(bytes_to_u64(&args[1..9]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 11: get_position(position_id)
         11 => {
-            if args.len() >= 1 + 8 {
+            if args.len() > 8 {
                 let r = get_position(bytes_to_u64(&args[1..9]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
@@ -2242,7 +2284,7 @@ pub extern "C" fn call() -> u32 {
         }
         // 14: get_tvl(pool_id)
         14 => {
-            if args.len() >= 1 + 8 {
+            if args.len() > 8 {
                 let r = get_tvl(bytes_to_u64(&args[1..9]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
@@ -2339,6 +2381,92 @@ mod tests {
             0
         );
         (admin, 1)
+    }
+
+    fn dispatch(args: &[u8]) -> u32 {
+        test_mock::set_args(args);
+        call()
+    }
+
+    fn emergency_pause_args(caller: [u8; 32]) -> std::vec::Vec<u8> {
+        let mut args = std::vec::Vec::with_capacity(1 + 32);
+        args.push(8);
+        args.extend_from_slice(&caller);
+        args
+    }
+
+    fn add_liquidity_args(
+        provider: [u8; 32],
+        pool_id: u64,
+        lower_tick: i32,
+        upper_tick: i32,
+        amount_a: u64,
+        amount_b: u64,
+        deadline: u64,
+    ) -> std::vec::Vec<u8> {
+        let mut args = std::vec::Vec::with_capacity(1 + 32 + 8 + 4 + 4 + 8 + 8 + 8);
+        args.push(3);
+        args.extend_from_slice(&provider);
+        args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.extend_from_slice(&lower_tick.to_le_bytes());
+        args.extend_from_slice(&upper_tick.to_le_bytes());
+        args.extend_from_slice(&u64_to_bytes(amount_a));
+        args.extend_from_slice(&u64_to_bytes(amount_b));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        args
+    }
+
+    fn remove_liquidity_args(
+        provider: [u8; 32],
+        position_id: u64,
+        liquidity_amount: u64,
+        deadline: u64,
+    ) -> std::vec::Vec<u8> {
+        let mut args = std::vec::Vec::with_capacity(1 + 32 + 8 + 8 + 8);
+        args.push(4);
+        args.extend_from_slice(&provider);
+        args.extend_from_slice(&u64_to_bytes(position_id));
+        args.extend_from_slice(&u64_to_bytes(liquidity_amount));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        args
+    }
+
+    fn swap_exact_in_args(
+        trader: [u8; 32],
+        pool_id: u64,
+        is_token_a_in: bool,
+        amount_in: u64,
+        min_out: u64,
+        deadline: u64,
+    ) -> std::vec::Vec<u8> {
+        let mut args = std::vec::Vec::with_capacity(1 + 32 + 8 + 1 + 8 + 8 + 8);
+        args.push(6);
+        args.extend_from_slice(&trader);
+        args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.push(u8::from(is_token_a_in));
+        args.extend_from_slice(&u64_to_bytes(amount_in));
+        args.extend_from_slice(&u64_to_bytes(min_out));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        args
+    }
+
+    fn swap_exact_out_args(
+        trader: [u8; 32],
+        pool_id: u64,
+        is_token_a_out: bool,
+        amount_out: u64,
+        max_in: u64,
+        deadline: u64,
+    ) -> std::vec::Vec<u8> {
+        let mut args = std::vec::Vec::with_capacity(1 + 32 + 8 + 1 + 8 + 8 + 8);
+        args.push(7);
+        args.extend_from_slice(&trader);
+        args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.push(u8::from(is_token_a_out));
+        args.extend_from_slice(&u64_to_bytes(amount_out));
+        args.extend_from_slice(&u64_to_bytes(max_in));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        args
     }
 
     // --- Initialization ---
@@ -2814,11 +2942,7 @@ mod tests {
         for &(tick, expected) in test_vectors {
             let computed = tick_to_sqrt_price(tick);
             // Allow ±1 ULP tolerance for fixed-point rounding
-            let diff = if computed > expected {
-                computed - expected
-            } else {
-                expected - computed
-            };
+            let diff = computed.abs_diff(expected);
             assert!(
                 diff <= 1,
                 "tick_to_sqrt_price({}) = {} but expected {} (diff={})",
@@ -2836,21 +2960,13 @@ mod tests {
         // Q32.32 = floor(148.39 * 2^32) = 637,349,993,568
         let price_100k = tick_to_sqrt_price(100_000);
         let expected_100k: u64 = 637_349_993_568;
-        let diff = if price_100k > expected_100k {
-            price_100k - expected_100k
-        } else {
-            expected_100k - price_100k
-        };
+        let diff = price_100k.abs_diff(expected_100k);
         assert!(diff <= 200, "tick 100000 off by {} (expected ~637B)", diff);
 
         // Negative large tick
         let price_neg100k = tick_to_sqrt_price(-100_000);
         let expected_neg100k: u64 = 28_942_879;
-        let diff2 = if price_neg100k > expected_neg100k {
-            price_neg100k - expected_neg100k
-        } else {
-            expected_neg100k - price_neg100k
-        };
+        let diff2 = price_neg100k.abs_diff(expected_neg100k);
         assert!(
             diff2 <= 2,
             "tick -100000 off by {} (expected ~28.9M)",
@@ -2905,11 +3021,7 @@ mod tests {
         // ratio[0] * ratio[0] should equal ratio[1] (since 1.00005^1 * 1.00005^1 = 1.00005^2)
         let r1 = TICK_RATIOS[1];
         let product = mul_q64(r0, r0);
-        let diff = if product > r1 {
-            product - r1
-        } else {
-            r1 - product
-        };
+        let diff = product.abs_diff(r1);
         assert!(diff <= 1, "R0*R0 should equal R1, diff={}", diff);
     }
 
@@ -2930,6 +3042,123 @@ mod tests {
         let rando = [99u8; 32];
         test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_dispatch_emergency_pause_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+
+        assert_eq!(dispatch(&emergency_pause_args(rando)), 1);
+        assert!(!is_paused());
+    }
+
+    #[test]
+    fn test_dispatch_swap_exact_in_enforces_deadline_and_slippage() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [3u8; 32];
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
+            0
+        );
+
+        test_mock::set_caller(trader);
+        assert_eq!(
+            dispatch(&swap_exact_in_args(trader, pool_id, true, 1_000, 0, 50)),
+            3
+        );
+        assert_eq!(
+            dispatch(&swap_exact_in_args(
+                trader,
+                pool_id,
+                true,
+                1_000,
+                u64::MAX,
+                0
+            )),
+            4
+        );
+    }
+
+    #[test]
+    fn test_dispatch_swap_exact_out_enforces_max_in() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [3u8; 32];
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
+            0
+        );
+
+        test_mock::set_caller(trader);
+        assert_eq!(
+            dispatch(&swap_exact_out_args(trader, pool_id, true, 100_000, 1, 0)),
+            4
+        );
+    }
+
+    #[test]
+    fn test_dispatch_add_liquidity_enforces_deadline() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+
+        assert_eq!(
+            dispatch(&add_liquidity_args(
+                provider, pool_id, -120, 120, 1_000_000, 1_000_000, 50,
+            )),
+            7
+        );
+        assert_eq!(load_u64(POSITION_COUNT_KEY), 0);
+
+        assert_eq!(
+            dispatch(&add_liquidity_args(
+                provider, pool_id, -120, 120, 1_000_000, 1_000_000, 150,
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn test_dispatch_remove_liquidity_enforces_deadline() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            dispatch(&add_liquidity_args(
+                provider, pool_id, -120, 120, 1_000_000, 1_000_000, 150,
+            )),
+            0
+        );
+
+        let position_before = storage_get(&position_key(1)).unwrap();
+        let liquidity_before = decode_pos_liquidity(&position_before);
+
+        assert_eq!(dispatch(&remove_liquidity_args(provider, 1, 500, 50)), 5);
+        let position_after_failed = storage_get(&position_key(1)).unwrap();
+        assert_eq!(
+            decode_pos_liquidity(&position_after_failed),
+            liquidity_before
+        );
+
+        assert_eq!(dispatch(&remove_liquidity_args(provider, 1, 500, 150)), 0);
+        let position_after_success = storage_get(&position_key(1)).unwrap();
+        assert_eq!(
+            decode_pos_liquidity(&position_after_success),
+            liquidity_before - 500
+        );
     }
 
     // --- Queries ---

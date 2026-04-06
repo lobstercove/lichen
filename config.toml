@@ -58,6 +58,18 @@ min_validator_stake = 75000000000
 # Slot duration in milliseconds
 slot_duration_ms = 400
 
+# Base BFT propose timeout in milliseconds
+propose_timeout_base_ms = 2000
+
+# Base BFT prevote timeout in milliseconds
+prevote_timeout_base_ms = 1000
+
+# Base BFT precommit timeout in milliseconds
+precommit_timeout_base_ms = 1000
+
+# Maximum cap for any BFT phase timeout in milliseconds
+max_phase_timeout_ms = 60000
+
 # Enable slashing for malicious behavior
 enable_slashing = true
 

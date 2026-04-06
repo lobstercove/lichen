@@ -335,8 +335,6 @@ impl DBErrorMarker for EvmDbError {}
 struct StateEvmDb {
     state: StateStore,
     code_cache: StdHashMap<RevmB256, Bytecode>,
-    /// Errors accumulated during DatabaseCommit::commit() (C7 fix)
-    commit_errors: Vec<String>,
 }
 
 impl StateEvmDb {
@@ -344,7 +342,6 @@ impl StateEvmDb {
         Self {
             state,
             code_cache: StdHashMap::new(),
-            commit_errors: Vec::new(),
         }
     }
 
@@ -453,94 +450,13 @@ impl Database for StateEvmDb {
 
 impl DatabaseCommit for StateEvmDb {
     fn commit(&mut self, changes: RevmHashMap<RevmAddress, Account>) {
-        // P9-CORE-07: Guard against direct state writes bypassing StateBatch atomicity.
-        // In production, EVM state changes must be collected and applied via StateBatch
-        // to ensure atomic block processing. This commit() is retained for revm trait
-        // compatibility but logs a warning when called with actual changes.
-        if !changes.is_empty() {
-            eprintln!(
-                "⚠️  P9-CORE-07: StateEvmDb::commit() called with {} changes — \
-                 these writes bypass StateBatch atomicity. Use collect_changes() instead.",
-                changes.len()
-            );
+        if changes.is_empty() {
+            return;
         }
-        self.commit_errors.clear();
-        for (address, account) in changes {
-            let address_bytes = revm_address_to_array(address);
-            if account.is_empty() {
-                if let Err(e) = self.state.clear_evm_account(&address_bytes) {
-                    self.commit_errors
-                        .push(format!("clear EVM account {:?}: {}", address_bytes, e));
-                }
-                if let Err(e) = self.state.clear_evm_storage(&address_bytes) {
-                    self.commit_errors
-                        .push(format!("clear EVM storage {:?}: {}", address_bytes, e));
-                }
-                continue;
-            }
 
-            let mut stored = EvmAccount::new();
-            stored.nonce = account.info.nonce;
-            stored.set_balance_u256(alloy_u256_from_revm(account.info.balance));
-            if let Some(code) = account.info.code {
-                stored.code = code.bytes().to_vec();
-            }
-
-            if let Err(e) = self.state.put_evm_account(&address_bytes, &stored) {
-                self.commit_errors
-                    .push(format!("put EVM account {:?}: {}", address_bytes, e));
-            }
-
-            for (slot, value) in account.storage {
-                let slot_bytes = alloy_u256_from_revm(slot).to_be_bytes::<32>();
-                let present_value = alloy_u256_from_revm(value.present_value);
-                let result = if present_value == U256::ZERO {
-                    self.state
-                        .clear_evm_storage_slot(&address_bytes, &slot_bytes)
-                } else {
-                    self.state
-                        .put_evm_storage(&address_bytes, &slot_bytes, present_value)
-                };
-                if let Err(e) = result {
-                    self.commit_errors.push(format!(
-                        "commit EVM storage {:?} slot: {}",
-                        address_bytes, e
-                    ));
-                }
-            }
-
-            // T3.8 fix: Always write back native balance, even if not a perfect
-            // spore multiple. Round down to nearest spore to avoid fractional
-            // spore amounts in the native account system.
-            if let Ok(Some(pubkey)) = self.state.lookup_evm_address(&address_bytes) {
-                let balance = alloy_u256_from_revm(account.info.balance);
-                let divisor = U256::from(1_000_000_000u64);
-                let spores = balance / divisor;
-                // M9 fix: reject overflow instead of saturating to u64::MAX (prevents silent inflation)
-                let spores_u64: u64 = match spores.try_into() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        self.commit_errors.push(format!(
-                            "EVM balance overflow for {:?}: spores {} exceeds u64::MAX",
-                            address_bytes, spores
-                        ));
-                        continue;
-                    }
-                };
-                if let Err(e) = self.state.set_spendable_balance(&pubkey, spores_u64) {
-                    self.commit_errors
-                        .push(format!("commit native balance for {:?}: {}", pubkey, e));
-                }
-                // Warn if there's a fractional remainder being dropped
-                let remainder = balance % divisor;
-                if remainder != U256::ZERO {
-                    eprintln!(
-                        "T3.8: EVM balance for {:?} has sub-spore remainder {} wei (dropped)",
-                        address_bytes, remainder
-                    );
-                }
-            }
-        }
+        panic!(
+            "StateEvmDb::commit() must not persist EVM changes directly; use execute_evm_transaction() and StateBatch-backed apply instead"
+        );
     }
 }
 
@@ -1131,6 +1047,42 @@ mod tests {
             changes.changes[0].native_balance_update.as_ref().unwrap().1,
             500
         );
+    }
+
+    #[test]
+    fn test_state_evm_db_commit_rejects_direct_persistence() {
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let state = crate::StateStore::open(temp.path()).unwrap();
+        let state_for_assert = state.clone();
+        let address = RevmAddress::from([0x44u8; 20]);
+        let mut db = StateEvmDb::new(state);
+        let mut changes = RevmHashMap::default();
+        let mut account = revm::state::Account::default();
+        account.info.nonce = 7;
+        account.info.balance = RevmU256::from(123u64);
+        changes.insert(address, account);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.commit(changes);
+        }));
+
+        assert!(result.is_err(), "direct DatabaseCommit writes must panic");
+        assert!(state_for_assert
+            .get_evm_account(&revm_address_to_array(address))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_state_evm_db_commit_allows_empty_noop() {
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let state = crate::StateStore::open(temp.path()).unwrap();
+        let mut db = StateEvmDb::new(state);
+        db.commit(RevmHashMap::default());
     }
 
     // ── Task 3.4: EVM Precompiles + eth_getLogs tests ──

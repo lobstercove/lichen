@@ -321,8 +321,10 @@ contribution_score = (
                         <td><code>account_snapshots</code></td>
                         <td>Address (32) + Slot (8, BE)</td>
                         <td>Account struct</td>
-                        <td>Historical account snapshots (archive mode). Enable with
-                            <code>set_archive_mode(true)</code>. Query via <code>getAccountAtSlot</code> RPC.
+                        <td>Historical account snapshots (archive mode). Enable by starting the validator with
+                            <code>--archive-mode</code>; pair with <code>--cold-store &lt;path&gt;</code> for bounded
+                            retention.
+                            Query via <code>getAccountAtSlot</code> RPC.
                         </td>
                     </tr>
                 </tbody>

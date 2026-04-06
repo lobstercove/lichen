@@ -5,6 +5,18 @@
 // ===== State =====
 let shieldedTxs = [];
 let poolStats = null;
+const SHIELDED_TX_TARGET = 50;
+const SHIELDED_TX_RPC_LIMIT = 100;
+const SHIELDED_TX_MAX_PAGES = 10;
+
+function isShieldedType(typeRaw) {
+    return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
+}
+
+function formatShieldedTypeLabel(typeRaw) {
+    if (typeRaw === 'ShieldedTransfer') return 'Shielded Transfer';
+    return typeRaw || 'Unknown';
+}
 
 function bindStaticControls() {
     document.querySelectorAll('.address-tab[data-tab]').forEach((tab) => {
@@ -22,9 +34,9 @@ function bindStaticControls() {
     });
 
     document.addEventListener('click', (event) => {
-        const btn = event.target.closest('.copy-hash-btn');
-        if (!btn || !btn.dataset.hash) return;
-        copyToClipboard(btn.dataset.hash);
+        const copyButton = event.target.closest('.copy-hash[data-copy]');
+        if (!copyButton) return;
+        safeCopy(copyButton);
     });
 }
 
@@ -84,23 +96,34 @@ async function loadPoolStats() {
 async function loadShieldedTransactions() {
     if (!rpc) return;
 
-    const resp = await rpc.call('getShieldedCommitments', [{ from: 0, limit: 50 }]);
+    const txs = [];
+    let beforeSlot = null;
+    let pageCount = 0;
 
-    const txs = (resp && Array.isArray(resp.commitments) ? resp.commitments : []).map((entry) => ({
-        type: 'shield',
-        commitment: entry.commitment,
-        amount: null,
-        slot: '-',
-        timestamp: null,
-        proof_valid: true,
-    }));
+    while (txs.length < SHIELDED_TX_TARGET && pageCount < SHIELDED_TX_MAX_PAGES) {
+        const params = { limit: SHIELDED_TX_RPC_LIMIT };
+        if (beforeSlot !== null) {
+            params.before_slot = beforeSlot;
+        }
 
-    if (txs.length > 0) {
-        shieldedTxs = txs;
-        renderShieldedTxs(txs);
-    } else {
-        renderShieldedTxs([]);
+        const resp = await rpc.call('getRecentTransactions', [params]);
+        const recent = Array.isArray(resp?.transactions) ? resp.transactions : [];
+
+        for (const tx of recent) {
+            const instruction = tx.message?.instructions?.[0] || null;
+            const type = resolveTxType(tx, instruction);
+            if (!isShieldedType(type)) continue;
+            txs.push(tx);
+            if (txs.length >= SHIELDED_TX_TARGET) break;
+        }
+
+        pageCount += 1;
+        if (!resp?.has_more || !resp?.next_before_slot) break;
+        beforeSlot = resp.next_before_slot;
     }
+
+    shieldedTxs = txs;
+    renderShieldedTxs(txs);
 }
 
 // ===== UI Updates =====
@@ -184,72 +207,47 @@ function renderShieldedTxs(txs) {
 
     empty.style.display = 'none';
     tbody.innerHTML = txs.map(tx => {
-        const typeInfo = getShieldedTxType(tx.type || tx.tx_type);
-        const hashDisplay = tx.commitment || tx.nullifier || tx.signature || '';
-        const truncated = hashDisplay.length > 16
-            ? hashDisplay.slice(0, 8) + '...' + hashDisplay.slice(-8)
-            : hashDisplay;
-
-        const amountDisplay = tx.amount != null
-            ? formatLicn(tx.amount)
-            : '<span style="color: var(--text-muted);">Hidden</span>';
-
-        const proofStatus = tx.proof_valid !== false
-            ? '<span style="color: #06d6a0;"><i class="fas fa-check-circle"></i> Valid</span>'
-            : '<span style="color: #f43f5e;"><i class="fas fa-times-circle"></i> Invalid</span>';
+        const signature = tx.signature || tx.hash || 'unknown';
+        const instruction = tx.message?.instructions?.[0] || null;
+        const type = resolveTxType(tx, instruction);
+        const amountSpores = tx.amount_spores !== undefined
+            ? tx.amount_spores
+            : (tx.amount !== undefined ? Math.round(tx.amount * SPORES_PER_LICN) : null);
+        const amount = tx.token_symbol
+            ? formatNumber(tx.token_amount || 0) + ' ' + tx.token_symbol
+            : (amountSpores !== null ? formatLicn(amountSpores) : '-');
+        const feeSpores = tx.fee_spores !== undefined
+            ? tx.fee_spores
+            : (tx.fee !== undefined ? tx.fee : null);
+        const fee = feeSpores !== null ? formatLicn(feeSpores) : '-';
+        const slot = tx.slot;
+        const timestamp = tx.timestamp;
+        const statusRaw = tx.status || (tx.success === false ? 'Error' : 'Success');
+        const isError = tx.success === false || String(statusRaw).toLowerCase().includes('fail');
+        const statusLabel = isError ? 'Error' : 'Success';
+        const statusIcon = isError ? 'times' : 'check';
+        const statusClass = isError ? 'error' : 'success';
+        const blockCell = slot !== undefined && slot !== null
+            ? `<a href="block.html?slot=${slot}">#${formatSlot(slot)}</a>`
+            : '<span class="hash-short">-</span>';
 
         return `
             <tr>
+                <td>${blockCell}</td>
                 <td>
-                    <span class="badge" style="background: ${typeInfo.bg}; color: ${typeInfo.color};">
-                        <i class="${typeInfo.icon}"></i> ${typeInfo.label}
-                    </span>
+                    <a href="transaction.html?sig=${encodeURIComponent(signature)}" title="${escapeHtml(signature)}">${formatHash(signature)}</a>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(signature)}" title="Copy signature"></i>
                 </td>
-                <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">
-                    <span title="${escapeHtml(hashDisplay)}" style="cursor: pointer;" class="copy-hash-btn" data-hash="${escapeHtml(hashDisplay)}">
-                        ${escapeHtml(truncated)} <i class="fas fa-copy" style="font-size: 0.7rem; opacity: 0.5;"></i>
-                    </span>
-                </td>
-                <td>${proofStatus}</td>
-                <td>${amountDisplay}</td>
-                <td>${tx.slot || tx.block || '-'}</td>
-                <td style="color: var(--text-muted); font-size: 0.85rem;">${tx.timestamp ? formatTimeFull(tx.timestamp) : '-'}</td>
+                <td><span class="pill pill-${type.toLowerCase()}">${formatShieldedTypeLabel(type)}</span></td>
+                <td><span class="hash-short">Shielded Note(s) (private)</span></td>
+                <td><span class="hash-short">Shielded Note(s) (private)</span></td>
+                <td>${amount}</td>
+                <td>${fee}</td>
+                <td><span class="pill pill-${statusClass}" title="${escapeHtml(String(statusRaw))}"><i class="fas fa-${statusIcon}"></i> ${statusLabel}</span></td>
+                <td>${timestamp ? formatTime(timestamp) : '-'}</td>
             </tr>
         `;
     }).join('');
-}
-
-function getShieldedTxType(type) {
-    switch (type) {
-        case 'shield':
-            return {
-                label: 'Shield',
-                icon: 'fas fa-arrow-down',
-                bg: 'rgba(6, 214, 160, 0.2)',
-                color: '#06d6a0',
-            };
-        case 'unshield':
-            return {
-                label: 'Unshield',
-                icon: 'fas fa-arrow-up',
-                bg: 'rgba(245, 158, 11, 0.2)',
-                color: '#f59e0b',
-            };
-        case 'transfer':
-            return {
-                label: 'Transfer',
-                icon: 'fas fa-exchange-alt',
-                bg: 'rgba(168, 85, 247, 0.2)',
-                color: '#c084fc',
-            };
-        default:
-            return {
-                label: 'Unknown',
-                icon: 'fas fa-question',
-                bg: 'rgba(107, 122, 153, 0.2)',
-                color: '#6b7a99',
-            };
-    }
 }
 
 // ===== Tab Switching =====

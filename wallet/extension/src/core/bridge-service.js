@@ -35,8 +35,8 @@ function currentBridgeAuthPayload(wallet) {
   };
 }
 
-async function ensureBridgeAccessAuth(wallet, password) {
-  if (hasValidBridgeAccessAuth(wallet)) {
+async function ensureBridgeAccessAuth(wallet, password, { forceRefresh = false } = {}) {
+  if (!forceRefresh && hasValidBridgeAccessAuth(wallet)) {
     return currentBridgeAuthPayload(wallet);
   }
   if (!wallet?.encryptedKey) {
@@ -156,7 +156,7 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
     throw new Error('Unsupported bridge asset');
   }
 
-  const auth = await ensureBridgeAccessAuth(wallet, password);
+  const auth = await ensureBridgeAccessAuth(wallet, password, { forceRefresh: true });
 
   // Route through authenticated RPC bridge proxy — custody auth stays server-side.
   const rpc = getTrustedBridgeRpc(network);

@@ -49,6 +49,9 @@ developers/
 
 # Shared frontend assets
 shared/
+!shared/
+shared/*
+!shared/incident-guardian-pause-allowlist.json
 
 # Skills / tools / examples
 skills/

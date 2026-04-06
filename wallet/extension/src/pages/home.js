@@ -232,13 +232,14 @@ async function requestDepositAddressAction() {
     const hasWsSubscription = Boolean(wsStatus?.ok && wsStatus?.result?.subscribed);
     const pollIntervalMs = hasWsSubscription ? 30000 : 5000;
 
-    let password = null;
-    if (!hasBridgeAccessAuth(activeWallet)) {
-      password = await securePasswordPrompt('Wallet password (for bridge authorization):');
-      if (!password) {
-        setActionStatus('Bridge authorization cancelled');
-        return;
-      }
+    const hasCachedBridgeAuth = hasBridgeAccessAuth(activeWallet);
+    if (hasCachedBridgeAuth) {
+      setActionStatus(`Refreshing bridge authorization for a new ${asset.toUpperCase()} deposit request...`);
+    }
+    const password = await securePasswordPrompt('Wallet password (for bridge authorization):');
+    if (!password) {
+      setActionStatus('Bridge authorization cancelled');
+      return;
     }
 
     const response = await requestBridgeDepositAddress({

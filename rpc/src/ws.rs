@@ -151,7 +151,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Per-IP connection limit
@@ -169,6 +169,8 @@ const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 const MAX_WS_CONNECTIONS: usize = 500;
 /// RPC-L03: Increased base WS event channel capacity to reduce lagged receivers under bursty traffic.
 const WS_EVENT_CHANNEL_CAPACITY: usize = 4096;
+/// Bounded per-connection outbound queue. Slow consumers are disconnected once this fills.
+const WS_CONNECTION_QUEUE_CAPACITY: usize = 100;
 
 /// WebSocket subscription request
 #[derive(Debug, Deserialize)]
@@ -523,7 +525,10 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     }
 
     let (mut sender, mut receiver) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<String>(100);
+    let (tx, mut rx) = mpsc::channel::<String>(WS_CONNECTION_QUEUE_CAPACITY);
+    let (close_tx, _) = watch::channel(false);
+    let mut close_rx_send = close_tx.subscribe();
+    let mut close_rx_recv = close_tx.subscribe();
 
     // Subscribe to broadcast events
     let mut event_rx = state.event_tx.subscribe();
@@ -543,6 +548,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     let pong_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let pong_pending_writer = pong_pending.clone();
     let pong_pending_reader = pong_pending.clone();
+    let send_task_close = close_tx.clone();
 
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
@@ -552,10 +558,17 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                close_state = close_rx_send.changed() => {
+                    if close_state.is_err() || *close_rx_send.borrow() {
+                        let _ = sender.send(Message::Close(None)).await;
+                        break;
+                    }
+                }
                 msg = rx.recv() => {
                     match msg {
                         Some(text) => {
                             if sender.send(Message::Text(text)).await.is_err() {
+                                let _ = send_task_close.send(true);
                                 break;
                             }
                         }
@@ -567,10 +580,13 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     // client is considered dead — close the connection.
                     if pong_pending_writer.load(std::sync::atomic::Ordering::SeqCst) {
                         warn!("WS: Pong timeout — closing dead connection");
+                        let _ = sender.send(Message::Close(None)).await;
+                        let _ = send_task_close.send(true);
                         break;
                     }
                     pong_pending_writer.store(true, std::sync::atomic::Ordering::SeqCst);
                     if sender.send(Message::Ping(vec![b'k'])).await.is_err() {
+                        let _ = send_task_close.send(true);
                         break;
                     }
                 }
@@ -580,6 +596,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
     // Task to broadcast events to subscribed clients
     let tx_clone = tx.clone();
+    let event_close_tx = close_tx.clone();
     let event_subscription_manager = subscription_manager.clone();
     let event_task = tokio::spawn(async move {
         loop {
@@ -652,7 +669,9 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 if should_send {
                     let notification = create_notification(*sub_id, &event);
                     if let Ok(json) = serde_json::to_string(&notification) {
-                        let _ = tx_clone.send(json).await;
+                        if !enqueue_ws_message(&tx_clone, &event_close_tx, json, "core") {
+                            return;
+                        }
                     }
                 }
             }
@@ -661,6 +680,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
     // Task to forward DEX-specific events to subscribed clients
     let tx_dex = tx.clone();
+    let dex_close_tx = close_tx.clone();
     let dex_subscription_manager = subscription_manager.clone();
     let dex_event_task = tokio::spawn(async move {
         loop {
@@ -686,7 +706,9 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                             },
                         };
                         if let Ok(json) = serde_json::to_string(&notification) {
-                            let _ = tx_dex.send(json).await;
+                            if !enqueue_ws_message(&tx_dex, &dex_close_tx, json, "dex") {
+                                return;
+                            }
                         }
                     }
                 }
@@ -696,6 +718,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
     // Task to forward prediction market events to subscribed clients
     let tx_pred = tx.clone();
+    let pred_close_tx = close_tx.clone();
     let pred_subscription_manager = subscription_manager.clone();
     let prediction_event_task = tokio::spawn(async move {
         loop {
@@ -724,7 +747,9 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                             },
                         };
                         if let Ok(json) = serde_json::to_string(&notification) {
-                            let _ = tx_pred.send(json).await;
+                            if !enqueue_ws_message(&tx_pred, &pred_close_tx, json, "prediction") {
+                                return;
+                            }
                         }
                     }
                 }
@@ -737,6 +762,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     // SignatureStatus events. This poller checks indexed tx signatures and pushes
     // one-shot notifications when signatures are observed.
     let tx_sig = tx.clone();
+    let sig_close_tx = close_tx.clone();
     let sig_subscription_manager = subscription_manager.clone();
     let sig_state = state.state.clone();
     let sig_finality = state.finality.clone();
@@ -812,7 +838,9 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 };
                 let notification = create_notification(sub_id, &event);
                 if let Ok(json) = serde_json::to_string(&notification) {
-                    let _ = tx_sig.send(json).await;
+                    if !enqueue_ws_message(&tx_sig, &sig_close_tx, json, "signature") {
+                        return;
+                    }
                     sent_once.insert(sub_id);
                     completed_subs.push(sub_id);
                 }
@@ -825,6 +853,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     });
 
     let tx_governance = tx.clone();
+    let governance_close_tx = close_tx.clone();
     let governance_subscription_manager = subscription_manager.clone();
     let governance_state = state.state.clone();
     let governance_event_task = tokio::spawn(async move {
@@ -906,7 +935,14 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     for sub_id in &sub_ids {
                         let notification = create_notification(*sub_id, &ws_event);
                         if let Ok(json) = serde_json::to_string(&notification) {
-                            let _ = tx_governance.send(json).await;
+                            if !enqueue_ws_message(
+                                &tx_governance,
+                                &governance_close_tx,
+                                json,
+                                "governance",
+                            ) {
+                                return;
+                            }
                         }
                     }
                 }
@@ -922,7 +958,22 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     const MAX_MSGS_PER_SEC: u32 = 100;
 
     // Handle incoming messages
-    while let Some(Ok(msg)) = receiver.next().await {
+    loop {
+        let msg = tokio::select! {
+            close_state = close_rx_recv.changed() => {
+                if close_state.is_err() || *close_rx_recv.borrow() {
+                    break;
+                }
+                continue;
+            }
+            maybe_msg = receiver.next() => {
+                match maybe_msg {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(_)) | None => break,
+                }
+            }
+        };
+
         // AUDIT-FIX H15: Rate-limit incoming messages per connection
         msg_count += 1;
         if msg_window_start.elapsed().as_secs() >= 1 {
@@ -940,13 +991,22 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         if let Message::Text(text) = msg {
             // Handle client-side keepalive pings (explorer sends {"method":"ping"})
             if text.contains("\"ping\"") {
-                let _ = tx.send("{\"result\":\"pong\"}".to_string()).await;
+                if !enqueue_ws_message(
+                    &tx,
+                    &close_tx,
+                    "{\"result\":\"pong\"}".to_string(),
+                    "keepalive",
+                ) {
+                    break;
+                }
                 continue;
             }
             if let Ok(req) = serde_json::from_str::<SubscriptionRequest>(&text) {
                 let response = handle_subscription_request(req, &subscription_manager).await;
                 if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = tx.send(json).await;
+                    if !enqueue_ws_message(&tx, &close_tx, json, "control") {
+                        break;
+                    }
                 }
             }
         } else if let Message::Pong(_) = msg {
@@ -987,6 +1047,26 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 conns.remove(&ip);
             }
         }
+    }
+}
+
+fn enqueue_ws_message(
+    tx: &mpsc::Sender<String>,
+    close_tx: &watch::Sender<bool>,
+    payload: String,
+    source: &'static str,
+) -> bool {
+    match tx.try_send(payload) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!(
+                "WS: outbound queue saturated while forwarding {} event; closing slow connection",
+                source
+            );
+            let _ = close_tx.send(true);
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
     }
 }
 
@@ -1696,7 +1776,7 @@ async fn handle_subscription_request(
 
         _ => Err(WsError {
             code: -32601,
-            message: format!("Method not found: {}", req.method),
+            message: "Method not found".to_string(),
         }),
     };
 
@@ -2538,5 +2618,60 @@ mod tests {
             is_dead,
             "Connection with missed pong should be detected as dead"
         );
+    }
+
+    #[test]
+    fn ws_outbound_queue_closes_slow_consumer_on_saturation() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (close_tx, close_rx) = watch::channel(false);
+
+        assert!(enqueue_ws_message(
+            &tx,
+            &close_tx,
+            "first".to_string(),
+            "test"
+        ));
+        assert!(!*close_rx.borrow());
+
+        assert!(!enqueue_ws_message(
+            &tx,
+            &close_tx,
+            "second".to_string(),
+            "test"
+        ));
+        assert!(*close_rx.borrow());
+        assert_eq!(rx.try_recv().unwrap(), "first");
+    }
+
+    #[test]
+    fn ws_outbound_queue_overflow_isolated_per_connection() {
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        let (slow_close_tx, slow_close_rx) = watch::channel(false);
+        let (healthy_tx, mut healthy_rx) = mpsc::channel(1);
+        let (healthy_close_tx, healthy_close_rx) = watch::channel(false);
+
+        assert!(enqueue_ws_message(
+            &slow_tx,
+            &slow_close_tx,
+            "queued".to_string(),
+            "slow"
+        ));
+        assert!(!enqueue_ws_message(
+            &slow_tx,
+            &slow_close_tx,
+            "overflow".to_string(),
+            "slow"
+        ));
+
+        assert!(enqueue_ws_message(
+            &healthy_tx,
+            &healthy_close_tx,
+            "healthy".to_string(),
+            "healthy"
+        ));
+
+        assert!(*slow_close_rx.borrow());
+        assert!(!*healthy_close_rx.borrow());
+        assert_eq!(healthy_rx.try_recv().unwrap(), "healthy");
     }
 }

@@ -17,6 +17,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
+    let ip = addr.ip();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast())
+}
+
 /// Node role determines connection limits and relay behavior for a 500-validator network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeRole {
@@ -1109,13 +1117,7 @@ impl P2PNetwork {
                 );
                 for (node_id, addr_str) in closest {
                     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
-                        // AUDIT-FIX H13: Reject invalid/reserved IP addresses
-                        let ip = addr.ip();
-                        if ip.is_loopback()
-                            || ip.is_unspecified()
-                            || ip.is_multicast()
-                            || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast())
-                        {
+                        if is_rejected_find_node_response_addr(&addr) {
                             warn!(
                                 "P2P: Rejecting invalid address {} from FindNodeResponse by {}",
                                 addr, peer_addr
@@ -1370,6 +1372,26 @@ mod tests {
             let parsed: NodeRole = s.parse().unwrap();
             assert_eq!(parsed, role);
         }
+    }
+
+    #[test]
+    fn test_find_node_response_rejects_invalid_addresses() {
+        for raw in [
+            "127.0.0.1:7001",
+            "0.0.0.0:7001",
+            "224.0.0.1:7001",
+            "255.255.255.255:7001",
+        ] {
+            let addr: SocketAddr = raw.parse().unwrap();
+            assert!(
+                is_rejected_find_node_response_addr(&addr),
+                "{} should be rejected",
+                raw
+            );
+        }
+
+        let valid: SocketAddr = "198.51.100.8:7001".parse().unwrap();
+        assert!(!is_rejected_find_node_response_addr(&valid));
     }
 
     #[test]

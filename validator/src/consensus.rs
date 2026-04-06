@@ -15,6 +15,10 @@
 // unlock). This guarantees that two honest validators never commit
 // different values at the same height.
 
+use lichen_core::consensus::{
+    DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS, DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+    DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS, DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+};
 use lichen_core::{
     Block, CommitSignature, Hash, Keypair, PqSignature, Precommit, Prevote, Proposal, Pubkey,
     RoundStep, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
@@ -23,14 +27,24 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-/// Base timeout for the Propose step (ms).
-const PROPOSE_TIMEOUT_BASE_MS: u64 = 2000;
-/// Base timeout for the Prevote step (ms).
-const PREVOTE_TIMEOUT_BASE_MS: u64 = 1000;
-/// Base timeout for the Precommit step (ms).
-const PRECOMMIT_TIMEOUT_BASE_MS: u64 = 1000;
-/// Maximum timeout for any phase (60 seconds). Prevents unbounded growth.
-const MAX_TIMEOUT_MS: u64 = 60_000;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsensusTimeoutConfig {
+    pub propose_timeout_base_ms: u64,
+    pub prevote_timeout_base_ms: u64,
+    pub precommit_timeout_base_ms: u64,
+    pub max_phase_timeout_ms: u64,
+}
+
+impl Default for ConsensusTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            propose_timeout_base_ms: DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+            prevote_timeout_base_ms: DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS,
+            precommit_timeout_base_ms: DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+            max_phase_timeout_ms: DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS,
+        }
+    }
+}
 
 /// Maximum number of heights ahead to buffer future BFT messages.
 /// Messages beyond this range are dropped to prevent memory exhaustion.
@@ -82,6 +96,7 @@ pub struct ConsensusEngine {
     keypair: Keypair,
     pub validator_pubkey: Pubkey,
     min_validator_stake: u64,
+    timeouts: ConsensusTimeoutConfig,
 
     // ── Round state ─────────────────────────────────────────────────
     /// Current block height (tip_slot + 1).
@@ -112,9 +127,15 @@ pub struct ConsensusEngine {
     proposal_blocks: HashMap<Hash, Block>,
 
     // ── Duplicate suppression & equivocation detection ─────────────
-    /// Prevotes we've already processed: (round, validator) → voted hash.
+    /// Prevotes we've already processed for the current height:
+    /// (round, validator) → voted hash.
+    /// Height is implicit because `start_height()` clears all per-height vote
+    /// state and future-height votes are buffered until they become current.
     seen_prevotes: HashMap<(u32, Pubkey), Option<Hash>>,
-    /// Precommits we've already processed: (round, validator) → voted hash.
+    /// Precommits we've already processed for the current height:
+    /// (round, validator) → voted hash.
+    /// Height is implicit because `start_height()` clears all per-height vote
+    /// state and future-height votes are buffered until they become current.
     seen_precommits: HashMap<(u32, Pubkey), Option<Hash>>,
     /// Precommit signatures retained for commit certificates: (round, validator) → (signature, timestamp).
     precommit_sigs: HashMap<(u32, Pubkey), (PqSignature, u64)>,
@@ -122,6 +143,9 @@ pub struct ConsensusEngine {
     signed_prevote_rounds: HashMap<u32, Option<Hash>>,
     /// Rounds for which we already signed a precommit, to prevent equivocation.
     signed_precommit_rounds: HashMap<u32, Option<Hash>>,
+    /// Timestamp of the last committed block header so new proposals can be
+    /// rejected if they do not advance monotonically.
+    last_committed_block_timestamp: Option<u64>,
 
     // ── Future message buffers (G-10 fix) ───────────────────────────
     /// Proposals for heights > self.height, replayed when we advance.
@@ -144,10 +168,27 @@ impl ConsensusEngine {
         validator_pubkey: Pubkey,
         min_validator_stake: u64,
     ) -> Self {
+        Self::new_with_min_stake_and_timeouts(
+            keypair,
+            validator_pubkey,
+            min_validator_stake,
+            ConsensusTimeoutConfig::default(),
+        )
+    }
+
+    /// Create a new consensus engine with a network-specific minimum stake
+    /// and timeout configuration.
+    pub fn new_with_min_stake_and_timeouts(
+        keypair: Keypair,
+        validator_pubkey: Pubkey,
+        min_validator_stake: u64,
+        timeouts: ConsensusTimeoutConfig,
+    ) -> Self {
         Self {
             keypair,
             validator_pubkey,
             min_validator_stake,
+            timeouts,
             height: 0,
             round: 0,
             step: RoundStep::Commit, // Not active until start_height()
@@ -164,6 +205,7 @@ impl ConsensusEngine {
             precommit_sigs: HashMap::new(),
             signed_prevote_rounds: HashMap::new(),
             signed_precommit_rounds: HashMap::new(),
+            last_committed_block_timestamp: None,
             future_proposals: BTreeMap::new(),
             future_prevotes: BTreeMap::new(),
             future_precommits: BTreeMap::new(),
@@ -366,6 +408,15 @@ impl ConsensusEngine {
             .unwrap_or_default()
             .as_secs();
         let proposed_ts = proposal.block.header.timestamp;
+        if let Some(parent_ts) = self.last_committed_block_timestamp {
+            if proposed_ts <= parent_ts {
+                warn!(
+                    "🚨 BFT: Proposal timestamp {} does not advance past parent timestamp {}",
+                    proposed_ts, parent_ts
+                );
+                return ConsensusAction::None;
+            }
+        }
         if proposed_ts > now_secs + 30 {
             warn!(
                 "🚨 BFT: Proposal timestamp {} is too far in the future (now={}, delta={}s)",
@@ -668,6 +719,7 @@ impl ConsensusEngine {
                     hex::encode(&bh.0[..4])
                 );
                 self.transition_to(RoundStep::Commit);
+                self.last_committed_block_timestamp = Some(block.header.timestamp);
                 let mut committed = block;
                 committed.commit_round = round;
                 committed.commit_signatures = self.collect_commit_signatures(round, &bh);
@@ -1431,24 +1483,36 @@ impl ConsensusEngine {
 
     /// Compute exponential timeout: base × 1.5^round, capped at MAX_TIMEOUT_MS.
     /// Uses integer arithmetic (×3/2 per round) to avoid floating-point.
-    fn exponential_timeout(base_ms: u64, round: u32) -> Duration {
+    fn exponential_timeout(base_ms: u64, round: u32, max_timeout_ms: u64) -> Duration {
         let mut timeout = base_ms;
         for _ in 0..round.min(20) {
-            timeout = (timeout * 3 / 2).min(MAX_TIMEOUT_MS);
+            timeout = (timeout * 3 / 2).min(max_timeout_ms);
         }
-        Duration::from_millis(timeout.min(MAX_TIMEOUT_MS))
+        Duration::from_millis(timeout.min(max_timeout_ms))
     }
 
     fn propose_timeout(&self) -> Duration {
-        Self::exponential_timeout(PROPOSE_TIMEOUT_BASE_MS, self.round)
+        Self::exponential_timeout(
+            self.timeouts.propose_timeout_base_ms,
+            self.round,
+            self.timeouts.max_phase_timeout_ms,
+        )
     }
 
     pub fn prevote_timeout(&self) -> Duration {
-        Self::exponential_timeout(PREVOTE_TIMEOUT_BASE_MS, self.round)
+        Self::exponential_timeout(
+            self.timeouts.prevote_timeout_base_ms,
+            self.round,
+            self.timeouts.max_phase_timeout_ms,
+        )
     }
 
     pub fn precommit_timeout(&self) -> Duration {
-        Self::exponential_timeout(PRECOMMIT_TIMEOUT_BASE_MS, self.round)
+        Self::exponential_timeout(
+            self.timeouts.precommit_timeout_base_ms,
+            self.round,
+            self.timeouts.max_phase_timeout_ms,
+        )
     }
 
     /// Determine if this validator is the proposer for (height, round)
@@ -1683,6 +1747,206 @@ mod tests {
     }
 
     #[test]
+    fn test_prevote_equivocation_ignored_across_heights() {
+        let (_, vs, sp) = make_test_env(2);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        let (validator_kp, validator_pk) = make_validator(2);
+
+        engine.start_height(10);
+
+        let block_hash_10 = Some(Hash::hash(b"height-10"));
+        let prevote_10 = Prevote {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_10,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Prevote::signable_bytes(10, 0, &block_hash_10)),
+        };
+        assert!(matches!(
+            engine.on_prevote(prevote_10, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert_eq!(
+            engine.seen_prevotes.get(&(0, validator_pk)),
+            Some(&block_hash_10)
+        );
+
+        engine.start_height(11);
+
+        let block_hash_11 = Some(Hash::hash(b"height-11"));
+        let prevote_11 = Prevote {
+            height: 11,
+            round: 0,
+            block_hash: block_hash_11,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Prevote::signable_bytes(11, 0, &block_hash_11)),
+        };
+        assert!(matches!(
+            engine.on_prevote(prevote_11, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert_eq!(
+            engine.seen_prevotes.get(&(0, validator_pk)),
+            Some(&block_hash_11)
+        );
+        assert_eq!(engine.seen_prevotes.len(), 1);
+    }
+
+    #[test]
+    fn test_prevote_equivocation_detected_within_height_round() {
+        let (_, vs, sp) = make_test_env(2);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        let (validator_kp, validator_pk) = make_validator(2);
+
+        engine.start_height(10);
+
+        let block_hash_a = Some(Hash::hash(b"prevote-a"));
+        let first_prevote = Prevote {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_a,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Prevote::signable_bytes(10, 0, &block_hash_a)),
+        };
+        assert!(matches!(
+            engine.on_prevote(first_prevote, &vs, &sp),
+            ConsensusAction::None
+        ));
+
+        let block_hash_b = Some(Hash::hash(b"prevote-b"));
+        let conflicting_prevote = Prevote {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_b,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Prevote::signable_bytes(10, 0, &block_hash_b)),
+        };
+
+        match engine.on_prevote(conflicting_prevote, &vs, &sp) {
+            ConsensusAction::EquivocationDetected {
+                height,
+                round,
+                validator,
+                vote_type,
+                hash_1,
+                hash_2,
+            } => {
+                assert_eq!(height, 10);
+                assert_eq!(round, 0);
+                assert_eq!(validator, validator_pk);
+                assert_eq!(vote_type, "prevote");
+                assert_eq!(hash_1, block_hash_a);
+                assert_eq!(hash_2, block_hash_b);
+            }
+            other => panic!("expected prevote equivocation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_precommit_equivocation_ignored_across_heights() {
+        let (_, vs, sp) = make_test_env(2);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        let (validator_kp, validator_pk) = make_validator(2);
+
+        engine.start_height(10);
+
+        let block_hash_10 = Some(Hash::hash(b"precommit-height-10"));
+        let precommit_10 = Precommit {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_10,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Precommit::signable_bytes(10, 0, &block_hash_10, 1)),
+            timestamp: 1,
+        };
+        assert!(matches!(
+            engine.on_precommit(precommit_10, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert_eq!(
+            engine.seen_precommits.get(&(0, validator_pk)),
+            Some(&block_hash_10)
+        );
+
+        engine.start_height(11);
+
+        let block_hash_11 = Some(Hash::hash(b"precommit-height-11"));
+        let precommit_11 = Precommit {
+            height: 11,
+            round: 0,
+            block_hash: block_hash_11,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Precommit::signable_bytes(11, 0, &block_hash_11, 2)),
+            timestamp: 2,
+        };
+        assert!(matches!(
+            engine.on_precommit(precommit_11, &vs, &sp),
+            ConsensusAction::None
+        ));
+        assert_eq!(
+            engine.seen_precommits.get(&(0, validator_pk)),
+            Some(&block_hash_11)
+        );
+        assert_eq!(engine.seen_precommits.len(), 1);
+    }
+
+    #[test]
+    fn test_precommit_equivocation_detected_within_height_round() {
+        let (_, vs, sp) = make_test_env(2);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        let (validator_kp, validator_pk) = make_validator(2);
+
+        engine.start_height(10);
+
+        let block_hash_a = Some(Hash::hash(b"precommit-a"));
+        let first_precommit = Precommit {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_a,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Precommit::signable_bytes(10, 0, &block_hash_a, 1)),
+            timestamp: 1,
+        };
+        assert!(matches!(
+            engine.on_precommit(first_precommit, &vs, &sp),
+            ConsensusAction::None
+        ));
+
+        let block_hash_b = Some(Hash::hash(b"precommit-b"));
+        let conflicting_precommit = Precommit {
+            height: 10,
+            round: 0,
+            block_hash: block_hash_b,
+            validator: validator_pk,
+            signature: validator_kp.sign(&Precommit::signable_bytes(10, 0, &block_hash_b, 2)),
+            timestamp: 2,
+        };
+
+        match engine.on_precommit(conflicting_precommit, &vs, &sp) {
+            ConsensusAction::EquivocationDetected {
+                height,
+                round,
+                validator,
+                vote_type,
+                hash_1,
+                hash_2,
+            } => {
+                assert_eq!(height, 10);
+                assert_eq!(round, 0);
+                assert_eq!(validator, validator_pk);
+                assert_eq!(vote_type, "precommit");
+                assert_eq!(hash_1, block_hash_a);
+                assert_eq!(hash_2, block_hash_b);
+            }
+            other => panic!("expected precommit equivocation, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_exponential_timeout_propose() {
         let (kp, pk) = make_validator(1);
         let mut engine = ConsensusEngine::new(kp, pk);
@@ -1732,6 +1996,32 @@ mod tests {
         assert_eq!(engine.propose_timeout(), Duration::from_millis(60_000));
         assert_eq!(engine.prevote_timeout(), Duration::from_millis(60_000));
         assert_eq!(engine.precommit_timeout(), Duration::from_millis(60_000));
+    }
+
+    #[test]
+    fn test_custom_timeout_config_overrides_defaults() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake_and_timeouts(
+            kp,
+            pk,
+            MIN_VALIDATOR_STAKE,
+            ConsensusTimeoutConfig {
+                propose_timeout_base_ms: 500,
+                prevote_timeout_base_ms: 250,
+                precommit_timeout_base_ms: 400,
+                max_phase_timeout_ms: 1000,
+            },
+        );
+
+        engine.round = 0;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(500));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(250));
+        assert_eq!(engine.precommit_timeout(), Duration::from_millis(400));
+
+        engine.round = 2;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(1000));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(562));
+        assert_eq!(engine.precommit_timeout(), Duration::from_millis(900));
     }
 
     // ─── Commit certificate tests (Task 1.2) ────────────────────────
@@ -1836,6 +2126,61 @@ mod tests {
             }
             other => panic!("Expected CommitBlock, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_on_proposal_rejects_non_monotonic_parent_timestamp() {
+        let (kp, pk) = make_validator(1);
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let vi = lichen_core::ValidatorInfo {
+            pubkey: pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        };
+        vs.add_validator(vi);
+        sp.stake(pk, 100_000_000_000_000, 0).ok();
+
+        let mut block = Block::new_with_timestamp(
+            2,
+            Hash::default(),
+            Hash::hash(b"state"),
+            pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&kp);
+
+        let block_hash = block.hash();
+        let signature = kp.sign(&Proposal::signable_bytes_static(2, 0, &block_hash, -1));
+        let proposal = Proposal {
+            height: 2,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: pk,
+            signature,
+        };
+
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(2);
+        engine.last_committed_block_timestamp = Some(1_000);
+
+        let action = engine.on_proposal(proposal, &vs, &sp);
+        match action {
+            ConsensusAction::None => {}
+            other => panic!("expected proposal rejection, got {:?}", other),
+        }
+        assert!(engine.proposals.is_empty());
     }
 
     #[test]

@@ -383,14 +383,8 @@ async fn submit_shielded_tx(
         ));
     }
 
-    // Basic signature validation
-    if tx.signatures.is_empty() {
-        return api_err("Transaction has no signatures");
-    }
-    for sig in &tx.signatures {
-        if crate::pq_signature_is_zero(sig) {
-            return api_err("Transaction contains an invalid zero signature");
-        }
+    if let Err(error) = crate::preflight_transaction_submission(state, &tx, false).await {
+        return api_err(&error.message);
     }
 
     // Submit to mempool
@@ -619,6 +613,9 @@ pub(crate) async fn handle_get_shielded_commitments(
     } else {
         (0u64, 100u64)
     };
+
+    let min_from = pool.commitment_count.saturating_sub(10_000);
+    let from = from.max(min_from);
 
     let end = pool.commitment_count.min(from.saturating_add(limit));
     let mut entries = Vec::with_capacity((end.saturating_sub(from)) as usize);

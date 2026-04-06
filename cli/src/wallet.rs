@@ -125,15 +125,9 @@ impl WalletManager {
         let keypair = load_keypair_from_file(&keypair_path)?;
         let address = keypair.pubkey().to_base58();
 
-        // Copy keypair to wallets directory
+        // Copy keypair to wallets directory with owner-only permissions.
         let new_keypair_path = self.wallets_dir.join(format!("{}.json", name));
-        fs::copy(&keypair_path, &new_keypair_path)?;
-        // I-3: Set restrictive permissions (owner-only read/write)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&new_keypair_path, fs::Permissions::from_mode(0o600))?;
-        }
+        crate::keygen::copy_secure_file(&keypair_path, &new_keypair_path)?;
 
         // Create wallet info
         let wallet_info = WalletInfo {
@@ -244,5 +238,47 @@ fn format_timestamp(timestamp: u64) -> String {
     match dt {
         Some(dt) => dt.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
         None => "Unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn file_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_import_wallet_copies_keypair_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let wallets_dir = dir.path().join("wallets");
+        fs::create_dir_all(&wallets_dir).unwrap();
+
+        let manager = WalletManager {
+            wallets_dir: wallets_dir.clone(),
+            index_path: wallets_dir.join("index.json"),
+        };
+
+        let source_path = dir.path().join("source.json");
+        let keypair = Keypair::new();
+        let file = crate::keygen::KeypairFile::from_keypair(&keypair);
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        crate::keygen::write_secure_file(&source_path, json.as_bytes()).unwrap();
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let wallet = manager
+            .import_wallet("alice".to_string(), source_path.clone())
+            .unwrap();
+
+        assert_eq!(file_mode(&source_path), 0o600);
+        assert_eq!(file_mode(&wallet.keypair_path), 0o600);
+        assert_eq!(wallet.address, keypair.pubkey().to_base58());
     }
 }

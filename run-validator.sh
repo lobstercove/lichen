@@ -188,14 +188,14 @@ except: pass
 		--initial-validator "$VALIDATOR_PUBKEY" || exit 1
 }
 
-BOOTSTRAP=""
+BOOTSTRAP_PEERS=""
 case $VALIDATOR_NUM in
 	1)
 		NAME="${NETWORK_UPPER}-V1-PRIMARY"
 		;;
 	*)
 		NAME="${NETWORK_UPPER}-V${VALIDATOR_NUM}-SECONDARY"
-		BOOTSTRAP="--bootstrap-peers 127.0.0.1:${BASE_P2P}"
+		BOOTSTRAP_PEERS="127.0.0.1:${BASE_P2P}"
 		;;
 esac
 
@@ -231,6 +231,13 @@ if [ "$NETWORK" = "testnet" ]; then
 else
 	EXTRA_FLAGS=""
 fi
+
+if [ -n "$BOOTSTRAP_PEERS" ]; then
+	export LICHEN_BOOTSTRAP_PEERS="${LICHEN_BOOTSTRAP_PEERS:-$BOOTSTRAP_PEERS}"
+else
+	unset LICHEN_BOOTSTRAP_PEERS
+fi
+
 for arg in "$@"; do
 		case "$arg" in
 				--dev-mode)
@@ -268,7 +275,7 @@ if [ -x "$VALIDATOR_BIN" ]; then
 		--p2p-port "$P2P_PORT" \
 		--listen-addr "$LOCAL_LISTEN_ADDR" \
 		--db-path "$DB_PATH" \
-		$BOOTSTRAP $EXTRA_FLAGS
+		$EXTRA_FLAGS
 else
 	echo "Release binary not found at $VALIDATOR_BIN"
 	echo "Building with cargo..."
@@ -279,5 +286,5 @@ else
 		--p2p-port "$P2P_PORT" \
 		--listen-addr "$LOCAL_LISTEN_ADDR" \
 		--db-path "$DB_PATH" \
-		$BOOTSTRAP $EXTRA_FLAGS
+		$EXTRA_FLAGS
 fi

@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use lichen_core::{Keypair, Pubkey};
+use lichen_core::{Keypair, Pubkey, MAX_CONTRACT_CODE};
 use std::path::PathBuf;
 
 mod client;
@@ -1714,14 +1714,12 @@ async fn main() -> Result<()> {
                 );
             }
 
-            // Pre-flight validation: size limit (512 KB, matching on-chain limit)
-            const MAX_CONTRACT_SIZE: usize = 512 * 1024;
-            if wasm_code.len() > MAX_CONTRACT_SIZE {
+            if wasm_code.len() > MAX_CONTRACT_CODE {
                 anyhow::bail!(
                     "Contract too large: {} bytes (max {} bytes = 512 KB).\n\
                      Tip: use wasm-opt or enable LTO in your Cargo.toml [profile.release]",
                     wasm_code.len(),
-                    MAX_CONTRACT_SIZE
+                    MAX_CONTRACT_CODE
                 );
             }
 
@@ -2062,12 +2060,11 @@ async fn main() -> Result<()> {
                     );
                 }
 
-                const MAX_CONTRACT_SIZE: usize = 512 * 1024;
-                if wasm_code.len() > MAX_CONTRACT_SIZE {
+                if wasm_code.len() > MAX_CONTRACT_CODE {
                     anyhow::bail!(
                         "Contract too large: {} bytes (max {} bytes = 512 KB)",
                         wasm_code.len(),
-                        MAX_CONTRACT_SIZE
+                        MAX_CONTRACT_CODE
                     );
                 }
 

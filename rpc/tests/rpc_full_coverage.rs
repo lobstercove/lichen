@@ -27,6 +27,8 @@ use tokio::sync::RwLock;
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
+const TEST_ADMIN_TOKEN: &str = "test-admin-token";
+const TEST_BEARER_ADMIN_TOKEN: &str = "Bearer test-admin-token";
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
@@ -175,6 +177,8 @@ fn public_network_app_with_admin_token() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
+    // Test fixture only. Production admin tokens come from runtime config,
+    // never from committed test sources.
     build_rpc_router(
         state,
         None,
@@ -182,7 +186,7 @@ fn public_network_app_with_admin_token() -> axum::Router {
         None,
         "lichen-testnet".to_string(),
         "lichen-testnet".to_string(),
-        Some("test-admin-token".to_string()),
+        Some(TEST_ADMIN_TOKEN.to_string()),
         None,
         None,
         None,
@@ -194,6 +198,8 @@ fn dev_network_app_with_admin_token() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
+    // Test fixture only. Production admin tokens come from runtime config,
+    // never from committed test sources.
     build_rpc_router(
         state,
         None,
@@ -201,7 +207,7 @@ fn dev_network_app_with_admin_token() -> axum::Router {
         None,
         "lichen-local".to_string(),
         "lichen-dev".to_string(),
-        Some("test-admin-token".to_string()),
+        Some(TEST_ADMIN_TOKEN.to_string()),
         None,
         None,
         None,
@@ -440,10 +446,7 @@ async fn test_native_get_account_proof_returns_anchored_finalized_context() {
             .len(),
         1
     );
-    assert!(!result["anchor"]["block_signature"]
-        .as_str()
-        .unwrap()
-        .is_empty());
+    assert!(result["anchor"]["block_signature"].is_object());
 }
 
 #[tokio::test]
@@ -939,7 +942,7 @@ async fn test_native_legacy_admin_rpcs_accept_bearer_header_on_dev_networks() {
         "/",
         "setFeeConfig",
         json!({"base_fee_spores": 1000}),
-        Some("Bearer test-admin-token"),
+        Some(TEST_BEARER_ADMIN_TOKEN),
         Some("127.0.0.1:9000".parse().unwrap()),
     )
     .await
@@ -956,7 +959,7 @@ async fn test_native_legacy_admin_rpcs_require_loopback_on_dev_networks() {
         &app,
         "/",
         "setFeeConfig",
-        json!({"base_fee_spores": 1000, "admin_token": "test-admin-token"}),
+        json!({"base_fee_spores": 1000, "admin_token": TEST_ADMIN_TOKEN}),
         None,
         Some("203.0.113.10:9000".parse().unwrap()),
     )
@@ -1643,6 +1646,7 @@ async fn test_native_unknown_method() {
     let resp = rpc(&app, "/", "totallyBogusMethod").await.unwrap();
     assert!(resp.get("error").is_some());
     assert_eq!(resp["error"]["code"], -32601);
+    assert_eq!(resp["error"]["message"], "Method not found");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2146,6 +2150,7 @@ async fn test_native_invalid_pubkey_format() {
         .unwrap();
     assert_valid_rpc(&resp);
     assert!(resp.get("error").is_some(), "invalid pubkey should error");
+    assert_eq!(resp["error"]["message"], "Invalid pubkey format");
 }
 
 #[tokio::test]
@@ -2799,6 +2804,21 @@ async fn test_evm_eth_get_logs_empty() {
         0,
         "no logs in empty state"
     );
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_invalid_address_filter_is_generic() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"address": "not-an-address", "fromBlock": "0x0", "toBlock": "0x0"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["error"]["message"], "Invalid address filter format");
 }
 
 #[tokio::test]

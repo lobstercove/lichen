@@ -57,7 +57,7 @@ use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     FinalityTracker, Hash, Instruction, MarketActivityKind, Message, PqSignature, Pubkey,
     StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID,
-    EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
+    EVM_PROGRAM_ID, MAX_CONTRACT_CODE, SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -1291,19 +1291,16 @@ fn verify_bridge_access_auth_at(
         });
     }
 
-    if auth.expires_at < now.saturating_sub(BRIDGE_ACCESS_CLOCK_SKEW_SECS) {
+    if auth.expires_at < now {
         return Err(RpcError {
             code: -32602,
             message: "bridge auth has expired".to_string(),
         });
     }
 
-    let user_pubkey = Pubkey::from_base58(user_id).map_err(|error| RpcError {
+    let user_pubkey = Pubkey::from_base58(user_id).map_err(|_| RpcError {
         code: -32602,
-        message: format!(
-            "user_id must be a valid Lichen base58 public key (32 bytes): {}",
-            error
-        ),
+        message: "user_id must be a valid Lichen base58 public key (32 bytes)".to_string(),
     })?;
     let signature = parse_pq_signature_value(&auth.signature)?;
     let message = bridge_access_message(user_id, auth.issued_at, auth.expires_at);
@@ -1354,6 +1351,34 @@ struct RpcResponse {
 struct RpcError {
     code: i32,
     message: String,
+}
+
+fn method_not_found_error() -> RpcError {
+    RpcError {
+        code: -32601,
+        message: "Method not found".to_string(),
+    }
+}
+
+fn invalid_pubkey_format_error() -> RpcError {
+    RpcError {
+        code: -32602,
+        message: "Invalid pubkey format".to_string(),
+    }
+}
+
+fn invalid_address_filter_error() -> RpcError {
+    RpcError {
+        code: -32602,
+        message: "Invalid address filter format".to_string(),
+    }
+}
+
+fn symbol_not_found_error() -> RpcError {
+    RpcError {
+        code: -32001,
+        message: "Symbol not found".to_string(),
+    }
 }
 
 /// P2-4: Content-type negotiation for binary RPC responses.
@@ -1528,7 +1553,7 @@ struct RpcState {
     /// Cached metrics JSON — refreshed at most once per slot (~400ms).
     metrics_cache: Arc<RwLock<(Instant, Option<serde_json::Value>)>>,
     /// Cached responses for high-frequency list endpoints.
-    program_list_response_cache: Arc<RwLock<HashMap<String, (Instant, serde_json::Value)>>>,
+    program_list_response_cache: Arc<RwLock<LruCache<String, (Instant, serde_json::Value)>>>,
     /// AUDIT-FIX RPC-4: Per-address airdrop cooldown to prevent abuse.
     /// Bounded + async lock to avoid blocking runtime and unbounded growth.
     airdrop_cooldowns: Arc<RwLock<AirdropCooldowns>>,
@@ -1733,14 +1758,28 @@ async fn get_cached_program_list_response(
     params: &Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     let key = program_list_cache_key(method, params);
-    let guard = state.program_list_response_cache.read().await;
-    guard.get(&key).and_then(|(ts, cached)| {
-        if ts.elapsed().as_millis() < PROGRAM_LIST_CACHE_TTL_MS {
-            Some(cached.clone())
-        } else {
+    let mut guard = state.program_list_response_cache.write().await;
+    match guard.get(&key).cloned() {
+        Some((ts, cached)) if ts.elapsed().as_millis() < PROGRAM_LIST_CACHE_TTL_MS => Some(cached),
+        Some(_) => {
+            guard.pop(&key);
             None
         }
-    })
+        None => None,
+    }
+}
+
+fn prune_stale_program_list_entries(cache: &mut LruCache<String, (Instant, serde_json::Value)>) {
+    loop {
+        let stale_lru = cache
+            .peek_lru()
+            .map(|(_, (ts, _))| ts.elapsed().as_millis() >= PROGRAM_LIST_CACHE_TTL_MS * 2)
+            .unwrap_or(false);
+        if !stale_lru {
+            break;
+        }
+        let _ = cache.pop_lru();
+    }
 }
 
 async fn put_cached_program_list_response(
@@ -1752,12 +1791,8 @@ async fn put_cached_program_list_response(
     let key = program_list_cache_key(method, params);
     let mut guard = state.program_list_response_cache.write().await;
 
-    guard.retain(|_, (ts, _)| ts.elapsed().as_millis() < PROGRAM_LIST_CACHE_TTL_MS * 2);
-    if guard.len() >= PROGRAM_LIST_CACHE_MAX_ENTRIES {
-        guard.clear();
-    }
-
-    guard.insert(key, (Instant::now(), response));
+    prune_stale_program_list_entries(&mut guard);
+    guard.put(key, (Instant::now(), response));
 }
 
 /// AUDIT-FIX HIGH-03: Exact allowlist instead of substring matching.
@@ -1871,6 +1906,30 @@ fn verify_admin_auth(state: &RpcState, auth_header: Option<&str>) -> Result<(), 
             message: "Missing Authorization: Bearer <token> header".to_string(),
         }),
     }
+}
+
+fn log_privileged_rpc_mutation(
+    method: &str,
+    auth_scope: &str,
+    actor: &str,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    details: serde_json::Value,
+) {
+    let details = serde_json::to_string(&details)
+        .unwrap_or_else(|_| "{\"serialization_error\":true}".to_string());
+
+    info!(
+        target: "audit",
+        event = "privileged_rpc_mutation",
+        method,
+        auth_scope,
+        actor,
+        resource_type,
+        resource_id = resource_id.unwrap_or(""),
+        details = %details,
+        "Privileged RPC mutation executed"
+    );
 }
 
 /// T8.4: Constant-time byte comparison to prevent timing side-channel attacks
@@ -3338,7 +3397,9 @@ pub fn build_rpc_router_with_min_validator_stake(
             Instant::now() - std::time::Duration::from_secs(60),
             None,
         ))),
-        program_list_response_cache: Arc::new(RwLock::new(HashMap::new())),
+        program_list_response_cache: Arc::new(RwLock::new(LruCache::new(
+            NonZeroUsize::new(PROGRAM_LIST_CACHE_MAX_ENTRIES).unwrap(),
+        ))),
         airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
         orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
         custody_url: std::env::var("CUSTODY_URL").ok().filter(|s| !s.is_empty()),
@@ -3815,10 +3876,7 @@ async fn handle_rpc(
             shielded::handle_generate_transfer_proof(&state, req.params).await
         }
 
-        _ => Err(RpcError {
-            code: -32601,
-            message: format!("Method not found: {}", req.method),
-        }),
+        _ => Err(method_not_found_error()),
     };
 
     let response = match result {
@@ -4012,10 +4070,7 @@ async fn handle_evm_rpc(
         "eth_getStorageAt" => handle_eth_get_storage_at(&state, req.params).await,
         "net_listening" => Ok(serde_json::json!(true)),
         "web3_clientVersion" => Ok(serde_json::json!(format!("Lichen/{}", state.version))),
-        _ => Err(RpcError {
-            code: -32601,
-            message: format!("Method not found: {}", req.method),
-        }),
+        _ => Err(method_not_found_error()),
     };
 
     let response = match result {
@@ -4329,10 +4384,7 @@ async fn handle_get_balance(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let account = state.state.get_account(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -4421,10 +4473,7 @@ async fn handle_get_account(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let account = state.state.get_account(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -4490,10 +4539,8 @@ async fn handle_get_account_at_slot(
             message: "Invalid params: expected slot number as second argument".to_string(),
         })?;
 
-    let pubkey = lichen_core::account::Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = lichen_core::account::Pubkey::from_base58(pubkey_str)
+        .map_err(|_| invalid_pubkey_format_error())?;
 
     if !state.state.is_archive_mode() {
         return Err(RpcError {
@@ -4968,6 +5015,26 @@ async fn handle_set_fee_config(
             message: format!("Database error: {}", e),
         })?;
 
+    log_privileged_rpc_mutation(
+        "setFeeConfig",
+        "legacy_admin",
+        "admin_token",
+        "fee_config",
+        None,
+        serde_json::json!({
+            "base_fee_spores": config.base_fee,
+            "contract_deploy_fee_spores": config.contract_deploy_fee,
+            "contract_upgrade_fee_spores": config.contract_upgrade_fee,
+            "nft_mint_fee_spores": config.nft_mint_fee,
+            "nft_collection_fee_spores": config.nft_collection_fee,
+            "fee_burn_percent": config.fee_burn_percent,
+            "fee_producer_percent": config.fee_producer_percent,
+            "fee_voters_percent": config.fee_voters_percent,
+            "fee_treasury_percent": config.fee_treasury_percent,
+            "fee_community_percent": config.fee_community_percent,
+        }),
+    );
+
     Ok(serde_json::json!({"status": "ok"}))
 }
 
@@ -5025,6 +5092,18 @@ async fn handle_set_rent_params(
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+
+    log_privileged_rpc_mutation(
+        "setRentParams",
+        "legacy_admin",
+        "admin_token",
+        "rent_params",
+        None,
+        serde_json::json!({
+            "rent_rate_spores_per_kb_month": rate,
+            "rent_free_kb": free_kb,
+        }),
+    );
 
     Ok(serde_json::json!({"status": "ok"}))
 }
@@ -5763,6 +5842,199 @@ fn validate_incoming_transaction_limits(tx: &Transaction) -> Result<(), RpcError
     })
 }
 
+fn transaction_has_contract_call_preflight(tx: &Transaction) -> bool {
+    tx.message.instructions.iter().any(|ix| {
+        ix.program_id == lichen_core::CONTRACT_PROGRAM_ID && !ix.data.starts_with(b"{\"Deploy\"")
+    })
+}
+
+fn transaction_has_mandatory_shielded_preflight(tx: &Transaction) -> bool {
+    tx.message.instructions.iter().any(|ix| {
+        ix.program_id == lichen_core::SYSTEM_PROGRAM_ID
+            && matches!(ix.data.first().copied(), Some(23..=25))
+    })
+}
+
+pub(crate) async fn preflight_transaction_submission(
+    state: &RpcState,
+    tx: &Transaction,
+    skip_preflight: bool,
+) -> Result<(), RpcError> {
+    validate_incoming_transaction_limits(tx)?;
+
+    if tx.is_evm() {
+        return Err(RpcError {
+            code: -32003,
+            message: "EVM transactions are not allowed via sendTransaction".to_string(),
+        });
+    }
+
+    if tx.signatures.is_empty() {
+        return Err(RpcError {
+            code: -32003,
+            message: "Transaction has no signatures".to_string(),
+        });
+    }
+
+    for sig in &tx.signatures {
+        if pq_signature_is_zero(sig) {
+            return Err(RpcError {
+                code: -32003,
+                message: "Transaction contains an invalid zero signature".to_string(),
+            });
+        }
+    }
+
+    tx.verify_required_signatures().map_err(|error| RpcError {
+        code: -32003,
+        message: error,
+    })?;
+
+    {
+        let budget = tx.message.effective_compute_budget();
+        if budget > lichen_core::MAX_COMPUTE_BUDGET {
+            return Err(RpcError {
+                code: -32003,
+                message: format!(
+                    "Compute budget {} exceeds maximum {}",
+                    budget,
+                    lichen_core::MAX_COMPUTE_BUDGET
+                ),
+            });
+        }
+    }
+
+    {
+        let fee_payer = tx
+            .message
+            .instructions
+            .first()
+            .and_then(|ix| ix.accounts.first().cloned());
+        if let Some(payer) = fee_payer {
+            let fee_config = state
+                .state
+                .get_fee_config()
+                .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
+            let expected_fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
+
+            if expected_fee > 0 {
+                match state.state.get_account(&payer) {
+                    Ok(Some(acct)) => {
+                        if acct.spendable < expected_fee {
+                            return Err(RpcError {
+                                code: -32003,
+                                message: format!(
+                                    "Insufficient LICN balance for fees: need {} spores ({:.6} LICN), have {} spores ({:.6} LICN)",
+                                    expected_fee,
+                                    expected_fee as f64 / 1_000_000_000.0,
+                                    acct.spendable,
+                                    acct.spendable as f64 / 1_000_000_000.0
+                                ),
+                            });
+                        }
+
+                        if let Some(first_ix) = tx.message.instructions.first() {
+                            if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
+                                if let Some(&kind) = first_ix.data.first() {
+                                    if (kind == 0 || kind == 1) && first_ix.data.len() >= 9 {
+                                        let transfer_amount = u64::from_le_bytes(
+                                            first_ix.data[1..9].try_into().unwrap_or([0u8; 8]),
+                                        );
+                                        if acct.spendable
+                                            < expected_fee.saturating_add(transfer_amount)
+                                        {
+                                            return Err(RpcError {
+                                                code: -32003,
+                                                message: format!(
+                                                    "Insufficient LICN for transfer + fees: need {} spores (transfer) + {} spores (fee) = {} total, have {} spendable",
+                                                    transfer_amount,
+                                                    expected_fee,
+                                                    transfer_amount.saturating_add(expected_fee),
+                                                    acct.spendable
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(RpcError {
+                            code: -32003,
+                            message: "Payer account does not exist on-chain. Fund it first."
+                                .to_string(),
+                        });
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    if let Some(first_ix) = tx.message.instructions.first() {
+        if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
+            if let Some(&opcode) = first_ix.data.first() {
+                if matches!(opcode, 27 | 30 | 31) {
+                    let sender = tx.sender();
+                    let is_active_validator = if let Some(ref pool) = state.stake_pool {
+                        let pool_guard = pool.read().await;
+                        pool_guard
+                            .get_stake(&sender)
+                            .map(|s| s.is_active && s.meets_minimum())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                    if !is_active_validator {
+                        let op_name = match opcode {
+                            27 => "SlashValidator",
+                            30 => "OracleAttestation",
+                            31 => "DeregisterValidator",
+                            _ => "System",
+                        };
+                        return Err(RpcError {
+                            code: -32003,
+                            message: format!(
+                                "{} transactions can only be submitted by active validators",
+                                op_name
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let must_simulate = transaction_has_mandatory_shielded_preflight(tx);
+    if must_simulate {
+        let processor = TxProcessor::new(state.state.clone());
+        processor
+            .validate_shielded_preflight(tx)
+            .map_err(|reason| RpcError {
+                code: -32002,
+                message: format!("Transaction simulation failed: {}", reason),
+            })?;
+    }
+
+    if !skip_preflight && transaction_has_contract_call_preflight(tx) {
+        let processor = TxProcessor::new(state.state.clone());
+        let sim = processor.simulate_transaction(tx);
+        if !sim.success {
+            let reason = sim
+                .error
+                .unwrap_or_else(|| "Contract execution failed".to_string());
+            return Err(RpcError {
+                code: -32002,
+                message: format!("Transaction simulation failed: {}", reason),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMMITMENT-LEVEL HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -6121,199 +6393,7 @@ async fn handle_send_transaction(
     // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
     let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
-    validate_incoming_transaction_limits(&tx)?;
-
-    // ── Pre-mempool validation ──────────────────────────────────
-    // Reject structurally invalid transactions BEFORE entering mempool.
-
-    // Reject EVM transactions via native sendTransaction (must use /evm endpoint).
-    if tx.is_evm() {
-        return Err(RpcError {
-            code: -32003,
-            message: "EVM transactions are not allowed via sendTransaction".to_string(),
-        });
-    }
-
-    // 1. Reject transactions with empty signatures
-    if tx.signatures.is_empty() {
-        return Err(RpcError {
-            code: -32003,
-            message: "Transaction has no signatures".to_string(),
-        });
-    }
-    // 2. Reject zero signatures (all bytes 0x00)
-    for sig in &tx.signatures {
-        if pq_signature_is_zero(sig) {
-            return Err(RpcError {
-                code: -32003,
-                message: "Transaction contains an invalid zero signature".to_string(),
-            });
-        }
-    }
-    // 3. Reject transactions with no instructions
-    if tx.message.instructions.is_empty() {
-        return Err(RpcError {
-            code: -32003,
-            message: "Transaction has no instructions".to_string(),
-        });
-    }
-
-    // 4a. Validate compute budget is within protocol limits
-    {
-        let budget = tx.message.effective_compute_budget();
-        if budget > lichen_core::MAX_COMPUTE_BUDGET {
-            return Err(RpcError {
-                code: -32003,
-                message: format!(
-                    "Compute budget {} exceeds maximum {}",
-                    budget,
-                    lichen_core::MAX_COMPUTE_BUDGET
-                ),
-            });
-        }
-    }
-
-    // 4b. Pre-mempool balance + fee check: reject if payer can't afford fees
-    //    This prevents silent failures during block production.
-    {
-        let fee_payer = tx
-            .message
-            .instructions
-            .first()
-            .and_then(|ix| ix.accounts.first().cloned());
-        if let Some(payer) = fee_payer {
-            // Compute expected fee
-            let fee_config = state
-                .state
-                .get_fee_config()
-                .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
-            let expected_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
-
-            if expected_fee > 0 {
-                // Check payer's spendable balance
-                match state.state.get_account(&payer) {
-                    Ok(Some(acct)) => {
-                        if acct.spendable < expected_fee {
-                            return Err(RpcError {
-                                code: -32003,
-                                message: format!(
-                                    "Insufficient LICN balance for fees: need {} spores ({:.6} LICN), have {} spores ({:.6} LICN)",
-                                    expected_fee, expected_fee as f64 / 1_000_000_000.0,
-                                    acct.spendable, acct.spendable as f64 / 1_000_000_000.0
-                                ),
-                            });
-                        }
-                    }
-                    Ok(None) => {
-                        return Err(RpcError {
-                            code: -32003,
-                            message: "Payer account does not exist on-chain. Fund it first."
-                                .to_string(),
-                        });
-                    }
-                    Err(_) => {} // DB error — let block producer handle it
-                }
-
-                // Also check if the TX transfers value — verify total needed
-                // (fee + transfer amount) is covered
-                if let Some(first_ix) = tx.message.instructions.first() {
-                    if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
-                        if let Some(&kind) = first_ix.data.first() {
-                            if kind == 0 || kind == 1 {
-                                // Transfer or TransferWithMemo
-                                if first_ix.data.len() >= 9 {
-                                    let transfer_amount = u64::from_le_bytes(
-                                        first_ix.data[1..9].try_into().unwrap_or([0u8; 8]),
-                                    );
-                                    if let Ok(Some(acct)) = state.state.get_account(&payer) {
-                                        if acct.spendable
-                                            < expected_fee.saturating_add(transfer_amount)
-                                        {
-                                            return Err(RpcError {
-                                                code: -32003,
-                                                message: format!(
-                                                    "Insufficient LICN for transfer + fees: need {} spores (transfer) + {} spores (fee) = {} total, have {} spendable",
-                                                    transfer_amount, expected_fee,
-                                                    transfer_amount.saturating_add(expected_fee),
-                                                    acct.spendable
-                                                ),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Pre-validate fee-exempt protocol opcodes ────────────────────────
-    // Opcodes 27 (SlashValidator), 30 (OracleAttestation),
-    // 31 (DeregisterValidator) are fee-exempt. Reject from non-validators
-    // to prevent free block-space griefing.
-    // Opcode 26 (RegisterValidator) is EXCLUDED: new validators joining the
-    // network must be able to submit this tx. The processor enforces its own
-    // validation (bootstrap cap, fingerprint uniqueness, treasury debit).
-    if let Some(first_ix) = tx.message.instructions.first() {
-        if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
-            if let Some(&opcode) = first_ix.data.first() {
-                if matches!(opcode, 27 | 30 | 31) {
-                    let sender = tx.sender();
-                    let is_active_validator = if let Some(ref pool) = state.stake_pool {
-                        let pool_guard = pool.read().await;
-                        pool_guard
-                            .get_stake(&sender)
-                            .map(|s| s.is_active && s.meets_minimum())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-
-                    if !is_active_validator {
-                        let op_name = match opcode {
-                            27 => "SlashValidator",
-                            30 => "OracleAttestation",
-                            31 => "DeregisterValidator",
-                            _ => "System",
-                        };
-                        return Err(RpcError {
-                            code: -32003,
-                            message: format!(
-                                "{} transactions can only be submitted by active validators",
-                                op_name
-                            ),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Preflight simulation: pre-execute contract calls to catch errors ─
-    // Like Solana's preflight check — simulates the TX and rejects if it
-    // would fail on-chain. Callers can pass { skipPreflight: true } to bypass.
-    // Skip preflight for deploy transactions (data contains JSON with "Deploy" key).
-    if !skip_preflight {
-        let has_contract_call = tx.message.instructions.iter().any(|ix| {
-            ix.program_id == lichen_core::CONTRACT_PROGRAM_ID
-                && !ix.data.starts_with(b"{\"Deploy\"") // skip deploys
-        });
-        if has_contract_call {
-            let processor = TxProcessor::new(state.state.clone());
-            let sim = processor.simulate_transaction(&tx);
-            if !sim.success {
-                let reason = sim
-                    .error
-                    .unwrap_or_else(|| "Contract execution failed".to_string());
-                return Err(RpcError {
-                    code: -32002,
-                    message: format!("Transaction simulation failed: {}", reason),
-                });
-            }
-        }
-    }
+    preflight_transaction_submission(state, &tx, skip_preflight).await?;
 
     // RPC-04: Emit prediction WS events AFTER mempool acceptance (not before),
     // so clients never receive events for transactions that fail submission.
@@ -6794,10 +6874,7 @@ async fn handle_solana_get_balance(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let balance = state.state.get_balance(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -6838,10 +6915,7 @@ async fn handle_solana_get_account_info(
         .and_then(|v| v.as_str())
         .unwrap_or("base64");
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let account = state.state.get_account(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -7120,15 +7194,7 @@ async fn handle_solana_send_transaction(
 
     let tx = decode_solana_transaction(tx_payload, encoding)?;
 
-    validate_incoming_transaction_limits(&tx)?;
-
-    // Reject EVM transactions submitted via Solana-compat endpoint
-    if tx.is_evm() {
-        return Err(RpcError {
-            code: -32003,
-            message: "EVM transactions are not allowed via sendTransaction".to_string(),
-        });
-    }
+    preflight_transaction_submission(state, &tx, false).await?;
 
     let signature_hash = tx.signature();
     let signature_base58 = hash_to_base58(&signature_hash);
@@ -7916,10 +7982,7 @@ async fn handle_get_validator_info(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let validator = state.state.get_validator(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -7969,10 +8032,7 @@ async fn handle_get_validator_performance(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let validator = state.state.get_validator(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -8094,7 +8154,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
 
 /// Create stake transaction
 async fn handle_stake(
-    _state: &RpcState,
+    state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let params = params.ok_or_else(|| RpcError {
@@ -8138,7 +8198,9 @@ async fn handle_stake(
             });
         }
 
-        let signature = submit_transaction(_state, tx)?;
+        preflight_transaction_submission(state, &tx, false).await?;
+
+        let signature = submit_transaction(state, tx)?;
         return Ok(serde_json::json!(signature));
     }
 
@@ -8150,7 +8212,7 @@ async fn handle_stake(
 
 /// Create unstake transaction
 async fn handle_unstake(
-    _state: &RpcState,
+    state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let params = params.ok_or_else(|| RpcError {
@@ -8194,7 +8256,9 @@ async fn handle_unstake(
             });
         }
 
-        let signature = submit_transaction(_state, tx)?;
+        preflight_transaction_submission(state, &tx, false).await?;
+
+        let signature = submit_transaction(state, tx)?;
         return Ok(serde_json::json!(signature));
     }
 
@@ -8223,10 +8287,7 @@ async fn handle_get_staking_status(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     // Check if this is a validator
     let validator_info = state.state.get_validator(&pubkey).map_err(|e| RpcError {
@@ -8335,10 +8396,7 @@ async fn handle_get_staking_rewards(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     // Get staking rewards from stake pool
     if let Some(ref pool) = state.stake_pool {
@@ -8452,10 +8510,7 @@ async fn handle_get_account_info(
             message: "Invalid params: expected [pubkey]".to_string(),
         })?;
 
-    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })?;
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     let account = state.state.get_account(&pubkey).map_err(|e| RpcError {
         code: -32000,
@@ -8859,6 +8914,17 @@ async fn handle_set_contract_abi(
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+
+    log_privileged_rpc_mutation(
+        "setContractAbi",
+        "legacy_admin",
+        "admin_token",
+        "contract_abi",
+        Some(contract_id_str),
+        serde_json::json!({
+            "abi_functions": contract.abi.as_ref().map(|abi| abi.functions.len()).unwrap_or(0),
+        }),
+    );
 
     Ok(serde_json::json!({
         "success": true,
@@ -9302,12 +9368,17 @@ async fn handle_deploy_contract(
         }
     }
 
-    info!(
-        "deployContract: {} deployed contract at {} (code={} bytes, fee={} spores)",
-        deployer_pubkey.to_base58(),
-        program_pubkey.to_base58(),
-        account.data.len(),
-        deploy_fee,
+    log_privileged_rpc_mutation(
+        "deployContract",
+        "legacy_admin",
+        &deployer_pubkey.to_base58(),
+        "contract",
+        Some(&program_pubkey.to_base58()),
+        serde_json::json!({
+            "code_size": account.data.len(),
+            "deploy_fee": deploy_fee,
+            "contract_name": contract_name,
+        }),
     );
 
     Ok(serde_json::json!({
@@ -9392,14 +9463,13 @@ async fn handle_upgrade_contract(
     }
 
     // P10-RPC-05: Reject oversized WASM code to prevent storage abuse
-    const MAX_CONTRACT_CODE_SIZE: usize = 524_288; // 512 KB
-    if code_bytes.len() > MAX_CONTRACT_CODE_SIZE {
+    if code_bytes.len() > MAX_CONTRACT_CODE {
         return Err(RpcError {
             code: -32602,
             message: format!(
                 "Contract code too large: {} bytes (max {} bytes / 512 KB)",
                 code_bytes.len(),
-                MAX_CONTRACT_CODE_SIZE,
+                MAX_CONTRACT_CODE,
             ),
         });
     }
@@ -9556,14 +9626,18 @@ async fn handle_upgrade_contract(
         message: format!("Atomic upgrade commit failed: {}", e),
     })?;
 
-    info!(
-        "upgradeContract: {} upgraded {} v{} → v{} (code={} bytes, fee={} spores)",
-        owner_pubkey.to_base58(),
-        contract_pubkey.to_base58(),
-        old_version,
-        contract.version,
-        updated_account.data.len(),
-        upgrade_fee,
+    log_privileged_rpc_mutation(
+        "upgradeContract",
+        "legacy_admin",
+        &owner_pubkey.to_base58(),
+        "contract",
+        Some(&contract_pubkey.to_base58()),
+        serde_json::json!({
+            "previous_version": old_version,
+            "version": contract.version,
+            "code_size": updated_account.data.len(),
+            "upgrade_fee": upgrade_fee,
+        }),
     );
 
     Ok(serde_json::json!({
@@ -10148,10 +10222,7 @@ fn extract_single_pubkey(
             code: -32602,
             message: format!("Invalid params for {}: expected [pubkey]", method),
         })?;
-    Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid pubkey: {}", e),
-    })
+    Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())
 }
 
 fn extract_single_string(
@@ -12646,23 +12717,17 @@ async fn handle_eth_get_logs(
     // Optional address filter (single address or array of addresses)
     let filter_addresses: Vec<[u8; 20]> = match filter.get("address") {
         Some(serde_json::Value::String(s)) => {
-            vec![
-                lichen_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid address filter: {}", e),
-                })?,
-            ]
+            vec![lichen_core::StateStore::parse_evm_address(s)
+                .map_err(|_| invalid_address_filter_error())?]
         }
         Some(serde_json::Value::Array(arr)) => {
             let mut addrs = Vec::with_capacity(arr.len());
             for v in arr {
                 if let Some(s) = v.as_str() {
-                    addrs.push(lichen_core::StateStore::parse_evm_address(s).map_err(|e| {
-                        RpcError {
-                            code: -32602,
-                            message: format!("Invalid address in array: {}", e),
-                        }
-                    })?);
+                    addrs.push(
+                        lichen_core::StateStore::parse_evm_address(s)
+                            .map_err(|_| invalid_address_filter_error())?,
+                    );
                 }
             }
             addrs
@@ -14386,10 +14451,7 @@ fn resolve_symbol_pubkey(state: &RpcState, symbol: &str) -> Result<Pubkey, RpcEr
             message: format!("DB error: {}", e),
         })?
         .map(|e| e.program)
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: format!("{} symbol not found", symbol),
-        })
+        .ok_or_else(symbol_not_found_error)
 }
 
 /// getDexCoreStats — DEX core exchange stats
@@ -14851,6 +14913,18 @@ async fn handle_create_bridge_deposit(
         });
     }
 
+    log_privileged_rpc_mutation(
+        "createBridgeDeposit",
+        "bridge_access",
+        user_id,
+        "bridge_deposit",
+        body.get("deposit_id").and_then(|value| value.as_str()),
+        serde_json::json!({
+            "chain": chain,
+            "asset": asset,
+        }),
+    );
+
     Ok(body)
 }
 
@@ -15140,15 +15214,18 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        bridge_access_message, classify_method, classify_solana_method_tier, encode_rpc_response,
-        filter_signatures_for_address, handle_create_bridge_deposit, handle_get_bridge_deposit,
-        handle_get_governance_events, handle_get_incident_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, parse_bridge_access_auth, parse_get_block_slot_param,
-        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, verify_bridge_access_auth_at, AirdropCooldowns,
-        MethodTier, RateLimiter, RpcError, RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES,
-        AIRDROP_COOLDOWN_SECS,
+        bridge_access_message, classify_method, classify_solana_method_tier, constant_time_eq,
+        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
+        handle_create_bridge_deposit, handle_get_bridge_deposit, handle_get_governance_events,
+        handle_get_incident_status, handle_get_service_fleet_status,
+        handle_get_signed_metadata_manifest, handle_set_fee_config, parse_bridge_access_auth,
+        parse_get_block_slot_param, parse_governance_event, parse_rpc_request,
+        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
+        put_cached_program_list_response, validate_incoming_transaction_limits,
+        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
+        verify_bridge_access_auth_at, AirdropCooldowns, MethodTier, RateLimiter, RpcError,
+        RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        PROGRAM_LIST_CACHE_TTL_MS,
     };
     use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
     use lichen_core::account::Keypair as LichenKeypair;
@@ -15162,7 +15239,10 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::{Mutex as TokioMutex, RwLock};
 
-    fn make_test_rpc_state(state: StateStore) -> RpcState {
+    fn make_test_rpc_state_with_program_cache_capacity(
+        state: StateStore,
+        program_cache_capacity: usize,
+    ) -> RpcState {
         RpcState {
             state,
             tx_sender: None,
@@ -15181,7 +15261,9 @@ mod tests {
             prediction_broadcaster: Arc::new(super::ws::PredictionEventBroadcaster::new(16)),
             validator_cache: Arc::new(RwLock::new((Instant::now(), Vec::new()))),
             metrics_cache: Arc::new(RwLock::new((Instant::now(), None))),
-            program_list_response_cache: Arc::new(RwLock::new(HashMap::new())),
+            program_list_response_cache: Arc::new(RwLock::new(LruCache::new(
+                NonZeroUsize::new(program_cache_capacity).unwrap(),
+            ))),
             airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
             custody_url: None,
@@ -15199,8 +15281,86 @@ mod tests {
         }
     }
 
+    fn make_test_rpc_state(state: StateStore) -> RpcState {
+        make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
     fn make_hash(value: u8) -> Hash {
         Hash([value; 32])
+    }
+
+    #[tokio::test]
+    async fn program_list_cache_overflow_evicts_only_lru_entry() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state_with_program_cache_capacity(state, 2);
+
+        put_cached_program_list_response(
+            &rpc_state,
+            "getPrograms",
+            &None,
+            serde_json::json!({"key": "programs"}),
+        )
+        .await;
+        put_cached_program_list_response(
+            &rpc_state,
+            "getAllContracts",
+            &None,
+            serde_json::json!({"key": "contracts"}),
+        )
+        .await;
+
+        assert!(
+            get_cached_program_list_response(&rpc_state, "getPrograms", &None)
+                .await
+                .is_some()
+        );
+
+        put_cached_program_list_response(
+            &rpc_state,
+            "getAllSymbolRegistry",
+            &None,
+            serde_json::json!({"key": "symbols"}),
+        )
+        .await;
+
+        assert_eq!(
+            get_cached_program_list_response(&rpc_state, "getPrograms", &None).await,
+            Some(serde_json::json!({"key": "programs"}))
+        );
+        assert_eq!(
+            get_cached_program_list_response(&rpc_state, "getAllContracts", &None).await,
+            None
+        );
+        assert_eq!(
+            get_cached_program_list_response(&rpc_state, "getAllSymbolRegistry", &None).await,
+            Some(serde_json::json!({"key": "symbols"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn program_list_cache_drops_expired_entries_on_lookup() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state_with_program_cache_capacity(state, 2);
+
+        {
+            let mut guard = rpc_state.program_list_response_cache.write().await;
+            guard.put(
+                "getPrograms:null".to_string(),
+                (
+                    Instant::now()
+                        - Duration::from_millis((PROGRAM_LIST_CACHE_TTL_MS * 2 + 1) as u64),
+                    serde_json::json!({"stale": true}),
+                ),
+            );
+        }
+
+        assert_eq!(
+            get_cached_program_list_response(&rpc_state, "getPrograms", &None).await,
+            None
+        );
+        assert_eq!(rpc_state.program_list_response_cache.read().await.len(), 0);
     }
 
     fn signed_bridge_deposit_payload(seed: u8, chain: &str, asset: &str) -> serde_json::Value {
@@ -15280,6 +15440,20 @@ mod tests {
         )
     }
 
+    async fn mock_custody_create_deposit_replayed_auth(
+        State(state): State<MockCustodyState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        state.requests.lock().await.push(payload);
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "code": "invalid_request",
+                "message": "bridge auth already used for a different deposit request; sign a new bridge authorization"
+            })),
+        )
+    }
+
     async fn spawn_mock_server(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -15291,6 +15465,43 @@ mod tests {
                 .expect("serve mock app");
         });
         format!("http://{}", addr)
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs_async<F>(future: F) -> String
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        let buffer = CapturedLogWriter::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        tracing::dispatcher::with_default(&dispatch, || runtime.block_on(future));
+
+        let captured = buffer.0.lock().unwrap().clone();
+        String::from_utf8(captured).unwrap()
     }
 
     #[test]
@@ -15332,6 +15543,33 @@ mod tests {
     }
 
     #[test]
+    fn test_set_fee_config_emits_privileged_audit_log() {
+        let logs = capture_logs_async(async {
+            let dir = tempdir().unwrap();
+            let state = StateStore::open(dir.path()).unwrap();
+            let rpc_state = make_test_rpc_state(state);
+            *rpc_state.admin_token.write().unwrap() = Some("supersecret".to_string());
+
+            let response = handle_set_fee_config(
+                &rpc_state,
+                Some(serde_json::json!({
+                    "base_fee_spores": 42,
+                })),
+                Some("Bearer supersecret"),
+            )
+            .await
+            .expect("setFeeConfig should succeed in local admin mode");
+
+            assert_eq!(response["status"], "ok");
+        });
+
+        assert!(logs.contains("Privileged RPC mutation executed"));
+        assert!(logs.contains("setFeeConfig"));
+        assert!(logs.contains("fee_config"));
+        assert!(logs.contains("admin_token"));
+    }
+
+    #[test]
     fn test_m02_native_get_block_is_moderate() {
         assert_eq!(classify_method("getBlock"), MethodTier::Moderate);
     }
@@ -15350,6 +15588,66 @@ mod tests {
         assert_eq!(
             classify_solana_method_tier("getSignatureStatuses"),
             MethodTier::Moderate
+        );
+    }
+
+    #[test]
+    fn test_hi13_constant_time_eq_matches_only_identical_tokens() {
+        assert!(constant_time_eq(b"admin-token", b"admin-token"));
+        assert!(!constant_time_eq(b"admin-token", b"admin-tokfn"));
+        assert!(!constant_time_eq(b"admin-token", b"admin-token-extra"));
+    }
+
+    #[test]
+    fn test_hi13_verify_admin_auth_uses_shared_header_path() {
+        let dir = tempdir().unwrap();
+        let state_store = StateStore::open(dir.path()).unwrap();
+        let mut state = make_test_rpc_state(state_store);
+        state.admin_token = Arc::new(std::sync::RwLock::new(Some("supersecret".to_string())));
+
+        assert!(verify_admin_auth(&state, Some("Bearer supersecret")).is_ok());
+
+        let invalid = verify_admin_auth(&state, Some("Bearer wrong-token")).unwrap_err();
+        assert_eq!(invalid.code, -32003);
+        assert_eq!(invalid.message, "Invalid admin token");
+
+        let missing = verify_admin_auth(&state, Some("supersecret")).unwrap_err();
+        assert_eq!(missing.code, -32003);
+        assert_eq!(
+            missing.message,
+            "Missing Authorization: Bearer <token> header"
+        );
+    }
+
+    #[test]
+    fn test_hi14_verify_admin_auth_observes_live_token_rotation() {
+        let dir = tempdir().unwrap();
+        let state_store = StateStore::open(dir.path()).unwrap();
+        let mut state = make_test_rpc_state(state_store);
+        state.admin_token = Arc::new(std::sync::RwLock::new(Some("old-token".to_string())));
+
+        assert!(verify_admin_auth(&state, Some("Bearer old-token")).is_ok());
+
+        {
+            let mut guard = state.admin_token.write().unwrap();
+            *guard = Some("new-token".to_string());
+        }
+
+        let stale = verify_admin_auth(&state, Some("Bearer old-token")).unwrap_err();
+        assert_eq!(stale.code, -32003);
+        assert_eq!(stale.message, "Invalid admin token");
+        assert!(verify_admin_auth(&state, Some("Bearer new-token")).is_ok());
+
+        {
+            let mut guard = state.admin_token.write().unwrap();
+            *guard = None;
+        }
+
+        let disabled = verify_admin_auth(&state, Some("Bearer new-token")).unwrap_err();
+        assert_eq!(disabled.code, -32003);
+        assert_eq!(
+            disabled.message,
+            "Admin endpoints disabled: no admin_token configured"
         );
     }
 
@@ -15508,7 +15806,7 @@ mod tests {
         }))
         .expect("parse bridge auth");
 
-        let err = verify_bridge_access_auth_at(&user_id, &auth, expires_at + 301)
+        let err = verify_bridge_access_auth_at(&user_id, &auth, expires_at + 1)
             .expect_err("expired bridge auth must fail");
         assert!(err.message.contains("expired"));
     }
@@ -16260,6 +16558,49 @@ mod tests {
         assert_eq!(requests[0]["auth"], expected_auth);
     }
 
+    #[test]
+    fn test_create_bridge_deposit_emits_privileged_audit_log() {
+        let logs = capture_logs_async(async {
+            let tmp = tempdir().unwrap();
+            let state = StateStore::open(tmp.path()).unwrap();
+
+            let custody_state = MockCustodyState::default();
+            let custody_url = spawn_mock_server(
+                Router::new()
+                    .route("/deposits", post(mock_custody_create_deposit))
+                    .with_state(custody_state.clone()),
+            )
+            .await;
+
+            let mut rpc_state = make_test_rpc_state(state);
+            rpc_state.custody_url = Some(custody_url);
+            rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+            let payload = signed_bridge_deposit_payload(41, "solana", "sol");
+            let user_id = payload["user_id"]
+                .as_str()
+                .expect("bridge payload user_id should exist")
+                .to_string();
+
+            let response =
+                handle_create_bridge_deposit(&rpc_state, Some(serde_json::json!([payload])))
+                    .await
+                    .expect("bridge deposit creation should succeed");
+
+            assert_eq!(
+                response["deposit_id"],
+                "11111111-1111-1111-1111-111111111111"
+            );
+            assert_eq!(response["address"], "mock-bridge-address");
+            assert!(!user_id.is_empty());
+        });
+
+        assert!(logs.contains("Privileged RPC mutation executed"));
+        assert!(logs.contains("createBridgeDeposit"));
+        assert!(logs.contains("bridge_deposit"));
+        assert!(logs.contains("11111111-1111-1111-1111-111111111111"));
+    }
+
     #[tokio::test]
     async fn test_create_bridge_deposit_surfaces_custody_http_errors() {
         let tmp = tempdir().unwrap();
@@ -16290,6 +16631,42 @@ mod tests {
         assert_eq!(
             error.message,
             "rate_limited: wait 10s between deposit requests"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_surfaces_custody_replay_errors() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit_replayed_auth))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let error = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                34, "solana", "sol"
+            )])),
+        )
+        .await
+        .expect_err("custody replay errors must surface as RPC errors");
+
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.message,
+            "bridge auth already used for a different deposit request; sign a new bridge authorization"
         );
 
         let requests = custody_state.requests.lock().await;

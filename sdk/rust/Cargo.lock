@@ -2588,7 +2588,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-core"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives 0.8.26",

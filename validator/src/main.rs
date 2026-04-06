@@ -74,7 +74,7 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::consensus::{ConsensusAction, ConsensusEngine};
+use crate::consensus::{ConsensusAction, ConsensusEngine, ConsensusTimeoutConfig};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 
@@ -395,6 +395,22 @@ fn derive_rpc_url_from_peer(peer_addr: &str) -> Option<String> {
 
 fn needs_bootstrap_slot_catch_up(current_slot: u64, bootstrap_slot: u64, tolerance: u64) -> bool {
     current_slot.saturating_add(tolerance) < bootstrap_slot
+}
+
+fn should_gate_bft_on_network_sync(
+    is_joining_network: bool,
+    current_tip: u64,
+    has_seed_peers: bool,
+) -> bool {
+    is_joining_network || (current_tip > 0 && has_seed_peers)
+}
+
+fn should_reconsider_duplicate_block(
+    block_slot: u64,
+    current_slot: u64,
+    has_pending_blocks: bool,
+) -> bool {
+    has_pending_blocks && block_slot == current_slot
 }
 
 async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<u64> {
@@ -4739,6 +4755,24 @@ fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| a == name || a.starts_with(&format!("{}=", name)))
 }
 
+fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attached: bool) -> bool {
+    if !has_flag(args, "--archive-mode") {
+        return false;
+    }
+
+    state.set_archive_mode(true);
+    if cold_store_attached {
+        info!(
+            "🗂️  Archive mode enabled; historical account snapshots will be retained alongside cold storage"
+        );
+    } else {
+        warn!(
+            "🗂️  Archive mode enabled without --cold-store; historical account snapshots will remain in the hot state DB until manually pruned"
+        );
+    }
+    true
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SUPERVISOR — wraps the validator in a restart loop.
 //  When the internal watchdog detects a stall it exits with EXIT_CODE_RESTART;
@@ -5112,72 +5146,27 @@ async fn run_validator() {
     // killed before CommitBlock stores the block, the state has orphaned writes
     // from the uncommitted proposal. On restart the computed state_root no
     // longer matches the last committed block's state_root.
-    // Fix: detect the mismatch, wipe only the RocksDB files (preserving
-    // identity files like TLS keys, validator keypair, known-peers), and let
-    // sync rebuild from peers.
-    //
-    // SAFETY: Only wipe if the node has bootstrap peers to recover from.
-    // A primary validator (no --bootstrap-peers) would lose all state
-    // permanently. In that case, log a warning and continue — the orphaned
-    // writes will be overwritten on the next committed block.
-    let has_bootstrap_peers = get_flag_value(&args, &["--bootstrap-peers"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
+    // Preserve the local DB even when bootstrap peers are configured. Secondary
+    // validators may legitimately restart from a copied snapshot that still has
+    // these orphaned writes; auto-wiping on that path destroys resumable state
+    // before the node can reconnect and overwrite the stale proposal writes.
     {
         let tip = state.get_last_slot().unwrap_or(0);
         if tip > 0 {
             if let Ok(Some(last_block)) = state.get_block_by_slot(tip) {
                 let current_root = state.compute_state_root();
                 if last_block.header.state_root != current_root {
-                    if !has_bootstrap_peers {
-                        warn!(
-                            "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {} \
-                             (expected {}, got {}). No bootstrap peers — skipping wipe to \
-                             preserve genesis state. Orphaned proposal writes will be \
-                             overwritten on next committed block.",
-                            tip,
-                            last_block.header.state_root.to_hex(),
-                            current_root.to_hex(),
-                        );
-                    } else {
-                        warn!(
-                            "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {}. \
-                         Expected {}, got {}. Wiping RocksDB for clean resync.",
-                            tip,
-                            last_block.header.state_root.to_hex(),
-                            current_root.to_hex(),
-                        );
-                        drop(state);
-                        // Preserve identity files, wipe only RocksDB artifacts
-                        let preserve = [
-                            "validator-keypair.json",
-                            "genesis-keys",
-                            "home",
-                            "IDENTITY",
-                            "known-peers.json",
-                        ];
-                        if let Ok(entries) = std::fs::read_dir(&data_dir) {
-                            for entry in entries.flatten() {
-                                let name = entry.file_name();
-                                let name_str = name.to_string_lossy();
-                                if !preserve.iter().any(|p| *p == name_str.as_ref()) {
-                                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                                        let _ = std::fs::remove_dir_all(entry.path());
-                                    } else {
-                                        let _ = std::fs::remove_file(entry.path());
-                                    }
-                                }
-                            }
-                        }
-                        state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!("Failed to reopen state after wipe: {}", e);
-                                return;
-                            }
-                        };
-                        info!("✅ State wiped (identity preserved). Node will resync from peers.");
-                    }
+                    warn!(
+                        "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {} \
+                         (expected {}, got {}). Preserving local RocksDB so resumed nodes \
+                         and copied snapshots are not wiped automatically; orphaned proposal \
+                         writes will be overwritten on the next committed block. If a clean \
+                         resync is required, stop the validator and wipe the state directory \
+                         manually before restarting.",
+                        tip,
+                        last_block.header.state_root.to_hex(),
+                        current_root.to_hex(),
+                    );
                 } else {
                     info!(
                         "✅ State integrity OK at slot {} (root={})",
@@ -5199,6 +5188,8 @@ async fn run_validator() {
             return;
         }
     }
+
+    configure_archive_mode(&state, &args, cold_store_path.is_some());
 
     // Create transaction processor
     let processor = Arc::new(TxProcessor::new(state.clone()));
@@ -5478,7 +5469,8 @@ async fn run_validator() {
     // STARTUP MODE: RESUME vs JOIN
     // ────────────────────────────────────────────────────────────────
     // How every blockchain works:
-    //   - State on disk (last_slot > 0)  → RESUME. Load state, start consensus.
+    //   - State on disk (last_slot > 0)  → RESUME. Load local state, then verify
+    //                                      whether peer catch-up is needed before BFT.
     //   - No state, seeds exist          → JOIN.   Sync from peers first.
     //   - No state, no seeds             → ERROR.  Can't start.
     //
@@ -5487,7 +5479,7 @@ async fn run_validator() {
     // it resumes from where it left off. Period.
     // ────────────────────────────────────────────────────────────────
     let is_joining_network = if last_slot > 0 || has_genesis_block {
-        // Node has state on disk — resume consensus.
+        // Node has state on disk — resume from local state.
         info!(
             "🔄 Resuming from slot {} (genesis: {})",
             last_slot,
@@ -6468,15 +6460,51 @@ async fn run_validator() {
     // Create sync manager
     let sync_manager = Arc::new(SyncManager::new());
     // Genesis validators start in LiveSync — they ARE the network, no catch-up.
-    // Restarted nodes that already progressed past genesis (tip > 0) also go to
-    // LiveSync — they'll quickly re-sync the few blocks they missed.
+    // Restarted nodes with a nonzero tip only enter LiveSync immediately when
+    // their explicit bootstrap peer is not materially ahead. If the bootstrap
+    // peer is ahead, keep the node in InitialSync so it requests catch-up
+    // batches instead of re-entering consensus at a stale height.
     // Joining nodes AND restarted nodes stuck at tip=0 stay in InitialSync to
     // ensure fast catch-up behaviour (500ms sync cooldown vs 2s in LiveSync).
     let current_tip = state.get_last_slot().unwrap_or(0);
+    let wait_for_pre_consensus_sync =
+        should_gate_bft_on_network_sync(is_joining_network, current_tip, has_any_seed_peers);
+    if current_tip > 0 {
+        sync_manager.note_seen(current_tip).await;
+    }
+    if wait_for_pre_consensus_sync && !is_joining_network {
+        info!(
+            "🔄 Resumed node will verify peer tip before entering BFT (local slot {})",
+            current_tip
+        );
+    }
     if !is_joining_network && current_tip > 0 {
-        // Use block_on-safe approach: spawn a task that transitions immediately
+        let bootstrap_rpc_url_for_restart = explicit_seed_peer_strings
+            .first()
+            .and_then(|peer| derive_rpc_url_from_peer(peer));
         let sm_init = sync_manager.clone();
         tokio::spawn(async move {
+            if let Some(bootstrap_rpc_url) = bootstrap_rpc_url_for_restart.as_ref() {
+                let http_client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(3))
+                    .build()
+                    .ok();
+                if let Some(http_client) = http_client.as_ref() {
+                    if let Some(bootstrap_slot) =
+                        fetch_rpc_slot(http_client, bootstrap_rpc_url).await
+                    {
+                        sm_init.note_seen(bootstrap_slot).await;
+                        if needs_bootstrap_slot_catch_up(current_tip, bootstrap_slot, 5) {
+                            info!(
+                                "⏳ Restarted node staying in InitialSync (local={}, bootstrap={})",
+                                current_tip, bootstrap_slot
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+
             sm_init.transition_to_live().await;
         });
     }
@@ -7042,10 +7070,11 @@ async fn run_validator() {
                                 // finality guard and strand the rest of the sync batch.
                                 continue;
                             }
-                            if block_slot <= current && has_pending {
-                                // Let through to fork choice for re-evaluation
+                            if should_reconsider_duplicate_block(block_slot, current, has_pending) {
+                                // Let the current tip be re-evaluated when pending
+                                // descendants are waiting on an alternative parent.
                                 info!(
-                                    "🔄 Re-evaluating fork block {} (pending blocks exist)",
+                                    "🔄 Re-evaluating current tip block {} (pending descendants exist)",
                                     block_slot
                                 );
                             } else {
@@ -11905,10 +11934,12 @@ async fn run_validator() {
 
     let watchdog_disabled = has_flag(&args, "--no-watchdog");
 
-    // Shared flag: suppress watchdog during the joining sync phase.
-    // Joining nodes may spend minutes syncing without committing blocks,
-    // which is NOT a stall — the watchdog must not kill them.
-    let joining_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(is_joining_network));
+    // Shared flag: suppress watchdog during the pre-consensus sync phase.
+    // Fresh joiners and stale resumed nodes may spend time syncing without
+    // committing blocks, which is NOT a stall.
+    let joining_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(
+        wait_for_pre_consensus_sync,
+    ));
 
     let last_block_time_for_watchdog = last_block_time.clone();
     let state_for_watchdog = state.clone();
@@ -12398,11 +12429,15 @@ async fn run_validator() {
     //  and timeout events, then executing the resulting ConsensusActions.
     // ═══════════════════════════════════════════════════════════════
 
-    // ── Pre-loop: Joining network sync ──
-    // Wait until we have genesis, validators, and are caught up before
+    // ── Pre-loop: Pre-consensus sync gate ──
+    // Wait until we have the local validator state and are caught up before
     // entering the consensus loop.
-    if is_joining_network {
-        info!("⏳ Joining network — waiting for genesis sync and validator discovery");
+    if wait_for_pre_consensus_sync {
+        if is_joining_network {
+            info!("⏳ Joining network — waiting for genesis sync and validator discovery");
+        } else {
+            info!("⏳ Resumed node — waiting to catch up before entering consensus");
+        }
         let snapshot_sync_join = snapshot_sync.clone();
         let sync_manager_join = sync_manager.clone();
         let vs_join = validator_set.clone();
@@ -12570,17 +12605,29 @@ async fn run_validator() {
             state.get_last_slot().unwrap_or(0) + 1
         );
         // Mark join as complete so restarts don't re-enter joining mode.
-        if let Err(e) = state.put_metadata("join_complete", b"1") {
-            warn!("⚠️  Failed to persist join_complete marker: {}", e);
+        if is_joining_network {
+            if let Err(e) = state.put_metadata("join_complete", b"1") {
+                warn!("⚠️  Failed to persist join_complete marker: {}", e);
+            }
         }
-        // Clear the joining sync flag so the watchdog resumes monitoring.
+        // Clear the pre-consensus sync flag so the watchdog resumes monitoring.
         joining_sync_active.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ── Initialize BFT consensus engine ──
     let bft_keypair = Keypair::from_seed(validator_keypair.secret_key());
-    let mut bft =
-        ConsensusEngine::new_with_min_stake(bft_keypair, validator_pubkey, min_validator_stake);
+    let bft_timeouts = ConsensusTimeoutConfig {
+        propose_timeout_base_ms: genesis_config.consensus.propose_timeout_base_ms,
+        prevote_timeout_base_ms: genesis_config.consensus.prevote_timeout_base_ms,
+        precommit_timeout_base_ms: genesis_config.consensus.precommit_timeout_base_ms,
+        max_phase_timeout_ms: genesis_config.consensus.max_phase_timeout_ms,
+    };
+    let mut bft = ConsensusEngine::new_with_min_stake_and_timeouts(
+        bft_keypair,
+        validator_pubkey,
+        min_validator_stake,
+        bft_timeouts,
+    );
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
     // ── Initialize Consensus WAL (G-1/G-2 fix) ──
@@ -14996,6 +15043,42 @@ mod tests {
         assert!(needs_bootstrap_slot_catch_up(2528, 4899, 5));
         assert!(!needs_bootstrap_slot_catch_up(4897, 4899, 5));
         assert!(!needs_bootstrap_slot_catch_up(4900, 4899, 5));
+    }
+
+    #[test]
+    fn gate_bft_on_network_sync_for_joiners_and_resumed_peers() {
+        assert!(should_gate_bft_on_network_sync(true, 0, false));
+        assert!(should_gate_bft_on_network_sync(false, 122_274, true));
+        assert!(!should_gate_bft_on_network_sync(false, 122_274, false));
+        assert!(!should_gate_bft_on_network_sync(false, 0, true));
+    }
+
+    #[test]
+    fn reconsider_duplicate_block_only_at_current_tip() {
+        assert!(should_reconsider_duplicate_block(12, 12, true));
+        assert!(!should_reconsider_duplicate_block(11, 12, true));
+        assert!(!should_reconsider_duplicate_block(12, 12, false));
+        assert!(!should_reconsider_duplicate_block(13, 12, true));
+    }
+
+    #[test]
+    fn archive_mode_requires_explicit_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let args = vec!["lichen-validator".to_string()];
+
+        assert!(!configure_archive_mode(&state, &args, false));
+        assert!(!state.is_archive_mode());
+    }
+
+    #[test]
+    fn archive_mode_flag_enables_historical_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let args = vec!["lichen-validator".to_string(), "--archive-mode".to_string()];
+
+        assert!(configure_archive_mode(&state, &args, true));
+        assert!(state.is_archive_mode());
     }
 
     // ── constants sanity ────────────────────────────────────────────

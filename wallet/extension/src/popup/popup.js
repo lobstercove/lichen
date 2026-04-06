@@ -1896,12 +1896,13 @@ async function requestExtBridgeDeposit(chain, asset, chainName) {
   if (loadingEl) loadingEl.style.display = 'block';
 
   try {
-    let password = null;
-    if (!hasBridgeAccessAuth(wallet)) {
-      password = await securePasswordPrompt('Wallet password (for bridge authorization):');
-      if (!password) {
-        throw new Error('Bridge authorization cancelled');
-      }
+    const hasCachedBridgeAuth = hasBridgeAccessAuth(wallet);
+    if (hasCachedBridgeAuth && loadingEl) {
+      loadingEl.innerHTML = '<i class="fas fa-key"></i> Refreshing bridge authorization...';
+    }
+    const password = await securePasswordPrompt('Wallet password (for bridge authorization):');
+    if (!password) {
+      throw new Error('Bridge authorization cancelled');
     }
 
     const data = await requestBridgeDepositAddress({

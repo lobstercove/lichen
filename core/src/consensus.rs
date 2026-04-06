@@ -17,6 +17,18 @@ use std::sync::Arc;
 /// giving a 25% buffer before deactivation after slashing.
 pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k LICN in spores
 
+/// Default BFT propose timeout base in milliseconds.
+pub const DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS: u64 = 2000;
+
+/// Default BFT prevote timeout base in milliseconds.
+pub const DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS: u64 = 1000;
+
+/// Default BFT precommit timeout base in milliseconds.
+pub const DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS: u64 = 1000;
+
+/// Default cap for any BFT phase timeout in milliseconds.
+pub const DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS: u64 = 60_000;
+
 /// Bootstrap grant amount (100,000 LICN) — the initial stake granted to the first 200 validators.
 /// Funded from the genesis treasury reserve (not from block reward minting).
 pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k LICN in spores

@@ -43,6 +43,9 @@ COPY faucet-service/ faucet-service/
 COPY custody/ custody/
 COPY genesis/ genesis/
 COPY compiler/ compiler/
+COPY seeds.json ./
+COPY shared/incident-guardian-pause-allowlist.json shared/incident-guardian-pause-allowlist.json
+COPY contracts/lusd_token/abi.json contracts/lusd_token/abi.json
 COPY config.toml .
 
 # Force rebuild with real sources

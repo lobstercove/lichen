@@ -257,6 +257,97 @@ wait_for_healthy_rpc() {
   exit 1
 }
 
+validator_health_status() {
+  local rpc_port=$1
+  local response
+  response=$(curl -s -X POST "http://127.0.0.1:${rpc_port}" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' 2>/dev/null || true)
+  echo "$response" | python3 -c '
+import json
+import sys
+
+try:
+    result = json.load(sys.stdin).get("result", {})
+    if isinstance(result, dict):
+        print(result.get("status", "unknown"))
+    else:
+        print(result)
+except Exception:
+    print("unreachable")
+'
+}
+
+count_staked_validators() {
+  local rpc_port=$1
+  local response
+  response=$(curl -s -X POST "http://127.0.0.1:${rpc_port}" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}' 2>/dev/null || true)
+  echo "$response" | python3 -c '
+import json
+import sys
+
+try:
+    result = json.load(sys.stdin).get("result", {})
+    validators = result.get("validators", []) if isinstance(result, dict) else []
+    print(sum(1 for validator in validators if validator.get("stake", 0) > 0))
+except Exception:
+    print(0)
+'
+}
+
+wait_for_http_health() {
+  local url=$1
+  local label=$2
+  local timeout_seconds=${3:-60}
+
+  for _ in $(seq 1 "$timeout_seconds"); do
+    local body
+    body=$(curl -sf --max-time 2 "$url" 2>/dev/null || true)
+    if echo "$body" | grep -Eq 'OK|"status"[[:space:]]*:[[:space:]]*"ok"'; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "❌ Timed out waiting for ${label} health at ${url}" >&2
+  return 1
+}
+
+wait_for_validator_cluster_ready() {
+  local timeout_seconds=${1:-90}
+  local expected_validators=${#RPC_CANDIDATES[@]}
+  local primary_rpc=${RPC_CANDIDATES[0]}
+
+  for second in $(seq 1 "$timeout_seconds"); do
+    local all_healthy=true
+    local statuses=()
+    for rpc_port in "${RPC_CANDIDATES[@]}"; do
+      local status
+      status=$(validator_health_status "$rpc_port")
+      statuses+=("${rpc_port}:${status}")
+      if [ "$status" != "ok" ]; then
+        all_healthy=false
+      fi
+    done
+
+    local staked
+    staked=$(count_staked_validators "$primary_rpc")
+    if $all_healthy && [ "$staked" -ge "$expected_validators" ]; then
+      return 0
+    fi
+
+    if [ $((second % 5)) -eq 0 ]; then
+      echo "⏳ Waiting for validator cluster readiness... ${statuses[*]} staked=${staked}/${expected_validators}"
+    fi
+    sleep 1
+  done
+
+  echo "❌ Timed out waiting for the full local validator cluster to become healthy" >&2
+  return 1
+}
+
 ./run-validator.sh "$NETWORK" 1 >"${LOG_DIR}/validator-1.log" 2>&1 &
 V1_PID=$!
 
@@ -308,6 +399,23 @@ else
   echo "❌ Post-genesis bootstrap failed; see ${LOG_DIR}/first-boot-deploy.log" >&2
   cleanup_started_processes
   exit 1
+fi
+
+if ! wait_for_validator_cluster_ready "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+if ! wait_for_http_health "http://127.0.0.1:${CUSTODY_PORT}/health" "custody" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+if [ -n "$FAUCET_PID" ]; then
+  if ! wait_for_http_health "http://127.0.0.1:${FAUCET_PORT}/health" "faucet" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+    cleanup_started_processes
+    exit 1
+  fi
 fi
 
 echo "🦞 Lichen local stack started"

@@ -1,6 +1,10 @@
 // Lichen Genesis Configuration
 // Production-ready genesis block and chain initialization
 
+use crate::consensus::{
+    DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS, DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+    DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS, DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+};
 use crate::{Account, Pubkey, ValidatorInfo};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -75,6 +79,22 @@ pub struct ConsensusParams {
     /// Slot duration in milliseconds
     pub slot_duration_ms: u64,
 
+    /// Base propose timeout in milliseconds for BFT rounds.
+    #[serde(default = "default_bft_propose_timeout_base_ms")]
+    pub propose_timeout_base_ms: u64,
+
+    /// Base prevote timeout in milliseconds for BFT rounds.
+    #[serde(default = "default_bft_prevote_timeout_base_ms")]
+    pub prevote_timeout_base_ms: u64,
+
+    /// Base precommit timeout in milliseconds for BFT rounds.
+    #[serde(default = "default_bft_precommit_timeout_base_ms")]
+    pub precommit_timeout_base_ms: u64,
+
+    /// Maximum timeout cap for any BFT phase in milliseconds.
+    #[serde(default = "default_bft_max_phase_timeout_ms")]
+    pub max_phase_timeout_ms: u64,
+
     /// Slots per epoch
     pub epoch_slots: u64,
 
@@ -117,6 +137,18 @@ fn default_double_vote_pct() -> u64 {
 fn default_censorship_pct() -> u64 {
     25
 }
+fn default_bft_propose_timeout_base_ms() -> u64 {
+    DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS
+}
+fn default_bft_prevote_timeout_base_ms() -> u64 {
+    DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS
+}
+fn default_bft_precommit_timeout_base_ms() -> u64 {
+    DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS
+}
+fn default_bft_max_phase_timeout_ms() -> u64 {
+    DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS
+}
 
 /// AUDIT-FIX MEDIUM-8: This Default impl uses **testnet-scale** values
 /// (75 LICN min stake instead of 75K LICN). It exists solely for backward
@@ -127,6 +159,10 @@ impl Default for ConsensusParams {
     fn default() -> Self {
         ConsensusParams {
             slot_duration_ms: 400,
+            propose_timeout_base_ms: DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+            prevote_timeout_base_ms: DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS,
+            precommit_timeout_base_ms: DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+            max_phase_timeout_ms: DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS,
             epoch_slots: 432000,
             min_validator_stake: 75_000_000_000, // 75 LICN — testnet only, see note above
             validator_reward_per_block: 20_000_000, // 0.02 LICN — sustainable emission rate
@@ -247,6 +283,29 @@ impl GenesisConfig {
         // Validate consensus params
         if self.consensus.slot_duration_ms == 0 {
             return Err("Slot duration must be greater than 0".to_string());
+        }
+
+        if self.consensus.propose_timeout_base_ms == 0
+            || self.consensus.prevote_timeout_base_ms == 0
+            || self.consensus.precommit_timeout_base_ms == 0
+        {
+            return Err("Consensus timeout bases must be greater than 0".to_string());
+        }
+
+        if self.consensus.max_phase_timeout_ms == 0 {
+            return Err("Consensus max phase timeout must be greater than 0".to_string());
+        }
+
+        let max_base_timeout = self
+            .consensus
+            .propose_timeout_base_ms
+            .max(self.consensus.prevote_timeout_base_ms)
+            .max(self.consensus.precommit_timeout_base_ms);
+        if self.consensus.max_phase_timeout_ms < max_base_timeout {
+            return Err(
+                "Consensus max phase timeout must be at least as large as every timeout base"
+                    .to_string(),
+            );
         }
 
         if self.consensus.epoch_slots == 0 {
@@ -428,6 +487,10 @@ impl GenesisConfig {
             genesis_time: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
+                propose_timeout_base_ms: DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+                prevote_timeout_base_ms: DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS,
+                precommit_timeout_base_ms: DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+                max_phase_timeout_ms: DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000, // ~2 days at 400ms
                 // AUDIT-FIX 3.22: Lower stake requirement for testnet (75 LICN vs 75k)
@@ -479,6 +542,10 @@ impl GenesisConfig {
             genesis_time: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
+                propose_timeout_base_ms: DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
+                prevote_timeout_base_ms: DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS,
+                precommit_timeout_base_ms: DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
+                max_phase_timeout_ms: DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000,
                 min_validator_stake: 75_000_000_000_000, // 75,000 LICN
@@ -588,5 +655,27 @@ mod tests {
         let genesis = GenesisConfig::default_testnet();
         let accounts = genesis.to_accounts().unwrap();
         assert!(accounts.is_empty());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_consensus_timeout_base() {
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis.consensus.propose_timeout_base_ms = 0;
+
+        let error = genesis
+            .validate()
+            .expect_err("zero timeout bases must fail validation");
+        assert!(error.contains("timeout bases"));
+    }
+
+    #[test]
+    fn test_validate_rejects_max_phase_timeout_below_base() {
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis.consensus.max_phase_timeout_ms = genesis.consensus.precommit_timeout_base_ms - 1;
+
+        let error = genesis
+            .validate()
+            .expect_err("max timeout below a base timeout must fail validation");
+        assert!(error.contains("max phase timeout"));
     }
 }

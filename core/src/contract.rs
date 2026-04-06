@@ -30,13 +30,6 @@ static MODULE_CACHE: std::sync::LazyLock<Mutex<lru::LruCache<[u8; 32], Vec<u8>>>
         ))
     });
 
-// PERF-FIX 7: Thread-local ContractRuntime pool.
-// Avoids creating a new Cranelift compiler + Wasmer Store on every contract call.
-// Each rayon thread reuses its own runtime instance, eliminating ~1-5ms overhead per TX.
-thread_local! {
-    static RUNTIME_POOL: std::cell::RefCell<Option<ContractRuntime>> = const { std::cell::RefCell::new(None) };
-}
-
 /// Maximum compute units per contract execution (T1.5)
 /// Contracts with 64KB stack buffers (storage_get) + complex init can easily
 /// use 2-3M instructions. 10M provides ample headroom for legitimate contracts
@@ -820,9 +813,7 @@ const MAX_CCC_ARGS_LEN: u32 = 65_536;
 /// 5. **Deploy-time Validation**: Bytecode is validated at deploy to reject
 ///    modules with excessive memory declarations, unauthorized import modules,
 ///    or WASI capabilities.
-pub struct ContractRuntime {
-    store: Store,
-}
+pub struct ContractRuntime;
 
 impl Default for ContractRuntime {
     fn default() -> Self {
@@ -831,30 +822,31 @@ impl Default for ContractRuntime {
 }
 
 impl ContractRuntime {
+    fn fresh_store() -> Store {
+        let metering = std::sync::Arc::new(Metering::new(MAX_WASM_COMPUTE_UNITS, |_| 1));
+        let mut compiler = Cranelift::default();
+        compiler.push_middleware(metering);
+        Store::new(compiler)
+    }
+
     /// Create new contract runtime with WASM compute metering (T1.5).
     /// Every WASM instruction costs 1 compute unit.
     /// Execution traps when compute budget is exhausted — prevents infinite loops.
     pub fn new() -> Self {
-        let metering = std::sync::Arc::new(Metering::new(MAX_WASM_COMPUTE_UNITS, |_| 1));
-        let mut compiler = Cranelift::default();
-        compiler.push_middleware(metering);
-        let store = Store::new(compiler);
-        Self { store }
+        Self
     }
 
-    /// PERF-FIX 7: Get a runtime from the thread-local pool, or create one if empty.
-    /// This avoids constructing a new Cranelift compiler + Store on every contract call,
-    /// saving ~1-5ms per invocation. The runtime is returned to the pool after use.
+    /// Return a fresh runtime instance.
+    ///
+    /// Wasmer's metering middleware is single-use per compiled module. Reusing a
+    /// Store across multiple `Module::new` calls can panic under multi-contract
+    /// workloads, so this API remains stable while returning a stateless runtime.
     pub fn get_pooled() -> Self {
-        RUNTIME_POOL.with(|cell| cell.borrow_mut().take().unwrap_or_else(Self::new))
+        Self::new()
     }
 
-    /// PERF-FIX 7: Return a runtime to the thread-local pool for reuse.
-    pub fn return_to_pool(self) {
-        RUNTIME_POOL.with(|cell| {
-            *cell.borrow_mut() = Some(self);
-        });
-    }
+    /// Runtime instances are stateless, so returning one is a no-op.
+    pub fn return_to_pool(self) {}
 
     /// Deploy contract — validate bytecode and enforce sandbox constraints (T2.4).
     ///
@@ -863,8 +855,9 @@ impl ContractRuntime {
     /// - Rejects imports from unauthorized modules (only `"env"` allowed)
     /// - Rejects memory declarations exceeding `MAX_WASM_MEMORY_PAGES` (64MB)
     pub fn deploy(&mut self, bytecode: &[u8]) -> Result<Hash, String> {
-        let module = Module::new(&self.store, bytecode)
-            .map_err(|e| format!("Invalid WASM bytecode: {}", e))?;
+        let store = Self::fresh_store();
+        let module =
+            Module::new(&store, bytecode).map_err(|e| format!("Invalid WASM bytecode: {}", e))?;
 
         // T2.4: Validate imports — only "env" module allowed, no WASI
         for import in module.imports() {
@@ -918,6 +911,7 @@ impl ContractRuntime {
         args: &[u8],
         context: ContractContext,
     ) -> Result<ContractResult, String> {
+        let mut store = Self::fresh_store();
         let ctx = Self::prepare_execution_context(context, args);
         let initial_compute = ctx.compute_remaining;
         // Capture the TX-level compute limit. When called from the processor,
@@ -936,12 +930,12 @@ impl ContractRuntime {
                 // Hot path: deserialize pre-compiled module (~0.5ms)
                 // SAFETY: We serialized these bytes ourselves from a valid Module.
                 // The Store uses the same Cranelift + metering config every time.
-                unsafe { Module::deserialize(&self.store, cached_bytes) }
+                unsafe { Module::deserialize(&store, cached_bytes) }
                     .map_err(|e| format!("Failed to deserialize cached module: {}", e))?
             } else {
                 drop(cache);
                 // Cold path: compile from bytecode + cache for next time
-                let m = Module::new(&self.store, &contract.code)
+                let m = Module::new(&store, &contract.code)
                     .map_err(|e| format!("Failed to compile contract: {}", e))?;
                 if let Ok(serialized) = m.serialize() {
                     let mut cache_w = MODULE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -952,48 +946,48 @@ impl ContractRuntime {
             }
         };
 
-        let env = FunctionEnv::new(&mut self.store, ctx);
+        let env = FunctionEnv::new(&mut store, ctx);
 
         let imports = imports! {
             "env" => {
                 // Storage (4-param read matches SDK FFI, 2-param kept for backward compat)
-                "storage_read" => Function::new_typed_with_env(&mut self.store, &env, host_storage_read),
-                "storage_read_result" => Function::new_typed_with_env(&mut self.store, &env, host_storage_read_result),
-                "storage_write" => Function::new_typed_with_env(&mut self.store, &env, host_storage_write),
-                "storage_delete" => Function::new_typed_with_env(&mut self.store, &env, host_storage_delete),
+                "storage_read" => Function::new_typed_with_env(&mut store, &env, host_storage_read),
+                "storage_read_result" => Function::new_typed_with_env(&mut store, &env, host_storage_read_result),
+                "storage_write" => Function::new_typed_with_env(&mut store, &env, host_storage_write),
+                "storage_delete" => Function::new_typed_with_env(&mut store, &env, host_storage_delete),
                 // Logging & events
-                "log" => Function::new_typed_with_env(&mut self.store, &env, host_log_msg),
-                "emit_event" => Function::new_typed_with_env(&mut self.store, &env, host_emit_event),
+                "log" => Function::new_typed_with_env(&mut store, &env, host_log_msg),
+                "emit_event" => Function::new_typed_with_env(&mut store, &env, host_emit_event),
                 // Chain introspection
-                "get_timestamp" => Function::new_typed_with_env(&mut self.store, &env, host_get_timestamp),
-                "get_caller" => Function::new_typed_with_env(&mut self.store, &env, host_get_caller),
-                "get_contract_address" => Function::new_typed_with_env(&mut self.store, &env, host_get_contract_address),
-                "get_value" => Function::new_typed_with_env(&mut self.store, &env, host_get_value),
-                "get_slot" => Function::new_typed_with_env(&mut self.store, &env, host_get_slot),
+                "get_timestamp" => Function::new_typed_with_env(&mut store, &env, host_get_timestamp),
+                "get_caller" => Function::new_typed_with_env(&mut store, &env, host_get_caller),
+                "get_contract_address" => Function::new_typed_with_env(&mut store, &env, host_get_contract_address),
+                "get_value" => Function::new_typed_with_env(&mut store, &env, host_get_value),
+                "get_slot" => Function::new_typed_with_env(&mut store, &env, host_get_slot),
                 // Args & return data
-                "get_args_len" => Function::new_typed_with_env(&mut self.store, &env, host_get_args_len),
-                "get_args" => Function::new_typed_with_env(&mut self.store, &env, host_get_args),
-                "set_return_data" => Function::new_typed_with_env(&mut self.store, &env, host_set_return_data),
+                "get_args_len" => Function::new_typed_with_env(&mut store, &env, host_get_args_len),
+                "get_args" => Function::new_typed_with_env(&mut store, &env, host_get_args),
+                "set_return_data" => Function::new_typed_with_env(&mut store, &env, host_set_return_data),
                 // Cross-contract calls
-                "cross_contract_call" => Function::new_typed_with_env(&mut self.store, &env, host_cross_contract_call),
+                "cross_contract_call" => Function::new_typed_with_env(&mut store, &env, host_cross_contract_call),
                 // Cryptographic functions
-                "host_poseidon_hash" => Function::new_typed_with_env(&mut self.store, &env, host_poseidon_hash),
+                "host_poseidon_hash" => Function::new_typed_with_env(&mut store, &env, host_poseidon_hash),
             }
         };
 
-        let instance = Instance::new(&mut self.store, &module, &imports)
+        let instance = Instance::new(&mut store, &module, &imports)
             .map_err(|e| format!("Failed to instantiate contract: {}", e))?;
 
         // Set WASM fuel to the hard runtime ceiling.  The actual CU charge
         // is post-computed by dividing raw WASM instructions by WASM_CU_DIVISOR,
         // then checked against the TX-level compute_limit (Solana model).
         let wasm_fuel_limit = MAX_WASM_COMPUTE_UNITS;
-        set_remaining_points(&mut self.store, &instance, wasm_fuel_limit);
+        set_remaining_points(&mut store, &instance, wasm_fuel_limit);
 
         // Bind WASM linear memory to context for host function access
         if let Ok(memory) = instance.exports.get_memory("memory") {
             // T1.9: Enforce memory limit — reject contracts that declare too much memory
-            let current_pages = memory.view(&self.store).size().0;
+            let current_pages = memory.view(&store).size().0;
             if current_pages > MAX_WASM_MEMORY_PAGES {
                 return Err(format!(
                     "Contract memory exceeds limit: {} pages > {} max",
@@ -1005,9 +999,9 @@ impl ContractRuntime {
             // for all contracts regardless of their declared initial pages.
             if current_pages < DEFAULT_WASM_MEMORY_PAGES {
                 let grow_by = DEFAULT_WASM_MEMORY_PAGES - current_pages;
-                let _ = memory.grow(&mut self.store, grow_by);
+                let _ = memory.grow(&mut store, grow_by);
             }
-            env.as_mut(&mut self.store).memory = Some(memory.clone());
+            env.as_mut(&mut store).memory = Some(memory.clone());
         }
 
         let (func, effective_args) = match instance.exports.get_function(function_name) {
@@ -1043,7 +1037,7 @@ impl ContractRuntime {
         //   (b) Opcode ABI: fn call() — zero WASM params; args read via get_args()
         //       host import.
         // This block handles both transparently.
-        let func_type = func.ty(&self.store);
+        let func_type = func.ty(&store);
         let params: Vec<Type> = func_type.params().to_vec();
         let call_args: Vec<Value> = if params.is_empty() || effective_args.is_empty() {
             vec![]
@@ -1056,7 +1050,7 @@ impl ContractRuntime {
                 .get_memory("memory")
                 .map_err(|e| format!("Contract has no memory export: {}", e))?;
             let old_pages = memory
-                .grow(&mut self.store, 1)
+                .grow(&mut store, 1)
                 .map_err(|e| format!("Failed to grow WASM memory for args: {}", e))?;
             let args_base: u32 = old_pages.0 * 65536; // byte offset of the new page
 
@@ -1084,7 +1078,7 @@ impl ContractRuntime {
             };
             let args = &encoded_args;
 
-            let view = memory.view(&self.store);
+            let view = memory.view(&store);
             view.write(args_base as u64, args)
                 .map_err(|e| format!("Failed to write args to WASM memory: {}", e))?;
 
@@ -1122,7 +1116,7 @@ impl ContractRuntime {
             // Re-write only the data portion into WASM memory if using layout mode
             if has_layout {
                 let data_slice = &args[data_start as usize..];
-                let view2 = memory.view(&self.store);
+                let view2 = memory.view(&store);
                 view2
                     .write(args_base as u64, data_slice)
                     .map_err(|e| format!("Failed to write args data to WASM memory: {}", e))?;
@@ -1224,11 +1218,11 @@ impl ContractRuntime {
             wasm_args
         };
 
-        let exec_result = func.call(&mut self.store, &call_args);
+        let exec_result = func.call(&mut store, &call_args);
 
         // T1.5: Check remaining metering points after execution.
         // If exhausted, the execution already trapped, but we report it clearly.
-        let metering_remaining = match get_remaining_points(&mut self.store, &instance) {
+        let metering_remaining = match get_remaining_points(&mut store, &instance) {
             MeteringPoints::Remaining(pts) => pts,
             MeteringPoints::Exhausted => 0,
         };
@@ -1240,9 +1234,9 @@ impl ContractRuntime {
         // T2.4: Post-execution memory growth check — enforce sandbox limits.
         // Catches contracts that call memory.grow() during execution.
         if let Ok(memory) = instance.exports.get_memory("memory") {
-            let final_pages = memory.view(&self.store).size().0;
+            let final_pages = memory.view(&store).size().0;
             if final_pages > MAX_WASM_MEMORY_PAGES {
-                let ctx = env.as_ref(&self.store);
+                let ctx = env.as_ref(&store);
                 let host_cost = initial_compute.saturating_sub(ctx.compute_remaining);
                 return Ok(ContractResult {
                     return_data: vec![],
@@ -1265,7 +1259,7 @@ impl ContractRuntime {
             }
         }
 
-        let final_ctx = env.as_ref(&self.store);
+        let final_ctx = env.as_ref(&store);
         // Total compute: host function costs + WASM instruction costs
         let host_compute_used = initial_compute.saturating_sub(final_ctx.compute_remaining);
         let compute_used = host_compute_used.saturating_add(wasm_compute_used);
@@ -2982,6 +2976,23 @@ mod tests {
             result.is_ok(),
             "Deploy should accept 1-page memory: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_runtime_reuses_fresh_metering_per_deploy() {
+        let result = std::panic::catch_unwind(|| {
+            let mut rt = ContractRuntime::new();
+
+            rt.deploy(&wasm_with_memory(1, None))
+                .expect("first module compile should succeed");
+            rt.deploy(&wasm_with_memory(2, Some(2)))
+                .expect("second module compile should also succeed");
+        });
+
+        assert!(
+            result.is_ok(),
+            "reusing a ContractRuntime across multiple module compiles must not panic"
         );
     }
 

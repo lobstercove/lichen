@@ -2387,14 +2387,15 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
   container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = 'none');
 
   try {
-    let password = null;
-    if (!hasBridgeAccessAuth(wallet)) {
-      password = await promptPassword('Enter wallet password to sign bridge access authorization:');
-      if (!password) {
-        if (resultEl) resultEl.innerHTML = '<p style="color:#EF476F;text-align:center;">Bridge authorization cancelled.</p>';
-        container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = '');
-        return;
-      }
+    if (hasBridgeAccessAuth(wallet) && resultEl) {
+      resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-key"></i> Refreshing bridge authorization for a new deposit request...</p>';
+    }
+
+    const password = await promptPassword('Enter wallet password to sign bridge access authorization:');
+    if (!password) {
+      if (resultEl) resultEl.innerHTML = '<p style="color:#EF476F;text-align:center;">Bridge authorization cancelled.</p>';
+      container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = '');
+      return;
     }
 
     const response = await requestBridgeDepositAddress({

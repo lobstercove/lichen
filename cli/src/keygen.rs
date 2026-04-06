@@ -90,6 +90,109 @@ fn decrypt_aes_gcm(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     })
 }
 
+pub(crate) fn repair_key_file_permissions(path: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "Failed to inspect keypair file permissions: {}",
+                        path.display()
+                    )
+                });
+            }
+        };
+
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 == 0 {
+            return Ok(false);
+        }
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Failed to set secure permissions on {}", path.display()))?;
+        Ok(true)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(false)
+    }
+}
+
+pub(crate) fn maybe_repair_insecure_key_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Ok(metadata) = fs::metadata(path) {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                match repair_key_file_permissions(path) {
+                    Ok(true) => eprintln!(
+                        "🔒 Repaired insecure permissions on keypair file {}.",
+                        path.display()
+                    ),
+                    Ok(false) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "⚠️  WARNING: Keypair file {} has insecure permissions ({:o}) and automatic repair failed: {}",
+                            path.display(), mode, err
+                        );
+                        eprintln!("   Run: chmod 600 {}", path.display());
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn write_secure_file(path: &Path, contents: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).with_context(|| {
+                format!("Failed to prepare secure permissions on {}", path.display())
+            })?;
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("Failed to open keypair file {}", path.display()))?;
+        file.write_all(contents)
+            .with_context(|| format!("Failed to write keypair file {}", path.display()))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).with_context(|| {
+            format!(
+                "Failed to finalize secure permissions on {}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+            .with_context(|| format!("Failed to write keypair file {}", path.display()))?;
+        Ok(())
+    }
+}
+
+pub(crate) fn copy_secure_file(source: &Path, destination: &Path) -> Result<()> {
+    let contents = fs::read(source)
+        .with_context(|| format!("Failed to read keypair file {}", source.display()))?;
+    write_secure_file(destination, &contents)
+}
+
 impl KeypairFile {
     /// Create from Keypair
     #[allow(dead_code)]
@@ -147,7 +250,7 @@ impl KeypairFile {
                 }
             }
             _ => {
-                eprintln!("\u{26a0}\u{fe0f}  WARNING: LICHEN_KEYPAIR_PASSWORD not set \u{2014} keypair stored in PLAINTEXT.");
+                eprintln!("⚠️  WARNING: LICHEN_KEYPAIR_PASSWORD not set \u{2014} keypair stored in PLAINTEXT.");
                 eprintln!("   Set LICHEN_KEYPAIR_PASSWORD for encrypted storage (T1.8).");
                 self.clone()
             }
@@ -155,40 +258,16 @@ impl KeypairFile {
 
         let json =
             serde_json::to_string_pretty(&file_to_save).context("Failed to serialize keypair")?;
-
-        // Write to file
-        fs::write(path, &json).context("Failed to write keypair file")?;
-
-        // Set secure permissions (Unix: 600, Windows: equivalent)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let permissions = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(path, permissions).context("Failed to set file permissions")?;
-        }
+        write_secure_file(path, json.as_bytes()).context("Failed to write keypair file")?;
 
         Ok(())
     }
 
     /// Load from file.
     /// If the file is encrypted, requires LICHEN_KEYPAIR_PASSWORD to decrypt (T1.8).
-    /// Warns if file permissions are too open on Unix systems.
+    /// Repairs insecure file permissions automatically on Unix where possible.
     pub fn load(path: &Path) -> Result<Self> {
-        // T1.8: Check file permissions on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::metadata(path) {
-                let mode = metadata.permissions().mode() & 0o777;
-                if mode & 0o077 != 0 {
-                    eprintln!(
-                        "\u{26a0}\u{fe0f}  WARNING: Keypair file {} has insecure permissions ({:o}).",
-                        path.display(), mode
-                    );
-                    eprintln!("   Run: chmod 600 {}", path.display());
-                }
-            }
-        }
+        maybe_repair_insecure_key_file_permissions(path);
 
         let json = fs::read_to_string(path).context("Failed to read keypair file")?;
 
@@ -358,6 +437,13 @@ pub fn load_keypair(path: Option<&Path>) -> Result<Keypair> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn file_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
     #[test]
     fn test_derive_encryption_key_deterministic() {
         let salt = b"0123456789abcdef";
@@ -430,6 +516,40 @@ mod tests {
         let kf = KeypairFile::from_keypair(&keypair);
         let restored = kf.to_keypair().unwrap();
         assert_eq!(restored.pubkey(), keypair.pubkey());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_keypairfile_save_sets_owner_only_permissions() {
+        std::env::remove_var("LICHEN_KEYPAIR_PASSWORD");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id.json");
+        let keypair = Keypair::new();
+
+        KeypairFile::from_keypair(&keypair).save(&path).unwrap();
+
+        assert_eq!(file_mode(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_keypairfile_load_repairs_insecure_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id.json");
+        let keypair = Keypair::new();
+
+        let file = KeypairFile::from_keypair(&keypair);
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        write_secure_file(&path, json.as_bytes()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let loaded = KeypairFile::load(&path).unwrap();
+
+        assert_eq!(loaded.public_key_base58, keypair.pubkey().to_base58());
+        assert_eq!(file_mode(&path), 0o600);
     }
 
     #[test]

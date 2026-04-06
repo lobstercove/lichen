@@ -11,8 +11,8 @@ pub const MAX_BLOCK_SIZE: usize = 10 * 1024 * 1024;
 /// Maximum transactions per block
 pub const MAX_TX_PER_BLOCK: usize = 10_000;
 
-/// Maximum WASM contract code size — 2 MB
-pub const MAX_CONTRACT_CODE: usize = 2 * 1024 * 1024;
+/// Maximum deployable WASM contract code size — 512 KB.
+pub const MAX_CONTRACT_CODE: usize = 512 * 1024;
 
 /// Custom serde for [u8; 32] (validator pubkeys in commit signatures)
 mod pubkey_serde {

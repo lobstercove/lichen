@@ -1,6 +1,6 @@
 [package]
 name = "lichen-validator"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen validator node"
