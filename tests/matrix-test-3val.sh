@@ -91,6 +91,30 @@ free_ports() {
     sleep 0.5
 }
 
+write_local_seed_file() {
+        local db_path=$1
+        local seed_p2p=$2
+        local seed_rpc=$3
+        mkdir -p "$db_path"
+        cat > "$db_path/seeds.json" <<EOF
+{
+    "testnet": {
+        "network_id": "lichen-testnet-local",
+        "chain_id": "lichen-testnet-1",
+        "seeds": [],
+        "bootstrap_peers": [
+            "127.0.0.1:${seed_p2p}"
+        ],
+        "rpc_endpoints": [
+            "http://127.0.0.1:${seed_rpc}"
+        ],
+        "explorers": [],
+        "faucets": []
+    }
+}
+EOF
+}
+
 cleanup() {
     if [ "$USING_EXISTING_CLUSTER" = true ]; then return; fi
     echo -e "\n${YELLOW}Cleaning up validators...${NC}"
@@ -156,10 +180,11 @@ else
 
     # Start V2
     echo -e "  ${CYAN}Starting V2 (joins V1)...${NC}"
+    write_local_seed_file "$DATA_DIR_BASE/v2" "$P2P_V1" "$RPC_V1"
     HOME="$DATA_DIR_BASE/v2/home" RUST_LOG=warn "$BIN" \
         --network testnet --dev-mode \
         --p2p-port $P2P_V2 --rpc-port $RPC_V2 --ws-port $WS_V2 \
-        --db-path "$DATA_DIR_BASE/v2" --bootstrap-peers 127.0.0.1:$P2P_V1 --no-watchdog > "$LOG_DIR/v2.log" 2>&1 &
+        --db-path "$DATA_DIR_BASE/v2" --no-watchdog > "$LOG_DIR/v2.log" 2>&1 &
     V2PID=$!
     echo "    PID=$V2PID, waiting ${STAGGER_DELAY}s..."
     sleep $STAGGER_DELAY
@@ -172,10 +197,11 @@ else
 
     # Start V3
     echo -e "  ${CYAN}Starting V3 (joins V1+V2)...${NC}"
+    write_local_seed_file "$DATA_DIR_BASE/v3" "$P2P_V1" "$RPC_V1"
     HOME="$DATA_DIR_BASE/v3/home" RUST_LOG=warn "$BIN" \
         --network testnet --dev-mode \
         --p2p-port $P2P_V3 --rpc-port $RPC_V3 --ws-port $WS_V3 \
-        --db-path "$DATA_DIR_BASE/v3" --bootstrap-peers "127.0.0.1:$P2P_V1" --no-watchdog > "$LOG_DIR/v3.log" 2>&1 &
+        --db-path "$DATA_DIR_BASE/v3" --no-watchdog > "$LOG_DIR/v3.log" 2>&1 &
     V3PID=$!
     echo "    PID=$V3PID, waiting ${STAGGER_DELAY}s..."
     sleep $STAGGER_DELAY

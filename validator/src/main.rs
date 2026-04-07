@@ -429,10 +429,9 @@ async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<
     body["result"].as_u64()
 }
 
-/// Discover companion binaries (faucet, custody, cli) installed alongside
-/// the validator.  Only returns entries for binaries that actually exist on
-/// disk — this way an agent running just the validator won't try to update
-/// services it doesn't have.
+/// Discover companion binaries installed alongside the validator. Only returns
+/// entries for binaries that actually exist on disk so validator-only installs
+/// don't try to update tools they don't have.
 fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
     let exe_path = match std::env::current_exe() {
         Ok(p) => p,
@@ -444,20 +443,22 @@ fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
     };
 
     let companions = [
-        ("lichen-faucet", "lichen-faucet"),
-        ("lichen-custody", "lichen-custody"),
-        ("lichen-cli", "lichen-cli"),
+        ("lichen", ["lichen", "lichen-cli"]),
+        ("zk-prove", ["zk-prove", "zk-prove.exe"]),
     ];
 
     let mut found = Vec::new();
-    for (name, filename) in &companions {
-        let path = exe_dir.join(filename);
-        if path.exists() {
-            info!(
-                "🔄 Auto-updater: companion binary found — {}",
-                path.display()
-            );
-            found.push((name.to_string(), path));
+    for (asset_name, filenames) in &companions {
+        for filename in filenames {
+            let path = exe_dir.join(filename);
+            if path.exists() {
+                info!(
+                    "🔄 Auto-updater: companion binary found — {}",
+                    path.display()
+                );
+                found.push((asset_name.to_string(), path));
+                break;
+            }
         }
     }
     found
@@ -5246,46 +5247,6 @@ async fn run_validator() {
     // P2P NETWORK SETUP - do this early to check if joining existing network
     info!("🦞 Initializing P2P network...");
 
-    // Parse seed peers from CLI
-    // Supports:
-    //   --bootstrap <host:port>
-    //   --bootstrap-peers <host:port,host:port>
-    let mut seed_peer_strings: Vec<String> = Vec::new();
-    let mut explicit_seed_peer_strings: Vec<String> = Vec::new();
-
-    // Extract --bootstrap / --bootstrap-peers via get_flag_value helpers
-    if let Some(val) = get_flag_value(&args, &["--bootstrap"]) {
-        seed_peer_strings.push(val.to_string());
-        explicit_seed_peer_strings.push(val.to_string());
-    }
-    if let Some(val) = get_flag_value(&args, &["--bootstrap-peers"]) {
-        for part in val.split(',') {
-            seed_peer_strings.push(part.to_string());
-            explicit_seed_peer_strings.push(part.to_string());
-        }
-    }
-
-    // Env var fallback — LICHEN_BOOTSTRAP_PEERS provides reliable delivery
-    // of bootstrap peers without systemd word-splitting issues that can break
-    // LICHEN_EXTRA_ARGS expansion in ExecStart.
-    if explicit_seed_peer_strings.is_empty() {
-        if let Ok(peers) = std::env::var("LICHEN_BOOTSTRAP_PEERS") {
-            for part in peers.split(',') {
-                let trimmed = part.trim();
-                if !trimmed.is_empty() {
-                    seed_peer_strings.push(trimmed.to_string());
-                    explicit_seed_peer_strings.push(trimmed.to_string());
-                }
-            }
-            if !explicit_seed_peer_strings.is_empty() {
-                info!(
-                    "📡 Loaded {} bootstrap peer(s) from LICHEN_BOOTSTRAP_PEERS env var",
-                    explicit_seed_peer_strings.len()
-                );
-            }
-        }
-    }
-
     // Parse --listen-addr flag for P2P bind address.
     // Default 0.0.0.0 — binding to loopback prevents outbound QUIC connections
     // from reaching external peers (sendmsg EADDRNOTAVAIL).
@@ -5347,44 +5308,52 @@ async fn run_validator() {
         }
     };
 
-    let mut seed_peers = resolve_peer_list(&seed_peer_strings);
-    let explicit_seed_peers = resolve_peer_list(&explicit_seed_peer_strings);
-    // Search seeds.json in multiple locations
-    let seeds_candidates = [
-        data_dir_path.join("seeds.json"),
-        PathBuf::from("/etc/lichen/seeds.json"),
-        PathBuf::from("seeds.json"),
-    ];
-    let seeds_path = seeds_candidates
-        .iter()
-        .find(|p| p.exists())
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from("seeds.json"));
     let local_only = listen_addr.ip().is_loopback();
-    let cached_peers = if explicit_seed_peers.is_empty() && !local_only {
-        let seed_file_peers = load_seed_peers(&genesis_config.chain_id, &seeds_path);
-        if !seed_file_peers.is_empty() {
-            info!(
-                "📖 Loaded {} seed peers from {}",
-                seed_file_peers.len(),
-                seeds_path.display()
-            );
+    let state_scoped_seeds_path = data_dir_path.join("seeds.json");
+    let (seeds_path, seed_file_peer_strings) = if local_only {
+        if state_scoped_seeds_path.exists() {
+            (
+                state_scoped_seeds_path.clone(),
+                load_seed_peers(&genesis_config.chain_id, &state_scoped_seeds_path),
+            )
+        } else {
+            (state_scoped_seeds_path.clone(), Vec::new())
         }
-        seed_peers.extend(resolve_peer_list(&seed_file_peers));
-        let cached = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
-        seed_peers.extend(cached.iter().copied());
-        cached
-    } else if !explicit_seed_peers.is_empty() {
-        info!("🔒 Using explicit bootstrap peers (--bootstrap-peers)");
-        if !local_only {
-            // Load seeds.json for additional connectivity on remote nodes
-            let seed_file_peers = load_seed_peers(&genesis_config.chain_id, &seeds_path);
-            seed_peers.extend(resolve_peer_list(&seed_file_peers));
-        }
-        Vec::new()
     } else {
-        info!("🔒 Local-only mode: external seed peers disabled");
-        Vec::new()
+        let seeds_candidates = [
+            state_scoped_seeds_path.clone(),
+            PathBuf::from("/etc/lichen/seeds.json"),
+            PathBuf::from("seeds.json"),
+        ];
+        let resolved_path = seeds_candidates
+            .iter()
+            .find(|p| p.exists())
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("seeds.json"));
+        let peers = load_seed_peers(&genesis_config.chain_id, &resolved_path);
+        (resolved_path, peers)
+    };
+
+    if !seed_file_peer_strings.is_empty() {
+        info!(
+            "📖 Loaded {} seed peers from {}",
+            seed_file_peer_strings.len(),
+            seeds_path.display()
+        );
+    } else if local_only {
+        info!(
+            "🔒 Local-only mode: using only state-scoped seeds at {}",
+            state_scoped_seeds_path.display()
+        );
+    }
+
+    let mut seed_peers = resolve_peer_list(&seed_file_peer_strings);
+    let cached_peers = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
+    seed_peers.extend(cached_peers.iter().copied());
+    let bootstrap_peer_strings = if !seed_file_peer_strings.is_empty() {
+        seed_file_peer_strings.clone()
+    } else {
+        cached_peers.iter().map(|peer| peer.to_string()).collect()
     };
 
     // Collect all local IP addresses so we can filter out self-referencing seeds
@@ -5462,8 +5431,7 @@ async fn run_validator() {
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
     let last_slot = state.get_last_slot().unwrap_or(0);
-    let has_any_seed_peers =
-        !explicit_seed_peers.is_empty() || !cached_peers.is_empty() || !seed_peers.is_empty();
+    let has_any_seed_peers = !cached_peers.is_empty() || !seed_peers.is_empty();
 
     // ────────────────────────────────────────────────────────────────
     // STARTUP MODE: RESUME vs JOIN
@@ -5475,7 +5443,7 @@ async fn run_validator() {
     //   - No state, no seeds             → ERROR.  Can't start.
     //
     // That's it. No metadata checks, no join_complete flags, no special
-    // cases for --bootstrap-peers on restart. If the node has blocks,
+    // restart-only seed override paths. If the node has blocks,
     // it resumes from where it left off. Period.
     // ────────────────────────────────────────────────────────────────
     let is_joining_network = if last_slot > 0 || has_genesis_block {
@@ -5494,16 +5462,15 @@ async fn run_validator() {
         // Fresh node with no state — join the existing network
         info!("🔄 Fresh node — will sync from existing network");
         info!(
-            "   Seeds: {} explicit, {} from seeds.json, {} cached",
-            explicit_seed_peers.len(),
-            seed_peers.len().saturating_sub(explicit_seed_peers.len()),
+            "   Seeds: {} from seeds.json, {} cached",
+            seed_file_peer_strings.len(),
             cached_peers.len(),
         );
         true
     } else {
         // No state, no seeds — can't start
         error!("❌ No blocks on disk and no seed peers available.");
-        error!("   Run lichen-genesis first, or provide --bootstrap-peers / seeds.json.");
+        error!("   Run lichen-genesis first, or install seeds.json for this network.");
         std::process::exit(1);
     };
 
@@ -5538,16 +5505,16 @@ async fn run_validator() {
 
     let genesis_exists = has_genesis_block;
 
-    // --- Fetch genesis accounts from bootstrap peer if still missing ---
+    // --- Fetch genesis accounts from a seed peer if still missing ---
     // This handles V2/V3 joining the network without genesis-wallet.json
     if state
         .get_genesis_accounts()
         .map(|v| v.is_empty())
         .unwrap_or(true)
-        && !explicit_seed_peer_strings.is_empty()
+        && !bootstrap_peer_strings.is_empty()
     {
-        info!("  🔄 Fetching genesis accounts from bootstrap peer...");
-        for peer in &explicit_seed_peer_strings {
+        info!("  🔄 Fetching genesis accounts from a seed peer...");
+        for peer in &bootstrap_peer_strings {
             // Derive RPC port from P2P port
             let parts: Vec<&str> = peer.split(':').collect();
             if let (Some(host), Some(p2p_port_str)) = (parts.first(), parts.get(1)) {
@@ -6234,16 +6201,15 @@ async fn run_validator() {
             // Guard: NEVER self-register on a joining node — joining nodes must
             // go through the consensus RegisterValidator path after sync.
             //
-            // Belt-and-suspenders: explicit_seed_peers.is_empty() ensures that
-            // a node started with --bootstrap-peers can NEVER trigger genesis
-            // bootstrap, even if a supervisor restart sets is_joining_network=false
-            // (because has_genesis_block=true after syncing genesis from the network).
+            // Belt-and-suspenders: only the node that has the local genesis
+            // wallet may self-register as the founding validator. Joining
+            // nodes sync genesis from the network and do not have that wallet.
             let genesis_bootstrap = {
                 let last = state.get_last_slot().unwrap_or(0);
                 last == 0
                     && pool.bootstrap_grants_issued() == 0
                     && !is_joining_network
-                    && explicit_seed_peers.is_empty()
+                    && genesis_wallet.is_some()
             };
 
             if genesis_bootstrap {
@@ -6479,7 +6445,7 @@ async fn run_validator() {
         );
     }
     if !is_joining_network && current_tip > 0 {
-        let bootstrap_rpc_url_for_restart = explicit_seed_peer_strings
+        let bootstrap_rpc_url_for_restart = bootstrap_peer_strings
             .first()
             .and_then(|peer| derive_rpc_url_from_peer(peer));
         let sm_init = sync_manager.clone();
@@ -12037,7 +12003,7 @@ async fn run_validator() {
         let register_keypair_seed = validator_keypair.to_seed();
         let register_pubkey = validator_pubkey;
         let register_fingerprint = machine_fingerprint;
-        let bootstrap_peer_strings = explicit_seed_peer_strings.clone();
+        let bootstrap_peer_strings = bootstrap_peer_strings.clone();
         let marker_path = std::path::PathBuf::from(&data_dir).join("registration-submitted.marker");
         let sync_mgr_for_register = sync_manager.clone();
         tokio::spawn(async move {
@@ -12442,7 +12408,7 @@ async fn run_validator() {
         let sync_manager_join = sync_manager.clone();
         let vs_join = validator_set.clone();
         let sp_join = stake_pool.clone();
-        let bootstrap_rpc_url_for_join = explicit_seed_peer_strings
+        let bootstrap_rpc_url_for_join = bootstrap_peer_strings
             .first()
             .and_then(|peer| derive_rpc_url_from_peer(peer));
         let bootstrap_http_client_for_join = bootstrap_rpc_url_for_join.as_ref().map(|_| {

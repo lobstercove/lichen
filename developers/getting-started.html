@@ -166,9 +166,9 @@ npm --version   # 10.x.x</code></pre>
                 <div class="callout-title"><i class="fas fa-server"></i> Running a Validator Without Cloning the Repo
                 </div>
                 If you already have a <code>lichen-validator</code> release artifact, you can join mainnet directly
-                without a repository checkout. Use a writable state directory plus domain bootstrap peers like
-                <code>seed-01.lichen.network:8001</code>, <code>seed-02.lichen.network:8001</code>, and
-                <code>seed-03.lichen.network:8001</code>. See <a href="validator.html">Validator Setup</a> for Linux,
+                without a repository checkout. Use a writable state directory, keep the bundled
+                <code>zk-prove</code> tool beside the validator, copy the bundled <code>seeds.json</code> into the
+                state directory, and start the binary. See <a href="validator.html">Validator Setup</a> for Linux,
                 macOS, and Windows release install commands.
             </div>
 

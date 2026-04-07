@@ -37,6 +37,30 @@ function Wait-RpcPort {
     return $false
 }
 
+function Write-LocalSeedsFile {
+        Param([string]$DbPath)
+
+        New-Item -ItemType Directory -Force -Path $DbPath | Out-Null
+        $seedsPath = Join-Path $DbPath 'seeds.json'
+        @"
+{
+    "testnet": {
+        "network_id": "lichen-testnet-local",
+        "chain_id": "lichen-testnet-1",
+        "seeds": [],
+        "bootstrap_peers": [
+            "127.0.0.1:7001"
+        ],
+        "rpc_endpoints": [
+            "http://127.0.0.1:8899"
+        ],
+        "explorers": [],
+        "faucets": []
+    }
+}
+"@ | Set-Content -Path $seedsPath -Encoding UTF8
+}
+
 function Stop-Cluster {
     if (Test-Path $PidFile) {
         $pids = Get-Content $PidFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
@@ -89,9 +113,8 @@ function Start-Validator {
         '--ws-port',$ws,
         '--db-path',$db
     )
-    if ($Number -gt 1) {
-        $args += @('--bootstrap-peers','127.0.0.1:7001')
-    }
+
+    Write-LocalSeedsFile -DbPath $db
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Bin

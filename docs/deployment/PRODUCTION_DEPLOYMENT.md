@@ -89,8 +89,7 @@ rustup target add wasm32-unknown-unknown
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt 2>/dev/null || true
-cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen
-cargo build --release -p lichen-cli --bin zk-prove
+cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen --bin zk-prove
 ./scripts/build-all-contracts.sh
 ```
 
@@ -353,7 +352,7 @@ From the staged repo:
 
 ```bash
 . "$HOME/.cargo/env"
-cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen
+cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen --bin zk-prove
 ./scripts/build-all-contracts.sh
 ```
 
@@ -476,13 +475,15 @@ sudo install -m 640 -o root -g lichen \
 
 ### Step 6: join additional validators
 
-On every joining VPS, set bootstrap peers in `/etc/lichen/env-testnet` or `/etc/lichen/env-mainnet`:
+On every joining VPS, verify the installed state seed file matches the staged release file:
 
 ```bash
-LICHEN_BOOTSTRAP_PEERS=<genesis-ip>:7001
+cmp /var/lib/lichen/state-testnet/seeds.json /etc/lichen/seeds.json
 ```
 
-Use `8001` instead of `7001` for mainnet.
+For mainnet, compare `/var/lib/lichen/state-mainnet/seeds.json` instead.
+
+`deploy/setup.sh` installs the checked-in `seeds.json` to both `/etc/lichen/seeds.json` and `/var/lib/lichen/state-<net>/seeds.json`. Joining validators use that seed file directly; no bootstrap flags or env overrides are required.
 
 Then start the service:
 
@@ -720,7 +721,9 @@ Examples:
 
 ```bash
 ./lichen-start.sh testnet --foreground
-./lichen-start.sh mainnet --bootstrap seed-01.lichen.network:8001
+mkdir -p ./data/state-mainnet
+cp ./seeds.json ./data/state-mainnet/seeds.json
+./lichen-start.sh mainnet
 ```
 
 Notes:

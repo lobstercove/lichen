@@ -7,21 +7,21 @@
 #
 #   PHASE 1 — SEED/RELAY NETWORK (3 VPSes)
 #     V1 (US)   Genesis validator, solo start      [run-validator.sh]
-#     V2 (EU)   Bootstrap from V1                  [run-validator.sh]
-#     V3 (SEA)  Bootstrap from V1                  [run-validator.sh]
+#     V2 (EU)   Seed file points at V1             [run-validator.sh]
+#     V3 (SEA)  Seed file points at V1             [run-validator.sh]
 #     → Wait for 3 staked validators, all producing blocks
 #
 #   PHASE 2 — AGENT VALIDATORS (3 agents joining)
-#     V4 (Agent-1)  Bootstrap from V1,V2,V3        [binary direct]
-#     V5 (Agent-2)  Bootstrap from V1,V2,V3        [binary direct]
-#     V6 (Agent-3)  Bootstrap from V1,V2,V3        [binary direct]
+#     V4 (Agent-1)  Seed file points at V1,V2,V3   [binary direct]
+#     V5 (Agent-2)  Seed file points at V1,V2,V3   [binary direct]
+#     V6 (Agent-3)  Seed file points at V1,V2,V3   [binary direct]
 #     → Wait for 6 staked validators, all producing blocks
 #
 # Why two launch modes:
 #   - Seed/relay VPSes use run-validator.sh (matches systemd deployment)
 #   - Agent validators use the binary directly (agents don't use our
 #     launcher — they download the binary and configure their own
-#     seeds/bootstrap peers pointing at the seed network)
+#     seeds.json pointing at the seed network)
 #
 # Port scheme:
 #   V1: p2p=7001  rpc=8899  ws=8900  (seed - US)
@@ -423,23 +423,15 @@ else
 # ═══════════════════════════════════════════════════════════════════════
 # Simulates agents joining the seed network.
 # Agent validators do NOT use run-validator.sh — they use the binary
-# directly with --bootstrap-peers pointing to ALL seed nodes.
+# directly with a state-scoped seeds.json pointing to ALL seed nodes.
 # This matches production: agents download the binary and configure
-# their own seeds.json / bootstrap peers.
+# their own seeds.json.
 # ═══════════════════════════════════════════════════════════════════════
 
 echo ""
 hdr "═══════════════════════════════════════════════════════════"
 hdr "PHASE 2: Starting agent validators (${AGENT_COUNT} agents)"
 hdr "═══════════════════════════════════════════════════════════"
-
-# Build bootstrap peers string: all seed nodes
-SEED_PEERS=""
-for s in $(seq 1 "$SEED_COUNT"); do
-    [[ -n "$SEED_PEERS" ]] && SEED_PEERS="${SEED_PEERS},"
-    SEED_PEERS="${SEED_PEERS}127.0.0.1:$(p2p_port $s)"
-done
-log "Agent bootstrap peers: $SEED_PEERS"
 
 # Build RPC endpoints for seed verification
 SEED_RPCS=""
@@ -509,7 +501,6 @@ SEEDEOF
         --p2p-port "$V_P2P" \
         --listen-addr 127.0.0.1 \
         --db-path "$V_DB" \
-        --bootstrap-peers "$SEED_PEERS" \
         --dev-mode \
         > "$V_LOG" 2>&1 &
     V_PID=$!
@@ -518,7 +509,7 @@ SEEDEOF
     # Restore HOME for the test script itself
     export HOME="$REAL_HOME"
 
-    log "  V${V_NUM} PID=$V_PID  RPC=:$V_RPC  P2P=:$V_P2P  bootstrap=seed-network"
+    log "  V${V_NUM} PID=$V_PID  RPC=:$V_RPC  P2P=:$V_P2P  seeds.json=seed-network"
 
     # Wait for keypair to be auto-generated
     V_KEYPAIR="${V_DB}/validator-keypair.json"

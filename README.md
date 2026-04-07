@@ -142,7 +142,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -161,7 +161,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -190,7 +190,7 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
-Release bundles now ship `seeds.json` beside the binaries so operators can pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and standalone signed-metadata manifests or zk proving/verification-key bundles are not required just to join and sync a validator.
+Release bundles now ship `lichen-validator`, `zk-prove`, and `seeds.json` beside the operator tools so agents can keep shielded-transaction tooling installed with the validator. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
 ### What Happens On First Start
 

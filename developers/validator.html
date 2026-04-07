@@ -173,7 +173,8 @@
                 build, you can start a validator immediately without cloning the repository.</p>
 
             <p>The intended agent workflow is: download the latest signed release artifact for the host platform,
-                extract it, create a state directory, and run the validator with domain bootstrap peers and
+                extract it, keep the bundled <code>zk-prove</code> tool beside the validator, copy the bundled
+                <code>seeds.json</code> into a writable state directory, and run the validator with
                 <code>--auto-update=apply</code>.
             </p>
 
@@ -189,7 +190,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -213,7 +214,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -269,10 +270,10 @@ lichen-validator \
     --auto-update=apply</code></pre>
             </div>
 
-            <p>This is the fastest operational path for agents: binary, ports, state directory, bundled seed file. If
-                the state directory already exists, the validator resumes with the same identity and local chain state.
-                In apply mode, auto-update also refreshes <code>{db-path}/seeds.json</code> from newer release
-                archives.
+            <p>This is the fastest operational path for agents: validator binary, bundled <code>zk-prove</code>,
+                ports, state directory, and bundled seed file. If the state directory already exists, the validator
+                resumes with the same identity and local chain state. In apply mode, auto-update also refreshes
+                <code>{db-path}/seeds.json</code> from newer release archives.
             </p>
 
             <h4>What happens when the validator starts?</h4>
@@ -478,8 +479,7 @@ cargo build --release
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
                 These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>,
                 <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>,
-                <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--cold-store</code>,
-                <code>--archive-mode</code>, <code>--admin-token</code>,
+                <code>--cold-store</code>, <code>--archive-mode</code>, <code>--admin-token</code>,
                 <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>,
                 <code>--dev-mode</code>, <code>--import-key</code>. They are documentation aliases, not direct TOML keys
                 parsed by the current binary.
@@ -585,7 +585,7 @@ cargo build --release
                         <td><code>seed_nodes</code></td>
                         <td>Array</td>
                         <td><code>[]</code></td>
-                        <td>Bootstrap peers. Testnet:
+                        <td>Seed-file peer list loaded from <code>seeds.json</code>. Testnet:
                             <code>["seed-01.lichen.network:7001", "seed-02.lichen.network:7001", "seed-03.lichen.network:7001"]</code>
                         </td>
                     </tr>
@@ -1465,7 +1465,8 @@ sudo systemctl start lichen-validator-mainnet</code></pre>
             <h3>Create the Wrapper Script</h3>
 
             <p>The wrapper script downloads the latest release binary (using semver sorting, not GitHub's
-                <code>latest</code> endpoint), verifies its checksum, installs bundled ZK keys, and then
+                <code>latest</code> endpoint), verifies its checksum, installs the bundled <code>seeds.json</code>,
+                keeps the bundled <code>zk-prove</code> tool, and then
                 <code>exec</code>s the validator.
             </p>
 
@@ -1521,7 +1522,8 @@ print(releases[0]['tag_name'])
     grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
     tar xzf "$ASSET" --strip-components=1
     mv lichen-validator "$BINARY"
-    chmod +x "$BINARY"
+    mv zk-prove "$INSTALL_DIR/zk-prove"
+    chmod +x "$BINARY" "$INSTALL_DIR/zk-prove"
     cp seeds.json "$STATE_DIR/seeds.json"
 
     cd /
@@ -1664,7 +1666,7 @@ launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># 1. Download and extract the release
-$Version = "v0.2.14"  # Update to latest
+$Version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
 $Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"
 $InstallDir = "$env:LOCALAPPDATA\Lichen"
 New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-mainnet", "$InstallDir\logs"

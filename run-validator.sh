@@ -188,14 +188,12 @@ except: pass
 		--initial-validator "$VALIDATOR_PUBKEY" || exit 1
 }
 
-BOOTSTRAP_PEERS=""
 case $VALIDATOR_NUM in
 	1)
 		NAME="${NETWORK_UPPER}-V1-PRIMARY"
 		;;
 	*)
 		NAME="${NETWORK_UPPER}-V${VALIDATOR_NUM}-SECONDARY"
-		BOOTSTRAP_PEERS="127.0.0.1:${BASE_P2P}"
 		;;
 esac
 
@@ -213,7 +211,7 @@ echo ""
 if [ "$VALIDATOR_NUM" = "1" ]; then
 	echo "This is the PRIMARY validator (creates genesis)"
 else
-	echo "Bootstrapping from: 127.0.0.1:$BASE_P2P"
+	echo "Seed file: $LOCAL_SEEDS_FILE"
 fi
 
 echo ""
@@ -230,12 +228,6 @@ if [ "$NETWORK" = "testnet" ]; then
 	EXTRA_FLAGS="--dev-mode"
 else
 	EXTRA_FLAGS=""
-fi
-
-if [ -n "$BOOTSTRAP_PEERS" ]; then
-	export LICHEN_BOOTSTRAP_PEERS="${LICHEN_BOOTSTRAP_PEERS:-$BOOTSTRAP_PEERS}"
-else
-	unset LICHEN_BOOTSTRAP_PEERS
 fi
 
 for arg in "$@"; do

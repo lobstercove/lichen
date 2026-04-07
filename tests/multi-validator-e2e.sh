@@ -45,6 +45,30 @@ free_ports() {
     done
 }
 
+write_local_seed_file() {
+        local db_path=$1
+        local seed_p2p=$2
+        local seed_rpc=$3
+        mkdir -p "$db_path"
+        cat > "$db_path/seeds.json" <<EOF
+{
+    "testnet": {
+        "network_id": "lichen-testnet-local",
+        "chain_id": "lichen-testnet-1",
+        "seeds": [],
+        "bootstrap_peers": [
+            "127.0.0.1:${seed_p2p}"
+        ],
+        "rpc_endpoints": [
+            "http://127.0.0.1:${seed_rpc}"
+        ],
+        "explorers": [],
+        "faucets": []
+    }
+}
+EOF
+}
+
 rpc() {
     local port=$1 method=$2 params=${3:-[]}
     curl -sf http://127.0.0.1:$port -X POST \
@@ -174,14 +198,16 @@ else
     sleep 8
 
     info "Starting V2 on ports 9102/10101..."
+    write_local_seed_file "$DB_V2" 9100 10099
     HOME="$HOME_V2" LICHEN_SIGNER_BIND=127.0.0.1:9302 RUST_LOG=warn "$BIN" --network testnet --dev-mode --p2p-port 9102 --rpc-port 10101 --ws-port 10201 \
-        --db-path "$DB_V2" --bootstrap-peers 127.0.0.1:9100 --no-watchdog > "$LOG_V2" 2>&1 &
+        --db-path "$DB_V2" --no-watchdog > "$LOG_V2" 2>&1 &
     V2PID=$!
     sleep 6
 
     info "Starting V3 on ports 9104/10103..."
+    write_local_seed_file "$DB_V3" 9100 10099
     HOME="$HOME_V3" LICHEN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$BIN" --network testnet --dev-mode --p2p-port 9104 --rpc-port 10103 --ws-port 10203 \
-        --db-path "$DB_V3" --bootstrap-peers 127.0.0.1:9100 --no-watchdog > "$LOG_V3" 2>&1 &
+        --db-path "$DB_V3" --no-watchdog > "$LOG_V3" 2>&1 &
     V3PID=$!
     sleep 6
 fi

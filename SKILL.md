@@ -1592,20 +1592,21 @@ lichen validator performance <address>         # Validator performance
 If an agent is asked to install or start a validator on a fresh machine, the default public path is:
 
 1. Download the latest signed release bundle.
-2. Extract `lichen-validator`.
+2. Extract `lichen-validator` and `zk-prove`.
 3. Create a writable state directory.
-4. Start mainnet with seed peers and `--auto-update=apply`.
+4. Install the bundled `seeds.json` into the state directory and start mainnet with `--auto-update=apply`.
 
 Do not default to `git clone` unless the user explicitly wants source checkout, development, or to modify code.
 
 Linux x86_64:
 
 ```bash
-curl -LO https://github.com/lobstercove/lichen/releases/latest/download/lichen-validator-linux-x86_64.tar.gz
-curl -LO https://github.com/lobstercove/lichen/releases/latest/download/SHA256SUMS
+VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-linux-x86_64.tar.gz"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -1620,11 +1621,12 @@ cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 macOS Apple Silicon:
 
 ```bash
-curl -LO https://github.com/lobstercove/lichen/releases/latest/download/lichen-validator-darwin-aarch64.tar.gz
-curl -LO https://github.com/lobstercove/lichen/releases/latest/download/SHA256SUMS
+VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-darwin-aarch64.tar.gz"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -1639,7 +1641,8 @@ cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 Windows x64 (PowerShell):
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/latest/download/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
+$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
+Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
 Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
@@ -1656,7 +1659,7 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 
 If the machine already has a `lichen-validator` binary, agents do not need the full repo checkout. They can join mainnet immediately with the binary plus a writable state directory:
 
-Release bundles ship `seeds.json`, and `--auto-update=apply` refreshes `{db-path}/seeds.json` from newer release archives during apply-mode upgrades.
+Release bundles ship `zk-prove` and `seeds.json`, and `--auto-update=apply` refreshes `{db-path}/seeds.json` from newer release archives during apply-mode upgrades.
 
 ```bash
 mkdir -p "$HOME/.lichen/state-mainnet"
@@ -1676,9 +1679,9 @@ lichen-validator \
 Preferred agent flow:
 1. Detect platform.
 2. Download the matching GitHub Release archive.
-3. Extract `lichen-validator`.
+3. Extract `lichen-validator` and `zk-prove`.
 4. Create a writable state directory.
-5. Start with domain bootstrap peers and `--auto-update=apply`.
+5. Copy the bundled `seeds.json` into that state directory and start with `--auto-update=apply`.
 
 Release URL template:
 
@@ -1701,7 +1704,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -1721,7 +1724,7 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator
+chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
 ./lichen-validator \
@@ -1804,13 +1807,14 @@ The identity persists across restarts (stored in the data directory, not `$HOME`
 | `--rpc-port` | 8899 | JSON-RPC HTTP port |
 | `--ws-port` | 8900 | WebSocket port |
 | `--db-path` | `./data/state-{p2p_port}` | State database directory |
-| `--bootstrap-peers` | auto | Optional comma-separated override; otherwise the validator loads `{db-path}/seeds.json`, `/etc/lichen/seeds.json`, `./seeds.json`, then embedded defaults |
 | `--keypair` | auto | Path to validator keypair JSON |
 | `--import-key` | — | Import keypair from another machine |
 | `--genesis` | — | Path to genesis config (only for genesis node) |
 | `--listen-addr` | `0.0.0.0` | Bind address for all servers |
 | `--dev-mode` | off | Disable machine fingerprint (testnet only) |
 | `--auto-update` | check | `check` / `apply` / `off` |
+
+Peer discovery is driven by `seeds.json` under `{db-path}`, `/etc/lichen/seeds.json`, or the extracted working directory.
 | `--max-restarts` | 50 | Max auto-restarts before giving up |
 
 ### Seed Validators (Mainnet)
@@ -1962,7 +1966,7 @@ print(releases[0]['tag_name'])")
     /usr/bin/curl -fSL -o "$TMPDIR/$ASSET" "https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
     /usr/bin/curl -fSL -o "$TMPDIR/SHA256SUMS" "https://github.com/$REPO/releases/download/${VERSION}/SHA256SUMS"
     cd "$TMPDIR"; grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
-    tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; chmod +x "$BINARY"; cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+    tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; mv zk-prove "$INSTALL_DIR/zk-prove"; chmod +x "$BINARY" "$INSTALL_DIR/zk-prove"; cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
     trap - EXIT; rm -rf "$TMPDIR"
 fi
 exec "$BINARY" --network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 \
@@ -2018,7 +2022,7 @@ macOS file layout:
 
 ```powershell
 # 1. Download and extract
-$Version = "v0.2.14"
+$Version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
 $InstallDir = "$env:LOCALAPPDATA\Lichen"
 New-Item -ItemType Directory -Force -Path "$InstallDir\bin","$InstallDir\state-mainnet","$InstallDir\logs"
 $Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"

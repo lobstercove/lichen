@@ -69,18 +69,37 @@ SIGNER_PORT=$((9200 + VALIDATOR_NUM))
 
 # DB path: always absolute to avoid CWD confusion
 DB_PATH="${REPO_ROOT}/data/state-${P2P_PORT}"
+LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
 
-# Bootstrap: V1 has none, V2+ bootstrap from V1
-BOOTSTRAP=""
 case $VALIDATOR_NUM in
   1)
     NAME="${NETWORK_UPPER}-V1-PRIMARY"
     ;;
   *)
     NAME="${NETWORK_UPPER}-V${VALIDATOR_NUM}-SECONDARY"
-    BOOTSTRAP="--bootstrap-peers 127.0.0.1:${BASE_P2P}"
     ;;
 esac
+
+write_local_seeds_file() {
+  mkdir -p "$DB_PATH"
+  cat > "$LOCAL_SEEDS_FILE" <<EOF
+{
+  "$NETWORK": {
+    "network_id": "lichen-${NETWORK}-local",
+    "chain_id": "lichen-${NETWORK}-1",
+    "seeds": [],
+    "bootstrap_peers": [
+      "127.0.0.1:${BASE_P2P}"
+    ],
+    "rpc_endpoints": [
+      "http://127.0.0.1:${BASE_RPC}"
+    ],
+    "explorers": [],
+    "faucets": []
+  }
+}
+EOF
+}
 
 echo "Lichen Validator: $NAME"
 echo "=================================="
@@ -95,7 +114,7 @@ echo ""
 if [ "$VALIDATOR_NUM" = "1" ]; then
   echo "This is the PRIMARY validator (creates genesis)"
 else
-  echo "Bootstrapping from: 127.0.0.1:$BASE_P2P"
+  echo "Seed file: $LOCAL_SEEDS_FILE"
 fi
 
 echo ""
@@ -137,6 +156,8 @@ for i in $(seq 1 $#); do
     fi
 done
 
+write_local_seeds_file
+
 BIN_PATH="${REPO_ROOT}/target/release/lichen-validator"
 if [ -x "$BIN_PATH" ]; then
   exec "$BIN_PATH" \
@@ -145,7 +166,7 @@ if [ -x "$BIN_PATH" ]; then
     --ws-port "$WS_PORT" \
     --p2p-port "$P2P_PORT" \
     --db-path "$DB_PATH" \
-    $BOOTSTRAP $EXTRA_FLAGS
+    $EXTRA_FLAGS
 else
   echo "Release binary not found at $BIN_PATH"
   echo "Building with cargo..."
@@ -155,5 +176,5 @@ else
     --ws-port "$WS_PORT" \
     --p2p-port "$P2P_PORT" \
     --db-path "$DB_PATH" \
-    $BOOTSTRAP $EXTRA_FLAGS
+    $EXTRA_FLAGS
 fi

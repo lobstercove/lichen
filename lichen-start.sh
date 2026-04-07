@@ -4,12 +4,11 @@
 # ============================================================================
 #
 # The official script for starting a Lichen validator node. Handles both
-# first-boot genesis creation AND bootstrapping from an existing network.
+# first-boot genesis creation and seed-file joins to an existing network.
 #
 # Usage:
 #   ./lichen-start.sh testnet              # Start testnet validator
 #   ./lichen-start.sh mainnet              # Start mainnet validator
-#   ./lichen-start.sh testnet --bootstrap seed1.lichen.network:7001
 #   ./lichen-start.sh testnet --no-deploy  # Skip first-boot deployment
 #   ./lichen-start.sh testnet --custody    # Also start custody service
 #   ./lichen-start.sh testnet --build      # Force rebuild before start
@@ -25,10 +24,10 @@
 #   first-boot-deploy.sh to deploy all 29 smart contracts (DEX, wrapped tokens,
 #   core infrastructure), seed AMM pools, and fund the insurance reserve.
 #
-# Bootstrap behavior:
-#   If --bootstrap is provided, the validator syncs genesis + state from the
-#   specified peer and bootstraps into the network as a new validator with a
-#   10,000 LICN bootstrap grant.
+# Join behavior:
+#   If `seeds.json` is installed under the validator state directory or
+#   `/etc/lichen/seeds.json`, the validator syncs genesis + state from that
+#   seed list and joins the existing network.
 #
 # ============================================================================
 
@@ -93,7 +92,6 @@ configure_local_custody_auth() {
 
 # ── Defaults ──
 NETWORK=""
-BOOTSTRAP_PEERS=""
 NO_DEPLOY=false
 NO_FAUCET=false
 START_CUSTODY=false
@@ -105,13 +103,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         testnet|mainnet)
             NETWORK="$1"
-            ;;
-        --bootstrap|--bootstrap-peers)
-            shift
-            BOOTSTRAP_PEERS="$1"
-            ;;
-        --bootstrap=*|--bootstrap-peers=*)
-            BOOTSTRAP_PEERS="${1#*=}"
             ;;
         --no-deploy)
             NO_DEPLOY=true
@@ -132,7 +123,6 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 <testnet|mainnet> [options]"
             echo ""
             echo "Options:"
-            echo "  --bootstrap <host:port>  Bootstrap from existing validator"
             echo "  --no-deploy              Skip first-boot contract deployment"
             echo "  --no-faucet              Skip faucet service (testnet only)"
             echo "  --custody                Also start the custody service"
@@ -189,6 +179,8 @@ LOG_DIR="/tmp/lichen-${NETWORK}"
 TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
 GENESIS_ARTIFACT_DIR="./artifacts/${NETWORK}"
 GENESIS_WALLET_FILE="${GENESIS_ARTIFACT_DIR}/genesis-wallet.json"
+STATE_SEEDS_FILE="${DB_PATH}/seeds.json"
+SYSTEM_SEEDS_FILE="/etc/lichen/seeds.json"
 BIN_PATH="./target/release/lichen-validator"
 CLI_BIN="./target/release/lichen"
 SUPERVISOR_PATH="${REPO_ROOT}/scripts/validator-supervisor.sh"
@@ -207,10 +199,12 @@ HAS_CHAIN_STATE=false
 if [ -d "$DB_PATH" ] && [ -f "$DB_PATH/CURRENT" ]; then
     HAS_CHAIN_STATE=true
 fi
+HAS_JOIN_SEEDS=false
+if [ -f "$STATE_SEEDS_FILE" ] || [ -f "$SYSTEM_SEEDS_FILE" ]; then
+    HAS_JOIN_SEEDS=true
+fi
 
-if [ -n "$BOOTSTRAP_PEERS" ]; then
-    : # bootstrap mode — detected below in banner
-elif ! $HAS_CHAIN_STATE; then
+if ! $HAS_CHAIN_STATE && ! $HAS_JOIN_SEEDS; then
     IS_GENESIS=true
 fi
 
@@ -242,10 +236,10 @@ echo -e "  ${BOLD}DB:${NC}         $DB_PATH"
 echo -e "  ${BOLD}Logs:${NC}       $LOG_DIR"
 echo -e ""
 
-if [ -n "$BOOTSTRAP_PEERS" ]; then
-    echo -e "  ${BOLD}Mode:${NC}       ${CYAN}BOOTSTRAP${NC} — syncing from $BOOTSTRAP_PEERS"
-elif $IS_GENESIS; then
+if $IS_GENESIS; then
     echo -e "  ${BOLD}Mode:${NC}       ${GREEN}GENESIS${NC} — first validator, creating new chain"
+elif ! $HAS_CHAIN_STATE; then
+    echo -e "  ${BOLD}Mode:${NC}       ${CYAN}JOIN${NC} — syncing from installed seeds.json"
 else
     echo -e "  ${BOLD}Mode:${NC}       ${GREEN}RESUME${NC} — existing chain state found"
 fi
@@ -286,10 +280,6 @@ VALIDATOR_CMD=("$BIN_PATH"
     --p2p-port "$P2P_PORT"
     --db-path "$DB_PATH"
 )
-
-if [ -n "$BOOTSTRAP_PEERS" ]; then
-    VALIDATOR_CMD+=(--bootstrap-peers "$BOOTSTRAP_PEERS")
-fi
 
 # Always bind on all interfaces so external peers can connect via QUIC.
 VALIDATOR_CMD+=(--listen-addr 0.0.0.0)

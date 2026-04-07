@@ -489,7 +489,7 @@ echo "✅ Directories created"
 ensure_caddy_installed
 
 # ── 3. Copy binaries ──
-for bin in lichen-validator lichen-genesis lichen-faucet lichen-custody; do
+for bin in lichen-validator lichen-genesis lichen-faucet lichen-custody zk-prove; do
     if [ -f "target/release/$bin" ]; then
         tmp_bin="$(mktemp "$INSTALL_DIR/.${bin}.XXXXXX")"
         install -m 755 "target/release/$bin" "$tmp_bin"
@@ -516,7 +516,8 @@ if [ -f "seeds.json" ]; then
     chmod 644 "$CONFIG_DIR/seeds.json"
     echo "✅ Installed seeds.json → $CONFIG_DIR/seeds.json"
 else
-    echo "   ⚠  seeds.json not found (validators will need --bootstrap-peers)"
+    echo "   ❌ seeds.json not found (required for seed-file validator joins)"
+    exit 1
 fi
 
 # ── 3c. Install contract artifacts for genesis/runtime bootstrap ──
@@ -568,7 +569,6 @@ for net in "${NETWORKS[@]}"; do
     SERVICE_FLEET_CONFIG_FILE=""
     SERVICE_FLEET_UPSTREAM_RPC_URL=""
     SERVICE_FLEET_STATUS_FILE=""
-    BOOTSTRAP_PEERS=""
     CURRENT_HOST_IPV4="$(primary_ipv4)"
     if [ -f "$ENV_FILE" ]; then
         SIGNER_AUTH_TOKEN="$(read_env_value "$ENV_FILE" "LICHEN_SIGNER_AUTH_TOKEN")"
@@ -578,7 +578,6 @@ for net in "${NETWORKS[@]}"; do
         SERVICE_FLEET_CONFIG_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_CONFIG_FILE")"
         SERVICE_FLEET_UPSTREAM_RPC_URL="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL")"
         SERVICE_FLEET_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_STATUS_FILE")"
-        BOOTSTRAP_PEERS="$(read_env_value "$ENV_FILE" "LICHEN_BOOTSTRAP_PEERS")"
     fi
     if [ -z "$SIGNER_AUTH_TOKEN" ]; then
         SIGNER_AUTH_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
@@ -598,9 +597,6 @@ for net in "${NETWORKS[@]}"; do
     if [ -z "$SERVICE_FLEET_STATUS_FILE" ]; then
         SERVICE_FLEET_STATUS_FILE="$DATA_DIR/service-fleet-status-${net}.json"
     fi
-    if [ -z "$BOOTSTRAP_PEERS" ] && [ "$CURRENT_HOST_IPV4" != "15.204.229.189" ]; then
-        BOOTSTRAP_PEERS="15.204.229.189:${P2P_PORT}"
-    fi
     if [ -z "$SERVICE_FLEET_UPSTREAM_RPC_URL" ] && [ "$net" = "testnet" ] && [ "$CURRENT_HOST_IPV4" != "15.204.229.189" ]; then
         SERVICE_FLEET_UPSTREAM_RPC_URL="http://15.204.229.189:8899"
     fi
@@ -615,18 +611,13 @@ LICHEN_SIGNER_BIND=127.0.0.1:$SIGNER_PORT
 LICHEN_SIGNER_AUTH_TOKEN=$SIGNER_AUTH_TOKEN
 LICHEN_CONTRACTS_DIR=$DATA_DIR/contracts
 RUST_LOG=info
-# Bootstrap peers — read directly by the validator binary via env var.
-# This avoids systemd word-splitting issues with LICHEN_EXTRA_ARGS.
-# Set to comma-separated host:port pairs for joining (non-genesis) nodes.
-# Leave empty on the genesis-producing node.
-LICHEN_BOOTSTRAP_PEERS=$BOOTSTRAP_PEERS
 LICHEN_INCIDENT_STATUS_FILE=$INCIDENT_STATUS_FILE
 LICHEN_SIGNED_METADATA_MANIFEST_FILE=$SIGNED_METADATA_MANIFEST_FILE
 LICHEN_SIGNED_METADATA_KEYPAIR_FILE=$SIGNED_METADATA_KEYPAIR_FILE
 LICHEN_SERVICE_FLEET_CONFIG_FILE=$SERVICE_FLEET_CONFIG_FILE
 LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL=$SERVICE_FLEET_UPSTREAM_RPC_URL
 LICHEN_SERVICE_FLEET_STATUS_FILE=$SERVICE_FLEET_STATUS_FILE
-# Extra CLI args passed to the validator (legacy — prefer LICHEN_BOOTSTRAP_PEERS).
+# Extra CLI args passed to the validator.
 # Production default stays fail-closed with auto-update disabled until signed
 # canary rollout is proven.
 LICHEN_EXTRA_ARGS=--auto-update=off
@@ -642,6 +633,8 @@ EOF
     # Create network-specific state dir
     mkdir -p "$DATA_DIR/state-${net}"
     chown "$USER":"$GROUP" "$DATA_DIR/state-${net}"
+    install -m 644 -o "$USER" -g "$GROUP" "seeds.json" "$DATA_DIR/state-${net}/seeds.json"
+    echo "   ✅ Installed state seed file: $DATA_DIR/state-${net}/seeds.json"
     touch "$SERVICE_FLEET_STATUS_FILE"
     chown "$USER":"$GROUP" "$SERVICE_FLEET_STATUS_FILE"
     chmod 640 "$SERVICE_FLEET_STATUS_FILE"
@@ -815,9 +808,8 @@ echo ""
 echo "   4. Start the genesis validator:"
 echo "      sudo systemctl start lichen-validator-<net>"
 echo ""
-echo "   5. On joining VPSes, set bootstrap peers in /etc/lichen/env-<net>:"
-echo "      LICHEN_BOOTSTRAP_PEERS=<genesis-ip>:<p2p-port>"
-echo "      Then start:  sudo systemctl start lichen-validator-<net>"
+echo "   5. On joining VPSes, verify /var/lib/lichen/state-<net>/seeds.json matches the staged release file, then start:"
+echo "      sudo systemctl start lichen-validator-<net>"
 echo ""
 echo "   6. Install post-genesis key material from the live state:"
 echo "      cd ~/lichen && bash scripts/vps-post-genesis.sh <net>"

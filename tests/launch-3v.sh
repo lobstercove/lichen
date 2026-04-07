@@ -1,7 +1,29 @@
 #!/usr/bin/env bash
 set -e
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd "$(dirname "$0")/.."
 BIN="$PWD/target/release/lichen-validator"
+
+write_seed_file() {
+  local db_path=$1
+  mkdir -p "$db_path"
+  cat > "$db_path/seeds.json" <<'EOF'
+{
+  "testnet": {
+    "network_id": "lichen-testnet-local",
+    "chain_id": "lichen-testnet-1",
+    "seeds": [],
+    "bootstrap_peers": [
+      "127.0.0.1:7001"
+    ],
+    "rpc_endpoints": [
+      "http://127.0.0.1:8899"
+    ],
+    "explorers": [],
+    "faucets": []
+  }
+}
+EOF
+}
 
 echo "=== Starting V1 (leader) ==="
 RUST_LOG=info "$BIN" --dev-mode --p2p-port 7001 --rpc-port 8899 \
@@ -16,15 +38,17 @@ curl -sf http://127.0.0.1:8899 -X POST -H 'Content-Type:application/json' \
 echo ""
 
 echo "=== Starting V2 ==="
+write_seed_file "$PWD/data/state-7002"
 RUST_LOG=info "$BIN" --dev-mode --p2p-port 7002 --rpc-port 8901 \
-  --db-path "$PWD/data/state-7002" --bootstrap 127.0.0.1:7001 > /tmp/v2.log 2>&1 &
+  --db-path "$PWD/data/state-7002" > /tmp/v2.log 2>&1 &
 V2PID=$!
 echo "V2 PID=$V2PID"
 sleep 6
 
 echo "=== Starting V3 ==="
+write_seed_file "$PWD/data/state-7003"
 RUST_LOG=info "$BIN" --dev-mode --p2p-port 7003 --rpc-port 8903 \
-  --db-path "$PWD/data/state-7003" --bootstrap 127.0.0.1:7001 > /tmp/v3.log 2>&1 &
+  --db-path "$PWD/data/state-7003" > /tmp/v3.log 2>&1 &
 V3PID=$!
 echo "V3 PID=$V3PID"
 sleep 6

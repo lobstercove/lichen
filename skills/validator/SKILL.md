@@ -39,7 +39,7 @@ df -h /tmp
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/lichen.git
+git clone https://github.com/lobstercove/lichen.git
 cd lichen
 
 # Build validator (takes ~2-5 minutes)
@@ -81,16 +81,21 @@ sleep 30 && ./run-validator.sh testnet 3
 
 **Option C: Join production network (real network)**
 ```bash
-# Production validators connect to bootstrap nodes automatically
-# Bootstrap nodes are configured in: validator/src/config.rs
-# Default bootstrap nodes:
-#   - seed1.lichen.network:7001 (US-East)
-#   - seed2.lichen.network:7001 (EU-West)
-#   - seed3.lichen.network:7001 (Asia-Pacific)
+# Production validators do not need explicit bootstrap args by default.
+# Copy the bundled seeds.json into the state directory; if it is missing,
+# the validator falls back to the embedded DNS seed defaults.
 
 # Start your validator (will sync from network)
 cd /path/to/lichen
-nohup ./run-validator.sh mainnet 1 > validator.log 2>&1 &
+mkdir -p "$HOME/.lichen/state-mainnet"
+cp ./seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+nohup ./target/release/lichen-validator \
+  --network mainnet \
+  --p2p-port 8001 \
+  --rpc-port 9899 \
+  --ws-port 9900 \
+  --db-path "$HOME/.lichen/state-mainnet" \
+  --auto-update=apply > validator.log 2>&1 &
 echo $! > validator.pid
 
 # Monitor sync progress:
@@ -101,13 +106,13 @@ tail -f validator.log | grep "sync\|READY"
 ```bash
 # Zero-config setup with all checks
 cd /path/to/lichen
-./skills/validator/setup-and-run.sh
+./skills/validator/setup-and-run-validator.sh
 ```
 
 **Network Modes:**
 - **Local (127.0.0.1):** Development testing, no real LICN
 - **Testnet (testnet.lichen.network):** Public testnet, free test LICN
-- **Mainnet (seed1.lichen.network):** Production network, real LICN
+- **Mainnet:** Production network, real LICN
 
 ---
 
@@ -512,7 +517,7 @@ sleep 5
 
 **Community:**
 - Discord: https://discord.gg/lichen
-- GitHub: https://github.com/yourusername/lichen
+- GitHub: https://github.com/lobstercove/lichen
 - Docs: https://docs.lichen.network
 
 **Support:**
@@ -535,7 +540,7 @@ Before you start, verify:
 
 **One-command quickstart:**
 ```bash
-git clone https://github.com/yourusername/lichen.git && \
+git clone https://github.com/lobstercove/lichen.git && \
 cd lichen && \
 cargo build --release && \
 ./run-validator.sh 1
