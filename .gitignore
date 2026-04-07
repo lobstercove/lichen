@@ -49,6 +49,7 @@ known-peers.json
 airdrops.json
 release-signing-keypair.json
 faucet-keypair.json
+signed-metadata-manifest-*.json
 
 # ── Wallets / artifacts (never commit private keys) ────────
 sdk/python/wallets/
