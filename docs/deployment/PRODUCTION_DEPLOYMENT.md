@@ -422,10 +422,17 @@ Concrete sequence for testnet:
 
 ```bash
 sudo systemctl start lichen-validator-testnet
+sudo install -D -m 600 -o lichen -g lichen \
+  /var/lib/lichen/state-testnet/validator-keypair.json \
+  /var/lib/lichen/validator-keypair-testnet.json
 sudo python3 -c "import json; print(json.load(open('/var/lib/lichen/state-testnet/validator-keypair.json'))['publicKeyBase58'])"
 sudo systemctl stop lichen-validator-testnet
 sudo rm -rf /var/lib/lichen/state-testnet
 sudo rm -rf /var/lib/lichen/.lichen
+sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
+sudo install -m 600 -o lichen -g lichen \
+  /var/lib/lichen/validator-keypair-testnet.json \
+  /var/lib/lichen/state-testnet/validator-keypair.json
 
 sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
   lichen-genesis --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
@@ -444,6 +451,8 @@ sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS
 
 sudo systemctl start lichen-validator-testnet
 ```
+
+Preserve the generated `validator-keypair.json` across the state wipe. If you delete it and restart the service on a different keypair than the one baked into genesis, the node will come up at stake `0`, stay at slot `0`, and never produce the founding blocks.
 
 If `api.binance.com` is blocked or returns `451` on the host, export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, and `GENESIS_BNB_USD` from a trusted fallback source before running `lichen-genesis`.
 
@@ -464,6 +473,18 @@ DEPLOY_NETWORK=mainnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:989
 ```
 
 This is the cleanest way to refresh the deploy manifest, helper key alignment, and signed metadata manifest in the current repo state.
+
+If the configured `LICHEN_SIGNED_METADATA_KEYPAIR_FILE` lives under `/etc/lichen/secrets/`, the checkout owner may not be able to read it directly. In that case, copy it to a temporary user-readable path and pass it explicitly:
+
+```bash
+sudo cp /etc/lichen/secrets/release-signing-keypair-testnet.json ~/release-signing-keypair-testnet.json
+sudo chown "$USER":"$USER" ~/release-signing-keypair-testnet.json
+chmod 600 ~/release-signing-keypair-testnet.json
+cd ~/lichen
+SIGNED_METADATA_KEYPAIR=$HOME/release-signing-keypair-testnet.json \
+  DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
+rm -f ~/release-signing-keypair-testnet.json
+```
 
 If the script generated the signed metadata file under `~/lichen/`, install it into the RPC-configured path before continuing:
 
