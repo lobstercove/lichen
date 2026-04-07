@@ -42,8 +42,8 @@ WATCHDOG_LOG="${WATCHDOG_LOG:-/tmp/lichen-watchdog.log}"
 
 DEFAULT_VALIDATORS=(
   "val1|8899|7001||/tmp/val1.log"
-  "val2|8901|7002|--bootstrap-peers 127.0.0.1:7001|/tmp/val2.log"
-  "val3|8902|7003|--bootstrap 127.0.0.1:7001 --bootstrap 127.0.0.1:7002|/tmp/val3.log"
+  "val2|8901|7002||/tmp/val2.log"
+  "val3|8902|7003||/tmp/val3.log"
 )
 
 # ── Parse arguments ──────────────────────────────────────────────────
@@ -128,6 +128,30 @@ find_pid() {
   ps aux | grep "lichen-validator" | grep -v grep | grep "\-\-p2p-port $p2p_port\b" | awk '{print $2}' | head -1
 }
 
+write_local_seeds_file() {
+  local p2p_port="$1"
+  local db_path="${PROJECT_DIR}/data/state-${p2p_port}"
+
+  mkdir -p "$db_path"
+  cat > "${db_path}/seeds.json" <<'EOF'
+{
+  "testnet": {
+    "network_id": "lichen-testnet-local",
+    "chain_id": "lichen-testnet-1",
+    "seeds": [],
+    "bootstrap_peers": [
+      "127.0.0.1:7001"
+    ],
+    "rpc_endpoints": [
+      "http://127.0.0.1:8899"
+    ],
+    "explorers": [],
+    "faucets": []
+  }
+}
+EOF
+}
+
 # ── Helper: start a validator ────────────────────────────────────────
 start_validator() {
   local idx="$1"
@@ -135,8 +159,10 @@ start_validator() {
 
   log "🚀 Starting $name (RPC:$rpc_port, P2P:$p2p_port)"
 
+  write_local_seeds_file "$p2p_port"
+
   # Build command
-  local cmd="LICHEN_SIGNER_BIND=off $BINARY --p2p-port $p2p_port --rpc-port $rpc_port --network testnet"
+  local cmd="LICHEN_SIGNER_BIND=off $BINARY --p2p-port $p2p_port --rpc-port $rpc_port --db-path ${PROJECT_DIR}/data/state-${p2p_port} --network testnet"
   if [[ -n "$extra_args" ]]; then
     cmd="$cmd $extra_args"
   fi

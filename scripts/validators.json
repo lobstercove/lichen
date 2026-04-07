@@ -12,14 +12,14 @@
       "name": "val2",
       "rpc_port": 8901,
       "p2p_port": 7002,
-      "extra_args": "--bootstrap-peers 127.0.0.1:7001",
+      "extra_args": "",
       "log_file": "/tmp/val2.log"
     },
     {
       "name": "val3",
       "rpc_port": 8902,
       "p2p_port": 7003,
-      "extra_args": "--bootstrap 127.0.0.1:7001 --bootstrap 127.0.0.1:7002",
+      "extra_args": "",
       "log_file": "/tmp/val3.log"
     }
   ]

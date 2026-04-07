@@ -52,34 +52,31 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen --bin lichen-custody
+        run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
 
       - name: Strip binary (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target != 'aarch64-unknown-linux-gnu'
         run: |
           strip target/${{ matrix.target }}/release/lichen-validator
           strip target/${{ matrix.target }}/release/lichen-genesis
-          strip target/${{ matrix.target }}/release/lichen-faucet
           strip target/${{ matrix.target }}/release/lichen
-          strip target/${{ matrix.target }}/release/lichen-custody
+          strip target/${{ matrix.target }}/release/zk-prove
 
       - name: Strip binary (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-validator
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-genesis
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-faucet
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/lichen-custody
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/zk-prove
 
       - name: Strip binary (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
           strip target/${{ matrix.target }}/release/lichen-validator
           strip target/${{ matrix.target }}/release/lichen-genesis
-          strip target/${{ matrix.target }}/release/lichen-faucet
           strip target/${{ matrix.target }}/release/lichen
-          strip target/${{ matrix.target }}/release/lichen-custody
+          strip target/${{ matrix.target }}/release/zk-prove
 
       - name: Create archive
         if: matrix.os != 'windows-latest'
@@ -87,9 +84,8 @@ jobs:
           mkdir -p ${{ matrix.artifact }}
           cp target/${{ matrix.target }}/release/lichen-validator ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen-genesis ${{ matrix.artifact }}/
-          cp target/${{ matrix.target }}/release/lichen-faucet ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
-          cp target/${{ matrix.target }}/release/lichen-custody ${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/zk-prove ${{ matrix.artifact }}/
           cp seeds.json ${{ matrix.artifact }}/
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
@@ -100,9 +96,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path ${{ matrix.artifact }} | Out-Null
           Copy-Item target/${{ matrix.target }}/release/lichen-validator.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen-genesis.exe ${{ matrix.artifact }}/
-          Copy-Item target/${{ matrix.target }}/release/lichen-faucet.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/lichen.exe ${{ matrix.artifact }}/
-          Copy-Item target/${{ matrix.target }}/release/lichen-custody.exe ${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/zk-prove.exe ${{ matrix.artifact }}/
           Copy-Item seeds.json ${{ matrix.artifact }}/
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
@@ -175,15 +170,14 @@ jobs:
 
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-            chmod +x lichen-validator
+            chmod +x lichen-validator zk-prove
             mkdir -p "$HOME/.lichen/state-mainnet"
             cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
             ```
 
-            Each archive also includes `seeds.json`. Install it under your chosen
-            `--db-path` (or `/etc/lichen/seeds.json`) so seed-set updates can flow
-            through normal release upgrades. `--bootstrap-peers` remains an override,
-            not the default install path.
+            Each archive includes `lichen-validator`, `zk-prove`, and `seeds.json`.
+            Install `seeds.json` under your chosen `--db-path` (or `/etc/lichen/seeds.json`)
+            so seed-set updates flow through normal release upgrades.
 
             Windows artifact:
 
