@@ -140,9 +140,26 @@ fn is_bridge_committee_admin_contract_call(symbol: &str, function: &str) -> bool
         )
 }
 
-fn is_oracle_committee_admin_contract_call(symbol: &str, function: &str) -> bool {
-    (symbol.eq_ignore_ascii_case("ORACLE") || symbol.eq_ignore_ascii_case("LICHENORACLE"))
-        && matches!(function, "add_price_feeder" | "set_authorized_attester")
+fn is_oracle_committee_admin_contract_call(symbol: &str, function: &str, args: &[u8]) -> bool {
+    if ((symbol.eq_ignore_ascii_case("ORACLE") || symbol.eq_ignore_ascii_case("LICHENORACLE"))
+        && matches!(function, "add_price_feeder" | "set_authorized_attester"))
+        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB") && function == "set_attester")
+    {
+        return true;
+    }
+
+    if symbol.eq_ignore_ascii_case("DEXMARGIN") || symbol.eq_ignore_ascii_case("MARGIN") {
+        return matches!(function, "set_mark_price" | "set_index_price")
+            || (function == "call" && matches!(args.first().copied(), Some(1) | Some(31)));
+    }
+
+    false
+}
+
+fn is_immediate_oracle_committee_contract_call(symbol: &str, function: &str, args: &[u8]) -> bool {
+    (symbol.eq_ignore_ascii_case("DEXMARGIN") || symbol.eq_ignore_ascii_case("MARGIN"))
+        && (matches!(function, "set_mark_price" | "set_index_price")
+            || (function == "call" && matches!(args.first().copied(), Some(1) | Some(31))))
 }
 
 fn is_treasury_executor_contract_call(symbol: &str, function: &str, args: &[u8]) -> bool {
@@ -159,6 +176,7 @@ fn is_treasury_executor_contract_call(symbol: &str, function: &str, args: &[u8])
         || ((symbol.eq_ignore_ascii_case("SPOREVAULT") || symbol.eq_ignore_ascii_case("VAULT"))
             && function == "withdraw_protocol_fees")
         || (symbol.eq_ignore_ascii_case("SPOREPUMP") && function == "withdraw_fees")
+        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB") && function == "set_minter")
 }
 
 fn is_evm_instruction(tx: &Transaction) -> bool {
@@ -3861,7 +3879,10 @@ impl TxProcessor {
         action: &GovernanceAction,
     ) -> Result<bool, String> {
         let GovernanceAction::ContractCall {
-            contract, function, ..
+            contract,
+            function,
+            args,
+            ..
         } = action
         else {
             return Ok(false);
@@ -3871,10 +3892,14 @@ impl TxProcessor {
             return Ok(false);
         };
 
-        Ok(is_allowlisted_incident_guardian_pause(
-            entry.symbol.as_str(),
-            function.as_str(),
-        ))
+        Ok(
+            is_allowlisted_incident_guardian_pause(entry.symbol.as_str(), function.as_str())
+                || is_immediate_oracle_committee_contract_call(
+                    entry.symbol.as_str(),
+                    function.as_str(),
+                    args.as_slice(),
+                ),
+        )
     }
 
     fn governance_action_requires_treasury_executor_policy(
@@ -3951,7 +3976,10 @@ impl TxProcessor {
         action: &GovernanceAction,
     ) -> Result<bool, String> {
         let GovernanceAction::ContractCall {
-            contract, function, ..
+            contract,
+            function,
+            args,
+            ..
         } = action
         else {
             return Ok(false);
@@ -3964,6 +3992,7 @@ impl TxProcessor {
         Ok(is_oracle_committee_admin_contract_call(
             entry.symbol.as_str(),
             function.as_str(),
+            args.as_slice(),
         ))
     }
 
@@ -14481,6 +14510,52 @@ mod tests {
         assert_eq!(rotation_proposal.approval_authority, None);
         assert_eq!(rotation_proposal.execute_after_epoch, 5);
 
+        let minter_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury_authority, rotation_contract],
+            data: make_governance_contract_call_data("set_minter", &rotation_args, 0),
+        };
+        let minter_tx = make_signed_tx(&alice_kp, minter_ix, genesis_hash);
+        let minter_result = processor.process_transaction(&minter_tx, &validator);
+        assert!(
+            minter_result.success,
+            "Wrapped-token minter rotation should use treasury executor approvals: {:?}",
+            minter_result.error
+        );
+
+        let minter_proposal = state.get_governance_proposal(3).unwrap().unwrap();
+        assert_eq!(minter_proposal.authority, gov);
+        assert_eq!(minter_proposal.approval_authority, Some(treasury_authority));
+        assert_eq!(minter_proposal.execute_after_epoch, 1);
+
+        let attester_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![
+                alice,
+                state
+                    .get_oracle_committee_admin_authority()
+                    .unwrap()
+                    .unwrap(),
+                rotation_contract,
+            ],
+            data: make_governance_contract_call_data("set_attester", &rotation_args, 0),
+        };
+        let attester_tx = make_signed_tx(&alice_kp, attester_ix, genesis_hash);
+        let attester_result = processor.process_transaction(&attester_tx, &validator);
+        assert!(
+            attester_result.success,
+            "Wrapped-token attester rotation should use oracle committee approvals: {:?}",
+            attester_result.error
+        );
+
+        let attester_proposal = state.get_governance_proposal(4).unwrap().unwrap();
+        assert_eq!(attester_proposal.authority, gov);
+        assert_eq!(
+            attester_proposal.approval_authority,
+            state.get_oracle_committee_admin_authority().unwrap()
+        );
+        assert_eq!(attester_proposal.execute_after_epoch, 1);
+
         let wrong_role_ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, treasury_authority, rotation_contract],
@@ -15431,6 +15506,30 @@ mod tests {
     }
 
     #[test]
+    fn test_margin_price_updates_use_oracle_committee_immediate_policy() {
+        let (processor, state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let owner = Pubkey([0xB9; 32]);
+        let margin_contract = Pubkey([0xD4; 32]);
+
+        register_contract_symbol_for_test(&state, owner, margin_contract, "DEXMARGIN");
+
+        for opcode in [1u8, 31u8] {
+            let action = GovernanceAction::ContractCall {
+                contract: margin_contract,
+                function: "call".to_string(),
+                args: vec![opcode],
+                value: 0,
+            };
+            assert!(processor
+                .governance_action_requires_oracle_committee_admin_policy(&action)
+                .unwrap());
+            assert!(processor
+                .governance_action_uses_immediate_risk_reduction_policy(&action)
+                .unwrap());
+        }
+    }
+
+    #[test]
     fn test_bridge_validator_change_requires_governance_proposal_when_authority_is_governed() {
         let mut call_args = vec![0u8; 64];
         call_args[32] = 0x55;
@@ -15476,6 +15575,119 @@ mod tests {
         assert_governed_committee_contract_call_requires_proposal(
             "set_authorized_attester",
             call_args,
+        );
+    }
+
+    #[test]
+    fn test_margin_price_update_contract_call_uses_oracle_committee_approval_authority_and_executes_immediately(
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+
+        let fund = Account::licn_to_spores(1_000);
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "community_treasury",
+                )
+                .with_timelock(5),
+            )
+            .unwrap();
+        let oracle_authority =
+            configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let contract_addr =
+            install_test_contract_account(&state, gov, governance_test_contract_code());
+        register_contract_symbol_for_test(&state, gov, contract_addr, "DEXMARGIN");
+
+        let mut call_args = vec![0u8; 49];
+        call_args[0] = 1u8;
+        call_args[1] = 0x44;
+        call_args[33..41].copy_from_slice(&7u64.to_le_bytes());
+        call_args[41..49].copy_from_slice(&1_000_000u64.to_le_bytes());
+
+        let direct = submit_contract_ix(
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "call".to_string(),
+                args: call_args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!direct.success);
+        assert!(direct
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("proposal flow"));
+
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, oracle_authority, contract_addr],
+            data: make_governance_contract_call_data("call", &call_args, 0),
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let propose_result = processor.process_transaction(&propose_tx, &validator);
+        assert!(
+            propose_result.success,
+            "Proposal should succeed: {:?}",
+            propose_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(oracle_authority));
+        assert_eq!(proposal.execute_after_epoch, 0);
+        assert!(!proposal.executed);
+
+        let mut approve_data = vec![35u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes());
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let approve_result = processor.process_transaction(&approve_tx, &validator);
+        assert!(
+            approve_result.success,
+            "Approval should execute immediately: {:?}",
+            approve_result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap()
+                .unwrap(),
+            gov.0.to_vec()
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            call_args
         );
     }
 

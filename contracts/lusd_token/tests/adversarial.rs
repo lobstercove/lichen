@@ -416,6 +416,14 @@ fn test_transfer_admin() {
     lichen_sdk::test_mock::set_caller(new_admin);
     assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 2);
     assert_eq!(accept_admin(new_admin.as_ptr()), 0);
+    assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 2);
+
+    // Mint authority remains on the prior operational key until governance rotates it.
+    lichen_sdk::test_mock::set_caller(admin);
+    assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
+
+    lichen_sdk::test_mock::set_caller(new_admin);
+    assert_eq!(set_minter(new_admin.as_ptr(), new_admin.as_ptr()), 0);
     assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 0);
 }
 

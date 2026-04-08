@@ -21,6 +21,25 @@ export function serializeMessageForSigning(message) {
     parts.push(new Uint8Array(bytes));
   }
 
+  function writeOptionalU64(value, fieldName) {
+    if (value === undefined || value === null) {
+      parts.push(new Uint8Array([0x00]));
+      return;
+    }
+
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (!Number.isFinite(numeric) || numeric < 0 || !Number.isInteger(numeric)) {
+      throw new Error(`Invalid ${fieldName}: expected a non-negative integer`);
+    }
+    if (numeric === 0) {
+      parts.push(new Uint8Array([0x00]));
+      return;
+    }
+
+    parts.push(new Uint8Array([0x01]));
+    writeU64LE(numeric);
+  }
+
   // instructions: Vec<Instruction>
   const ixs = message.instructions || [];
   writeU64LE(ixs.length);
@@ -50,10 +69,8 @@ export function serializeMessageForSigning(message) {
   }
   writeBytes(hashBytes);
 
-  // compute_budget: Option<u64> = None (0x00)
-  parts.push(new Uint8Array([0x00]));
-  // compute_unit_price: Option<u64> = None (0x00)
-  parts.push(new Uint8Array([0x00]));
+  writeOptionalU64(message.compute_budget ?? message.computeBudget, 'compute_budget');
+  writeOptionalU64(message.compute_unit_price ?? message.computeUnitPrice, 'compute_unit_price');
 
   // Concatenate all parts
   const totalLen = parts.reduce((s, p) => s + p.length, 0);

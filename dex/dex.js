@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const WS_URL = (localStorage.getItem('dexWsUrl') || window.LICHEN_WS || _licnWs).replace(/\/$/, '');
     const API_BASE = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
+    const CONTRACT_TX_COMPUTE_BUDGET = 1_400_000;
 
     // ═══════════════════════════════════════════════════════════════════════
     // API Client
@@ -297,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.keypair = this.signingReady ? { connected: true } : null;
             return this;
         },
-        async sendTransaction(instructions) {
+        async sendTransaction(instructions, messageOptions = {}) {
             if (!this.address) throw new Error('Wallet not connected');
             if (!this.signingReady) {
                 throw new Error('Signing session not active. Reconnect the matching wallet extension account to sign.');
@@ -310,9 +311,21 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
             const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
+            const requestedComputeBudget = messageOptions.compute_budget ?? messageOptions.computeBudget;
+            const requestedComputeUnitPrice = messageOptions.compute_unit_price ?? messageOptions.computeUnitPrice;
+            const inferredComputeBudget = requestedComputeBudget !== undefined
+                ? requestedComputeBudget
+                : (instructions.some(ix => (ix.program_id || ix.programId) === CONTRACT_PROGRAM_ID)
+                    ? CONTRACT_TX_COMPUTE_BUDGET
+                    : null);
+            const computeBudget = inferredComputeBudget > 0 ? Math.trunc(inferredComputeBudget) : null;
+            const computeUnitPrice = requestedComputeUnitPrice > 0 ? Math.trunc(requestedComputeUnitPrice) : null;
+            const message = { instructions: normalizedIx, blockhash: blockhash };
+            if (computeBudget !== null) message.compute_budget = computeBudget;
+            if (computeUnitPrice !== null) message.compute_unit_price = computeUnitPrice;
             const result = await provider.sendTransaction({
                 signatures: [],
-                message: { instructions: normalizedIx, blockhash: blockhash },
+                message,
             });
             return result && typeof result === 'object' && result.txHash ? result.txHash : result;
         },
@@ -972,7 +985,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // AUDIT-FIX F10.9: Bincode-compatible message serialization for signing.
     // Must match Rust's bincode::serialize(Message { instructions, recent_blockhash })
     // where Message/Instruction use Vec (u64 LE length prefix) and fixed [u8; 32] arrays.
-    function encodeTransactionMessage(instructions, blockhash, signer) {
+    function encodeTransactionMessage(instructions, blockhash, signer, computeBudget, computeUnitPrice) {
         const parts = [];
         // Helper: write u64 LE
         function pushU64LE(n) {
@@ -981,6 +994,15 @@ document.addEventListener('DOMContentLoaded', () => {
             view.setUint32(0, n & 0xFFFFFFFF, true);
             view.setUint32(4, Math.floor(n / 0x100000000) & 0xFFFFFFFF, true);
             parts.push(new Uint8Array(buf));
+        }
+        function pushOptionalU64(value) {
+            const numeric = Number(value || 0);
+            if (!Number.isFinite(numeric) || numeric <= 0) {
+                parts.push(new Uint8Array([0x00]));
+                return;
+            }
+            parts.push(new Uint8Array([0x01]));
+            pushU64LE(Math.trunc(numeric));
         }
         // instructions: Vec<Instruction> — u64 length + each instruction
         pushU64LE(instructions.length);
@@ -998,10 +1020,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // recent_blockhash: [u8; 32] — hex decoded
         parts.push(hexToBytes(blockhash));
-        // compute_budget: Option<u64> = None (0x00)
-        parts.push(new Uint8Array([0x00]));
-        // compute_unit_price: Option<u64> = None (0x00)
-        parts.push(new Uint8Array([0x00]));
+        pushOptionalU64(computeBudget);
+        pushOptionalU64(computeUnitPrice);
         // Concatenate all parts
         const total = parts.reduce((s, a) => s + a.length, 0);
         const out = new Uint8Array(total);
@@ -1994,16 +2014,19 @@ document.addEventListener('DOMContentLoaded', () => {
         tab.classList.add('active');
         state.orderSide = tab.dataset.side;
         state.marginSide = state.orderSide === 'buy' ? 'long' : 'short';
+        calcTotal();
         updateSubmitBtn();
         if (state.tradeMode === 'margin') updateMarginInfo();
     }));
     orderTypeBtns.forEach(btn => btn.addEventListener('click', () => {
-        orderTypeBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+        if (state.tradeMode === 'margin' && btn.dataset.type !== 'market') {
+            showNotification('Margin entry orders are currently market-only', 'info');
+            syncOrderTypeUi();
+            return;
+        }
         state.orderType = btn.dataset.type;
-        if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
-        if (priceInput) priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
-        updateMarginSltpVisibility();
+        syncOrderTypeUi();
+        calcTotal();
         if (state.tradeMode === 'margin') updateMarginInfo();
         updateSubmitBtn();
     }));
@@ -2027,6 +2050,54 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.max(0, balances[quoteSymbol]?.available || 0);
     }
 
+    function getSpotMarketReferencePrice(side) {
+        const bookEntry = side === 'buy'
+            ? state.orderBook?.asks?.[0]
+            : state.orderBook?.bids?.[0];
+        const bookPrice = Number(bookEntry?.price || 0);
+        if (bookPrice > 0) return bookPrice;
+        return Math.max(0, Number(state.lastPrice || 0));
+    }
+
+    function getSpotMarketWorstPrice(side) {
+        const referencePrice = getSpotMarketReferencePrice(side);
+        if (referencePrice <= 0) return 0;
+        const slippageFraction = Math.max(0, Number(state.slippagePct || 0)) / 100;
+        return side === 'buy'
+            ? referencePrice * (1 + slippageFraction)
+            : referencePrice * Math.max(0, 1 - slippageFraction);
+    }
+
+    function getEffectiveOrderPrice(side, orderType, tradeMode = state.tradeMode) {
+        if (orderType !== 'market') {
+            return Math.max(0, parseFloat(priceInput?.value || '0') || 0);
+        }
+        return tradeMode === 'margin'
+            ? getSpotMarketReferencePrice(side)
+            : getSpotMarketWorstPrice(side);
+    }
+
+    function syncOrderTypeUi() {
+        const marginMarketOnly = state.tradeMode === 'margin';
+        if (marginMarketOnly && state.orderType !== 'market') {
+            state.orderType = 'market';
+        }
+
+        orderTypeBtns.forEach(btn => {
+            const disabled = marginMarketOnly && btn.dataset.type !== 'market';
+            btn.disabled = disabled;
+            btn.classList.toggle('mode-disabled', disabled);
+            btn.classList.toggle('active', btn.dataset.type === state.orderType);
+            btn.title = disabled ? 'Margin entry orders are currently market-only' : '';
+        });
+
+        if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
+        if (priceInput?.parentElement?.parentElement) {
+            priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
+        }
+        updateMarginSltpVisibility();
+    }
+
     function updateSubmitBtn() {
         if (!submitBtn) return;
         const sideLabel = state.tradeMode === 'margin'
@@ -2043,9 +2114,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const amount = Math.max(0, parseFloat(amountInput?.value || '0') || 0);
-        const price = state.orderType === 'market'
-            ? (state.lastPrice || 0)
-            : Math.max(0, parseFloat(priceInput?.value || '0') || 0);
+        const price = getEffectiveOrderPrice(state.orderSide, state.orderType);
         const stopPriceInput = document.getElementById('stopPrice');
         const stopPrice = Math.max(0, parseFloat(stopPriceInput?.value || '0') || 0);
         const feeRate = 0.0005;
@@ -2060,15 +2129,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (state.tradeMode === 'margin') {
                 const quoteSymbol = state.activePair.quote;
                 const availableQuote = getQuoteAvailableMargin();
+                const leverage = Math.max(1, Number(state.leverageValue || 1));
+                const requiredMargin = notional / leverage;
                 if (state.marginType === 'cross') {
                     if (availableQuote <= 0) disabledReason = `Insufficient ${quoteSymbol}`;
-                    else {
-                        const maxOpenNotional = (availableQuote * Math.max(1, Number(state.leverageValue || 1))) / (1 + feeRate);
-                        if (notional > maxOpenNotional) disabledReason = `Insufficient ${quoteSymbol}`;
-                    }
+                    else if (requiredMargin > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
                 } else {
-                    const leverage = Math.max(1, Number(state.leverageValue || 1));
-                    const requiredMargin = (notional / leverage) * (1 + feeRate);
                     if (requiredMargin > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
                 }
             } else if (state.orderSide === 'buy') {
@@ -2078,7 +2144,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (requiredQuote > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
             } else {
                 const baseSymbol = state.activePair.base;
-                const requiredBase = amount * (1 + feeRate);
+                const requiredBase = amount;
                 const availableBase = balances[baseSymbol]?.available || 0;
                 if (requiredBase > availableBase) disabledReason = `Insufficient ${baseSymbol}`;
             }
@@ -2129,11 +2195,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         state.tradeMode = mode;
         updateOrderSideLabels();
+        syncOrderTypeUi();
         document.querySelectorAll('.trade-mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
         const mi = document.getElementById('marginInline');
         if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin');
         updateSubmitBtn();
-        updateMarginSltpVisibility();
         if (state.tradeMode === 'margin') {
             applyLeverageConstraints();
             loadMarginStats();
@@ -2160,7 +2226,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!priceInput || !amountInput || !totalInput) return;
         const rawP = parseFloat(priceInput.value);
         const rawA = parseFloat(amountInput.value);
-        const p = Math.max(0, Number.isFinite(rawP) ? rawP : 0);
+        const effectivePrice = state.orderType === 'market'
+            ? getEffectiveOrderPrice(state.orderSide, state.orderType)
+            : (Number.isFinite(rawP) ? rawP : 0);
+        const p = Math.max(0, effectivePrice);
         const a = Math.max(0, Number.isFinite(rawA) ? rawA : 0);
         if (Number.isFinite(rawP) && rawP < 0) priceInput.value = String(p);
         if (Number.isFinite(rawA) && rawA < 0) amountInput.value = String(a);
@@ -2200,7 +2269,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (amountInput) amountInput.addEventListener('input', calcTotal);
     if (totalInput) totalInput.addEventListener('input', () => {
         if (!priceInput || !amountInput) return;
-        const p = Math.max(0, parseFloat(priceInput.value) || 0);
+        const p = state.orderType === 'market'
+            ? getEffectiveOrderPrice(state.orderSide, state.orderType)
+            : Math.max(0, parseFloat(priceInput.value) || 0);
         const rawT = parseFloat(totalInput.value);
         const t = Math.max(0, Number.isFinite(rawT) ? rawT : 0);
         if (Number.isFinite(rawT) && rawT < 0) totalInput.value = String(t);
@@ -2212,7 +2283,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.preset-btn').forEach(btn => btn.addEventListener('click', () => {
         const pct = parseInt(btn.dataset.pct, 10) / 100, tok = state.orderSide === 'buy' ? state.activePair?.quote : state.activePair?.base, bal = tok ? balances[tok] : null;
         if (!bal || !amountInput || !priceInput) return;
-        if (state.orderSide === 'buy') { amountInput.value = ((bal.available * pct) / (parseFloat(priceInput.value) || state.lastPrice)).toFixed(4); } else amountInput.value = (bal.available * pct).toFixed(4);
+        if (state.orderSide === 'buy') {
+            const referencePrice = getEffectiveOrderPrice(state.orderSide, state.orderType);
+            if (referencePrice > 0) amountInput.value = ((bal.available * pct) / referencePrice).toFixed(4);
+        } else amountInput.value = (bal.available * pct).toFixed(4);
         calcTotal();
         updateSubmitBtn();
     }));
@@ -2295,15 +2369,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
         if (!walletCanSign()) return { ok: false, error: 'Reconnect wallet to sign transactions', code: 'NO_KEYPAIR' };
 
+        const effectivePrice = orderType === 'market'
+            ? (tradeMode === 'margin' ? getSpotMarketReferencePrice(side) : getSpotMarketWorstPrice(side))
+            : price;
+
         // 2. Basic input validation
         if (!amount || amount <= 0) return { ok: false, error: 'Amount must be positive', code: 'BAD_AMOUNT' };
         if (orderType !== 'market' && (!price || price <= 0)) return { ok: false, error: 'Price must be positive', code: 'BAD_PRICE' };
+        if (orderType === 'market' && effectivePrice <= 0) return { ok: false, error: 'Waiting for market price', code: 'BAD_PRICE' };
         if (amount > 9_000_000) return { ok: false, error: 'Amount too large (max 9M)', code: 'OVERFLOW_AMOUNT' };
-        if (price > 9_000_000) return { ok: false, error: 'Price too large (max 9M)', code: 'OVERFLOW_PRICE' };
+        if (effectivePrice > 9_000_000) return { ok: false, error: 'Price too large (max 9M)', code: 'OVERFLOW_PRICE' };
 
         // 3. Contract availability
         if (!contracts.dex_core) return { ok: false, error: 'Contract addresses not loaded', code: 'NO_CONTRACT' };
         if (tradeMode === 'margin' && !contracts.dex_margin) return { ok: false, error: 'Margin contract not loaded', code: 'NO_MARGIN' };
+        if (tradeMode === 'margin' && orderType !== 'market') return { ok: false, error: 'Margin entry orders are currently market-only', code: 'MARGIN_MARKET_ONLY' };
 
         // 4. Stop-limit validation
         if (orderType === 'stop-limit') {
@@ -2356,23 +2436,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 7. Minimum notional check (MIN_ORDER_VALUE = 1000 spores = 0.000001 in human)
         {
-            const notional = orderType === 'market' ? amount * (state.lastPrice || 1) : price * amount;
+            const notional = amount * effectivePrice;
             const minNotionalHuman = 1000 / PRICE_SCALE; // MIN_ORDER_VALUE in spores
             if (notional < minNotionalHuman && notional > 0) {
                 return { ok: false, error: `Order notional ${formatAmount(notional)} below minimum (${formatAmount(minNotionalHuman)})`, code: 'MIN_NOTIONAL' };
-            }
-        }
-
-        // 8. Oracle band check — reject if limit price is outside ±10% of reference
-        if (orderType === 'limit' || orderType === 'post-only') {
-            const ref = state.lastPrice || 0;
-            if (ref > 0) {
-                const bandPct = orderType === 'limit' ? 0.10 : 0.05; // limits ±10%, post-only ±5%
-                const lowerBand = ref * (1 - bandPct);
-                const upperBand = ref * (1 + bandPct);
-                if (price < lowerBand || price > upperBand) {
-                    return { ok: false, error: `Price ${formatPrice(price)} is outside the oracle band (${formatPrice(lowerBand)} – ${formatPrice(upperBand)}). Adjust price or use market order.`, code: 'ORACLE_BAND' };
-                }
             }
         }
 
@@ -2406,7 +2473,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         {
             const neededToken = side === 'buy' ? (pair?.quote || 'lUSD') : (pair?.base || 'LICN');
-            const effectivePrice = orderType === 'market' ? (state.lastPrice || 0) : price;
             const neededAmount = side === 'buy' ? (effectivePrice * amount) : amount;
             const available = balances[neededToken]?.available || 0;
             if (neededAmount > available) {
@@ -2449,7 +2515,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === Order submission via signed sendTransaction ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
-        const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
+        const rawPrice = parseFloat(priceInput?.value) || 0;
+        const price = state.orderType === 'market'
+            ? (state.tradeMode === 'margin' ? getSpotMarketReferencePrice(state.orderSide) : getSpotMarketWorstPrice(state.orderSide))
+            : rawPrice;
+        const amount = parseFloat(amountInput?.value) || 0;
         const stopPriceInput = document.getElementById('stopPrice');
         const stopPrice = parseFloat(stopPriceInput?.value) || 0;
 
@@ -2502,10 +2572,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
-                const notional = amount * (price || state.lastPrice);
-                const quoteAvailable = getQuoteAvailableMargin();
+                const referencePrice = getSpotMarketReferencePrice(state.orderSide);
+                const notional = amount * referencePrice;
                 const isolatedMarginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
-                const crossMarginDeposit = Math.round(quoteAvailable * PRICE_SCALE);
+                const crossMarginDeposit = isolatedMarginDeposit;
                 const marginDeposit = state.marginType === 'cross' ? crossMarginDeposit : isolatedMarginDeposit;
                 if (marginDeposit <= 0) {
                     showNotification(`Insufficient ${state.activePair?.quote || 'quote'} balance for margin`, 'warning');
@@ -2560,6 +2630,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { showNotification(`Order failed: ${e.message}`, 'error'); }
         finally { submitBtn.disabled = false; updateSubmitBtn(); }
     });
+
+    syncOrderTypeUi();
 
     // ═══════════════════════════════════════════════════════════════════════
     // Open Orders
@@ -4575,7 +4647,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         const minQuorum = Number(state.governanceMinQuorum || GOVERNANCE_MIN_QUORUM_DEFAULT);
                         const quorumMet = totalVotes >= minQuorum;
                         const quorumShortfall = Math.max(0, minQuorum - totalVotes);
-                        const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
+                        const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 0;
+                        const noPct = totalVotes > 0 ? 100 - yesPct : 0;
                         const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : status === 'rejected' ? 'rejected-proposal' : 'executed-proposal';
                         // F14.5: Generate title from proposalType + proposalId
                         const typeLabels = { new_pair: 'New Pair Listing', fee_change: 'Fee Change', delist: 'Pair Delisting', param_change: 'Parameter Change' };
@@ -4653,7 +4726,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <div class="vote-bar"><div class="vote-yes" style="width: ${yesPct}%"></div></div>
                                 <div class="vote-counts">
                                     <span class="vote-yes-text"><i class="fas fa-check"></i> ${yesPct}% Yes (${yesVotes} votes)</span>
-                                    <span class="vote-no-text"><i class="fas fa-times"></i> ${100 - yesPct}% No (${noVotes} votes)</span>
+                                    <span class="vote-no-text"><i class="fas fa-times"></i> ${noPct}% No (${noVotes} votes)</span>
                                 </div>
                             </div>
                             <div class="proposal-footer">

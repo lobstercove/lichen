@@ -250,6 +250,13 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
             <p>If a release predates Windows packaging, use the source-build workflow for Windows until a newer release
                 is published.</p>
 
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Production Key Password</div>
+                Outside explicit local development, set <code>LICHEN_KEYPAIR_PASSWORD</code> before first start and on
+                every restart. Validator, treasury, genesis-primary, and signer keypair files now use the shared
+                encrypted-at-rest format, and production starts refuse plaintext keypair files.
+            </div>
+
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
@@ -323,6 +330,7 @@ lichen-validator \
                 <pre><code>git clone https://github.com/lobstercove/lichen.git
 cd lichen
 cargo build --release
+export LICHEN_KEYPAIR_PASSWORD='local-e2e-secret'
 bash scripts/start-local-3validators.sh start-reset</code></pre>
             </div>
 
@@ -334,7 +342,8 @@ bash scripts/start-local-3validators.sh start-reset</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>./scripts/start-local-stack.sh testnet
+                <pre><code>export LICHEN_KEYPAIR_PASSWORD='local-e2e-secret'
+./scripts/start-local-stack.sh testnet
 ./scripts/status-local-stack.sh testnet</code></pre>
             </div>
 
@@ -417,6 +426,7 @@ bash scripts/start-local-3validators.sh start-reset</code></pre>
                 <pre><code>git clone https://github.com/lobstercove/lichen.git
 cd lichen
 cargo build --release
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 # Start — the built-in supervisor auto-restarts on stalls/crashes
 ./target/release/lichen-validator \
@@ -463,7 +473,8 @@ cargo build --release
             <div class="callout callout-warning">
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Back Up Your Keypair</div>
                 Your validator keypair controls your staked funds. Back it up securely and never expose it in public
-                repositories.
+                repositories. Keep the matching <code>LICHEN_KEYPAIR_PASSWORD</code> in your operator secret store;
+                without it, encrypted runtime key files cannot be reopened after restart or restore.
             </div>
 
             <!-- ========== 3. CONFIGURATION ========== -->

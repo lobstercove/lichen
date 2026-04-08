@@ -613,6 +613,13 @@
     border-bottom-color: var(--teal-primary);
 }
 
+.order-type-btn.mode-disabled,
+.order-type-btn:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
 .order-form {
     padding: 12px;
 }

@@ -96,8 +96,24 @@ pub fn build_block(
                     }
                 }
             }
-            if let Some(ref err) = result.error {
-                debug!("❌ TX {} failed: {}", tx_hash.to_hex(), err);
+            let error_detail = result.error.as_deref().unwrap_or("unknown error");
+            if result.contract_logs.is_empty() {
+                info!(
+                    "❌ TX {} failed at height {}: error={}, return_code={:?}",
+                    tx_hash.to_hex(),
+                    height,
+                    error_detail,
+                    result.return_code
+                );
+            } else {
+                info!(
+                    "❌ TX {} failed at height {}: error={}, return_code={:?}, logs={:?}",
+                    tx_hash.to_hex(),
+                    height,
+                    error_detail,
+                    result.return_code,
+                    result.contract_logs
+                );
             }
             failed_hashes.push(tx_hash);
         }

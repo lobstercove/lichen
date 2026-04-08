@@ -40,6 +40,8 @@ class TransactionBuilder:
     def __init__(self):
         self._instructions: List[Instruction] = []
         self._recent_blockhash: Optional[str] = None
+        self._compute_budget: Optional[int] = None
+        self._compute_unit_price: Optional[int] = None
     
     def add(self, instruction: Instruction) -> 'TransactionBuilder':
         """Add an instruction"""
@@ -49,6 +51,20 @@ class TransactionBuilder:
     def set_recent_blockhash(self, blockhash: str) -> 'TransactionBuilder':
         """Set recent blockhash"""
         self._recent_blockhash = blockhash
+        return self
+
+    def set_compute_budget(self, compute_budget: Optional[int]) -> 'TransactionBuilder':
+        """Set an optional compute budget for the message"""
+        if compute_budget is not None and compute_budget < 0:
+            raise ValueError("Compute budget must be non-negative")
+        self._compute_budget = compute_budget
+        return self
+
+    def set_compute_unit_price(self, compute_unit_price: Optional[int]) -> 'TransactionBuilder':
+        """Set an optional compute unit price for the message"""
+        if compute_unit_price is not None and compute_unit_price < 0:
+            raise ValueError("Compute unit price must be non-negative")
+        self._compute_unit_price = compute_unit_price
         return self
     
     def build(self) -> Message:
@@ -60,7 +76,9 @@ class TransactionBuilder:
         
         return Message(
             instructions=self._instructions,
-            recent_blockhash=self._recent_blockhash
+            recent_blockhash=self._recent_blockhash,
+            compute_budget=self._compute_budget,
+            compute_unit_price=self._compute_unit_price,
         )
 
     def build_and_sign(self, keypair: Keypair) -> Transaction:

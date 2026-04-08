@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Restore a sane tool PATH when the caller shell exported a stripped environment.
+BOOTSTRAP_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.cargo/bin" ]; then
+  BOOTSTRAP_PATH="${HOME}/.cargo/bin:${BOOTSTRAP_PATH}"
+fi
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
+  BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
+fi
+PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+export PATH
+
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 RUNNER="$ROOT/run-validator.sh"
@@ -17,6 +28,74 @@ SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-$ROOT/keypairs/release-signi
 RPC_WAIT_SECS="${LICN_LOCAL_RPC_WAIT_SECS:-900}"
 
 export LICHEN_LOCAL_DEV=1
+
+any_path_newer_than() {
+  local target=$1
+  shift
+
+  if [ ! -e "$target" ]; then
+    return 0
+  fi
+
+  local path newer_file
+  for path in "$@"; do
+    if [ ! -e "$path" ]; then
+      continue
+    fi
+
+    if [ -d "$path" ]; then
+      newer_file=$(find "$path" -type f -newer "$target" -print -quit)
+      if [ -n "$newer_file" ]; then
+        return 0
+      fi
+    elif [ "$path" -nt "$target" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_runtime_binaries() {
+  local runtime_sources=(
+    "$ROOT/Cargo.toml"
+    "$ROOT/Cargo.lock"
+    "$ROOT/core"
+    "$ROOT/validator"
+    "$ROOT/rpc"
+    "$ROOT/p2p"
+    "$ROOT/cli"
+    "$ROOT/genesis"
+  )
+
+  if any_path_newer_than "$ROOT/target/release/lichen" "${runtime_sources[@]}" \
+    || any_path_newer_than "$ROOT/target/release/lichen-genesis" "${runtime_sources[@]}" \
+    || any_path_newer_than "$ROOT/target/release/lichen-validator" "${runtime_sources[@]}"; then
+    echo "[local-3validators] rebuilding required release binaries"
+    cargo build --release --bin lichen --bin lichen-genesis --bin lichen-validator
+  fi
+}
+
+refresh_changed_contract_wasm() {
+  local contract_dir manifest contract_name root_wasm target_wasm
+
+  for contract_dir in "$ROOT"/contracts/*; do
+    [ -d "$contract_dir" ] || continue
+
+    manifest="$contract_dir/Cargo.toml"
+    [ -f "$manifest" ] || continue
+
+    contract_name=$(basename "$contract_dir")
+    root_wasm="$contract_dir/${contract_name}.wasm"
+    target_wasm="$contract_dir/target/wasm32-unknown-unknown/release/${contract_name}.wasm"
+
+    if any_path_newer_than "$root_wasm" "$manifest" "$contract_dir/Cargo.lock" "$contract_dir/src"; then
+      echo "[local-3validators] refreshing ${contract_name}.wasm"
+      cargo build --manifest-path "$manifest" --target wasm32-unknown-unknown --release
+      cp "$target_wasm" "$root_wasm"
+    fi
+  done
+}
 
 case "$NETWORK" in
   testnet)
@@ -200,6 +279,9 @@ start_cluster() {
     echo "[local-3validators] ERROR: run-validator.sh not executable at $RUNNER"
     exit 1
   fi
+
+  ensure_runtime_binaries
+  refresh_changed_contract_wasm
 
   stop_cluster
 

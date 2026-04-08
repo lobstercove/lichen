@@ -21,6 +21,17 @@
 
 set -euo pipefail
 
+# Restore a sane tool PATH when the caller shell exported a stripped environment.
+BOOTSTRAP_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.cargo/bin" ]; then
+    BOOTSTRAP_PATH="${HOME}/.cargo/bin:${BOOTSTRAP_PATH}"
+fi
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
+    BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
+fi
+PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+export PATH
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 TOOLS_DIR="${REPO_ROOT}/tools"
@@ -449,7 +460,7 @@ align_local_helper_keypair() {
     fi
 
     mkdir -p "$REPO_ROOT/keypairs"
-    cp "$source_key" "$REPO_ROOT/keypairs/deployer.json"
+    install -m 600 "$source_key" "$REPO_ROOT/keypairs/deployer.json"
     return 0
 }
 

@@ -230,6 +230,21 @@ fn fresh_mark_price(pair_id: u64) -> u64 {
     price
 }
 
+/// Load an index price only when it is fresh enough to trust for liquidation
+/// and other safety-critical fallback paths.
+fn fresh_index_price(pair_id: u64) -> u64 {
+    let (price, ts) = load_index_price(pair_id);
+    if price == 0 {
+        return 0;
+    }
+    let now = get_timestamp();
+    if ts == 0 || (now > ts && now - ts > MAX_PRICE_AGE_SECONDS) {
+        log_info("DEX Margin: Index price stale — rejecting");
+        return 0;
+    }
+    price
+}
+
 // ============================================================================
 // DEEP SECURITY
 // ============================================================================
@@ -1492,8 +1507,19 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let leverage = decode_pos_leverage(&data);
     let side = decode_pos_side(&data);
     let entry_price = decode_pos_entry_price(&data);
-    // AUDIT-FIX M20: Freshness-checked mark price for liquidation
-    let mark_price = fresh_mark_price(pair_id);
+    // AUDIT-FIX M20: Freshness-checked liquidation price. If the mark price is
+    // stale or absent, fall back to a fresh index price so unhealthy positions
+    // can still be liquidated instead of remaining stuck indefinitely.
+    let mark_price = match fresh_mark_price(pair_id) {
+        0 => {
+            let index_price = fresh_index_price(pair_id);
+            if index_price > 0 {
+                log_info("DEX Margin: Falling back to index price for liquidation");
+            }
+            index_price
+        }
+        price => price,
+    };
     if mark_price == 0 {
         reentrancy_exit();
         return 2;
@@ -2418,6 +2444,16 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // 31 = set_index_price(caller[32], pair_id[8], price[8])
+        31 => {
+            if args.len() >= 49 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let price = bytes_to_u64(&args[41..49]);
+                let r = set_index_price(args[1..33].as_ptr(), pair_id, price);
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -2971,6 +3007,41 @@ mod tests {
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 2);
+    }
+
+    #[test]
+    fn test_liquidation_falls_back_to_fresh_index_price() {
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+        let liquidator = [3u8; 32];
+        let licn_addr = [10u8; 32];
+
+        test_mock::set_timestamp(1000);
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
+
+        test_mock::set_caller(trader);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 600_000_000);
+        set_index_price(admin.as_ptr(), 1, 600_000_000);
+
+        test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 10);
+        set_index_price(admin.as_ptr(), 1, 600_000_000);
+
+        test_mock::set_caller(liquidator);
+        assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
+
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_LIQUIDATED);
     }
 
     #[test]

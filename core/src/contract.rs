@@ -30,15 +30,9 @@ static MODULE_CACHE: std::sync::LazyLock<Mutex<lru::LruCache<[u8; 32], Vec<u8>>>
         ))
     });
 
-/// Maximum compute units per contract execution (T1.5)
-/// Contracts with 64KB stack buffers (storage_get) + complex init can easily
-/// use 2-3M instructions. 10M provides ample headroom for legitimate contracts
-/// while still preventing infinite loops.
-const MAX_WASM_COMPUTE_UNITS: u64 = 10_000_000;
-
 /// Conversion ratio: how many raw WASM instructions equal 1 CU.
 /// WASM instructions are much finer-grained than Solana-model CUs.
-/// With DIVISOR=50:  200K CU budget ≈ 10M WASM instructions (the hard limit).
+/// With DIVISOR=50:  200K CU budget ≈ 10M WASM instructions.
 /// A simple contract (~500K WASM instructions) costs ~10K CU.
 pub const WASM_CU_DIVISOR: u64 = 50;
 
@@ -750,6 +744,11 @@ const MAX_RETURN_DATA: usize = 65_536;
 const MAX_EVENT_DATA: usize = 8_192;
 /// Default compute limit per contract call (10 million units)
 pub const DEFAULT_COMPUTE_LIMIT: u64 = 10_000_000;
+/// Maximum raw WASM fuel the runtime middleware must support.
+///
+/// The processor passes per-transaction CU budgets into the runtime, but
+/// standalone/test contexts can still use the historical 10M-CU ceiling.
+const MAX_WASM_FUEL_POINTS: u64 = DEFAULT_COMPUTE_LIMIT * WASM_CU_DIVISOR;
 /// Compute cost for a storage read
 const COMPUTE_STORAGE_READ: u64 = 100;
 /// Compute cost for a storage write (base, plus per-byte cost)
@@ -782,6 +781,12 @@ const MAX_CCC_FUNCTION_LEN: u32 = 256;
 /// Maximum args length for cross-contract calls (64 KB)
 const MAX_CCC_ARGS_LEN: u32 = 65_536;
 
+fn wasm_fuel_limit_for_compute_limit(compute_limit: u64) -> u64 {
+    compute_limit
+        .min(DEFAULT_COMPUTE_LIMIT)
+        .saturating_mul(WASM_CU_DIVISOR)
+}
+
 /// Contract runtime - executes WASM bytecode with compute metering
 ///
 /// # Security Sandbox (T2.4)
@@ -789,8 +794,8 @@ const MAX_CCC_ARGS_LEN: u32 = 65_536;
 /// The WASM runtime is sandboxed with the following security measures:
 ///
 /// 1. **Compute Metering**: Every WASM instruction costs 1 compute unit.
-///    Execution traps after `MAX_WASM_COMPUTE_UNITS` (10M) units, preventing
-///    infinite loops and DoS via compute exhaustion.
+///    Execution traps after the per-call fuel allowance derived from the active
+///    compute budget, preventing infinite loops and DoS via compute exhaustion.
 ///
 /// 2. **Memory Limits**: WASM linear memory is capped at `MAX_WASM_MEMORY_PAGES`
 ///    (1024 pages = 64MB). Contracts declaring or growing memory beyond this
@@ -823,7 +828,7 @@ impl Default for ContractRuntime {
 
 impl ContractRuntime {
     fn fresh_store() -> Store {
-        let metering = std::sync::Arc::new(Metering::new(MAX_WASM_COMPUTE_UNITS, |_| 1));
+        let metering = std::sync::Arc::new(Metering::new(MAX_WASM_FUEL_POINTS, |_| 1));
         let mut compiler = Cranelift::default();
         compiler.push_middleware(metering);
         Store::new(compiler)
@@ -978,10 +983,10 @@ impl ContractRuntime {
         let instance = Instance::new(&mut store, &module, &imports)
             .map_err(|e| format!("Failed to instantiate contract: {}", e))?;
 
-        // Set WASM fuel to the hard runtime ceiling.  The actual CU charge
-        // is post-computed by dividing raw WASM instructions by WASM_CU_DIVISOR,
-        // then checked against the TX-level compute_limit (Solana model).
-        let wasm_fuel_limit = MAX_WASM_COMPUTE_UNITS;
+        // Set WASM fuel from the active compute limit so higher-budget
+        // transactions are not silently clamped to the old 10M-instruction
+        // ceiling (~200k CU at the current divisor).
+        let wasm_fuel_limit = wasm_fuel_limit_for_compute_limit(compute_limit);
         set_remaining_points(&mut store, &instance, wasm_fuel_limit);
 
         // Bind WASM linear memory to context for host function access
@@ -1227,7 +1232,7 @@ impl ContractRuntime {
             MeteringPoints::Exhausted => 0,
         };
         // Convert raw WASM instructions to CU using the divisor.
-        // With WASM_CU_DIVISOR=50: 10M instructions → 200K CU.
+        // Convert raw metering points back to protocol CUs.
         let raw_wasm_instructions = wasm_fuel_limit.saturating_sub(metering_remaining);
         let wasm_compute_used = raw_wasm_instructions / WASM_CU_DIVISOR;
 
@@ -1897,6 +1902,10 @@ fn host_set_return_data(
     0
 }
 
+fn push_contract_log(env: &mut FunctionEnvMut<ContractContext>, message: impl Into<String>) {
+    env.data_mut().logs.push(message.into());
+}
+
 /// Cross-contract call — full re-entrant implementation.
 ///
 /// Reads target address (32 bytes), function name, args, and value from the
@@ -1926,13 +1935,23 @@ fn host_cross_contract_call(
 ) -> u32 {
     // ── Validate lengths ─────────────────────────────────────────────
     if function_len > MAX_CCC_FUNCTION_LEN || args_len > MAX_CCC_ARGS_LEN {
+        push_contract_log(
+            &mut env,
+            format!(
+                "[CCC] rejected: invalid function/args length (function_len={}, args_len={})",
+                function_len, args_len
+            ),
+        );
         return 0;
     }
 
     // ── Read parameters from caller's WASM linear memory ─────────────
     let memory = match env.data().memory.clone() {
         Some(m) => m,
-        None => return 0,
+        None => {
+            push_contract_log(&mut env, "[CCC] rejected: caller memory not initialized");
+            return 0;
+        }
     };
 
     let (target, function_name, args_buf) = {
@@ -1941,22 +1960,28 @@ fn host_cross_contract_call(
         // Target address (32 bytes)
         let mut target_bytes = [0u8; 32];
         if view.read(target_ptr as u64, &mut target_bytes).is_err() {
+            push_contract_log(&mut env, "[CCC] rejected: failed to read target address");
             return 0;
         }
 
         // Function name (UTF-8 string)
         let mut func_buf = vec![0u8; function_len as usize];
         if view.read(function_ptr as u64, &mut func_buf).is_err() {
+            push_contract_log(&mut env, "[CCC] rejected: failed to read function name");
             return 0;
         }
         let function_name = match String::from_utf8(func_buf) {
             Ok(s) => s,
-            Err(_) => return 0,
+            Err(_) => {
+                push_contract_log(&mut env, "[CCC] rejected: function name is not valid UTF-8");
+                return 0;
+            }
         };
 
         // Args
         let mut args_buf = vec![0u8; args_len as usize];
         if args_len > 0 && view.read(args_ptr as u64, &mut args_buf).is_err() {
+            push_contract_log(&mut env, "[CCC] rejected: failed to read argument buffer");
             return 0;
         }
 
@@ -1969,11 +1994,16 @@ fn host_cross_contract_call(
         None => {
             // No state store — running in test mode or standalone.
             // Return 0 so contracts get an Err from call_contract.
+            push_contract_log(&mut env, "[CCC] rejected: state store unavailable");
             return 0;
         }
     };
     let call_depth = env.data().call_depth;
     if call_depth >= MAX_CROSS_CALL_DEPTH {
+        push_contract_log(
+            &mut env,
+            format!("[CCC] rejected: max call depth exceeded ({})", call_depth),
+        );
         return 0; // Recursion depth exceeded
     }
 
@@ -1988,6 +2018,8 @@ fn host_cross_contract_call(
     {
         let ctx = env.data_mut();
         if !deduct_compute(ctx, COMPUTE_CROSS_CALL) {
+            ctx.logs
+                .push("[CCC] rejected: insufficient compute for cross-contract call".to_string());
             return 0;
         }
     }
@@ -1999,11 +2031,51 @@ fn host_cross_contract_call(
     // ── Load target contract from state ──────────────────────────────
     let target_account = match state_store.get_account(&target) {
         Ok(Some(a)) if a.executable => a,
-        _ => return 0, // Target not found or not a contract
+        Ok(Some(_)) => {
+            push_contract_log(
+                &mut env,
+                format!(
+                    "[CCC] rejected: target {} is not executable",
+                    crate::Pubkey(target.0)
+                ),
+            );
+            return 0;
+        }
+        Ok(None) => {
+            push_contract_log(
+                &mut env,
+                format!(
+                    "[CCC] rejected: target {} not found",
+                    crate::Pubkey(target.0)
+                ),
+            );
+            return 0;
+        }
+        Err(err) => {
+            push_contract_log(
+                &mut env,
+                format!(
+                    "[CCC] rejected: failed to load target {} account: {}",
+                    crate::Pubkey(target.0),
+                    err
+                ),
+            );
+            return 0;
+        }
     };
     let target_contract: ContractAccount = match serde_json::from_slice(&target_account.data) {
         Ok(c) => c,
-        Err(_) => return 0,
+        Err(err) => {
+            push_contract_log(
+                &mut env,
+                format!(
+                    "[CCC] rejected: failed to decode target {} contract account: {}",
+                    crate::Pubkey(target.0),
+                    err
+                ),
+            );
+            return 0;
+        }
     };
 
     // ── Build callee storage: base + pending overlay ─────────────────
@@ -2013,7 +2085,17 @@ fn host_cross_contract_call(
     let mut callee_storage: HashMap<Vec<u8>, Vec<u8>> =
         match state_store.load_contract_storage_map(&target) {
             Ok(entries) => entries.into_iter().collect(),
-            Err(_) => return 0,
+            Err(err) => {
+                push_contract_log(
+                    &mut env,
+                    format!(
+                        "[CCC] rejected: failed to load storage for {}: {}",
+                        crate::Pubkey(target.0),
+                        err
+                    ),
+                );
+                return 0;
+            }
         };
     {
         let changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
@@ -2233,13 +2315,23 @@ fn host_cross_contract_call(
     if write_len > 0 {
         let memory = match env.data().memory.clone() {
             Some(m) => m,
-            None => return 0,
+            None => {
+                push_contract_log(
+                    &mut env,
+                    "[CCC] rejected: caller memory unavailable for result write",
+                );
+                return 0;
+            }
         };
         let view = memory.view(&env);
         if view
             .write(result_ptr as u64, &effective_result[..write_len])
             .is_err()
         {
+            push_contract_log(
+                &mut env,
+                "[CCC] rejected: failed to write cross-contract result",
+            );
             return 0;
         }
     }
@@ -2644,6 +2736,29 @@ mod tests {
 
         assert!(!deduct_compute(&mut ctx, 1));
         assert_eq!(ctx.compute_remaining, 0);
+    }
+
+    #[test]
+    fn test_wasm_fuel_limit_tracks_compute_budget() {
+        assert_eq!(wasm_fuel_limit_for_compute_limit(0), 0);
+        assert_eq!(wasm_fuel_limit_for_compute_limit(200_000), 10_000_000);
+        assert_eq!(wasm_fuel_limit_for_compute_limit(600_000), 30_000_000);
+        assert_eq!(
+            wasm_fuel_limit_for_compute_limit(crate::transaction::MAX_COMPUTE_BUDGET),
+            crate::transaction::MAX_COMPUTE_BUDGET * WASM_CU_DIVISOR
+        );
+    }
+
+    #[test]
+    fn test_runtime_metering_supports_standalone_limit() {
+        assert_eq!(
+            MAX_WASM_FUEL_POINTS,
+            DEFAULT_COMPUTE_LIMIT * WASM_CU_DIVISOR
+        );
+        assert!(
+            MAX_WASM_FUEL_POINTS
+                >= wasm_fuel_limit_for_compute_limit(crate::transaction::MAX_COMPUTE_BUDGET)
+        );
     }
 
     #[test]

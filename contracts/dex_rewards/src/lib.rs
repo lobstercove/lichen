@@ -937,6 +937,15 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // 20: set_authorized_caller(caller[32], contract_addr[32], enabled[1])
+        20 => {
+            if args.len() >= 66 {
+                let r = set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr(), args[65]);
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;

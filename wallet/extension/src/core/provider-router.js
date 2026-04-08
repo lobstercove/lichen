@@ -360,6 +360,15 @@ function normalizeDataBytes(value) {
   return new Uint8Array(0);
 }
 
+function normalizeOptionalU64(value, fieldName) {
+  if (value === undefined || value === null) return undefined;
+  const numeric = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(numeric) || numeric < 0 || !Number.isInteger(numeric)) {
+    throw new Error(`Transaction message has invalid ${fieldName}`);
+  }
+  return numeric > 0 ? numeric : undefined;
+}
+
 function normalizeMessageForSigning(messageLike) {
   const blockhash = messageLike?.blockhash || messageLike?.recent_blockhash || messageLike?.recentBlockhash;
   if (typeof blockhash !== 'string' || blockhash.length !== 64) {
@@ -369,13 +378,24 @@ function normalizeMessageForSigning(messageLike) {
   const instructions = Array.isArray(messageLike?.instructions) ? messageLike.instructions : [];
   if (!instructions.length) throw new Error('Transaction message has no instructions');
 
+  const computeBudget = normalizeOptionalU64(
+    messageLike?.compute_budget ?? messageLike?.computeBudget,
+    'compute_budget'
+  );
+  const computeUnitPrice = normalizeOptionalU64(
+    messageLike?.compute_unit_price ?? messageLike?.computeUnitPrice,
+    'compute_unit_price'
+  );
+
   return {
     instructions: instructions.map((ix) => ({
       program_id: Array.from(normalizePubkeyBytes(ix?.program_id ?? ix?.programId)),
       accounts: Array.isArray(ix?.accounts) ? ix.accounts.map((a) => Array.from(normalizePubkeyBytes(a))) : [],
       data: Array.from(normalizeDataBytes(ix?.data))
     })),
-    blockhash
+    blockhash,
+    compute_budget: computeBudget,
+    compute_unit_price: computeUnitPrice,
   };
 }
 

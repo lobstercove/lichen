@@ -5204,7 +5204,7 @@ async fn handle_get_transaction(
         })?;
 
     // T8.2: Use tx→slot reverse index for O(1) lookup, fall back to scan
-    let (slot, timestamp) = match state.state.get_tx_slot(&sig_hash) {
+    let (slot, timestamp, slot_indexed) = match state.state.get_tx_slot(&sig_hash) {
         Ok(Some(slot)) => {
             let ts = state
                 .state
@@ -5213,7 +5213,7 @@ async fn handle_get_transaction(
                 .flatten()
                 .map(|b| b.header.timestamp)
                 .unwrap_or(0);
-            (slot, ts)
+            (slot, ts, true)
         }
         _ => {
             // Fallback: reverse scan (for txs indexed before the reverse index existed)
@@ -5235,9 +5235,11 @@ async fn handle_get_transaction(
                         }
                     }
                 }
-                found.unwrap_or((0, 0))
+                found
+                    .map(|(slot, ts)| (slot, ts, true))
+                    .unwrap_or((0, 0, false))
             } else {
-                (0, 0)
+                (0, 0, false)
             }
         }
     };
@@ -5247,6 +5249,10 @@ async fn handle_get_transaction(
         .get_fee_config()
         .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
+    if !slot_indexed {
+        return Ok(serde_json::Value::Null);
+    }
+
     match tx {
         Some(tx) => {
             let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
@@ -5254,7 +5260,11 @@ async fn handle_get_transaction(
             let mut json =
                 tx_to_rpc_json(&tx, slot, timestamp, &fee_config, stored_cu, &state.state);
             // Add commitment status to transaction response
-            let (status, confirmations) = tx_commitment_status(state, slot);
+            let (status, confirmations) = if slot_indexed {
+                tx_commitment_status(state, slot)
+            } else {
+                ("processed", serde_json::json!(0))
+            };
             if let Some(obj) = json.as_object_mut() {
                 obj.insert("confirmation_status".to_string(), serde_json::json!(status));
                 obj.insert("confirmations".to_string(), confirmations);
@@ -7088,8 +7098,9 @@ async fn handle_solana_get_transaction(
             message: format!("Database error: {}", e),
         })?;
 
-    // T8.2: Use tx→slot reverse index for O(1) lookup, fall back to scan
-    let (slot, timestamp) = match state.state.get_tx_slot(&sig_hash) {
+    // T8.2: Use tx→slot reverse index for O(1) lookup, fall back to scan.
+    // Only return the transaction once it is indexed in a block.
+    let (slot, timestamp, slot_indexed) = match state.state.get_tx_slot(&sig_hash) {
         Ok(Some(slot)) => {
             let ts = state
                 .state
@@ -7098,7 +7109,7 @@ async fn handle_solana_get_transaction(
                 .flatten()
                 .map(|b| b.header.timestamp)
                 .unwrap_or(0);
-            (slot, ts)
+            (slot, ts, true)
         }
         _ => {
             // Fallback: reverse scan (for txs indexed before the reverse index existed)
@@ -7119,12 +7130,18 @@ async fn handle_solana_get_transaction(
                         }
                     }
                 }
-                found.unwrap_or((0, 0))
+                found
+                    .map(|(slot, ts)| (slot, ts, true))
+                    .unwrap_or((0, 0, false))
             } else {
-                (0, 0)
+                (0, 0, false)
             }
         }
     };
+
+    if !slot_indexed {
+        return Ok(serde_json::Value::Null);
+    }
 
     let tx = match tx {
         Some(tx) => tx,

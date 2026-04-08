@@ -2,7 +2,7 @@
 // Create, import, list, and manage multiple wallets
 
 use anyhow::{Context, Result};
-use lichen_core::Keypair;
+use lichen_core::{copy_secure_file, write_secure_file, Keypair, KeypairFile};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -89,8 +89,10 @@ impl WalletManager {
 
         // Save keypair to file using KeypairFile (supports encryption via LICHEN_KEYPAIR_PASSWORD)
         let keypair_path = self.wallets_dir.join(format!("{}.json", wallet_name));
-        let keypair_file = crate::keygen::KeypairFile::from_keypair(&keypair);
-        keypair_file.save(&keypair_path)?;
+        let keypair_file = KeypairFile::from_keypair(&keypair);
+        keypair_file
+            .save(&keypair_path)
+            .map_err(anyhow::Error::msg)?;
 
         // Create wallet info
         let wallet_info = WalletInfo {
@@ -127,7 +129,7 @@ impl WalletManager {
 
         // Copy keypair to wallets directory with owner-only permissions.
         let new_keypair_path = self.wallets_dir.join(format!("{}.json", name));
-        crate::keygen::copy_secure_file(&keypair_path, &new_keypair_path)?;
+        copy_secure_file(&keypair_path, &new_keypair_path).map_err(anyhow::Error::msg)?;
 
         // Create wallet info
         let wallet_info = WalletInfo {
@@ -218,9 +220,10 @@ impl WalletManager {
 
 /// Load keypair from file — delegates to the canonical keygen loader.
 fn load_keypair_from_file(path: &Path) -> Result<Keypair> {
-    let keypair_file = crate::keygen::KeypairFile::load(path)
+    let keypair_file = KeypairFile::load(path)
+        .map_err(anyhow::Error::msg)
         .with_context(|| format!("Failed to load canonical keypair from {}", path.display()))?;
-    keypair_file.to_keypair()
+    keypair_file.to_keypair().map_err(anyhow::Error::msg)
 }
 
 /// Get current Unix timestamp
@@ -268,9 +271,9 @@ mod tests {
 
         let source_path = dir.path().join("source.json");
         let keypair = Keypair::new();
-        let file = crate::keygen::KeypairFile::from_keypair(&keypair);
+        let file = KeypairFile::from_keypair(&keypair);
         let json = serde_json::to_string_pretty(&file).unwrap();
-        crate::keygen::write_secure_file(&source_path, json.as_bytes()).unwrap();
+        write_secure_file(&source_path, json.as_bytes()).unwrap();
         fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
 
         let wallet = manager

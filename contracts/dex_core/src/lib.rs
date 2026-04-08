@@ -71,6 +71,8 @@ const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
 // G2-04: Margin contract address for reduce-only cross-contract validation
 const MARGIN_ADDRESS_KEY: &str = "dex_margin_addr";
+// Trading rewards contract address for fee-mining accrual on matched trades
+const REWARDS_ADDRESS_KEY: &str = "dex_rewards_addr";
 // F18.7: Daily volume reset tracking (slot-based day boundary)
 const SLOTS_PER_DAY: u64 = 216_000; // 24h * 3600s / 0.4s
 
@@ -698,7 +700,7 @@ fn quote_exact_input(
         let mut remaining = amount_in;
         let mut amount_out = 0u64;
         let mut price_bound = 0u64;
-        let mut best_bid = load_u64(&best_bid_key(pair_id));
+        let mut best_bid = refresh_best_bid_level(pair_id);
 
         while remaining > 0 && best_bid != 0 {
             let level_count = load_u64(&bid_count_key(pair_id, best_bid));
@@ -778,7 +780,7 @@ fn quote_exact_input(
     let mut quote_budget = amount_in;
     let mut amount_out = 0u64;
     let mut price_bound = 0u64;
-    let mut best_ask = load_u64(&best_ask_key(pair_id));
+    let mut best_ask = refresh_best_ask_level(pair_id);
 
     while quote_budget > 0 && best_ask != u64::MAX {
         let level_count = load_u64(&ask_count_key(pair_id, best_ask));
@@ -1081,8 +1083,33 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
         args.extend_from_slice(&u64_to_bytes(amount));
         let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
         match call_contract(call) {
-            Ok(ret) => ret.first().copied().unwrap_or(1) == 0,
-            Err(_) => false,
+            Ok(ret) => match ret.first().copied().unwrap_or(255) {
+                0 | 1 => true,
+                5 => {
+                    log_info("Token transfer_from failed: insufficient token balance");
+                    false
+                }
+                7 => {
+                    log_info("Token transfer_from failed: insufficient token allowance");
+                    false
+                }
+                100 => {
+                    log_info("Token transfer_from failed: reentrancy guard active");
+                    false
+                }
+                200 => {
+                    log_info("Token transfer_from failed: caller mismatch");
+                    false
+                }
+                _ => {
+                    log_info("Token transfer_from failed: token contract returned error");
+                    false
+                }
+            },
+            Err(_) => {
+                log_info("Token transfer_from failed: cross-contract call error");
+                false
+            }
         }
     }
 }
@@ -1119,7 +1146,7 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
         args.extend_from_slice(&u64_to_bytes(amount));
         let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
         match call_contract(call) {
-            Ok(ret) => ret.first().copied().unwrap_or(1) == 0,
+            Ok(ret) => matches!(ret.first().copied().unwrap_or(255), 0 | 1),
             Err(_) => false,
         }
     }
@@ -1721,13 +1748,13 @@ pub fn place_order(
     // Post-only check: reject if would immediately match
     if base_order_type == ORDER_POST_ONLY {
         if side == SIDE_BUY {
-            let best_ask = load_u64(&best_ask_key(pair_id));
-            if best_ask != u64::MAX && price >= best_ask {
+            let best_ask = get_best_ask(pair_id);
+            if best_ask != 0 && price >= best_ask {
                 reentrancy_exit();
                 return 7;
             }
         } else {
-            let best_bid = load_u64(&best_bid_key(pair_id));
+            let best_bid = get_best_bid(pair_id);
             if best_bid != 0 && price <= best_bid {
                 reentrancy_exit();
                 return 7;
@@ -1988,7 +2015,7 @@ fn match_order(
     // For buy orders: match against asks (lowest first)
     // For sell orders: match against bids (highest first)
     if side == SIDE_BUY {
-        let mut best_ask = load_u64(&best_ask_key(pair_id));
+        let mut best_ask = refresh_best_ask_level(pair_id);
         while remaining > 0 && best_ask != u64::MAX && (price == 0 || price >= best_ask) {
             remaining = fill_at_price_level(
                 taker_order_id,
@@ -2004,26 +2031,15 @@ fn match_order(
             // Check if level is exhausted
             let level_count = load_u64(&ask_count_key(pair_id, best_ask));
             if level_count == 0 {
-                // Move to next ask price — scan upward
-                let mut next = best_ask + 1;
-                let mut found = false;
-                // AUDIT-FIX CLOB-3: Scan up to MAX_TICK_SCAN ticks for sparse books
-                for _ in 0..MAX_TICK_SCAN {
-                    if load_u64(&ask_count_key(pair_id, next)) > 0 {
-                        best_ask = next;
-                        found = true;
-                        break;
-                    }
-                    next += 1;
+                if remaining == 0 {
+                    break;
                 }
-                if !found {
-                    best_ask = u64::MAX;
-                }
+                best_ask = next_nonempty_ask(pair_id, best_ask);
             }
         }
         save_u64(&best_ask_key(pair_id), best_ask);
     } else {
-        let mut best_bid = load_u64(&best_bid_key(pair_id));
+        let mut best_bid = refresh_best_bid_level(pair_id);
         while remaining > 0 && best_bid != 0 && (price == 0 || price <= best_bid) {
             remaining = fill_at_price_level(
                 taker_order_id,
@@ -2038,22 +2054,10 @@ fn match_order(
             );
             let level_count = load_u64(&bid_count_key(pair_id, best_bid));
             if level_count == 0 {
-                let mut next = best_bid.saturating_sub(1);
-                let mut found = false;
-                for _ in 0..MAX_TICK_SCAN {
-                    if next == 0 {
-                        break;
-                    }
-                    if load_u64(&bid_count_key(pair_id, next)) > 0 {
-                        best_bid = next;
-                        found = true;
-                        break;
-                    }
-                    next = next.saturating_sub(1);
+                if remaining == 0 {
+                    break;
                 }
-                if !found {
-                    best_bid = 0;
-                }
+                best_bid = next_nonempty_bid(pair_id, best_bid);
             }
         }
         save_u64(&best_bid_key(pair_id), best_bid);
@@ -2366,16 +2370,32 @@ fn fill_at_price_level(
         {
             let analytics_addr = load_addr(ANALYTICS_ADDRESS_KEY.as_bytes());
             if !is_zero(&analytics_addr) {
-                let mut ana_args = Vec::with_capacity(56);
+                let mut ana_args = Vec::with_capacity(57);
+                ana_args.push(1u8);
                 ana_args.extend_from_slice(&u64_to_bytes(pair_id));
                 ana_args.extend_from_slice(&u64_to_bytes(price));
                 ana_args.extend_from_slice(&u64_to_bytes(notional));
                 ana_args.extend_from_slice(taker);
-                let call =
-                    CrossCall::new(Address(analytics_addr), "record_trade", ana_args).with_value(0);
+                let call = CrossCall::new(Address(analytics_addr), "call", ana_args).with_value(0);
                 // Analytics recording is non-critical — log failures but don't block trade
                 if call_contract(call).is_err() {
                     log_info("Analytics record_trade call failed — trade still valid");
+                }
+            }
+        }
+
+        // Fee mining rewards are attributed to the fee-paying taker only.
+        {
+            let rewards_addr = load_addr(REWARDS_ADDRESS_KEY.as_bytes());
+            if !is_zero(&rewards_addr) && taker_fee > 0 {
+                let mut reward_args = Vec::with_capacity(49);
+                reward_args.push(1u8); // dex_rewards::record_trade
+                reward_args.extend_from_slice(taker);
+                reward_args.extend_from_slice(&u64_to_bytes(taker_fee));
+                reward_args.extend_from_slice(&u64_to_bytes(notional));
+                let call = CrossCall::new(Address(rewards_addr), "call", reward_args).with_value(0);
+                if call_contract(call).is_err() {
+                    log_info("DEX Rewards record_trade call failed — trade still valid");
                 }
             }
         }
@@ -2406,6 +2426,63 @@ fn fill_at_price_level(
     }
 
     remaining
+}
+
+fn next_nonempty_bid(pair_id: u64, current_best: u64) -> u64 {
+    let mut next = current_best.saturating_sub(1);
+    for _ in 0..MAX_TICK_SCAN {
+        if next == 0 {
+            break;
+        }
+        if load_u64(&bid_count_key(pair_id, next)) > 0 {
+            return next;
+        }
+        next = next.saturating_sub(1);
+    }
+    0
+}
+
+fn next_nonempty_ask(pair_id: u64, current_best: u64) -> u64 {
+    if current_best == u64::MAX {
+        return u64::MAX;
+    }
+
+    let mut next = current_best.saturating_add(1);
+    for _ in 0..MAX_TICK_SCAN {
+        if load_u64(&ask_count_key(pair_id, next)) > 0 {
+            return next;
+        }
+        next = next.saturating_add(1);
+    }
+    u64::MAX
+}
+
+fn refresh_best_bid_level(pair_id: u64) -> u64 {
+    let best = load_u64(&best_bid_key(pair_id));
+    if best == 0 {
+        return 0;
+    }
+    if load_u64(&bid_count_key(pair_id, best)) > 0 {
+        return best;
+    }
+
+    let refreshed = next_nonempty_bid(pair_id, best);
+    save_u64(&best_bid_key(pair_id), refreshed);
+    refreshed
+}
+
+fn refresh_best_ask_level(pair_id: u64) -> u64 {
+    let best = load_u64(&best_ask_key(pair_id));
+    if best == u64::MAX {
+        return u64::MAX;
+    }
+    if load_u64(&ask_count_key(pair_id, best)) > 0 {
+        return best;
+    }
+
+    let refreshed = next_nonempty_ask(pair_id, best);
+    save_u64(&best_ask_key(pair_id), refreshed);
+    refreshed
 }
 
 /// Add resting order to book
@@ -2703,6 +2780,32 @@ pub fn set_margin_address(caller: *const u8, margin: *const u8) -> u32 {
     0
 }
 
+/// Set the rewards contract address for taker fee mining (admin only)
+pub fn set_rewards_address(caller: *const u8, rewards: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut r = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(rewards, r.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&r) {
+        return 2;
+    }
+    if has_configured_address(REWARDS_ADDRESS_KEY.as_bytes()) {
+        return 3;
+    }
+    storage_set(REWARDS_ADDRESS_KEY.as_bytes(), &r);
+    log_info("DEX Core: rewards address set");
+    0
+}
+
 /// Emergency pause (admin only) — instant, no timelock
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -2806,12 +2909,12 @@ pub fn get_order(order_id: u64) -> u64 {
 
 /// Get best bid price for a pair
 pub fn get_best_bid(pair_id: u64) -> u64 {
-    load_u64(&best_bid_key(pair_id))
+    refresh_best_bid_level(pair_id)
 }
 
 /// Get best ask price for a pair
 pub fn get_best_ask(pair_id: u64) -> u64 {
-    let ask = load_u64(&best_ask_key(pair_id));
+    let ask = refresh_best_ask_level(pair_id);
     if ask == u64::MAX {
         0
     } else {
@@ -3284,6 +3387,14 @@ pub extern "C" fn call() -> u32 {
             // claim_rebate(caller[32], pair_id[8])
             if args.len() >= 41 {
                 let r = claim_rebate(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        34 => {
+            // set_rewards_address(caller[32], rewards[32])
+            if args.len() >= 65 {
+                let r = set_rewards_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
             }
@@ -4157,6 +4268,44 @@ mod tests {
     }
 
     #[test]
+    fn test_set_rewards_address() {
+        let admin = setup();
+        let rewards = [46u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_address(admin.as_ptr(), rewards.as_ptr()), 0);
+        assert_eq!(load_addr(REWARDS_ADDRESS_KEY.as_bytes()), rewards);
+    }
+
+    #[test]
+    fn test_set_rewards_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let rewards = [46u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_rewards_address(rando.as_ptr(), rewards.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_rewards_address_zero_and_reconfiguration_rejected() {
+        let admin = setup();
+        let first_rewards = [46u8; 32];
+        let second_rewards = [47u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_address(admin.as_ptr(), [0u8; 32].as_ptr()), 2);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_rewards_address(admin.as_ptr(), first_rewards.as_ptr()),
+            0
+        );
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_rewards_address(admin.as_ptr(), second_rewards.as_ptr()),
+            3
+        );
+        assert_eq!(load_addr(REWARDS_ADDRESS_KEY.as_bytes()), first_rewards);
+    }
+
+    #[test]
     fn test_normal_order_unaffected_by_reduce_only_feature() {
         // Standard limit order (no reduce-only flag) should still work normally
         let (_admin, pair_id) = setup_with_pair();
@@ -4425,6 +4574,118 @@ mod tests {
             0,
         );
         assert_eq!(get_best_ask(pair_id), 2_000_000_000);
+    }
+
+    #[test]
+    fn test_get_best_bid_refreshes_after_top_level_fill() {
+        let (_admin, pair_id) = setup_with_pair();
+        let buyer_top = [2u8; 32];
+        let buyer_next = [3u8; 32];
+        let seller = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(buyer_top);
+        assert_eq!(
+            place_order(
+                buyer_top.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(buyer_next);
+        assert_eq!(
+            place_order(
+                buyer_next.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                999_999_000,
+                2000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(seller);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        assert_eq!(get_best_bid(pair_id), 999_999_000);
+    }
+
+    #[test]
+    fn test_get_best_ask_refreshes_after_top_level_fill() {
+        let (_admin, pair_id) = setup_with_pair();
+        let seller_top = [2u8; 32];
+        let seller_next = [3u8; 32];
+        let buyer = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(seller_top);
+        assert_eq!(
+            place_order(
+                seller_top.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(seller_next);
+        assert_eq!(
+            place_order(
+                seller_next.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_001_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(buyer);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        assert_eq!(get_best_ask(pair_id), 1_000_001_000);
     }
 
     #[test]

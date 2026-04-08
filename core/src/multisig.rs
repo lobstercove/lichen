@@ -1,6 +1,9 @@
 // Lichen Multi-Signature Wallet Support
 
-use crate::{Hash, Keypair, Pubkey};
+use crate::{
+    keypair_file::{require_runtime_keypair_password, save_keypair_with_metadata},
+    Hash, Keypair, Pubkey,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -140,6 +143,39 @@ impl GovernedTransferVelocityPolicy {
             1_000_000 * SPORES_PER_LICN,
             1,
             2,
+        )
+    }
+
+    pub fn validator_rewards_defaults() -> Self {
+        Self::new(
+            1_000_000 * SPORES_PER_LICN,
+            3_000_000 * SPORES_PER_LICN,
+            250_000 * SPORES_PER_LICN,
+            750_000 * SPORES_PER_LICN,
+            1,
+            3,
+        )
+    }
+
+    pub fn builder_grants_defaults() -> Self {
+        Self::new(
+            750_000 * SPORES_PER_LICN,
+            2_500_000 * SPORES_PER_LICN,
+            200_000 * SPORES_PER_LICN,
+            500_000 * SPORES_PER_LICN,
+            1,
+            2,
+        )
+    }
+
+    pub fn founding_symbionts_defaults() -> Self {
+        Self::new(
+            250_000 * SPORES_PER_LICN,
+            1_000_000 * SPORES_PER_LICN,
+            100_000 * SPORES_PER_LICN,
+            250_000 * SPORES_PER_LICN,
+            2,
+            4,
         )
     }
 
@@ -448,11 +484,32 @@ pub fn governed_wallet_config_for_role(
     let governance_threshold = u8::try_from((all_signers.len() / 2) + 1).unwrap_or(u8::MAX);
 
     match role {
+        "validator_rewards" => Some(
+            GovernedWalletConfig::new(governance_threshold, signers, "validator_rewards")
+                .with_timelock(1)
+                .with_transfer_velocity_policy(
+                    GovernedTransferVelocityPolicy::validator_rewards_defaults(),
+                ),
+        ),
         "community_treasury" => Some(
             GovernedWalletConfig::new(governance_threshold, signers, "community_treasury")
                 .with_timelock(1)
                 .with_transfer_velocity_policy(
                     GovernedTransferVelocityPolicy::community_treasury_defaults(),
+                ),
+        ),
+        "builder_grants" => Some(
+            GovernedWalletConfig::new(governance_threshold, signers, "builder_grants")
+                .with_timelock(1)
+                .with_transfer_velocity_policy(
+                    GovernedTransferVelocityPolicy::builder_grants_defaults(),
+                ),
+        ),
+        "founding_symbionts" => Some(
+            GovernedWalletConfig::new(governance_threshold, signers, "founding_symbionts")
+                .with_timelock(2)
+                .with_transfer_velocity_policy(
+                    GovernedTransferVelocityPolicy::founding_symbionts_defaults(),
                 ),
         ),
         "ecosystem_partnerships" => Some(
@@ -497,23 +554,12 @@ pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
     ("reserve_pool", 50_000_000, 10),
 ];
 
-fn canonical_keypair_json(
-    keypair: &Keypair,
+fn canonical_keypair_metadata(
     role: &str,
     chain_id: &str,
     warning: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let public_key = keypair.public_key();
     let mut file = serde_json::Map::new();
-    file.insert(
-        "privateKey".to_string(),
-        serde_json::json!(keypair.to_seed()),
-    );
-    file.insert("publicKey".to_string(), serde_json::json!(public_key.bytes));
-    file.insert(
-        "publicKeyBase58".to_string(),
-        serde_json::json!(keypair.pubkey().to_base58()),
-    );
     file.insert("role".to_string(), serde_json::json!(role));
     file.insert("chain_id".to_string(), serde_json::json!(chain_id));
     file.insert(
@@ -529,7 +575,7 @@ fn canonical_keypair_json(
 pub struct GenesisWallet {
     /// Genesis treasury public key
     pub pubkey: Pubkey,
-    /// Primary keypair (saved encrypted)
+    /// Primary keypair (encrypted at rest outside explicit local-dev mode)
     pub keypair_path: String,
     /// Treasury public key (validator_rewards wallet — used for block rewards, fees, bootstraps)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -648,6 +694,16 @@ impl GenesisWallet {
         base_path: P,
         chain_id: &str,
     ) -> Result<Vec<String>, String> {
+        let password = require_runtime_keypair_password("genesis keypair storage")?;
+        Self::save_keypairs_with_password(keypairs, base_path, chain_id, password.as_deref())
+    }
+
+    fn save_keypairs_with_password<P: AsRef<Path>>(
+        keypairs: &[Keypair],
+        base_path: P,
+        chain_id: &str,
+        password: Option<&str>,
+    ) -> Result<Vec<String>, String> {
         let mut paths = Vec::new();
 
         for (i, keypair) in keypairs.iter().enumerate() {
@@ -659,16 +715,13 @@ impl GenesisWallet {
             let filename = format!("genesis-{}-{}.json", role, chain_id);
             let path = base_path.as_ref().join(&filename);
 
-            let keypair_json = serde_json::Value::Object(canonical_keypair_json(
-                keypair,
+            let metadata = canonical_keypair_metadata(
                 role,
                 chain_id,
                 "KEEP THIS FILE SECURE - CONTROLS GENESIS TREASURY",
-            ));
-
-            let json_str = serde_json::to_string_pretty(&keypair_json)
-                .map_err(|e| format!("Failed to serialize keypair JSON: {}", e))?;
-            fs::write(&path, json_str).map_err(|e| format!("Failed to write keypair: {}", e))?;
+            );
+            save_keypair_with_metadata(keypair, &path, password, password.is_some(), &metadata)
+                .map_err(|e| format!("Failed to write keypair {}: {}", path.display(), e))?;
 
             paths.push(path.to_string_lossy().to_string());
         }
@@ -682,19 +735,25 @@ impl GenesisWallet {
         base_path: P,
         chain_id: &str,
     ) -> Result<String, String> {
+        let password = require_runtime_keypair_password("genesis treasury keypair storage")?;
+        Self::save_treasury_keypair_with_password(keypair, base_path, chain_id, password.as_deref())
+    }
+
+    fn save_treasury_keypair_with_password<P: AsRef<Path>>(
+        keypair: &Keypair,
+        base_path: P,
+        chain_id: &str,
+        password: Option<&str>,
+    ) -> Result<String, String> {
         let filename = format!("treasury-{}.json", chain_id);
         let path = base_path.as_ref().join(&filename);
-        let keypair_json = serde_json::Value::Object(canonical_keypair_json(
-            keypair,
+        let metadata = canonical_keypair_metadata(
             "treasury",
             chain_id,
             "KEEP THIS FILE SECURE - CONTROLS TREASURY",
-        ));
-
-        let json_str = serde_json::to_string_pretty(&keypair_json)
-            .map_err(|e| format!("Failed to serialize treasury JSON: {}", e))?;
-        fs::write(&path, json_str)
-            .map_err(|e| format!("Failed to write treasury keypair: {}", e))?;
+        );
+        save_keypair_with_metadata(keypair, &path, password, password.is_some(), &metadata)
+            .map_err(|e| format!("Failed to write treasury keypair {}: {}", path.display(), e))?;
 
         Ok(path.to_string_lossy().to_string())
     }
@@ -706,26 +765,44 @@ impl GenesisWallet {
         base_path: P,
         chain_id: &str,
     ) -> Result<Vec<String>, String> {
+        let password = require_runtime_keypair_password("genesis distribution keypair storage")?;
+        Self::save_distribution_keypairs_with_password(
+            distribution,
+            keypairs,
+            base_path,
+            chain_id,
+            password.as_deref(),
+        )
+    }
+
+    fn save_distribution_keypairs_with_password<P: AsRef<Path>>(
+        distribution: &[DistributionWallet],
+        keypairs: &[Keypair],
+        base_path: P,
+        chain_id: &str,
+        password: Option<&str>,
+    ) -> Result<Vec<String>, String> {
         let mut paths = Vec::new();
 
         for (dw, kp) in distribution.iter().zip(keypairs.iter()) {
             let filename = format!("{}-{}.json", dw.role, chain_id);
             let path = base_path.as_ref().join(&filename);
 
-            let mut keypair_json = canonical_keypair_json(
-                kp,
+            let mut metadata = canonical_keypair_metadata(
                 &dw.role,
                 chain_id,
                 "KEEP THIS FILE SECURE - CONTROLS DISTRIBUTION WALLET",
             );
-            keypair_json.insert("amount_licn".to_string(), serde_json::json!(dw.amount_licn));
-            keypair_json.insert("percentage".to_string(), serde_json::json!(dw.percentage));
-            let keypair_json = serde_json::Value::Object(keypair_json);
-
-            let json_str = serde_json::to_string_pretty(&keypair_json)
-                .map_err(|e| format!("Failed to serialize distribution JSON: {}", e))?;
-            fs::write(&path, json_str)
-                .map_err(|e| format!("Failed to write distribution keypair: {}", e))?;
+            metadata.insert("amount_licn".to_string(), serde_json::json!(dw.amount_licn));
+            metadata.insert("percentage".to_string(), serde_json::json!(dw.percentage));
+            save_keypair_with_metadata(kp, &path, password, password.is_some(), &metadata)
+                .map_err(|e| {
+                    format!(
+                        "Failed to write distribution keypair {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
 
             paths.push(path.to_string_lossy().to_string());
         }
@@ -942,11 +1019,17 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let keypair = Keypair::generate();
-        let saved_path = GenesisWallet::save_treasury_keypair(&keypair, &dir, "testnet-1").unwrap();
+        let saved_path = GenesisWallet::save_treasury_keypair_with_password(
+            &keypair,
+            &dir,
+            "testnet-1",
+            Some("test-password"),
+        )
+        .unwrap();
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&saved_path).unwrap()).unwrap();
 
-        assert_eq!(json["privateKey"].as_array().unwrap().len(), 32);
+        assert_eq!(json["encrypted"], serde_json::json!(true));
         assert_eq!(
             json["publicKey"].as_array().unwrap().len(),
             keypair.public_key().bytes.len()
@@ -958,5 +1041,56 @@ mod tests {
 
         let _ = fs::remove_file(saved_path);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_governed_wallet_config_covers_all_high_value_roles() {
+        let signers = vec![
+            Pubkey([1; 32]),
+            Pubkey([2; 32]),
+            Pubkey([3; 32]),
+            Pubkey([4; 32]),
+            Pubkey([5; 32]),
+            Pubkey([6; 32]),
+            Pubkey([7; 32]),
+        ];
+
+        let validator_rewards =
+            governed_wallet_config_for_role("validator_rewards", &signers).unwrap();
+        assert_eq!(validator_rewards.threshold, 4);
+        assert_eq!(validator_rewards.timelock_epochs, 1);
+        assert_eq!(
+            validator_rewards
+                .transfer_velocity_policy
+                .as_ref()
+                .unwrap()
+                .daily_cap_spores,
+            3_000_000 * SPORES_PER_LICN
+        );
+
+        let builder_grants = governed_wallet_config_for_role("builder_grants", &signers).unwrap();
+        assert_eq!(builder_grants.threshold, 4);
+        assert_eq!(builder_grants.timelock_epochs, 1);
+        assert_eq!(
+            builder_grants
+                .transfer_velocity_policy
+                .as_ref()
+                .unwrap()
+                .per_transfer_cap_spores,
+            750_000 * SPORES_PER_LICN
+        );
+
+        let founding_symbionts =
+            governed_wallet_config_for_role("founding_symbionts", &signers).unwrap();
+        assert_eq!(founding_symbionts.threshold, 4);
+        assert_eq!(founding_symbionts.timelock_epochs, 2);
+        assert_eq!(
+            founding_symbionts
+                .transfer_velocity_policy
+                .as_ref()
+                .unwrap()
+                .extraordinary_additional_timelock_epochs,
+            4
+        );
     }
 }
