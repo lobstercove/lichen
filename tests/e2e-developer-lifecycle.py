@@ -47,6 +47,9 @@ CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TRANSFER_AMOUNT = 500_000_000  # 0.5 LICN
 RPC_RETRY_ATTEMPTS = max(1, int(os.environ.get("RPC_RETRY_ATTEMPTS", "4")))
 RPC_RETRY_BASE_DELAY = max(0.1, float(os.environ.get("RPC_RETRY_BASE_DELAY", "0.4")))
+SPORES_PER_LICN = 1_000_000_000
+BASE_TRANSFER_FEE_SPORES = 1_000_000
+MAX_RPC_AIRDROP_LICN = 10
 
 passed = 0
 failed = 0
@@ -137,18 +140,34 @@ async def wait_for_balance(conn: Connection, pubkey: PublicKey, min_spores: int,
 
 async def wait_for_transaction(conn: Connection, signature: str,
                                timeout: float = 45.0) -> dict:
-    """Poll until a transaction is indexed and queryable."""
+    """Poll until a transaction is confirmed in a block."""
     deadline = time.monotonic() + timeout
+    last_response = None
     while time.monotonic() < deadline:
         try:
-            info = await conn.get_transaction(signature)
-            if info:
-                return info
-        except Exception as exc:
-            if "Transaction not found" not in str(exc):
-                raise
+            response = await conn._rpc("confirmTransaction", [signature])
+            last_response = response
+            value = response.get("value") if isinstance(response, dict) else None
+            if isinstance(value, dict):
+                try:
+                    info = await conn.get_transaction(signature)
+                    if info:
+                        return info
+                except Exception:
+                    pass
+                return {
+                    "signature": signature,
+                    "confirmation_status": value.get("confirmation_status"),
+                    "slot": value.get("slot"),
+                    "confirmations": value.get("confirmations"),
+                    "error": value.get("err"),
+                }
+        except Exception:
+            pass
         await asyncio.sleep(0.5)
-    raise TimeoutError(f"Transaction {signature} not indexed within {timeout}s")
+    raise TimeoutError(
+        f"Transaction {signature} not confirmed within {timeout}s: {last_response}"
+    )
 
 
 async def wait_for_contract_info(conn: Connection, contract: PublicKey,
@@ -203,6 +222,65 @@ async def rpc_with_retry(
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"RPC call {method} failed without an error")
+
+
+async def request_local_airdrop(
+    conn: Connection,
+    address: str,
+    amount_licn: int,
+) -> dict:
+    if amount_licn <= 0 or amount_licn > MAX_RPC_AIRDROP_LICN:
+        raise ValueError(
+            f"requestAirdrop amount must be between 1 and {MAX_RPC_AIRDROP_LICN} LICN"
+        )
+    return await rpc_with_retry(conn, "requestAirdrop", [address, amount_licn])
+
+
+async def top_up_with_local_airdrop_helpers(
+    conn: Connection,
+    recipient: PublicKey,
+    required_spores: int,
+) -> tuple[int, int]:
+    current_spores = extract_spores(await conn.get_balance(recipient))
+    helper_count = 0
+
+    while current_spores < required_spores:
+        remaining = required_spores - current_spores
+        helper = Keypair.generate()
+        helper_count += 1
+
+        airdrop_licn = min(
+            MAX_RPC_AIRDROP_LICN,
+            max(
+                1,
+                (
+                    min(
+                        remaining + BASE_TRANSFER_FEE_SPORES,
+                        MAX_RPC_AIRDROP_LICN * SPORES_PER_LICN,
+                    )
+                    + SPORES_PER_LICN
+                    - 1
+                )
+                // SPORES_PER_LICN,
+            ),
+        )
+        helper_budget = airdrop_licn * SPORES_PER_LICN
+        max_send_spores = helper_budget - BASE_TRANSFER_FEE_SPORES
+        if max_send_spores <= 0:
+            raise RuntimeError("Local airdrop helper budget cannot cover transfer fee")
+
+        await request_local_airdrop(conn, helper.address().to_base58(), airdrop_licn)
+        await wait_for_balance(conn, helper.address(), helper_budget, timeout=45.0)
+
+        send_spores = min(remaining, max_send_spores)
+        signature = await conn.transfer(helper, recipient, send_spores)
+        await wait_for_transaction(conn, signature, timeout=45.0)
+
+        expected_balance = current_spores + send_spores
+        balance = await wait_for_balance(conn, recipient, expected_balance, timeout=45.0)
+        current_spores = extract_spores(balance)
+
+    return current_spores, helper_count
 
 
 def extract_spores(balance: dict | None) -> int:
@@ -463,23 +541,30 @@ async def main():
                 f"Developer wallet covers deploy fee ({current_spores / 1e9:.4f} LICN >= {required_spores / 1e9:.4f} LICN)"
             )
         else:
-            donor, donor_spores, donor_label = await find_funded_local_signer(conn, dev_addr)
-            if donor is None:
-                fail(
-                    "Developer deploy funding",
-                    f"need {required_spores} spores, have {current_spores}, no funded donor found",
+            try:
+                funded_spores, helper_count = await top_up_with_local_airdrop_helpers(
+                    conn,
+                    dev.address(),
+                    required_spores,
                 )
-            else:
-                top_up = required_spores - current_spores + 1_000_000_000
-                sig = await conn.transfer(donor, dev.address(), top_up)
-                try:
-                    await wait_for_transaction(conn, sig, timeout=45.0)
-                except TimeoutError:
-                    pass
-                funded_balance = await wait_for_balance(conn, dev.address(), required_spores, timeout=60.0)
                 ok(
-                    f"Developer wallet topped up from {donor_label} ({extract_spores(funded_balance) / 1e9:.4f} LICN, donor had {donor_spores / 1e9:.4f} LICN)"
+                    f"Developer wallet topped up via {helper_count} local airdrop helper(s) ({funded_spores / 1e9:.4f} LICN)"
                 )
+            except Exception:
+                donor, donor_spores, donor_label = await find_funded_local_signer(conn, dev_addr)
+                if donor is None:
+                    fail(
+                        "Developer deploy funding",
+                        f"need {required_spores} spores, have {current_spores}, no funded donor found",
+                    )
+                else:
+                    top_up = required_spores - current_spores + 1_000_000_000
+                    sig = await conn.transfer(donor, dev.address(), top_up)
+                    await wait_for_transaction(conn, sig, timeout=45.0)
+                    funded_balance = await wait_for_balance(conn, dev.address(), required_spores, timeout=60.0)
+                    ok(
+                        f"Developer wallet topped up from {donor_label} ({extract_spores(funded_balance) / 1e9:.4f} LICN, donor had {donor_spores / 1e9:.4f} LICN)"
+                    )
     except Exception as e:
         fail("Developer deploy funding", str(e))
 

@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use lichen_core::{Keypair, Pubkey, MAX_CONTRACT_CODE};
+use lichen_core::{Keypair, KeypairFile, Pubkey, MAX_CONTRACT_CODE};
 use std::path::PathBuf;
 
 mod client;
@@ -900,7 +900,13 @@ async fn main() -> Result<()> {
                 }
             };
 
-            keypair_mgr.save_keypair(&keypair, &path)?;
+            let password = lichen_core::require_runtime_keypair_password(
+                "validator keypair generation",
+            )
+            .map_err(anyhow::Error::msg)?;
+            KeypairFile::from_keypair(&keypair)
+                .save_with_password(&path, password.as_deref(), password.is_some())
+                .map_err(anyhow::Error::msg)?;
 
             println!("🦞 Validator keypair initialized!");
             println!("📍 Pubkey: {}", pubkey.to_base58());

@@ -3421,9 +3421,11 @@ dependencies = [
 name = "lichen-core"
 version = "0.5.5"
 dependencies = [
+ "aes-gcm",
  "alloy-consensus",
  "alloy-primitives 0.8.26",
  "alloy-rlp",
+ "argon2",
  "ark-bn254 0.4.0",
  "ark-crypto-primitives",
  "ark-ec 0.4.2",

@@ -2,6 +2,17 @@
 
 set -euo pipefail
 
+# Restore a sane tool PATH when the caller shell exported a stripped environment.
+BOOTSTRAP_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.cargo/bin" ]; then
+  BOOTSTRAP_PATH="${HOME}/.cargo/bin:${BOOTSTRAP_PATH}"
+fi
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
+  BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
+fi
+PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+export PATH
+
 NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
 SOLANA_RPC_URL=${2:-${CUSTODY_SOLANA_RPC_URL:-}}
@@ -27,6 +38,7 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+LOCAL_CLUSTER_SCRIPT="$REPO_ROOT/scripts/start-local-3validators.sh"
 
 LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT="$REPO_ROOT/keypairs/release-signing-key.json"
 
@@ -214,7 +226,8 @@ refresh_changed_contract_wasm
 clear_local_peer_trust_state
 
 cleanup_started_processes() {
-  kill "$V1_PID" "$V2_PID" "$V3_PID" "$CUSTODY_PID" 2>/dev/null || true
+  "$LOCAL_CLUSTER_SCRIPT" stop >/dev/null 2>&1 || true
+  kill "$CUSTODY_PID" 2>/dev/null || true
   if [ -n "${FAUCET_PID:-}" ]; then
     kill "$FAUCET_PID" 2>/dev/null || true
   fi
@@ -348,26 +361,14 @@ wait_for_validator_cluster_ready() {
   return 1
 }
 
-./run-validator.sh "$NETWORK" 1 >"${LOG_DIR}/validator-1.log" 2>&1 &
-V1_PID=$!
-
-sleep 2
-
-./run-validator.sh "$NETWORK" 2 >"${LOG_DIR}/validator-2.log" 2>&1 &
-V2_PID=$!
-
-sleep 2
-
-./run-validator.sh "$NETWORK" 3 >"${LOG_DIR}/validator-3.log" 2>&1 &
-V3_PID=$!
-
-sleep 2
+echo "🦞 Starting canonical 3-validator local cluster..."
+LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start
 
 wait_for_file "$GENESIS_TREASURY_KEYPAIR" "genesis treasury keypair"
 wait_for_file "$GENESIS_PRIMARY_KEYPAIR" "genesis primary keypair"
 
 mkdir -p ./keypairs
-cp "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
+install -m 600 "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
 export CUSTODY_TREASURY_KEYPAIR="${CUSTODY_TREASURY_KEYPAIR:-$LOCAL_DEPLOYER_KEYPAIR}"
 
 CLUSTER_RPC_URL="$(wait_for_healthy_rpc "$LOCAL_HEALTH_TIMEOUT_SECS")"
@@ -421,7 +422,7 @@ fi
 echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"
 echo "Cluster RPC: $CLUSTER_RPC_URL"
-echo "Validator PIDs: $V1_PID $V2_PID $V3_PID"
+echo "Validator launcher: $LOCAL_CLUSTER_SCRIPT start"
 echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"

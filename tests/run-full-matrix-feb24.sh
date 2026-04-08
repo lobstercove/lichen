@@ -11,7 +11,7 @@ CLUSTER_RESET_STATE="${RESET_MATRIX_STATE:-1}"
 CLUSTER_BUILD_FIRST="${MATRIX_BUILD_FIRST:-1}"
 CLUSTER_STAGGER_SECS="${MATRIX_STAGGER_SECS:-15}"
 CLUSTER_MIN_VALIDATORS="${MATRIX_MIN_VALIDATORS:-3}"
-MATRIX_REUSE_HEALTHY_CLUSTER="${MATRIX_REUSE_HEALTHY_CLUSTER:-0}"
+MATRIX_REUSE_HEALTHY_CLUSTER="${MATRIX_REUSE_HEALTHY_CLUSTER:-1}"
 MATRIX_CUSTODY_URL="${CUSTODY_URL:-http://127.0.0.1:9105}"
 MATRIX_RUN_CUSTODY_WITHDRAWAL_E2E="${MATRIX_RUN_CUSTODY_WITHDRAWAL_E2E:-1}"
 
@@ -54,6 +54,10 @@ cluster_has_quorum_now() {
     fi
   done
   return 0
+}
+
+faucet_ok_now() {
+  curl -sf --connect-timeout 1 --max-time 2 http://127.0.0.1:9100/health >/dev/null 2>&1
 }
 
 ensure_cluster_ready() {
@@ -242,8 +246,8 @@ MATRIX_CUSTODY_FIXTURES_READY=0
 : > "$REPORT"
 
 echo "[full-matrix] preflight: start matrix cluster" | tee -a "$LOG"
-if [[ "$MATRIX_REUSE_HEALTHY_CLUSTER" == "1" ]] && cluster_has_quorum_now; then
-  echo "[full-matrix] healthy cluster already running; reusing existing validators (skip reset/rebuild)" | tee -a "$LOG"
+if [[ "$MATRIX_REUSE_HEALTHY_CLUSTER" == "1" ]] && cluster_has_quorum_now && faucet_ok_now; then
+  echo "[full-matrix] healthy full local stack already running; reusing existing validators/services (skip reset/rebuild)" | tee -a "$LOG"
   CLUSTER_FORCE_MANAGED=0
   CLUSTER_RESET_STATE=0
   CLUSTER_BUILD_FIRST=0

@@ -73,6 +73,7 @@ const RESERVE_WARNING_BPS: u64 = 10_200; // 102% — warn if close to floor
 const ADMIN_KEY: &[u8] = b"lusd_admin";
 const PENDING_ADMIN_KEY: &[u8] = b"lusd_pending_admin";
 const ATTESTER_KEY: &[u8] = b"lusd_attester";
+const MINTER_KEY: &[u8] = b"lusd_minter";
 const BOOTSTRAP_COMPLETE_KEY: &[u8] = b"lusd_bootstrap_complete";
 const PAUSED_KEY: &[u8] = b"lusd_paused";
 const REENTRANCY_KEY: &[u8] = b"lusd_reentrancy";
@@ -200,6 +201,11 @@ fn require_admin(caller: &[u8; 32]) -> bool {
     !is_zero(&admin) && *caller == admin
 }
 
+fn require_minter(caller: &[u8; 32]) -> bool {
+    let minter = load_addr(MINTER_KEY);
+    !is_zero(&minter) && *caller == minter
+}
+
 fn require_attester(caller: &[u8; 32]) -> bool {
     let attester = load_addr(ATTESTER_KEY);
     !is_zero(&attester) && *caller == attester
@@ -290,6 +296,7 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 
     storage_set(ADMIN_KEY, &addr);
     storage_set(ATTESTER_KEY, &addr);
+    storage_set(MINTER_KEY, &addr);
     storage_set(BOOTSTRAP_COMPLETE_KEY, &[0u8]);
     save_u64(TOTAL_SUPPLY_KEY, 0);
     save_u64(TOTAL_MINTED_KEY, 0);
@@ -327,7 +334,7 @@ pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
         reentrancy_exit();
         return 1;
     }
-    if !require_admin(&caller_addr) {
+    if !require_minter(&caller_addr) {
         reentrancy_exit();
         return 2;
     }
@@ -832,7 +839,9 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
     if is_zero(&new_addr) {
         return 3;
     }
-    if is_bootstrap_complete() && new_addr == load_addr(ATTESTER_KEY) {
+    if is_bootstrap_complete()
+        && (new_addr == load_addr(ATTESTER_KEY) || new_addr == load_addr(MINTER_KEY))
+    {
         return 4;
     }
     storage_set(PENDING_ADMIN_KEY, &new_addr);
@@ -858,13 +867,47 @@ pub extern "C" fn accept_admin(caller: *const u8) -> u32 {
     if pending_admin != caller_addr {
         return 2;
     }
-    if is_bootstrap_complete() && caller_addr == load_addr(ATTESTER_KEY) {
+    if is_bootstrap_complete()
+        && (caller_addr == load_addr(ATTESTER_KEY) || caller_addr == load_addr(MINTER_KEY))
+    {
         return 3;
     }
 
     storage_set(ADMIN_KEY, &caller_addr);
     storage_set(PENDING_ADMIN_KEY, &[0u8; 32]);
     log_info("lUSD: admin accepted");
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn set_minter(caller: *const u8, new_minter: *const u8) -> u32 {
+    let mut caller_addr = [0u8; 32];
+    let mut new_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(new_minter, new_addr.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
+    }
+    if !require_admin(&caller_addr) {
+        return 2;
+    }
+    if is_zero(&new_addr) {
+        return 3;
+    }
+    if is_bootstrap_complete()
+        && (new_addr == load_addr(ADMIN_KEY) || new_addr == load_addr(ATTESTER_KEY))
+    {
+        return 4;
+    }
+    if load_addr(MINTER_KEY) == new_addr {
+        return 0;
+    }
+
+    storage_set(MINTER_KEY, &new_addr);
+    log_info("lUSD: mint authority updated");
     0
 }
 
@@ -886,7 +929,9 @@ pub extern "C" fn set_attester(caller: *const u8, new_attester: *const u8) -> u3
     if is_zero(&new_addr) {
         return 3;
     }
-    if is_bootstrap_complete() && new_addr == load_addr(ADMIN_KEY) {
+    if is_bootstrap_complete()
+        && (new_addr == load_addr(ADMIN_KEY) || new_addr == load_addr(MINTER_KEY))
+    {
         return 4;
     }
     if load_addr(ATTESTER_KEY) == new_addr {
@@ -920,7 +965,13 @@ pub extern "C" fn complete_bootstrap(caller: *const u8) -> u32 {
 
     let admin = load_addr(ADMIN_KEY);
     let attester = load_addr(ATTESTER_KEY);
-    if is_zero(&attester) || attester == admin {
+    let minter = load_addr(MINTER_KEY);
+    if is_zero(&attester)
+        || is_zero(&minter)
+        || attester == admin
+        || attester == minter
+        || admin == minter
+    {
         return 3;
     }
     if load_u64(RESERVE_ATTESTED_KEY) == 0 || load_u64(RESERVE_SLOT_KEY) == 0 {
@@ -1262,6 +1313,11 @@ mod tests {
         test_mock::set_caller(new_admin);
         assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 2);
         assert_eq!(accept_admin(new_admin.as_ptr()), 0);
+        assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 2);
+        test_mock::set_caller(admin);
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+        test_mock::set_caller(new_admin);
+        assert_eq!(set_minter(new_admin.as_ptr(), new_admin.as_ptr()), 0);
         assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
         assert_eq!(load_addr(PENDING_ADMIN_KEY), [0u8; 32]);
     }
@@ -1288,6 +1344,7 @@ mod tests {
         reset_store();
         let admin = addr(1);
         let attester = addr(7);
+        let minter = addr(8);
         let user = addr(2);
         let proof = addr(9);
         initialize(admin.as_ptr());
@@ -1295,6 +1352,7 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(complete_bootstrap(admin.as_ptr()), 3);
         assert_eq!(set_attester(admin.as_ptr(), attester.as_ptr()), 0);
+        assert_eq!(set_minter(admin.as_ptr(), minter.as_ptr()), 0);
         assert_eq!(
             attest_reserves(admin.as_ptr(), 5_000_000, proof.as_ptr()),
             2
@@ -1312,10 +1370,14 @@ mod tests {
         assert_eq!(complete_bootstrap(admin.as_ptr()), 0);
         assert_eq!(transfer_admin(admin.as_ptr(), attester.as_ptr()), 4);
         assert_eq!(set_attester(admin.as_ptr(), admin.as_ptr()), 4);
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+        assert_eq!(set_attester(admin.as_ptr(), minter.as_ptr()), 4);
+        assert_eq!(set_minter(admin.as_ptr(), attester.as_ptr()), 4);
+
+        test_mock::set_caller(minter);
+        assert_eq!(mint(minter.as_ptr(), user.as_ptr(), 1_000_000), 0);
 
         test_mock::set_slot(100 + MAX_ATTESTATION_AGE_SLOTS + 1);
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 10);
+        assert_eq!(mint(minter.as_ptr(), user.as_ptr(), 1_000_000), 10);
 
         test_mock::set_caller(attester);
         assert_eq!(
@@ -1323,8 +1385,8 @@ mod tests {
             0
         );
 
-        test_mock::set_caller(admin);
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+        test_mock::set_caller(minter);
+        assert_eq!(mint(minter.as_ptr(), user.as_ptr(), 1_000_000), 0);
     }
 
     // ---- Edge cases ----

@@ -2,24 +2,16 @@
 // Production-ready keypair loading with proper file handling
 // Note: This is the validator-specific keypair loader. CLI uses cli/src/keygen.rs.
 
-use anyhow::{bail, Context, Result};
-use lichen_core::Keypair;
-use serde::{Deserialize, Serialize};
-use std::fs;
+use anyhow::{bail, Result};
+use lichen_core::{
+    keypair_file::{
+        copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        require_runtime_keypair_password,
+    },
+    Keypair, KeypairFile,
+};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
-
-/// Keypair file format with a 32-byte seed, full PQ verifying key bytes,
-/// and the compact address for operator display.
-#[derive(Debug, Serialize, Deserialize)]
-struct KeypairFile {
-    #[serde(rename = "privateKey")]
-    private_key: Vec<u8>,
-    #[serde(rename = "publicKey")]
-    public_key: Vec<u8>,
-    #[serde(rename = "publicKeyBase58")]
-    public_key_base58: String,
-}
 
 /// Load validator keypair from file or generate new one.
 ///
@@ -41,6 +33,24 @@ pub fn load_or_generate_keypair(
     data_dir: Option<&Path>,
     network: Option<&str>,
 ) -> Result<Keypair> {
+    let password = require_runtime_keypair_password("validator keypair load")
+        .map_err(anyhow::Error::msg)?;
+    load_or_generate_keypair_with_options(
+        config_path,
+        data_dir,
+        network,
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    )
+}
+
+fn load_or_generate_keypair_with_options(
+    config_path: Option<&str>,
+    data_dir: Option<&Path>,
+    network: Option<&str>,
+    password: Option<&str>,
+    allow_plaintext: bool,
+) -> Result<Keypair> {
     // 1. Explicit CLI path
     if let Some(path) = config_path {
         let p = PathBuf::from(path);
@@ -49,7 +59,7 @@ pub fn load_or_generate_keypair(
                 "📁 Loading validator keypair from CLI path: {}",
                 p.display()
             );
-            return load_keypair(&p);
+            return load_keypair_with_options(&p, password, allow_plaintext);
         }
         warn!("⚠️  Specified keypair path does not exist: {}", p.display());
     }
@@ -62,7 +72,7 @@ pub fn load_or_generate_keypair(
                 "📁 Loading validator keypair from data dir: {}",
                 data_dir_path.display()
             );
-            return load_keypair(&data_dir_path);
+            return load_keypair_with_options(&data_dir_path, password, allow_plaintext);
         }
     }
 
@@ -74,13 +84,13 @@ pub fn load_or_generate_keypair(
                 "📁 Loading validator keypair from shared path: {}",
                 shared_path.display()
             );
-            let keypair = load_keypair(&shared_path)?;
+            let keypair = load_keypair_with_options(&shared_path, password, allow_plaintext)?;
 
             // Copy into data directory for fast future loads
             if let Some(dir) = data_dir {
                 let data_dir_path = dir.join("validator-keypair.json");
                 if !data_dir_path.exists() {
-                    match save_keypair(&keypair, &data_dir_path) {
+                    match copy_secure_file(&shared_path, &data_dir_path) {
                         Ok(()) => info!(
                             "📋 Copied keypair into data dir: {}",
                             data_dir_path.display()
@@ -103,7 +113,7 @@ pub fn load_or_generate_keypair(
     let save_path = data_dir
         .map(|d| d.join("validator-keypair.json"))
         .unwrap_or_else(|| PathBuf::from("validator-keypair.json"));
-    if let Err(e) = save_keypair(&keypair, &save_path) {
+    if let Err(e) = save_keypair_with_options(&keypair, &save_path, password) {
         warn!("Failed to save keypair: {}. Will use in-memory only.", e);
     } else {
         info!("💾 Saved validator keypair to: {}", save_path.display());
@@ -112,7 +122,7 @@ pub fn load_or_generate_keypair(
     // Also save to shared HOME path so identity survives state flushes
     if let Some(net) = network {
         let shared_path = shared_validator_keypair_path(net);
-        match save_keypair(&keypair, &shared_path) {
+        match save_keypair_with_options(&keypair, &shared_path, password) {
             Ok(()) => info!(
                 "💾 Saved validator keypair (shared): {}",
                 shared_path.display()
@@ -150,59 +160,27 @@ pub fn shared_validator_keypair_path(network: &str) -> PathBuf {
 
 /// Load keypair from file
 fn load_keypair(path: &Path) -> Result<Keypair> {
-    let json = fs::read_to_string(path).context("Failed to read keypair file")?;
-
-    let keypair_file: KeypairFile =
-        serde_json::from_str(&json).context("Failed to parse keypair file")?;
-
-    if keypair_file.private_key.len() != 32 {
-        bail!("Invalid private key length: expected 32 bytes");
-    }
-
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&keypair_file.private_key);
-    let keypair = Keypair::from_seed(&seed);
-    if !keypair_file.public_key_base58.is_empty()
-        && keypair.pubkey().to_base58() != keypair_file.public_key_base58
-    {
-        bail!("Keypair file publicKeyBase58 does not match derived PQ address");
-    }
-    // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
-    seed.iter_mut().for_each(|b| *b = 0);
-    Ok(keypair)
+    let password = require_runtime_keypair_password("validator keypair load")
+        .map_err(anyhow::Error::msg)?;
+    load_keypair_with_options(path, password.as_deref(), plaintext_keypair_compat_allowed())
 }
 
-/// Save keypair to file
-fn save_keypair(keypair: &Keypair, path: &Path) -> Result<()> {
-    // Create parent directories
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create directory")?;
-    }
+fn load_keypair_with_options(
+    path: &Path,
+    password: Option<&str>,
+    allow_plaintext: bool,
+) -> Result<Keypair> {
+    load_keypair_with_password_policy(path, password, allow_plaintext).map_err(anyhow::Error::msg)
+}
 
-    // Create keypair file
-    let pubkey = keypair.pubkey();
-    let public_key = keypair.public_key();
-    let seed = keypair.to_seed();
-
-    let keypair_file = KeypairFile {
-        private_key: seed.to_vec(),
-        public_key: public_key.bytes,
-        public_key_base58: pubkey.to_base58(),
-    };
-
-    // Serialize and write
-    let json = serde_json::to_string_pretty(&keypair_file)?;
-    fs::write(path, json)?;
-
-    // Set secure permissions (Unix only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let permissions = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(path, permissions)?;
-    }
-
-    Ok(())
+fn save_keypair_with_options(
+    keypair: &Keypair,
+    path: &Path,
+    password: Option<&str>,
+) -> Result<()> {
+    KeypairFile::from_keypair(keypair)
+        .save_with_password(path, password, password.is_some())
+        .map_err(anyhow::Error::msg)
 }
 
 /// Load keypair from environment variable or file
@@ -244,20 +222,34 @@ mod tests {
         let keypair_path_string = keypair_path.to_string_lossy().to_string();
 
         let original_keypair = Keypair::new();
-        save_keypair(&original_keypair, &keypair_path).expect("save original keypair");
+        save_keypair_with_options(&original_keypair, &keypair_path, None)
+            .expect("save original keypair");
 
-        let loaded_original = load_or_generate_keypair(Some(&keypair_path_string), 0, None, None)
-            .expect("load original");
+        let loaded_original = load_or_generate_keypair_with_options(
+            Some(&keypair_path_string),
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("load original");
         assert_eq!(loaded_original.pubkey(), original_keypair.pubkey());
 
         let mut rotated_keypair = Keypair::new();
         while rotated_keypair.pubkey() == original_keypair.pubkey() {
             rotated_keypair = Keypair::new();
         }
-        save_keypair(&rotated_keypair, &keypair_path).expect("save rotated keypair");
+        save_keypair_with_options(&rotated_keypair, &keypair_path, None)
+            .expect("save rotated keypair");
 
-        let loaded_rotated = load_or_generate_keypair(Some(&keypair_path_string), 0, None, None)
-            .expect("load rotated");
+        let loaded_rotated = load_or_generate_keypair_with_options(
+            Some(&keypair_path_string),
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("load rotated");
         assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
         assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
     }

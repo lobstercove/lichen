@@ -118,6 +118,17 @@ Other important outputs:
 - VPS validator envs: `/etc/lichen/env-testnet` and `/etc/lichen/env-mainnet`
 - VPS custody envs: `/etc/lichen/custody-env` and `/etc/lichen/custody-env-mainnet`
 
+## Keypair password policy
+
+Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before the first validator, genesis, custody, or signer start and keep the same value available on every restart.
+
+Operational rules:
+
+- canonical validator, treasury, genesis-primary, and signer keypair JSON files are encrypted at rest when `LICHEN_KEYPAIR_PASSWORD` is set
+- production loaders now refuse plaintext keypair files unless `LICHEN_LOCAL_DEV=1` or `LICHEN_ALLOW_PLAINTEXT_KEYPAIRS=1` is explicitly set
+- local launchers still allow plaintext compatibility for throwaway development, but the secure local E2E path should export `LICHEN_KEYPAIR_PASSWORD` so the same code path is exercised before redeploy
+- any helper copy of a keypair file must preserve owner-only permissions; use the checked-in scripts rather than ad hoc `cp`
+
 ## Local Runbook
 
 ### Local 3-validator cluster
@@ -127,6 +138,7 @@ Use this when you want the verified multi-validator path with signed metadata ge
 Start from a clean state:
 
 ```bash
+export LICHEN_KEYPAIR_PASSWORD='local-e2e-secret'
 ./scripts/start-local-3validators.sh start-reset
 ```
 
@@ -173,6 +185,7 @@ Use this when you want validators plus custody, faucet, and first-boot deploy.
 Start:
 
 ```bash
+export LICHEN_KEYPAIR_PASSWORD='local-e2e-secret'
 ./scripts/start-local-stack.sh testnet
 ```
 
@@ -216,6 +229,8 @@ If you want to reuse an already-running cluster in the validator test harness:
 ```bash
 LICHEN_REUSE_EXISTING_CLUSTER=1 bash tests/local-multi-validator-test.sh
 ```
+
+Keep `LICHEN_KEYPAIR_PASSWORD` exported while running Python or SDK-driven E2Es against that cluster. The helper files under `keypairs/` and `data/state-*/genesis-keys/` may now be encrypted canonical keypair JSON, and the SDK loader uses the same password to open them.
 
 ## Genesis Runbook
 
@@ -411,6 +426,8 @@ Service names:
 
 Run these steps on the first validator only.
 
+Before Step 1, set a fresh high-entropy `LICHEN_KEYPAIR_PASSWORD` in `/etc/lichen/env-<net>` and the matching `/etc/lichen/custody-env[-mainnet]`. The validator, genesis builder, custody service, and threshold signer now share the canonical encrypted keypair format, so the same password must be present anywhere those files are loaded.
+
 1. Start the validator once so it generates `validator-keypair.json`.
 2. Record `publicKeyBase58` from that file.
 3. Stop the service and clear any temporary state.
@@ -474,6 +491,8 @@ DEPLOY_NETWORK=mainnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:989
 
 This is the cleanest way to refresh the deploy manifest, helper key alignment, and signed metadata manifest in the current repo state.
 
+The helper key alignment step now copies the encrypted `genesis-primary-*.json` file with mode `600`. That repo-local helper represents the current wrapped-token operational minter key used by local bootstrap flows, not the long-lived governed admin authority.
+
 If the configured `LICHEN_SIGNED_METADATA_KEYPAIR_FILE` lives under `/etc/lichen/secrets/`, the checkout owner may not be able to read it directly. In that case, copy it to a temporary user-readable path and pass it explicitly:
 
 ```bash
@@ -516,6 +535,8 @@ sudo systemctl start lichen-validator-testnet
 
 `deploy/setup.sh` creates the custody env files, but you still need to provision the secret material.
 
+Run `scripts/vps-post-genesis.sh` after genesis creation so `/etc/lichen/custody-treasury-<net>.json` is populated from the encrypted `genesis-primary-*.json` artifact with secure permissions. Despite the historical path name, this file is now the wrapped-token operational minter key used by custody for `mint()` flows; wrapped-token admin and contract ownership move to governance during genesis.
+
 Provision before starting custody:
 
 - `/etc/lichen/secrets/custody-master-seed-testnet.txt`
@@ -527,7 +548,16 @@ Permission model for those files matters:
 
 - `/etc/lichen/secrets` must be `root:lichen` with mode `750`.
 - Seed files must be `root:lichen` with mode `640`.
+- `/etc/lichen/custody-treasury-<net>.json` must remain `lichen:lichen` with mode `600`.
+- `LICHEN_KEYPAIR_PASSWORD` must be present in `/etc/lichen/custody-env` or `/etc/lichen/custody-env-mainnet` before custody starts, because that service now loads the same canonical encrypted keypair JSON used by genesis and validator helpers.
 - If you provision them as `root:root 600`, `lichen-custody` will fail with `Permission denied`.
+
+Wrapped-token authority split after genesis:
+
+- contract owner and wrapped-token admin live under the governance authority
+- custody keeps the current wrapped-token minter key until governance executes `set_minter`
+- wrapped-token attester rotation now runs through the oracle-committee approval lane via `set_attester`
+- cold admin transfer remains on the governance root via `transfer_admin` and `accept_admin`
 
 Then start the services:
 
@@ -599,7 +629,7 @@ The authoritative backup set for a VPS validator is:
 - `/etc/lichen/env-<net>`
 - `/etc/lichen/custody-env` on testnet or `/etc/lichen/custody-env-mainnet` on mainnet
 - `/etc/lichen/secrets/`
-- `/etc/lichen/custody-treasury-<net>.json`
+- `/etc/lichen/custody-treasury-<net>.json` (wrapped-token operational minter key)
 - `/etc/lichen/signed-metadata-manifest-<net>.json`
 - `/etc/lichen/incident-status-<net>.json`
 - `/etc/lichen/service-fleet-<net>.json`
@@ -741,9 +771,11 @@ Use `lichen-start.sh` only when you need a manual, foreground, or one-off debugg
 Examples:
 
 ```bash
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-start.sh testnet --foreground
 mkdir -p ./data/state-mainnet
 cp ./seeds.json ./data/state-mainnet/seeds.json
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-start.sh mainnet
 ```
 

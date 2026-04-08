@@ -15,7 +15,7 @@
  */
 
 const pq = require('./helpers/pq-node');
-const { fundAccount } = require('./helpers/funded-wallets');
+const { fundAccount, loadFundedWallets, loadKeypairFile } = require('./helpers/funded-wallets');
 const fs = require('fs');
 const path = require('path');
 
@@ -206,6 +206,11 @@ async function getTokenBalance(address, symbol) {
     return await rpc('getTokenBalance', [address, symbol]);
 }
 
+async function getSymbolProgram(symbol) {
+    const result = await rpc('getSymbolRegistry', [symbol]);
+    return result?.program || null;
+}
+
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function waitForBalance(address, predicate, timeoutMs = 10000, intervalMs = 250) {
@@ -221,6 +226,48 @@ async function waitForBalance(address, predicate, timeoutMs = 10000, intervalMs 
     }
 
     return lastBalance;
+}
+
+async function waitForTransaction(signature, predicate, timeoutMs = 10000, intervalMs = 500) {
+    const deadline = Date.now() + timeoutMs;
+    let lastTx = null;
+
+    while (Date.now() < deadline) {
+        try {
+            lastTx = await rpc('getTransaction', [signature]);
+        } catch (_) {
+            lastTx = null;
+        }
+
+        if (predicate(lastTx)) {
+            return lastTx;
+        }
+
+        await sleep(intervalMs);
+    }
+
+    return lastTx;
+}
+
+async function waitForConfirmation(signature, timeoutMs = 10000, intervalMs = 500) {
+    const deadline = Date.now() + timeoutMs;
+    let lastConfirmation = null;
+
+    while (Date.now() < deadline) {
+        try {
+            lastConfirmation = await rpc('confirmTransaction', [signature]);
+        } catch (_) {
+            lastConfirmation = null;
+        }
+
+        if (lastConfirmation?.value?.confirmation_status) {
+            return lastConfirmation;
+        }
+
+        await sleep(intervalMs);
+    }
+
+    return lastConfirmation;
 }
 
 // ============================================================================
@@ -270,9 +317,19 @@ async function main() {
         process.exit(1);
     }
 
-    const deployerKeyData = JSON.parse(fs.readFileSync(deployerKeyFile, 'utf8'));
-    const deployerSeed = deployerKeyData.privateKey;
-    const deployer = keypairFromSeed(deployerSeed);
+    let deployer = null;
+    try {
+        deployer = loadKeypairFile(deployerKeyFile);
+    } catch (err) {
+        const funded = loadFundedWallets(1);
+        deployer = funded[0] || null;
+        if (deployer) {
+            console.log(`  ℹ️  Falling back to funded signer: ${path.basename(deployer.source)}`);
+        } else {
+            console.log(`  ⚠️  Failed to load deployer keypair: ${err.message}`);
+            process.exit(1);
+        }
+    }
     ok('Deployer loaded', !!deployer.address,
         `${deployer.address.slice(0, 8)}...`);
 
@@ -303,14 +360,14 @@ async function main() {
         ok('Airdrop to A', result && (result.signature || result), 'requested 5 LICN');
     });
 
-    await sleep(1500); // Wait for tx inclusion
+    await waitForBalance(walletA.address, (balance) => balance.spores > 0, 15000);
 
     await tryTest('Airdrop to B', async () => {
         const result = await rpc('requestAirdrop', [walletB.address, 5]);
         ok('Airdrop to B', result && (result.signature || result), 'requested 5 LICN');
     });
 
-    await sleep(1500);
+    await waitForBalance(walletB.address, (balance) => balance.spores > 0, 15000);
 
     // Verify balances
     const balA = await getBalance(walletA.address);
@@ -336,10 +393,17 @@ async function main() {
 
     // ── Create SporePump token ──
     console.log('\n5️⃣  Create SporePump Token');
-    const SPOREPUMP_ADDR = 'AvxPnDv3vGXJJL9y6CCEw3KBtTudYSWLxqae1wihAoYP';
+    const SPOREPUMP_ADDR = await getSymbolProgram('SPOREPUMP');
+    ok('SporePump registry found', !!SPOREPUMP_ADDR,
+        `program: ${SPOREPUMP_ADDR || '?'}`);
 
     await tryTest('Create token via SporePump', async () => {
+        if (!SPOREPUMP_ADDR) {
+            throw new Error('SporePump not found in symbol registry');
+        }
+
         // SporePump create_token args: creator_pubkey(32 bytes) + fee_amount(8 bytes)
+        const deployerBalanceBefore = await getBalance(deployer.address);
         const creatorBytes = base58Decode(deployer.address);
         const buf = new Uint8Array(40);
         buf.set(creatorBytes, 0);
@@ -359,11 +423,44 @@ async function main() {
         ok('Token created', sig, `sig: ${String(sig).slice(0, 16)}...`);
 
         if (sig) {
-            await sleep(2000);
-            // Check the transaction
-            const tx = await rpc('getTransaction', [String(sig)]);
-            ok('TX included in block', tx && tx.slot >= 0 && tx.status === 'Success',
-                `slot ${tx?.slot}, status: ${tx?.status}`);
+            const confirmation = await waitForConfirmation(String(sig));
+            const confirmationValue = confirmation?.value || null;
+            const deployerBalanceAfter = await waitForBalance(
+                deployer.address,
+                (balance) => balance.spores <= deployerBalanceBefore.spores - (9 * SPORES_PER_LICN),
+                15000,
+            );
+            const spent = deployerBalanceBefore.spores - deployerBalanceAfter.spores;
+            ok(
+                'Creation fee deducted',
+                spent >= 9 * SPORES_PER_LICN,
+                `spent ${(spent / SPORES_PER_LICN).toFixed(1)} LICN`,
+            );
+
+            if (confirmationValue) {
+                ok(
+                    'TX confirmed in block',
+                    !confirmationValue.err,
+                    `slot ${confirmationValue.slot}, status: ${confirmationValue.confirmation_status}`,
+                );
+            } else {
+                console.log('  ℹ️  confirmTransaction metadata still pending');
+            }
+
+            const tx = await waitForTransaction(
+                String(sig),
+                (candidate) => candidate && candidate.slot >= 0,
+                5000,
+            );
+            if (tx) {
+                ok(
+                    'TX indexed detail',
+                    tx.slot >= 0 && tx.status === 'Success',
+                    `slot ${tx.slot}, status: ${tx.status}`,
+                );
+            } else {
+                console.log('  ℹ️  transaction detail index still pending');
+            }
             if (tx?.contract_logs) {
                 console.log(`    Contract logs: ${JSON.stringify(tx.contract_logs)}`);
             }

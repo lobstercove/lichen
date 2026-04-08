@@ -5,6 +5,17 @@
 
 set -euo pipefail
 
+# Restore a sane tool PATH when the caller shell exported a stripped environment.
+BOOTSTRAP_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.cargo/bin" ]; then
+	BOOTSTRAP_PATH="${HOME}/.cargo/bin:${BOOTSTRAP_PATH}"
+fi
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
+	BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
+fi
+PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+export PATH
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -17,6 +17,7 @@ All on-chain E2E tests require a running PQ-native validator cluster. The suppor
 cargo build --release
 
 # 2. Start a fresh 3-validator local cluster
+export LICHEN_KEYPAIR_PASSWORD='local-e2e-secret'
 bash scripts/start-local-3validators.sh start-reset
 
 # 3. Verify RPC health
@@ -27,6 +28,8 @@ curl -s http://127.0.0.1:8899 \
 # 4. Optional strict launch gate
 STRICT_NO_SKIPS=1 bash scripts/launch-verification.sh
 ```
+
+If you intentionally omit `LICHEN_KEYPAIR_PASSWORD`, the local launcher still works in explicit local-dev compatibility mode. That is useful for throwaway debugging, but it does not exercise the production encrypted-key path that the testnet and mainnet runbooks now require.
 
 For broader local-stack scenarios that also need custody or faucet sidecars, start those services with your existing harness before running the suites that depend on them.
 

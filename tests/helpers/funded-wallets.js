@@ -2,9 +2,17 @@
 
 const fs = require('fs');
 const path = require('path');
+const { argon2Sync, createDecipheriv, pbkdf2Sync } = require('crypto');
 const pq = require('./pq-node');
 
 const BS58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const KEYPAIR_PASSWORD_ENV = 'LICHEN_KEYPAIR_PASSWORD';
+const CANONICAL_ENCRYPTION_VERSION = 2;
+const ARGON2_MEMORY_COST_KIB = 19_456;
+const ARGON2_ITERATIONS = 2;
+const ARGON2_LANES = 1;
+const AES_GCM_NONCE_BYTES = 12;
+const AES_GCM_TAG_BYTES = 16;
 
 function bs58encode(bytes) {
   let lz = 0;
@@ -21,39 +29,233 @@ function bs58encode(bytes) {
 
 function bs58decode(str) {
   let num = 0n;
-  for (const c of str) { const i = BS58.indexOf(c); if (i < 0) throw new Error(`Bad b58: ${c}`); num = num * 58n + BigInt(i); }
-  const hex = num === 0n ? '' : num.toString(16); const padded = hex.length % 2 ? '0' + hex : hex;
-  const bytes = []; for (let i = 0; i < padded.length; i += 2) bytes.push(parseInt(padded.slice(i, i + 2), 16));
-  let lo = 0; for (let i = 0; i < str.length && str[i] === '1'; i++) lo++;
-  const r = new Uint8Array(lo + bytes.length); r.set(bytes, lo); return r;
+  for (const c of str) {
+    const i = BS58.indexOf(c);
+    if (i < 0) throw new Error(`Bad b58: ${c}`);
+    num = num * 58n + BigInt(i);
+  }
+  const hex = num === 0n ? '' : num.toString(16);
+  const padded = hex.length % 2 ? '0' + hex : hex;
+  const bytes = [];
+  for (let i = 0; i < padded.length; i += 2) bytes.push(parseInt(padded.slice(i, i + 2), 16));
+  let lo = 0;
+  for (let i = 0; i < str.length && str[i] === '1'; i++) lo++;
+  const out = new Uint8Array(lo + bytes.length);
+  out.set(bytes, lo);
+  return out;
 }
 
-function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
+function bytesToHex(bytes) {
+  return Array.from(bytes).map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function sameBytes(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function decodeStoredBytes(value, fieldName) {
+  if (Array.isArray(value)) return Buffer.from(value);
+  if (typeof value === 'string') {
+    const hex = value.startsWith('0x') ? value.slice(2) : value;
+    if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+      throw new Error(`${fieldName} must be a hex string, byte array, or buffer`);
+    }
+    return Buffer.from(hex, 'hex');
+  }
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value);
+  throw new Error(`${fieldName} must be a hex string, byte array, or buffer`);
+}
+
+function resolveKeypairPassword(password) {
+  return password ?? process.env[KEYPAIR_PASSWORD_ENV] ?? null;
+}
+
+function deriveCanonicalKey(password, salt) {
+  if (typeof argon2Sync !== 'function') {
+    throw new Error('Node runtime does not support crypto.argon2Sync for canonical keypair decryption');
+  }
+  return argon2Sync('argon2id', {
+    message: Buffer.from(password, 'utf8'),
+    nonce: Buffer.from(salt),
+    parallelism: ARGON2_LANES,
+    tagLength: 32,
+    memory: ARGON2_MEMORY_COST_KIB,
+    passes: ARGON2_ITERATIONS,
+  });
+}
+
+function decryptAes256Gcm(key, nonce, ciphertextWithTag, filePath) {
+  if (nonce.length !== AES_GCM_NONCE_BYTES) {
+    throw new Error(`Invalid AES-GCM nonce length in ${filePath}`);
+  }
+  if (ciphertextWithTag.length <= AES_GCM_TAG_BYTES) {
+    throw new Error(`Encrypted keypair payload is too short in ${filePath}`);
+  }
+
+  const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - AES_GCM_TAG_BYTES);
+  const authTag = ciphertextWithTag.subarray(ciphertextWithTag.length - AES_GCM_TAG_BYTES);
+  const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function maybeDeriveWallet(seed) {
+  try {
+    return pq.keypairFromSeed(new Uint8Array(seed));
+  } catch (_) {
+    return null;
+  }
+}
+
+function buildWalletFromSeed(seedBytes, raw, filePath) {
+  const seed = Buffer.from(seedBytes);
+  if (seed.length !== 32) {
+    throw new Error(`Keypair seed must be 32 bytes in ${filePath}`);
+  }
+
+  const derived = maybeDeriveWallet(seed);
+  const storedPublicKey = raw.publicKey ? new Uint8Array(decodeStoredBytes(raw.publicKey, 'publicKey')) : null;
+  const publicKey = storedPublicKey || derived?.publicKey;
+  if (!publicKey) {
+    throw new Error(`Keypair file missing publicKey and ML-DSA derivation is unavailable: ${filePath}`);
+  }
+  if (derived && storedPublicKey && !sameBytes(storedPublicKey, derived.publicKey)) {
+    throw new Error(`Keypair file publicKey does not match derived seed in ${filePath}`);
+  }
+
+  const derivedAddress = derived?.address || pq.bs58encode(pq.publicKeyToAddressBytes(publicKey));
+  const address = raw.address || raw.publicKeyBase58 || derivedAddress;
+  if (address !== derivedAddress) {
+    throw new Error(`Keypair file address does not match derived seed in ${filePath}`);
+  }
+
+  return {
+    seed: new Uint8Array(seed),
+    publicKey: new Uint8Array(publicKey),
+    address,
+  };
+}
+
+function parseStoredKeypair(raw, filePath = '<memory>', options = {}) {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`Invalid keypair JSON in ${filePath}`);
+  }
+
+  const password = resolveKeypairPassword(options.password);
+
+  if (raw.encrypted) {
+    if (!password) {
+      throw new Error(`Encrypted keypair requires ${KEYPAIR_PASSWORD_ENV} or an explicit password: ${filePath}`);
+    }
+    const version = Number(raw.encryption_version || 0);
+    if (version !== CANONICAL_ENCRYPTION_VERSION) {
+      throw new Error(`Unsupported canonical keypair encryption version ${version} in ${filePath}`);
+    }
+    const salt = decodeStoredBytes(raw.salt, 'salt');
+    const encryptedSeed = decodeStoredBytes(raw.privateKey, 'privateKey');
+    const nonce = encryptedSeed.subarray(0, AES_GCM_NONCE_BYTES);
+    const ciphertextWithTag = encryptedSeed.subarray(AES_GCM_NONCE_BYTES);
+    const key = deriveCanonicalKey(password, salt);
+    const plaintext = decryptAes256Gcm(key, nonce, ciphertextWithTag, filePath);
+    return buildWalletFromSeed(plaintext.subarray(0, 32), raw, filePath);
+  }
+
+  if (raw.encrypted_seed !== undefined) {
+    if (!password) {
+      throw new Error(`Encrypted keypair requires ${KEYPAIR_PASSWORD_ENV} or an explicit password: ${filePath}`);
+    }
+    const salt = decodeStoredBytes(raw.salt, 'salt');
+    const nonce = decodeStoredBytes(raw.nonce, 'nonce');
+    const ciphertext = decodeStoredBytes(raw.encrypted_seed, 'encrypted_seed');
+    const authTag = decodeStoredBytes(raw.tag, 'tag');
+    const key = pbkdf2Sync(Buffer.from(password, 'utf8'), salt, 600_000, 32, 'sha256');
+    const plaintext = decryptAes256Gcm(key, nonce, Buffer.concat([ciphertext, authTag]), filePath);
+    return buildWalletFromSeed(plaintext.subarray(0, 32), raw, filePath);
+  }
+
+  if (raw.seed !== undefined) {
+    return buildWalletFromSeed(decodeStoredBytes(raw.seed, 'seed'), raw, filePath);
+  }
+
+  if (raw.privateKey !== undefined) {
+    const seed = decodeStoredBytes(raw.privateKey, 'privateKey');
+    if (seed.length !== 32) {
+      throw new Error(`Unsupported plaintext privateKey length ${seed.length} in ${filePath}`);
+    }
+    return buildWalletFromSeed(seed, raw, filePath);
+  }
+
+  throw new Error(`Keypair file missing supported seed/privateKey fields in ${filePath}`);
+}
 
 function genKeypair() {
   return pq.generateKeypair();
 }
 
-function walletFromStoredKeypair(raw) {
-  if (!Array.isArray(raw.privateKey) || raw.privateKey.length !== 32 || !Array.isArray(raw.publicKey)) {
+function walletFromStoredKeypair(raw, options = {}) {
+  try {
+    return parseStoredKeypair(raw, options.filePath || '<memory>', options);
+  } catch (_) {
     return null;
   }
-  const seed = new Uint8Array(raw.privateKey);
-  const publicKey = new Uint8Array(raw.publicKey);
-  const address = raw.address
-    || raw.publicKeyBase58
-    || pq.bs58encode(pq.publicKeyToAddressBytes(publicKey));
-  return { seed, publicKey, address };
+}
+
+function loadKeypairFile(filePath, options = {}) {
+  const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return {
+    ...parseStoredKeypair(raw, filePath, options),
+    source: filePath,
+  };
+}
+
+function loadFirstMatchingKeypair(keysDir, predicate, options = {}) {
+  if (!fs.existsSync(keysDir)) return null;
+  const files = fs.readdirSync(keysDir).filter((file) => predicate(file)).sort();
+  for (const file of files) {
+    const filePath = path.join(keysDir, file);
+    try {
+      return loadKeypairFile(filePath, options);
+    } catch (_) { }
+  }
+  return null;
+}
+
+function findGenesisAdminKeypair(options = {}) {
+  const roots = options.roots || [process.cwd(), path.resolve(process.cwd(), '..')];
+  for (const root of roots) {
+    const dataDir = path.join(root, 'data');
+    if (fs.existsSync(dataDir)) {
+      const stateDirs = fs.readdirSync(dataDir)
+        .filter((name) => name.startsWith('state-') || name.startsWith('matrix-sdk-state-'))
+        .sort();
+      for (const stateDir of stateDirs) {
+        for (const keysDir of [
+          path.join(dataDir, stateDir, 'genesis-keys'),
+          path.join(dataDir, stateDir, 'blockchain.db', 'genesis-keys'),
+        ]) {
+          const keypair = loadFirstMatchingKeypair(keysDir, (file) => file.startsWith('genesis-primary'), options);
+          if (keypair) return keypair;
+        }
+      }
+    }
+
+    const keypair = loadFirstMatchingKeypair(path.join(root, 'keypairs'), (file) => file === 'deployer.json', options);
+    if (keypair) return keypair;
+  }
+
+  return null;
 }
 
 function loadKeysFromDir(keysDir, wallets, seen, limit) {
   if (!fs.existsSync(keysDir)) return;
   const files = fs.readdirSync(keysDir)
-    .filter((f) => f.endsWith('.json'))
-    .sort((a, b) => {
+    .filter((file) => file.endsWith('.json'))
+    .sort((left, right) => {
       const priority = (name) => {
-        // Prefer spendable grant/community fixtures before validator/bootstrap
-        // identities, which may carry stake but no spendable balance.
         if (name.startsWith('builder_grants')) return 0;
         if (name.startsWith('community_treasury')) return 1;
         if (name.startsWith('ecosystem_partnerships')) return 2;
@@ -65,21 +267,16 @@ function loadKeysFromDir(keysDir, wallets, seen, limit) {
         if (name.startsWith('genesis-signer')) return 8;
         return 9;
       };
-      return priority(a) - priority(b) || a.localeCompare(b);
+      return priority(left) - priority(right) || left.localeCompare(right);
     });
 
   for (const file of files) {
     if (wallets.length >= limit) return;
     try {
-      const raw = JSON.parse(fs.readFileSync(path.join(keysDir, file), 'utf8'));
-      // New ML-DSA-65 key format: { privateKey: number[], publicKey: number[], publicKeyBase58: string, ... }
-      const kp = walletFromStoredKeypair(raw);
-      if (kp) {
-        if (seen.has(kp.address)) continue;
-        seen.add(kp.address);
-        wallets.push({ ...kp, source: path.join(keysDir, file) });
-        continue;
-      }
+      const wallet = loadKeypairFile(path.join(keysDir, file));
+      if (seen.has(wallet.address)) continue;
+      seen.add(wallet.address);
+      wallets.push(wallet);
     } catch (_) { }
   }
 }
@@ -89,23 +286,21 @@ function loadFundedWallets(limit = 2) {
   const wallets = [];
   const seen = new Set();
 
-  // 1. Check artifacts/testnet/genesis-keys/ (has all 10 keys)
   for (const root of roots) {
     if (wallets.length >= limit) return wallets;
     loadKeysFromDir(path.join(root, 'artifacts', 'testnet', 'genesis-keys'), wallets, seen, limit);
   }
 
-  // 2. Check data/state-*/blockchain.db/genesis-keys/ (runtime location)
   for (const root of roots) {
     if (wallets.length >= limit) return wallets;
     const dataDir = path.join(root, 'data');
     if (!fs.existsSync(dataDir)) continue;
     try {
-      const stateDirs = fs.readdirSync(dataDir).filter((n) => n.startsWith('state-') || n.startsWith('matrix-sdk-state-'));
-      for (const st of stateDirs) {
+      const stateDirs = fs.readdirSync(dataDir).filter((name) => name.startsWith('state-') || name.startsWith('matrix-sdk-state-'));
+      for (const stateDir of stateDirs) {
         if (wallets.length >= limit) break;
-        loadKeysFromDir(path.join(dataDir, st, 'blockchain.db', 'genesis-keys'), wallets, seen, limit);
-        loadKeysFromDir(path.join(dataDir, st, 'genesis-keys'), wallets, seen, limit);
+        loadKeysFromDir(path.join(dataDir, stateDir, 'blockchain.db', 'genesis-keys'), wallets, seen, limit);
+        loadKeysFromDir(path.join(dataDir, stateDir, 'genesis-keys'), wallets, seen, limit);
       }
     } catch (_) { }
   }
@@ -113,14 +308,6 @@ function loadFundedWallets(limit = 2) {
   return wallets;
 }
 
-/**
- * Fund an account via airdrop (up to 10 LICN per call), faucet, or deployer transfer.
- * @param {string} address - Base58 address to fund
- * @param {number} amountLicn - Amount in LICN (will be split into max-10-LICN airdrops)
- * @param {string} rpcUrl - RPC endpoint URL (default: http://127.0.0.1:8899)
- * @param {string} faucetUrl - Faucet endpoint URL (default: http://127.0.0.1:9100)
- * @returns {Promise<boolean>} true if funded successfully
- */
 async function fundAccount(address, amountLicn = 10, rpcUrl = 'http://127.0.0.1:8899', faucetUrl = 'http://127.0.0.1:9100') {
   const http = require('http');
 
@@ -129,11 +316,21 @@ async function fundAccount(address, amountLicn = 10, rpcUrl = 'http://127.0.0.1:
       const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: params || [] });
       const url = new URL(rpcUrl);
       const req = http.request({
-        hostname: url.hostname, port: url.port, path: url.pathname, method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       }, (res) => {
-        let data = ''; res.on('data', (c) => data += c);
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
       req.on('error', reject);
       req.end(body);
@@ -145,43 +342,51 @@ async function fundAccount(address, amountLicn = 10, rpcUrl = 'http://127.0.0.1:
       const body = JSON.stringify({ address: addr, amount: amt });
       const url = new URL(faucetUrl);
       const req = http.request({
-        hostname: url.hostname, port: url.port, path: '/faucet/request', method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        hostname: url.hostname,
+        port: url.port,
+        path: '/faucet/request',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       }, (res) => {
-        let data = ''; res.on('data', (c) => data += c);
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
       req.on('error', reject);
       req.end(body);
     });
   }
 
-  // Strategy 1: Airdrop (max 10 LICN per call)
   let funded = 0;
-  const MAX_PER_AIRDROP = 10;
+  const maxPerAirdrop = 10;
   while (funded < amountLicn) {
-    const chunk = Math.min(MAX_PER_AIRDROP, amountLicn - funded);
+    const chunk = Math.min(maxPerAirdrop, amountLicn - funded);
     try {
       const res = await rpcCall('requestAirdrop', [address, chunk]);
       const result = res.result || res;
       if (result && (result.success || typeof result === 'string')) {
         funded += chunk;
-        if (funded < amountLicn) await new Promise(r => setTimeout(r, 200));
+        if (funded < amountLicn) await new Promise((resolve) => setTimeout(resolve, 200));
         continue;
       }
     } catch (_) { }
-    break; // airdrop failed, try faucet
+    break;
   }
   if (funded >= amountLicn) return true;
 
-  // Strategy 2: Faucet (max 10 LICN per request)
   while (funded < amountLicn) {
-    const chunk = Math.min(MAX_PER_AIRDROP, amountLicn - funded);
+    const chunk = Math.min(maxPerAirdrop, amountLicn - funded);
     try {
       const res = await faucetCall(address, chunk);
       if (res && (res.success || res.signature)) {
         funded += chunk;
-        if (funded < amountLicn) await new Promise(r => setTimeout(r, 200));
+        if (funded < amountLicn) await new Promise((resolve) => setTimeout(resolve, 200));
         continue;
       }
     } catch (_) { }
@@ -191,4 +396,14 @@ async function fundAccount(address, amountLicn = 10, rpcUrl = 'http://127.0.0.1:
   return funded > 0;
 }
 
-module.exports = { loadFundedWallets, fundAccount, genKeypair, bs58encode, bs58decode, bytesToHex, initCrypto: pq.init.bind(pq) };
+module.exports = {
+  loadFundedWallets,
+  fundAccount,
+  genKeypair,
+  bs58encode,
+  bs58decode,
+  bytesToHex,
+  initCrypto: pq.init.bind(pq),
+  loadKeypairFile,
+  findGenesisAdminKeypair,
+};

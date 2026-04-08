@@ -2,6 +2,8 @@
 
 This matrix is used with `tests/production-e2e-gate.sh` to track launch-blocking coverage.
 
+Execution order, suite ownership, and recent-runtime regression targets now live in `tests/PRODUCTION_E2E_EXPANSION_PLAN.md`. Treat that plan as the implementation tracker for closing the gaps below.
+
 ## Current automated coverage
 
 - Wallet lifecycle
@@ -57,6 +59,10 @@ This matrix is used with `tests/production-e2e-gate.sh` to track launch-blocking
   - social recovery set/approve/execute
   - delegation set/revoke + delegated write actions
   - premium-name auction create/bid/finalize
+- Governance and launchpad lifecycle with real identity prerequisites:
+  - bootstrap LichenID identity + reputation before proposing or voting
+  - proposal create/vote/finalize/execute with post-execution state checks
+  - launchpad creation/buy/sell/graduation into listed DEX pair
 - DeFi and app contract state-changing flows under real funded actors:
   - launchpad creation/buy/graduation
   - DEX swap/add/remove liquidity

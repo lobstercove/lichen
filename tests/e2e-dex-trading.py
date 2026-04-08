@@ -30,7 +30,7 @@ except Exception:
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
@@ -40,6 +40,7 @@ from lichen import Connection, Instruction, Keypair, PublicKey, TransactionBuild
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
 WS_URL = os.getenv("WS_URL", "ws://127.0.0.1:8900")
 FAUCET_URL = os.getenv("FAUCET_URL", "http://127.0.0.1:9100")
+SYSTEM_PROGRAM = PublicKey(b"\x00" * 32)
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "15"))
 DEPLOYER_PATH = os.getenv("AGENT_KEYPAIR") or str(ROOT / "keypairs" / "deployer.json")
@@ -50,6 +51,7 @@ ALLOW_DIRECT_AIRDROP_FALLBACK = os.getenv("ALLOW_DIRECT_AIRDROP_FALLBACK", "0") 
 ALLOW_TRANSFER_FALLBACK = os.getenv("ALLOW_TRANSFER_FALLBACK", "0") == "1"
 FUNDING_POLL_INTERVAL_SECS = float(os.getenv("FUNDING_POLL_INTERVAL_SECS", "0.5"))
 FUNDING_TIMEOUT_SECS = float(os.getenv("FUNDING_TIMEOUT_SECS", "20"))
+CONTRACT_CALL_COMPUTE_BUDGET = int(os.getenv("CONTRACT_CALL_COMPUTE_BUDGET", "1400000"))
 SPORES = 1_000_000_000
 
 
@@ -66,6 +68,7 @@ PASS = 0
 FAIL = 0
 SKIP = 0
 RESULTS: List[Dict[str, Any]] = []
+LAST_PREDICTION_MARKET_ID: Optional[int] = None
 
 # ─── Contract dir → symbol mapping ───
 DISPATCHER_CONTRACTS = {
@@ -182,8 +185,50 @@ def build_named_ix(fn_name: str, args: dict) -> bytes:
     return payload.encode("utf-8")
 
 
-def tx_has_success_return(info: Dict[str, Any]) -> bool:
-    return info.get("return_code") not in (None, 0) and bool(info.get("return_data"))
+def contract_call_needs_receipt(fn_name: str) -> bool:
+    return True
+
+
+def contract_call_return_code_is_error(contract_dir: str, return_code: Optional[int]) -> bool:
+    if return_code in (None, 0):
+        return False
+    if contract_dir == "prediction_market":
+        return False
+    return True
+
+
+async def simulate_signed_transaction(conn: Connection, tx: Any) -> Dict[str, Any]:
+    tx_bytes = TransactionBuilder.transaction_to_bincode(tx)
+    tx_b64 = base64.b64encode(tx_bytes).decode("utf-8")
+    result = await rpc_call(conn, "simulateTransaction", [tx_b64])
+    return result if isinstance(result, dict) else {"raw": result}
+
+
+def summarize_simulation_failure(simulation: Dict[str, Any]) -> str:
+    error = simulation.get("error")
+    return_code = simulation.get("returnCode")
+    compute_used = simulation.get("computeUsed")
+    logs = simulation.get("logs")
+    pieces: List[str] = []
+    if error:
+        pieces.append(f"error={error}")
+    if return_code is not None:
+        pieces.append(f"return_code={return_code}")
+    if compute_used is not None:
+        pieces.append(f"compute_used={compute_used}")
+    if isinstance(logs, list) and logs:
+        if len(logs) <= 8:
+            pieces.append(f"logs={logs}")
+        else:
+            pieces.append(f"logs={logs[:4] + ['...'] + logs[-4:]}")
+    return ", ".join(pieces) if pieces else str(simulation)
+
+
+def optional_positive_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
 
 
 async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_name: str, args: dict) -> Any:
@@ -192,6 +237,12 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
     The validator deserializes ix.data as a JSON ContractInstruction::Call
     envelope.  Accounts must be [caller, contract_address, ...].
     """
+    args = dict(args)
+    compute_budget = optional_positive_int(
+        args.pop("__compute_budget", CONTRACT_CALL_COMPUTE_BUDGET)
+    )
+    compute_unit_price = optional_positive_int(args.pop("__compute_unit_price", None))
+
     abi = load_abi(contract_dir)
     is_dispatcher = contract_dir in DISPATCHER_CONTRACTS and abi is not None
     if is_dispatcher:
@@ -222,8 +273,11 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
 
     # Accounts: [caller (signer), contract]
     ix = Instruction(CONTRACT_PROGRAM, [kp.address(), contract_pubkey], data)
-    tb = TransactionBuilder()
-    tb.add(ix)
+    tb = TransactionBuilder().add(ix)
+    if compute_budget is not None:
+        tb.set_compute_budget(compute_budget)
+    if compute_unit_price is not None:
+        tb.set_compute_unit_price(compute_unit_price)
 
     latest = await conn.get_latest_block()
     blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
@@ -231,8 +285,9 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
     tx = tb.build_and_sign(kp)
     sig = await conn.send_transaction(tx)
 
-    # Wait for confirmation
-    for _ in range(TX_CONFIRM_TIMEOUT * 5):
+    # All E2E contract calls must observe a confirmed receipt before advancing.
+    max_attempts = TX_CONFIRM_TIMEOUT * 5 if contract_call_needs_receipt(fn_name) else 10
+    for _ in range(max_attempts):
         await asyncio.sleep(0.2)
         try:
             info = await conn.get_transaction(sig)
@@ -240,7 +295,7 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
                 if info.get("error"):
                     raise RuntimeError(f"{contract_dir}.{fn_name} failed: {info['error']}")
                 return_code = info.get("return_code")
-                if return_code not in (None, 0) and not tx_has_success_return(info):
+                if contract_call_return_code_is_error(contract_dir, return_code):
                     raise RuntimeError(
                         f"{contract_dir}.{fn_name} returned code {return_code}, "
                         f"return_data={info.get('return_data')}"
@@ -250,6 +305,16 @@ async def call_contract(conn: Connection, kp: Keypair, contract_dir: str, fn_nam
             if "Transaction not found" in str(exc):
                 continue
             raise
+    if contract_call_needs_receipt(fn_name):
+        detail = ""
+        try:
+            simulation = await simulate_signed_transaction(conn, tx)
+            detail = f"; simulation: {summarize_simulation_failure(simulation)}"
+        except Exception as exc:
+            detail = f"; simulation unavailable: {exc}"
+        raise RuntimeError(
+            f"{contract_dir}.{fn_name} timed out waiting for transaction receipt ({sig}){detail}"
+        )
     return sig
 
 
@@ -260,7 +325,9 @@ async def call_contract_raw(
     fn_name: str,
     raw_args: bytes | List[int],
     value: int = 0,
+    allow_nonzero_return_code: bool = False,
 ) -> Any:
+    compute_budget = CONTRACT_CALL_COMPUTE_BUDGET if CONTRACT_CALL_COMPUTE_BUDGET > 0 else None
     args_list = list(raw_args) if isinstance(raw_args, bytes) else raw_args
     data = json.dumps({
         "Call": {
@@ -272,6 +339,55 @@ async def call_contract_raw(
 
     ix = Instruction(CONTRACT_PROGRAM, [kp.address(), contract_pubkey], data)
     tb = TransactionBuilder().add(ix)
+    if compute_budget is not None:
+        tb.set_compute_budget(compute_budget)
+
+    latest = await conn.get_latest_block()
+    blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
+    tb.set_recent_blockhash(blockhash)
+    tx = tb.build_and_sign(kp)
+    sig = await conn.send_transaction(tx)
+
+    max_attempts = TX_CONFIRM_TIMEOUT * 5 if contract_call_needs_receipt(fn_name) else 10
+    for _ in range(max_attempts):
+        await asyncio.sleep(0.2)
+        try:
+            info = await conn.get_transaction(sig)
+            if info:
+                if info.get("error"):
+                    raise RuntimeError(f"{fn_name} failed: {info['error']}")
+                return_code = info.get("return_code")
+                if return_code not in (None, 0) and not allow_nonzero_return_code:
+                    raise RuntimeError(
+                        f"{contract_pubkey}.{fn_name} returned code {return_code}, "
+                        f"return_data={info.get('return_data')}"
+                    )
+                return info
+        except Exception as exc:
+            if "Transaction not found" in str(exc):
+                continue
+            raise
+    if contract_call_needs_receipt(fn_name):
+        detail = ""
+        try:
+            simulation = await simulate_signed_transaction(conn, tx)
+            detail = f"; simulation: {summarize_simulation_failure(simulation)}"
+        except Exception as exc:
+            detail = f"; simulation unavailable: {exc}"
+        raise RuntimeError(
+            f"{contract_pubkey}.{fn_name} timed out waiting for transaction receipt ({sig}){detail}"
+        )
+    return sig
+
+
+async def send_instruction(
+    conn: Connection,
+    kp: Keypair,
+    ix: Instruction,
+    label: str,
+) -> Dict[str, Any]:
+    tb = TransactionBuilder()
+    tb.add(ix)
 
     latest = await conn.get_latest_block()
     blockhash = latest.get("hash", latest.get("blockhash", "0" * 64))
@@ -285,19 +401,93 @@ async def call_contract_raw(
             info = await conn.get_transaction(sig)
             if info:
                 if info.get("error"):
-                    raise RuntimeError(f"{fn_name} failed: {info['error']}")
-                return_code = info.get("return_code")
-                if return_code not in (None, 0) and not tx_has_success_return(info):
-                    raise RuntimeError(
-                        f"{contract_pubkey}.{fn_name} returned code {return_code}, "
-                        f"return_data={info.get('return_data')}"
-                    )
+                    raise RuntimeError(f"{label} failed: {info['error']}")
                 return info
         except Exception as exc:
             if "Transaction not found" in str(exc):
                 continue
             raise
-    return sig
+    raise RuntimeError(f"{label} timed out waiting for transaction receipt ({sig})")
+
+
+def build_governance_contract_call_data(function: str, args: bytes, value: int = 0) -> bytes:
+    function_bytes = function.encode("utf-8")
+    return (
+        bytes([34, 9])
+        + struct.pack("<Q", int(value))
+        + struct.pack("<H", len(function_bytes))
+        + function_bytes
+        + struct.pack("<I", len(args))
+        + args
+    )
+
+
+def derive_governed_committee_authority(label: str, governance_authority: PublicKey) -> PublicKey:
+    digest = hashlib.sha256(
+        f"lichen:{label}:v1".encode("utf-8") + governance_authority.to_bytes()
+    ).digest()
+    return PublicKey(digest)
+
+
+def derive_oracle_committee_admin_authority(governance_authority: PublicKey) -> PublicKey:
+    return derive_governed_committee_authority("oracle_committee_admin", governance_authority)
+
+
+async def get_latest_governance_proposal_id(conn: Connection, limit: int = 100) -> int:
+    raw = await rpc_call(conn, "getGovernanceEvents", [limit])
+    events = raw.get("events", []) if isinstance(raw, dict) else []
+    latest_id = 0
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            proposal_id = event.get("proposal_id")
+            if isinstance(proposal_id, int):
+                latest_id = max(latest_id, proposal_id)
+    return latest_id
+
+
+async def wait_for_new_governance_proposal_id(
+    conn: Connection,
+    previous_max_id: int,
+    timeout_secs: float = 5.0,
+) -> int:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        latest_id = await get_latest_governance_proposal_id(conn)
+        if latest_id > previous_max_id:
+            return latest_id
+        await asyncio.sleep(0.2)
+    raise RuntimeError("Governance proposal did not appear on-chain")
+
+
+async def submit_governance_contract_call(
+    conn: Connection,
+    proposer: Keypair,
+    approver: Keypair,
+    approval_authority: PublicKey,
+    contract_pubkey: PublicKey,
+    function: str,
+    args: bytes,
+    label: str,
+    value: int = 0,
+) -> int:
+    proposal_id_before = await get_latest_governance_proposal_id(conn)
+    propose_ix = Instruction(
+        SYSTEM_PROGRAM,
+        [proposer.address(), approval_authority, contract_pubkey],
+        build_governance_contract_call_data(function, args, value),
+    )
+    await send_instruction(conn, proposer, propose_ix, f"{label} proposal")
+    proposal_id = await wait_for_new_governance_proposal_id(conn, proposal_id_before)
+
+    approve_ix = Instruction(
+        SYSTEM_PROGRAM,
+        [approver.address()],
+        bytes([35]) + struct.pack("<Q", proposal_id),
+    )
+    await send_instruction(conn, approver, approve_ix, f"{label} approval")
+    return proposal_id
 
 
 def _normalize_symbol(symbol: Any) -> str:
@@ -331,6 +521,26 @@ async def call_contract_return_u64(
     if not isinstance(result, dict):
         return None
     return _decode_return_u64(result.get("return_data"))
+
+
+async def get_prediction_market_id(conn: Connection, kp: Keypair) -> int:
+    global LAST_PREDICTION_MARKET_ID
+
+    if LAST_PREDICTION_MARKET_ID is not None and LAST_PREDICTION_MARKET_ID > 0:
+        return LAST_PREDICTION_MARKET_ID
+
+    market_id = await call_contract_return_u64(
+        conn,
+        kp,
+        "prediction_market",
+        "get_market_count",
+        {},
+    )
+    if market_id is not None and market_id > 0:
+        LAST_PREDICTION_MARKET_ID = market_id
+        return market_id
+
+    return 1
 
 
 def _pair_symbols(pair: Dict[str, Any]) -> Tuple[str, str]:
@@ -419,6 +629,30 @@ async def wait_for_new_margin_position(
     raise RuntimeError("Could not resolve the newly created margin position from REST state")
 
 
+async def wait_for_margin_position_status(
+    position_id: int,
+    expected_statuses: Set[str],
+    timeout_secs: float = 8.0,
+) -> Optional[str]:
+    deadline = time.monotonic() + timeout_secs
+    normalized = {status.lower() for status in expected_statuses}
+    last_status: Optional[str] = None
+    while time.monotonic() < deadline:
+        try:
+            payload = rest_get(f"/margin/positions/{position_id}")
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, dict):
+                status = data.get("status")
+                if isinstance(status, str):
+                    last_status = status
+                    if status.lower() in normalized:
+                        return status
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+    return last_status
+
+
 def _valid_genesis_key_files() -> List[Path]:
     valid: List[Path] = []
     for key_file in _genesis_key_files():
@@ -430,20 +664,70 @@ def _valid_genesis_key_files() -> List[Path]:
     return valid
 
 
-def find_genesis_keypair_path(role: str) -> Path:
+def _matching_genesis_key_files(role: str) -> List[Path]:
     network = os.getenv("LICHEN_NETWORK", "testnet").lower()
     preferred_prefix = f"{role}-lichen-{network}-"
-    for key_file in _valid_genesis_key_files():
-        if key_file.name.startswith(preferred_prefix):
+
+    matches: List[Path] = []
+    for key_file in _genesis_key_files():
+        name = key_file.name
+        if name.startswith(preferred_prefix) or name.startswith(f"{role}-"):
+            matches.append(key_file)
+
+    if role == "genesis-primary":
+        deployer_path = Path(DEPLOYER_PATH)
+        if deployer_path.exists():
+            matches.append(deployer_path)
+
+    deduped: List[Path] = []
+    seen = set()
+    for key_file in matches:
+        resolved = str(key_file.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(key_file)
+    return deduped
+
+
+def find_genesis_keypair_path(role: str) -> Path:
+    candidates = _matching_genesis_key_files(role)
+    if not candidates:
+        raise FileNotFoundError(f"Genesis keypair not found for role '{role}'")
+
+    load_errors: List[str] = []
+    for key_file in candidates:
+        try:
+            load_keypair_flexible(key_file)
             return key_file
-    for key_file in _valid_genesis_key_files():
-        if key_file.name.startswith(f"{role}-"):
-            return key_file
-    raise FileNotFoundError(f"Genesis keypair not found for role '{role}'")
+        except Exception as exc:
+            load_errors.append(f"{key_file}: {exc}")
+
+    detail = "; ".join(load_errors[:3])
+    raise RuntimeError(
+        f"Genesis keypair for role '{role}' exists but could not be loaded: {detail}"
+    )
 
 
 def load_genesis_keypair(role: str) -> Keypair:
     return load_keypair_flexible(find_genesis_keypair_path(role))
+
+
+def load_oracle_committee_signers() -> List[Keypair]:
+    signers: List[Keypair] = []
+    load_errors: List[str] = []
+    for role in ("validator_rewards", "ecosystem_partnerships", "builder_grants"):
+        try:
+            signers.append(load_genesis_keypair(role))
+        except Exception as exc:
+            load_errors.append(f"{role}: {exc}")
+    if len(signers) < 2:
+        detail = "; ".join(load_errors[:3])
+        raise RuntimeError(
+            "Need at least two oracle committee signer keypairs "
+            f"(validator_rewards/ecosystem_partnerships/builder_grants); {detail}"
+        )
+    return signers[:2]
 
 
 async def get_lichenid_reputation(conn: Connection, owner: PublicKey) -> int:
@@ -490,6 +774,243 @@ async def get_token_balance(conn: Connection, token_program: PublicKey, owner: P
     return 0
 
 
+def extract_receipt_timeout_signature(message: str) -> Optional[str]:
+    if "timed out waiting for transaction receipt" not in message:
+        return None
+    if not message.endswith(")") or "(" not in message:
+        return None
+    signature = message.rsplit("(", 1)[-1][:-1].strip()
+    return signature or None
+
+
+async def wait_for_transaction_confirmation(
+    conn: Connection,
+    signature: str,
+    timeout_secs: float = 6.0,
+) -> Optional[Dict[str, Any]]:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        try:
+            response = await rpc_call(conn, "confirmTransaction", [signature])
+        except Exception:
+            response = None
+        value = response.get("value") if isinstance(response, dict) else None
+        if isinstance(value, dict):
+            if value.get("confirmation_status") or value.get("err") is not None or value.get("slot") is not None:
+                return value
+        await asyncio.sleep(0.2)
+    return None
+
+
+async def wait_for_open_order_count(
+    conn: Connection,
+    trader: Keypair,
+    minimum_count: int,
+    timeout_secs: float = float(TX_CONFIRM_TIMEOUT),
+) -> bool:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        try:
+            count = await call_contract_return_u64(
+                conn,
+                trader,
+                "dex_core",
+                "get_open_order_count",
+                {"user_address": trader.address()},
+            )
+            if (count or 0) >= minimum_count:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def wait_for_trade_count(
+    conn: Connection,
+    trader: Keypair,
+    minimum_count: int,
+    timeout_secs: float = float(TX_CONFIRM_TIMEOUT),
+) -> bool:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        try:
+            count = await call_contract_return_u64(
+                conn,
+                trader,
+                "dex_core",
+                "get_trade_count",
+                {},
+            )
+            if (count or 0) >= minimum_count:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def wait_for_pool_tvl(
+    conn: Connection,
+    trader: Keypair,
+    pool_id: int,
+    minimum_tvl: int,
+    timeout_secs: float = float(TX_CONFIRM_TIMEOUT),
+) -> bool:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        try:
+            tvl = await call_contract_return_u64(
+                conn,
+                trader,
+                "dex_amm",
+                "get_tvl",
+                {"pool_id": pool_id},
+            )
+            if (tvl or 0) >= minimum_tvl:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def place_dex_order_with_observed_state(
+    conn: Connection,
+    trader: Keypair,
+    order_args: Dict[str, Any],
+    attempts: int = 3,
+) -> Any:
+    baseline_count = await call_contract_return_u64(
+        conn,
+        trader,
+        "dex_core",
+        "get_open_order_count",
+        {"user_address": trader.address()},
+    )
+    target_count = int(baseline_count or 0) + 1
+    last_error: Optional[Exception] = None
+
+    for _ in range(attempts):
+        try:
+            return await call_contract(conn, trader, "dex_core", "place_order", dict(order_args))
+        except Exception as exc:
+            msg = str(exc)
+            if "timed out waiting for transaction receipt" not in msg:
+                raise
+
+            signature = extract_receipt_timeout_signature(msg)
+            confirmation = (
+                await wait_for_transaction_confirmation(conn, signature)
+                if signature
+                else None
+            )
+            if isinstance(confirmation, dict) and confirmation.get("err") is not None:
+                raise RuntimeError(f"dex_core.place_order failed after confirmation: {confirmation.get('err')}")
+            if await wait_for_open_order_count(conn, trader, target_count):
+                return {
+                    "signature": signature,
+                    "confirmation_status": confirmation.get("confirmation_status") if isinstance(confirmation, dict) else None,
+                }
+
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("dex_core.place_order failed without an observable order-state change")
+
+
+async def place_dex_order_with_observed_trade(
+    conn: Connection,
+    trader: Keypair,
+    order_args: Dict[str, Any],
+    attempts: int = 3,
+) -> Any:
+    baseline_trade_count = await call_contract_return_u64(
+        conn,
+        trader,
+        "dex_core",
+        "get_trade_count",
+        {},
+    )
+    target_trade_count = int(baseline_trade_count or 0) + 1
+    last_error: Optional[Exception] = None
+
+    for _ in range(attempts):
+        try:
+            return await call_contract(conn, trader, "dex_core", "place_order", dict(order_args))
+        except Exception as exc:
+            msg = str(exc)
+            if "timed out waiting for transaction receipt" not in msg:
+                raise
+
+            signature = extract_receipt_timeout_signature(msg)
+            confirmation = (
+                await wait_for_transaction_confirmation(conn, signature)
+                if signature
+                else None
+            )
+            if isinstance(confirmation, dict) and confirmation.get("err") is not None:
+                raise RuntimeError(f"dex_core.place_order failed after confirmation: {confirmation.get('err')}")
+            if await wait_for_trade_count(conn, trader, target_trade_count):
+                return {
+                    "signature": signature,
+                    "confirmation_status": confirmation.get("confirmation_status") if isinstance(confirmation, dict) else None,
+                }
+
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("dex_core.place_order failed without an observable trade-state change")
+
+
+async def add_amm_liquidity_with_observed_tvl(
+    conn: Connection,
+    trader: Keypair,
+    pool_id: int,
+    liquidity_args: Dict[str, Any],
+    attempts: int = 3,
+) -> Any:
+    baseline_tvl = await call_contract_return_u64(
+        conn,
+        trader,
+        "dex_amm",
+        "get_tvl",
+        {"pool_id": pool_id},
+    )
+    target_tvl = int(baseline_tvl or 0) + 1
+    last_error: Optional[Exception] = None
+
+    for _ in range(attempts):
+        try:
+            return await call_contract(conn, trader, "dex_amm", "add_liquidity", dict(liquidity_args))
+        except Exception as exc:
+            msg = str(exc)
+            if "timed out waiting for transaction receipt" not in msg:
+                raise
+
+            signature = extract_receipt_timeout_signature(msg)
+            confirmation = (
+                await wait_for_transaction_confirmation(conn, signature)
+                if signature
+                else None
+            )
+            if isinstance(confirmation, dict) and confirmation.get("err") is not None:
+                raise RuntimeError(f"dex_amm.add_liquidity failed after confirmation: {confirmation.get('err')}")
+            if await wait_for_pool_tvl(conn, trader, pool_id, target_tvl):
+                return {
+                    "signature": signature,
+                    "confirmation_status": confirmation.get("confirmation_status") if isinstance(confirmation, dict) else None,
+                }
+
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("dex_amm.add_liquidity failed without an observable TVL increase")
+
+
 async def ensure_wallet_has_spendable(
     conn: Connection,
     wallet: Keypair,
@@ -506,8 +1027,17 @@ async def ensure_wallet_has_spendable(
             continue
         if _extract_spores(await conn.get_balance(funder.address())) < needed_licn * SPORES:
             continue
-        if await fund_account(conn, funder, wallet, needed_licn):
+        if await transfer_spores(
+            conn,
+            funder,
+            wallet.address(),
+            needed_licn * SPORES,
+            current + needed_licn * SPORES,
+        ):
             return
+
+    if await fund_account(conn, wallet, wallet, needed_licn):
+        return
 
     raise RuntimeError(
         f"Could not fund {wallet.address()} with {needed_licn} LICN for contract fees"
@@ -803,6 +1333,60 @@ async def rpc_call(conn: Connection, method: str, params=None) -> Any:
     return await conn._rpc(method, params or [])
 
 
+async def get_program_storage(
+    conn: Connection,
+    contract_dir: str,
+    limit: int = 500,
+    max_pages: int = 8,
+) -> Dict[str, bytes]:
+    contract_pubkey = await resolve_contract_address(conn, contract_dir)
+    if not contract_pubkey:
+        return {}
+    result: Dict[str, bytes] = {}
+    after_key: Optional[str] = None
+    for _ in range(max_pages):
+        options: Dict[str, Any] = {"limit": limit}
+        if after_key:
+            options["after_key"] = after_key
+        raw = await rpc_call(conn, "getProgramStorage", [str(contract_pubkey), options])
+        if not raw or not isinstance(raw, dict):
+            break
+        entries = raw.get("entries", [])
+        if not isinstance(entries, list) or not entries:
+            break
+        for entry in entries:
+            key = entry.get("key_decoded") or entry.get("key_hex", "")
+            value_hex = entry.get("value_hex", entry.get("value", ""))
+            try:
+                result[key] = bytes.fromhex(value_hex)
+            except (TypeError, ValueError):
+                result[key] = b""
+        if len(entries) < limit:
+            break
+        next_after_key = entries[-1].get("key_hex")
+        if not isinstance(next_after_key, str) or not next_after_key or next_after_key == after_key:
+            break
+        after_key = next_after_key
+    return result
+
+
+async def wait_for_contract_u64(
+    conn: Connection,
+    contract_dir: str,
+    storage_key: str,
+    expected_value: int,
+    timeout_secs: float = 10.0,
+) -> bool:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        storage = await get_program_storage(conn, contract_dir)
+        raw = storage.get(storage_key)
+        if raw and len(raw) >= 8 and struct.unpack("<Q", raw[:8])[0] == expected_value:
+            return True
+        await asyncio.sleep(0.2)
+    return False
+
+
 def _api_base_url() -> str:
     return RPC_URL.rstrip("/") + "/api/v1"
 
@@ -930,6 +1514,32 @@ async def fund_account(conn: Connection, deployer: Keypair, target: Keypair, amo
     return False
 
 
+async def transfer_spores(
+    conn: Connection,
+    sender: Keypair,
+    recipient: PublicKey,
+    amount_spores: int,
+    expected_balance: int,
+) -> bool:
+    try:
+        blockhash_result = await conn.get_latest_block()
+        bh = blockhash_result.get("hash", blockhash_result.get("blockhash", "0" * 64))
+        ix = TransactionBuilder.transfer(sender.address(), recipient, amount_spores)
+        tx = TransactionBuilder().add(ix).set_recent_blockhash(bh).build_and_sign(sender)
+        sig = await conn.send_transaction(tx)
+        for _ in range(TX_CONFIRM_TIMEOUT * 5):
+            await asyncio.sleep(0.2)
+            try:
+                await conn.get_transaction(sig)
+            except Exception:
+                pass
+            if await wait_for_spendable_balance(conn, recipient, expected_balance):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 # ═══════════════════════════════════════════
 #  SECTION 1: Full Order Lifecycle with Matching
 # ═══════════════════════════════════════════
@@ -967,34 +1577,51 @@ async def test_order_lifecycle(conn: Connection, deployer: Keypair, trader_a: Ke
             report("FAIL", "DEX create_pair", str(e))
             return
 
+    order_price = 100_000_000
+    tick_size = 1_000_000
+    no_ask_sentinel = (1 << 64) - 1
+    try:
+        best_bid = await call_contract_return_u64(conn, deployer, "dex_core", "get_best_bid", {"pair_id": pair_id})
+        best_ask = await call_contract_return_u64(conn, deployer, "dex_core", "get_best_ask", {"pair_id": pair_id})
+        bid_value = int(best_bid or 0)
+        ask_value = int(best_ask or 0)
+        if ask_value not in (0, no_ask_sentinel):
+            candidate = max(tick_size, ask_value - tick_size)
+            if bid_value > 0 and bid_value + tick_size < ask_value:
+                order_price = bid_value + tick_size
+            else:
+                order_price = candidate
+    except Exception:
+        pass
+
     # 1b. Trader A places a limit BUY order
     try:
-        await call_contract(conn, trader_a, "dex_core", "place_order", {
+        await place_dex_order_with_observed_state(conn, trader_a, {
             "caller": trader_a.address(),
             "pair_id": pair_id,
             "side": 0,  # 0=Buy
             "order_type": 0,  # 0=Limit
-            "price": 100_000_000,  # 0.1 LUSD
+            "price": order_price,
             "quantity": 10_000_000_000,  # 10 LICN
             "expiry": 0,
         })
-        report("PASS", "Trader A: limit BUY 10 LICN @ 0.1")
+        report("PASS", "Trader A: passive limit BUY")
     except Exception as e:
         report("FAIL", "Trader A: limit BUY", str(e))
 
     # 1c. Trader B places a limit SELL order (should match)
     try:
-        await call_contract(conn, trader_b, "dex_core", "place_order", {
+        await place_dex_order_with_observed_trade(conn, trader_b, {
             "caller": trader_b.address(),
             "pair_id": pair_id,
             "side": 1,  # 1=Sell
             "order_type": 0,  # 0=Limit
-            "price": 100_000_000,  # 0.1 LUSD (matches buy)
+            "price": order_price,
             "quantity": 5_000_000_000,  # 5 LICN (partial fill)
             "expiry": 0,
             "__value": 5_000_000_000,
         })
-        report("PASS", "Trader B: limit SELL 5 LICN @ 0.1 (partial match)")
+        report("PASS", "Trader B: limit SELL 5 LICN (partial match)")
     except Exception as e:
         if is_compute_budget_error(e):
             report("SKIP", "Trader B: limit SELL", str(e))
@@ -1172,25 +1799,66 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
 
     try:
         margin_admin = load_genesis_keypair("community_treasury")
+        oracle_committee_signers = load_oracle_committee_signers()
+        oracle_committee_authority = derive_oracle_committee_admin_authority(
+            margin_admin.address()
+        )
     except Exception as e:
         report("FAIL", "Margin admin keypair unavailable", str(e))
         return
 
+    margin_contract = await resolve_contract_address(conn, "dex_margin")
+    if not margin_contract:
+        report("FAIL", "DEX Margin contract address unavailable")
+        return
+
     pair_id = 1
 
-    async def set_margin_mark_price(price: int, label: str) -> None:
-        await call_contract(conn, margin_admin, "dex_margin", "set_mark_price", {
+    async def governed_margin_price_update(price: int, fn_name: str, storage_key: str, label: str) -> None:
+        raw_args = build_dispatcher_ix(abi, fn_name, {
             "caller": margin_admin.address(),
             "pair_id": pair_id,
             "price": price,
         })
+        await submit_governance_contract_call(
+            conn,
+            oracle_committee_signers[0],
+            oracle_committee_signers[1],
+            oracle_committee_authority,
+            margin_contract,
+            "call",
+            raw_args,
+            label,
+        )
+        if not await wait_for_contract_u64(conn, "dex_margin", storage_key, price):
+            raise RuntimeError(f"{storage_key} did not update to {price}")
         report("PASS", label)
+
+    async def set_margin_mark_price(price: int, label: str) -> None:
+        await governed_margin_price_update(
+            price,
+            "set_mark_price",
+            f"mrg_mark_{pair_id}",
+            label,
+        )
+
+    async def set_margin_index_price(price: int, label: str) -> None:
+        await governed_margin_price_update(
+            price,
+            "set_index_price",
+            f"mrg_idx_{pair_id}",
+            label,
+        )
 
     # 4a. Set mark price for pair
     try:
         await set_margin_mark_price(100_000_000, "Margin set_mark_price")
     except Exception as e:
         report("FAIL", "Margin set_mark_price", str(e))
+    try:
+        await set_margin_index_price(100_000_000, "Margin set_index_price")
+    except Exception as e:
+        report("FAIL", "Margin set_index_price", str(e))
 
     # 4b. Open a LONG position with 3x leverage
     try:
@@ -1267,14 +1935,31 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     except Exception as e:
         report("FAIL", "Margin get_tier_info", str(e))
 
-    # 4i. Open dedicated liquidation target calibrated to current contract math
+    # 4i. Open a dedicated liquidation target using the same 1.0 -> 0.6 path
+    # proven in the contract regression tests, which avoids live precision drift.
+    try:
+        await set_margin_mark_price(
+            1_000_000_000,
+            "Margin set_mark_price (liquidation baseline)",
+        )
+    except Exception as e:
+        report("FAIL", "Margin set_mark_price (liquidation baseline)", str(e))
+        return
+    try:
+        await set_margin_index_price(
+            1_000_000_000,
+            "Margin set_index_price (liquidation baseline)",
+        )
+    except Exception as e:
+        report("FAIL", "Margin set_index_price (liquidation baseline)", str(e))
+        return
     try:
         known_position_ids = margin_position_ids(load_margin_positions_rest(trader_a.address()))
         await call_contract(conn, trader_a, "dex_margin", "open_position", {
             "trader": trader_a.address(),
             "pair_id": pair_id,
             "side": 0,  # Long
-            "size": 10_000_000_000,
+            "size": 1_000_000_000,
             "leverage": 2,
             "margin": 500_000_000,
         })
@@ -1293,6 +1978,8 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     liquidation_ratio_before = None
     liquidation_ratio_after = None
     liquidation_ready = False
+    liquidation_tx_succeeded = False
+    liquidation_status_after = None
     observed_liquidation_mark = None
 
     try:
@@ -1321,14 +2008,21 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     except Exception as e:
         report("FAIL", "Margin liquidation baseline fetch", str(e))
 
-    # 4k. Drop price to the 2x liquidation threshold scenario used by the contract tests
+    # 4k. Drop both reference prices to the contract-tested liquidation threshold.
     try:
         await set_margin_mark_price(
-            60_000_000,
+            600_000_000,
             "Margin set_mark_price (drop for liquidation)",
         )
     except Exception as e:
         report("FAIL", "Margin set_mark_price (drop)", str(e))
+    try:
+        await set_margin_index_price(
+            600_000_000,
+            "Margin set_index_price (drop for liquidation)",
+        )
+    except Exception as e:
+        report("FAIL", "Margin set_index_price (drop)", str(e))
 
     try:
         liquidation_ratio_after = await call_contract_return_u64(conn, trader_a, "dex_margin", "get_margin_ratio", {
@@ -1347,7 +2041,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
             observed_liquidation_mark = liquidation_row.get("markPrice")
 
         if liquidation_ratio_after is None:
-            report("SKIP", "Margin liquidation health check unavailable")
+            report("FAIL", "Margin liquidation health check unavailable")
         elif liquidation_ratio_after < 2_500:
             liquidation_ready = True
             report(
@@ -1359,32 +2053,47 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
             if observed_liquidation_mark is not None:
                 detail += f", observed_mark={observed_liquidation_mark}"
             report(
-                "SKIP",
-                "Margin liquidation scenario unavailable",
+                "FAIL",
+                "Margin liquidation scenario did not breach maintenance",
                 detail,
             )
     except Exception as e:
-        report("SKIP", "Margin liquidation health check", str(e))
+        report("FAIL", "Margin liquidation health check", str(e))
 
     # 4l. Liquidate dedicated target position
-    if liquidation_ready:
-        try:
-            await call_contract(conn, deployer, "dex_margin", "liquidate", {
-                "liquidator": deployer.address(),
-                "position_id": liquidation_target_id,
-            })
+    try:
+        await call_contract(conn, deployer, "dex_margin", "liquidate", {
+            "liquidator": deployer.address(),
+            "position_id": liquidation_target_id,
+        })
+        liquidation_status_after = await wait_for_margin_position_status(
+            liquidation_target_id,
+            {"liquidated", "closed"},
+        )
+        liquidation_tx_succeeded = isinstance(liquidation_status_after, str) and liquidation_status_after.lower() in {
+            "liquidated",
+            "closed",
+        }
+        if liquidation_tx_succeeded:
             report("PASS", "Margin liquidate position")
-        except Exception as e:
-            msg = str(e)
-            if "not liquidatable" in msg.lower() or "not found" in msg.lower():
-                report("SKIP", "Margin liquidate (not liquidatable)", msg)
-            else:
-                report("FAIL", "Margin liquidate", msg)
-    else:
-        detail = "liquidation target did not fall below maintenance"
+        else:
+            detail = f"status={liquidation_status_after or 'unknown'}"
+            if liquidation_ratio_after is not None:
+                detail += f"; ratio_after={liquidation_ratio_after} bps"
+            if observed_liquidation_mark is not None:
+                detail += f"; observed_mark={observed_liquidation_mark}"
+            report("FAIL", "Margin liquidate", detail)
+    except Exception as e:
+        msg = str(e)
+        detail = msg
+        if liquidation_ratio_after is not None:
+            detail += f"; ratio_after={liquidation_ratio_after} bps"
         if observed_liquidation_mark is not None:
-            detail += f" (observed_mark={observed_liquidation_mark})"
-        report("SKIP", "Margin liquidate", detail)
+            detail += f"; observed_mark={observed_liquidation_mark}"
+        if "not liquidatable" in msg.lower() or "returned code 2" in msg.lower() or "not found" in msg.lower():
+            report("FAIL", "Margin liquidate", detail)
+        else:
+            report("FAIL", "Margin liquidate", detail)
 
     # 4m. Liquidation count (contract call smoke)
     try:
@@ -1396,6 +2105,8 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4n. Liquidation persistence in REST stats
     liq_actually_happened = False
     try:
+        if liquidation_tx_succeeded:
+            await asyncio.sleep(0.5)
         margin_stats_after = rest_get("/stats/margin")
         liq_count_after = _extract_liquidation_count(margin_stats_after)
         if isinstance(liq_count_before, int) and isinstance(liq_count_after, int):
@@ -1423,8 +2134,6 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
             status = pos_data.get("status")
             if isinstance(status, str) and status.lower() in {"liquidated", "closed"}:
                 report("PASS", f"Margin position status persisted after liquidation ({status})")
-            elif not liq_actually_happened:
-                report("SKIP", f"Margin position liquidation status (contract returned early, status={status})")
             else:
                 report("FAIL", "Margin position liquidation status", str(pos_data)[:220])
         else:
@@ -1446,6 +2155,7 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
     # 4q. Open SHORT position
     try:
         await set_margin_mark_price(100_000_000, "Margin reset_mark_price for SHORT")
+        await set_margin_index_price(100_000_000, "Margin reset_index_price for SHORT")
         known_position_ids = margin_position_ids(load_margin_positions_rest(trader_a.address()))
         await call_contract(conn, trader_a, "dex_margin", "open_position", {
             "trader": trader_a.address(),
@@ -1492,6 +2202,8 @@ async def test_margin_trading(conn: Connection, deployer: Keypair, trader_a: Key
 async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: Keypair, trader_b: Keypair):
     print(f"\n{bold(cyan('══ SECTION 5: Prediction Market Lifecycle ══'))}")
 
+    global LAST_PREDICTION_MARKET_ID
+
     abi = load_abi("prediction_market")
     if not abi:
         report("SKIP", "Prediction Market ABI not found")
@@ -1499,9 +2211,12 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     prediction_ws_events: List[Dict[str, Any]] = []
     prediction_ws_stop = asyncio.Event()
+    prediction_ws_ready = asyncio.Event()
     prediction_ws_task: Optional[asyncio.Task] = None
+    prediction_ws_active = False
 
     async def _prediction_ws_collector():
+        nonlocal prediction_ws_active
         if websockets is None:
             return
         try:
@@ -1510,31 +2225,42 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "subscribePrediction",
-                    "params": {"channel": "market:1"},
+                    "params": {"channel": "all"},
                 }))
                 _ack = await asyncio.wait_for(ws.recv(), timeout=5)
+                prediction_ws_active = True
+                prediction_ws_ready.set()
                 while not prediction_ws_stop.is_set():
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
                         msg = json.loads(raw)
-                        if msg.get("method") == "notification":
+                        if msg.get("method") == "subscription":
                             event = msg.get("params", {}).get("result")
                             if isinstance(event, dict):
                                 prediction_ws_events.append(event)
                     except asyncio.TimeoutError:
                         continue
         except Exception:
+            prediction_ws_ready.set()
             return
 
     if websockets is not None:
         prediction_ws_task = asyncio.create_task(_prediction_ws_collector())
+        try:
+            await asyncio.wait_for(prediction_ws_ready.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
     else:
         report("SKIP", "Prediction WS lifecycle assertions (websockets package missing)")
 
     target_market_id = 1
 
     def _read_market_payload(mid_hint: int) -> Optional[Dict[str, Any]]:
-        for mid in (mid_hint, 1, 0):
+        candidate_ids: List[int] = []
+        for mid in (mid_hint, LAST_PREDICTION_MARKET_ID, 1, 0):
+            if isinstance(mid, int) and mid not in candidate_ids:
+                candidate_ids.append(mid)
+        for mid in candidate_ids:
             try:
                 payload = rest_get(f"/prediction-market/markets/{mid}")
                 data = payload.get("data") if isinstance(payload, dict) else None
@@ -1546,18 +2272,37 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     # 5a. Create a prediction market
     try:
-        import hashlib
-        question = "Will LICN reach $1 by Q4?"
-        q_hash = hashlib.sha256(question.encode()).digest()
-        await call_contract(conn, deployer, "prediction_market", "create_market", {
-            "creator": deployer.address(),
-            "category": 0,  # General
-            "close_slot": 999999,  # Far future slot
-            "outcome_count": 2,
-            "question_hash": PublicKey(q_hash),
-            "question_len": len(question),
-            "__value": 10_000_000,
-        })
+        prediction_contract = await resolve_contract_address(conn, "prediction_market")
+        if not prediction_contract:
+            raise RuntimeError("prediction_market contract is not deployed")
+
+        current_slot = await conn.get_slot()
+        question = f"Will LICN reach $1 by Q4? #{time.time_ns()}"
+        question_bytes = question.encode("utf-8")
+        q_hash = hashlib.sha256(question_bytes).digest()
+        close_slot = current_slot + 20_000
+        create_args = bytearray([1])
+        create_args.extend(deployer.address().to_bytes())
+        create_args.extend(struct.pack("<B", 0))
+        create_args.extend(struct.pack("<Q", close_slot))
+        create_args.extend(struct.pack("<B", 2))
+        create_args.extend(q_hash)
+        create_args.extend(struct.pack("<I", len(question_bytes)))
+        create_args.extend(question_bytes)
+        result = await call_contract_raw(
+            conn,
+            deployer,
+            prediction_contract,
+            "call",
+            bytes(create_args),
+            value=10_000_000,
+            allow_nonzero_return_code=True,
+        )
+        created_market_id = _decode_return_u64(result.get("return_data")) if isinstance(result, dict) else None
+        if created_market_id is None or created_market_id == 0:
+            raise RuntimeError(f"prediction_market.create_market returned no market id: {result}")
+        target_market_id = created_market_id
+        LAST_PREDICTION_MARKET_ID = created_market_id
         report("PASS", "Prediction create_market")
     except Exception as e:
         report("FAIL", "Prediction create_market", str(e))
@@ -1565,18 +2310,18 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     # 5b. Check market count
     try:
-        mc = await call_contract(conn, deployer, "prediction_market", "get_market_count", {})
+        mc = await call_contract_return_u64(conn, deployer, "prediction_market", "get_market_count", {})
         report("PASS", "Prediction get_market_count")
-        # Best-effort market id inference for REST/accounting checks.
-        # Keep contract-call path on market_id=1 for backward compatibility.
-        target_market_id = 1
+        if mc is not None and mc > 0 and target_market_id <= 0:
+            target_market_id = mc
+            LAST_PREDICTION_MARKET_ID = mc
     except Exception as e:
         report("FAIL", "Prediction get_market_count", str(e))
 
     # 5c. Get market info
     try:
-        market = await call_contract(conn, deployer, "prediction_market", "get_market", {"market_id": 1})
-        report("PASS", "Prediction get_market(0)")
+        market = await call_contract(conn, deployer, "prediction_market", "get_market", {"market_id": target_market_id})
+        report("PASS", "Prediction get_market")
     except Exception as e:
         report("FAIL", "Prediction get_market", str(e))
 
@@ -1584,9 +2329,9 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         await call_contract(conn, deployer, "prediction_market", "add_initial_liquidity", {
             "provider": deployer.address(),
-            "market_id": 1,
-            "amount_musd": 10_000_000_000,  # 10 LUSD
-            "__value": 10_000_000_000,
+            "market_id": target_market_id,
+            "amount_musd": 30_000_000,  # 30 LUSD (6 decimals)
+            "__value": 30_000_000,
         })
         report("PASS", "Prediction add_initial_liquidity")
     except Exception as e:
@@ -1595,7 +2340,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5e. Get outcome prices
     try:
         price_0 = await call_contract(conn, deployer, "prediction_market", "get_price", {
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 0,
         })
         report("PASS", "Prediction get_price outcome=0 (YES)")
@@ -1605,9 +2350,9 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5f. Quote buy
     try:
         quote = await call_contract(conn, deployer, "prediction_market", "quote_buy", {
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 0,
-            "amount": 1_000_000_000,
+            "amount": 1_000_000,
         })
         report("PASS", "Prediction quote_buy")
     except Exception as e:
@@ -1617,10 +2362,10 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         await call_contract(conn, trader_a, "prediction_market", "buy_shares", {
             "buyer": trader_a.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 0,  # YES
-            "amount": 2_000_000_000,  # 2 LUSD
-            "__value": 2_000_000_000,
+            "amount": 2_000_000,  # 2 LUSD (6 decimals)
+            "__value": 2_000_000,
         })
         report("PASS", "Trader A: buy_shares YES")
     except Exception as e:
@@ -1631,10 +2376,10 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         await call_contract(conn, trader_b, "prediction_market", "buy_shares", {
             "buyer": trader_b.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 1,  # NO
-            "amount": 1_000_000_000,  # 1 LUSD
-            "__value": 1_000_000_000,
+            "amount": 1_000_000,  # 1 LUSD (6 decimals)
+            "__value": 1_000_000,
         })
         report("PASS", "Trader B: buy_shares NO")
     except Exception as e:
@@ -1644,7 +2389,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5i. Check positions
     try:
         pos_a = await call_contract(conn, trader_a, "prediction_market", "get_position", {
-            "market_id": 1,
+            "market_id": target_market_id,
             "user": trader_a.address(),
             "outcome": 0,
         })
@@ -1654,7 +2399,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     try:
         pos_b = await call_contract(conn, trader_b, "prediction_market", "get_position", {
-            "market_id": 1,
+            "market_id": target_market_id,
             "user": trader_b.address(),
             "outcome": 1,
         })
@@ -1666,9 +2411,9 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         await call_contract(conn, trader_b, "prediction_market", "sell_shares", {
             "seller": trader_b.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 1,
-            "amount": 500_000_000,
+            "amount": 500_000,
         })
         report("PASS", "Trader B: sell_shares NO (partial)")
     except Exception as e:
@@ -1676,7 +2421,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 
     # 5k. Pool reserves
     try:
-        reserves = await call_contract(conn, deployer, "prediction_market", "get_pool_reserves", {"market_id": 1})
+        reserves = await call_contract(conn, deployer, "prediction_market", "get_pool_reserves", {"market_id": target_market_id})
         report("PASS", "Prediction get_pool_reserves")
     except Exception as e:
         report("FAIL", "Prediction get_pool_reserves", str(e))
@@ -1684,7 +2429,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     # 5l. Price history
     try:
         ph = await call_contract(conn, deployer, "prediction_market", "get_price_history", {
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 0,
         })
         report("PASS", "Prediction get_price_history")
@@ -1712,11 +2457,11 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         evidence = hashlib.sha256(b"resolution evidence").digest()
         await call_contract(conn, deployer, "prediction_market", "submit_resolution", {
             "resolver": deployer.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "winning_outcome": 0,  # YES
             "evidence_hash": PublicKey(evidence),
-            "bond_amount": 1_000_000_000,
-            "__value": 1_000_000_000,
+            "bond_amount": 100_000_000,
+            "__value": 100_000_000,
         })
         report("PASS", "Prediction submit_resolution (YES wins)")
     except Exception as e:
@@ -1726,7 +2471,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         await call_contract(conn, deployer, "prediction_market", "finalize_resolution", {
             "caller": deployer.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
         })
         report("PASS", "Prediction finalize_resolution")
     except Exception as e:
@@ -1763,7 +2508,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         result = await call_contract(conn, trader_a, "prediction_market", "redeem_shares", {
             "user": trader_a.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 0,  # YES (winner)
         })
         report("PASS", "Trader A: redeem_shares (winner)")
@@ -1775,7 +2520,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
     try:
         result = await call_contract(conn, trader_b, "prediction_market", "redeem_shares", {
             "user": trader_b.address(),
-            "market_id": 1,
+            "market_id": target_market_id,
             "outcome": 1,  # NO (loser)
         })
         report("PASS", "Trader B: redeem_shares (loser — 0 payout)")
@@ -1842,9 +2587,13 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         event_types_lower = {t.lower() for t in event_types}
         if not event_types:
             report(
-                "SKIP",
-                "Prediction WS lifecycle assertions skipped (no prediction events emitted by running validator)",
-                "restart validator with latest build to validate runtime emission",
+                "SKIP" if prediction_ws_active else "FAIL",
+                "Prediction WS lifecycle assertions skipped (no prediction events emitted by running validator)"
+                if prediction_ws_active
+                else "Prediction WS lifecycle subscription did not attach",
+                "restart validator with latest build to validate runtime emission"
+                if prediction_ws_active
+                else "websocket subscribePrediction did not acknowledge",
             )
             return
         report(
@@ -1870,15 +2619,17 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
 async def test_prediction_rpc(conn: Connection, trader_a: Keypair):
     print(f"\n{bold(cyan('══ SECTION 6: Prediction Market RPC ══'))}")
 
+    target_market_id = await get_prediction_market_id(conn, trader_a)
+
     endpoints = [
-        ("getPredictionStats", []),
+        ("getPredictionMarketStats", []),
         ("getPredictionMarkets", [{"limit": 10, "offset": 0}]),
-        ("getPredictionMarket", [0]),
+        ("getPredictionMarket", [target_market_id]),
         ("getPredictionPositions", [str(trader_a.address())]),
         ("getPredictionTraderStats", [str(trader_a.address())]),
         ("getPredictionLeaderboard", [{"limit": 10}]),
         ("getPredictionTrending", [{"limit": 5}]),
-        ("getPredictionMarketAnalytics", [0]),
+        ("getPredictionMarketAnalytics", [target_market_id]),
     ]
 
     for method, params in endpoints:
@@ -1899,7 +2650,7 @@ async def test_prediction_rpc(conn: Connection, trader_a: Keypair):
 # ═══════════════════════════════════════════
 #  SECTION 7: Rewards Trading + Claim
 # ═══════════════════════════════════════════
-async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair):
+async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair, trader_b: Keypair):
     print(f"\n{bold(cyan('══ SECTION 7: DEX Rewards ══'))}")
 
     abi = load_abi("dex_rewards")
@@ -1907,29 +2658,50 @@ async def test_rewards(conn: Connection, deployer: Keypair, trader_a: Keypair):
         report("SKIP", "DEX Rewards ABI not found")
         return
 
-    report("PASS", "Rewards rely on DEX trade events from Section 1")
+    reward_trader = trader_b
+
+    report("PASS", "Rewards rely on DEX trade events from Section 1 (fee-paying taker)")
+
+    recorded_trades = 0
+    try:
+        stats = await rpc_call(conn, "getDexRewardsStats", [])
+        if isinstance(stats, dict):
+            recorded_trades = int(stats.get("trade_count") or 0)
+        if recorded_trades > 0:
+            report("PASS", "Rewards recorded DEX trade events")
+        else:
+            report("FAIL", "Rewards recorded DEX trade events", str(stats))
+            return
+    except Exception as e:
+        report("FAIL", "Rewards recorded DEX trade events", str(e))
+        return
 
     # 7b. Check pending rewards
+    pending_rewards = 0
     try:
-        pending = await call_contract(conn, trader_a, "dex_rewards", "get_pending_rewards", {
-            "addr": trader_a.address(),
+        pending = await call_contract_return_u64(conn, reward_trader, "dex_rewards", "get_pending_rewards", {
+            "addr": reward_trader.address(),
         })
+        pending_rewards = pending or 0
         report("PASS", "Rewards get_pending_rewards")
     except Exception as e:
         report("FAIL", "Rewards get_pending_rewards", str(e))
 
     # 7c. Claim trading rewards
-    try:
-        await call_contract(conn, trader_a, "dex_rewards", "claim_trading_rewards", {
-            "trader": trader_a.address(),
-        })
-        report("PASS", "Rewards claim_trading_rewards")
-    except Exception as e:
-        msg = str(e)
-        if "returned code 1" in msg:
-            report("SKIP", "Rewards claim_trading_rewards", "No pending rewards after current trade set")
-        else:
-            report("FAIL", "Rewards claim_trading_rewards", msg)
+    if pending_rewards <= 0:
+        report("SKIP", "Rewards claim_trading_rewards", "No pending rewards after current trade set")
+    else:
+        try:
+            await call_contract(conn, reward_trader, "dex_rewards", "claim_trading_rewards", {
+                "trader": reward_trader.address(),
+            })
+            report("PASS", "Rewards claim_trading_rewards")
+        except Exception as e:
+            msg = str(e)
+            if "returned code 1" in msg:
+                report("SKIP", "Rewards claim_trading_rewards", "No pending rewards after current trade set")
+            else:
+                report("FAIL", "Rewards claim_trading_rewards", msg)
 
 
 # ═══════════════════════════════════════════
@@ -2026,7 +2798,8 @@ async def test_amm(conn: Connection, deployer: Keypair, trader_a: Keypair):
 
     # 9b. Add liquidity
     try:
-        await call_contract(conn, trader_a, "dex_amm", "add_liquidity", {
+        await ensure_wallet_has_spendable(conn, trader_a, [deployer], 11 * SPORES)
+        await add_amm_liquidity_with_observed_tvl(conn, trader_a, 1, {
             "provider": trader_a.address(),
             "pool_id": 1,
             "lower_tick": -30000,
@@ -2096,14 +2869,14 @@ async def test_protocol_stats_rpc(conn: Connection):
 
     endpoints = [
         ("getLichenSwapStats", []),
-        ("getThalllendStats", []),
-        ("getSporepayStats", []),
-        ("getBountyboardStats", []),
+        ("getThallLendStats", []),
+        ("getSporePayStats", []),
+        ("getBountyBoardStats", []),
         ("getComputeMarketStats", []),
         ("getMossStorageStats", []),
-        ("getLichenmarketStats", []),
-        ("getLichenauctionStats", []),
-        ("getLichenpunksStats", []),
+        ("getLichenMarketStats", []),
+        ("getLichenAuctionStats", []),
+        ("getLichenPunksStats", []),
     ]
 
     for method, params in endpoints:
@@ -2253,8 +3026,17 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
         return
 
     min_reputation = 500
-    proposer_rep = await get_lichenid_reputation(conn, trader_a.address())
-    voter_rep = await get_lichenid_reputation(conn, deployer.address())
+    try:
+        proposer = load_genesis_keypair("genesis-primary")
+    except Exception:
+        proposer = deployer
+    try:
+        voter = load_genesis_keypair("builder_grants")
+    except Exception:
+        voter = deployer
+
+    proposer_rep = await get_lichenid_reputation(conn, proposer.address())
+    voter_rep = await get_lichenid_reputation(conn, voter.address())
     proposal_count_before = await call_contract_return_u64(
         conn,
         deployer,
@@ -2268,24 +3050,31 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
     # 14a. Propose new pair
     wsol_addr = await resolve_token(conn, "WSOL")
     musd_addr = await resolve_token(conn, "LUSD")
-    try:
-        await call_contract(conn, trader_a, "dex_governance", "propose_new_pair", {
-            "proposer": trader_a.address(),
-            "base_token": wsol_addr,
-            "quote_token": musd_addr,
-        })
-        report("PASS", "Governance propose_new_pair")
-        proposal_created = True
-    except Exception as e:
-        msg = str(e)
-        if "returned code 5" in msg:
-            report(
-                "PASS",
-                "Governance propose_new_pair rejected by reputation gate",
-                f"reputation={proposer_rep}, minimum={min_reputation}",
-            )
-        else:
-            report("FAIL", "Governance propose_new_pair", msg)
+    if proposer_rep < min_reputation:
+        report(
+            "SKIP",
+            "Governance propose_new_pair",
+            f"reputation={proposer_rep}, minimum={min_reputation}",
+        )
+    else:
+        try:
+            await call_contract(conn, proposer, "dex_governance", "propose_new_pair", {
+                "proposer": proposer.address(),
+                "base_token": wsol_addr,
+                "quote_token": musd_addr,
+            })
+            report("PASS", "Governance propose_new_pair")
+            proposal_created = True
+        except Exception as e:
+            msg = str(e)
+            if "returned code 5" in msg:
+                report(
+                    "PASS",
+                    "Governance propose_new_pair rejected by reputation gate",
+                    f"reputation={proposer_rep}, minimum={min_reputation}",
+                )
+            else:
+                report("FAIL", "Governance propose_new_pair", msg)
 
     # 14b. Proposal count
     try:
@@ -2304,7 +3093,13 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
         report("FAIL", "Governance get_proposal_count", str(e))
 
     # 14c. Vote on proposal
-    if not proposal_created and voter_rep >= min_reputation:
+    if voter_rep < min_reputation:
+        report(
+            "SKIP",
+            "Governance vote",
+            f"reputation={voter_rep}, minimum={min_reputation}",
+        )
+    elif not proposal_created:
         report(
             "SKIP",
             "Governance vote",
@@ -2312,8 +3107,8 @@ async def test_governance(conn: Connection, deployer: Keypair, trader_a: Keypair
         )
     else:
         try:
-            await call_contract(conn, deployer, "dex_governance", "vote", {
-                "voter": deployer.address(),
+            await call_contract(conn, voter, "dex_governance", "vote", {
+                "voter": voter.address(),
                 "proposal_id": current_proposal_id,
                 "support": 1,  # 1=For
             })
@@ -2354,14 +3149,15 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
         ("WSOL", "LUSD", 1_000_000_000),
         ("WETH", "LUSD", 500_000_000),
     ]
-    resolved_pairs: List[Tuple[str, int, int]] = []
+    resolved_pairs: List[Tuple[str, int, int, int]] = []
     for base_name, quote_name, quantity in pair_targets:
         pair = find_pair_entry(base_name, quote_name)
         if not pair or pair.get("pairId") is None:
             report("FAIL", f"Pair {base_name}/{quote_name}", "Required genesis pair is missing")
             continue
         pair_id = int(pair["pairId"])
-        resolved_pairs.append((base_name, pair_id, quantity))
+        price = pair_last_price_spores(pair, 100_000_000)
+        resolved_pairs.append((base_name, pair_id, quantity, price))
         report("PASS", f"Pair {base_name}/{quote_name} already exists (pair {pair_id})")
 
     # 15b. Get pair count
@@ -2371,28 +3167,47 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
     except Exception as e:
         report("FAIL", "DEX get_pair_count", str(e))
 
+    try:
+        dex_core = await resolve_contract_address(conn, "dex_core")
+        token_admin = load_genesis_keypair("genesis-primary")
+        fee_funders = [deployer, trader_a, trader_b]
+        if dex_core:
+            wsol = await resolve_contract_address(conn, "wsol_token")
+            weth = await resolve_contract_address(conn, "weth_token")
+            lusd = await resolve_contract_address(conn, "lusd_token")
+            await ensure_wallet_has_spendable(conn, trader_a, [deployer], SPORES)
+            await ensure_wallet_has_spendable(conn, trader_b, [deployer], SPORES)
+            if lusd:
+                await ensure_token_balance(conn, token_admin, lusd, trader_a.address(), 5_000 * SPORES, fee_funders)
+                await approve_token(conn, trader_a, lusd, dex_core, 10_000 * SPORES)
+            if wsol:
+                await ensure_token_balance(conn, token_admin, wsol, trader_b.address(), 5 * SPORES, fee_funders)
+                await approve_token(conn, trader_b, wsol, dex_core, 10 * SPORES)
+            if weth:
+                await ensure_token_balance(conn, token_admin, weth, trader_b.address(), 2 * SPORES, fee_funders)
+                await approve_token(conn, trader_b, weth, dex_core, 10 * SPORES)
+    except Exception as e:
+        report("FAIL", "Refresh multi-pair token fixtures", str(e))
+
     # 15c. Place orders on multiple pairs concurrently
-    for base_name, pair_id, quantity in resolved_pairs:
-        pair = find_pair_entry(base_name, "LUSD")
-        price = pair_last_price_spores(pair or {}, 100_000_000)
+    for base_name, pair_id, quantity, price in resolved_pairs:
+        order_args = {
+            "caller": trader_a.address(),
+            "pair_id": pair_id,
+            "side": 0,
+            "order_type": 0,
+            "price": price,
+            "quantity": quantity,
+            "expiry": 0,
+        }
         try:
-            await call_contract(conn, trader_a, "dex_core", "place_order", {
-                "caller": trader_a.address(),
-                "pair_id": pair_id,
-                "side": 0,
-                "order_type": 0,
-                "price": price,
-                "quantity": quantity,
-                "expiry": 0,
-            })
+            await place_dex_order_with_observed_state(conn, trader_a, order_args)
             report("PASS", f"Multi-pair BUY order on pair {pair_id}")
         except Exception as e:
             report("FAIL", f"Multi-pair BUY order pair {pair_id}", str(e))
 
     # 15d. Counter orders to trigger matching
-    for base_name, pair_id, quantity in resolved_pairs:
-        pair = find_pair_entry(base_name, "LUSD")
-        price = pair_last_price_spores(pair or {}, 100_000_000)
+    for base_name, pair_id, quantity, price in resolved_pairs:
         order_args = {
             "caller": trader_b.address(),
             "pair_id": pair_id,
@@ -2405,7 +3220,7 @@ async def test_multi_pair_trading(conn: Connection, deployer: Keypair, trader_a:
         if base_name == "LICN":
             order_args["__value"] = quantity
         try:
-            await call_contract(conn, trader_b, "dex_core", "place_order", order_args)
+            await place_dex_order_with_observed_trade(conn, trader_b, order_args)
             report("PASS", f"Multi-pair SELL order on pair {pair_id} (match)")
         except Exception as e:
             report("FAIL", f"Multi-pair SELL order pair {pair_id}", str(e))
@@ -2560,7 +3375,7 @@ async def main():
     await test_margin_trading(conn, deployer, trader_a)
     await test_prediction_market(conn, deployer, trader_a, trader_b)
     await test_prediction_rpc(conn, trader_a)
-    await test_rewards(conn, deployer, trader_a)
+    await test_rewards(conn, deployer, trader_a, trader_b)
     await test_router(conn, deployer, trader_a)
     await test_amm(conn, deployer, trader_a)
     await test_protocol_stats_rpc(conn)

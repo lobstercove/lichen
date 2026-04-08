@@ -5,8 +5,8 @@ Lichen custody withdrawal E2E.
 Exercises the live withdrawal slice supported by the local validator + custody
 stack without requiring external Solana/EVM RPCs:
 
-1. Fund the wrapped-token admin if it has no spendable LICN for fees.
-2. Mint wSOL to a fresh user with the on-chain genesis token admin.
+1. Fund the wrapped-token operational minter if it has no spendable LICN for fees.
+2. Mint wSOL to a fresh user with the on-chain wrapped-token minter key.
 3. Create a custody withdrawal job.
 4. Burn the user's wrapped tokens on Lichen.
 5. Submit the burn transaction signature to custody.
@@ -50,6 +50,7 @@ WITHDRAWAL_AMOUNT_SPORES = int(os.getenv("WITHDRAWAL_AMOUNT_SPORES", "1000000000
 ADMIN_FEE_FUNDING_SPORES = int(os.getenv("ADMIN_FEE_FUNDING_SPORES", "2000000000"))
 USER_FEE_FUNDING_SPORES = int(os.getenv("USER_FEE_FUNDING_SPORES", "1000000000"))
 WITHDRAWAL_AUTH_TTL_SECS = 24 * 60 * 60
+SPORES_PER_LICN = 1_000_000_000
 
 PASS = 0
 FAIL = 0
@@ -241,19 +242,47 @@ async def wait_for_transaction(
     signature: str,
     timeout_secs: float = 20.0,
 ) -> dict[str, Any]:
+    last_response: Any = None
     deadline = time.monotonic() + timeout_secs
     while time.monotonic() < deadline:
         try:
-            info = await conn.get_transaction(signature)
-        except Exception as exc:
-            if "Transaction not found" in str(exc):
-                await asyncio.sleep(0.5)
-                continue
-            raise
-        if info:
-            return info
+            response = await conn._rpc("confirmTransaction", [signature])
+            last_response = response
+            value = response.get("value") if isinstance(response, dict) else None
+            if isinstance(value, dict):
+                try:
+                    info = await conn.get_transaction(signature)
+                    if info:
+                        return info
+                except Exception:
+                    pass
+                return {
+                    "signature": signature,
+                    "confirmation_status": value.get("confirmation_status"),
+                    "slot": value.get("slot"),
+                    "confirmations": value.get("confirmations"),
+                    "error": value.get("err"),
+                }
+        except Exception:
+            pass
         await asyncio.sleep(0.5)
-    raise TimeoutError(f"Transaction {signature} was not indexed before timeout")
+    raise TimeoutError(
+        f"Transaction {signature} was not confirmed before timeout: {last_response}"
+    )
+
+
+async def request_local_airdrop(
+    conn: Connection,
+    recipient: PublicKey,
+    min_spores: int,
+) -> dict[str, Any]:
+    amount_licn = max(1, (min_spores + SPORES_PER_LICN - 1) // SPORES_PER_LICN)
+    if amount_licn > 10:
+        raise ValueError("requestAirdrop supports at most 10 LICN per call")
+    result = await conn._rpc("requestAirdrop", [recipient.to_base58(), amount_licn])
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected requestAirdrop response: {result}")
+    return result
 
 
 async def wait_for_spendable_balance(
@@ -392,13 +421,13 @@ async def main() -> int:
 
     try:
         auth_headers = _authorization_headers()
-        token_admin = Keypair.load(_find_role_keypair_path("genesis-primary"))
+        token_minter = Keypair.load(_find_role_keypair_path("genesis-primary"))
         treasury = Keypair.load(_find_role_keypair_path("treasury"))
         token_program = await resolve_symbol_program(conn, WITHDRAWAL_TOKEN_SYMBOL)
         report(
             "PASS",
             "Withdrawal fixture keypairs loaded",
-            f"admin={token_admin.address().to_base58()}, treasury={treasury.address().to_base58()}",
+            f"minter={token_minter.address().to_base58()}, treasury={treasury.address().to_base58()}",
         )
         report(
             "PASS",
@@ -411,24 +440,29 @@ async def main() -> int:
         return 1
 
     try:
-        admin_balance = await conn.get_balance(token_admin.address())
-        if _extract_spores(admin_balance) < ADMIN_FEE_FUNDING_SPORES:
-            fund_admin_signature = await conn.transfer(
-                treasury, token_admin.address(), ADMIN_FEE_FUNDING_SPORES
+        minter_balance = await conn.get_balance(token_minter.address())
+        if _extract_spores(minter_balance) < ADMIN_FEE_FUNDING_SPORES:
+            fund_admin = await request_local_airdrop(
+                conn, token_minter.address(), ADMIN_FEE_FUNDING_SPORES
             )
+            fund_admin_signature = str(fund_admin.get("signature", ""))
             await wait_for_transaction(conn, fund_admin_signature)
-            report("PASS", "Wrapped token admin funded", fund_admin_signature)
+            await wait_for_spendable_balance(
+                conn, token_minter.address(), ADMIN_FEE_FUNDING_SPORES
+            )
+            report("PASS", "Wrapped token minter funded", fund_admin_signature)
         else:
             report(
                 "PASS",
-                "Wrapped token admin already funded",
-                f"spendable={_extract_spores(admin_balance)}",
+                "Wrapped token minter already funded",
+                f"spendable={_extract_spores(minter_balance)}",
             )
 
         withdrawal_user = Keypair.generate()
-        fund_user_signature = await conn.transfer(
-            treasury, withdrawal_user.address(), USER_FEE_FUNDING_SPORES
+        fund_user = await request_local_airdrop(
+            conn, withdrawal_user.address(), USER_FEE_FUNDING_SPORES
         )
+        fund_user_signature = str(fund_user.get("signature", ""))
         await wait_for_transaction(conn, fund_user_signature)
         user_balance = await wait_for_spendable_balance(
             conn, withdrawal_user.address(), USER_FEE_FUNDING_SPORES
@@ -446,13 +480,13 @@ async def main() -> int:
 
     try:
         mint_args = (
-            bytes(token_admin.address().to_bytes())
+            bytes(token_minter.address().to_bytes())
             + bytes(withdrawal_user.address().to_bytes())
             + struct.pack("<Q", WITHDRAWAL_AMOUNT_SPORES)
         )
         mint_info = await call_contract_checked(
             conn,
-            token_admin,
+            token_minter,
             token_program,
             "mint",
             mint_args,

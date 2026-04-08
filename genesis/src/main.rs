@@ -13,6 +13,10 @@ use lichen_core::multisig::{
     treasury_executor_config_for_roles, upgrade_proposer_config_for_roles,
     upgrade_veto_guardian_config_for_roles,
 };
+use lichen_core::keypair_file::{
+    copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    require_runtime_keypair_password,
+};
 use lichen_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisValidator, GenesisWallet, Hash,
     Instruction, Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE,
@@ -28,16 +32,6 @@ use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-
-#[derive(serde::Deserialize)]
-struct GenesisKeypairFile {
-    #[serde(rename = "privateKey")]
-    private_key: Vec<u8>,
-    #[serde(rename = "publicKey")]
-    public_key: Vec<u8>,
-    #[serde(rename = "publicKeyBase58")]
-    public_key_base58: String,
-}
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
@@ -68,36 +62,22 @@ fn parse_genesis_timestamp(genesis_time: &str) -> Result<u64, String> {
         .map_err(|err| format!("Failed to parse genesis_time '{}': {}", genesis_time, err))
 }
 
+fn load_genesis_keypair_with_policy(
+    path: &std::path::Path,
+    password: Option<&str>,
+    allow_plaintext: bool,
+) -> Result<Keypair, String> {
+    load_keypair_with_password_policy(path, password, allow_plaintext)
+        .map_err(|err| format!("Failed to load keypair file {}: {}", path.display(), err))
+}
+
 fn load_genesis_keypair(path: &std::path::Path) -> Result<Keypair, String> {
-    let json = std::fs::read_to_string(path)
-        .map_err(|err| format!("Failed to read keypair file {}: {}", path.display(), err))?;
-    let keypair_file: GenesisKeypairFile = serde_json::from_str(&json)
-        .map_err(|err| format!("Failed to parse keypair file {}: {}", path.display(), err))?;
-    if keypair_file.private_key.len() != 32 {
-        return Err(format!(
-            "Keypair file {} has invalid seed length {} (expected 32 bytes)",
-            path.display(),
-            keypair_file.private_key.len()
-        ));
-    }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&keypair_file.private_key);
-
-    let keypair = Keypair::from_seed(&seed);
-    if keypair.public_key().bytes != keypair_file.public_key {
-        return Err(format!(
-            "Keypair file {} publicKey does not match the derived PQ verifying key",
-            path.display()
-        ));
-    }
-    if keypair.pubkey().to_base58() != keypair_file.public_key_base58 {
-        return Err(format!(
-            "Keypair file {} publicKeyBase58 does not match the derived PQ address",
-            path.display()
-        ));
-    }
-
-    Ok(keypair)
+    let password = require_runtime_keypair_password("genesis keypair load")?;
+    load_genesis_keypair_with_policy(
+        path,
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    )
 }
 
 fn resolve_artifact_path(base_file: &std::path::Path, relative_or_absolute: &str) -> PathBuf {
@@ -146,14 +126,31 @@ fn copy_optional_artifact(
             )
         })?;
     }
-    std::fs::copy(&source_path, &target_path).map_err(|err| {
-        format!(
-            "Failed to copy artifact {} -> {}: {}",
-            source_path.display(),
-            target_path.display(),
-            err
-        )
-    })?;
+    if artifact_path.contains("genesis-keys/")
+        || target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.ends_with("-keypair.json"))
+            .unwrap_or(false)
+    {
+        copy_secure_file(&source_path, &target_path).map_err(|err| {
+            format!(
+                "Failed to securely copy artifact {} -> {}: {}",
+                source_path.display(),
+                target_path.display(),
+                err
+            )
+        })?;
+    } else {
+        std::fs::copy(&source_path, &target_path).map_err(|err| {
+            format!(
+                "Failed to copy artifact {} -> {}: {}",
+                source_path.display(),
+                target_path.display(),
+                err
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -1272,7 +1269,7 @@ mod tests {
 
         std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-        let loaded = load_genesis_keypair(&path).unwrap();
+    let loaded = load_genesis_keypair_with_policy(&path, None, true).unwrap();
         assert_eq!(loaded.to_seed(), keypair.to_seed());
 
         let _ = std::fs::remove_file(path);

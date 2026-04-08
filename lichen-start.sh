@@ -33,6 +33,17 @@
 
 set -euo pipefail
 
+# Restore a sane tool PATH when the caller shell exported a stripped environment.
+BOOTSTRAP_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.cargo/bin" ]; then
+    BOOTSTRAP_PATH="${HOME}/.cargo/bin:${BOOTSTRAP_PATH}"
+fi
+if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
+    BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
+fi
+PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+export PATH
+
 # ── Colors ──
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -88,6 +99,21 @@ configure_local_custody_auth() {
         export CUSTODY_SIGNER_AUTH_TOKEN="$LICHEN_SIGNER_AUTH_TOKEN"
     fi
     ensure_generated_token CUSTODY_API_AUTH_TOKEN "custody API auth token" || return 1
+}
+
+require_production_keypair_password() {
+    if is_local_dev_mode; then
+        return 0
+    fi
+
+    if [ -n "${LICHEN_KEYPAIR_PASSWORD:-}" ]; then
+        return 0
+    fi
+
+    echo -e "${RED}Error: LICHEN_KEYPAIR_PASSWORD must be set before starting a production validator.${NC}"
+    echo "The validator, genesis treasury, and signer key files are encrypted at rest outside explicit local development."
+    echo "Set LICHEN_KEYPAIR_PASSWORD in the current environment or in /etc/lichen/env-<network> before first boot and every restart."
+    exit 1
 }
 
 # ── Defaults ──
@@ -173,6 +199,8 @@ esac
 if $START_CUSTODY; then
     configure_local_custody_auth || exit 1
 fi
+
+require_production_keypair_password
 
 DB_PATH="./data/state-${NETWORK}"
 LOG_DIR="/tmp/lichen-${NETWORK}"

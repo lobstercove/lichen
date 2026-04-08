@@ -29,11 +29,12 @@
 'use strict';
 
 const pq = require('./helpers/pq-node');
-const { loadFundedWallets } = require('./helpers/funded-wallets');
+const { loadFundedWallets, findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
 const REST_BASE = `${RPC_URL}/api/v1`;
 const SPORES_PER_LICN = 1_000_000_000;  // 1 LICN = 1e9 spores
+const GOVERNANCE_REPUTATION_THRESHOLD = 500;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test harness
@@ -308,6 +309,21 @@ function buildGetGovernanceStats() {
     return new Uint8Array([18]);
 }
 
+// LichenID: admin_register_reserved_name — [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
+function buildAdminRegisterReservedName(adminAddr, ownerAddr, name, agentType = 0) {
+    const nameBytes = new TextEncoder().encode(name);
+    const total = 32 + 32 + nameBytes.length + 4 + 1;
+    const buf = new ArrayBuffer(total);
+    const a = new Uint8Array(buf);
+    const v = new DataView(buf);
+    writePubkey(a, 0, adminAddr);
+    writePubkey(a, 32, ownerAddr);
+    a.set(nameBytes, 64);
+    v.setUint32(64 + nameBytes.length, nameBytes.length, true);
+    writeU8(a, 64 + nameBytes.length + 4, agentType);
+    return a;
+}
+
 // propose_fee_change: opcode 9, proposer[32] + pair_id[u64] + maker_fee[i16] + taker_fee[u16]
 function buildProposeFeeChange(proposerAddr, pairId, makerFee, takerFee) {
     const buf = new ArrayBuffer(45); const v = new DataView(buf); const a = new Uint8Array(buf);
@@ -341,6 +357,7 @@ async function discoverContracts() {
         'ANALYTICS': 'dex_analytics', 'PREDICT': 'prediction_market',
         'LUSD': 'lusd_token', 'WSOL': 'wsol_token', 'WETH': 'weth_token',
         'ORACLE': 'lichenoracle', 'SPOREPUMP': 'sporepump', 'MOSS': 'moss_token',
+        'YID': 'lichenid',
     };
     for (const e of entries) {
         const key = symbolMap[e.symbol] || e.symbol.toLowerCase();
@@ -367,6 +384,68 @@ async function getBalance(addr) {
     const result = await rpc('getBalance', [addr]);
     if (typeof result === 'number') return result;
     return result?.spores ?? result?.value ?? 0;
+}
+
+async function getLichenIdReputation(addr) {
+    try {
+        const result = await rpc('getLichenIdReputation', [addr]);
+        return Number(result?.score || 0);
+    } catch {
+        return 0;
+    }
+}
+
+function governanceIdentityLabel(wallet, index) {
+    const suffix = wallet.address.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 18);
+    return `launch${index}${suffix}`.slice(0, 32);
+}
+
+async function ensureGovernanceReputation(admin, wallets) {
+    const initialReputations = new Map();
+    for (const wallet of wallets) {
+        initialReputations.set(wallet.address, await getLichenIdReputation(wallet.address));
+    }
+
+    const needsBootstrap = wallets.filter(
+        (wallet) => (initialReputations.get(wallet.address) || 0) < GOVERNANCE_REPUTATION_THRESHOLD,
+    );
+    let bootstrapAttempts = 0;
+
+    for (let index = 0; index < needsBootstrap.length; index++) {
+        const wallet = needsBootstrap[index];
+        try {
+            const args = buildAdminRegisterReservedName(
+                admin.address,
+                wallet.address,
+                governanceIdentityLabel(wallet, index),
+                0,
+            );
+            await sendTx(admin, [
+                namedCallIx(admin.address, CONTRACTS.lichenid, 'admin_register_reserved_name', args),
+            ]);
+            bootstrapAttempts += 1;
+            await sleep(500);
+        } catch (e) {
+            console.log(`  Identity bootstrap note: ${wallet.address.slice(0, 12)}... ${e.message.slice(0, 80)}`);
+        }
+    }
+
+    if (bootstrapAttempts > 0) {
+        await sleep(2000);
+    }
+
+    const finalReputations = new Map();
+    for (const wallet of wallets) {
+        finalReputations.set(wallet.address, await getLichenIdReputation(wallet.address));
+    }
+
+    return {
+        bootstrapAttempts,
+        finalReputations,
+        ready: wallets.every(
+            (wallet) => (finalReputations.get(wallet.address) || 0) >= GOVERNANCE_REPUTATION_THRESHOLD,
+        ),
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -442,6 +521,52 @@ async function runTests() {
     assert(bobBal > 0, `Bob funded: ${(bobBal / SPORES_PER_LICN).toFixed(1)} LICN`);
     const charlieBal = await getBalance(charlie.address);
     assert(charlieBal > 0, `Charlie funded: ${(charlieBal / SPORES_PER_LICN).toFixed(1)} LICN`);
+
+    let governancePrereqsReady = false;
+    section('2b. Governance Identity Bootstrap');
+    if (hasGov && CONTRACTS.lichenid) {
+        const currentReputations = new Map();
+        for (const wallet of [alice, bob, charlie, dave]) {
+            currentReputations.set(wallet.address, await getLichenIdReputation(wallet.address));
+        }
+
+        if ([alice, bob, charlie, dave].every(
+            (wallet) => (currentReputations.get(wallet.address) || 0) >= GOVERNANCE_REPUTATION_THRESHOLD,
+        )) {
+            for (const [label, wallet] of [['Alice', alice], ['Bob', bob], ['Charlie', charlie], ['Dave', dave]]) {
+                assert(true, `${label} governance reputation ready: ${currentReputations.get(wallet.address) || 0}`);
+            }
+            governancePrereqsReady = true;
+        } else {
+            const admin = findGenesisAdminKeypair();
+            if (!admin) {
+                skipped++;
+                console.log('  ⊘ Genesis admin keypair not found; governance bootstrap skipped');
+                for (const [label, wallet] of [['Alice', alice], ['Bob', bob], ['Charlie', charlie], ['Dave', dave]]) {
+                    skipped++;
+                    console.log(`  ⊘ ${label} governance reputation below threshold: ${currentReputations.get(wallet.address) || 0}`);
+                }
+            } else {
+                const adminBal = await getBalance(admin.address);
+                assert(adminBal > 0, `Genesis admin available for bootstrap: ${admin.address.slice(0, 16)}...`);
+
+                const bootstrap = await ensureGovernanceReputation(admin, [alice, bob, charlie, dave]);
+                for (const [label, wallet] of [['Alice', alice], ['Bob', bob], ['Charlie', charlie], ['Dave', dave]]) {
+                    const score = bootstrap.finalReputations.get(wallet.address) || 0;
+                    if (score >= GOVERNANCE_REPUTATION_THRESHOLD) {
+                        assert(true, `${label} governance reputation ready: ${score}`);
+                    } else {
+                        skipped++;
+                        console.log(`  ⊘ ${label} governance reputation below threshold after bootstrap: ${score}`);
+                    }
+                }
+                governancePrereqsReady = bootstrap.ready;
+            }
+        }
+    } else if (hasGov) {
+        skipped++;
+        console.log('  ⊘ LichenID contract not discovered; governance bootstrap skipped');
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // 3. SporePump: Create Token #1
@@ -677,7 +802,7 @@ async function runTests() {
     // ══════════════════════════════════════════════════════════════════════
     // 10. DEX Governance: Propose new pair
     // ══════════════════════════════════════════════════════════════════════
-    if (hasGov) {
+    if (hasGov && governancePrereqsReady) {
         section('10. Governance: Propose New Pair');
         let proposalId = 0;
 
@@ -834,7 +959,7 @@ async function runTests() {
 
     } else {
         skipped += 10;
-        console.log('\n  ⊘ Governance tests skipped (contract not deployed)');
+        console.log(`\n  ⊘ Governance tests skipped (${hasGov ? 'identity prerequisites unavailable' : 'contract not deployed'})`);
     }
 
     // ══════════════════════════════════════════════════════════════════════

@@ -606,6 +606,9 @@ LICHEN_NETWORK=$net
 LICHEN_RPC_PORT=$RPC_PORT
 LICHEN_WS_PORT=$WS_PORT
 LICHEN_P2P_PORT=$P2P_PORT
+# Required outside explicit local development. Set this before first boot so
+# validator, genesis, treasury, and signer key files are encrypted at rest.
+LICHEN_KEYPAIR_PASSWORD=
 # P9-INF-09: Custody signer binds to loopback only (not all interfaces)
 LICHEN_SIGNER_BIND=127.0.0.1:$SIGNER_PORT
 LICHEN_SIGNER_AUTH_TOKEN=$SIGNER_AUTH_TOKEN
@@ -701,6 +704,9 @@ CUSTODY_POLL_INTERVAL_SECS=15
 CUSTODY_DEPOSIT_TTL_SECS=86400
 CUSTODY_LISTEN_PORT=$CUSTODY_PORT
 CUSTODY_SIGNER_AUTH_TOKEN=$SIGNER_AUTH_TOKEN
+# Required outside explicit local development when CUSTODY_TREASURY_KEYPAIR
+# points at canonical validator/genesis keypair JSON.
+LICHEN_KEYPAIR_PASSWORD=
 LICHEN_INCIDENT_STATUS_FILE=$INCIDENT_STATUS_FILE
 RUST_LOG=info
 CUSTODY_TREASURY_KEYPAIR=$CONFIG_DIR/custody-treasury-$net.json
@@ -782,6 +788,9 @@ for net in "${NETWORKS[@]}"; do
 done
 echo ""
 echo "⚠  VPS bootstrap — Genesis Node (run once on the first VPS):"
+echo ""
+echo "   0. Set LICHEN_KEYPAIR_PASSWORD in /etc/lichen/env-<net> and /etc/lichen/custody-env[-mainnet] before first boot."
+echo "      Production validators now refuse plaintext validator, treasury, and signer key files."
 echo ""
 echo "   1. Prepare wallet artifacts:"
 echo "      sudo -u lichen HOME=$DATA_DIR LICHEN_HOME=$DATA_DIR LICHEN_CONTRACTS_DIR=$DATA_DIR/contracts \\"

@@ -19,6 +19,7 @@ pub mod evm;
 pub mod genesis;
 pub mod governance;
 pub mod hash;
+pub mod keypair_file;
 pub mod marketplace;
 pub mod mempool;
 pub mod mossstake; // Liquid staking protocol
@@ -74,6 +75,11 @@ pub use genesis::{
 };
 pub use governance::{GovernanceAction, GovernanceProposal};
 pub use hash::Hash;
+pub use keypair_file::{
+    copy_secure_file, keypair_password_from_env, plaintext_keypair_compat_allowed,
+    repair_key_file_permissions, require_runtime_keypair_password, write_secure_file, KeypairFile,
+    ALLOW_PLAINTEXT_KEYPAIR_ENV, KEYPAIR_PASSWORD_ENV,
+};
 pub use marketplace::{
     decode_market_activity, encode_market_activity, MarketActivity, MarketActivityKind,
 };

@@ -399,6 +399,56 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "set_oracle_contract",
+      "opcode": 29,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "oracle_addr",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_mark_price_from_oracle",
+      "opcode": 30,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "asset_name",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "set_index_price",
+      "opcode": 31,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "price",
+          "type": "u64"
+        }
+      ]
     }
   ]
 }

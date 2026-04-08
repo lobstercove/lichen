@@ -24,6 +24,10 @@ pub mod updater;
 pub mod wal;
 
 use futures_util::{SinkExt, StreamExt};
+use lichen_core::keypair_file::{
+    load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    require_runtime_keypair_password,
+};
 use lichen_core::multisig::{
     bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
     incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
@@ -88,6 +92,58 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// The watchdog is also sync-aware: it won't fire while the node has
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+
+fn should_preserve_partial_genesis_entry(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(
+            "genesis.json"
+                | "genesis-wallet.json"
+                | "seeds.json"
+                | "validator-keypair.json"
+                | "signer-keypair.json"
+                | "known-peers.json"
+                | "genesis-keys"
+                | "home"
+                | "logs"
+        )
+    )
+}
+
+fn scrub_partial_genesis_state(data_dir: &Path) -> Result<(), String> {
+    let entries = fs::read_dir(data_dir).map_err(|e| {
+        format!(
+            "Failed to read state directory {}: {}",
+            data_dir.display(),
+            e
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            format!(
+                "Failed to enumerate state directory {}: {}",
+                data_dir.display(),
+                e
+            )
+        })?;
+        let path = entry.path();
+        if should_preserve_partial_genesis_entry(&path) {
+            continue;
+        }
+
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+        } else {
+            fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+        }
+    }
+
+    Ok(())
+}
 
 // =========================================================================
 //  SHARED ORACLE PRICES — Thread-safe container for external feeder data
@@ -639,29 +695,6 @@ fn hash_stake_pool(pool: &StakePool) -> Hash {
     Hash::hash(&data)
 }
 
-#[derive(Deserialize)]
-struct TreasuryKeyFile {
-    #[serde(default, rename = "privateKey")]
-    private_key: Option<serde_json::Value>,
-}
-
-fn decode_treasury_seed_value(value: &serde_json::Value) -> Option<[u8; 32]> {
-    let entries = value.as_array()?;
-    if entries.len() != 32 {
-        return None;
-    }
-
-    let mut seed = [0u8; 32];
-    for (index, entry) in entries.iter().enumerate() {
-        let byte = entry.as_u64()?;
-        if byte > u8::MAX as u64 {
-            return None;
-        }
-        seed[index] = byte as u8;
-    }
-    Some(seed)
-}
-
 fn resolve_treasury_keypair_path(
     genesis_wallet: Option<&GenesisWallet>,
     data_dir: &Path,
@@ -700,51 +733,32 @@ fn load_treasury_keypair(
     chain_id: &str,
 ) -> Option<Keypair> {
     let path = resolve_treasury_keypair_path(genesis_wallet, data_dir, keys_dir, chain_id)?;
-    let contents = match fs::read_to_string(&path) {
-        Ok(data) => data,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed to read treasury keypair {}: {}",
-                path.display(),
-                e
-            );
+    let password = match require_runtime_keypair_password("treasury keypair load") {
+        Ok(password) => password,
+        Err(err) => {
+            warn!("⚠️  {}", err);
             return None;
         }
     };
 
-    let parsed: TreasuryKeyFile = match serde_json::from_str(&contents) {
-        Ok(file) => file,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed to parse treasury keypair {}: {}",
-                path.display(),
-                e
-            );
-            return None;
+    match load_keypair_with_password_policy(
+        &path,
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    ) {
+        Ok(keypair) => {
+            info!("🔐 Loaded treasury keypair from {}", path.display());
+            Some(keypair)
         }
-    };
-
-    let Some(seed_value) = parsed.private_key.as_ref() else {
-        warn!(
-            "⚠️  Treasury keypair {} is missing a privateKey field",
-            path.display()
-        );
-        return None;
-    };
-
-    let Some(mut seed) = decode_treasury_seed_value(seed_value) else {
-        warn!(
-            "⚠️  Treasury keypair {} has an invalid privateKey payload",
-            path.display()
-        );
-        return None;
-    };
-
-    let keypair = Keypair::from_seed(&seed);
-    // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
-    seed.iter_mut().for_each(|b| *b = 0);
-    info!("🔐 Loaded treasury keypair from {}", path.display());
-    Some(keypair)
+        Err(err) => {
+            warn!(
+                "⚠️  Failed to load treasury keypair {}: {}",
+                path.display(),
+                err
+            );
+            None
+        }
+    }
 }
 
 /// Extract the embedded GenesisConfig from the genesis block.
@@ -5132,6 +5146,39 @@ async fn run_validator() {
         }
     };
 
+    let genesis_sync_incomplete = matches!(
+        state
+            .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(b"1")
+    );
+    let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
+    if !has_genesis_block && genesis_sync_incomplete {
+        warn!(
+            "⚠️  Detected partial genesis replay state without a stored slot-0 block; scrubbing local RocksDB state before retry"
+        );
+        drop(state);
+
+        if let Err(e) = scrub_partial_genesis_state(&data_dir_path) {
+            error!("Failed to scrub partial genesis state: {}", e);
+            return;
+        }
+
+        state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to reopen state after partial genesis scrub: {}", e);
+                return;
+            }
+        };
+    } else if has_genesis_block && genesis_sync_incomplete {
+        if let Err(e) = state.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0") {
+            warn!("⚠️  Failed to clear stale genesis sync marker: {}", e);
+        }
+    }
+
     // Force Merkle leaf cache rebuild on startup.  The incremental cache
     // (CF_MERKLE_LEAVES / CF_CONTRACT_MERKLE_LEAVES) might be stale if the
     // previous process was killed between account writes and dirty-marker
@@ -6683,6 +6730,7 @@ async fn run_validator() {
     // causing the receiver's compute_state_root to read hybrid state
     // (partially modified by BFT's apply_block_effects).
     let bft_committing_slot = Arc::new(AtomicU64::new(0));
+    let genesis_sync_in_progress = Arc::new(AtomicBool::new(false));
 
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
@@ -6717,6 +6765,7 @@ async fn run_validator() {
         let p2p_config_for_slash_blocks = p2p_config.clone();
         let p2p_pm_for_slash_blocks = p2p_pm.clone();
         let bft_committing_for_blocks = bft_committing_slot.clone();
+        let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -7106,6 +7155,20 @@ async fn run_validator() {
                     {
                         warn!("⚠️  Ignoring duplicate genesis block from network");
                         continue;
+                    }
+                    if genesis_sync_in_progress_for_blocks
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                    {
+                        warn!(
+                            "⚠️  Ignoring duplicate genesis block while reconstruction is already in progress"
+                        );
+                        continue;
+                    }
+                    if let Err(err) =
+                        state_for_blocks.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
+                    {
+                        warn!("⚠️  Failed to persist genesis sync marker: {}", err);
                     }
                     // Genesis block — defer put_block until reconstruction is
                     // complete. This prevents the block receiver from chaining
@@ -7865,6 +7928,11 @@ async fn run_validator() {
                                 std::process::exit(1);
                             }
                             state_for_blocks.set_last_slot(0).ok();
+                            if let Err(err) =
+                                state_for_blocks.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                            {
+                                warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                            }
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
@@ -7876,10 +7944,17 @@ async fn run_validator() {
                                 error!("Failed to store genesis block: {}", e);
                             }
                             state_for_blocks.set_last_slot(0).ok();
+                            if let Err(err) =
+                                state_for_blocks.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                            {
+                                warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                            }
                             info!(
                                 "✅ 📡 [sync] Applied genesis block (slot 0) from network (state incomplete)"
                             );
                         }
+
+                        genesis_sync_in_progress_for_blocks.store(false, Ordering::Release);
 
                         // Try to apply any pending blocks now that we have genesis
                         let genesis_hash = block.hash();
@@ -13995,6 +14070,42 @@ mod tests {
                 },
             )
             .expect("register symbol");
+    }
+
+    #[test]
+    fn partial_genesis_scrub_preserves_identity_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let root = temp_dir.path();
+
+        fs::write(root.join("CURRENT"), b"rocksdb-current").expect("write current");
+        fs::write(root.join("000007.log"), b"rocksdb-wal").expect("write wal");
+        fs::create_dir(root.join("archive")).expect("create archive dir");
+        fs::write(root.join("registration-submitted.marker"), b"1").expect("write marker");
+
+        fs::write(root.join("genesis.json"), b"{}").expect("write genesis config");
+        fs::write(root.join("seeds.json"), b"[]").expect("write seeds");
+        fs::write(root.join("validator-keypair.json"), b"[]").expect("write validator key");
+        fs::write(root.join("signer-keypair.json"), b"[]").expect("write signer key");
+        fs::write(root.join("known-peers.json"), b"[]").expect("write peers");
+        fs::create_dir(root.join("genesis-keys")).expect("create genesis keys dir");
+        fs::create_dir(root.join("home")).expect("create home dir");
+        fs::create_dir(root.join("logs")).expect("create logs dir");
+
+        scrub_partial_genesis_state(root).expect("scrub partial genesis state");
+
+        assert!(root.join("genesis.json").exists());
+        assert!(root.join("seeds.json").exists());
+        assert!(root.join("validator-keypair.json").exists());
+        assert!(root.join("signer-keypair.json").exists());
+        assert!(root.join("known-peers.json").exists());
+        assert!(root.join("genesis-keys").exists());
+        assert!(root.join("home").exists());
+        assert!(root.join("logs").exists());
+
+        assert!(!root.join("CURRENT").exists());
+        assert!(!root.join("000007.log").exists());
+        assert!(!root.join("archive").exists());
+        assert!(!root.join("registration-submitted.marker").exists());
     }
 
     #[test]

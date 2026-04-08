@@ -12,6 +12,10 @@ use axum::{
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
 use lichen_core::{
+    keypair_file::{
+        load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        require_runtime_keypair_password,
+    },
     Hash, Instruction, Keypair, Message, PqSignature, Pubkey, Transaction, SYSTEM_PROGRAM_ID,
 };
 use rocksdb::{
@@ -6143,6 +6147,23 @@ fn _build_contract_burn_instruction(
 }
 
 fn load_treasury_keypair(path: &Path) -> Result<Keypair, String> {
+    let password = require_runtime_keypair_password("custody treasury keypair load")?;
+    match load_keypair_with_password_policy(
+        path,
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    ) {
+        Ok(keypair) => return Ok(keypair),
+        Err(canonical_err) if !plaintext_keypair_compat_allowed() => {
+            return Err(format!(
+                "failed to load canonical treasury keypair {}: {}",
+                path.display(),
+                canonical_err
+            ));
+        }
+        Err(_) => {}
+    }
+
     let json = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
     let parsed: TreasuryKeyFile =
         serde_json::from_str(&json).map_err(|e| format!("parse: {}", e))?;

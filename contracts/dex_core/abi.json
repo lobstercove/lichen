@@ -425,6 +425,48 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "set_fee_treasury_address",
+      "opcode": 32,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "treasury",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "claim_rebate",
+      "opcode": 33,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_rewards_address",
+      "opcode": 34,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "rewards",
+          "type": "Pubkey"
+        }
+      ]
     }
   ]
 }

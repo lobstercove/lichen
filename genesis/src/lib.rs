@@ -334,6 +334,17 @@ fn uses_operational_token_admin(dir_name: &str) -> bool {
     )
 }
 
+fn operational_token_contracts() -> &'static [&'static str] {
+    &["lusd_token", "wsol_token", "weth_token", "wbnb_token"]
+}
+
+fn two_address_args(first: &[u8; 32], second: &[u8; 32]) -> Vec<u8> {
+    let mut args = Vec::with_capacity(64);
+    args.extend_from_slice(first);
+    args.extend_from_slice(second);
+    args
+}
+
 fn apply_genesis_contract_hardening(
     state: &StateStore,
     governance_authority: &Pubkey,
@@ -362,10 +373,11 @@ fn apply_genesis_contract_hardening(
             )
         })?;
 
-        if contract.upgrade_timelock_epochs == timelock {
+        if contract.upgrade_timelock_epochs == timelock && contract.owner == *governance_authority {
             continue;
         }
 
+        contract.owner = *governance_authority;
         contract.upgrade_timelock_epochs = timelock;
         account.data = serde_json::to_vec(&contract).map_err(|e| {
             format!(
@@ -850,9 +862,9 @@ pub fn genesis_initialize_contracts(
         };
 
         let initialized_ok = if uses_operational_token_admin(spec.dir_name) {
-            // Wrapped/quote token minting remains on the operational deployer key
-            // used by custody and local DEX seeding. Governance hardening still
-            // applies at the contract control layer via genesis_harden_contract_controls.
+            // Wrapped/quote tokens bootstrap under the operational issuance key used
+            // by custody. Their long-lived admin role is transferred to governance
+            // immediately after initialization below.
             genesis_exec_contract(
                 state,
                 &pubkey,
@@ -870,6 +882,43 @@ pub fn genesis_initialize_contracts(
             initialized += 1;
         } else {
             skipped += 1;
+        }
+    }
+
+    for dir_name in operational_token_contracts() {
+        let Some(pubkey) = address_map.get(*dir_name) else {
+            continue;
+        };
+
+        let transfer_args = two_address_args(&operational_token_admin, &admin);
+        if genesis_exec_contract(
+            state,
+            pubkey,
+            deployer_pubkey,
+            "transfer_admin",
+            &transfer_args,
+            &format!("{}(transfer_admin)", dir_name),
+        ) {
+            info!("  SET {}(pending governance admin)", dir_name);
+        } else {
+            return Err(format!(
+                "Failed to transfer {} admin from operational bootstrap key to governance",
+                dir_name
+            ));
+        }
+
+        if exec_as_governance(
+            pubkey,
+            "accept_admin",
+            &named_init_args(&admin),
+            &format!("{}(accept_admin)", dir_name),
+        ) {
+            info!("  SET {}(governed admin)", dir_name);
+        } else {
+            return Err(format!(
+                "Failed to accept {} admin as governed authority",
+                dir_name
+            ));
         }
     }
 
@@ -1114,6 +1163,23 @@ pub fn genesis_initialize_contracts(
         }
     }
 
+    // ── DEX Core → DEX Rewards: wire rewards address for taker fee mining ──
+    // Opcode 34 = set_rewards_address. Format: [34][admin 32B][rewards_addr 32B]
+    // Without this, dex_core never records fee-mining rewards after matched trades.
+    if let (Some(dex_core_pk), Some(dex_rewards_pk)) =
+        (address_map.get("dex_core"), address_map.get("dex_rewards"))
+    {
+        let mut args = Vec::with_capacity(65);
+        args.push(34u8); // opcode 34 = set_rewards_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&dex_rewards_pk.0);
+        if exec_as_governance(dex_core_pk, "call", &args, "dex_core(set_rewards_address)") {
+            info!("  SET dex_core(set_rewards_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_core rewards address");
+        }
+    }
+
     // ── DEX Analytics ← DEX Core: authorize dex_core as trade recorder ──
     // Opcode 11 = set_authorized_caller. Format: [11][admin 32B][dex_core_addr 32B]
     // Without this, dex_analytics rejects all record_trade calls (error 200).
@@ -1155,6 +1221,29 @@ pub fn genesis_initialize_contracts(
             info!("  SET dex_rewards(set_lichencoin_address)");
         } else {
             warn!("  WARN: Failed to set dex_rewards lichencoin address");
+        }
+    }
+
+    // ── DEX Rewards ← DEX Core: authorize dex_core to accrue trader rewards ──
+    // Opcode 20 = set_authorized_caller(caller[32], contract_addr[32], enabled[1]).
+    // Without this, dex_rewards rejects all record_trade calls from dex_core.
+    if let (Some(dex_rewards_pk), Some(dex_core_pk)) =
+        (address_map.get("dex_rewards"), address_map.get("dex_core"))
+    {
+        let mut args = Vec::with_capacity(66);
+        args.push(20u8); // opcode 20 = set_authorized_caller
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&dex_core_pk.0);
+        args.push(1u8); // enabled=true
+        if exec_as_governance(
+            dex_rewards_pk,
+            "call",
+            &args,
+            "dex_rewards(set_authorized_caller)",
+        ) {
+            info!("  SET dex_rewards(set_authorized_caller)");
+        } else {
+            warn!("  WARN: Failed to set dex_rewards authorized caller");
         }
     }
 
@@ -3089,6 +3178,7 @@ mod tests {
 
         let account = state.get_account(&contract_pubkey).unwrap().unwrap();
         let contract: ContractAccount = serde_json::from_slice(&account.data).unwrap();
+        assert_eq!(contract.owner, governance_authority);
         assert_eq!(
             contract.upgrade_timelock_epochs,
             Some(GENESIS_DEFAULT_CONTRACT_UPGRADE_TIMELOCK_EPOCHS)

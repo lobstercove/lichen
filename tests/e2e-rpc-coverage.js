@@ -9,7 +9,7 @@
 
 const http = require('http');
 const https = require('https');
-const { loadFundedWallets, fundAccount, genKeypair } = require('./helpers/funded-wallets');
+const { loadFundedWallets, fundAccount, genKeypair, initCrypto } = require('./helpers/funded-wallets');
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:8899';
 const REST_BASE = RPC;
@@ -88,6 +88,8 @@ async function runTests() {
     console.log('═══════════════════════════════════════════════');
     console.log('  Lichen RPC Method Coverage — Full Inventory');
     console.log('═══════════════════════════════════════════════');
+
+    await initCrypto();
 
     // Load a funded wallet for queries
     const wallets = loadFundedWallets(2);

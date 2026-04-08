@@ -31,6 +31,7 @@
 
 const pq = require('./helpers/pq-node');
 const crypto = require('crypto');
+const { findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
 const FAUCET_URL = process.env.FAUCET_URL || 'http://127.0.0.1:9100';
@@ -382,33 +383,7 @@ async function discoverContracts() {
 }
 
 function loadGenesisAdmin() {
-    const fs = require('fs');
-    const path = require('path');
-    const dataDirs = ['data/state-7001', 'data/state-7002', 'data/state-7003'];
-    for (const dir of dataDirs) {
-        const genesisKeysDir = path.join(process.cwd(), dir, 'genesis-keys');
-        if (!fs.existsSync(genesisKeysDir)) continue;
-        const files = fs.readdirSync(genesisKeysDir).filter(f => f.startsWith('genesis-primary'));
-        if (files.length === 0) continue;
-        const kpData = JSON.parse(fs.readFileSync(path.join(genesisKeysDir, files[0]), 'utf8'));
-        if (Array.isArray(kpData.privateKey) && kpData.privateKey.length === 32) {
-            const seed = new Uint8Array(kpData.privateKey);
-            const kp = keypairFromSeed(seed);
-            return kp;
-        }
-    }
-    const fs2 = require('fs');
-    const path2 = require('path');
-    const deployerPath = path2.join(process.cwd(), 'keypairs', 'deployer.json');
-    if (fs2.existsSync(deployerPath)) {
-        const dp = JSON.parse(fs2.readFileSync(deployerPath, 'utf8'));
-        if (Array.isArray(dp.privateKey) && dp.privateKey.length === 32) {
-            const seed = new Uint8Array(dp.privateKey);
-            const kp = keypairFromSeed(seed);
-            return kp;
-        }
-    }
-    return null;
+    return findGenesisAdminKeypair();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

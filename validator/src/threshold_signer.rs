@@ -1,13 +1,17 @@
 use axum::{routing::get, routing::post, Json, Router};
-use lichen_core::Keypair;
+use lichen_core::{
+    keypair_file::{
+        load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        require_runtime_keypair_password,
+    },
+    Keypair, KeypairFile,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
-use zeroize::Zeroize;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -45,19 +49,19 @@ struct SignerState {
     auth_token: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SignerKeyFile {
-    #[serde(rename = "privateKey")]
-    private_key: Vec<u8>,
-    #[serde(rename = "publicKey")]
-    public_key: Vec<u8>,
-    #[serde(rename = "publicKeyBase58")]
-    public_key_base58: String,
-}
-
 pub async fn start_signer_server(bind: SocketAddr, data_dir: &Path) {
     let keypair_path = resolve_signer_keypair_path(data_dir);
-    let keypair = load_or_generate_signer_keypair(&keypair_path);
+    let keypair = match load_or_generate_signer_keypair(&keypair_path) {
+        Ok(keypair) => keypair,
+        Err(err) => {
+            warn!(
+                "threshold signer disabled because keypair setup failed at {}: {}",
+                keypair_path.display(),
+                err
+            );
+            return;
+        }
+    };
     let pubkey_base58 = keypair.pubkey().to_base58();
 
     // T2.2 fix: Require authentication for signing requests.
@@ -163,77 +167,71 @@ fn resolve_signer_keypair_path(data_dir: &Path) -> PathBuf {
     data_dir.join("signer-keypair.json")
 }
 
-fn load_or_generate_signer_keypair(path: &Path) -> Keypair {
+fn load_or_generate_signer_keypair(path: &Path) -> Result<Keypair, String> {
+    let allow_plaintext = plaintext_keypair_compat_allowed();
+    let password = require_runtime_keypair_password("threshold signer keypair load")?;
+
     if path.exists() {
-        match load_signer_keypair(path) {
-            Ok(keypair) => return keypair,
+        match load_signer_keypair_with_policy(path, password.as_deref(), allow_plaintext) {
+            Ok(keypair) => return Ok(keypair),
             Err(err) => warn!("failed to load signer keypair {}: {}", path.display(), err),
         }
     }
 
     let keypair = Keypair::new();
-    if let Err(err) = save_signer_keypair(&keypair, path) {
-        warn!("failed to save signer keypair {}: {}", path.display(), err);
+    if let Err(err) = save_signer_keypair_with_password(&keypair, path, password.as_deref()) {
+        return Err(err);
     } else {
         info!("saved signer keypair to {}", path.display());
     }
-    keypair
+    Ok(keypair)
 }
 
-fn load_signer_keypair(path: &Path) -> Result<Keypair, String> {
-    let json = fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
-    let keypair_file: SignerKeyFile =
-        serde_json::from_str(&json).map_err(|e| format!("parse: {}", e))?;
-    if keypair_file.private_key.len() != 32 {
-        return Err("invalid private key length".to_string());
-    }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&keypair_file.private_key);
-    let kp = Keypair::from_seed(&seed);
-    if !keypair_file.public_key_base58.is_empty()
-        && kp.pubkey().to_base58() != keypair_file.public_key_base58
-    {
-        return Err("signer key file address does not match derived PQ address".to_string());
-    }
-    // AUDIT-FIX C-9: Zeroize seed material after use
-    seed.zeroize();
-    Ok(kp)
+fn load_signer_keypair_with_policy(
+    path: &Path,
+    password: Option<&str>,
+    allow_plaintext: bool,
+) -> Result<Keypair, String> {
+    load_keypair_with_password_policy(path, password, allow_plaintext)
+        .map_err(|err| format!("load signer keypair {}: {}", path.display(), err))
 }
 
-fn save_signer_keypair(keypair: &Keypair, path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+fn save_signer_keypair_with_password(
+    keypair: &Keypair,
+    path: &Path,
+    password: Option<&str>,
+) -> Result<(), String> {
+    KeypairFile::from_keypair(keypair)
+        .save_with_password(path, password, password.is_some())
+        .map_err(|err| format!("save signer keypair {}: {}", path.display(), err))
+}
+
+#[cfg(test)]
+fn load_or_generate_signer_keypair_with_policy(
+    path: &Path,
+    password: Option<&str>,
+    allow_plaintext: bool,
+) -> Result<Keypair, String> {
+    if path.exists() {
+        match load_signer_keypair_with_policy(path, password, allow_plaintext) {
+            Ok(keypair) => return Ok(keypair),
+            Err(err) => warn!("failed to load signer keypair {}: {}", path.display(), err),
+        }
     }
 
-    let pubkey = keypair.pubkey();
-    let public_key = keypair.public_key();
-    let mut seed = keypair.to_seed();
-    let mut keypair_file = SignerKeyFile {
-        private_key: seed.to_vec(),
-        public_key: public_key.bytes,
-        public_key_base58: pubkey.to_base58(),
-    };
-    // AUDIT-FIX C-9: Zeroize seed material after use
-    seed.zeroize();
-
-    let json = serde_json::to_string_pretty(&keypair_file).map_err(|e| format!("encode: {}", e))?;
-    // Zeroize private key from struct immediately after serialization
-    keypair_file.private_key.zeroize();
-    fs::write(path, json).map_err(|e| format!("write: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let permissions = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(path, permissions).map_err(|e| format!("chmod: {}", e))?;
+    let keypair = Keypair::new();
+    if let Err(err) = save_signer_keypair_with_password(&keypair, path, password) {
+        return Err(err);
+    } else {
+        info!("saved signer keypair to {}", path.display());
     }
-
-    Ok(())
+    Ok(keypair)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_build_signing_payload_full() {
@@ -282,8 +280,8 @@ mod tests {
         let keypair = Keypair::new();
         let pubkey = keypair.pubkey().to_base58();
 
-        save_signer_keypair(&keypair, &path).expect("save failed");
-        let loaded = load_signer_keypair(&path).expect("load failed");
+        save_signer_keypair_with_password(&keypair, &path, None).expect("save failed");
+        let loaded = load_signer_keypair_with_policy(&path, None, true).expect("load failed");
 
         assert_eq!(loaded.pubkey().to_base58(), pubkey);
         let _ = fs::remove_file(&path);
@@ -305,7 +303,7 @@ mod tests {
         let path = dir.join("new-signer.json");
         let _ = fs::remove_file(&path);
 
-        let kp = load_or_generate_signer_keypair(&path);
+        let kp = load_or_generate_signer_keypair_with_policy(&path, None, true).unwrap();
         assert!(path.exists());
         // Should be a valid keypair
         assert!(!kp.pubkey().to_base58().is_empty());

@@ -541,7 +541,9 @@ lichen-cli 0.9.2 (lichen)</code></pre>
                     <div class="callout-title"><i class="fas fa-lightbulb"></i> Keypair Encryption</div>
                     Set the <code>LICHEN_KEYPAIR_PASSWORD</code> environment variable before generating to encrypt
                     the keypair file at rest with <strong>AES-256-GCM</strong> authenticated encryption (12-byte random
-                    nonce, password-derived key). Legacy keypairs (v1) are auto-detected and upgraded on next use.
+                    nonce, password-derived key). For validator, genesis, treasury, and signer material, this password
+                    is required outside explicit local development so operator key files are never written back as
+                    plaintext.
                 </div>
             </div>
 

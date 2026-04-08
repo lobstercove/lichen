@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lichen.publickey import PublicKey
 from lichen.bincode import encode_message, encode_transaction, EncodedInstruction
 from lichen.pq import PqPublicKey, PqSignature
+from lichen.transaction import TransactionBuilder
 
 
 # --- Deterministic test data (same as Rust golden vector tests) ---
@@ -74,7 +75,44 @@ def test_transaction_golden_vector():
     print("  ✓ Transaction golden vector matches Rust length + hash")
 
 
+def test_message_optional_compute_fields():
+    """Optional compute fields must encode as bincode Option<u64>."""
+    msg_bytes = encode_message([ix], blockhash, compute_budget=500_000, compute_unit_price=250)
+    got = msg_bytes.hex()
+    expected_suffix = (
+        "01"                                                        # compute_budget: Some
+        "20a1070000000000"                                          # 500_000 LE
+        "01"                                                        # compute_unit_price: Some
+        "fa00000000000000"                                          # 250 LE
+    )
+
+    assert got.endswith(expected_suffix), (
+        f"K4-02 PYTHON COMPUTE OPTION MISMATCH!\n"
+        f"Got suffix:      {got[-len(expected_suffix):]}\n"
+        f"Expected suffix: {expected_suffix}"
+    )
+    print("  ✓ Optional compute fields encode correctly")
+
+
+def test_transaction_builder_sets_compute_fields():
+    """TransactionBuilder should preserve explicit compute settings on the message."""
+    message = (
+        TransactionBuilder()
+        .add(TransactionBuilder.transfer(account0, program_id, 1))
+        .set_recent_blockhash(blockhash)
+        .set_compute_budget(500_000)
+        .set_compute_unit_price(250)
+        .build()
+    )
+
+    assert message.compute_budget == 500_000
+    assert message.compute_unit_price == 250
+    print("  ✓ TransactionBuilder preserves compute settings")
+
+
 if __name__ == "__main__":
     test_message_golden_vector()
     test_transaction_golden_vector()
+    test_message_optional_compute_fields()
+    test_transaction_builder_sets_compute_fields()
     print("K4-02: All Python cross-SDK compatibility tests passed")

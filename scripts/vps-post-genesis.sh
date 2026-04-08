@@ -13,7 +13,8 @@
 #
 # What this script does:
 #   1. Copies genesis primary keypair → /etc/lichen/custody-treasury-<network>.json
-#      (so custody signs mint() calls with the matching contract admin key)
+#      (so custody signs wrapped-token mint() calls with the operational minter key;
+#       wrapped-token admin ownership moves to governance during genesis)
 #   2. Copies faucet keypair → /var/lib/lichen/faucet-keypair-<network>.json
 #      (falls back to the genesis treasury keypair when no dedicated faucet
 #       keypair was emitted by genesis)
@@ -90,12 +91,10 @@ PY
 
 GENESIS_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "genesis-primary-*.json" -type f 2>/dev/null | head -1)
 if [ -n "$GENESIS_KEY" ]; then
-	sudo cp "$GENESIS_KEY" "$CUSTODY_KEY_TARGET"
-	sudo chmod 600 "$CUSTODY_KEY_TARGET"
-	sudo chown lichen:lichen "$CUSTODY_KEY_TARGET"
+	sudo install -m 600 -o lichen -g lichen "$GENESIS_KEY" "$CUSTODY_KEY_TARGET"
 
 	PUBKEY=$(read_keypair_pubkey "$GENESIS_KEY")
-	echo -e "  ${GREEN}✓${NC} Custody treasury = genesis admin: $PUBKEY"
+	echo -e "  ${GREEN}✓${NC} Custody wrapped-token minter = genesis primary: $PUBKEY"
 	echo -e "    $GENESIS_KEY → $CUSTODY_KEY_TARGET"
 else
 	echo -e "  ${RED}✗${NC} Genesis primary keypair not found in $GENESIS_KEYS_DIR"
@@ -109,9 +108,7 @@ if [ -z "$FAUCET_KEY" ]; then
 	FAUCET_SOURCE_LABEL="treasury fallback"
 fi
 if [ -n "$FAUCET_KEY" ]; then
-	sudo cp "$FAUCET_KEY" "$FAUCET_KEY_TARGET"
-	sudo chmod 600 "$FAUCET_KEY_TARGET"
-	sudo chown lichen:lichen "$FAUCET_KEY_TARGET"
+	sudo install -m 600 -o lichen -g lichen "$FAUCET_KEY" "$FAUCET_KEY_TARGET"
 
 	FAUCET_PK=$(read_keypair_pubkey "$FAUCET_KEY")
 	echo -e "  ${GREEN}✓${NC} Faucet keypair ($FAUCET_SOURCE_LABEL): $FAUCET_PK"
@@ -125,7 +122,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 if [ -d "$REPO_ROOT" ] && [ -n "$GENESIS_KEY" ]; then
 	mkdir -p "$REPO_ROOT/keypairs" 2>/dev/null || true
-	sudo cp "$GENESIS_KEY" "$REPO_ROOT/keypairs/deployer.json" 2>/dev/null && \
+	sudo install -m 600 "$GENESIS_KEY" "$REPO_ROOT/keypairs/deployer.json" 2>/dev/null && \
 		echo -e "  ${GREEN}✓${NC} Copied to keypairs/deployer.json" || true
 fi
 

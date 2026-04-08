@@ -213,6 +213,8 @@ Important runtime files in the chosen `--db-path`:
 - `home/.lichen/node_identity.json`
 - `home/.lichen/peer_identities.json`
 
+Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before first start and on every restart. The validator, treasury, and signer key files are encrypted at rest, and production starts refuse plaintext keypair files.
+
 If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
 
 For P2P identity and trust-state files, the validator prefers `--db-path/home`
@@ -225,6 +227,7 @@ For production deployments, run the validator under a restart supervisor such as
 ```bash
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 lichen-validator \
     --network mainnet \
@@ -240,6 +243,7 @@ If you are building from source inside this repo, use the same runtime flags wit
 # Join mainnet with one command (syncs from seed nodes, generates keypair)
 mkdir -p ./data/state-mainnet/home
 cp ./seeds.json ./data/state-mainnet/seeds.json
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 env HOME="$PWD/data/state-mainnet/home" \
 ./target/release/lichen-validator \

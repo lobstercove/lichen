@@ -30,7 +30,7 @@
 
 const pq = require('./helpers/pq-node');
 const crypto = require('crypto');
-const { loadFundedWallets } = require('./helpers/funded-wallets');
+const { loadFundedWallets, findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
 const REST_BASE = `${RPC_URL}/api/v1`;
@@ -417,35 +417,12 @@ async function discoverContracts() {
 
 // Load genesis admin keypair from data directory
 function loadGenesisAdmin() {
-    const fs = require('fs');
     const path = require('path');
-    // Try data dirs in order (testnet ports: 7001-7003, matrix legacy: 8000-8002)
-    const dataDirs = ['data/state-7001', 'data/state-7002', 'data/state-7003', 'data/state-8000', 'data/state-8001', 'data/state-8002'];
-    for (const dir of dataDirs) {
-        const genesisKeysDir = path.join(process.cwd(), dir, 'genesis-keys');
-        if (!fs.existsSync(genesisKeysDir)) continue;
-        const files = fs.readdirSync(genesisKeysDir).filter(f => f.startsWith('genesis-primary'));
-        if (files.length === 0) continue;
-        const kpData = JSON.parse(fs.readFileSync(path.join(genesisKeysDir, files[0]), 'utf8'));
-        if (Array.isArray(kpData.privateKey) && kpData.privateKey.length === 32) {
-            const seed = new Uint8Array(kpData.privateKey);
-            const kp = keypairFromSeed(seed);
-            console.log(`  Loaded genesis admin: ${kp.address} (from ${dir})`);
-            return kp;
-        }
+    const admin = findGenesisAdminKeypair();
+    if (admin) {
+        console.log(`  Loaded genesis admin: ${admin.address} (from ${path.relative(process.cwd(), admin.source)})`);
     }
-    // Fallback: try deployer.json
-    const deployerPath = path.join(process.cwd(), 'keypairs', 'deployer.json');
-    if (fs.existsSync(deployerPath)) {
-        const dp = JSON.parse(fs.readFileSync(deployerPath, 'utf8'));
-        if (Array.isArray(dp.privateKey) && dp.privateKey.length === 32) {
-            const seed = new Uint8Array(dp.privateKey);
-            const kp = keypairFromSeed(seed);
-            console.log(`  Loaded deployer: ${kp.address}`);
-            return kp;
-        }
-    }
-    return null;
+    return admin;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
