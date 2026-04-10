@@ -17,3 +17,23 @@ testnet-ws.lichen.network {
     import common_headers
     reverse_proxy 127.0.0.1:8900
 }
+
+faucet.lichen.network {
+    tls internal
+    import common_headers
+
+    @api path /faucet/*
+    handle @api {
+        reverse_proxy 127.0.0.1:9100
+    }
+
+    @health path /health
+    handle @health {
+        reverse_proxy 127.0.0.1:9100
+    }
+
+    handle {
+        root * /home/ubuntu/lichen/faucet
+        file_server
+    }
+}

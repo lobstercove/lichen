@@ -292,6 +292,9 @@ async fn main() {
             .parse::<HeaderValue>()
             .unwrap(),
         "https://lichen.network".parse::<HeaderValue>().unwrap(),
+        "https://lichen-network-faucet.pages.dev"
+            .parse::<HeaderValue>()
+            .unwrap(),
     ];
 
     // Only include localhost origins during development
