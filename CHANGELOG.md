@@ -5,6 +5,20 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-04-10
+
+### Added
+- `lichen identity export` CLI command: decrypt and display validator/wallet keypair info. Supports `--reveal-seed` for private key export and `--output json` for agent-friendly output.
+- `deploy/setup.sh` now auto-generates `LICHEN_KEYPAIR_PASSWORD` if not previously set, eliminating a manual step that could be missed during deployment.
+
+### Fixed
+- Block timestamp drift: added `wall_clock_safe_delay()` to prevent block timestamps from racing ahead of wall clock time during fast BFT rounds. Previously, second-precision timestamps with 400ms slot time caused ~0.6s drift per block, triggering the 120s future-block rejection threshold after ~200 blocks.
+- Deployment runbook: Step 5 (signed metadata manifest) is now marked mandatory with verification commands. Missing manifest was the root cause of DEX "Missing contract addresses" errors on deployed frontends.
+
+### Changed
+- Deployment runbook Step 4: documents that `LICHEN_KEYPAIR_PASSWORD` is auto-generated and shows how to use `lichen identity export` to access validator keys.
+- Deployment runbook Step 6: joining validators now explicitly copy the signed metadata manifest from the genesis VPS.
+
 ## [0.5.5] - 2026-04-07
 
 ### Changed

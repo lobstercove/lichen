@@ -1,7 +1,7 @@
 // Lichen CLI - Command-line interface for agents
 // "Every crab, lobster, and shrimp can access the moss!"
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use lichen_core::{Keypair, KeypairFile, Pubkey, MAX_CONTRACT_CODE};
 use std::path::PathBuf;
@@ -553,6 +553,21 @@ enum IdentityCommands {
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
+
+    /// Decrypt and export a keypair file (validator or wallet key)
+    ///
+    /// Reads an encrypted keypair file, decrypts it using LICHEN_KEYPAIR_PASSWORD,
+    /// and shows the public key and address. Use --reveal-seed to also display the
+    /// private seed (WARNING: handle with extreme care).
+    Export {
+        /// Keypair file path (e.g. /var/lib/lichen/testnet/validator-keypair.json)
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+
+        /// Also print the decrypted 32-byte private seed (hex). Handle with care!
+        #[arg(long)]
+        reveal_seed: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -842,6 +857,46 @@ async fn main() -> Result<()> {
                 println!("🔐 EVM Address: {}", pubkey.to_evm());
                 println!("📄 Keypair: {}", path.display());
             }
+
+            IdentityCommands::Export {
+                keypair,
+                reveal_seed,
+            } => {
+                let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+
+                // Attempt to load + decrypt (uses LICHEN_KEYPAIR_PASSWORD env)
+                let kp = keypair_mgr.load_keypair(&path).with_context(|| {
+                    format!(
+                        "Failed to decrypt {}. Is LICHEN_KEYPAIR_PASSWORD set correctly?",
+                        path.display()
+                    )
+                })?;
+                let pubkey = kp.pubkey();
+
+                if json_output {
+                    let mut obj = serde_json::json!({
+                        "pubkey": pubkey.to_base58(),
+                        "evm_address": pubkey.to_evm(),
+                        "file": path.display().to_string(),
+                        "encrypted": std::env::var("LICHEN_KEYPAIR_PASSWORD").map(|v| !v.is_empty()).unwrap_or(false),
+                    });
+                    if reveal_seed {
+                        obj["seed_hex"] = serde_json::Value::String(hex::encode(kp.to_seed()));
+                    }
+                    print_json(&obj);
+                } else {
+                    println!("🦞 Keypair Export");
+                    println!("📄 File:    {}", path.display());
+                    println!("📍 Pubkey:  {}", pubkey.to_base58());
+                    println!("🔐 EVM:     {}", pubkey.to_evm());
+                    if reveal_seed {
+                        println!("🔑 Seed:    {}", hex::encode(kp.to_seed()));
+                        println!();
+                        println!("⚠️  SECURITY: The seed above is your private key material.");
+                        println!("   Anyone with this seed controls your account. Do not share.");
+                    }
+                }
+            }
         },
 
         Commands::Wallet(wallet_cmd) => {
@@ -900,10 +955,9 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let password = lichen_core::require_runtime_keypair_password(
-                "validator keypair generation",
-            )
-            .map_err(anyhow::Error::msg)?;
+            let password =
+                lichen_core::require_runtime_keypair_password("validator keypair generation")
+                    .map_err(anyhow::Error::msg)?;
             KeypairFile::from_keypair(&keypair)
                 .save_with_password(&path, password.as_deref(), password.is_some())
                 .map_err(anyhow::Error::msg)?;

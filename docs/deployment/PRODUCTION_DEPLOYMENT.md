@@ -426,7 +426,21 @@ Service names:
 
 Run these steps on the first validator only.
 
-Before Step 1, set a fresh high-entropy `LICHEN_KEYPAIR_PASSWORD` in `/etc/lichen/env-<net>` and the matching `/etc/lichen/custody-env[-mainnet]`. The validator, genesis builder, custody service, and threshold signer now share the canonical encrypted keypair format, so the same password must be present anywhere those files are loaded.
+`deploy/setup.sh` auto-generates `LICHEN_KEYPAIR_PASSWORD` in `/etc/lichen/env-<net>` and writes the same password into `/etc/lichen/custody-env[-mainnet]`. The validator, genesis builder, custody service, and threshold signer share the canonical encrypted keypair format, so the same password must be present anywhere those files are loaded.
+
+To inspect or export your validator keypair at any time:
+
+```bash
+# Load the password
+LICHEN_KEYPAIR_PASSWORD=$(grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-testnet | cut -d= -f2-)
+export LICHEN_KEYPAIR_PASSWORD
+
+# Show public key and EVM address
+lichen identity export --keypair /var/lib/lichen/state-testnet/validator-keypair.json
+
+# Also reveal the private seed (handle with extreme care)
+lichen identity export --keypair /var/lib/lichen/state-testnet/validator-keypair.json --reveal-seed
+```
 
 1. Start the validator once so it generates `validator-keypair.json`.
 2. Record `publicKeyBase58` from that file.
@@ -473,9 +487,9 @@ Preserve the generated `validator-keypair.json` across the state wipe. If you de
 
 If `api.binance.com` is blocked or returns `451` on the host, export `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, and `GENESIS_BNB_USD` from a trusted fallback source before running `lichen-genesis`.
 
-### Step 5: run post-genesis deploy on the genesis VPS
+### Step 5: run post-genesis deploy on the genesis VPS (MANDATORY)
 
-After the validator is healthy, run the post-genesis deploy from the repo checkout on the genesis host as the checkout owner:
+After the validator is healthy, run the post-genesis deploy from the repo checkout on the genesis host as the checkout owner. **This step is required** — without it, the signed metadata manifest is not generated and all frontend portals (DEX, wallet, explorer, etc.) will fail to resolve contract addresses.
 
 ```bash
 cd ~/lichen
@@ -505,13 +519,23 @@ SIGNED_METADATA_KEYPAIR=$HOME/release-signing-keypair-testnet.json \
 rm -f ~/release-signing-keypair-testnet.json
 ```
 
-If the script generated the signed metadata file under `~/lichen/`, install it into the RPC-configured path before continuing:
+If the script generated the signed metadata file under `~/lichen/`, install it into the RPC-configured path before continuing. **Do not skip this step — the DEX and all frontends depend on it:**
 
 ```bash
 sudo install -m 640 -o root -g lichen \
   ~/lichen/signed-metadata-manifest-testnet.json \
   /etc/lichen/signed-metadata-manifest-testnet.json
 ```
+
+Verify the manifest is served correctly:
+
+```bash
+curl -s http://127.0.0.1:8899 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); p=json.loads(d['result']['envelope']['payload']); print(f'{len(p.get(\"symbol_registry\",[]))} symbols in manifest')"
+```
+
+If this does not return the expected symbol count (28 for genesis), check that the manifest file exists at the path configured by `LICHEN_SIGNED_METADATA_MANIFEST_FILE` in `/etc/lichen/env-<net>` and restart the validator.
 
 ### Step 6: join additional validators
 
@@ -524,6 +548,18 @@ cmp /var/lib/lichen/state-testnet/seeds.json /etc/lichen/seeds.json
 For mainnet, compare `/var/lib/lichen/state-mainnet/seeds.json` instead.
 
 `deploy/setup.sh` installs the checked-in `seeds.json` to both `/etc/lichen/seeds.json` and `/var/lib/lichen/state-<net>/seeds.json`. Joining validators use that seed file directly; no bootstrap flags or env overrides are required.
+
+Copy the signed metadata manifest from the genesis VPS to each joining VPS, so all nodes serve the same contract address data to frontends:
+
+```bash
+# From genesis VPS:
+scp -P 2222 /etc/lichen/signed-metadata-manifest-testnet.json ubuntu@<JOINING_VPS>:~/
+# On joining VPS:
+sudo install -m 640 -o root -g lichen \
+  ~/signed-metadata-manifest-testnet.json \
+  /etc/lichen/signed-metadata-manifest-testnet.json
+rm ~/signed-metadata-manifest-testnet.json
+```
 
 Then start the service:
 

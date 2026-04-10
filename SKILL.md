@@ -1534,7 +1534,9 @@ lichen wallet remove <name>                    # Remove wallet
 ```bash
 lichen identity new --output <path>            # Create identity
 lichen identity show --keypair <path>          # Show identity
-lichen init --output <path>                    # Init validator keypair
+lichen identity export --keypair <path>        # Decrypt + show pubkey/EVM address
+lichen identity export --keypair <path> --reveal-seed  # Also show private seed (hex)
+lichen init --output <path>                    # Init validator keypair (deprecated)
 ```
 
 ### Staking

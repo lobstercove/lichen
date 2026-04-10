@@ -13167,8 +13167,13 @@ async fn run_validator() {
                 if bft.step == RoundStep::Commit {
                     // Delay proposal: 800ms heartbeat for empty blocks,
                     // slot_duration for blocks with pending TXs.
+                    // Use wall_clock_safe_delay to ensure wall clock advances
+                    // past parent_timestamp+1 (second-precision timestamps
+                    // require at least 1s between blocks to avoid drift).
                     let has_pending = { mempool.lock().await.size() > 0 };
-                    let delay = if has_pending { slot_duration_ms } else { 800 };
+                    let base_delay = if has_pending { slot_duration_ms } else { 800 };
+                    let delay =
+                        block_producer::wall_clock_safe_delay(&state, &parent_hash, base_delay);
                     time::sleep(Duration::from_millis(delay)).await;
                     continue;
                 }
@@ -13652,11 +13657,16 @@ async fn run_validator() {
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                         // Delay proposal to reduce QUIC stream pressure.
                         // 800ms for empty blocks (heartbeat), 100ms for blocks with TXs.
+                        // Use wall_clock_safe_delay to prevent timestamp drift
+                        // (second-precision timestamps need wall clock to advance
+                        // past parent_timestamp+1 before the next proposal).
                         let has_pending_txs = {
                             let mp = mempool.lock().await;
                             mp.size() > 0
                         };
-                        let delay_ms = if has_pending_txs { 100 } else { 800 };
+                        let base_delay = if has_pending_txs { 100 } else { 800 };
+                        let delay_ms =
+                            block_producer::wall_clock_safe_delay(&state, &parent_hash, base_delay);
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
                         ))));
