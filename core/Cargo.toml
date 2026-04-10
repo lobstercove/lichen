@@ -28,7 +28,7 @@ wasmer-compiler-cranelift = "4.2"  # JIT compiler for WASM
 wasmer-middlewares = "4.2"  # Metering middleware for compute limits
 chrono = { version = "0.4", features = ["serde"] }  # For genesis timestamps
 rayon = "1.10"  # Parallel TX processing for non-conflicting account sets
-lru = "0.12"  # P9-CORE-04: LRU eviction for MODULE_CACHE
+lru = "0.16"  # P9-CORE-04: LRU eviction for MODULE_CACHE
 tracing = "0.1"  # Logging for VoteAuthority and consensus internals
 revm = "34.0.0"
 alloy-consensus = { version = "0.7.3", default-features = false, features = ["k256"] }

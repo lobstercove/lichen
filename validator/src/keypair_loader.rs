@@ -33,8 +33,8 @@ pub fn load_or_generate_keypair(
     data_dir: Option<&Path>,
     network: Option<&str>,
 ) -> Result<Keypair> {
-    let password = require_runtime_keypair_password("validator keypair load")
-        .map_err(anyhow::Error::msg)?;
+    let password =
+        require_runtime_keypair_password("validator keypair load").map_err(anyhow::Error::msg)?;
     load_or_generate_keypair_with_options(
         config_path,
         data_dir,
@@ -160,9 +160,13 @@ pub fn shared_validator_keypair_path(network: &str) -> PathBuf {
 
 /// Load keypair from file
 fn load_keypair(path: &Path) -> Result<Keypair> {
-    let password = require_runtime_keypair_password("validator keypair load")
-        .map_err(anyhow::Error::msg)?;
-    load_keypair_with_options(path, password.as_deref(), plaintext_keypair_compat_allowed())
+    let password =
+        require_runtime_keypair_password("validator keypair load").map_err(anyhow::Error::msg)?;
+    load_keypair_with_options(
+        path,
+        password.as_deref(),
+        plaintext_keypair_compat_allowed(),
+    )
 }
 
 fn load_keypair_with_options(
@@ -173,11 +177,7 @@ fn load_keypair_with_options(
     load_keypair_with_password_policy(path, password, allow_plaintext).map_err(anyhow::Error::msg)
 }
 
-fn save_keypair_with_options(
-    keypair: &Keypair,
-    path: &Path,
-    password: Option<&str>,
-) -> Result<()> {
+fn save_keypair_with_options(keypair: &Keypair, path: &Path, password: Option<&str>) -> Result<()> {
     KeypairFile::from_keypair(keypair)
         .save_with_password(path, password, password.is_some())
         .map_err(anyhow::Error::msg)

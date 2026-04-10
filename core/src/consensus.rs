@@ -2555,7 +2555,9 @@ impl ValidatorSet {
         // MIN-STAKE GUARD: If no validators meet minimum stake, the chain
         // halts rather than producing blocks with 0-stake validators.
         if eligible.is_empty() {
-            tracing::error!("HALT: No validators meet MIN_VALIDATOR_STAKE — chain cannot produce blocks safely");
+            tracing::error!(
+                "HALT: No validators meet MIN_VALIDATOR_STAKE — chain cannot produce blocks safely"
+            );
             return None;
         }
 

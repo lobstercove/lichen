@@ -7,15 +7,15 @@
 use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
+use lichen_core::keypair_file::{
+    copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+    require_runtime_keypair_password,
+};
 use lichen_core::multisig::{
     bridge_committee_admin_config_for_roles, governed_wallet_config_for_role,
     incident_guardian_config_for_roles, oracle_committee_admin_config_for_roles,
     treasury_executor_config_for_roles, upgrade_proposer_config_for_roles,
     upgrade_veto_guardian_config_for_roles,
-};
-use lichen_core::keypair_file::{
-    copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
-    require_runtime_keypair_password,
 };
 use lichen_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisValidator, GenesisWallet, Hash,
@@ -1269,7 +1269,7 @@ mod tests {
 
         std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-    let loaded = load_genesis_keypair_with_policy(&path, None, true).unwrap();
+        let loaded = load_genesis_keypair_with_policy(&path, None, true).unwrap();
         assert_eq!(loaded.to_seed(), keypair.to_seed());
 
         let _ = std::fs::remove_file(path);

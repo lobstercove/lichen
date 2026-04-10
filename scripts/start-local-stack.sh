@@ -10,7 +10,7 @@ fi
 if [ -n "${HOME:-}" ] && [ -d "${HOME}/.local/bin" ]; then
   BOOTSTRAP_PATH="${HOME}/.local/bin:${BOOTSTRAP_PATH}"
 fi
-PATH="${BOOTSTRAP_PATH}:${PATH:-}"
+PATH="${PATH:+${PATH}:}${BOOTSTRAP_PATH}"
 export PATH
 
 NETWORK=${1:-testnet}

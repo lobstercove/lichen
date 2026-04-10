@@ -41,12 +41,14 @@ impl KeypairManager {
     }
     /// Load keypair from the canonical keypair file format.
     pub fn load_keypair(&self, path: &Path) -> Result<Keypair> {
-        let keypair_file = KeypairFile::load(path).map_err(anyhow::Error::msg).with_context(|| {
-            format!(
+        let keypair_file = KeypairFile::load(path)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
                 "Unsupported keypair format in {}. Expected the canonical KeypairFile JSON shape",
                 path.display()
             )
-        })?;
+            })?;
 
         keypair_file.to_keypair().map_err(anyhow::Error::msg)
     }

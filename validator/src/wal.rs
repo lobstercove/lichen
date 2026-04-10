@@ -211,7 +211,10 @@ impl ConsensusWal {
                         .and_then(|_| f.write_all(&checksum))
                         .and_then(|_| f.sync_all())
                     {
-                        error!("WAL: Failed to write checkpoint data at height {}: {}", height, e);
+                        error!(
+                            "WAL: Failed to write checkpoint data at height {}: {}",
+                            height, e
+                        );
                     }
                 }
                 self.entries.push(entry);
