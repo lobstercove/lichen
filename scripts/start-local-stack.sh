@@ -120,7 +120,27 @@ ensure_runtime_binaries() {
 }
 
 refresh_changed_contract_wasm() {
-  local contract_dir manifest contract_name root_wasm target_wasm
+  local contract_dir manifest contract_name artifact_name root_wasm target_wasm
+
+  contract_artifact_name() {
+    local manifest_path="$1"
+
+    awk -F'"' '
+      /^\[package\]/ { in_package = 1; in_lib = 0; next }
+      /^\[lib\]/ { in_lib = 1; in_package = 0; next }
+      /^\[/ { in_package = 0; in_lib = 0; next }
+      in_package && $1 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*$/ && package_name == "" { package_name = $2 }
+      in_lib && $1 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*$/ && lib_name == "" { lib_name = $2 }
+      END {
+        name = lib_name
+        if (name == "") {
+          name = package_name
+        }
+        gsub(/-/, "_", name)
+        print name
+      }
+    ' "$manifest_path"
+  }
 
   for contract_dir in ./contracts/*; do
     [ -d "$contract_dir" ] || continue
@@ -129,8 +149,10 @@ refresh_changed_contract_wasm() {
     [ -f "$manifest" ] || continue
 
     contract_name=$(basename "$contract_dir")
+    artifact_name=$(contract_artifact_name "$manifest")
+    [ -n "$artifact_name" ] || artifact_name="$contract_name"
     root_wasm="$contract_dir/${contract_name}.wasm"
-    target_wasm="$contract_dir/target/wasm32-unknown-unknown/release/${contract_name}.wasm"
+    target_wasm="$contract_dir/target/wasm32-unknown-unknown/release/${artifact_name}.wasm"
 
     if any_path_newer_than "$root_wasm" "$manifest" "$contract_dir/Cargo.lock" "$contract_dir/src"; then
       echo "🔨 Refreshing ${contract_name}.wasm..."

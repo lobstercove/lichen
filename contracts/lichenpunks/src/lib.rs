@@ -206,6 +206,7 @@ pub extern "C" fn owner_of(token_id: u64, out_ptr: *mut u8) -> u32 {
     unsafe {
         match make_nft().owner_of(token_id) {
             Ok(owner) => {
+                lichen_sdk::set_return_data(&owner.0);
                 let out_slice = core::slice::from_raw_parts_mut(out_ptr, 32);
                 out_slice.copy_from_slice(&owner.0);
                 1
@@ -673,6 +674,7 @@ mod tests {
         let mut out = [0u8; 32];
         assert_eq!(owner_of(1, out.as_mut_ptr()), 1);
         assert_eq!(out, owner);
+        assert_eq!(test_mock::get_return_data(), owner.to_vec());
     }
 
     #[test]

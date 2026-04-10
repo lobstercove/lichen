@@ -2,7 +2,7 @@
 // Create, import, list, and manage multiple wallets
 
 use anyhow::{Context, Result};
-use lichen_core::{copy_secure_file, write_secure_file, Keypair, KeypairFile};
+use lichen_core::{copy_secure_file, Keypair, KeypairFile};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -247,6 +247,7 @@ fn format_timestamp(timestamp: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::write_secure_file;
 
     #[cfg(unix)]
     fn file_mode(path: &Path) -> u32 {

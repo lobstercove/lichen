@@ -1004,7 +1004,9 @@ impl ContractRuntime {
             // for all contracts regardless of their declared initial pages.
             if current_pages < DEFAULT_WASM_MEMORY_PAGES {
                 let grow_by = DEFAULT_WASM_MEMORY_PAGES - current_pages;
-                let _ = memory.grow(&mut store, grow_by);
+                memory.grow(&mut store, grow_by).map_err(|e| {
+                    format!("Failed to grow WASM memory by {} pages: {}", grow_by, e)
+                })?;
             }
             env.as_mut(&mut store).memory = Some(memory.clone());
         }

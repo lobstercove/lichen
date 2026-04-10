@@ -205,11 +205,14 @@ impl ConsensusWal {
                 if let Ok(encoded) = bincode::serialize(&entry) {
                     let len_bytes = (encoded.len() as u32).to_le_bytes();
                     let checksum = Self::checksum(&encoded);
-                    let _ = f
+                    if let Err(e) = f
                         .write_all(&len_bytes)
                         .and_then(|_| f.write_all(&encoded))
                         .and_then(|_| f.write_all(&checksum))
-                        .and_then(|_| f.sync_all());
+                        .and_then(|_| f.sync_all())
+                    {
+                        error!("WAL: Failed to write checkpoint data at height {}: {}", height, e);
+                    }
                 }
                 self.entries.push(entry);
             }

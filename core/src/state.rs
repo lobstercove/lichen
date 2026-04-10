@@ -1594,7 +1594,7 @@ impl StateStore {
                     Ok(()) => {
                         batch.put_cf(&tx_cf, sig.0, &tx_value);
                     }
-                    Err(e) => eprintln!("Warning: failed to serialize tx {}: {}", sig.to_hex(), e),
+                    Err(e) => tracing::warn!("Failed to serialize tx {}: {}", sig.to_hex(), e),
                 }
             }
 
@@ -2141,7 +2141,9 @@ impl StateStore {
             hex::encode(&root.0[..8]),
         );
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
+            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
+                tracing::error!("Failed to cache state root: {e}");
+            }
         }
         root
     }
@@ -2242,7 +2244,7 @@ impl StateStore {
         batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
 
         if let Err(e) = self.db.write(batch) {
-            eprintln!("Warning: failed to write Merkle leaf updates: {}", e);
+            tracing::error!("Failed to write Merkle leaf updates: {}", e);
             return self.compute_accounts_root_full_scan();
         }
 
@@ -2338,10 +2340,7 @@ impl StateStore {
         batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
 
         if let Err(e) = self.db.write(batch) {
-            eprintln!(
-                "Warning: failed to write contract Merkle leaf updates: {}",
-                e
-            );
+            tracing::error!("Failed to write contract Merkle leaf updates: {}", e);
             return self.compute_contract_storage_root_full_scan();
         }
 
@@ -2413,7 +2412,9 @@ impl StateStore {
             );
             batch.put_cf(&cf_stats, b"dirty_contract_count", 0u64.to_le_bytes());
         }
-        let _ = self.db.write(batch);
+        if let Err(e) = self.db.write(batch) {
+            tracing::error!("Failed to write contract Merkle leaf cache: {e}");
+        }
 
         Self::merkle_root_from_leaves(&leaves)
     }
@@ -2453,7 +2454,9 @@ impl StateStore {
         composite.extend_from_slice(&mossstake_pool_hash.0);
         let root = Hash::hash(&composite);
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self.db.put_cf(&cf_stats, b"cached_state_root", root.0);
+            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
+                tracing::error!("Failed to cache cold-start state root: {e}");
+            }
         }
         root
     }
@@ -2464,12 +2467,18 @@ impl StateStore {
     /// regardless of whether the previous shutdown was clean.
     pub fn invalidate_merkle_cache(&self) {
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self
+            if let Err(e) = self
                 .db
-                .put_cf(&cf_stats, b"merkle_leaf_count", 0u64.to_le_bytes());
-            let _ = self
-                .db
-                .put_cf(&cf_stats, b"contract_merkle_leaf_count", 0u64.to_le_bytes());
+                .put_cf(&cf_stats, b"merkle_leaf_count", 0u64.to_le_bytes())
+            {
+                tracing::error!("Failed to invalidate account Merkle cache: {e}");
+            }
+            if let Err(e) =
+                self.db
+                    .put_cf(&cf_stats, b"contract_merkle_leaf_count", 0u64.to_le_bytes())
+            {
+                tracing::error!("Failed to invalidate contract Merkle cache: {e}");
+            }
             tracing::info!("🔄 Merkle leaf cache invalidated — cold start will run on next state root computation");
         }
     }
@@ -2524,7 +2533,9 @@ impl StateStore {
             batch.put_cf(&cf_stats, b"merkle_leaf_count", count.to_le_bytes());
             batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
         }
-        let _ = self.db.write(batch);
+        if let Err(e) = self.db.write(batch) {
+            tracing::error!("Failed to write account Merkle leaf cache: {e}");
+        }
 
         Self::merkle_root_from_leaves(&leaves)
     }
@@ -2554,9 +2565,12 @@ impl StateStore {
 
         // Reset dirty counter
         if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            let _ = self
+            if let Err(e) = self
                 .db
-                .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+                .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes())
+            {
+                tracing::error!("Failed to reset dirty_account_count: {e}");
+            }
         }
 
         root
@@ -3508,9 +3522,12 @@ impl StateStore {
                         }
                         _ => 0,
                     };
-                    let _ = self
+                    if let Err(e) = self
                         .db
-                        .put_cf(cf_s, &counter_key, (current + 1).to_le_bytes());
+                        .put_cf(cf_s, &counter_key, (current + 1).to_le_bytes())
+                    {
+                        tracing::warn!("Failed to increment account TX counter: {e}");
+                    }
                 }
             }
         }
@@ -3613,7 +3630,9 @@ impl StateStore {
                 }
 
                 // Cache the count for next time
-                let _ = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes());
+                if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
+                    tracing::warn!("Failed to cache account TX count: {e}");
+                }
                 Ok(count)
             }
         }
@@ -4288,9 +4307,12 @@ impl StateStore {
                 }
                 _ => 0,
             };
-            let _ = self
+            if let Err(e) = self
                 .db
-                .put_cf(&cf_stats, &counter_key, (current + 1).to_le_bytes());
+                .put_cf(&cf_stats, &counter_key, (current + 1).to_le_bytes())
+            {
+                tracing::warn!("Failed to increment program call counter: {e}");
+            }
         }
 
         Ok(())
@@ -4392,7 +4414,9 @@ impl StateStore {
                     count += 1;
                 }
 
-                let _ = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes());
+                if let Err(e) = self.db.put_cf(&cf_stats, &counter_key, count.to_le_bytes()) {
+                    tracing::warn!("Failed to cache program TX count: {e}");
+                }
                 Ok(count)
             }
         }
@@ -7378,8 +7402,8 @@ impl StateStore {
         };
         match self.db.get_cf(&cf, b"slashing_tracker") {
             Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_else(|e| {
-                eprintln!(
-                    "⚠️  Failed to deserialize slashing tracker, starting fresh: {}",
+                tracing::warn!(
+                    "Failed to deserialize slashing tracker, starting fresh: {}",
                     e
                 );
                 crate::consensus::SlashingTracker::new()
@@ -7677,9 +7701,12 @@ impl StateStore {
             // indicator, not a count.
             if dirty_deleted > 0 {
                 if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-                    let _ = self
-                        .db
-                        .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+                    if let Err(e) =
+                        self.db
+                            .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes())
+                    {
+                        tracing::error!("Failed to reset dirty_account_count after prune: {e}");
+                    }
                 }
             }
         }

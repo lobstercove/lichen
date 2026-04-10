@@ -106,7 +106,7 @@ impl PredictionEventBroadcaster {
     }
 
     pub fn broadcast(&self, event: PredictionEvent) {
-        let _ = self.sender.send(event);
+        drop(self.sender.send(event));
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PredictionEvent> {
@@ -474,7 +474,9 @@ async fn ws_handler(
         return Response::builder()
             .status(503)
             .body(axum::body::Body::from("Too many WebSocket connections"))
-            .unwrap();
+            .unwrap_or_else(|_| {
+                Response::new(axum::body::Body::from("Too many WebSocket connections"))
+            });
     }
 
     // Per-IP connection limit
@@ -487,7 +489,9 @@ async fn ws_handler(
             return Response::builder()
                 .status(429)
                 .body(axum::body::Body::from("Too many connections from this IP"))
-                .unwrap();
+                .unwrap_or_else(|_| {
+                    Response::new(axum::body::Body::from("Too many connections from this IP"))
+                });
         }
     }
 
@@ -560,7 +564,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
             tokio::select! {
                 close_state = close_rx_send.changed() => {
                     if close_state.is_err() || *close_rx_send.borrow() {
-                        let _ = sender.send(Message::Close(None)).await;
+                        drop(sender.send(Message::Close(None)).await);
                         break;
                     }
                 }
@@ -568,7 +572,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     match msg {
                         Some(text) => {
                             if sender.send(Message::Text(text)).await.is_err() {
-                                let _ = send_task_close.send(true);
+                                _ = send_task_close.send(true);
                                 break;
                             }
                         }
@@ -580,13 +584,13 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     // client is considered dead — close the connection.
                     if pong_pending_writer.load(std::sync::atomic::Ordering::SeqCst) {
                         warn!("WS: Pong timeout — closing dead connection");
-                        let _ = sender.send(Message::Close(None)).await;
-                        let _ = send_task_close.send(true);
+                        drop(sender.send(Message::Close(None)).await);
+                        _ = send_task_close.send(true);
                         break;
                     }
                     pong_pending_writer.store(true, std::sync::atomic::Ordering::SeqCst);
                     if sender.send(Message::Ping(vec![b'k'])).await.is_err() {
-                        let _ = send_task_close.send(true);
+                        _ = send_task_close.send(true);
                         break;
                     }
                 }
@@ -847,7 +851,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
             }
 
             for sub_id in completed_subs {
-                let _ = sig_subscription_manager.unsubscribe(sub_id).await;
+                _ = sig_subscription_manager.unsubscribe(sub_id).await;
             }
         }
     });
@@ -1063,7 +1067,7 @@ fn enqueue_ws_message(
                 "WS: outbound queue saturated while forwarding {} event; closing slow connection",
                 source
             );
-            let _ = close_tx.send(true);
+            _ = close_tx.send(true);
             false
         }
         Err(mpsc::error::TrySendError::Closed(_)) => false,

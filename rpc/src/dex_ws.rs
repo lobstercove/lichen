@@ -187,7 +187,7 @@ impl DexEventBroadcaster {
 
     /// Broadcast a DEX event to all subscribers
     pub fn broadcast(&self, event: DexEvent) {
-        let _ = self.sender.send(event);
+        drop(self.sender.send(event));
     }
 
     /// Create a new receiver for DEX events

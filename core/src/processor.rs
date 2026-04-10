@@ -1508,8 +1508,12 @@ impl TxProcessor {
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
             // Store the failed TX so getTransaction can find it (fee was charged).
-            let _ = self.state.put_transaction(tx);
-            let _ = self.store_tx_meta(&tx.signature(), 0);
+            if let Err(e2) = self.state.put_transaction(tx) {
+                tracing::error!("Failed to store failed TX after rent error: {e2}");
+            }
+            if let Err(e2) = self.store_tx_meta(&tx.signature(), 0) {
+                tracing::error!("Failed to store TX meta after rent error: {e2}");
+            }
             return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)), 0);
         }
 
@@ -1522,8 +1526,12 @@ impl TxProcessor {
         if native_cu > compute_budget {
             self.rollback_batch();
             // Store the failed TX so getTransaction can find it (fee was charged).
-            let _ = self.state.put_transaction(tx);
-            let _ = self.store_tx_meta(&tx.signature(), native_cu);
+            if let Err(e) = self.state.put_transaction(tx) {
+                tracing::error!("Failed to store failed TX after CU budget exceeded: {e}");
+            }
+            if let Err(e) = self.store_tx_meta(&tx.signature(), native_cu) {
+                tracing::error!("Failed to store TX meta after CU budget exceeded: {e}");
+            }
             return self.make_result(
                 false,
                 total_fee, // Fee is NOT refunded — anti-DoS (Solana model)
@@ -1549,13 +1557,17 @@ impl TxProcessor {
                 let premium = Self::compute_premium_fee(tx, &fee_config);
                 if premium > 0 {
                     if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
-                        eprintln!("Failed to refund deploy premium: {}", refund_err);
+                        tracing::error!("Failed to refund deploy premium: {}", refund_err);
                     }
                 }
 
                 // Store the failed TX so getTransaction can find it (fee was charged).
-                let _ = self.state.put_transaction(tx);
-                let _ = self.store_tx_meta(&tx.signature(), total_cu);
+                if let Err(e2) = self.state.put_transaction(tx) {
+                    tracing::error!("Failed to store failed TX after execution error: {e2}");
+                }
+                if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
+                    tracing::error!("Failed to store TX meta after execution error: {e2}");
+                }
 
                 let actual_fee = total_fee.saturating_sub(premium);
                 return self.make_result(
@@ -1579,8 +1591,12 @@ impl TxProcessor {
                 if total_cu > compute_budget {
                     self.rollback_batch();
                     // Store the failed TX so getTransaction can find it (fee was charged).
-                    let _ = self.state.put_transaction(tx);
-                    let _ = self.store_tx_meta(&tx.signature(), total_cu);
+                    if let Err(e) = self.state.put_transaction(tx) {
+                        tracing::error!("Failed to store failed TX after WASM CU exceeded: {e}");
+                    }
+                    if let Err(e) = self.store_tx_meta(&tx.signature(), total_cu) {
+                        tracing::error!("Failed to store TX meta after WASM CU exceeded: {e}");
+                    }
                     return self.make_result(
                         false,
                         total_fee, // Fee NOT refunded — CU exceeded
@@ -1601,12 +1617,20 @@ impl TxProcessor {
                 let premium = Self::compute_premium_fee(tx, &fee_config);
                 if premium > 0 {
                     if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
-                        eprintln!("Failed to refund deploy premium: {}", refund_err);
+                        tracing::error!("Failed to refund deploy premium: {}", refund_err);
                     }
                 }
 
-                let _ = self.state.put_transaction(tx);
-                let _ = self.store_tx_meta(&tx.signature(), total_cu);
+                if let Err(e2) = self.state.put_transaction(tx) {
+                    tracing::error!(
+                        "Failed to store failed TX after governance validation error: {e2}"
+                    );
+                }
+                if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
+                    tracing::error!(
+                        "Failed to store TX meta after governance validation error: {e2}"
+                    );
+                }
 
                 let actual_fee = total_fee.saturating_sub(premium);
                 return self.make_result(
@@ -1620,7 +1644,9 @@ impl TxProcessor {
 
         // ── Post-execution achievement auto-detection ──────────────────
         // Best-effort: failures here do NOT prevent the transaction from committing.
-        let _ = self.detect_and_award_achievements(tx);
+        if let Err(e) = self.detect_and_award_achievements(tx) {
+            tracing::warn!("Achievement detection failed (non-fatal): {e}");
+        }
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
@@ -1628,7 +1654,7 @@ impl TxProcessor {
             let premium = Self::compute_premium_fee(tx, &fee_config);
             if premium > 0 {
                 if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
-                    eprintln!("Failed to refund deploy premium: {}", refund_err);
+                    tracing::error!("Failed to refund deploy premium: {}", refund_err);
                 }
             }
             let actual_fee = total_fee.saturating_sub(premium);
@@ -1641,7 +1667,9 @@ impl TxProcessor {
         }
 
         // Store actual compute units used (native + WASM) for explorer/RPC
-        let _ = self.b_put_tx_meta(&tx.signature(), total_cu);
+        if let Err(e) = self.b_put_tx_meta(&tx.signature(), total_cu) {
+            tracing::error!("Failed to store TX meta in commit batch: {e}");
+        }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
@@ -1649,7 +1677,7 @@ impl TxProcessor {
             let premium = Self::compute_premium_fee(tx, &fee_config);
             if premium > 0 {
                 if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
-                    eprintln!("Failed to refund deploy premium: {}", refund_err);
+                    tracing::error!("Failed to refund deploy premium: {}", refund_err);
                 }
             }
             let actual_fee = total_fee.saturating_sub(premium);
@@ -2059,6 +2087,8 @@ impl TxProcessor {
                                                 live_storage,
                                                 args.clone(),
                                             );
+                                            // Inject state store for cross-contract calls
+                                            context.state_store = Some(self.state.clone());
                                             // Pass remaining CU budget to WASM runtime
                                             let remaining =
                                                 compute_budget.saturating_sub(total_compute);
@@ -6615,7 +6645,7 @@ impl TxProcessor {
         let deployer = &ix.accounts[0];
         let contract_address = &ix.accounts[1];
 
-        eprintln!(
+        tracing::debug!(
             "📋 contract_deploy: deployer={} addr={} code_len={}",
             deployer.to_base58(),
             contract_address.to_base58(),
@@ -6634,7 +6664,7 @@ impl TxProcessor {
         let deploy_result = runtime.deploy(&code);
         runtime.return_to_pool();
         if let Err(ref e) = deploy_result {
-            eprintln!(
+            tracing::debug!(
                 "❌ contract_deploy: WASM validation failed for {} — {}",
                 contract_address.to_base58(),
                 e
@@ -6650,7 +6680,7 @@ impl TxProcessor {
             match DeployRegistryData::from_init_data(&init_data) {
                 Some(r) => Some(r),
                 None => {
-                    eprintln!(
+                    tracing::debug!(
                         "⚠️  contract_deploy: init_data ({} bytes) could not be parsed as registry metadata — \
                          symbol/name/template will NOT be registered",
                         init_data.len()
@@ -6708,7 +6738,7 @@ impl TxProcessor {
             self.b_index_program(contract_address)?;
         }
 
-        eprintln!(
+        tracing::debug!(
             "✅ contract_deploy: {} created (deployer={}, code={}B, data={}B)",
             contract_address.to_base58(),
             deployer.to_base58(),
@@ -8211,7 +8241,7 @@ impl DeployRegistryData {
         let raw = match std::str::from_utf8(init_data) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!(
+                tracing::debug!(
                     "⚠️  DeployRegistryData::from_init_data: UTF-8 decode failed ({} bytes): {}",
                     init_data.len(),
                     e
@@ -8222,7 +8252,7 @@ impl DeployRegistryData {
         match serde_json::from_str(raw) {
             Ok(data) => Some(data),
             Err(e) => {
-                eprintln!(
+                tracing::debug!(
                     "⚠️  DeployRegistryData::from_init_data: JSON parse failed: {} (first 200 chars: {:?})",
                     e,
                     &raw[..raw.len().min(200)]

@@ -65,11 +65,18 @@ impl PeerBanList {
         };
 
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(e) = fs::create_dir_all(parent) {
+                tracing::warn!("Failed to create ban list directory: {e}");
+            }
         }
 
-        if let Ok(json) = serde_json::to_string_pretty(&data) {
-            let _ = fs::write(&self.path, json);
+        match serde_json::to_string_pretty(&data) {
+            Ok(json) => {
+                if let Err(e) = fs::write(&self.path, json) {
+                    tracing::error!("Failed to persist peer ban list: {e}");
+                }
+            }
+            Err(e) => tracing::error!("Failed to serialize ban list: {e}"),
         }
     }
 

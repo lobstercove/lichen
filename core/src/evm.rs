@@ -655,9 +655,10 @@ fn convert_revm_state_to_deferred(
                     Ok(spores_u64) => {
                         let remainder = balance % divisor;
                         if remainder != U256::ZERO {
-                            eprintln!(
+                            tracing::warn!(
                                 "H3: EVM balance for {:?} has sub-spore remainder {} wei (dropped)",
-                                address_bytes, remainder
+                                address_bytes,
+                                remainder
                             );
                         }
                         Some((pubkey, spores_u64))

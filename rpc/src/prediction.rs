@@ -1006,11 +1006,9 @@ async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeReq
 /// Market creation must go through `sendTransaction` so all writes execute
 /// under consensus and deterministic contract logic.
 async fn post_create(
-    State(state): State<Arc<RpcState>>,
-    Json(req): Json<CreateMarketRequest>,
+    State(_state): State<Arc<RpcState>>,
+    Json(_req): Json<CreateMarketRequest>,
 ) -> Response {
-    let _ = state;
-    let _ = req;
     api_err(
         "prediction-market/create is disabled for safety. Submit a signed transaction via sendTransaction to create markets under consensus.",
     )

@@ -287,19 +287,27 @@ async fn main() {
         restored_addrs, restored_ips
     );
 
-    let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([axum::http::header::CONTENT_TYPE])
-        .allow_origin([
-            "https://faucet.lichen.network"
-                .parse::<HeaderValue>()
-                .unwrap(),
-            "https://lichen.network".parse::<HeaderValue>().unwrap(),
+    let mut origins: Vec<HeaderValue> = vec![
+        "https://faucet.lichen.network"
+            .parse::<HeaderValue>()
+            .unwrap(),
+        "https://lichen.network".parse::<HeaderValue>().unwrap(),
+    ];
+
+    // Only include localhost origins during development
+    if std::env::var("DEV_CORS").is_ok() {
+        origins.extend([
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3003".parse::<HeaderValue>().unwrap(),
             "http://localhost:9100".parse::<HeaderValue>().unwrap(),
             "http://localhost:9101".parse::<HeaderValue>().unwrap(),
         ]);
+    }
+
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE])
+        .allow_origin(origins);
 
     let app = Router::new()
         .route("/health", get(health))

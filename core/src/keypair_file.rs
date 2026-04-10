@@ -138,7 +138,7 @@ pub fn repair_key_file_permissions(path: &Path) -> Result<bool, String> {
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        drop(path);
         Ok(false)
     }
 }

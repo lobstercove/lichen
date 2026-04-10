@@ -380,7 +380,9 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
                     if let Ok(meta) = fs::metadata(&companion_staging) {
                         let mut perms = meta.permissions();
                         perms.set_mode(0o755);
-                        let _ = fs::set_permissions(&companion_staging, perms);
+                        if let Err(e) = fs::set_permissions(&companion_staging, perms) {
+                            warn!("failed to set companion binary permissions: {}", e);
+                        }
                     }
                 }
                 // Back up existing binary if present
@@ -391,7 +393,9 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
                             "⚠️  Failed to back up {} — skipping update: {}",
                             companion_name, e
                         );
-                        let _ = fs::remove_file(&companion_staging);
+                        if let Err(e) = fs::remove_file(&companion_staging) {
+                            warn!("failed to clean up companion staging file: {}", e);
+                        }
                         continue;
                     }
                 }
@@ -422,7 +426,9 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
         match extract_named_file_from_archive(&archive_data, &asset_staging, asset_name) {
             Ok(()) => {
                 if install_path.exists() {
-                    let _ = fs::remove_file(install_path);
+                    if let Err(e) = fs::remove_file(install_path) {
+                        warn!("failed to remove old companion asset: {}", e);
+                    }
                 }
                 match fs::rename(&asset_staging, install_path) {
                     Ok(()) => info!(
@@ -455,7 +461,9 @@ fn schedule_windows_update_swap(
     pending_path: &Path,
 ) -> Result<()> {
     if pending_path.exists() {
-        let _ = fs::remove_file(pending_path);
+        if let Err(e) = fs::remove_file(pending_path) {
+            warn!("failed to remove stale pending file: {}", e);
+        }
     }
 
     fs::rename(staging_path, pending_path)
@@ -530,10 +538,14 @@ async fn check_rollback_guard() -> Result<()> {
         // Ran long enough — the update is stable
         // Clean up rollback binary and state
         if rollback_path.exists() {
-            let _ = fs::remove_file(&rollback_path);
+            if let Err(e) = fs::remove_file(&rollback_path) {
+                warn!("failed to clean up rollback file: {}", e);
+            }
         }
         if state_path.exists() {
-            let _ = fs::remove_file(&state_path);
+            if let Err(e) = fs::remove_file(&state_path) {
+                warn!("failed to clean up update state file: {}", e);
+            }
         }
         info!(
             "✅ Update to v{} confirmed stable — cleaned up rollback files",

@@ -534,7 +534,9 @@ pub fn genesis_exec_contract(
                     }
                     None => {
                         contract.remove_storage(key);
-                        let _ = state.delete_contract_storage(program_pubkey, key);
+                        state
+                            .delete_contract_storage(program_pubkey, key)
+                            .expect("genesis: delete_contract_storage failed");
                     }
                 }
             }
@@ -1897,7 +1899,9 @@ pub fn genesis_initialize_contracts(
                     })
                     .unwrap_or(0);
                 let new_count = (existing + 1).to_le_bytes().to_vec();
-                let _ = state.put_contract_storage(lichenid_pk, &count_key, &new_count);
+                state
+                    .put_contract_storage(lichenid_pk, &count_key, &new_count)
+                    .expect("genesis: put_contract_storage lichenid count failed");
                 attest_entries.push(AttestEntry {
                     key: count_key,
                     value: new_count,
@@ -1919,7 +1923,9 @@ pub fn genesis_initialize_contracts(
                     if let Ok(data) = serde_json::to_vec(&yid_contract) {
                         let mut updated = yid_account;
                         updated.data = data;
-                        let _ = state.put_account(lichenid_pk, &updated);
+                        state
+                            .put_account(lichenid_pk, &updated)
+                            .expect("genesis: put_account lichenid failed");
                     }
                 }
             }
@@ -2411,11 +2417,13 @@ pub fn genesis_seed_analytics_prices(
 
         // Write last price: ana_lp_{pair_id}
         let lp_key = format!("ana_lp_{}", pair_id);
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            lp_key.as_bytes(),
-            &price_scaled.to_le_bytes(),
-        );
+        state
+            .put_contract_storage(
+                &analytics_pk,
+                lp_key.as_bytes(),
+                &price_scaled.to_le_bytes(),
+            )
+            .expect("genesis: put_contract_storage analytics last price failed");
 
         // Write 24h stats: ana_24h_{pair_id} (48 bytes)
         // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8)
@@ -2427,7 +2435,9 @@ pub fn genesis_seed_analytics_prices(
         stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = price
         stats.extend_from_slice(&0u64.to_le_bytes()); // trades = 0
         let stats_key = format!("ana_24h_{}", pair_id);
-        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+        state
+            .put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats)
+            .expect("genesis: put_contract_storage analytics 24h stats failed");
 
         info!("  ANA seeded: pair {} → price {:.4}", pair_id, price_f64);
     }
@@ -2454,21 +2464,23 @@ pub fn genesis_seed_analytics_prices(
             // Store period-start time so TradingView bars align to boundaries
             candle[40..48].copy_from_slice(&candle_start.to_le_bytes());
             let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, 0);
-            let _ = state.put_contract_storage(&analytics_pk, candle_key.as_bytes(), &candle);
+            state
+                .put_contract_storage(&analytics_pk, candle_key.as_bytes(), &candle)
+                .expect("genesis: put_contract_storage analytics candle failed");
             // Set candle count to 1
             let count_key = format!("ana_cc_{}_{}", pair_id, interval);
-            let _ = state.put_contract_storage(
-                &analytics_pk,
-                count_key.as_bytes(),
-                &1u64.to_le_bytes(),
-            );
+            state
+                .put_contract_storage(&analytics_pk, count_key.as_bytes(), &1u64.to_le_bytes())
+                .expect("genesis: put_contract_storage analytics candle count failed");
             // Set current candle start to the timestamp-based period
             let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
-            let _ = state.put_contract_storage(
-                &analytics_pk,
-                cur_key.as_bytes(),
-                &candle_start.to_le_bytes(),
-            );
+            state
+                .put_contract_storage(
+                    &analytics_pk,
+                    cur_key.as_bytes(),
+                    &candle_start.to_le_bytes(),
+                )
+                .expect("genesis: put_contract_storage analytics current candle failed");
         }
     }
 }
@@ -2508,7 +2520,9 @@ pub fn genesis_seed_margin_prices(
         let mut mark_val = Vec::with_capacity(16);
         mark_val.extend_from_slice(&price_scaled.to_le_bytes());
         mark_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
-        let _ = state.put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val);
+        state
+            .put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val)
+            .expect("genesis: put_contract_storage margin mark price failed");
         margin_entries.push((mark_key.into_bytes(), mark_val));
 
         // Index price: mrg_idx_{pair_id} → [price 8B LE][timestamp 8B LE]
@@ -2516,13 +2530,17 @@ pub fn genesis_seed_margin_prices(
         let mut idx_val = Vec::with_capacity(16);
         idx_val.extend_from_slice(&price_scaled.to_le_bytes());
         idx_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
-        let _ = state.put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val);
+        state
+            .put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val)
+            .expect("genesis: put_contract_storage margin index price failed");
         margin_entries.push((idx_key.into_bytes(), idx_val));
 
         // Enable margin trading: mrg_ena_{pair_id} → [1u64 LE]
         let ena_key = format!("mrg_ena_{}", pair_id);
         let ena_val = 1u64.to_le_bytes().to_vec();
-        let _ = state.put_contract_storage(&margin_pk, ena_key.as_bytes(), &ena_val);
+        state
+            .put_contract_storage(&margin_pk, ena_key.as_bytes(), &ena_val)
+            .expect("genesis: put_contract_storage margin enable failed");
         margin_entries.push((ena_key.into_bytes(), ena_val));
 
         info!(
@@ -2542,7 +2560,9 @@ pub fn genesis_seed_margin_prices(
             if let Ok(data) = serde_json::to_vec(&margin_contract) {
                 let mut updated = margin_account;
                 updated.data = data;
-                let _ = state.put_account(&margin_pk, &updated);
+                state
+                    .put_account(&margin_pk, &updated)
+                    .expect("genesis: put_account margin failed");
             }
         }
     }
@@ -2983,7 +3003,9 @@ pub fn genesis_assign_achievements(
         })
         .unwrap_or(0);
     let new_count = prev + identity_count;
-    let _ = state.put_contract_storage(&lichenid_addr, count_key, &new_count.to_le_bytes());
+    state
+        .put_contract_storage(&lichenid_addr, count_key, &new_count.to_le_bytes())
+        .expect("genesis: put_contract_storage lichenid count failed");
 
     info!("──────────────────────────────────────────────────────");
     info!(
@@ -3045,15 +3067,19 @@ fn register_genesis_identity(
     // Byte 126: is_active = 1
     record[126] = 1;
 
-    let _ = state.put_contract_storage(lichenid_addr, id_key.as_bytes(), &record);
+    state
+        .put_contract_storage(lichenid_addr, id_key.as_bytes(), &record)
+        .expect("genesis: put_contract_storage lichenid identity record failed");
 
     // Also store reputation separately (for quick lookups)
     let rep_key = format!("rep:{}", hex);
-    let _ = state.put_contract_storage(
-        lichenid_addr,
-        rep_key.as_bytes(),
-        &initial_reputation.to_le_bytes(),
-    );
+    state
+        .put_contract_storage(
+            lichenid_addr,
+            rep_key.as_bytes(),
+            &initial_reputation.to_le_bytes(),
+        )
+        .expect("genesis: put_contract_storage lichenid reputation failed");
 }
 
 /// Award a single achievement. Returns true if newly awarded.
@@ -3081,14 +3107,18 @@ fn award_genesis_ach(
     let mut data = Vec::with_capacity(9);
     data.push(achievement_id);
     data.extend_from_slice(&timestamp.to_le_bytes());
-    let _ = state.put_contract_storage(lichenid_addr, key_bytes, &data);
+    state
+        .put_contract_storage(lichenid_addr, key_bytes, &data)
+        .expect("genesis: put_contract_storage achievement failed");
     true
 }
 
 /// Write the total achievement count for an address.
 fn write_ach_count(state: &StateStore, lichenid_addr: &Pubkey, hex: &str, count: u64) {
     let key = format!("ach_count:{}", hex);
-    let _ = state.put_contract_storage(lichenid_addr, key.as_bytes(), &count.to_le_bytes());
+    state
+        .put_contract_storage(lichenid_addr, key.as_bytes(), &count.to_le_bytes())
+        .expect("genesis: put_contract_storage achievement count failed");
 }
 
 /// Convert a Pubkey to 64-char lowercase hex string.

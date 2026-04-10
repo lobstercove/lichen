@@ -1399,7 +1399,13 @@ fn encode_rpc_response(headers: &HeaderMap, response: RpcResponse) -> Response {
                 .status(200)
                 .header("content-type", "application/msgpack")
                 .body(axum::body::Body::from(bytes))
-                .unwrap();
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "msgpack response build failed",
+                    )
+                        .into_response()
+                });
         }
     } else if accept.contains("application/octet-stream") {
         if let Ok(bytes) = bincode::serialize(&response) {
@@ -1407,7 +1413,13 @@ fn encode_rpc_response(headers: &HeaderMap, response: RpcResponse) -> Response {
                 .status(200)
                 .header("content-type", "application/octet-stream")
                 .body(axum::body::Body::from(bytes))
-                .unwrap();
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "bincode response build failed",
+                    )
+                        .into_response()
+                });
         }
     }
 
@@ -1778,7 +1790,7 @@ fn prune_stale_program_list_entries(cache: &mut LruCache<String, (Instant, serde
         if !stale_lru {
             break;
         }
-        let _ = cache.pop_lru();
+        drop(cache.pop_lru());
     }
 }
 
@@ -2143,9 +2155,13 @@ impl RateLimiter {
             if let Ok(bytes) = serde_json::to_vec(&counters) {
                 let tmp_path = PathBuf::from(format!("{}.tmp", shared_file.display()));
                 if fs::write(&tmp_path, bytes).is_ok() {
-                    let _ = fs::rename(&tmp_path, shared_file);
+                    if let Err(e) = fs::rename(&tmp_path, shared_file) {
+                        tracing::warn!("rate limiter: failed to persist counters: {e}");
+                    }
                 } else {
-                    let _ = fs::remove_file(&tmp_path);
+                    if let Err(e) = fs::remove_file(&tmp_path) {
+                        tracing::debug!("rate limiter: failed to clean up tmp file: {e}");
+                    }
                 }
             }
 
@@ -2155,7 +2171,9 @@ impl RateLimiter {
         };
 
         drop(lock_file);
-        let _ = fs::remove_file(&lock_path);
+        if let Err(e) = fs::remove_file(&lock_path) {
+            tracing::debug!("rate limiter: failed to remove lock file: {e}");
+        }
         result
     }
 
@@ -8706,24 +8724,23 @@ async fn handle_get_contract_info(
         "version": contract_version,
     });
     if let Some(pch) = prev_code_hash {
-        result
-            .as_object_mut()
-            .unwrap()
-            .insert("previous_code_hash".to_string(), serde_json::json!(pch));
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("previous_code_hash".to_string(), serde_json::json!(pch));
+        }
     }
     if let Some(tm) = token_metadata {
-        result
-            .as_object_mut()
-            .unwrap()
-            .insert("token_metadata".to_string(), tm);
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("token_metadata".to_string(), tm);
+        }
     }
 
     // Enrich with registry metadata (is_native flag)
     if let Ok(Some(reg)) = state.state.get_symbol_registry_by_program(&contract_id) {
         if let Some(reg_meta) = &reg.metadata {
-            let rm = result.as_object_mut().unwrap();
-            if reg_meta.get("is_native").and_then(|v| v.as_bool()) == Some(true) {
-                rm.insert("is_native".to_string(), serde_json::json!(true));
+            if let Some(rm) = result.as_object_mut() {
+                if reg_meta.get("is_native").and_then(|v| v.as_bool()) == Some(true) {
+                    rm.insert("is_native".to_string(), serde_json::json!(true));
+                }
             }
         }
     }

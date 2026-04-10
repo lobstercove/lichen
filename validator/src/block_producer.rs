@@ -142,7 +142,9 @@ pub fn build_block(
             // Credit fee_paid back to payer
             if let Ok(Some(mut payer_account)) = state.get_account(fee_payer) {
                 if payer_account.add_spendable(*fee_paid).is_ok() {
-                    let _ = state.put_account(fee_payer, &payer_account);
+                    if let Err(e) = state.put_account(fee_payer, &payer_account) {
+                        tracing::error!("Failed to reverse fee for payer: {e}");
+                    }
                 }
             }
             // Debit treasury's portion (everything except burned amount)
@@ -150,7 +152,9 @@ pub fn build_block(
                 if *to_treasury > 0 {
                     if let Ok(Some(mut treasury_account)) = state.get_account(tpk) {
                         if treasury_account.deduct_spendable(*to_treasury).is_ok() {
-                            let _ = state.put_account(tpk, &treasury_account);
+                            if let Err(e) = state.put_account(tpk, &treasury_account) {
+                                tracing::error!("Failed to debit treasury fee reversal: {e}");
+                            }
                         }
                     }
                 }

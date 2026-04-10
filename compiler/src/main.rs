@@ -57,10 +57,24 @@ impl IntoResponse for ApiKeyError {
 /// Returns Ok(()) on success, or an error response on failure.
 fn validate_api_key(headers: &HeaderMap, state: &AppState) -> Result<(), ApiKeyError> {
     match headers.get(API_KEY_HEADER).and_then(|v| v.to_str().ok()) {
-        Some(provided) if provided == state.api_key.as_str() => Ok(()),
+        Some(provided) if constant_time_eq(provided.as_bytes(), state.api_key.as_bytes()) => {
+            Ok(())
+        }
         Some(_) => Err(ApiKeyError::Invalid),
         None => Err(ApiKeyError::Missing),
     }
+}
+
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[derive(Debug, Deserialize)]
@@ -1070,8 +1084,12 @@ async fn wait_with_timeout(
             Ok(None) => {
                 // Still running
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap
+                    if let Err(e) = child.kill() {
+                        tracing::warn!("failed to kill timed-out compiler process: {}", e);
+                    }
+                    if let Err(e) = child.wait() {
+                        tracing::warn!("failed to reap timed-out compiler process: {}", e);
+                    }
                     return Err(format!(
                         "Compilation timed out after {} seconds",
                         timeout.as_secs()

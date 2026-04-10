@@ -760,7 +760,7 @@ impl PeerManager {
                             if let Err(e) = stream.write_all(&bytes).await {
                                 warn!("P2P: Failed to relay to {}: {}", peer_addr, e);
                             }
-                            let _ = stream.finish();
+                            drop(stream.finish());
                         }
                         Err(e) => warn!("P2P: Failed to open relay stream to {}: {}", peer_addr, e),
                     }
@@ -769,7 +769,9 @@ impl PeerManager {
         }
 
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                warn!("P2P: relay task panicked: {}", e);
+            }
         }
     }
 
@@ -828,7 +830,7 @@ impl PeerManager {
                             if let Err(e) = stream.write_all(&bytes).await {
                                 warn!("P2P: Failed to send to {}: {}", peer_addr, e);
                             }
-                            let _ = stream.finish();
+                            drop(stream.finish());
                         }
                         Err(e) => warn!("P2P: Failed to open stream to {}: {}", peer_addr, e),
                     }
@@ -838,7 +840,9 @@ impl PeerManager {
 
         // Await all sends concurrently
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                warn!("P2P: send task panicked: {}", e);
+            }
         }
     }
 
@@ -914,7 +918,7 @@ impl PeerManager {
                             if let Err(e) = stream.write_all(&bytes).await {
                                 warn!("P2P: routed send to {} failed: {}", addr, e);
                             }
-                            let _ = stream.finish();
+                            drop(stream.finish());
                         }
                         Err(e) => warn!("P2P: routed stream to {} failed: {}", addr, e),
                     }
@@ -922,7 +926,9 @@ impl PeerManager {
             }));
         }
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                warn!("P2P: routed send task panicked: {}", e);
+            }
         }
     }
 
@@ -1006,7 +1012,7 @@ impl PeerManager {
                             if let Err(e) = stream.write_all(&bytes).await {
                                 warn!("P2P: validator send to {} failed: {}", addr, e);
                             }
-                            let _ = stream.finish();
+                            drop(stream.finish());
                         }
                         Err(e) => warn!("P2P: validator stream to {} failed: {}", addr, e),
                     }
@@ -1014,7 +1020,9 @@ impl PeerManager {
             }));
         }
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                warn!("P2P: validator send task panicked: {}", e);
+            }
         }
     }
 
@@ -1652,15 +1660,22 @@ impl PeerIdentityStore {
         let store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(json) = serde_json::to_string_pretty(&*store) {
             if let Some(parent) = self.path.parent() {
-                let _ = fs::create_dir_all(parent);
+                if let Err(e) = fs::create_dir_all(parent) {
+                    warn!("P2P: failed to create identity store dir: {}", e);
+                    return;
+                }
             }
             let tmp_path = self.path.with_extension("tmp");
             if let Ok(mut file) = fs::File::create(&tmp_path) {
                 use std::io::Write;
                 if file.write_all(json.as_bytes()).is_ok() && file.sync_all().is_ok() {
-                    let _ = fs::rename(&tmp_path, &self.path);
+                    if let Err(e) = fs::rename(&tmp_path, &self.path) {
+                        warn!("P2P: failed to persist identity store: {}", e);
+                    }
                 } else {
-                    let _ = fs::remove_file(&tmp_path);
+                    if let Err(e) = fs::remove_file(&tmp_path) {
+                        warn!("P2P: failed to clean up identity store tmp: {}", e);
+                    }
                 }
             }
         }
@@ -1747,7 +1762,7 @@ fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        let _ = write!(&mut output, "{:02x}", byte);
+        write!(&mut output, "{:02x}", byte).unwrap();
     }
     output
 }

@@ -79,7 +79,9 @@ impl PeerStore {
 
         // File I/O outside the lock
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("peer_store: failed to create directory: {}", e);
+            }
         }
 
         if let Ok(json) = serde_json::to_string_pretty(&data_to_write) {

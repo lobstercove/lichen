@@ -1335,16 +1335,22 @@ async fn main() {
         // ── Audit event history endpoint ──
         .route("/events", get(list_events))
         // AUDIT-FIX M-18: Restrict CORS to Lichen domains
-        .layer(
-            CorsLayer::new()
-                .allow_origin(AllowOrigin::list([
-                    "https://lichen.network".parse().unwrap(),
-                    "https://wallet.lichen.network".parse().unwrap(),
-                    "https://explorer.lichen.network".parse().unwrap(),
-                    "https://dex.lichen.network".parse().unwrap(),
+        .layer({
+            let mut origins: Vec<http::HeaderValue> = vec![
+                "https://lichen.network".parse().unwrap(),
+                "https://wallet.lichen.network".parse().unwrap(),
+                "https://explorer.lichen.network".parse().unwrap(),
+                "https://dex.lichen.network".parse().unwrap(),
+            ];
+            // Only include localhost origins during development
+            if std::env::var("DEV_CORS").is_ok() {
+                origins.extend([
                     "http://localhost:3000".parse().unwrap(),
                     "http://localhost:8080".parse().unwrap(),
-                ]))
+                ]);
+            }
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
                 .allow_methods([
                     http::Method::GET,
                     http::Method::POST,
@@ -1356,8 +1362,8 @@ async fn main() {
                     http::header::CONTENT_TYPE,
                     http::header::AUTHORIZATION,
                     http::header::HeaderName::from_static("x-custody-operator-token"),
-                ]),
-        )
+                ])
+        })
         .with_state(state);
 
     let port = std::env::var("CUSTODY_LISTEN_PORT")
@@ -1815,7 +1821,9 @@ fn update_status_index(
     job_id: &str,
 ) -> Result<(), String> {
     if old_status != new_status {
-        let _ = remove_status_index(db, table, old_status, job_id);
+        if let Err(e) = remove_status_index(db, table, old_status, job_id) {
+            tracing::error!("Failed remove_status_index: {e}");
+        }
         set_status_index(db, table, new_status, job_id)?;
     }
     Ok(())
@@ -2290,10 +2298,11 @@ fn load_required_seed_secret(
                         seed_path,
                         mode
                     );
-                    let _ = std::fs::set_permissions(
-                        &seed_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
+                    if let Err(e) =
+                        std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600))
+                    {
+                        tracing::warn!("failed to tighten permissions on {}: {}", seed_path, e);
+                    }
                 }
             }
         }
@@ -3399,7 +3408,9 @@ async fn process_solana_token_deposit(
     // and any subsequent deposit for a smaller amount would be missed forever
     // (because last_balance >= new_balance would remain true).
     if balance == 0 {
-        let _ = set_last_balance_with_key(&state.db, &last_key, 0);
+        if let Err(e) = set_last_balance_with_key(&state.db, &last_key, 0) {
+            tracing::error!("Failed set_last_balance_with_key: {e}");
+        }
         return Ok(());
     }
 
@@ -4212,10 +4223,14 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
             continue;
         }
         // AUDIT-FIX M4: Record intent before broadcast for crash idempotency
-        let _ = record_tx_intent(&state.db, "sweep", &job.job_id, &job.chain);
+        if let Err(e) = record_tx_intent(&state.db, "sweep", &job.job_id, &job.chain) {
+            tracing::error!("Failed record_tx_intent: {e}");
+        }
         match broadcast_sweep(state, job).await {
             Ok(Some(tx_hash)) => {
-                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "sweep", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 job.status = "sweep_submitted".to_string();
                 job.sweep_tx_hash = Some(tx_hash);
                 job.last_error = None;
@@ -4235,7 +4250,9 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 // issuing wrapped tokens when the sweep tx reverts — a fund mismatch.
             }
             Ok(None) => {
-                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "sweep", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 if job.chain == "solana" && !is_solana_stablecoin(&job.asset) {
                     job.status = "signed".to_string();
                     job.last_error = Some(
@@ -4257,7 +4274,9 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 );
             }
             Err(err) => {
-                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "sweep", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 warn!("sweep broadcast failed: {}", err);
                 mark_sweep_failed(job, err);
                 store_sweep_job(&state.db, job)?;
@@ -4276,14 +4295,18 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
 
                 // P0-FIX: Update the deposit record to "swept" so polling clients
                 // see the status progression (issued → confirmed → swept → credited)
-                let _ = update_deposit_status(&state.db, &job.deposit_id, "swept");
-                let _ = update_status_index(
+                if let Err(e) = update_deposit_status(&state.db, &job.deposit_id, "swept") {
+                    tracing::error!("Failed update_deposit_status: {e}");
+                }
+                if let Err(e) = update_status_index(
                     &state.db,
                     "deposits",
                     "sweep_queued",
                     "swept",
                     &job.deposit_id,
-                );
+                ) {
+                    tracing::error!("Failed update_status_index: {e}");
+                }
 
                 emit_custody_event(
                     state,
@@ -4401,10 +4424,14 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
             continue;
         }
         // AUDIT-FIX M4: Record intent before credit broadcast
-        let _ = record_tx_intent(&state.db, "credit", &job.job_id, "lichen");
+        if let Err(e) = record_tx_intent(&state.db, "credit", &job.job_id, "lichen") {
+            tracing::error!("Failed record_tx_intent: {e}");
+        }
         match submit_wrapped_credit(state, &job).await {
             Ok(tx_signature) => {
-                let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "credit", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 job.status = "submitted".to_string();
                 job.tx_signature = Some(tx_signature);
                 job.last_error = None;
@@ -4420,7 +4447,9 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 );
             }
             Err(err) => {
-                let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "credit", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 tracing::warn!("credit mint failed for deposit={}: {}", job.deposit_id, err);
                 mark_credit_failed(&mut job, err);
                 store_credit_job(&state.db, &job)?;
@@ -4450,14 +4479,14 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
 
                 // P0-FIX: Update the deposit record to "credited" so polling clients
                 // see the terminal state and can stop polling.
-                let _ = update_deposit_status(&state.db, &job.deposit_id, "credited");
-                let _ = update_status_index(
-                    &state.db,
-                    "deposits",
-                    "swept",
-                    "credited",
-                    &job.deposit_id,
-                );
+                if let Err(e) = update_deposit_status(&state.db, &job.deposit_id, "credited") {
+                    tracing::error!("Failed update_deposit_status: {e}");
+                }
+                if let Err(e) =
+                    update_status_index(&state.db, "deposits", "swept", "credited", &job.deposit_id)
+                {
+                    tracing::error!("Failed update_status_index: {e}");
+                }
 
                 emit_custody_event(
                     state,
@@ -5180,7 +5209,7 @@ fn build_evm_threshold_withdrawal_intent(
     state: &CustodyState,
     job: &WithdrawalJob,
     asset: &str,
-    nonce: u64,
+    _nonce: u64,
 ) -> Result<(String, u128, Vec<u8>), String> {
     let is_erc20 = matches!(asset, "usdt" | "usdc");
     if is_erc20 {
@@ -5189,11 +5218,9 @@ fn build_evm_threshold_withdrawal_intent(
         let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
         let transfer_data = evm_encode_erc20_transfer(&job.dest_address, chain_amount)
             .map_err(|e| format!("encode ERC-20 transfer: {}", e))?;
-        let _ = nonce;
         Ok((contract_addr, 0u128, transfer_data))
     } else {
         let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
-        let _ = nonce;
         Ok((job.dest_address.clone(), chain_amount, Vec::new()))
     }
 }
@@ -6282,10 +6309,16 @@ fn store_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
     // AUDIT-FIX M1: Update status index on every store
     if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
         if let Ok(old_job) = serde_json::from_slice::<SweepJob>(&old_bytes) {
-            let _ = update_status_index(db, "sweep", &old_job.status, &job.status, &job.job_id);
+            if let Err(e) =
+                update_status_index(db, "sweep", &old_job.status, &job.status, &job.job_id)
+            {
+                tracing::error!("Failed update_status_index: {e}");
+            }
         }
     } else {
-        let _ = set_status_index(db, "sweep", &job.status, &job.job_id);
+        if let Err(e) = set_status_index(db, "sweep", &job.status, &job.job_id) {
+            tracing::error!("Failed set_status_index: {e}");
+        }
     }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
@@ -6299,10 +6332,16 @@ fn store_credit_job(db: &DB, job: &CreditJob) -> Result<(), String> {
     // AUDIT-FIX M1: Update status index on every store
     if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
         if let Ok(old_job) = serde_json::from_slice::<CreditJob>(&old_bytes) {
-            let _ = update_status_index(db, "credit", &old_job.status, &job.status, &job.job_id);
+            if let Err(e) =
+                update_status_index(db, "credit", &old_job.status, &job.status, &job.job_id)
+            {
+                tracing::error!("Failed update_status_index: {e}");
+            }
         }
     } else {
-        let _ = set_status_index(db, "credit", &job.status, &job.job_id);
+        if let Err(e) = set_status_index(db, "credit", &job.status, &job.job_id) {
+            tracing::error!("Failed set_status_index: {e}");
+        }
     }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
@@ -6523,7 +6562,7 @@ fn record_audit_event_ext(
             timestamp,
         };
         // Best-effort: if no receivers are listening, that's fine
-        let _ = tx.send(event);
+        drop(tx.send(event));
     }
 
     Ok(())
@@ -6739,7 +6778,9 @@ fn enqueue_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))?;
     // AUDIT-FIX M1: index initial sweep job status
-    let _ = set_status_index(db, "sweep", &job.status, &job.job_id);
+    if let Err(e) = set_status_index(db, "sweep", &job.status, &job.job_id) {
+        tracing::error!("Failed set_status_index: {e}");
+    }
     Ok(())
 }
 
@@ -6751,7 +6792,9 @@ fn update_deposit_status(db: &DB, deposit_id: &str, status: &str) -> Result<(), 
     record.status = status.to_string();
     store_deposit(db, &record)?;
     // AUDIT-FIX M1: maintain status index
-    let _ = update_status_index(db, "deposits", &old_status, status, deposit_id);
+    if let Err(e) = update_status_index(db, "deposits", &old_status, status, deposit_id) {
+        tracing::error!("Failed update_status_index: {e}");
+    }
     Ok(())
 }
 
@@ -7594,11 +7637,16 @@ fn store_withdrawal_job(db: &DB, job: &WithdrawalJob) -> Result<(), String> {
     // AUDIT-FIX M1: Update status index on every store
     if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
         if let Ok(old_job) = serde_json::from_slice::<WithdrawalJob>(&old_bytes) {
-            let _ =
-                update_status_index(db, "withdrawal", &old_job.status, &job.status, &job.job_id);
+            if let Err(e) =
+                update_status_index(db, "withdrawal", &old_job.status, &job.status, &job.job_id)
+            {
+                tracing::error!("Failed update_status_index: {e}");
+            }
         }
     } else {
-        let _ = set_status_index(db, "withdrawal", &job.status, &job.job_id);
+        if let Err(e) = set_status_index(db, "withdrawal", &job.status, &job.job_id) {
+            tracing::error!("Failed set_status_index: {e}");
+        }
     }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
@@ -7675,7 +7723,9 @@ fn reset_pending_burn_submission(
     err: String,
 ) -> Result<(), String> {
     if let Some(existing) = job.burn_tx_signature.take() {
-        let _ = release_burn_signature_reservation(db, &existing, &job.job_id);
+        if let Err(e) = release_burn_signature_reservation(db, &existing, &job.job_id) {
+            tracing::error!("Failed release_burn_signature_reservation: {e}");
+        }
     }
 
     job.attempts = job.attempts.saturating_add(1);
@@ -7704,7 +7754,9 @@ fn expire_pending_burn_job(
 ) -> Result<(), String> {
     let burn_tx_signature = job.burn_tx_signature.take();
     if let Some(existing) = burn_tx_signature.as_deref() {
-        let _ = release_burn_signature_reservation(&state.db, existing, &job.job_id);
+        if let Err(e) = release_burn_signature_reservation(&state.db, existing, &job.job_id) {
+            tracing::error!("Failed release_burn_signature_reservation: {e}");
+        }
     }
 
     let age_secs = now.saturating_sub(job.created_at).max(0);
@@ -7828,7 +7880,9 @@ async fn submit_burn_signature(
         .burn_tx_signature
         .replace(payload.burn_tx_signature.clone())
     {
-        let _ = release_burn_signature_reservation(&state.db, &existing, &job_id);
+        if let Err(e) = release_burn_signature_reservation(&state.db, &existing, &job_id) {
+            tracing::error!("Failed release_burn_signature_reservation: {e}");
+        }
     }
 
     job.last_error = None;
@@ -8129,10 +8183,16 @@ fn store_rebalance_job(db: &DB, job: &RebalanceJob) -> Result<(), String> {
     // AUDIT-FIX M1: Update status index on every store
     if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
         if let Ok(old_job) = serde_json::from_slice::<RebalanceJob>(&old_bytes) {
-            let _ = update_status_index(db, "rebalance", &old_job.status, &job.status, &job.job_id);
+            if let Err(e) =
+                update_status_index(db, "rebalance", &old_job.status, &job.status, &job.job_id)
+            {
+                tracing::error!("Failed update_status_index: {e}");
+            }
         }
     } else {
-        let _ = set_status_index(db, "rebalance", &job.status, &job.job_id);
+        if let Err(e) = set_status_index(db, "rebalance", &job.status, &job.job_id) {
+            tracing::error!("Failed set_status_index: {e}");
+        }
     }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
@@ -8256,26 +8316,34 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                         let old_status = record.status.clone();
                         record.status = "expired".to_string();
                         if let Ok(json) = serde_json::to_vec(&record) {
-                            let _ = state.db.put_cf(&cf, deposit_id.as_bytes(), &json);
+                            if let Err(e) = state.db.put_cf(&cf, deposit_id.as_bytes(), &json) {
+                                tracing::error!("Failed to write custody DB: {e}");
+                            }
                             // AUDIT-FIX R-M1: Maintain status index during cleanup
-                            let _ = update_status_index(
+                            if let Err(e) = update_status_index(
                                 &state.db,
                                 "deposits",
                                 &old_status,
                                 "expired",
                                 deposit_id,
-                            );
+                            ) {
+                                tracing::error!("Failed update_status_index: {e}");
+                            }
                         }
                     }
                 }
             }
             // Remove address → deposit_id index so the address can be recycled
             if let Some(addr_cf) = state.db.cf_handle(CF_ADDRESS_INDEX) {
-                let _ = state.db.delete_cf(&addr_cf, address.as_bytes());
+                if let Err(e) = state.db.delete_cf(&addr_cf, address.as_bytes()) {
+                    tracing::error!("Failed to delete custody DB entry: {e}");
+                }
             }
             // Prune stale address balance entries
             if let Some(bal_cf) = state.db.cf_handle(CF_ADDRESS_BALANCES) {
-                let _ = state.db.delete_cf(&bal_cf, address.as_bytes());
+                if let Err(e) = state.db.delete_cf(&bal_cf, address.as_bytes()) {
+                    tracing::error!("Failed to delete custody DB entry: {e}");
+                }
             }
             // Prune stale token balance entries (key format: address:token)
             if let Some(tok_cf) = state.db.cf_handle(CF_TOKEN_BALANCES) {
@@ -8283,7 +8351,9 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                 let iter = state.db.prefix_iterator_cf(&tok_cf, prefix.as_bytes());
                 for (key, _) in iter.flatten() {
                     if key.starts_with(prefix.as_bytes()) {
-                        let _ = state.db.delete_cf(&tok_cf, &key);
+                        if let Err(e) = state.db.delete_cf(&tok_cf, &key) {
+                            tracing::error!("Failed to delete custody DB entry: {e}");
+                        }
                     } else {
                         break;
                     }
@@ -8300,7 +8370,9 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                     .prefix_iterator_cf(&evt_cf, dedup_prefix.as_bytes());
                 for (key, _) in iter.flatten() {
                     if key.starts_with(dedup_prefix.as_bytes()) {
-                        let _ = state.db.delete_cf(&evt_cf, &key);
+                        if let Err(e) = state.db.delete_cf(&evt_cf, &key) {
+                            tracing::error!("Failed to delete custody DB entry: {e}");
+                        }
                     } else {
                         break;
                     }
@@ -8314,7 +8386,9 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                     }
                     if let Ok(evt) = serde_json::from_slice::<DepositEvent>(&value) {
                         if evt.deposit_id == *deposit_id {
-                            let _ = state.db.delete_cf(&evt_cf, &key);
+                            if let Err(e) = state.db.delete_cf(&evt_cf, &key) {
+                                tracing::error!("Failed to delete custody DB entry: {e}");
+                            }
                         }
                     }
                 }
@@ -9248,14 +9322,18 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                         expected,
                                         tx_contract
                                     );
-                                    let _ = reset_pending_burn_submission(
+                                    if let Err(e) = reset_pending_burn_submission(
                                         &state.db,
                                         &mut job,
                                         format!(
                                             "Burn contract mismatch: expected {} got {:?}",
                                             expected, tx_contract
                                         ),
-                                    );
+                                    ) {
+                                        tracing::error!(
+                                            "Failed reset_pending_burn_submission: {e}"
+                                        );
+                                    }
                                     continue;
                                 }
                             } else {
@@ -9270,7 +9348,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     "No contract address configured for asset '{}'",
                                     job.asset
                                 ));
-                                let _ = store_withdrawal_job(&state.db, &job);
+                                if let Err(e) = store_withdrawal_job(&state.db, &job) {
+                                    tracing::error!("Failed store_withdrawal_job: {e}");
+                                }
                                 continue;
                             }
 
@@ -9282,14 +9362,16 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     job.job_id,
                                     tx_method
                                 );
-                                let _ = reset_pending_burn_submission(
+                                if let Err(e) = reset_pending_burn_submission(
                                     &state.db,
                                     &mut job,
                                     format!(
                                         "Burn method mismatch: expected 'burn' got {:?}",
                                         tx_method
                                     ),
-                                );
+                                ) {
+                                    tracing::error!("Failed reset_pending_burn_submission: {e}");
+                                }
                                 continue;
                             }
 
@@ -9303,14 +9385,16 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     expected_amount,
                                     tx_amount
                                 );
-                                let _ = reset_pending_burn_submission(
+                                if let Err(e) = reset_pending_burn_submission(
                                     &state.db,
                                     &mut job,
                                     format!(
                                         "Burn amount mismatch: expected {} got {}",
                                         expected_amount, tx_amount
                                     ),
-                                );
+                                ) {
+                                    tracing::error!("Failed reset_pending_burn_submission: {e}");
+                                }
                                 continue;
                             }
 
@@ -9324,14 +9408,16 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     expected_user_id,
                                     tx_caller
                                 );
-                                let _ = reset_pending_burn_submission(
+                                if let Err(e) = reset_pending_burn_submission(
                                     &state.db,
                                     &mut job,
                                     format!(
                                         "Burn caller mismatch: expected {} got {:?}",
                                         expected_user_id, tx_caller
                                     ),
-                                );
+                                ) {
+                                    tracing::error!("Failed reset_pending_burn_submission: {e}");
+                                }
                                 continue;
                             }
 
@@ -9593,10 +9679,14 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
     let signing = list_withdrawal_jobs_by_status(&state.db, "signing")?;
     for mut job in signing {
         // AUDIT-FIX M4: Record intent before withdrawal broadcast
-        let _ = record_tx_intent(&state.db, "withdrawal", &job.job_id, &job.dest_chain);
+        if let Err(e) = record_tx_intent(&state.db, "withdrawal", &job.job_id, &job.dest_chain) {
+            tracing::error!("Failed record_tx_intent: {e}");
+        }
         match broadcast_outbound_withdrawal(state, &job).await {
             Ok(tx_hash) => {
-                let _ = clear_tx_intent(&state.db, "withdrawal", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "withdrawal", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 job.outbound_tx_hash = Some(tx_hash.clone());
                 job.status = "broadcasting".to_string();
                 job.last_error = None;
@@ -9617,7 +9707,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 info!("withdrawal broadcast: {} → tx={}", job.job_id, tx_hash);
             }
             Err(e) => {
-                let _ = clear_tx_intent(&state.db, "withdrawal", &job.job_id);
+                if let Err(e) = clear_tx_intent(&state.db, "withdrawal", &job.job_id) {
+                    tracing::error!("Failed clear_tx_intent: {e}");
+                }
                 job.attempts = job.attempts.saturating_add(1);
                 job.last_error = Some(e.clone());
                 // AUDIT-FIX R-H2: Cap withdrawal retries like sweep/credit
@@ -10655,7 +10747,7 @@ async fn handle_ws_events(
                             "warning": "lagged",
                             "dropped_events": n,
                         });
-                        let _ = socket.send(WsMessage::Text(warning.to_string())).await;
+                        drop(socket.send(WsMessage::Text(warning.to_string())).await);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -10665,7 +10757,7 @@ async fn handle_ws_events(
                 match msg {
                     Some(Ok(WsMessage::Close(_))) | None => break,
                     Some(Ok(WsMessage::Ping(data))) => {
-                        let _ = socket.send(WsMessage::Pong(data)).await;
+                        drop(socket.send(WsMessage::Pong(data)).await);
                     }
                     _ => {} // Ignore text/binary from client
                 }
@@ -14683,13 +14775,15 @@ mod tests {
             status: "sweep_queued".to_string(),
         };
         store_deposit(&state.db, &deposit).expect("store deposit");
-        let _ = update_status_index(
+        if let Err(e) = update_status_index(
             &state.db,
             "deposits",
             "issued",
             "sweep_queued",
             &deposit.deposit_id,
-        );
+        ) {
+            tracing::error!("Failed update_status_index: {e}");
+        }
 
         let job = SweepJob {
             job_id: "test-sweep-confirm-worker".to_string(),

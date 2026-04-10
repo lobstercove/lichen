@@ -163,6 +163,8 @@ struct SharedOraclePrices {
     weth_micro: Arc<AtomicU64>,
     wbnb_micro: Arc<AtomicU64>,
     ws_healthy: Arc<AtomicBool>,
+    /// Epoch-millis of the last WS message received (for staleness detection)
+    last_ws_update_ms: Arc<AtomicU64>,
 }
 
 impl SharedOraclePrices {
@@ -172,6 +174,7 @@ impl SharedOraclePrices {
             weth_micro: Arc::new(AtomicU64::new(0)),
             wbnb_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
+            last_ws_update_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -1387,7 +1390,9 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         new_data[66] = 0; // STATUS_OPEN
 
         // Write activated order back
-        let _ = state.put_contract_storage(&dex_pk, ok.as_bytes(), &new_data);
+        if let Err(e) = state.put_contract_storage(&dex_pk, ok.as_bytes(), &new_data) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Add to order book level (the matching engine will process it on next trade)
         let price = u64::from_le_bytes(new_data[42..50].try_into().unwrap_or([0; 8]));
@@ -1401,10 +1406,16 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         if let Ok(Some(existing)) = state.get_contract_storage(&dex_pk, book_side_key.as_bytes()) {
             let mut updated = existing;
             updated.extend_from_slice(&oid.to_le_bytes());
-            let _ = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &updated);
+            if let Err(e) = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &updated)
+            {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
         } else {
-            let _ =
-                state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes());
+            if let Err(e) =
+                state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes())
+            {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
         }
 
         // Update best bid/ask if needed
@@ -1413,22 +1424,26 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
             let best_bid = state
                 .get_program_storage_u64("DEX", format!("dex_best_bid_{}", pair_id).as_bytes());
             if price > best_bid {
-                let _ = state.put_contract_storage(
+                if let Err(e) = state.put_contract_storage(
                     &dex_pk,
                     format!("dex_best_bid_{}", pair_id).as_bytes(),
                     &price.to_le_bytes(),
-                );
+                ) {
+                    tracing::error!("Failed to write contract storage: {e}");
+                }
             }
         } else {
             // Sell order: update best ask if lower
             let best_ask = state
                 .get_program_storage_u64("DEX", format!("dex_best_ask_{}", pair_id).as_bytes());
             if best_ask == 0 || best_ask == u64::MAX || price < best_ask {
-                let _ = state.put_contract_storage(
+                if let Err(e) = state.put_contract_storage(
                     &dex_pk,
                     format!("dex_best_ask_{}", pair_id).as_bytes(),
                     &price.to_le_bytes(),
-                );
+                ) {
+                    tracing::error!("Failed to write contract storage: {e}");
+                }
             }
         }
 
@@ -1549,7 +1564,9 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         let biased_pnl = (pnl_raw as i128 + BIAS as i128) as u64;
         new_data[90..98].copy_from_slice(&biased_pnl.to_le_bytes()); // realized_pnl
 
-        let _ = state.put_contract_storage(&margin_pk, pk.as_bytes(), &new_data);
+        if let Err(e) = state.put_contract_storage(&margin_pk, pk.as_bytes(), &new_data) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // P9-VAL-02 FIX: Settle PnL through the insurance fund instead of
         // creating money from nothing.  Losses are credited to the fund;
@@ -1564,34 +1581,42 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
             // Profitable close: pay profit from insurance fund (cap at fund balance)
             let capped_profit = abs_pnl.min(insurance_fund);
             // Debit insurance fund
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_insurance",
                 &insurance_fund.saturating_sub(capped_profit).to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
             // Track cumulative profit
             let prev_profit = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_profit");
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_profit",
                 &prev_profit.saturating_add(capped_profit).to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
             margin.saturating_add(capped_profit)
         } else {
             // Loss close: credit insurance fund with the loss
             let loss = abs_pnl.min(margin); // can't lose more than margin
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_insurance",
                 &insurance_fund.saturating_add(loss).to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
             // Track cumulative loss
             let prev_loss = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_loss");
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_loss",
                 &prev_loss.saturating_add(loss).to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
             margin.saturating_sub(loss)
         };
 
@@ -1600,7 +1625,9 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         if let Ok(Some(mut acc)) = state.get_account(&trader_pk) {
             acc.spores = acc.spores.saturating_add(return_amount);
             acc.spendable = acc.spendable.saturating_add(return_amount);
-            let _ = state.put_account(&trader_pk, &acc);
+            if let Err(e) = state.put_account(&trader_pk, &acc) {
+                tracing::error!("Failed to write account: {e}");
+            }
         }
 
         let trigger_type = if sl_price > 0
@@ -1636,11 +1663,13 @@ fn run_sltp_triggers_from_state(state: &StateStore) {
         run_sltp_trigger_engine(state, cursor, current);
         // Persist the new cursor so subsequent blocks pick up from here
         if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &dex_entry.program,
                 b"dex_sltp_trigger_cursor",
                 &current.to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
         }
     }
 }
@@ -1654,11 +1683,13 @@ fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, slot_duration_
         bridge_dex_trades_to_analytics(state, cursor, current, slot, slot_duration_ms);
         // Persist the new cursor so subsequent blocks pick up from here
         if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
-            let _ = state.put_contract_storage(
+            if let Err(e) = state.put_contract_storage(
                 &dex_entry.program,
                 b"dex_analytics_bridge_cursor",
                 &current.to_le_bytes(),
-            );
+            ) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
         }
     }
 }
@@ -1748,33 +1779,46 @@ fn bridge_dex_trades_to_analytics(
             _ => 0,
         };
 
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             &analytics_pk,
             b"ana_rec_count",
             &prev_rec.saturating_add(total_new_trades).to_le_bytes(),
-        );
-        let _ = state.put_contract_storage(
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
+        if let Err(e) = state.put_contract_storage(
             &analytics_pk,
             b"ana_total_volume",
             &prev_vol.saturating_add(total_new_volume).to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
         // Use max of pairs_count vs prev — tracks unique pairs seen over time
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             &analytics_pk,
             b"ana_trader_count",
             &prev_pairs.max(pairs_count).to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
     }
 
     for (pair_id, (last_price, volume, new_trades, high, low)) in &pair_trades {
         // ── ana_lp_{pair_id}: last trade price ──
         let lp_key = format!("ana_lp_{}", pair_id);
-        let _ =
-            state.put_contract_storage(&analytics_pk, lp_key.as_bytes(), &last_price.to_le_bytes());
+        if let Err(e) =
+            state.put_contract_storage(&analytics_pk, lp_key.as_bytes(), &last_price.to_le_bytes())
+        {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // ── ana_last_trade_ts_{pair_id}: unix timestamp for oracle fallback ──
         let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
+        if let Err(e) =
+            state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
+        {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // ── ana_24h_{pair_id}: read-modify-write 24h stats ──
         // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8) = 48
@@ -1813,7 +1857,9 @@ fn bridge_dex_trades_to_analytics(
         stats.extend_from_slice(&open.to_le_bytes()); // open
         stats.extend_from_slice(&last_price.to_le_bytes()); // close = last trade
         stats.extend_from_slice(&prev_trades.saturating_add(*new_trades).to_le_bytes()); // trades
-        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // ── Candles: update all 9 intervals with real trade data ──
         for &interval in &CANDLE_INTERVALS {
@@ -1903,7 +1949,11 @@ fn bridge_update_candle(
                 data[32..40].copy_from_slice(&new_vol.to_le_bytes());
                 // Keep timestamp as the period-start (don't overwrite with current time)
 
-                let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
+                if let Err(e) =
+                    state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)
+                {
+                    tracing::error!("Failed to write contract storage: {e}");
+                }
             }
         }
     } else {
@@ -1924,21 +1974,27 @@ fn bridge_update_candle(
 
         let new_idx = candle_count;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
-        let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle);
+        if let Err(e) = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Update count
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             analytics_pk,
             count_key.as_bytes(),
             &(new_idx + 1).to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Store current candle start slot
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             analytics_pk,
             cur_key.as_bytes(),
             &candle_start.to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
     }
 }
 
@@ -1958,7 +2014,7 @@ fn emit_program_and_nft_events(
 
     for tx in &block.transactions {
         // Emit Transaction event for every tx in the block
-        let _ = ws_event_tx.send(lichen_rpc::ws::Event::Transaction(tx.clone()));
+        drop(ws_event_tx.send(lichen_rpc::ws::Event::Transaction(tx.clone())));
 
         // Emit AccountChange events for all accounts touched by this tx
         let mut seen_accounts = std::collections::HashSet::new();
@@ -1966,10 +2022,10 @@ fn emit_program_and_nft_events(
             for account_pubkey in &ix.accounts {
                 if seen_accounts.insert(*account_pubkey) {
                     if let Ok(Some(acct)) = state.get_account(account_pubkey) {
-                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::AccountChange {
+                        drop(ws_event_tx.send(lichen_rpc::ws::Event::AccountChange {
                             pubkey: *account_pubkey,
                             balance: acct.spores,
-                        });
+                        }));
                     }
                 }
             }
@@ -1982,7 +2038,7 @@ fn emit_program_and_nft_events(
                         }
 
                         let collection = ix.accounts[1];
-                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::NftMint { collection });
+                        drop(ws_event_tx.send(lichen_rpc::ws::Event::NftMint { collection }));
                     }
                     Some(8) => {
                         if ix.accounts.len() < 3 {
@@ -2001,9 +2057,9 @@ fn emit_program_and_nft_events(
                             Err(_) => continue,
                         };
 
-                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::NftTransfer {
+                        drop(ws_event_tx.send(lichen_rpc::ws::Event::NftTransfer {
                             collection: token_state.collection,
-                        });
+                        }));
                     }
                     _ => {}
                 }
@@ -2012,68 +2068,69 @@ fn emit_program_and_nft_events(
                     match contract_ix {
                         ContractInstruction::Deploy { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "deploy".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::Upgrade { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "upgrade".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::Close => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "close".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::SetUpgradeTimelock { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "set_timelock".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::ExecuteUpgrade => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "execute_upgrade".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::VetoUpgrade => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "veto_upgrade".to_string(),
-                                });
+                                }));
                             }
                         }
                         ContractInstruction::Call { function, args, .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx
-                                    .send(lichen_rpc::ws::Event::ProgramCall { program: *program });
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::ProgramCall {
+                                    program: *program,
+                                }));
 
                                 // Emit Log event for contract call
-                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::Log {
+                                drop(ws_event_tx.send(lichen_rpc::ws::Event::Log {
                                     contract: *program,
                                     message: format!("call:{}", function),
-                                });
+                                }));
 
                                 // Emit contract events from DB if stored during processing
                                 if let Ok(events) = state.get_contract_logs(program, 50, None) {
                                     for event in &events {
                                         if event.slot == block.header.slot {
-                                            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Log {
+                                            drop(ws_event_tx.send(lichen_rpc::ws::Event::Log {
                                                 contract: event.program,
                                                 message: format!(
                                                     "event:{}:{}",
@@ -2081,7 +2138,7 @@ fn emit_program_and_nft_events(
                                                     serde_json::to_string(&event.data)
                                                         .unwrap_or_default()
                                                 ),
-                                            });
+                                            }));
                                         }
                                     }
                                 }
@@ -2106,7 +2163,7 @@ fn emit_program_and_nft_events(
                                         tx.signature(),
                                     );
 
-                                    let _ = match kind {
+                                    drop(match kind {
                                         MarketActivityKind::Listing => {
                                             ws_event_tx.send(lichen_rpc::ws::Event::MarketListing {
                                                 activity,
@@ -2116,7 +2173,7 @@ fn emit_program_and_nft_events(
                                             .send(lichen_rpc::ws::Event::MarketSale { activity }),
                                         MarketActivityKind::Cancel => Ok(0),
                                         _ => Ok(0),
-                                    };
+                                    });
                                 }
 
                                 // Emit bridge events for lock/mint calls
@@ -2155,14 +2212,13 @@ fn emit_program_and_nft_events(
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("lichen")
                                             .to_string();
-                                        let _ =
-                                            ws_event_tx.send(lichen_rpc::ws::Event::BridgeLock {
-                                                chain: dest_chain,
-                                                asset,
-                                                amount,
-                                                sender,
-                                                recipient,
-                                            });
+                                        drop(ws_event_tx.send(lichen_rpc::ws::Event::BridgeLock {
+                                            chain: dest_chain,
+                                            asset,
+                                            amount,
+                                            sender,
+                                            recipient,
+                                        }));
                                     }
                                     "mint" | "bridge_mint" => {
                                         let recipient = ix
@@ -2194,14 +2250,13 @@ fn emit_program_and_nft_events(
                                             .unwrap_or("musd")
                                             .to_string();
                                         let tx_hash = hex::encode(tx.signature().0);
-                                        let _ =
-                                            ws_event_tx.send(lichen_rpc::ws::Event::BridgeMint {
-                                                chain: source_chain,
-                                                asset,
-                                                amount,
-                                                recipient,
-                                                tx_hash,
-                                            });
+                                        drop(ws_event_tx.send(lichen_rpc::ws::Event::BridgeMint {
+                                            chain: source_chain,
+                                            asset,
+                                            amount,
+                                            recipient,
+                                            tx_hash,
+                                        }));
                                     }
                                     _ => {}
                                 }
@@ -2378,11 +2433,15 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         feed.extend_from_slice(&feeder);
 
         let price_key = format!("price_{}", asset);
-        let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
+        if let Err(e) = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Also write indexed key for aggregation
         let indexed_key = format!("{}_0", price_key);
-        let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
+        if let Err(e) = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
     }
 
     // ── Phase B: Write DEX price bands to DEX contract ──
@@ -2430,7 +2489,9 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
             let mut band_data = Vec::with_capacity(16);
             band_data.extend_from_slice(&price_scaled.to_le_bytes());
             band_data.extend_from_slice(&slot.to_le_bytes());
-            let _ = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data);
+            if let Err(e) = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data) {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
         }
     }
 
@@ -2461,11 +2522,13 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
 
         // Inactive market: write indicative price from oracle
         let lp_key = format!("ana_lp_{}", pair_id);
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             &analytics_pk,
             lp_key.as_bytes(),
             &price_scaled.to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Update 24h stats (read-modify-write)
         let stats_key = format!("ana_24h_{}", pair_id);
@@ -2496,7 +2559,9 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         stats.extend_from_slice(&open.to_le_bytes());
         stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
         stats.extend_from_slice(&trades.to_le_bytes());
-        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // ── Candles: update all 9 intervals with oracle price ──
         // This is consensus-deterministic: every validator processing this block
@@ -4068,8 +4133,11 @@ fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
         };
 
         if last_reset == 0 {
-            let _ =
-                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
+            if let Err(e) =
+                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
+            {
+                tracing::error!("Failed to write contract storage: {e}");
+            }
             continue;
         }
 
@@ -4100,9 +4168,15 @@ fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
         stats.extend_from_slice(&current_close.to_le_bytes());
         stats.extend_from_slice(&current_close.to_le_bytes());
         stats.extend_from_slice(&0u64.to_le_bytes());
-        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+        if let Err(e) = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
-        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
+        if let Err(e) =
+            state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes())
+        {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
     }
@@ -4129,7 +4203,9 @@ fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64, prices:
         if has_price {
             continue;
         }
-        let _ = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0);
+        if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
+            tracing::error!("Failed to seed oracle consensus price for {asset}: {e}");
+        }
     }
 }
 
@@ -4272,14 +4348,16 @@ fn spawn_oracle_price_feeder(
 
         // Spawn WebSocket reader task FIRST so prices start flowing immediately
         // even while we wait for ANALYTICS symbol registry (joining node sync).
+        let last_ws_update_ms = shared_prices.last_ws_update_ms.clone();
         {
             let ws_wsol = wsol_micro.clone();
             let ws_weth = weth_micro.clone();
             let ws_wbnb = wbnb_micro.clone();
             let ws_flag = ws_healthy.clone();
+            let ws_last = last_ws_update_ms.clone();
             let ws_url = oracle_ws_url.clone();
             tokio::spawn(async move {
-                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_url).await;
+                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_last, ws_url).await;
             });
         }
 
@@ -4340,8 +4418,22 @@ fn spawn_oracle_price_feeder(
             let mut cur_weth = weth_micro.load(Ordering::Relaxed);
             let mut cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
 
-            // REST fallback if WebSocket is not healthy or no prices yet
+            // REST fallback if WebSocket is not healthy, no prices yet,
+            // or WS data is stale (no message received within 15 seconds).
+            let ws_stale = {
+                let last_update = last_ws_update_ms.load(Ordering::Relaxed);
+                if last_update == 0 {
+                    true // never received a WS message
+                } else {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    now_ms.saturating_sub(last_update) > 15_000
+                }
+            };
             if !ws_healthy.load(Ordering::Relaxed)
+                || ws_stale
                 || (cur_wsol == 0 && cur_weth == 0 && cur_wbnb == 0)
             {
                 if let Ok(resp) = http.get(&rest_url).send().await {
@@ -4537,9 +4629,17 @@ async fn binance_ws_loop(
     weth: Arc<AtomicU64>,
     wbnb: Arc<AtomicU64>,
     healthy: Arc<AtomicBool>,
+    last_ws_update_ms: Arc<AtomicU64>,
     ws_url: String,
 ) {
     let mut backoff_secs: u64 = 1;
+
+    // Read timeout: if no WS message arrives within this window,
+    // treat the connection as dead and reconnect.  Binance aggTrade
+    // streams for SOL/ETH/BNB produce messages every ~100ms during
+    // active trading.  30s silence is a clear signal of a stale
+    // connection (TCP half-open, silent Binance-side close, etc.).
+    const WS_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
     loop {
         info!("🔮 Binance WebSocket connecting to {}...", ws_url);
@@ -4553,9 +4653,28 @@ async fn binance_ws_loop(
 
                 let (mut write, mut read) = ws_stream.split();
 
-                while let Some(msg_result) = read.next().await {
+                loop {
+                    let msg_result = match tokio::time::timeout(WS_READ_TIMEOUT, read.next()).await
+                    {
+                        Ok(Some(msg)) => msg,
+                        Ok(None) => {
+                            // Stream ended
+                            break;
+                        }
+                        Err(_) => {
+                            warn!("🔮 Binance WebSocket read timeout ({}s with no data), reconnecting", WS_READ_TIMEOUT.as_secs());
+                            break;
+                        }
+                    };
                     match msg_result {
                         Ok(tungstenite::Message::Text(ref text)) => {
+                            // Record that we received a message (for feeder staleness check)
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            last_ws_update_ms.store(now_ms, Ordering::Relaxed);
+
                             // aggTrade format: {"e":"aggTrade","s":"SOLUSDT","p":"82.30",...}
                             if let Ok(trade) = serde_json::from_str::<serde_json::Value>(text) {
                                 if let (Some(sym), Some(price_str)) =
@@ -4661,7 +4780,11 @@ fn oracle_update_candle(
                 // Update close price
                 data[24..32].copy_from_slice(&price.to_le_bytes());
                 // Keep timestamp as the period-start (don't overwrite with current time)
-                let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
+                if let Err(e) =
+                    state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data)
+                {
+                    tracing::error!("Failed to write contract storage: {e}");
+                }
             }
         }
     } else {
@@ -4682,21 +4805,27 @@ fn oracle_update_candle(
 
         let new_idx = candle_count;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
-        let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle);
+        if let Err(e) = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Update count
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             analytics_pk,
             count_key.as_bytes(),
             &(new_idx + 1).to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
 
         // Store current candle start slot
-        let _ = state.put_contract_storage(
+        if let Err(e) = state.put_contract_storage(
             analytics_pk,
             cur_key.as_bytes(),
             &candle_start.to_le_bytes(),
-        );
+        ) {
+            tracing::error!("Failed to write contract storage: {e}");
+        }
     }
 }
 
@@ -5031,7 +5160,7 @@ async fn run_validator() {
     // Canonicalize early so logs go to the same absolute path as the DB
     let pre_data_dir = {
         let p = PathBuf::from(&pre_data_dir);
-        let _ = fs::create_dir_all(&p);
+        fs::create_dir_all(&p).expect("failed to create data directory");
         std::fs::canonicalize(&p).unwrap_or_else(|_| {
             if p.is_absolute() {
                 p
@@ -5043,14 +5172,14 @@ async fn run_validator() {
         })
     };
     let log_dir = pre_data_dir.join("logs");
-    let _ = fs::create_dir_all(&log_dir);
+    fs::create_dir_all(&log_dir).expect("failed to create log directory");
 
     // Rolling daily file appender — creates files like validator.2026-02-15.log
     let file_appender = tracing_appender::rolling::daily(&log_dir, "validator.log");
     let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Layered subscriber: stdout (with ANSI colors) + rolling file (plain text)
-    let _ = tracing_subscriber::registry()
+    if tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
         .with(
             tracing_subscriber::fmt::layer()
@@ -5058,7 +5187,11 @@ async fn run_validator() {
                 .with_writer(non_blocking_writer),
         )
         .with(tracing_subscriber::filter::LevelFilter::INFO)
-        .try_init();
+        .try_init()
+        .is_err()
+    {
+        eprintln!("WARN: tracing subscriber already initialized");
+    }
 
     // Background task: sweep log files older than 7 days every 3 hours
     spawn_log_cleanup_task(log_dir.clone(), 7);
@@ -5722,27 +5855,33 @@ async fn run_validator() {
                     for (asset, price) in oracle_feeds {
                         // price_{asset}: 8 bytes LE (u64)
                         let price_key = format!("price_{}", asset);
-                        let _ = state.put_contract_storage(
+                        if let Err(e) = state.put_contract_storage(
                             &oracle_pk,
                             price_key.as_bytes(),
                             &price.to_le_bytes(),
-                        );
+                        ) {
+                            tracing::error!("Failed to write contract storage: {e}");
+                        }
 
                         // price_{asset}_ts: 8 bytes LE (u64 timestamp)
                         let ts_key = format!("price_{}_ts", asset);
-                        let _ = state.put_contract_storage(
+                        if let Err(e) = state.put_contract_storage(
                             &oracle_pk,
                             ts_key.as_bytes(),
                             &genesis_timestamp.to_le_bytes(),
-                        );
+                        ) {
+                            tracing::error!("Failed to write contract storage: {e}");
+                        }
 
                         // price_{asset}_dec: 1 byte (decimals)
                         let dec_key = format!("price_{}_dec", asset);
-                        let _ = state.put_contract_storage(
+                        if let Err(e) = state.put_contract_storage(
                             &oracle_pk,
                             dec_key.as_bytes(),
                             &[ORACLE_DECIMALS],
-                        );
+                        ) {
+                            tracing::error!("Failed to write contract storage: {e}");
+                        }
 
                         info!(
                             "  ✓ Oracle price seeded: {} = {} ({}dec)",
@@ -6017,7 +6156,7 @@ async fn run_validator() {
         if let Ok(Some(_)) = state.get_validator(&genesis_pubkey) {
             info!("🧹 Cleaning up: Removing genesis wallet from validator set");
             if let Err(e) = state.delete_validator(&genesis_pubkey) {
-                eprintln!("Failed to delete genesis validator: {e}");
+                tracing::error!("Failed to delete genesis validator: {e}");
             }
         }
     }
@@ -6039,7 +6178,7 @@ async fn run_validator() {
     // keypairs while preserving reputation/metrics for current validators via the
     // in-memory set that was loaded from DB above.
     if let Err(e) = state.save_validator_set(&*validator_set.read().await) {
-        eprintln!("Failed to save validator set: {e}");
+        tracing::error!("Failed to save validator set: {e}");
     }
 
     info!(
@@ -6099,7 +6238,7 @@ async fn run_validator() {
         .any(|validator| validator.pubkey == validator_pubkey.to_base58());
     let mut needs_on_chain_registration = {
         let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
-            eprintln!("Failed to read validator account: {e}");
+            tracing::error!("Failed to read validator account: {e}");
             None
         });
         if is_genesis_validator {
@@ -6267,7 +6406,9 @@ async fn run_validator() {
                 if let Some(tpk) = treasury_pubkey {
                     if let Ok(Some(mut treasury_acct)) = state.get_account(&tpk) {
                         if treasury_acct.deduct_spendable(grant).is_ok() {
-                            let _ = state.put_account(&tpk, &treasury_acct);
+                            if let Err(e) = state.put_account(&tpk, &treasury_acct) {
+                                tracing::error!("Failed to write account: {e}");
+                            }
                             // Create/update validator account
                             let mut acct = state
                                 .get_account(&validator_pubkey)
@@ -6287,7 +6428,9 @@ async fn run_validator() {
                                 });
                             acct.spores = acct.spores.saturating_add(grant);
                             acct.staked = acct.staked.saturating_add(grant);
-                            let _ = state.put_account(&validator_pubkey, &acct);
+                            if let Err(e) = state.put_account(&validator_pubkey, &acct) {
+                                tracing::error!("Failed to write account: {e}");
+                            }
                             // Add to stake pool
                             // Use [0u8; 32] fingerprint (not machine_fingerprint) so that
                             // joining nodes can replicate the exact same StakeInfo bytes
@@ -6840,9 +6983,12 @@ async fn run_validator() {
                                         },
                                         local_addr,
                                     );
-                                    let _ = peer_mgr_for_sync
+                                    if let Err(e) = peer_mgr_for_sync
                                         .send_to_peer(peer_addr, request_msg)
-                                        .await;
+                                        .await
+                                    {
+                                        tracing::warn!("sync chunk request to peer failed: {e}");
+                                    }
                                 }
                                 chunk_start = chunk_end + 1;
                                 chunk_idx += 1;
@@ -7881,23 +8027,32 @@ async fn run_validator() {
                                         ];
                                         for (asset, price) in oracle_feeds {
                                             let price_key = format!("price_{}", asset);
-                                            let _ = state_for_blocks.put_contract_storage(
+                                            if let Err(e) = state_for_blocks.put_contract_storage(
                                                 &oracle_pk,
                                                 price_key.as_bytes(),
                                                 &price.to_le_bytes(),
-                                            );
+                                            ) {
+                                                tracing::error!(
+                                                    "Failed to replicate oracle price for {}: {e}",
+                                                    asset
+                                                );
+                                            }
                                             let ts_key = format!("price_{}_ts", asset);
-                                            let _ = state_for_blocks.put_contract_storage(
+                                            if let Err(e) = state_for_blocks.put_contract_storage(
                                                 &oracle_pk,
                                                 ts_key.as_bytes(),
                                                 &block.header.timestamp.to_le_bytes(),
-                                            );
+                                            ) {
+                                                tracing::error!("Failed to replicate oracle timestamp for {}: {e}", asset);
+                                            }
                                             let dec_key = format!("price_{}_dec", asset);
-                                            let _ = state_for_blocks.put_contract_storage(
+                                            if let Err(e) = state_for_blocks.put_contract_storage(
                                                 &oracle_pk,
                                                 dec_key.as_bytes(),
                                                 &[ORACLE_DECIMALS],
-                                            );
+                                            ) {
+                                                tracing::error!("Failed to replicate oracle decimals for {}: {e}", asset);
+                                            }
                                         }
                                         info!(
                                             "  📡 [sync] Replicated RECONCILE oracle price feeds"
@@ -8450,12 +8605,24 @@ async fn run_validator() {
                                             info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
                                             // Update finality tracker + persist to StateStore
                                             if finality_for_blocks.mark_confirmed(block_slot) {
-                                                let _ = state_for_blocks.set_last_confirmed_slot(
-                                                    finality_for_blocks.confirmed_slot(),
-                                                );
-                                                let _ = state_for_blocks.set_last_finalized_slot(
-                                                    finality_for_blocks.finalized_slot(),
-                                                );
+                                                if let Err(e) = state_for_blocks
+                                                    .set_last_confirmed_slot(
+                                                        finality_for_blocks.confirmed_slot(),
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "Failed to persist confirmed slot: {e}"
+                                                    );
+                                                }
+                                                if let Err(e) = state_for_blocks
+                                                    .set_last_finalized_slot(
+                                                        finality_for_blocks.finalized_slot(),
+                                                    )
+                                                {
+                                                    tracing::error!(
+                                                        "Failed to persist finalized slot: {e}"
+                                                    );
+                                                }
                                             }
                                         }
                                         drop(pool);
@@ -8682,9 +8849,12 @@ async fn run_validator() {
                             for (peer_addr, _) in peer_infos.iter().take(3) {
                                 let meta_request =
                                     P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
-                                let _ = peer_mgr_for_sync
+                                if let Err(e) = peer_mgr_for_sync
                                     .send_to_peer(peer_addr, meta_request)
-                                    .await;
+                                    .await
+                                {
+                                    tracing::warn!("checkpoint meta request to peer failed: {e}");
+                                }
                             }
                             // The CheckpointMetaResponse handler will trigger
                             // StateSnapshotRequest downloads. After all chunks
@@ -9317,10 +9487,16 @@ async fn run_validator() {
                         );
                         // Update finality tracker + persist to StateStore
                         if finality_for_votes.mark_confirmed(vote.slot) {
-                            let _ = state_for_votes
-                                .set_last_confirmed_slot(finality_for_votes.confirmed_slot());
-                            let _ = state_for_votes
-                                .set_last_finalized_slot(finality_for_votes.finalized_slot());
+                            if let Err(e) = state_for_votes
+                                .set_last_confirmed_slot(finality_for_votes.confirmed_slot())
+                            {
+                                tracing::error!("Failed to persist confirmed slot from vote: {e}");
+                            }
+                            if let Err(e) = state_for_votes
+                                .set_last_finalized_slot(finality_for_votes.finalized_slot())
+                            {
+                                tracing::error!("Failed to persist finalized slot from vote: {e}");
+                            }
                         }
                     } else {
                         info!(
@@ -10653,7 +10829,9 @@ async fn run_validator() {
                         };
 
                         // Clean up staging DB
-                        let _ = std::fs::remove_dir_all(&staging_dir);
+                        if let Err(e) = std::fs::remove_dir_all(&staging_dir) {
+                            tracing::warn!("failed to clean up staging dir: {e}");
+                        }
 
                         if !staging_ok {
                             staged_snapshot_entries.clear();
@@ -11628,7 +11806,9 @@ async fn run_validator() {
 
             let vs_snapshot = vs.clone();
             drop(vs);
-            let _ = state_for_downtime.save_validator_set(&vs_snapshot);
+            if let Err(e) = state_for_downtime.save_validator_set(&vs_snapshot) {
+                tracing::error!("Failed to save validator set in downtime handler: {e}");
+            }
         }
     });
 
@@ -12256,14 +12436,18 @@ async fn run_validator() {
                 }
                 warn!("⚠️  Registration not confirmed after 10 minutes — marker exists but tx may have been lost");
                 // Remove stale marker to allow fresh submission
-                let _ = std::fs::remove_file(&marker_path);
+                if let Err(e) = std::fs::remove_file(&marker_path) {
+                    tracing::warn!("failed to remove stale marker: {e}");
+                }
             }
 
             // Check bootstrap peer's RPC (catches restart after tx landed but before sync)
             if check_remote_registration(&http_client, &bootstrap_rpc_url).await {
                 info!("✅ Validator already registered on bootstrap peer — waiting for sync");
                 // Write marker so next restart doesn't re-check
-                let _ = std::fs::write(&marker_path, "registered-remotely\n");
+                if let Err(e) = std::fs::write(&marker_path, "registered-remotely\n") {
+                    tracing::warn!("failed to write registration marker: {e}");
+                }
                 for wait in 1..=300u32 {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     if is_registered(&state_for_register) {
@@ -13851,8 +14035,8 @@ async fn execute_consensus_actions(
             emit_program_and_nft_events(state, ws_event_tx, &block);
 
             // Broadcast block event to WebSocket subscribers
-            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Block(block.clone()));
-            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Slot(height));
+            drop(ws_event_tx.send(lichen_rpc::ws::Event::Block(block.clone())));
+            drop(ws_event_tx.send(lichen_rpc::ws::Event::Slot(height)));
 
             // DEX events + analytics bridge + SL/TP triggers
             {
@@ -13877,7 +14061,7 @@ async fn execute_consensus_actions(
             // Finality tracking
             {
                 let finality = finality_tracker.clone();
-                let _ = finality.mark_confirmed(height);
+                finality.mark_confirmed(height);
             }
 
             // Remove included transactions from mempool
