@@ -1697,7 +1697,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updatePairStats(pair); updateTickerDisplay(); renderPairList();
         await Promise.all([loadOrderBook(), loadRecentTrades()]);
         subscribePair(pair.pairId);
-        if (tvWidget?.activeChart) { try { tvWidget.activeChart().setSymbol(pair.id, () => { }); } catch { drawChart(); } } else drawChart();
+        if (tvWidget?.activeChart && !_tvSymbolChanging) { try { tvWidget.activeChart().setSymbol(pair.id, () => { }); } catch { drawChart(); } } else if (!tvWidget?.activeChart) drawChart();
         // Update margin mode availability for new pair
         if (state.tradeMode === 'margin' && !isMarginEnabledForActivePair()) {
             setTradeMode('spot', { notifyOnBlocked: true });
@@ -1980,6 +1980,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let tvRetryCount = 0;
+    let _tvSymbolChanging = false;
     function initTradingView() {
         const el = document.getElementById('tvChartContainer');
         if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; if (++tvRetryCount < 5) setTimeout(initTradingView, 5000); return; }
@@ -1990,7 +1991,18 @@ document.addEventListener('DOMContentLoaded', () => {
             disabled_features: ['header_compare', 'header_undo_redo', 'go_to_date', 'use_localstorage_for_settings', 'study_templates'],
             enabled_features: ['side_toolbar_in_fullscreen_mode', 'header_symbol_search'],
         });
-        tvWidget.onChartReady(() => { tvWidget.activeChart().onSymbolChanged().subscribe(null, () => { const s = tvWidget.activeChart().symbol(); const p = pairs.find(x => x.id === s || ('Lichen:' + x.id) === s); if (p && p.id !== state.activePair?.id) selectPair(p); }); });
+        tvWidget.onChartReady(() => {
+            tvWidget.activeChart().onSymbolChanged().subscribe(null, () => {
+                const raw = tvWidget.activeChart().symbol();
+                // Strip exchange prefix if present (e.g. "Lichen:LICN/lUSD" → "LICN/lUSD")
+                const s = raw.replace(/^[^:]+:/, '');
+                const p = pairs.find(x => x.id === s || x.id === raw);
+                if (p && p.id !== state.activePair?.id) {
+                    _tvSymbolChanging = true;
+                    selectPair(p).finally(() => { _tvSymbolChanging = false; });
+                }
+            });
+        });
     }
 
     function drawChart() { if (realtimeCallback && state.candles.length) { const l = state.candles[state.candles.length - 1]; const ms = resolutionToMs(activeResolution); realtimeCallback({ time: Math.floor(l.time / ms) * ms, open: l.open, high: l.high, low: l.low, close: l.close, volume: l.volume }); } }

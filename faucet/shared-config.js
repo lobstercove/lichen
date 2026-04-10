@@ -45,15 +45,16 @@ const LICHEN_CONFIG = (() => {
     };
 
     // ── Visible Networks (production hides local-*) ─────────────────────
+    const productionPrimaryNetwork = 'testnet';
     const visibleNetworks = {};
     for (const [key, net] of Object.entries(networks)) {
-        if (!isProduction || !net.local) {
+        if (!isProduction || (!net.local && key !== 'mainnet')) {
             visibleNetworks[key] = net;
         }
     }
 
     // ── Default Network ─────────────────────────────────────────────────
-    const defaultNetwork = isProduction ? 'testnet' : 'local-testnet';
+    const defaultNetwork = isProduction ? productionPrimaryNetwork : 'local-testnet';
 
     const INCIDENT_STATUS_RPC_METHOD = 'getIncidentStatus';
     const INCIDENT_BANNER_ID = 'lichen-incident-banner';
@@ -71,11 +72,6 @@ const LICHEN_CONFIG = (() => {
     let incidentBannerRequestId = 0;
 
     function hasSavedIncidentNetworkSelection() {
-        const faucetNetwork = localStorage.getItem('lichen_faucet_network');
-        if (faucetNetwork) {
-            return true;
-        }
-
         if (window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY) {
             const stored = localStorage.getItem(window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY);
             if (stored) {
@@ -121,7 +117,11 @@ const LICHEN_CONFIG = (() => {
     /** Resolve a network key, falling back to the default if invalid. */
     function resolveNetwork(name) {
         if (name === 'local') return networks['local-testnet'] ? 'local-testnet' : defaultNetwork;
-        return networks[name] ? name : defaultNetwork;
+        const resolved = networks[name] ? name : defaultNetwork;
+        if (isProduction && resolved === 'mainnet') {
+            return productionPrimaryNetwork;
+        }
+        return resolved;
     }
 
     /** Get RPC URL for a given network (or current). */
@@ -191,10 +191,6 @@ const LICHEN_CONFIG = (() => {
     function incidentBannerNetwork(explicitNetwork) {
         if (explicitNetwork) {
             return resolveNetwork(explicitNetwork);
-        }
-
-        if (isProduction) {
-            return currentNetwork('lichen_faucet_network');
         }
 
         if (window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY) {
