@@ -269,6 +269,10 @@ cargo run --release -p lichen-cli -- balance <ADDRESS>
 
 # Transfer LICN
 cargo run --release -p lichen-cli -- transfer --to <ADDRESS> --amount 10
+
+# Export/decrypt a validator keypair (requires LICHEN_KEYPAIR_PASSWORD)
+lichen identity export --keypair /path/to/validator-keypair.json
+lichen identity export --keypair /path/to/validator-keypair.json --reveal-seed
 ```
 
 ---

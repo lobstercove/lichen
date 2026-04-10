@@ -7,6 +7,33 @@
 use lichen_core::{Block, FeeConfig, Hash, Mempool, Pubkey, StateStore, TxProcessor};
 use tracing::{debug, info};
 
+/// Compute the minimum delay (in milliseconds) the proposer should wait
+/// after committing before building the next block, so that wall-clock
+/// time has advanced past `parent_timestamp + 1`.
+///
+/// Block timestamps are second-precision and must be strictly increasing
+/// (`proposed_ts > parent_ts`). If a proposer completes a round faster
+/// than one second (e.g. solo BFT or low-latency 3-of-3 commit), the
+/// `parent_timestamp + 1` floor in `build_block` would push the next
+/// block's timestamp ahead of wall clock, causing cumulative drift.
+/// Joining validators reject blocks whose timestamps exceed wall clock
+/// by more than 120 s.
+///
+/// This function returns:
+///   `max(base_delay_ms, millis_until_wall_clock ≥ parent_ts + 1) + 50`
+///
+/// The +50 ms pad absorbs timer jitter so we never wake up 1 ms early.
+pub fn wall_clock_safe_delay(state: &StateStore, parent_hash: &Hash, base_delay_ms: u64) -> u64 {
+    let parent_ts = resolve_parent_timestamp(state, parent_hash).unwrap_or(0);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let target_ms = (parent_ts + 1) * 1000; // next block needs ts ≥ parent+1
+    let catch_up_ms = target_ms.saturating_sub(now_ms);
+    base_delay_ms.max(catch_up_ms).saturating_add(50)
+}
+
 fn resolve_parent_timestamp(state: &StateStore, parent_hash: &Hash) -> Option<u64> {
     let parent_slot = state.get_last_slot().ok()?;
     let parent_block = if parent_slot == 0 {
@@ -247,5 +274,49 @@ mod tests {
 
         assert!(processed.is_empty());
         assert_eq!(block.header.timestamp, parent_timestamp.saturating_add(1));
+    }
+
+    #[test]
+    fn wall_clock_safe_delay_pads_when_parent_timestamp_ahead() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Create a parent block whose timestamp is at wall clock (i.e. now)
+        let wall_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let parent = Block::genesis(Hash::hash(b"safe-delay"), wall_now, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+
+        // With parent at wall_now, next block needs ts >= wall_now+1,
+        // so we need to wait ~1000ms from now. base_delay of 400ms
+        // should be overridden by the catch-up.
+        let delay = wall_clock_safe_delay(&state, &parent_hash, 400);
+        // Must be at least 400ms (base), and should include catch-up + 50ms pad
+        assert!(delay >= 400, "delay {} should be >= base 400", delay);
+        // Should not be absurdly large (parent is at now, not far in the future)
+        assert!(delay <= 1200, "delay {} should be <= 1200ms", delay);
+    }
+
+    #[test]
+    fn wall_clock_safe_delay_returns_base_when_clock_already_ahead() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Create a parent block whose timestamp is 5s in the past
+        let wall_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let parent = Block::genesis(Hash::hash(b"old-parent"), wall_now - 5, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+
+        // Wall clock is already past parent+1, so base_delay dominates
+        let delay = wall_clock_safe_delay(&state, &parent_hash, 800);
+        // Should be base (800) + 50 pad = 850
+        assert_eq!(delay, 850);
     }
 }

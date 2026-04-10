@@ -80,6 +80,7 @@
                 <div class="sidebar-heading">Identity</div>
                 <a href="#identity-new" class="sidebar-link">identity new</a>
                 <a href="#identity-show" class="sidebar-link">identity show</a>
+                <a href="#identity-export" class="sidebar-link">identity export</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -590,6 +591,73 @@ lichen-cli 0.9.2 (lichen)</code></pre>
 <i class="fa-solid fa-location-dot"></i> Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 <i class="fa-solid fa-lock"></i> EVM Address: 0x7a3b...9f2e
 <i class="fa-solid fa-file"></i> Keypair:     ~/.lichen/keypairs/id.json</code></pre>
+                </div>
+            </div>
+
+            <!-- identity export -->
+            <div class="cmd-section" id="identity-export">
+                <h3><code>lichen identity export</code></h3>
+                <p>Decrypt and export a keypair file. Useful for validators who need to access their wallet address or
+                    import their key into the browser wallet. Requires <code>LICHEN_KEYPAIR_PASSWORD</code> to be set
+                    for encrypted keypair files.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>lichen identity export [--keypair &lt;path&gt;] [--reveal-seed]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr>
+                            <th>Flag</th>
+                            <th>Type</th>
+                            <th>Default</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
+                            <td>Keypair file to decrypt and export</td>
+                        </tr>
+                        <tr>
+                            <td><code>--reveal-seed</code></td>
+                            <td>flag</td>
+                            <td><code>false</code></td>
+                            <td>Also print the 32-byte private seed in hex. Handle with extreme care.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code># Set the password first
+export LICHEN_KEYPAIR_PASSWORD=$(grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-testnet | cut -d= -f2-)
+
+$ lichen identity export --keypair /var/lib/lichen/state-testnet/validator-keypair.json
+
+&#x1f99e; Keypair Export
+&#x1f4c4; File:    /var/lib/lichen/state-testnet/validator-keypair.json
+&#x1f4cd; Pubkey:  8kJQ9VYG8e51TuVd5LVUsXQWfaD7zG5cEToauCW5LEj
+&#x1f510; EVM:     0x7a3b...9f2e
+
+# JSON output for agents:
+$ lichen --output json identity export --keypair /var/lib/lichen/state-testnet/validator-keypair.json
+{"pubkey":"8kJQ9...","evm_address":"0x7a3b...","file":"...","encrypted":true}</code></pre>
+                </div>
+
+                <div class="note">
+                    <strong>Security:</strong> The <code>--reveal-seed</code> flag outputs the raw private key material.
+                    Anyone with this seed controls the account. Never share it, log it, or store it in plaintext.
+                    Use it only to import into a secure wallet or for one-time backup.
                 </div>
             </div>
 
