@@ -958,3 +958,535 @@ ls -l deploy-manifest.json signed-metadata-manifest-testnet.json
 ```
 
 If this document and the scripts ever disagree, trust the scripts first and then update this runbook immediately.
+
+---
+
+## Oracle price feed configuration
+
+The oracle price feeder is **built into the validator binary** — there is no separate oracle service or market-maker process. Every running `lichen-validator` instance spawns `spawn_oracle_price_feeder()` which:
+
+1. Opens a WebSocket to Binance for real-time aggregate trades (`solusdt`, `ethusdt`, `bnbusdt`).
+2. Falls back to REST polling (`/api/v3/ticker/price`) every 5 seconds if the WS connection drops.
+3. Stores prices in shared atomics (`SharedOraclePrices`).
+4. Submits oracle-attestation transactions (system opcode 30) into the mempool every 5 seconds.
+5. Broadcasts WS ticker and candle events to connected DEX frontend clients.
+
+### Env vars
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LICHEN_ORACLE_WS_URL` | `wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade` | Binance WebSocket stream |
+| `LICHEN_ORACLE_REST_URL` | `https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]` | Binance REST fallback |
+| `LICHEN_DISABLE_ORACLE` | unset | Set to `1` to disable the oracle entirely |
+
+### US VPS geo-block
+
+`api.binance.com` and `stream.binance.com` return HTTP 451 (Unavailable For Legal Reasons) from US IP addresses. If the validator is hosted on a US VPS, you **must** override both URLs to use Binance US:
+
+```
+LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade
+LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]
+```
+
+`deploy/setup.sh` auto-detects OVH US hosts (IP prefix `15.204.*`) and writes these overrides automatically. For other US hosting providers, manually uncomment or add the env vars in `/etc/lichen/env-<net>`.
+
+### Diagnosing silent oracle failures
+
+If the DEX shows static prices that never move:
+
+1. Check validator logs for Binance connection errors:
+   ```bash
+   sudo journalctl -u lichen-validator-testnet --no-pager | grep -i 'oracle\|binance\|price' | tail -20
+   ```
+2. Test the REST endpoint from the VPS:
+   ```bash
+   curl -sf 'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT"]' || echo "BLOCKED"
+   curl -sf 'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT"]' || echo "BLOCKED"
+   ```
+3. Verify env vars are loaded:
+   ```bash
+   grep ORACLE /etc/lichen/env-testnet
+   ```
+
+### Genesis price seeding
+
+The genesis builder reads `GENESIS_SOL_USD`, `GENESIS_ETH_USD`, and `GENESIS_BNB_USD` env vars to seed initial oracle prices into the genesis state. If `api.binance.com` is blocked on the genesis host, fetch the prices from a trusted fallback before running `lichen-genesis`:
+
+```bash
+# From a non-US machine or your local dev box:
+curl -s 'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]'
+# Then export on the genesis host:
+export GENESIS_SOL_USD=170.50
+export GENESIS_ETH_USD=2650.00
+export GENESIS_BNB_USD=620.00
+```
+
+---
+
+## Release signing key management (critical)
+
+### The canonical signing key
+
+The repo ships `keypairs/release-signing-key.json` — this is the **only** signing keypair whose public key (`8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`) is hardcoded in every frontend portal's `shared/utils.js` as `LICHEN_SIGNED_METADATA_SIGNERS`.
+
+### The fatal mistake: generating keys on VPS
+
+**NEVER run `scripts/generate-release-keys.sh` on a VPS.** That script creates a brand-new keypair with a different public key. If you use the VPS-generated key to sign metadata, every frontend portal will reject the manifest because the signer doesn't match the hardcoded expected signer.
+
+### Correct signing key deployment
+
+Copy the repo key to each VPS:
+
+```bash
+# From your local repo checkout:
+scp -P 2222 keypairs/release-signing-key.json ubuntu@<VPS_IP>:~/release-signing-key.json
+
+# On the VPS:
+sudo install -m 640 -o root -g lichen \
+  ~/release-signing-key.json \
+  /etc/lichen/secrets/release-signing-keypair-testnet.json
+rm ~/release-signing-key.json
+```
+
+If the US VPS has SFTP disabled:
+
+```bash
+cat keypairs/release-signing-key.json | ssh -p 2222 ubuntu@15.204.229.189 'cat > ~/release-signing-key.json'
+ssh -p 2222 ubuntu@15.204.229.189 'sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json && rm ~/release-signing-key.json'
+```
+
+### Verification
+
+After deploying, verify the signed metadata manifest uses the expected signer:
+
+```bash
+curl -s http://127.0.0.1:8899 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}' \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+env = d['result']['envelope']
+print(f\"Signer: {env['signer']}\")
+assert env['signer'] == '8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk', 'WRONG SIGNER KEY'
+p = json.loads(env['payload'])
+print(f\"Symbols: {len(p.get('symbol_registry', []))}\")"
+```
+
+---
+
+## Secrets distribution for joining validators
+
+When joining EU and SEA validators to an existing genesis, these files must be copied from the genesis VPS:
+
+| File | Source | Purpose |
+|------|--------|---------|
+| `custody-master-seed-testnet.txt` | Genesis VPS `/etc/lichen/secrets/` | Custody HD wallet root |
+| `custody-deposit-seed-testnet.txt` | Genesis VPS `/etc/lichen/secrets/` | Custody deposit address derivation |
+| `release-signing-keypair-testnet.json` | Repo `keypairs/release-signing-key.json` | Signed metadata manifest signing |
+| `signed-metadata-manifest-testnet.json` | Genesis VPS `/etc/lichen/` | Pre-generated signed manifest |
+
+Copy procedure (genesis VPS → joining VPS):
+
+```bash
+# From genesis VPS:
+scp -P 2222 /etc/lichen/secrets/custody-master-seed-testnet.txt ubuntu@<JOINING_IP>:~/
+scp -P 2222 /etc/lichen/secrets/custody-deposit-seed-testnet.txt ubuntu@<JOINING_IP>:~/
+scp -P 2222 /etc/lichen/signed-metadata-manifest-testnet.json ubuntu@<JOINING_IP>:~/
+
+# On joining VPS:
+sudo install -m 640 -o root -g lichen ~/custody-master-seed-testnet.txt /etc/lichen/secrets/
+sudo install -m 640 -o root -g lichen ~/custody-deposit-seed-testnet.txt /etc/lichen/secrets/
+sudo install -m 640 -o root -g lichen ~/signed-metadata-manifest-testnet.json /etc/lichen/
+rm ~/custody-master-seed-testnet.txt ~/custody-deposit-seed-testnet.txt ~/signed-metadata-manifest-testnet.json
+```
+
+---
+
+## Complete clean-slate VPS redeployment checklist
+
+This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the local 3-validator setup exactly.
+
+### Prerequisites
+
+- Latest code committed and pushed
+- All CI checks green
+- SSH access to all 3 VPSes (port 2222, user `ubuntu`)
+- `keypairs/release-signing-key.json` present in repo
+- `LICHEN_KEYPAIR_PASSWORD` known (or will be auto-generated by setup.sh)
+
+### Phase 1: Stop everything (all 3 VPSes)
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Stopping $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    sudo systemctl stop lichen-faucet 2>/dev/null || true
+    sudo systemctl stop lichen-custody 2>/dev/null || true
+    sudo systemctl stop lichen-validator-testnet 2>/dev/null || true
+    echo "Services stopped"
+  '
+done
+```
+
+### Phase 2: Flush state (all 3 VPSes)
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Flushing $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    sudo rm -rf /var/lib/lichen/state-testnet
+    sudo rm -rf /var/lib/lichen/.lichen
+    sudo rm -rf /var/lib/lichen/custody-db
+    sudo rm -f /etc/lichen/signed-metadata-manifest-testnet.json
+    sudo rm -f /var/lib/lichen/faucet-keypair-testnet.json
+    sudo rm -f /var/lib/lichen/airdrops.json
+    echo "State flushed"
+  '
+done
+```
+
+### Phase 3: Rsync code to all VPSes
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Syncing to $VPS ==="
+  rsync -az --delete \
+    --exclude '.git' \
+    --exclude 'target' \
+    --exclude 'compiler/target' \
+    --exclude 'data' \
+    --exclude 'logs' \
+    --exclude 'node_modules' \
+    --exclude 'dist' \
+    -e 'ssh -p 2222' \
+    ./ ubuntu@$VPS:~/lichen/
+done
+```
+
+### Phase 4: Build on all VPSes
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Building on $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    cd ~/lichen
+    source ~/.cargo/env
+    # Touch source files so cargo sees them as newer than stale remote artifacts
+    find . \( -path ./target -o -path ./compiler/target -o -path ./node_modules \) -prune -o \
+      -type f \( -name "*.rs" -o -name "Cargo.toml" -o -name "Cargo.lock" \) -exec touch {} +
+    cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen-custody --bin lichen --bin zk-prove
+    ./scripts/build-all-contracts.sh
+    echo "Build complete"
+  '
+done
+```
+
+### Phase 5: Run setup.sh on all VPSes
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Setup on $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    cd ~/lichen
+    sudo bash deploy/setup.sh testnet
+  '
+done
+```
+
+This auto-detects the US VPS and configures Binance US oracle endpoints.
+
+### Phase 6: Copy signing key to all VPSes
+
+```bash
+for VPS in 37.59.97.61 15.235.142.253; do
+  scp -P 2222 keypairs/release-signing-key.json ubuntu@$VPS:~/release-signing-key.json
+  ssh -p 2222 ubuntu@$VPS '
+    sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json
+    rm ~/release-signing-key.json
+  '
+done
+
+# US VPS (SFTP may be disabled):
+cat keypairs/release-signing-key.json | ssh -p 2222 ubuntu@15.204.229.189 'cat > ~/release-signing-key.json'
+ssh -p 2222 ubuntu@15.204.229.189 '
+  sudo install -m 640 -o root -g lichen ~/release-signing-key.json /etc/lichen/secrets/release-signing-keypair-testnet.json
+  rm ~/release-signing-key.json
+'
+```
+
+### Phase 7: Genesis on US VPS (primary validator)
+
+```bash
+ssh -p 2222 ubuntu@15.204.229.189 '
+  cd ~/lichen
+  source ~/.cargo/env
+
+  # Start once to generate validator keypair
+  sudo systemctl start lichen-validator-testnet
+  sleep 3
+  VALIDATOR_PUBKEY=$(sudo python3 -c "import json; print(json.load(open(\"/var/lib/lichen/state-testnet/validator-keypair.json\"))[\"publicKeyBase58\"])")
+  echo "Validator pubkey: $VALIDATOR_PUBKEY"
+  sudo systemctl stop lichen-validator-testnet
+
+  # Preserve validator keypair, wipe state
+  sudo install -D -m 600 -o lichen -g lichen \
+    /var/lib/lichen/state-testnet/validator-keypair.json \
+    /var/lib/lichen/validator-keypair-testnet.json
+  sudo rm -rf /var/lib/lichen/state-testnet
+  sudo rm -rf /var/lib/lichen/.lichen
+  sudo install -d -m 750 -o lichen -g lichen /var/lib/lichen/state-testnet
+  sudo install -m 600 -o lichen -g lichen \
+    /var/lib/lichen/validator-keypair-testnet.json \
+    /var/lib/lichen/state-testnet/validator-keypair.json
+
+  # Prepare wallet
+  LICHEN_KEYPAIR_PASSWORD=$(grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-testnet | cut -d= -f2-)
+  export LICHEN_KEYPAIR_PASSWORD
+  sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
+    LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
+    lichen-genesis --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
+
+  # Fetch genesis prices (use binance.us for US VPS)
+  PRICE_JSON=$(curl -sf "https://api.binance.us/api/v3/ticker/price?symbols=[\"SOLUSDT\",\"ETHUSDT\",\"BNBUSDT\"]")
+  export GENESIS_SOL_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t[\"price\"]) for t in json.load(sys.stdin) if t[\"symbol\"]==\"SOLUSDT\"]")
+  export GENESIS_ETH_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t[\"price\"]) for t in json.load(sys.stdin) if t[\"symbol\"]==\"ETHUSDT\"]")
+  export GENESIS_BNB_USD=$(echo "$PRICE_JSON" | python3 -c "import sys,json; [print(t[\"price\"]) for t in json.load(sys.stdin) if t[\"symbol\"]==\"BNBUSDT\"]")
+
+  # Create genesis DB
+  sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
+    LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
+    GENESIS_SOL_USD=$GENESIS_SOL_USD GENESIS_ETH_USD=$GENESIS_ETH_USD GENESIS_BNB_USD=$GENESIS_BNB_USD \
+    lichen-genesis --network testnet \
+    --db-path /var/lib/lichen/state-testnet \
+    --wallet-file /var/lib/lichen/genesis-keys-testnet/genesis-wallet.json \
+    --initial-validator "$VALIDATOR_PUBKEY"
+
+  # Start the genesis validator
+  sudo systemctl start lichen-validator-testnet
+  sleep 5
+  curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
+'
+```
+
+### Phase 8: Post-genesis on US VPS
+
+```bash
+ssh -p 2222 ubuntu@15.204.229.189 '
+  cd ~/lichen
+
+  # Run vps-post-genesis to copy keypairs to system paths
+  sudo bash scripts/vps-post-genesis.sh testnet
+
+  # Make the release signing key readable for first-boot-deploy
+  sudo cp /etc/lichen/secrets/release-signing-keypair-testnet.json ~/release-signing-keypair-testnet.json
+  sudo chown $(whoami):$(whoami) ~/release-signing-keypair-testnet.json
+  chmod 600 ~/release-signing-keypair-testnet.json
+
+  # Run first-boot-deploy
+  SIGNED_METADATA_KEYPAIR=$HOME/release-signing-keypair-testnet.json \
+    DEPLOY_NETWORK=testnet ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:8899 --skip-build
+
+  rm -f ~/release-signing-keypair-testnet.json
+
+  # Install the signed metadata manifest
+  sudo install -m 640 -o root -g lichen \
+    ~/lichen/signed-metadata-manifest-testnet.json \
+    /etc/lichen/signed-metadata-manifest-testnet.json
+
+  # Restart validator to pick up manifest
+  sudo systemctl restart lichen-validator-testnet
+  sleep 3
+
+  # Verify
+  curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); e=d[\"result\"][\"envelope\"]; p=json.loads(e[\"payload\"]); print(f\"Signer: {e[\"signer\"]}, Symbols: {len(p.get(\"symbol_registry\",[]))}\")"
+
+  # Provision custody seeds
+  sudo bash -c "openssl rand -hex 32 > /etc/lichen/secrets/custody-master-seed-testnet.txt"
+  sudo bash -c "openssl rand -hex 32 > /etc/lichen/secrets/custody-deposit-seed-testnet.txt"
+  sudo chown root:lichen /etc/lichen/secrets/custody-*-seed-testnet.txt
+  sudo chmod 640 /etc/lichen/secrets/custody-*-seed-testnet.txt
+
+  # Start custody and faucet
+  sudo systemctl start lichen-custody
+  sudo systemctl start lichen-faucet
+'
+```
+
+### Phase 9: Copy state and secrets to joining VPSes
+
+```bash
+# Copy genesis state from US to EU and SEA
+for VPS in 37.59.97.61 15.235.142.253; do
+  echo "=== Copying state to $VPS ==="
+
+  # Copy state DB
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo tar -cf - /var/lib/lichen/state-testnet" \
+    | ssh -p 2222 ubuntu@$VPS "sudo tar -xf - -C /"
+
+  # Copy secrets
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/secrets/custody-master-seed-testnet.txt" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/secrets/custody-master-seed-testnet.txt && chown root:lichen /etc/lichen/secrets/custody-master-seed-testnet.txt && chmod 640 /etc/lichen/secrets/custody-master-seed-testnet.txt'"
+
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/secrets/custody-deposit-seed-testnet.txt" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/secrets/custody-deposit-seed-testnet.txt && chown root:lichen /etc/lichen/secrets/custody-deposit-seed-testnet.txt && chmod 640 /etc/lichen/secrets/custody-deposit-seed-testnet.txt'"
+
+  # Copy signed metadata manifest
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/signed-metadata-manifest-testnet.json" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/signed-metadata-manifest-testnet.json && chown root:lichen /etc/lichen/signed-metadata-manifest-testnet.json && chmod 640 /etc/lichen/signed-metadata-manifest-testnet.json'"
+
+  # Copy custody treasury keypair
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /etc/lichen/custody-treasury-testnet.json" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /etc/lichen/custody-treasury-testnet.json && chown lichen:lichen /etc/lichen/custody-treasury-testnet.json && chmod 600 /etc/lichen/custody-treasury-testnet.json'"
+
+  # Copy faucet keypair
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /var/lib/lichen/faucet-keypair-testnet.json" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /var/lib/lichen/faucet-keypair-testnet.json && chown lichen:lichen /var/lib/lichen/faucet-keypair-testnet.json && chmod 600 /var/lib/lichen/faucet-keypair-testnet.json'"
+
+  # Remove the genesis validator keypair from copied state — each joining validator needs its own
+  ssh -p 2222 ubuntu@$VPS '
+    sudo rm -f /var/lib/lichen/state-testnet/validator-keypair.json
+    sudo chown -R lichen:lichen /var/lib/lichen/state-testnet
+  '
+done
+```
+
+### Phase 10: Start joining VPSes
+
+```bash
+for VPS in 37.59.97.61 15.235.142.253; do
+  echo "=== Starting $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    sudo systemctl start lichen-validator-testnet
+    sleep 5
+    curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
+    echo ""
+    sudo systemctl start lichen-custody
+    sudo systemctl start lichen-faucet
+    echo "Services started"
+  '
+done
+```
+
+### Phase 11: Verify everything
+
+```bash
+for VPS in 15.204.229.189 37.59.97.61 15.235.142.253; do
+  echo "=== Verifying $VPS ==="
+  ssh -p 2222 ubuntu@$VPS '
+    echo "--- Health ---"
+    curl -s http://127.0.0.1:8899 -X POST -H "Content-Type: application/json" \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}"
+    echo ""
+    echo "--- Signed Metadata ---"
+    curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}" \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); e=d[\"result\"][\"envelope\"]; p=json.loads(e[\"payload\"]); print(f\"Signer: {e[\"signer\"]}, Symbols: {len(p.get(\"symbol_registry\",[]))}\")" 2>/dev/null || echo "MANIFEST MISSING"
+    echo ""
+    echo "--- Pairs ---"
+    curl -s http://127.0.0.1:8899/api/v1/pairs | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{len(d)} pairs\")" 2>/dev/null || echo "PAIRS MISSING"
+    echo ""
+    echo "--- Oracle Prices ---"
+    curl -s http://127.0.0.1:8899 -H "Content-Type: application/json" \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getOraclePrices\",\"params\":[]}" 2>/dev/null | head -c 200
+    echo ""
+  '
+  echo ""
+done
+```
+
+Also verify external endpoints:
+
+```bash
+for HOST in testnet-rpc.lichen.network; do
+  echo "=== External: $HOST ==="
+  curl -s "https://$HOST/" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}'
+  echo ""
+  curl -s "https://$HOST/" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}' \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); e=d['result']['envelope']; print(f\"Signer: {e['signer']}\")" 2>/dev/null || echo "MANIFEST MISSING"
+  echo ""
+done
+```
+
+---
+
+## Deployment postmortem: known pitfalls
+
+This section documents actual deployment failures and their root causes, so they are never repeated.
+
+### Pitfall 1: Release signing key mismatch
+
+**Symptom**: DEX shows "Missing contract addresses", all frontends fail to load token metadata.
+
+**Root cause**: `scripts/generate-release-keys.sh` was run on the VPS, creating a new keypair. The VPS signed the metadata manifest with a different key than what frontends expect.
+
+**Fix**: Always copy `keypairs/release-signing-key.json` from the repo to `/etc/lichen/secrets/release-signing-keypair-testnet.json`. Never generate new keys on VPS.
+
+**Prevention**: `deploy/setup.sh` does not generate signing keys. The operator must provision the canonical key manually.
+
+### Pitfall 2: US VPS oracle geo-block
+
+**Symptom**: DEX prices are static — they load from genesis but never update. Local 3-validator cluster works fine.
+
+**Root cause**: The US VPS at `15.204.229.189` cannot reach `api.binance.com` / `stream.binance.com` (HTTP 451 geo-block). The validator's oracle feeder silently fails, no attestation transactions are submitted, and prices never move.
+
+**Fix**: Set `LICHEN_ORACLE_WS_URL` and `LICHEN_ORACLE_REST_URL` to binance.us endpoints in `/etc/lichen/env-testnet`.
+
+**Prevention**: `deploy/setup.sh` now auto-detects US hosts and writes binance.us overrides.
+
+### Pitfall 3: Stale deploy-manifest.json
+
+**Symptom**: `first-boot-deploy.sh` fails or generates incorrect signed metadata.
+
+**Root cause**: An old `deploy-manifest.json` from a previous deployment was carried into the new rsync. The script detects a mismatch with the live symbol registry.
+
+**Fix**: Delete `deploy-manifest.json` and `signed-metadata-manifest-*.json` from the repo checkout on the VPS before running `first-boot-deploy.sh`.
+
+### Pitfall 4: Cargo not in PATH on VPS
+
+**Symptom**: `cargo build` fails with "command not found" over SSH.
+
+**Root cause**: SSH non-login shells don't source `~/.cargo/env`. Running `ssh host 'cargo build'` fails.
+
+**Fix**: Always prefix with `source ~/.cargo/env` in SSH commands.
+
+### Pitfall 5: SFTP disabled on US VPS
+
+**Symptom**: `scp` fails to the US VPS.
+
+**Root cause**: OVH US VPS has SFTP subsystem disabled in sshd_config.
+
+**Fix**: Use `cat file | ssh host 'cat > remote_file'` for file transfers to US VPS.
+
+### Pitfall 6: Custody permission denied
+
+**Symptom**: `lichen-custody` fails to start with "Permission denied" on seed files.
+
+**Root cause**: Seed files provisioned as `root:root 600` instead of `root:lichen 640`.
+
+**Fix**: Ensure `/etc/lichen/secrets` is `root:lichen 750` and all files inside are `root:lichen 640`.
+
+### Pitfall 7: Missing LICHEN_KEYPAIR_PASSWORD in custody env
+
+**Symptom**: Custody service can't read the encrypted treasury keypair.
+
+**Root cause**: `deploy/setup.sh` writes the password to both `env-testnet` and `custody-env`, but if setup.sh is re-run without preserving the original password, the custody env gets a new password that doesn't match the encrypted keypair.
+
+**Fix**: Setup.sh preserves existing passwords. If you need to change the password, you must re-encrypt all keypair files.
+
+### Pitfall 8: Contract WASM binary mismatch across validators
+
+**Symptom**: Joining validators fail to sync — state root mismatch at genesis block.
+
+**Root cause**: Contracts were rebuilt only on the genesis VPS, producing different WASM hashes than the joining VPSes.
+
+**Fix**: Either (a) rsync pre-built WASM artifacts to all VPSes and never rebuild, or (b) run `./scripts/build-all-contracts.sh` on ALL VPSes before genesis. Verify the bundle hash matches:
+
+```bash
+command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs shasum -a 256 | shasum -a 256
+```

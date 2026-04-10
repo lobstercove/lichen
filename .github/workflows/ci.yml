@@ -137,6 +137,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build validator
         run: cargo build --release --bin lichen-validator
+      - name: Install Node.js dependencies
+        run: npm install
       - name: Start validator in background
         run: |
           ./target/release/lichen-validator &

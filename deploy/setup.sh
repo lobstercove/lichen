@@ -634,7 +634,29 @@ LICHEN_SERVICE_FLEET_STATUS_FILE=$SERVICE_FLEET_STATUS_FILE
 # canary rollout is proven.
 LICHEN_EXTRA_ARGS=--auto-update=off
 # LICHEN_ADMIN_TOKEN=your-secret-token-here
+# ── Oracle price-feed overrides ──────────────────────────────────────
+# The built-in oracle defaults to wss://stream.binance.com and
+# https://api.binance.com.  US-based VPSes are geo-blocked from those
+# endpoints; set the binance.us equivalents below.
+# Uncomment and adjust as needed, or leave defaults for non-US hosts.
+# LICHEN_ORACLE_WS_URL=wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade
+# LICHEN_ORACLE_REST_URL=https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]
+# LICHEN_DISABLE_ORACLE=1
 EOF
+
+    # Auto-detect US-hosted VPSes and enable Binance US oracle endpoints.
+    # Binance.com geo-blocks US IPs, so the validator's built-in oracle
+    # feeder would silently fail without this override.
+    case "$CURRENT_HOST_IPV4" in
+        15.204.*)  # OVH US (Hillsboro)
+            upsert_env_value "$ENV_FILE" "LICHEN_ORACLE_WS_URL" \
+                "wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade"
+            upsert_env_value "$ENV_FILE" "LICHEN_ORACLE_REST_URL" \
+                "https://api.binance.us/api/v3/ticker/price?symbols=[\"SOLUSDT\",\"ETHUSDT\",\"BNBUSDT\"]"
+            echo "   🌐 US host detected — oracle endpoints set to binance.us"
+            ;;
+    esac
+
     chmod 600 "$ENV_FILE"
     echo "   ✅ Created $ENV_FILE"
     echo "   ⚠  Provision offline release signing key → $SIGNED_METADATA_KEYPAIR_FILE before first-boot deploy"
