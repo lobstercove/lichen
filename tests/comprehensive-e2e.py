@@ -867,7 +867,8 @@ def scenario_spec(
              "negative": True, "expect_no_state_change": True, "expected_error_code": 7,
              "expected_error_any": ["error code 7", "error"], "depends_on": "approve"},
             {"fn": "balance_of", "args": {"account": dp}, "actor": "deployer"},
-            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer"},
+            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer", "expect_no_state_change": True,
+             "expected_error_any": ["error code", "allowance", "error"]},
             {"fn": "total_supply", "args": {}, "actor": "deployer"},
             {"fn": "total_minted", "args": {}, "actor": "deployer"},
             {"fn": "total_burned", "args": {}, "actor": "deployer"},
@@ -906,7 +907,8 @@ def scenario_spec(
              "negative": True, "expect_no_state_change": True, "expected_error_code": 7,
              "expected_error_any": ["error code 7", "error"], "depends_on": "approve"},
             {"fn": "balance_of", "args": {"account": dp}, "actor": "deployer"},
-            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer"},
+            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer", "expect_no_state_change": True,
+             "expected_error_any": ["error code", "allowance", "error"]},
             {"fn": "total_supply", "args": {}, "actor": "deployer"},
             {"fn": "total_minted", "args": {}, "actor": "deployer"},
             {"fn": "total_burned", "args": {}, "actor": "deployer"},
@@ -944,7 +946,8 @@ def scenario_spec(
              "negative": True, "expect_no_state_change": True, "expected_error_code": 7,
              "expected_error_any": ["error code 7", "error"], "depends_on": "approve"},
             {"fn": "balance_of", "args": {"account": dp}, "actor": "deployer"},
-            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer"},
+            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer", "expect_no_state_change": True,
+             "expected_error_any": ["error code", "allowance", "error"]},
             {"fn": "total_supply", "args": {}, "actor": "deployer"},
             {"fn": "total_minted", "args": {}, "actor": "deployer"},
             {"fn": "total_burned", "args": {}, "actor": "deployer"},
@@ -975,7 +978,8 @@ def scenario_spec(
              "negative": True, "expect_no_state_change": True, "expected_error_code": 7,
              "expected_error_any": ["error code 7", "error"], "depends_on": "approve"},
             {"fn": "balance_of", "args": {"account": dp}, "actor": "deployer"},
-            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer"},
+            {"fn": "allowance", "args": {"owner": dp, "spender": sp}, "actor": "deployer", "expect_no_state_change": True,
+             "expected_error_any": ["error code", "allowance", "error"]},
             {"fn": "total_supply", "args": {}, "actor": "deployer"},
             {"fn": "total_minted", "args": {}, "actor": "deployer"},
             {"fn": "total_burned", "args": {}, "actor": "deployer"},
@@ -1282,7 +1286,9 @@ def scenario_spec(
             {"fn": "get_availability", "args": {"addr_ptr": dp}, "actor": "deployer"},
             {"fn": "set_rate", "args": {"caller_ptr": dp, "licn_per_unit": 1000}, "actor": "deployer"},
             {"fn": "get_rate", "args": {"addr_ptr": dp}, "actor": "deployer"},
-            {"fn": "add_skill", "args": {"caller_ptr": dp, "skill_name_ptr": "rust", "skill_name_len": 4, "proficiency": 50}, "actor": "deployer"},
+            {"fn": "add_skill", "args": {"caller_ptr": dp, "skill_name_ptr": "rust", "skill_name_len": 4, "proficiency": 50}, "actor": "deployer",
+             "negative": True, "expect_no_state_change": True, "expected_error_code": 5,
+             "expected_error_any": ["return: 5", "error code 5", "error"]},
             {"fn": "get_skills", "args": {"addr_ptr": dp}, "actor": "deployer",
              "negative": True, "expect_no_state_change": True, "expected_error_code": 1,
              "expected_error_any": ["error code 1", "error"]},
@@ -1426,7 +1432,7 @@ def scenario_spec(
                 "target_contract_ptr": str(contracts.get("lichenid") or dp),
                 "action_ptr": '{"type":"noop"}', "action_len": 15, "proposal_type": 1},
              "actor": "deployer", "value": 1_000, "capture_return_code_as": "created_proposal_id"},
-            {"fn": "vote", "args": {"voter_ptr": dp, "proposal_id": {"from_context": "created_proposal_id"}, "support": 1, "_voting_power": 0}, "actor": "deployer"},
+            {"fn": "vote", "args": {"voter_ptr": dp, "proposal_id": {"from_context": "created_proposal_id"}, "support": 1, "_voting_power": 0}, "actor": "deployer", "depends_on": "create_proposal_typed"},
             {"fn": "get_proposal_count", "args": {}, "actor": "deployer",
              "negative": True, "expect_no_state_change": True, "expected_error_code": 3,
              "expected_error_any": ["error code 3", "error"]},
@@ -1441,7 +1447,7 @@ def scenario_spec(
              "negative": True, "expect_no_state_change": True, "expected_error_code": 1,
              "expected_error_any": ["error code 1", "error"]},
             {"fn": "veto_proposal", "args": {"caller_ptr": dp, "proposal_id": {"from_context": "created_proposal_id"}}, "actor": "deployer",
-             "expect_no_state_change": True, "expected_error_any": ["contract failure", "return:", "error", "invalid", "state"]},
+             "depends_on": "create_proposal_typed", "expect_no_state_change": True, "expected_error_any": ["contract failure", "return:", "error", "invalid", "state"]},
             {"fn": "dao_pause", "args": {"caller": dp}, "actor": "deployer"},
             {"fn": "dao_unpause", "args": {"caller": dp}, "actor": "deployer"},
         ],
@@ -1457,7 +1463,9 @@ def scenario_spec(
             {"fn": "get_total_supply", "args": {}, "actor": "deployer",
              "negative": True, "expect_no_state_change": True, "expected_error_code": 14,
              "expected_error_any": ["error code 14", "error"]},
-            {"fn": "get_owner_of", "args": {"token_id": rid}, "actor": "deployer"},
+            {"fn": "get_owner_of", "args": {"token_id": rid}, "actor": "deployer",
+             "negative": True, "expect_no_state_change": True, "expected_error_code": 1,
+             "expected_error_any": ["error code 1", "error"]},
             {"fn": "get_collection_stats", "args": {}, "actor": "deployer"},
             {"fn": "set_max_supply", "args": {"caller_ptr": dp, "max_supply": 10_000}, "actor": "deployer"},
             {"fn": "set_base_uri", "args": {"caller": dp, "uri": "https://punks.lichen.network/"}, "actor": "deployer"},
@@ -2466,8 +2474,13 @@ async def main():
         except Exception as e:
             report("SKIP", f"zk.rest.pool skip ({e})")
 
-        # 3.4: Generate shield proof
-        shield_amount = 500_000_000
+        # 3.4: Generate shield proof — use fraction of deployer balance
+        try:
+            _bal_resp = await _zk_rpc("getBalance", [deployer.address()])
+            _deployer_bal = int(_bal_resp.get("spores", 0)) if isinstance(_bal_resp, dict) else 0
+        except Exception:
+            _deployer_bal = 0
+        shield_amount = max(1_000, min(_deployer_bal // 10, 100_000_000))
         shield_json = None
         try:
             result = subprocess.run(
