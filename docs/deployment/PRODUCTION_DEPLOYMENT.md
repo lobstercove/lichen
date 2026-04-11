@@ -1145,6 +1145,20 @@ done
 
 This is the full step-by-step procedure for stopping everything, flushing all state, and redeploying from scratch so VPSes match the local 3-validator setup exactly.
 
+### One-command automated redeploy (recommended)
+
+```bash
+bash scripts/clean-slate-redeploy.sh testnet    # or: mainnet
+```
+
+This script performs ALL phases below automatically: stops services, flushes state, pulls+builds, creates genesis, runs post-genesis + first-boot-deploy, distributes all secrets via atomic tarball transfer, starts joining VPSes, and verifies everything. Typical time: 5-8 minutes with cached builds.
+
+Secrets are distributed as a single tarball per joining VPS (no partial copies). SSH operations have automatic retry with exponential backoff.
+
+### Manual phase-by-phase procedure (for debugging)
+
+If the automated script fails or you need to debug, follow these phases manually:
+
 ### Prerequisites
 
 - Latest code committed and pushed
