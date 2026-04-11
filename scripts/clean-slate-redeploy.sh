@@ -151,11 +151,17 @@ phase_done
 # ============================================================================
 # Phase 3: Git pull + Build
 # ============================================================================
-phase "Pull latest code and build"
+phase "Sync latest code and build"
 
+# Rsync code to all VPSes (they may not have .git — rsynced previously)
 for VPS in "${ALL_VPSES[@]}"; do
-  echo "  Pulling on $VPS..."
-  ssh_run "$VPS" "cd ~/lichen && git fetch origin && git reset --hard origin/main"
+  echo "  Syncing code to $VPS..."
+  rsync -az --delete \
+    --exclude target/ --exclude compiler/target/ --exclude node_modules/ \
+    --exclude data/ --exclude logs/ --exclude .git/ --exclude .venv/ \
+    --exclude '*.pyc' --exclude __pycache__/ \
+    -e "ssh -p $SSH_PORT -o StrictHostKeyChecking=no" \
+    "$REPO_ROOT/" "$SSH_USER@$VPS:~/lichen/"
 done
 
 # Build joining VPSes in background (they only need validator + support binaries)
