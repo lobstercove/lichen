@@ -40,7 +40,7 @@ ALL_VPSES=("$GENESIS_VPS" "${JOINING_VPSES[@]}")
 
 SSH_PORT=2222
 SSH_USER=ubuntu
-SSH_OPTS="-p $SSH_PORT -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o BatchMode=yes"
+SSH_OPTS="-p $SSH_PORT -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR"
 
 VPS_DATA="/var/lib/lichen"
 VPS_CONFIG="/etc/lichen"
@@ -189,6 +189,17 @@ ssh_run "$GENESIS_VPS" '
 for pid in "${JOINER_PIDS[@]}"; do
   wait "$pid" || { echo -e "${RED}Joining VPS build failed${NC}"; exit 1; }
 done
+
+# Distribute WASM from genesis VPS to joining VPSes
+# (rsync --exclude target/ means joiners have stale/no WASM; genesis built fresh)
+echo "  Distributing WASM contracts from genesis to joiners..."
+for VPS in "${JOINING_VPSES[@]}"; do
+  echo "    → $VPS..."
+  ssh_pipe "$GENESIS_VPS" "$VPS" \
+    "cd ~/lichen && tar czf - contracts/*/target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null" \
+    "cd ~/lichen && tar xzf -"
+done
+echo "  WASM contracts synchronized"
 phase_done
 
 # ============================================================================
@@ -420,9 +431,22 @@ for VPS in "${JOINING_VPSES[@]}"; do
 
     # Start validator
     sudo systemctl start '"$SERVICE"'
-    sleep 12
 
-    # Verify syncing
+    # Wait for genesis sync (up to 90s)
+    echo "  Waiting for genesis sync..."
+    for i in $(seq 1 18); do
+      sleep 5
+      SLOT=$(curl -sf http://127.0.0.1:'"$RPC_PORT"' -X POST -H "Content-Type: application/json" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\",\"params\":[]}" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['"'"'result'"'"'])" 2>/dev/null || echo "0")
+      if [ "$SLOT" -gt 0 ] 2>/dev/null; then
+        echo "  Synced to slot $SLOT"
+        break
+      fi
+      echo "  Still syncing... (${i}/18)"
+    done
+
+    # Health check
     HEALTH=$(curl -sf http://127.0.0.1:'"$RPC_PORT"' -X POST -H "Content-Type: application/json" \
       -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\",\"params\":[]}" 2>/dev/null || echo "FAIL")
     echo "  Health: $HEALTH"
@@ -468,7 +492,13 @@ for VPS in "${ALL_VPSES[@]}"; do
   fi
 
   # Manifest
-  SYMBOLS=$(ssh_run "$VPS" "curl -sf http://127.0.0.1:$RPC_PORT -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}' | python3 -c 'import sys,json; d=json.load(sys.stdin); p=json.loads(d[\"result\"][\"payload\"]); print(len(p.get(\"symbol_registry\",[])))'" 2>/dev/null || echo "?")
+  SYMBOLS=$(ssh_run "$VPS" "curl -sf http://127.0.0.1:$RPC_PORT -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSignedMetadataManifest\",\"params\":[]}' | python3 -c '
+import sys,json
+d=json.load(sys.stdin)
+p=d.get(\"result\",{}).get(\"payload\",{})
+if isinstance(p, str): p=json.loads(p)
+print(len(p.get(\"symbol_registry\",[])))
+'" 2>/dev/null || echo "?")
   if [ "$SYMBOLS" = "28" ]; then
     echo -e "  ${GREEN}✓${NC} Manifest: $SYMBOLS symbols"
   elif [ "$SYMBOLS" = "?" ]; then
