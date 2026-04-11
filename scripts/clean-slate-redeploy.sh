@@ -123,6 +123,8 @@ for VPS in "${ALL_VPSES[@]}"; do
     sudo systemctl stop lichen-custody 2>/dev/null || true
     sudo systemctl stop lichen-custody-mainnet 2>/dev/null || true
     sudo systemctl stop $SERVICE 2>/dev/null || true
+    # Ensure RPC port is open between VPSes (needed for genesis sync)
+    sudo ufw allow ${RPC_PORT}/tcp comment 'Lichen RPC' 2>/dev/null || true
   "
 done
 phase_done
@@ -363,16 +365,29 @@ ssh_run "$GENESIS_VPS" "$POSTGENESIS_SCRIPT"
 phase_done
 
 # ============================================================================
-# Phase 6: Bundle and distribute secrets to joining VPSes
+# Phase 6: Snapshot state + distribute secrets to joining VPSes
 # ============================================================================
-phase "Distribute secrets via tarball"
+phase "Snapshot genesis state + distribute to joiners"
 
-# Create tarball on genesis VPS with ALL secrets in one shot
-echo "  Creating secrets bundle on $GENESIS_VPS..."
+# Stop genesis validator for a clean RocksDB snapshot (brief downtime)
+echo "  Stopping genesis validator for clean snapshot..."
+ssh_run "$GENESIS_VPS" "sudo systemctl stop $SERVICE"
+
+# Create comprehensive tarball: state snapshot + all secrets
+# Excludes node-specific files (keypairs, LOCK, IDENTITY, LOG*)
+echo "  Creating state + secrets bundle on $GENESIS_VPS..."
 ssh_run "$GENESIS_VPS" "
-  sudo tar czf /tmp/lichen-secrets-bundle.tar.gz -C / \
-    var/lib/lichen/$STATE_DIR/genesis-wallet.json \
-    var/lib/lichen/$STATE_DIR/genesis-keys \
+  cd /
+  sudo tar czf /tmp/lichen-state-bundle.tar.gz \
+    --exclude='validator-keypair.json' \
+    --exclude='signer-keypair.json' \
+    --exclude='LOCK' \
+    --exclude='IDENTITY' \
+    --exclude='LOG' \
+    --exclude='LOG.old.*' \
+    --exclude='known-peers.json' \
+    --exclude='logs' \
+    var/lib/lichen/$STATE_DIR/ \
     var/lib/lichen/faucet-keypair-${NETWORK}.json \
     etc/lichen/secrets/custody-master-seed-${NETWORK}.txt \
     etc/lichen/secrets/custody-deposit-seed-${NETWORK}.txt \
@@ -380,17 +395,22 @@ ssh_run "$GENESIS_VPS" "
     etc/lichen/custody-treasury-${NETWORK}.json \
     etc/lichen/secrets/release-signing-keypair-${NETWORK}.json \
     2>/dev/null
-  sudo chmod 644 /tmp/lichen-secrets-bundle.tar.gz
-  echo \"  Bundle size: \$(du -h /tmp/lichen-secrets-bundle.tar.gz | cut -f1)\"
+  sudo chmod 644 /tmp/lichen-state-bundle.tar.gz
+  echo \"  Bundle size: \$(du -h /tmp/lichen-state-bundle.tar.gz | cut -f1)\"
 "
 
-for VPS in "${JOINING_VPSES[@]}"; do
-  echo "  Distributing to $VPS (single atomic transfer)..."
+# Restart genesis validator immediately
+echo "  Restarting genesis validator..."
+ssh_run "$GENESIS_VPS" "sudo systemctl start $SERVICE"
 
-  # Single pipe: genesis → tar → joining VPS → extract + fix perms
+for VPS in "${JOINING_VPSES[@]}"; do
+  echo "  Distributing state + secrets to $VPS..."
+
+  # Single pipe: genesis → tarball → joining VPS → cleanup old RocksDB, extract, fix perms
   ssh_pipe "$GENESIS_VPS" "$VPS" \
-    "cat /tmp/lichen-secrets-bundle.tar.gz" \
+    "cat /tmp/lichen-state-bundle.tar.gz" \
     "sudo mkdir -p $VPS_DATA/$STATE_DIR/genesis-keys $VPS_CONFIG/secrets && \
+     sudo rm -f $VPS_DATA/$STATE_DIR/*.sst $VPS_DATA/$STATE_DIR/CURRENT $VPS_DATA/$STATE_DIR/MANIFEST-* $VPS_DATA/$STATE_DIR/OPTIONS-* $VPS_DATA/$STATE_DIR/consensus.wal 2>/dev/null; \
      sudo tar xzf - -C / && \
      sudo chown -R lichen:lichen $VPS_DATA/$STATE_DIR/ && \
      sudo chmod 640 $VPS_DATA/$STATE_DIR/genesis-wallet.json && \
@@ -411,11 +431,12 @@ for VPS in "${JOINING_VPSES[@]}"; do
   # Verify
   COUNT=$(ssh_run "$VPS" "sudo ls $VPS_DATA/$STATE_DIR/genesis-keys/ 2>/dev/null | wc -l")
   WALLET=$(ssh_run "$VPS" "sudo test -f $VPS_DATA/$STATE_DIR/genesis-wallet.json && echo YES || echo NO")
-  echo -e "  ${GREEN}✓${NC} $VPS: $COUNT genesis-keys, wallet=$WALLET"
+  SST=$(ssh_run "$VPS" "ls $VPS_DATA/$STATE_DIR/*.sst 2>/dev/null | wc -l")
+  echo -e "  ${GREEN}✓${NC} $VPS: $COUNT genesis-keys, wallet=$WALLET, sst=$SST"
 done
 
 # Clean up bundle
-ssh_run "$GENESIS_VPS" "sudo rm -f /tmp/lichen-secrets-bundle.tar.gz"
+ssh_run "$GENESIS_VPS" "sudo rm -f /tmp/lichen-state-bundle.tar.gz"
 phase_done
 
 # ============================================================================
@@ -429,11 +450,20 @@ for VPS in "${JOINING_VPSES[@]}"; do
     # Install seeds.json
     sudo install -m 644 -o lichen -g lichen ~/lichen/seeds.json '"$VPS_DATA/$STATE_DIR"'/seeds.json
 
+    # Generate validator keypair if not present (auto-generated on first boot,
+    # but we ensure it exists so the snapshot state is usable immediately)
+    KP_PASS=$(sudo grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-'"$NETWORK"' | cut -d= -f2-)
+    if [ ! -f '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json ]; then
+      echo "  Generating validator keypair..."
+      sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="$KP_PASS" \
+        ~/lichen/target/release/lichen init --output '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json
+    fi
+
     # Start validator
     sudo systemctl start '"$SERVICE"'
 
-    # Wait for genesis sync (up to 90s)
-    echo "  Waiting for genesis sync..."
+    # Wait for sync (up to 90s) — with state snapshot, sync should be near-instant
+    echo "  Waiting for sync..."
     for i in $(seq 1 18); do
       sleep 5
       SLOT=$(curl -sf http://127.0.0.1:'"$RPC_PORT"' -X POST -H "Content-Type: application/json" \
