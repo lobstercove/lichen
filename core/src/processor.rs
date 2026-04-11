@@ -2124,6 +2124,41 @@ impl TxProcessor {
                                                             state_changes: total_state_changes,
                                                         };
                                                     }
+                                                    // Parity with contract_call_as_caller: fail
+                                                    // when a non-zero return code is paired with
+                                                    // no meaningful state changes.  Without this
+                                                    // check, preflight simulation reports success
+                                                    // for calls that block production will drop
+                                                    // (e.g. re-initialising an already-initialised
+                                                    // contract).
+                                                    if let Some(rc) = result.return_code {
+                                                        let meaningful_changes = result
+                                                            .storage_changes
+                                                            .keys()
+                                                            .any(|k| !k.ends_with(b"_reentrancy"));
+                                                        if rc != 0
+                                                            && !meaningful_changes
+                                                            && result.cross_call_changes.is_empty()
+                                                        {
+                                                            logs.push(format!(
+                                                                "[ix{}] Contract '{}' returned error code {} with no state changes",
+                                                                idx, function, rc
+                                                            ));
+                                                            return SimulationResult {
+                                                                success: false,
+                                                                fee: total_fee,
+                                                                logs,
+                                                                error: Some(format!(
+                                                                    "Contract '{}' returned error code {} with no state changes",
+                                                                    function, rc
+                                                                )),
+                                                                compute_used: total_compute,
+                                                                return_data: last_return_data,
+                                                                return_code: last_return_code,
+                                                                state_changes: total_state_changes,
+                                                            };
+                                                        }
+                                                    }
                                                     logs.push(format!(
                                                         "[ix{}] Contract call '{}' OK, compute: {}, changes: {}",
                                                         idx, function, result.compute_used, result.storage_changes.len()

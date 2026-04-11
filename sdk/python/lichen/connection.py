@@ -634,7 +634,98 @@ class Connection:
     async def off_market_sales(self, sub_id: int) -> bool:
         """Unsubscribe from marketplace sales"""
         return await self._unsubscribe("unsubscribeMarketSales", sub_id)
-    
+
+    async def confirm_transaction(self, signature: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
+        """Wait for a transaction signature to be confirmed via WebSocket.
+
+        Uses ``signatureSubscribe`` for a push-based one-shot notification
+        instead of polling ``getTransaction`` in a loop.  Falls back to RPC
+        polling when the WS URL is not available or the WS connection fails.
+
+        Returns the signature-status notification dict on success, or *None*
+        if the timeout expires.
+        """
+
+        # ── Auto-derive WS URL when not explicitly set ──
+        if not self.ws_url:
+            self.ws_url = self._derive_ws_url(self.rpc_url)
+
+        # ── Try WS-based confirmation first ──
+        if self.ws_url:
+            try:
+                return await self._confirm_via_ws(signature, timeout)
+            except Exception:
+                pass  # fall through to RPC polling
+
+        # ── Fallback: RPC polling (same as old wait_tx) ──
+        return await self._confirm_via_rpc(signature, timeout)
+
+    async def _confirm_via_ws(self, signature: str, timeout: float) -> Optional[Dict[str, Any]]:
+        """Subscribe to signatureStatus and wait for the one-shot notification.
+
+        After the WS notification fires, fetches the full transaction via RPC
+        so callers get the same data shape as the polling fallback.
+        """
+        await self._connect_ws()
+
+        result_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+        def _on_status(data: Any) -> None:
+            if not result_future.done():
+                result_future.set_result(data)
+
+        sub_id = await self._subscribe("signatureSubscribe", [signature])
+        self._subscriptions[sub_id] = _on_status
+
+        try:
+            await asyncio.wait_for(result_future, timeout=timeout)
+            # WS confirmed — now fetch full tx info so callers get return_code etc.
+            try:
+                tx_info = await self.get_transaction(signature)
+                if tx_info:
+                    return tx_info
+            except Exception:
+                pass
+            # If fetch fails, return a minimal confirmation dict
+            return {"signature": signature, "confirmed": True}
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._subscriptions.pop(sub_id, None)
+            try:
+                await self._unsubscribe("signatureUnsubscribe", sub_id)
+            except Exception:
+                pass
+
+    async def _confirm_via_rpc(self, signature: str, timeout: float) -> Optional[Dict[str, Any]]:
+        """Fall back to polling getTransaction."""
+        t0 = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - t0 < timeout:
+            try:
+                tx = await self.get_transaction(signature)
+                if tx:
+                    return tx
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return None
+
+    @staticmethod
+    def _derive_ws_url(rpc_url: str) -> Optional[str]:
+        """Best-effort derivation of a WS URL from the RPC HTTP URL."""
+        if not rpc_url:
+            return None
+        url = rpc_url.rstrip("/")
+        if "://localhost" in url or "://127.0.0.1" in url:
+            # localhost: port 8899 → 8900
+            return url.replace("http://", "ws://").replace(":8899", ":8900")
+        if url.startswith("https://"):
+            # Production: assume /ws path on same host
+            return url.replace("https://", "wss://") + "/ws"
+        if url.startswith("http://"):
+            return url.replace("http://", "ws://") + "/ws"
+        return None
+
     async def close(self):
         """Close connection and clean up all resources"""
         # Cancel all pending response futures

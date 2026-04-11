@@ -182,3 +182,7 @@ deploy-manifest.json
 .github/prompts/
 .github/copilot-instructions.md
 # Keep .github/workflows/ tracked for CI
+
+# ── Internal test artifacts (not for git) ───────────────────
+tests/FIX_PLAN_*.md
+*.pre-rewrite
