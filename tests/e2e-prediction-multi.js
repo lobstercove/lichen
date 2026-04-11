@@ -33,7 +33,12 @@ const pq = require('./helpers/pq-node');
 const crypto = require('crypto');
 const { findGenesisAdminKeypair } = require('./helpers/funded-wallets');
 
+let WebSocket;
+try { WebSocket = require('ws'); }
+catch { WebSocket = null; }
+
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
+const WS_URL = process.env.LICHEN_WS || RPC_URL.replace('https://', 'wss://').replace('http://', 'ws://').replace(':8899', ':8900');
 const FAUCET_URL = process.env.FAUCET_URL || 'http://127.0.0.1:9100';
 const REST_BASE = `${RPC_URL}/api/v1`;
 const PM_SCALE = 1_000_000;
@@ -113,15 +118,36 @@ async function rest(path) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function waitForTransaction(signature, timeoutMs = 15000) {
+async function waitForTransaction(signature, timeoutMs = 30000) {
+    // Try WS-based confirmation first
+    if (WebSocket) {
+        try {
+            return await new Promise((resolve, reject) => {
+                const ws = new WebSocket(WS_URL);
+                const timer = setTimeout(() => { try { ws.close(); } catch { } reject(new Error('ws timeout')); }, timeoutMs);
+                ws.on('error', () => { clearTimeout(timer); reject(new Error('ws error')); });
+                ws.on('open', () => {
+                    ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'signatureSubscribe', params: [signature] }));
+                });
+                ws.on('message', (data) => {
+                    try {
+                        const msg = JSON.parse(data.toString());
+                        if (msg.id === 1 && msg.result !== undefined) return;
+                        if (msg.params?.result) {
+                            clearTimeout(timer); try { ws.close(); } catch { } resolve(msg.params.result);
+                        }
+                    } catch { }
+                });
+            });
+        } catch { /* fall through to RPC polling */ }
+    }
+    // Fallback: RPC polling
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
         try {
             const tx = await rpc('getTransaction', [signature]);
             if (tx) return tx;
-        } catch {
-            // Transaction metadata is not visible immediately after submission.
-        }
+        } catch { }
         await sleep(300);
     }
     throw new Error(`Transaction ${signature} not visible within ${timeoutMs}ms`);

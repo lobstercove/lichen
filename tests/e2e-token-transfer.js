@@ -19,7 +19,12 @@ const { fundAccount, loadFundedWallets, loadKeypairFile } = require('./helpers/f
 const fs = require('fs');
 const path = require('path');
 
+let WebSocket;
+try { WebSocket = require('ws'); }
+catch { WebSocket = null; }
+
 const RPC_URL = process.argv[2] || 'http://localhost:8899';
+const WS_URL = process.env.LICHEN_WS || RPC_URL.replace('https://', 'wss://').replace('http://', 'ws://').replace(':8899', ':8900');
 const SPORES_PER_LICN = 1_000_000_000;
 
 // ============================================================================
@@ -249,7 +254,32 @@ async function waitForTransaction(signature, predicate, timeoutMs = 10000, inter
     return lastTx;
 }
 
-async function waitForConfirmation(signature, timeoutMs = 10000, intervalMs = 500) {
+async function waitForConfirmation(signature, timeoutMs = 30000, intervalMs = 500) {
+    // Try WS-based confirmation first (push, no poll)
+    if (WebSocket) {
+        try {
+            const result = await new Promise((resolve, reject) => {
+                const ws = new WebSocket(WS_URL);
+                const timer = setTimeout(() => { try { ws.close(); } catch { } reject(new Error('ws timeout')); }, timeoutMs);
+                ws.on('error', () => { clearTimeout(timer); reject(new Error('ws error')); });
+                ws.on('open', () => {
+                    ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'signatureSubscribe', params: [signature] }));
+                });
+                ws.on('message', (data) => {
+                    try {
+                        const msg = JSON.parse(data.toString());
+                        if (msg.id === 1 && msg.result !== undefined) return;
+                        if (msg.params?.result) {
+                            clearTimeout(timer); try { ws.close(); } catch { } resolve(msg.params.result);
+                        }
+                    } catch { }
+                });
+            });
+            return result;
+        } catch { /* fall through to RPC polling */ }
+    }
+
+    // Fallback: RPC polling
     const deadline = Date.now() + timeoutMs;
     let lastConfirmation = null;
 

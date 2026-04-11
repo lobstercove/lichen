@@ -141,6 +141,71 @@ if [ "$DO_RESTART" = true ]; then
 	sudo systemctl restart lichen-faucet 2>/dev/null && echo -e "  ${GREEN}✓${NC} faucet restarted" || echo -e "  ${YELLOW}⚠${NC} faucet restart failed"
 fi
 
+# ── 6. Distribute genesis-keys to joining VPSes ──
+# The treasury keypair, genesis-wallet.json, and genesis-keys/ are local artifacts
+# created only on the genesis VPS. Joining validators need them for treasury/airdrop
+# functionality. This section distributes them via SSH.
+echo ""
+echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+echo -e "${CYAN}  Genesis-keys distribution to joining validators${NC}"
+echo -e "${CYAN}──────────────────────────────────────────────────────${NC}"
+echo ""
+
+STATE_DIR="$VPS_STATE/state-$NETWORK"
+GENESIS_WALLET_SRC="$STATE_DIR/genesis-wallet.json"
+
+if ! sudo test -f "$GENESIS_WALLET_SRC"; then
+	echo -e "  ${YELLOW}⚠${NC} No genesis-wallet.json found at $GENESIS_WALLET_SRC"
+	echo -e "  ${YELLOW}  Skipping distribution — joining validators will not have treasury.${NC}"
+else
+	# Read joining VPS IPs from seeds.json or use known VPSes
+	JOINING_VPSES="${LICHEN_JOINING_VPSES:-}"
+	if [ -z "$JOINING_VPSES" ]; then
+		echo -e "  ${YELLOW}No LICHEN_JOINING_VPSES set.${NC}"
+		echo ""
+		echo "  To distribute genesis-keys to joining VPSes, set:"
+		echo "    export LICHEN_JOINING_VPSES=\"<IP1> <IP2> ...\""
+		echo "    bash scripts/vps-post-genesis.sh $NETWORK"
+		echo ""
+		echo "  Or run manually for each joining VPS:"
+		echo ""
+		echo "    # Copy genesis-wallet.json"
+		echo "    sudo cat $GENESIS_WALLET_SRC | ssh -p 2222 ubuntu@<JOINING_IP> \\"
+		echo "      \"sudo bash -c 'cat > $STATE_DIR/genesis-wallet.json && chown lichen:lichen $STATE_DIR/genesis-wallet.json && chmod 640 $STATE_DIR/genesis-wallet.json'\""
+		echo ""
+		echo "    # Copy all genesis-keys/"
+		echo "    for f in \$(sudo ls $GENESIS_KEYS_DIR/); do"
+		echo "      sudo cat $GENESIS_KEYS_DIR/\$f | ssh -p 2222 ubuntu@<JOINING_IP> \\"
+		echo "        \"sudo bash -c 'mkdir -p $STATE_DIR/genesis-keys && cat > $STATE_DIR/genesis-keys/\$f && chown lichen:lichen $STATE_DIR/genesis-keys/\$f && chmod 640 $STATE_DIR/genesis-keys/\$f'\""
+		echo "    done"
+	else
+		SSH_PORT="${LICHEN_SSH_PORT:-2222}"
+		for VPS_IP in $JOINING_VPSES; do
+			echo -e "  Distributing to ${CYAN}$VPS_IP${NC}..."
+
+			# Ensure state directory + genesis-keys dir exist on joining VPS
+			ssh -p "$SSH_PORT" "ubuntu@$VPS_IP" \
+				"sudo mkdir -p $STATE_DIR/genesis-keys && sudo chown -R lichen:lichen $STATE_DIR" 2>/dev/null
+
+			# Copy genesis-wallet.json
+			sudo cat "$GENESIS_WALLET_SRC" \
+				| ssh -p "$SSH_PORT" "ubuntu@$VPS_IP" \
+				"sudo bash -c 'cat > $STATE_DIR/genesis-wallet.json && chown lichen:lichen $STATE_DIR/genesis-wallet.json && chmod 640 $STATE_DIR/genesis-wallet.json'"
+			echo -e "    ${GREEN}✓${NC} genesis-wallet.json"
+
+			# Copy all genesis-keys/*.json
+			for keyfile in $(sudo ls "$GENESIS_KEYS_DIR/" 2>/dev/null); do
+				sudo cat "$GENESIS_KEYS_DIR/$keyfile" \
+					| ssh -p "$SSH_PORT" "ubuntu@$VPS_IP" \
+					"sudo bash -c 'cat > $STATE_DIR/genesis-keys/$keyfile && chown lichen:lichen $STATE_DIR/genesis-keys/$keyfile && chmod 640 $STATE_DIR/genesis-keys/$keyfile'"
+				echo -e "    ${GREEN}✓${NC} genesis-keys/$keyfile"
+			done
+
+			echo -e "  ${GREEN}Done: $VPS_IP${NC}"
+		done
+	fi
+fi
+
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Post-genesis setup complete.${NC}"

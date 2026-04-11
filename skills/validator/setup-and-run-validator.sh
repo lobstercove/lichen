@@ -181,6 +181,36 @@ if [ "$VALIDATOR_NUM" -gt 1 ]; then
     else
         echo -e "${GREEN}✓${NC} V1-PRIMARY is running"
     fi
+
+    # Propagate genesis-keys from V1 to this validator's data dir
+    # Without genesis-keys, this node won't be able to serve RPC airdrop requests
+    if [ "$NETWORK" = "mainnet" ]; then
+        V1_DB="data/state-8001"
+        MY_DB="data/state-$((8000 + VALIDATOR_NUM))"
+    else
+        V1_DB="data/state-7001"
+        MY_DB="data/state-$((7000 + VALIDATOR_NUM))"
+    fi
+
+    if [ -d "$V1_DB/genesis-keys" ]; then
+        mkdir -p "$MY_DB/genesis-keys"
+        if [ -f "$V1_DB/genesis-wallet.json" ] && [ ! -f "$MY_DB/genesis-wallet.json" ]; then
+            cp "$V1_DB/genesis-wallet.json" "$MY_DB/genesis-wallet.json"
+            echo -e "${GREEN}✓${NC} Copied genesis-wallet.json from V1"
+        fi
+        for keyfile in "$V1_DB/genesis-keys/"*.json; do
+            [ -f "$keyfile" ] || continue
+            fname="$(basename "$keyfile")"
+            if [ ! -f "$MY_DB/genesis-keys/$fname" ]; then
+                cp "$keyfile" "$MY_DB/genesis-keys/$fname"
+                echo -e "${GREEN}✓${NC} Copied genesis-keys/$fname from V1"
+            fi
+        done
+    else
+        echo -e "${YELLOW}⚠️  V1 genesis-keys not found at $V1_DB/genesis-keys/${NC}"
+        echo "   This node will not be able to serve airdrop requests."
+        echo "   Copy genesis-wallet.json and genesis-keys/ from V1 after genesis completes."
+    fi
 fi
 
 # Launch validator

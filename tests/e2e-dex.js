@@ -30,7 +30,12 @@
 const pq = require('./helpers/pq-node');
 const { loadFundedWallets } = require('./helpers/funded-wallets');
 
+let WebSocket;
+try { WebSocket = require('ws'); }
+catch { WebSocket = null; }
+
 const RPC_URL = process.env.LICHEN_RPC || 'http://127.0.0.1:8899';
+const WS_URL = process.env.LICHEN_WS || RPC_URL.replace('https://', 'wss://').replace('http://', 'ws://').replace(':8899', ':8900');
 const REST_BASE = `${RPC_URL}/api/v1`;
 const PRICE_SCALE = 1_000_000_000;
 const REQUIRE_BALANCE_DELTA = process.env.REQUIRE_BALANCE_DELTA === '1';
@@ -96,16 +101,58 @@ async function rest(path) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function waitForTx(signature, timeoutMs = 20000, pollMs = 400) {
-    const started = Date.now();
-    while ((Date.now() - started) < timeoutMs) {
-        try {
-            const tx = await rpc('getTransaction', [signature]);
-            if (tx) return tx;
-        } catch { /* retry */ }
-        await sleep(pollMs);
+// ═══════════════════════════════════════════════════════════════════════════════
+// WebSocket-based transaction confirmation (signatureSubscribe — push, no poll)
+// ═══════════════════════════════════════════════════════════════════════════════
+function confirmViaWs(signature, timeoutMs = 30000) {
+    if (!WebSocket) return confirmViaRpc(signature, timeoutMs);
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(WS_URL);
+        const timer = setTimeout(() => { try { ws.close(); } catch { } reject(new Error(`WS confirm timeout ${timeoutMs}ms`)); }, timeoutMs);
+        ws.on('error', () => { clearTimeout(timer); resolve(null); }); // fallback silently
+        ws.on('open', () => {
+            ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'signatureSubscribe', params: [signature] }));
+        });
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+                // Subscription ack
+                if (msg.id === 1 && msg.result !== undefined) return;
+                // Signature notification
+                if (msg.params?.result?.signature === signature || msg.params?.result?.event === 'SignatureStatus') {
+                    clearTimeout(timer); try { ws.close(); } catch { } resolve(msg.params.result);
+                    return;
+                }
+                // Any notification for our subscription
+                if (msg.method === 'notification' && msg.params?.subscription) {
+                    clearTimeout(timer); try { ws.close(); } catch { } resolve(msg.params.result || { confirmed: true });
+                    return;
+                }
+            } catch { }
+        });
+    });
+}
+
+function confirmViaRpc(signature, timeoutMs = 20000, pollMs = 500) {
+    return (async () => {
+        const started = Date.now();
+        while ((Date.now() - started) < timeoutMs) {
+            try {
+                const tx = await rpc('getTransaction', [signature]);
+                if (tx) return tx;
+            } catch { /* retry */ }
+            await sleep(pollMs);
+        }
+        return null;
+    })();
+}
+
+async function waitForTx(signature, timeoutMs = 30000) {
+    try {
+        return await confirmViaWs(signature, timeoutMs);
+    } catch {
+        return await confirmViaRpc(signature, timeoutMs);
     }
-    return null;
 }
 
 async function pollRest(path, predicate, timeoutMs = 20000, pollMs = 500) {
@@ -168,7 +215,7 @@ async function sendTx(keypair, instructions) {
     const payload = { signatures: [pqSig], message: { instructions: nix, blockhash: bh } };
     const b64 = Buffer.from(JSON.stringify(payload)).toString('base64');
     const txSig = await rpc('sendTransaction', [b64]);
-    await waitForTx(txSig, 25000, 500);
+    await waitForTx(txSig);
     return txSig;
 }
 

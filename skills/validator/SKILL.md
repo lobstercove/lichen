@@ -89,6 +89,14 @@ sleep 30 && ./run-validator.sh testnet 3
 cd /path/to/lichen
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp ./seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+
+# IMPORTANT: Copy genesis-keys from the genesis node for treasury/airdrop support.
+# Without these files, this node cannot serve requestAirdrop RPC calls.
+# Ask the network operator for genesis-wallet.json and genesis-keys/*.json
+# and place them in your state directory:
+#   cp genesis-wallet.json "$HOME/.lichen/state-mainnet/"
+#   cp genesis-keys/*.json "$HOME/.lichen/state-mainnet/genesis-keys/"
+
 nohup ./target/release/lichen-validator \
   --network mainnet \
   --p2p-port 8001 \

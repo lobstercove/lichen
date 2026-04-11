@@ -561,6 +561,28 @@ sudo install -m 640 -o root -g lichen \
 rm ~/signed-metadata-manifest-testnet.json
 ```
 
+**CRITICAL: Distribute genesis-keys and genesis-wallet.json** so the joining VPS has the treasury keypair for airdrop/faucet functionality. Without this, RPC airdrop requests to the joining VPS will fail with "Treasury keypair not configured":
+
+```bash
+# From genesis VPS — copy genesis-wallet.json:
+sudo cat /var/lib/lichen/state-testnet/genesis-wallet.json \
+  | ssh -p 2222 ubuntu@<JOINING_VPS> \
+  "sudo bash -c 'mkdir -p /var/lib/lichen/state-testnet/genesis-keys && cat > /var/lib/lichen/state-testnet/genesis-wallet.json && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-wallet.json && chmod 640 /var/lib/lichen/state-testnet/genesis-wallet.json'"
+
+# From genesis VPS — copy all genesis-keys/:
+for f in $(sudo ls /var/lib/lichen/state-testnet/genesis-keys/); do
+  sudo cat /var/lib/lichen/state-testnet/genesis-keys/$f \
+    | ssh -p 2222 ubuntu@<JOINING_VPS> \
+    "sudo bash -c 'cat > /var/lib/lichen/state-testnet/genesis-keys/$f && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-keys/$f && chmod 640 /var/lib/lichen/state-testnet/genesis-keys/$f'"
+done
+```
+
+Or use the automated distribution:
+```bash
+export LICHEN_JOINING_VPSES="<JOINING_IP_1> <JOINING_IP_2>"
+bash scripts/vps-post-genesis.sh testnet --no-restart
+```
+
 Then start the service:
 
 ```bash
@@ -1084,6 +1106,8 @@ When joining EU and SEA validators to an existing genesis, these files must be c
 | `custody-deposit-seed-testnet.txt` | Genesis VPS `/etc/lichen/secrets/` | Custody deposit address derivation |
 | `release-signing-keypair-testnet.json` | Repo `keypairs/release-signing-key.json` | Signed metadata manifest signing |
 | `signed-metadata-manifest-testnet.json` | Genesis VPS `/etc/lichen/` | Pre-generated signed manifest |
+| `genesis-wallet.json` | Genesis VPS `/var/lib/lichen/state-testnet/` | Treasury keypair path mapping (needed for airdrop/faucet) |
+| `genesis-keys/*` | Genesis VPS `/var/lib/lichen/state-testnet/genesis-keys/` | Treasury keypair(s) — **required for RPC airdrop on all nodes** |
 
 Copy procedure (genesis VPS → joining VPS):
 
@@ -1098,6 +1122,21 @@ sudo install -m 640 -o root -g lichen ~/custody-master-seed-testnet.txt /etc/lic
 sudo install -m 640 -o root -g lichen ~/custody-deposit-seed-testnet.txt /etc/lichen/secrets/
 sudo install -m 640 -o root -g lichen ~/signed-metadata-manifest-testnet.json /etc/lichen/
 rm ~/custody-master-seed-testnet.txt ~/custody-deposit-seed-testnet.txt ~/signed-metadata-manifest-testnet.json
+```
+
+**Genesis-keys distribution** (genesis VPS → joining VPS):
+
+```bash
+# From genesis VPS — copy genesis-wallet.json + genesis-keys/:
+sudo cat /var/lib/lichen/state-testnet/genesis-wallet.json \
+  | ssh -p 2222 ubuntu@<JOINING_IP> \
+  "sudo bash -c 'mkdir -p /var/lib/lichen/state-testnet/genesis-keys && cat > /var/lib/lichen/state-testnet/genesis-wallet.json && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-wallet.json && chmod 640 /var/lib/lichen/state-testnet/genesis-wallet.json'"
+
+for f in $(sudo ls /var/lib/lichen/state-testnet/genesis-keys/); do
+  sudo cat /var/lib/lichen/state-testnet/genesis-keys/$f \
+    | ssh -p 2222 ubuntu@<JOINING_IP> \
+    "sudo bash -c 'cat > /var/lib/lichen/state-testnet/genesis-keys/$f && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-keys/$f && chmod 640 /var/lib/lichen/state-testnet/genesis-keys/$f'"
+done
 ```
 
 ---
@@ -1353,6 +1392,17 @@ for VPS in 37.59.97.61 15.235.142.253; do
   # Copy faucet keypair
   ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /var/lib/lichen/faucet-keypair-testnet.json" \
     | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /var/lib/lichen/faucet-keypair-testnet.json && chown lichen:lichen /var/lib/lichen/faucet-keypair-testnet.json && chmod 600 /var/lib/lichen/faucet-keypair-testnet.json'"
+
+  # CRITICAL: Copy genesis-wallet.json and genesis-keys/ (treasury keypair)
+  # Without these, RPC airdrop requests to this node will fail with
+  # "Treasury keypair not configured"
+  ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /var/lib/lichen/state-testnet/genesis-wallet.json" \
+    | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'cat > /var/lib/lichen/state-testnet/genesis-wallet.json && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-wallet.json && chmod 640 /var/lib/lichen/state-testnet/genesis-wallet.json'"
+
+  for f in $(ssh -p 2222 ubuntu@15.204.229.189 "sudo ls /var/lib/lichen/state-testnet/genesis-keys/"); do
+    ssh -p 2222 ubuntu@15.204.229.189 "sudo cat /var/lib/lichen/state-testnet/genesis-keys/$f" \
+      | ssh -p 2222 ubuntu@$VPS "sudo bash -c 'mkdir -p /var/lib/lichen/state-testnet/genesis-keys && cat > /var/lib/lichen/state-testnet/genesis-keys/$f && chown lichen:lichen /var/lib/lichen/state-testnet/genesis-keys/$f && chmod 640 /var/lib/lichen/state-testnet/genesis-keys/$f'"
+  done
 
   echo "Done: $VPS"
 done
@@ -1695,3 +1745,23 @@ The static portal calls the API at `https://faucet.lichen.network/faucet/request
 The faucet service only serves API endpoints (`/health`, `/faucet/config`, `/faucet/status`, `/faucet/airdrops`, `/faucet/request`). It does NOT serve static HTML — that comes from Cloudflare Pages.
 
 Do NOT confuse the `faucet` key in `shared-config.js` with a portal URL — it is the API endpoint. The faucet portal is accessed via the Pages `.pages.dev` domain or a custom domain added to the Pages project.
+
+---
+
+## Incident Log
+
+### 2026-04-09: Treasury keypair missing on seed-02/seed-03
+
+**Symptom:** RPC `requestAirdrop` calls routed via Cloudflare round-robin intermittently failed with `"Treasury keypair not configured"`. DEX and marketplace tests on VPS showed 0 orders/trades because wallets only had ~20 LICN (genesis allocation) and could not fund contract operations.
+
+**Root cause:** The `genesis-wallet.json` and `genesis-keys/` directory (containing the treasury keypair) are local artifacts created ONLY on the genesis VPS during genesis creation. They are NOT part of the blockchain state that syncs via P2P. The deployment pipeline had no step to distribute these files to joining VPSes. Seed-02 and seed-03 had empty `genesis-keys/` directories and no `genesis-wallet.json`, causing `load_treasury_keypair()` to return `None`.
+
+**Fix:** Added genesis-keys distribution to all deployment paths:
+- `run-validator.sh`: Auto-propagates genesis-keys from V1 to V2/V3 in local dev
+- `scripts/vps-post-genesis.sh`: New section 6 distributes genesis-keys to joining VPSes
+- `PRODUCTION_DEPLOYMENT.md`: Updated Step 6, secrets table, and Phase 9 of clean-slate checklist
+- `deploy/setup.sh`: Added Step 5a with explicit genesis-keys distribution commands
+- `skills/validator/setup-and-run-validator.sh`: Auto-copies genesis-keys for joining validators
+- `skills/validator/SKILL.md`: Added genesis-keys setup instructions for external validators
+
+**Prevention:** Every joining validator — whether VPS, local dev, or external agent — must have `genesis-wallet.json` and `genesis-keys/` copied from the genesis node before starting. The deployment scripts now enforce this automatically.
