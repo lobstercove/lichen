@@ -261,8 +261,40 @@ for i in $(seq 1 $#); do
 		fi
 done
 
+propagate_genesis_keys() {
+	# For V2+ local validators, copy genesis-wallet.json and genesis-keys/ from V1
+	# so that treasury keypair, faucet, etc. are available on all local nodes.
+	if [[ "$VALIDATOR_NUM" == "1" ]]; then
+		return
+	fi
+
+	V1_DB_PATH="${REPO_ROOT}/data/state-${BASE_P2P}"
+
+	# Copy genesis-wallet.json from V1 if we don't have one
+	if [[ ! -f "$GENESIS_WALLET_FILE" && -f "$V1_DB_PATH/genesis-wallet.json" ]]; then
+		cp "$V1_DB_PATH/genesis-wallet.json" "$GENESIS_WALLET_FILE"
+		echo "  ✓ Copied genesis-wallet.json from V1"
+	fi
+
+	# Copy genesis-keys/ from V1 if V1 has them
+	if [[ -d "$V1_DB_PATH/genesis-keys" ]]; then
+		mkdir -p "$DB_PATH/genesis-keys"
+		# Only copy files that don't already exist (don't overwrite)
+		for keyfile in "$V1_DB_PATH/genesis-keys/"*.json; do
+			[ -f "$keyfile" ] || continue
+			local basename
+			basename="$(basename "$keyfile")"
+			if [[ ! -f "$DB_PATH/genesis-keys/$basename" ]]; then
+				cp "$keyfile" "$DB_PATH/genesis-keys/$basename"
+				echo "  ✓ Copied genesis-keys/$basename from V1"
+			fi
+		done
+	fi
+}
+
 write_local_seeds_file
 ensure_local_genesis
+propagate_genesis_keys
 
 if [[ "${LICHEN_SUPERVISED:-0}" == "1" ]]; then
 	# External supervisor is active; run validator in direct worker mode to
