@@ -4580,6 +4580,43 @@
     margin-bottom: 16px;
 }
 
+.wm-extension-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 0.85rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+}
+
+.wm-extension-status.hidden {
+    display: none;
+}
+
+.wm-extension-status.ready {
+    color: #7ef5d5;
+    background: rgba(0, 201, 219, 0.14);
+    border-color: rgba(0, 201, 219, 0.32);
+}
+
+.wm-extension-status.warning {
+    color: #ffd78c;
+    background: rgba(255, 209, 102, 0.14);
+    border-color: rgba(255, 209, 102, 0.32);
+}
+
+.wm-extension-status.info {
+    color: #b8c1ec;
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
 #wmCreateBtn {
     margin-bottom: 16px;
 }

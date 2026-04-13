@@ -2797,6 +2797,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const ACTIVE_WALLET_KEY = 'dexActiveWallet';
     const LEGACY_LOCAL_WALLET_SESSION_KEY = 'dexWalletSessionsV1';
     const LEGACY_LOCAL_WALLET_PASSWORD_PREFIX = 'dexWalletPassword:';
+    let lastExtensionProviderState = { available: false, connected: false, isLocked: false, accounts: [], activeAddress: '', provider: null };
+    let extensionProviderEventsBound = false;
     let savedWallets = (() => {
         try {
             const parsed = JSON.parse(localStorage.getItem('dexWallets') || '[]');
@@ -2827,6 +2829,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function normalizeWalletAddress(address) {
+        return typeof address === 'string' ? address.trim() : '';
+    }
+
+    function shortWalletAddress(address) {
+        const normalized = normalizeWalletAddress(address);
+        if (!normalized) return '';
+        return normalized.slice(0, 8) + '...' + normalized.slice(-6);
+    }
+
+    function ensureSavedExtensionWallet(address) {
+        const normalized = normalizeWalletAddress(address);
+        if (!normalized) return null;
+        let existing = savedWallets.find((walletEntry) => walletEntry.address === normalized);
+        if (existing) return existing;
+        existing = {
+            address: normalized,
+            short: shortWalletAddress(normalized),
+            added: Date.now(),
+            provider: 'extension',
+        };
+        savedWallets.push(existing);
+        persistSavedWallets();
+        return existing;
+    }
+
     function purgeLegacyLocalWalletArtifacts() {
         try { sessionStorage.removeItem(LEGACY_LOCAL_WALLET_SESSION_KEY); } catch { }
         try {
@@ -2846,10 +2874,228 @@ document.addEventListener('DOMContentLoaded', () => {
         return { signingReady: extensionReady, source: extensionReady ? 'extension' : 'none' };
     }
 
+    async function getExtensionProviderState(timeoutMs = 0) {
+        let provider = null;
+
+        if (typeof getInjectedLichenProvider === 'function') {
+            provider = getInjectedLichenProvider();
+        } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+            provider = window.licnwallet;
+        }
+
+        if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+            provider = await waitForInjectedLichenProvider(timeoutMs);
+        }
+
+        if (!provider) {
+            return { available: false, connected: false, isLocked: false, accounts: [], activeAddress: '', provider: null };
+        }
+
+        const providerState = typeof provider.getProviderState === 'function'
+            ? await provider.getProviderState().catch(() => null)
+            : null;
+        const accounts = Array.isArray(providerState?.accounts)
+            ? providerState.accounts.map(normalizeWalletAddress).filter(Boolean)
+            : [];
+
+        return {
+            available: true,
+            connected: Boolean(providerState?.connected),
+            isLocked: Boolean(providerState?.isLocked),
+            accounts,
+            activeAddress: accounts[0] || '',
+            provider,
+        };
+    }
+
+    function walletReconnectPromptHtml() {
+        if (lastExtensionProviderState.isLocked) {
+            return '<i class="fas fa-lock"></i> Unlock Extension to Sign';
+        }
+        return '<i class="fas fa-plug"></i> Reconnect Extension to Sign';
+    }
+
+    function updateExtensionTabUi(providerState) {
+        const icon = document.getElementById('wmExtensionIcon');
+        const title = document.getElementById('wmExtensionTitle');
+        const description = document.getElementById('wmExtensionDescription');
+        const status = document.getElementById('wmExtensionStatus');
+        const currentAddress = normalizeWalletAddress(state.walletAddress || wallet.address || '');
+        const activeAddress = normalizeWalletAddress(providerState.activeAddress);
+        const currentLabel = shortWalletAddress(currentAddress);
+        const activeLabel = shortWalletAddress(activeAddress);
+
+        if (!title || !description || !wmExtensionBtn) {
+            return;
+        }
+
+        wmExtensionBtn.disabled = false;
+        wmExtensionBtn.innerHTML = '<i class="fas fa-plug"></i> Connect Extension';
+
+        if (icon) {
+            icon.className = 'fas fa-plug';
+        }
+
+        if (status) {
+            status.className = 'wm-extension-status hidden';
+            status.textContent = '';
+        }
+
+        if (!providerState.available) {
+            title.textContent = 'Extension Not Detected';
+            description.textContent = 'Install or open the Lichen Wallet browser extension to approve trades securely.';
+            wmExtensionBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Retry Detection';
+            if (status) {
+                status.className = 'wm-extension-status info';
+                status.textContent = 'Not detected';
+            }
+            return;
+        }
+
+        if (providerState.isLocked) {
+            title.textContent = 'Extension Locked';
+            description.textContent = currentLabel
+                ? `${currentLabel} is connected in read-only mode. Unlock the extension to sign orders, approvals, and cancellations.`
+                : 'Unlock the extension to approve orders, approvals, and cancellations.';
+            wmExtensionBtn.innerHTML = '<i class="fas fa-lock"></i> Refresh After Unlock';
+            if (icon) {
+                icon.className = 'fas fa-lock';
+            }
+            if (status) {
+                status.className = 'wm-extension-status warning';
+                status.textContent = 'Locked';
+            }
+            return;
+        }
+
+        if (providerState.connected && activeAddress) {
+            if (currentAddress && activeAddress === currentAddress && wallet.signingReady) {
+                title.textContent = 'Extension Connected';
+                description.textContent = `${activeLabel} is ready to sign. If you switch the active wallet inside the extension, the DEX will follow it automatically.`;
+                wmExtensionBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Refresh Extension';
+                if (icon) {
+                    icon.className = 'fas fa-circle-check';
+                }
+                if (status) {
+                    status.className = 'wm-extension-status ready';
+                    status.textContent = 'Ready to sign';
+                }
+                return;
+            }
+
+            if (currentAddress && activeAddress !== currentAddress) {
+                title.textContent = 'Switch to Active Extension Wallet';
+                description.textContent = `${activeLabel} is active in the extension right now. Connecting here will switch the DEX signer to that wallet.`;
+                wmExtensionBtn.innerHTML = `<i class="fas fa-right-left"></i> Use ${activeLabel}`;
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Different wallet active';
+                }
+                return;
+            }
+        }
+
+        if (currentAddress) {
+            title.textContent = 'Reconnect Extension Session';
+            description.textContent = `${currentLabel} is connected in read-only mode. Reconnect the same extension wallet to resume signing.`;
+            wmExtensionBtn.innerHTML = '<i class="fas fa-plug"></i> Reconnect Extension';
+            if (status) {
+                status.className = 'wm-extension-status warning';
+                status.textContent = 'Read-only mode';
+            }
+            return;
+        }
+
+        title.textContent = 'Connect Wallet Extension';
+        description.textContent = 'Connect your Lichen Wallet browser extension to trade securely. Your private keys never leave the extension.';
+        if (status) {
+            status.className = 'wm-extension-status info';
+            status.textContent = providerState.connected ? 'Extension ready' : 'Permission required';
+        }
+    }
+
+    function bindExtensionProviderEvents(provider) {
+        if (!provider || extensionProviderEventsBound || typeof provider.on !== 'function') {
+            return;
+        }
+        extensionProviderEventsBound = true;
+
+        const refreshState = () => {
+            syncDexWithExtensionState({ notify: true }).catch(() => { });
+        };
+
+        provider.on('connect', refreshState);
+        provider.on('disconnect', refreshState);
+        provider.on('accountsChanged', refreshState);
+        provider.on('chainChanged', refreshState);
+    }
+
+    async function refreshExtensionTabState(timeoutMs = 0) {
+        lastExtensionProviderState = await getExtensionProviderState(timeoutMs);
+        bindExtensionProviderEvents(lastExtensionProviderState.provider);
+        updateExtensionTabUi(lastExtensionProviderState);
+        return lastExtensionProviderState;
+    }
+
+    async function syncDexWithExtensionState(options = {}) {
+        const { notify = false, timeoutMs = 0 } = options;
+        const providerState = await refreshExtensionTabState(timeoutMs);
+        const currentAddress = normalizeWalletAddress(state.walletAddress || wallet.address || '');
+
+        if (!currentAddress) {
+            applyWalletGateAll();
+            renderWalletList();
+            return providerState;
+        }
+
+        if (!providerState.available || !providerState.connected || providerState.isLocked || !providerState.activeAddress) {
+            const wasReady = wallet.signingReady;
+            wallet.signingReady = false;
+            wallet.keypair = null;
+            applyWalletGateAll();
+            renderWalletList();
+            if (notify && wasReady) {
+                showNotification(
+                    providerState.isLocked
+                        ? 'Extension locked. Unlock it to sign new orders.'
+                        : 'Extension session not active. Reconnect to sign new orders.',
+                    'warning'
+                );
+            }
+            return providerState;
+        }
+
+        ensureSavedExtensionWallet(providerState.activeAddress);
+
+        if (providerState.activeAddress === currentAddress) {
+            const becameReady = !wallet.signingReady;
+            wallet.signingReady = true;
+            wallet.keypair = { connected: true };
+            applyWalletGateAll();
+            renderWalletList();
+            if (notify && becameReady) {
+                showNotification('Extension wallet ready to sign.', 'success');
+            }
+            return providerState;
+        }
+
+        await connectWalletTo(providerState.activeAddress, shortWalletAddress(providerState.activeAddress), { signingReady: true });
+        if (notify) {
+            showNotification(`DEX switched to active extension wallet ${shortWalletAddress(providerState.activeAddress)}.`, 'info');
+        }
+        return providerState;
+    }
+
     purgeLegacyLocalWalletArtifacts();
     persistSavedWallets();
 
-    function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'extension'); } }
+    async function openWalletModal() {
+        if (!walletModal) return;
+        walletModal.classList.remove('hidden');
+        await syncDexWithExtensionState({ timeoutMs: 400 });
+        await renderWalletList();
+        switchWmTab(savedWallets.length ? 'wallets' : 'extension');
+    }
     function closeWalletModalFn() {
         if (walletModal) walletModal.classList.add('hidden');
         resetWalletModalInputs();
@@ -2859,11 +3105,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // DEX only supports extension-backed wallets.
     }
 
-    if (connectBtn) connectBtn.addEventListener('click', () => openWalletModal());
+    if (connectBtn) connectBtn.addEventListener('click', () => { openWalletModal().catch(() => { }); });
     if (closeModalBtn) closeModalBtn.addEventListener('click', closeWalletModalFn);
     if (walletModal) walletModal.addEventListener('click', e => { if (e.target === walletModal) closeWalletModalFn(); });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
+    window.addEventListener('focus', () => { syncDexWithExtensionState().catch(() => { }); });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            syncDexWithExtensionState().catch(() => { });
+        }
+    });
 
     // Extension tab — connect via wallet extension
     const wmExtensionBtn = document.getElementById('wmExtensionBtn');
@@ -2872,10 +3124,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (wmExtensionBtn) wmExtensionBtn.addEventListener('click', async () => {
         try {
             await wallet.connect();
-            if (!savedWallets.some(w => w.address === wallet.address)) {
-                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now(), provider: 'extension' });
-                persistSavedWallets();
-            }
+            ensureSavedExtensionWallet(wallet.address);
             await connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
             closeWalletModalFn();
             showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
@@ -2924,6 +3173,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
         renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory();
         loadPredictionHistory();
+        await refreshExtensionTabState();
         renderWalletList();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
     }
@@ -2939,6 +3189,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
         loadTradeHistory(); loadMarginPositions(); loadMarginHistory(); loadLPPositions(); loadPredictionPositions(); loadPredictionHistory(); loadCreatedMarkets();
+        refreshExtensionTabState().catch(() => { });
     }
 
     function toggleWalletPanels(show) {
@@ -2971,7 +3222,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* RPC unavailable — show plain addresses */ }
         list.innerHTML = savedWallets.map((w, i) => {
             const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);
-            return `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
+            const activeStateLabel = walletCanSign() ? 'Active' : 'Read-only';
+            return `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? `<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">${activeStateLabel}</span>` : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
         }).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
         list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', async () => {
             const w = savedWallets[parseInt(btn.dataset.idx)];
@@ -3152,7 +3404,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 submitBtn.disabled = true;
                 submitBtn.className = 'btn-full btn-wallet-gate';
                 submitBtn.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
@@ -3177,7 +3429,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 predictSubmit.disabled = true;
                 predictSubmit.className = 'btn-full btn-wallet-gate';
                 predictSubmit.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
@@ -3191,7 +3443,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 predictCreate.disabled = true;
                 predictCreate.className = 'btn btn-full btn-wallet-gate';
                 predictCreate.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Create';
             }
         }
@@ -3209,7 +3461,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 addLiqSubmit.disabled = true;
                 addLiqSubmit.className = 'btn btn-full btn-wallet-gate';
                 addLiqSubmit.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet';
             }
         }
@@ -3227,7 +3479,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalSubmit.disabled = true;
                 proposalSubmit.className = 'btn btn-full btn-wallet-gate';
                 proposalSubmit.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Propose';
             }
         }
@@ -3291,7 +3543,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 launchTradeGate.disabled = true;
                 launchTradeGate.className = 'btn btn-full btn-wallet-gate';
                 launchTradeGate.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
@@ -3305,7 +3557,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 launchCreateGate.disabled = true;
                 launchCreateGate.className = 'btn btn-full btn-wallet-gate';
                 launchCreateGate.innerHTML = connected
-                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    ? walletReconnectPromptHtml()
                     : '<i class="fas fa-wallet"></i> Connect Wallet to Launch';
             }
         }
@@ -7080,6 +7332,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 await connectWalletTo(restored.address, shortAddr, { signingReady });
             }
         }
+        await refreshExtensionTabState(400);
     })().catch(e => console.error('[DEX] Init error:', e));
 
     // F6.12: Clean up WebSocket connections on page unload
