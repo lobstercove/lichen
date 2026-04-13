@@ -5,6 +5,7 @@ This is the current operator runbook for the repo as it exists today.
 Use this document as the canonical workflow for:
 
 - local validator development via `scripts/start-local-3validators.sh`
+- local production-parity stack validation via `scripts/start-local-stack.sh`
 - VPS validator deployment via `deploy/setup.sh`
 - local full-stack extension when custody, faucet, and browser flows are needed
 - genesis DB creation and post-genesis bootstrap
@@ -19,6 +20,7 @@ This runbook intentionally prefers the scripts that are verified in the current 
 | --- | --- |
 | **VPS clean-slate redeploy** | `scripts/clean-slate-redeploy.sh testnet` |
 | Local validator development | `scripts/start-local-3validators.sh` |
+| **Local production-parity stack** | `scripts/start-local-stack.sh testnet` |
 | VPS initial provisioning | `deploy/setup.sh` |
 
 `deploy/setup.sh` is now responsible for the public edge as well: it installs the checked-in Caddy config from `deploy/Caddyfile.*`, enables the `caddy` service, uses internal TLS for Cloudflare-origin traffic, and keeps raw RPC, WebSocket, faucet, and custody ports off the public firewall surface.
@@ -63,6 +65,42 @@ Important distinctions:
 - `scripts/start-local-stack.sh` extends the supported local validator path with custody, faucet, and post-genesis bootstrap.
 - `scripts/first-boot-deploy.sh` is post-genesis bootstrap only. Genesis itself deploys the contract catalog.
 - `lichen-start.sh` is for manual foreground debugging only, not part of the supported operator runbook.
+
+## Local parity contract
+
+The repo supports two different local workflows, and they are not interchangeable:
+
+- `scripts/start-local-3validators.sh` is for validator and consensus development. It is intentionally lighter than VPS deployment.
+- `scripts/start-local-stack.sh` is the supported local analog for production-like stack validation.
+
+If you are trying to answer "will this behave like the VPS deployment except for being disposable?", use `scripts/start-local-stack.sh`, not the validator-only launcher.
+
+Production-parity rule:
+
+- The acceptable difference between local parity runs and VPS runs is disposability and host orchestration.
+- Local parity runs may use repo-local data paths, shell-managed processes, and loopback networking.
+- Local parity runs must still use the same release binaries, the same genesis flow, the same post-genesis bootstrap, the same contract artifacts, the same signed-metadata generation path, the same custody/faucet services, and the same keypair-password policy.
+
+Current status of that contract in this repo:
+
+| Concern | Local 3-validator | Local full stack | VPS deployment |
+| --- | --- | --- | --- |
+| 3-validator consensus shape | Yes | Yes | Yes |
+| Release validator binary | Yes | Yes | Yes |
+| Genesis + post-genesis bootstrap | Partial | Yes | Yes |
+| Custody service | No | Yes | Yes |
+| Faucet service | No | Yes on testnet | Yes on US testnet host |
+| Signed metadata manifest refresh | Yes | Yes | Yes |
+| Same encrypted-keypair path when `LICHEN_KEYPAIR_PASSWORD` is exported | Yes | Yes | Yes |
+| Public ingress via Caddy / Cloudflare | No | No | Yes |
+| systemd ownership of services | No | No | Yes |
+| Disposable reset to clean genesis | Yes | Yes | No by default |
+
+Operational consequence:
+
+- Do not treat `scripts/start-local-3validators.sh` as a production-representative environment.
+- Treat `scripts/start-local-stack.sh` as the required local gate for production-like E2E and matrix work.
+- Treat VPS or staging deployment as the final gate for systemd, ingress, firewall, and long-lived-state behavior.
 
 ## Network selection and public ingress
 
@@ -137,7 +175,9 @@ Operational rules:
 
 ### Local 3-validator cluster
 
-Use this when you want the verified multi-validator path with signed metadata generation.
+Use this when you want the verified multi-validator path with signed metadata generation and nothing else.
+
+This is not the production-parity local deployment. It is a validator-focused developer workflow.
 
 Start from a clean state:
 
@@ -181,10 +221,13 @@ What it does not do:
 
 - it does not start custody or faucet
 - it does not manage local stack status outside validator health
+- it does not mirror the VPS service layout closely enough for release-signoff E2E work
 
 ### Local full stack
 
-Use this when you want validators plus custody, faucet, and first-boot deploy.
+Use this when you want the closest supported local analog to the VPS deployment while keeping the stack disposable.
+
+This is the local production-parity path for E2E and matrix validation.
 
 Start:
 
@@ -212,6 +255,21 @@ What the full-stack launcher starts:
 - faucet service on testnet
 - `scripts/first-boot-deploy.sh` after validator health
 
+What still differs from VPS deployment:
+
+- processes are shell-managed rather than owned by systemd
+- state lives under repo-local `data/state-*` paths rather than `/var/lib/lichen/*`
+- ingress is loopback-only and does not include Caddy or Cloudflare
+- SSH, firewall, service-user, and origin-edge behavior are not part of the local stack
+
+What must not differ for production-like testing:
+
+- release binaries and contract artifacts
+- genesis and first-boot bootstrap behavior
+- custody/faucet/runtime feature set
+- signed metadata generation path
+- encrypted keypair handling when `LICHEN_KEYPAIR_PASSWORD` is set
+
 Where to look for logs:
 
 ```bash
@@ -235,6 +293,13 @@ LICHEN_REUSE_EXISTING_CLUSTER=1 bash tests/local-multi-validator-test.sh
 ```
 
 Keep `LICHEN_KEYPAIR_PASSWORD` exported while running Python or SDK-driven E2Es against that cluster. The helper files under `keypairs/` and `data/state-*/genesis-keys/` may now be encrypted canonical keypair JSON, and the SDK loader uses the same password to open them.
+
+For production-like validation, the minimum local gate is:
+
+1. Run `scripts/start-local-stack.sh testnet` from a clean reset.
+2. Run the intended E2E or matrix workload.
+3. Re-run the same workload without resetting state to catch reused-signer, reused-faucet, and long-lived-chain issues.
+4. Only after that, run the VPS or staging gate for systemd and ingress-specific behavior.
 
 ## Genesis Runbook
 
