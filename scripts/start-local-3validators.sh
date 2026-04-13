@@ -26,6 +26,9 @@ NETWORK="${LICN_LOCAL_NETWORK:-testnet}"
 MANIFEST_FILE="$ROOT/signed-metadata-manifest-${NETWORK}.json"
 SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-$ROOT/keypairs/release-signing-key.json}"
 RPC_WAIT_SECS="${LICN_LOCAL_RPC_WAIT_SECS:-900}"
+STATE1_DIR=""
+STATE2_DIR=""
+STATE3_DIR=""
 
 export LICHEN_LOCAL_DEV=1
 
@@ -116,6 +119,10 @@ case "$NETWORK" in
     ;;
 esac
 
+STATE1_DIR="$ROOT/data/state-${P2P1}"
+STATE2_DIR="$ROOT/data/state-${P2P2}"
+STATE3_DIR="$ROOT/data/state-${P2P3}"
+
 mkdir -p "$ART_DIR"
 
 generate_local_token() {
@@ -192,6 +199,85 @@ wait_rpc() {
     sleep "$delay"
   done
   return 1
+}
+
+wait_rpc_down() {
+  local port="$1"
+  local attempts="${2:-30}"
+  local delay="${3:-1}"
+  for _ in $(seq 1 "$attempts"); do
+    if ! rpc_ok "$port"; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  return 1
+}
+
+start_validator() {
+  local validator_num="$1"
+  local signer_bind="$2"
+  local log_file="$3"
+  local append_mode="${4:-0}"
+  local pid
+
+  if [[ "$append_mode" == "1" ]]; then
+    LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >>"$log_file" 2>&1 &
+  else
+    LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >"$log_file" 2>&1 &
+  fi
+  pid=$!
+  echo "$pid"
+}
+
+stop_pid() {
+  local pid="$1"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+sync_seed_state_to_joiners() {
+  local joiner_dir
+
+  if [[ ! -f "$STATE1_DIR/CURRENT" ]]; then
+    echo "[local-3validators] ERROR: seed state is not initialized at $STATE1_DIR"
+    return 1
+  fi
+
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "[local-3validators] ERROR: rsync is required to snapshot seed state to local joiners"
+    return 1
+  fi
+
+  for joiner_dir in "$STATE2_DIR" "$STATE3_DIR"; do
+    mkdir -p "$joiner_dir"
+    rsync -a --delete \
+      --exclude='validator-keypair.json' \
+      --exclude='signer-keypair.json' \
+      --exclude='seeds.json' \
+      --exclude='LOCK' \
+      --exclude='IDENTITY' \
+      --exclude='LOG' \
+      --exclude='LOG.old.*' \
+      --exclude='known-peers.json' \
+      --exclude='logs/' \
+      --exclude='home/' \
+      "$STATE1_DIR/" "$joiner_dir/"
+    rm -f "$joiner_dir/known-peers.json" 2>/dev/null || true
+    rm -f "$joiner_dir/seeds.json" 2>/dev/null || true
+    rm -rf "$joiner_dir/home" 2>/dev/null || true
+  done
 }
 
 generate_signed_metadata_manifest() {
@@ -294,18 +380,15 @@ start_cluster() {
   clear_local_peer_trust_state
 
   echo "[local-3validators] starting V1 via run-validator.sh ($NETWORK)"
-  LICHEN_SIGNER_BIND=127.0.0.1:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
-  V1PID=$!
+  V1PID="$(start_validator 1 127.0.0.1:9301 "$LOG1")"
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V2 via run-validator.sh ($NETWORK)"
-  LICHEN_SIGNER_BIND=127.0.0.1:9302 RUST_LOG=warn "$RUNNER" "$NETWORK" 2 --dev-mode >"$LOG2" 2>&1 &
-  V2PID=$!
+  V2PID="$(start_validator 2 127.0.0.1:9302 "$LOG2")"
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V3 via run-validator.sh ($NETWORK)"
-  LICHEN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
-  V3PID=$!
+  V3PID="$(start_validator 3 127.0.0.1:9303 "$LOG3")"
 
   if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
     echo "[local-3validators] ERROR: cluster did not become healthy"
@@ -323,6 +406,98 @@ start_cluster() {
   echo "[local-3validators] ready pids=$V1PID,$V2PID,$V3PID"
 }
 
+start_seed_only() {
+  local reset="${1:-0}"
+  local v1pid
+
+  if [[ ! -x "$RUNNER" ]]; then
+    echo "[local-3validators] ERROR: run-validator.sh not executable at $RUNNER"
+    exit 1
+  fi
+
+  ensure_runtime_binaries
+  refresh_changed_contract_wasm
+
+  stop_cluster
+
+  prepare_local_bridge_env
+
+  if [[ "$reset" == "1" ]]; then
+    bash "$ROOT/reset-blockchain.sh" "$NETWORK" >/dev/null
+  fi
+
+  clear_local_peer_trust_state
+
+  echo "[local-3validators] starting seed validator V1 via run-validator.sh ($NETWORK)"
+  v1pid="$(start_validator 1 127.0.0.1:9301 "$LOG1")"
+
+  if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1; then
+    echo "[local-3validators] ERROR: seed validator did not become healthy"
+    stop_cluster
+    exit 1
+  fi
+
+  echo "$v1pid" > "$PID_FILE"
+  echo "[local-3validators] seed-ready pid=$v1pid rpc=$RPC1"
+}
+
+promote_joiners_from_seed_snapshot() {
+  local existing_pids v1pid v1restart_pid v2pid v3pid
+
+  if [[ ! -f "$PID_FILE" ]]; then
+    echo "[local-3validators] ERROR: seed validator is not running; start it first"
+    exit 1
+  fi
+
+  existing_pids="$(cat "$PID_FILE")"
+  v1pid="${existing_pids%% *}"
+
+  if ! rpc_ok "$RPC1"; then
+    echo "[local-3validators] ERROR: seed validator RPC is not healthy on $RPC1"
+    exit 1
+  fi
+
+  echo "[local-3validators] stopping V1 for a clean local seed snapshot"
+  stop_pid "$v1pid"
+  if ! wait_rpc_down "$RPC1" 30 1; then
+    echo "[local-3validators] ERROR: seed validator did not stop cleanly"
+    stop_cluster
+    exit 1
+  fi
+
+  echo "[local-3validators] syncing seed state into V2/V3 data directories"
+  if ! sync_seed_state_to_joiners; then
+    stop_cluster
+    exit 1
+  fi
+
+  echo "[local-3validators] restarting V1 after snapshot"
+  v1restart_pid="$(start_validator 1 127.0.0.1:9301 "$LOG1" 1)"
+  sleep "$STAGGER_SECS"
+
+  echo "[local-3validators] starting V2 from seed snapshot"
+  v2pid="$(start_validator 2 127.0.0.1:9302 "$LOG2")"
+  sleep "$STAGGER_SECS"
+
+  echo "[local-3validators] starting V3 from seed snapshot"
+  v3pid="$(start_validator 3 127.0.0.1:9303 "$LOG3")"
+
+  if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
+    echo "[local-3validators] ERROR: snapshot-provisioned cluster did not become healthy"
+    stop_cluster
+    exit 1
+  fi
+
+  if ! generate_signed_metadata_manifest; then
+    echo "[local-3validators] ERROR: failed to prepare signed metadata manifest after joiner promotion"
+    stop_cluster
+    exit 1
+  fi
+
+  echo "$v1restart_pid $v2pid $v3pid" > "$PID_FILE"
+  echo "[local-3validators] joiners-ready pids=$v1restart_pid,$v2pid,$v3pid"
+}
+
 cmd="${1:-status}"
 case "$cmd" in
   start)
@@ -330,6 +505,15 @@ case "$cmd" in
     ;;
   start-reset)
     start_cluster 1
+    ;;
+  start-seed)
+    start_seed_only 0
+    ;;
+  start-reset-seed)
+    start_seed_only 1
+    ;;
+  start-joiners-from-seed-snapshot)
+    promote_joiners_from_seed_snapshot
     ;;
   stop)
     stop_cluster
@@ -339,7 +523,7 @@ case "$cmd" in
     status_cluster
     ;;
   *)
-    echo "usage: $0 {start|start-reset|stop|status}"
+    echo "usage: $0 {start|start-reset|start-seed|start-reset-seed|start-joiners-from-seed-snapshot|stop|status}"
     exit 2
     ;;
 esac

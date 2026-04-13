@@ -39,6 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 LOCAL_CLUSTER_SCRIPT="$REPO_ROOT/scripts/start-local-3validators.sh"
+LOCAL_CLUSTER_RESET="${LICHEN_LOCAL_RESET_CLUSTER:-1}"
 
 LOCAL_SIGNED_METADATA_KEYPAIR_DEFAULT="$REPO_ROOT/keypairs/release-signing-key.json"
 
@@ -176,6 +177,7 @@ LOCAL_HEALTH_TIMEOUT_SECS="${LICHEN_LOCAL_HEALTH_TIMEOUT_SECS:-900}"
 
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
+CUSTODY_PID=""
 
 SERVICE_FLEET_CONFIG_FILE="${LOG_DIR}/service-fleet-config.json"
 SERVICE_FLEET_STATUS_FILE="${LOG_DIR}/service-fleet-status.json"
@@ -249,7 +251,9 @@ clear_local_peer_trust_state
 
 cleanup_started_processes() {
   "$LOCAL_CLUSTER_SCRIPT" stop >/dev/null 2>&1 || true
-  kill "$CUSTODY_PID" 2>/dev/null || true
+  if [ -n "${CUSTODY_PID:-}" ]; then
+    kill "$CUSTODY_PID" 2>/dev/null || true
+  fi
   if [ -n "${FAUCET_PID:-}" ]; then
     kill "$FAUCET_PID" 2>/dev/null || true
   fi
@@ -268,7 +272,7 @@ wait_for_file() {
   done
 
   echo "❌ Timed out waiting for ${label}: ${file_path}" >&2
-  exit 1
+  return 1
 }
 
 wait_for_healthy_rpc() {
@@ -289,7 +293,7 @@ wait_for_healthy_rpc() {
   done
 
   echo "❌ Timed out waiting for a healthy validator RPC" >&2
-  exit 1
+  return 1
 }
 
 validator_health_status() {
@@ -383,17 +387,35 @@ wait_for_validator_cluster_ready() {
   return 1
 }
 
-echo "🦞 Starting canonical 3-validator local cluster..."
-LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start
+if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
+  LOCAL_CLUSTER_BOOTSTRAP_CMD="start-reset-seed"
+else
+  LOCAL_CLUSTER_BOOTSTRAP_CMD="start-seed"
+fi
 
-wait_for_file "$GENESIS_TREASURY_KEYPAIR" "genesis treasury keypair"
-wait_for_file "$GENESIS_PRIMARY_KEYPAIR" "genesis primary keypair"
+echo "🦞 Starting seed validator for local production-parity stack..."
+if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" "$LOCAL_CLUSTER_BOOTSTRAP_CMD"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+if ! wait_for_file "$GENESIS_TREASURY_KEYPAIR" "genesis treasury keypair"; then
+  cleanup_started_processes
+  exit 1
+fi
+if ! wait_for_file "$GENESIS_PRIMARY_KEYPAIR" "genesis primary keypair"; then
+  cleanup_started_processes
+  exit 1
+fi
 
 mkdir -p ./keypairs
 install -m 600 "$GENESIS_PRIMARY_KEYPAIR" "$LOCAL_DEPLOYER_KEYPAIR"
 export CUSTODY_TREASURY_KEYPAIR="${CUSTODY_TREASURY_KEYPAIR:-$LOCAL_DEPLOYER_KEYPAIR}"
 
-CLUSTER_RPC_URL="$(wait_for_healthy_rpc "$LOCAL_HEALTH_TIMEOUT_SECS")"
+if ! CLUSTER_RPC_URL="$(wait_for_healthy_rpc "$LOCAL_HEALTH_TIMEOUT_SECS")"; then
+  cleanup_started_processes
+  exit 1
+fi
 export CUSTODY_LICHEN_RPC_URL="$CLUSTER_RPC_URL"
 export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
 
@@ -420,6 +442,12 @@ if "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "$CLUSTER_RPC_URL" --skip-build >"
   echo "✅ Post-genesis bootstrap complete"
 else
   echo "❌ Post-genesis bootstrap failed; see ${LOG_DIR}/first-boot-deploy.log" >&2
+  cleanup_started_processes
+  exit 1
+fi
+
+echo "🦞 Provisioning joiner validators from the seed snapshot..."
+if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start-joiners-from-seed-snapshot; then
   cleanup_started_processes
   exit 1
 fi
