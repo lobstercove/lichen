@@ -73,6 +73,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # ── Test artifacts / output ─────────────────────────────────
+/tests/
 tests/artifacts/
 tests/dev_playground/
 *_test_output.txt
