@@ -15,7 +15,7 @@ export PATH
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 RUNNER="$ROOT/run-validator.sh"
-ART_DIR="$ROOT/tests/artifacts/local_cluster"
+ART_DIR="${LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR:-$ROOT/data/local-cluster}"
 PID_FILE="$ART_DIR/pids.txt"
 LOG1="$ART_DIR/v1.log"
 LOG2="$ART_DIR/v2.log"

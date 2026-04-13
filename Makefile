@@ -249,11 +249,11 @@ check:
 
 check-expected-contracts:
 	@echo "🔍 Verifying expected contract lockfile..."
-	python3 tests/update-expected-contracts.py --check
+	bash scripts/run-local-private-check.sh tests/update-expected-contracts.py -- python3 tests/update-expected-contracts.py --check
 
 production-gate: check-expected-contracts
 	@echo "🚦 Running production E2E gate..."
-	bash tests/production-e2e-gate.sh
+	bash scripts/run-local-private-check.sh tests/production-e2e-gate.sh -- bash tests/production-e2e-gate.sh
 
 sync-shared:
 	@echo "📦 Syncing canonical shared/ from monitoring/shared/ to all frontends..."

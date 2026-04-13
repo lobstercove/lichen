@@ -52,8 +52,10 @@ lichen/
 ├── deploy/      # Systemd services, Caddy configs
 ├── infra/       # Docker Compose, Prometheus, Grafana
 ├── scripts/     # Operational scripts (genesis, health-check, deploy)
-└── tests/       # End-to-end integration tests
+└── tests/       # Local-private E2E harness, intentionally not shipped in the public clone
 ```
+
+The public repository does not ship the local-private `tests/` harness. Tracked automation now skips those checks when the private bundle is absent, while local operator workflows can still use the same paths when that harness is present.
 
 Four binaries ship from this repo:
 

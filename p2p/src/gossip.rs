@@ -486,7 +486,8 @@ mod tests {
 
     // ── GossipManager field-level assertions (requires PeerManager which is
     //    async + heavy; tested at integration level instead) ──
-    //    See tests/matrix-test-3val.sh Phase 2 for live gossip verification.
+    //    Live gossip verification belongs to the local-private three-validator
+    //    matrix harness rather than this public unit-test module.
 
     #[test]
     fn gossip_manager_struct_size_sanity() {

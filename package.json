@@ -1,9 +1,9 @@
 {
   "scripts": {
     "build-wallet-pq": "node scripts/build-wallet-pq-bundle.mjs",
-    "test-frontend-assets": "node tests/test_frontend_asset_integrity.js",
-    "test-wallet": "node tests/test_wallet_audit.js",
-    "test-wallet-extension": "node tests/test_wallet_extension_audit.js",
+    "test-frontend-assets": "bash scripts/run-local-private-check.sh tests/test_frontend_asset_integrity.js -- node tests/test_frontend_asset_integrity.js",
+    "test-wallet": "bash scripts/run-local-private-check.sh tests/test_wallet_audit.js -- node tests/test_wallet_audit.js",
+    "test-wallet-extension": "bash scripts/run-local-private-check.sh tests/test_wallet_extension_audit.js -- node tests/test_wallet_extension_audit.js",
     "validate-wallet-extension-release": "npm run test-wallet-extension && npm run test-wallet",
     "deploy-pages": "bash scripts/deploy-cloudflare-pages.sh",
     "package-wallet-extension": "node scripts/package-wallet-extension.mjs",

@@ -56,7 +56,8 @@ require_local_dev
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 cd "$REPO_ROOT" || exit 1
-LOCAL_CUSTODY_TOKEN_FILE="$REPO_ROOT/tests/artifacts/local_cluster/custody-api-auth-token"
+LOCAL_ART_DIR="${LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR:-$REPO_ROOT/data/local-cluster}"
+LOCAL_CUSTODY_TOKEN_FILE="$LOCAL_ART_DIR/custody-api-auth-token"
 
 # In dev/insecure mode skip remote signers entirely (single-key local custody).
 if [ "${CUSTODY_ALLOW_INSECURE_SEED:-0}" = "1" ]; then

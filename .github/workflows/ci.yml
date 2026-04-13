@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify expected contracts lockfile
-        run: python3 tests/update-expected-contracts.py --check
+        run: bash scripts/run-local-private-check.sh tests/update-expected-contracts.py -- python3 tests/update-expected-contracts.py --check
 
   prediction-market-tests:
     name: Prediction Market Tests
@@ -81,7 +81,7 @@ jobs:
           done
           if [ $FAIL -ne 0 ]; then echo "❌ Contract tests failed"; exit 1; fi
       - name: Run local helper guard checks
-        run: bash tests/test_local_helper_guards.sh
+        run: bash scripts/run-local-private-check.sh tests/test_local_helper_guards.sh -- bash tests/test_local_helper_guards.sh
 
   rust-sbom:
     name: Rust SBOM
@@ -151,9 +151,9 @@ jobs:
             sleep 1
           done
       - name: Run RPC integration tests
-        run: bash tests/test-rpc-comprehensive.sh
+        run: bash scripts/run-local-private-check.sh tests/test-rpc-comprehensive.sh -- bash tests/test-rpc-comprehensive.sh
       - name: Run CLI integration tests
-        run: bash tests/test-cli-comprehensive.sh
+        run: bash scripts/run-local-private-check.sh tests/test-cli-comprehensive.sh -- bash tests/test-cli-comprehensive.sh
 
   wasm-contracts:
     name: WASM Contract Builds
@@ -193,8 +193,8 @@ jobs:
         run: cd sdk/js && npm install && npm run build
       - name: Run wallet audits
         run: |
-          node tests/test_wallet_extension_audit.js
-          node tests/test_wallet_audit.js
+          bash scripts/run-local-private-check.sh tests/test_wallet_extension_audit.js -- node tests/test_wallet_extension_audit.js
+          bash scripts/run-local-private-check.sh tests/test_wallet_audit.js -- node tests/test_wallet_audit.js
       - name: Package wallet extension
         run: node scripts/package-wallet-extension.mjs
       - name: Upload wallet extension artifacts

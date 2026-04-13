@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$ArtDir = Join-Path $Root 'tests/artifacts/local_cluster'
+$ArtDir = if ($env:LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR) { $env:LICHEN_LOCAL_CLUSTER_ARTIFACT_DIR } else { Join-Path $Root 'data/local-cluster' }
 $PidFile = Join-Path $ArtDir 'pids.txt'
 $Log1 = Join-Path $ArtDir 'v1.log'
 $Log2 = Join-Path $ArtDir 'v2.log'

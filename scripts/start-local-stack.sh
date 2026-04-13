@@ -472,7 +472,7 @@ fi
 echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"
 echo "Cluster RPC: $CLUSTER_RPC_URL"
-echo "Validator launcher: $LOCAL_CLUSTER_SCRIPT start"
+echo "Validator launcher: $LOCAL_CLUSTER_SCRIPT ${LOCAL_CLUSTER_BOOTSTRAP_CMD} + start-joiners-from-seed-snapshot"
 echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"
