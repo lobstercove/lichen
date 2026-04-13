@@ -2813,6 +2813,10 @@ impl TxProcessor {
 
         // Guard: governed wallets cannot use standard transfers. They require
         // the governed transfer proposal flow (instruction types 21/22/32/33).
+        // Exception: the treasury pubkey is exempt because key derivation may
+        // map multiple roles (e.g. treasury + validator_rewards) to the same
+        // keypair, making the treasury accidentally governed.  The treasury
+        // needs direct transfer capability for funding and operations.
         if self
             .state
             .get_governed_wallet_config(from)
@@ -2820,10 +2824,19 @@ impl TxProcessor {
             .flatten()
             .is_some()
         {
-            return Err(format!(
-                "Transfer from governed wallet {} requires multi-sig proposal (use types 21/22/32/33)",
-                from.to_base58()
-            ));
+            let is_treasury = self
+                .state
+                .get_treasury_pubkey()
+                .ok()
+                .flatten()
+                .map(|t| t == *from)
+                .unwrap_or(false);
+            if !is_treasury {
+                return Err(format!(
+                    "Transfer from governed wallet {} requires multi-sig proposal (use types 21/22/32/33)",
+                    from.to_base58()
+                ));
+            }
         }
 
         let amount_bytes: [u8; 8] = ix.data[1..9]

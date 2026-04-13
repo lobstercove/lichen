@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse, urlunparse
 import httpx
 import websockets
 from .keypair import Keypair
@@ -18,6 +19,8 @@ RPC_NO_BLOCKS_RETRIES = max(1, int(os.getenv("LICHEN_RPC_NO_BLOCKS_RETRIES", "20
 RPC_NO_BLOCKS_DELAY_SECS = max(0.05, float(os.getenv("LICHEN_RPC_NO_BLOCKS_DELAY_SECS", "0.5")))
 RPC_TRANSPORT_RETRIES = max(1, int(os.getenv("LICHEN_RPC_TRANSPORT_RETRIES", "3")))
 RPC_TRANSPORT_DELAY_SECS = max(0.05, float(os.getenv("LICHEN_RPC_TRANSPORT_DELAY_SECS", "0.25")))
+WS_SUBSCRIBE_TIMEOUT_SECS = max(1.0, float(os.getenv("LICHEN_WS_SUBSCRIBE_TIMEOUT_SECS", "10.0")))
+TX_CONFIRM_POLL_SECS = max(0.1, float(os.getenv("LICHEN_TX_CONFIRM_POLL_SECS", "0.5")))
 
 
 class Connection:
@@ -413,13 +416,30 @@ class Connection:
     # ============================================================================
     # WEBSOCKET SUBSCRIPTIONS
     # ============================================================================
+
+    @staticmethod
+    def _ws_is_open(ws: Any) -> bool:
+        """Handle connection-state checks across websockets client versions."""
+        if ws is None:
+            return False
+
+        closed = getattr(ws, "closed", None)
+        if isinstance(closed, bool):
+            return not closed
+
+        state = getattr(ws, "state", None)
+        state_name = getattr(state, "name", None)
+        if isinstance(state_name, str):
+            return state_name.upper() == "OPEN"
+
+        return True
     
     async def _connect_ws(self):
         """Connect to WebSocket"""
         if not self.ws_url:
             raise ValueError("WebSocket URL not provided")
         
-        if self._ws and not self._ws.closed:
+        if self._ws and self._ws_is_open(self._ws):
             return
         
         self._ws = await websockets.connect(self.ws_url)
@@ -488,7 +508,7 @@ class Connection:
         
         # Wait for response from the background task
         try:
-            data = await asyncio.wait_for(future, timeout=5.0)
+            data = await asyncio.wait_for(future, timeout=WS_SUBSCRIBE_TIMEOUT_SECS)
             if "error" in data:
                 raise Exception(f"Subscription error: {data['error']['message']}")
             return data["result"]
@@ -514,7 +534,7 @@ class Connection:
         
         # Wait for response from the background task
         try:
-            data = await asyncio.wait_for(future, timeout=5.0)
+            data = await asyncio.wait_for(future, timeout=WS_SUBSCRIBE_TIMEOUT_SECS)
             self._subscriptions.pop(sub_id, None)
             return data.get("result", False)
         except asyncio.TimeoutError:
@@ -636,35 +656,78 @@ class Connection:
         return await self._unsubscribe("unsubscribeMarketSales", sub_id)
 
     async def confirm_transaction(self, signature: str, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
-        """Wait for a transaction signature to be confirmed via WebSocket.
+        """Wait for a transaction signature to be confirmed.
 
-        Uses ``signatureSubscribe`` for a push-based one-shot notification
-        instead of polling ``getTransaction`` in a loop.  Falls back to RPC
-        polling when the WS URL is not available or the WS connection fails.
-
-        Returns the signature-status notification dict on success, or *None*
-        if the timeout expires.
+        Uses WebSocket confirmation first when available, then falls back to
+        RPC polling when the subscription path is unavailable or times out.
+        Returns the confirmed transaction dict on success, or *None* if the
+        timeout expires.
         """
 
-        # ── Auto-derive WS URL when not explicitly set ──
+        timeout = max(0.0, float(timeout))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
         if not self.ws_url:
             self.ws_url = self._derive_ws_url(self.rpc_url)
 
-        # ── Try WS-based confirmation first ──
         if self.ws_url:
             try:
-                return await self._confirm_via_ws(signature, timeout)
-            except Exception:
-                pass  # fall through to RPC polling
+                result = await self._confirm_via_ws(signature, timeout)
+                if result:
+                    return result
+            except Exception as exc:
+                logger.warning(
+                    "WS confirmation failed for %s, falling back to RPC polling: %s",
+                    signature,
+                    exc,
+                )
 
-        # ── Fallback: RPC polling (same as old wait_tx) ──
-        return await self._confirm_via_rpc(signature, timeout)
+        remaining = max(0.0, deadline - loop.time())
+        return await self._confirm_via_rpc(signature, remaining)
+
+    async def _confirm_via_rpc(self, signature: str, timeout: float) -> Optional[Dict[str, Any]]:
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+
+        while True:
+            status = None
+            try:
+                status = await self._rpc("confirmTransaction", [signature])
+            except Exception:
+                status = None
+
+            status_value = status.get("value") if isinstance(status, dict) else None
+            if status_value:
+                try:
+                    tx_info = await self.get_transaction(signature)
+                    if tx_info:
+                        return tx_info
+                except Exception:
+                    pass
+                return {
+                    "signature": signature,
+                    "confirmed": True,
+                    "status": status_value,
+                    "err": status_value.get("err"),
+                }
+
+            try:
+                tx_info = await self.get_transaction(signature)
+                if tx_info:
+                    return tx_info
+            except Exception:
+                pass
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(TX_CONFIRM_POLL_SECS, remaining))
 
     async def _confirm_via_ws(self, signature: str, timeout: float) -> Optional[Dict[str, Any]]:
         """Subscribe to signatureStatus and wait for the one-shot notification.
 
         After the WS notification fires, fetches the full transaction via RPC
-        so callers get the same data shape as the polling fallback.
+        so callers get the same data shape as ``get_transaction``.
         """
         await self._connect_ws()
 
@@ -697,34 +760,30 @@ class Connection:
             except Exception:
                 pass
 
-    async def _confirm_via_rpc(self, signature: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """Fall back to polling getTransaction."""
-        t0 = asyncio.get_event_loop().time()
-        while asyncio.get_event_loop().time() - t0 < timeout:
-            try:
-                tx = await self.get_transaction(signature)
-                if tx:
-                    return tx
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-        return None
-
     @staticmethod
     def _derive_ws_url(rpc_url: str) -> Optional[str]:
         """Best-effort derivation of a WS URL from the RPC HTTP URL."""
         if not rpc_url:
             return None
-        url = rpc_url.rstrip("/")
-        if "://localhost" in url or "://127.0.0.1" in url:
-            # localhost: port 8899 → 8900
-            return url.replace("http://", "ws://").replace(":8899", ":8900")
-        if url.startswith("https://"):
-            # Production: assume /ws path on same host
-            return url.replace("https://", "wss://") + "/ws"
-        if url.startswith("http://"):
-            return url.replace("http://", "ws://") + "/ws"
-        return None
+        parsed = urlparse(rpc_url.rstrip("/"))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        port = parsed.port
+        netloc = parsed.hostname
+
+        if port in {8899, 9899}:
+            mapped_port = port + 1
+            netloc = f"{parsed.hostname}:{mapped_port}"
+            path = ""
+        elif port is None or port in {80, 443}:
+            path = "/ws"
+        else:
+            netloc = f"{parsed.hostname}:{port}"
+            path = "/ws"
+
+        return urlunparse((scheme, netloc, path, "", "", ""))
 
     async def close(self):
         """Close connection and clean up all resources"""

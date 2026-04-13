@@ -2269,6 +2269,25 @@ fn emit_program_and_nft_events(
     }
 }
 
+fn emit_signature_status_events(
+    ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
+    finality_tracker: &FinalityTracker,
+    block: &Block,
+) {
+    let status = finality_tracker
+        .commitment_for_slot(block.header.slot)
+        .to_string();
+
+    for tx in &block.transactions {
+        drop(ws_event_tx.send(lichen_rpc::ws::Event::SignatureStatus {
+            signature: tx.signature().to_hex(),
+            status: status.clone(),
+            slot: block.header.slot,
+            err: None,
+        }));
+    }
+}
+
 #[derive(Default)]
 struct SnapshotSync {
     validator_set: bool,
@@ -14072,6 +14091,7 @@ async fn execute_consensus_actions(
             {
                 let finality = finality_tracker.clone();
                 finality.mark_confirmed(height);
+                emit_signature_status_events(ws_event_tx, &finality, &block);
             }
 
             // Remove included transactions from mempool

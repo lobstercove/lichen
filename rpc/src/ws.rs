@@ -173,7 +173,7 @@ const WS_EVENT_CHANNEL_CAPACITY: usize = 4096;
 const WS_CONNECTION_QUEUE_CAPACITY: usize = 100;
 
 /// WebSocket subscription request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SubscriptionRequest {
     #[allow(dead_code)]
     jsonrpc: String,
@@ -517,6 +517,74 @@ fn signature_commitment_status(
     }
 }
 
+fn extract_signature_param(params: &serde_json::Value) -> Option<&str> {
+    params
+        .as_str()
+        .or_else(|| {
+            params
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| params.get("signature").and_then(|value| value.as_str()))
+}
+
+fn parse_signature_hash(signature: &str) -> Result<Hash, WsError> {
+    if let Ok(hash) = Hash::from_hex(signature) {
+        return Ok(hash);
+    }
+
+    let bytes = bs58::decode(signature).into_vec().map_err(|_| WsError {
+        code: -32602,
+        message: "Invalid signature format".to_string(),
+    })?;
+    if bytes.len() != 32 {
+        return Err(WsError {
+            code: -32602,
+            message: "Invalid signature format".to_string(),
+        });
+    }
+
+    let mut raw = [0u8; 32];
+    raw.copy_from_slice(&bytes);
+    Ok(Hash(raw))
+}
+
+fn parse_signature_hash_from_params(params: &serde_json::Value) -> Result<Hash, WsError> {
+    let signature = extract_signature_param(params).ok_or_else(|| WsError {
+        code: -32602,
+        message: "Expected signature string".to_string(),
+    })?;
+    parse_signature_hash(signature)
+}
+
+fn signature_status_event_from_state(state: &WsState, signature_hash: &Hash) -> Option<Event> {
+    let last_slot = state.state.get_last_slot().ok()?;
+    let slot_opt = state.state.get_tx_slot(signature_hash).ok().flatten();
+    let tx_exists = state
+        .state
+        .get_transaction(signature_hash)
+        .ok()
+        .flatten()
+        .is_some();
+
+    let (status, slot) = match (slot_opt, tx_exists) {
+        (Some(slot), _) => (
+            signature_commitment_status(state.finality.as_ref(), last_slot, slot),
+            slot,
+        ),
+        (None, true) => ("processed", last_slot),
+        (None, false) => return None,
+    };
+
+    Some(Event::SignatureStatus {
+        signature: signature_hash.to_hex(),
+        status: status.to_string(),
+        slot,
+        err: None,
+    })
+}
+
 /// Handle WebSocket connection
 async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     state.active_connections.fetch_add(1, Ordering::SeqCst);
@@ -761,101 +829,6 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         }
     });
 
-    // Task to resolve signature subscriptions into status notifications.
-    // RPC-C04: signatureSubscribe previously never fired because no producer emitted
-    // SignatureStatus events. This poller checks indexed tx signatures and pushes
-    // one-shot notifications when signatures are observed.
-    let tx_sig = tx.clone();
-    let sig_close_tx = close_tx.clone();
-    let sig_subscription_manager = subscription_manager.clone();
-    let sig_state = state.state.clone();
-    let sig_finality = state.finality.clone();
-    let signature_event_task = tokio::spawn(async move {
-        let mut sent_once: HashSet<u64> = HashSet::new();
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            interval.tick().await;
-
-            let last_slot = match sig_state.get_last_slot() {
-                Ok(slot) => slot,
-                Err(_) => continue,
-            };
-
-            let targets: Vec<(u64, String)> = {
-                let subs = sig_subscription_manager.subscriptions.read().await;
-                subs.iter()
-                    .filter_map(|(sub_id, sub_type)| {
-                        if let SubscriptionType::SignatureStatus(sig) = sub_type {
-                            Some((*sub_id, sig.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            let mut completed_subs = Vec::new();
-
-            for (sub_id, signature) in targets {
-                if sent_once.contains(&sub_id) {
-                    continue;
-                }
-
-                let hash = if let Ok(bytes) = bs58::decode(&signature).into_vec() {
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Some(Hash(arr))
-                    } else {
-                        None
-                    }
-                } else {
-                    Hash::from_hex(&signature).ok()
-                };
-
-                let Some(hash) = hash else {
-                    continue;
-                };
-
-                let slot_opt = sig_state.get_tx_slot(&hash).ok().flatten();
-                let tx_exists = sig_state.get_transaction(&hash).ok().flatten().is_some();
-
-                let Some((status, slot)) = (match (slot_opt, tx_exists) {
-                    (Some(slot), _) => {
-                        let status =
-                            signature_commitment_status(sig_finality.as_ref(), last_slot, slot);
-                        Some((status, slot))
-                    }
-                    (None, true) => Some(("processed", last_slot)),
-                    (None, false) => None,
-                }) else {
-                    continue;
-                };
-
-                let event = Event::SignatureStatus {
-                    signature: signature.clone(),
-                    status: status.to_string(),
-                    slot,
-                    err: None,
-                };
-                let notification = create_notification(sub_id, &event);
-                if let Ok(json) = serde_json::to_string(&notification) {
-                    if !enqueue_ws_message(&tx_sig, &sig_close_tx, json, "signature") {
-                        return;
-                    }
-                    sent_once.insert(sub_id);
-                    completed_subs.push(sub_id);
-                }
-            }
-
-            for sub_id in completed_subs {
-                _ = sig_subscription_manager.unsubscribe(sub_id).await;
-            }
-        }
-    });
-
     let tx_governance = tx.clone();
     let governance_close_tx = close_tx.clone();
     let governance_subscription_manager = subscription_manager.clone();
@@ -1006,10 +979,33 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 continue;
             }
             if let Ok(req) = serde_json::from_str::<SubscriptionRequest>(&text) {
-                let response = handle_subscription_request(req, &subscription_manager).await;
+                let response =
+                    handle_subscription_request(req.clone(), &subscription_manager).await;
+                let sub_id = response.result.as_ref().and_then(|value| value.as_u64());
                 if let Ok(json) = serde_json::to_string(&response) {
                     if !enqueue_ws_message(&tx, &close_tx, json, "control") {
                         break;
+                    }
+                }
+
+                if matches!(
+                    req.method.as_str(),
+                    "subscribeSignatureStatus" | "signatureSubscribe"
+                ) {
+                    if let (Some(params), Some(sub_id)) = (req.params.as_ref(), sub_id) {
+                        if let Ok(signature_hash) = parse_signature_hash_from_params(params) {
+                            if let Some(event) =
+                                signature_status_event_from_state(&state, &signature_hash)
+                            {
+                                let notification = create_notification(sub_id, &event);
+                                if let Ok(json) = serde_json::to_string(&notification) {
+                                    if !enqueue_ws_message(&tx, &close_tx, json, "signature") {
+                                        break;
+                                    }
+                                }
+                                _ = subscription_manager.unsubscribe(sub_id).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1037,7 +1033,6 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     event_task.abort();
     dex_event_task.abort();
     prediction_event_task.abort();
-    signature_event_task.abort();
     governance_event_task.abort();
     // DDoS protection: decrement active connection counter
     conn_guard.fetch_sub(1, Ordering::SeqCst);
@@ -1492,25 +1487,12 @@ async fn handle_subscription_request(
         // ─── New subscriptions ───
         "subscribeSignatureStatus" | "signatureSubscribe" => {
             if let Some(params) = req.params {
-                if let Some(sig) = params
-                    .as_str()
-                    .or_else(|| {
-                        params
-                            .as_array()
-                            .and_then(|arr| arr.first())
-                            .and_then(|v| v.as_str())
-                    })
-                    .or_else(|| params.get("signature").and_then(|v| v.as_str()))
-                {
-                    subscription_manager
-                        .subscribe(SubscriptionType::SignatureStatus(sig.to_string()))
+                match parse_signature_hash_from_params(&params) {
+                    Ok(signature_hash) => subscription_manager
+                        .subscribe(SubscriptionType::SignatureStatus(signature_hash.to_hex()))
                         .await
-                        .map(|sub_id| serde_json::json!(sub_id))
-                } else {
-                    Err(WsError {
-                        code: -32602,
-                        message: "Expected signature string".to_string(),
-                    })
+                        .map(|sub_id| serde_json::json!(sub_id)),
+                    Err(err) => Err(err),
                 }
             } else {
                 Err(WsError {
@@ -2547,6 +2529,50 @@ mod tests {
     fn signature_commitment_status_without_finality_tracker_falls_back() {
         assert_eq!(signature_commitment_status(None, 80, 79), "confirmed");
         assert_eq!(signature_commitment_status(None, 80, 80), "processed");
+    }
+
+    #[tokio::test]
+    async fn signature_subscribe_canonicalizes_base58_input_to_hex() {
+        let subscription_manager = SubscriptionManager::new();
+        let hash = Hash([0x11; 32]);
+        let response = handle_subscription_request(
+            SubscriptionRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!(1),
+                method: "signatureSubscribe".to_string(),
+                params: Some(serde_json::json!([bs58::encode(hash.0).into_string()])),
+            },
+            &subscription_manager,
+        )
+        .await;
+
+        assert_eq!(response.result, Some(serde_json::json!(1)));
+        let subscriptions = subscription_manager.subscriptions.read().await;
+        assert!(matches!(
+            subscriptions.get(&1),
+            Some(SubscriptionType::SignatureStatus(signature)) if signature == &hash.to_hex()
+        ));
+    }
+
+    #[tokio::test]
+    async fn signature_subscribe_rejects_invalid_signature() {
+        let subscription_manager = SubscriptionManager::new();
+        let response = handle_subscription_request(
+            SubscriptionRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!(1),
+                method: "signatureSubscribe".to_string(),
+                params: Some(serde_json::json!(["not-a-signature"])),
+            },
+            &subscription_manager,
+        )
+        .await;
+
+        assert!(response.result.is_none());
+        assert_eq!(
+            response.error.as_ref().map(|err| err.message.as_str()),
+            Some("Invalid signature format")
+        );
     }
 
     // ── Event matching logic (regression) ──
