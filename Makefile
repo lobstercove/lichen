@@ -249,7 +249,7 @@ check:
 
 check-expected-contracts:
 	@echo "🔍 Verifying expected contract lockfile..."
-	bash scripts/run-local-private-check.sh tests/update-expected-contracts.py -- python3 tests/update-expected-contracts.py --check
+	python3 scripts/qa/update-expected-contracts.py --check
 
 production-gate: check-expected-contracts
 	@echo "🚦 Running production E2E gate..."

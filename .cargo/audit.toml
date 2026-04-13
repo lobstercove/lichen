@@ -12,4 +12,5 @@ ignore = [
   "RUSTSEC-2025-0141", # bincode unmaintained; pinned pending migration to bincode2/postcard where applicable.
   "RUSTSEC-2026-0002", # lru IterMut unsoundness; code paths avoid IterMut usage and are covered by runtime tests.
   "RUSTSEC-2026-0012", # keccak ARMv8 backend unsoundness; production deployment targets x86_64 and CI excludes vulnerable backend.
+  "RUSTSEC-2026-0097", # rand unsoundness requires a custom logger with rand::rng(); the workspace does not install a custom logger or call rand::rng directly.
 ]
