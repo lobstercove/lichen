@@ -834,7 +834,7 @@ test('wallet settings explain that critical metadata stays pinned to trusted end
 console.log('\n── H1-01 Keypair Secret Key Protection ──');
 
 test('H1-01: toString() does not contain secret key bytes', () => {
-    const { Keypair } = require('../sdk/js/dist/keypair');
+    const { Keypair } = require('../../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const str = kp.toString();
 
@@ -851,7 +851,7 @@ test('H1-01: toString() does not contain secret key bytes', () => {
 });
 
 test('H1-01: toJSON() excludes secret key', () => {
-    const { Keypair } = require('../sdk/js/dist/keypair');
+    const { Keypair } = require('../../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const json = JSON.stringify(kp);
     const parsed = JSON.parse(json);
@@ -869,7 +869,7 @@ test('H1-01: toJSON() excludes secret key', () => {
 });
 
 test('H1-01: getSecretKey() returns valid 32-byte seed', () => {
-    const { Keypair } = require('../sdk/js/dist/keypair');
+    const { Keypair } = require('../../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const sk = kp.getSecretKey();
     assert(sk instanceof Uint8Array, 'getSecretKey must return Uint8Array');
@@ -878,7 +878,7 @@ test('H1-01: getSecretKey() returns valid 32-byte seed', () => {
 });
 
 test('H1-01: sign() still works with private _secretKey', () => {
-    const { Keypair } = require('../sdk/js/dist/keypair');
+    const { Keypair } = require('../../sdk/js/dist/keypair');
     const kp = Keypair.generate();
     const msg = new Uint8Array([1, 2, 3, 4]);
     const sig = kp.sign(msg);
@@ -892,7 +892,7 @@ test('H1-01: sign() still works with private _secretKey', () => {
 });
 
 test('H1-01: secretKey field is not directly accessible', () => {
-    const { Keypair } = require('../sdk/js/dist/keypair');
+    const { Keypair } = require('../../sdk/js/dist/keypair');
     const kp = Keypair.generate();
 
     // The old public 'secretKey' field should no longer exist
