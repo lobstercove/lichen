@@ -34,7 +34,7 @@ run_predeploy_checks() {
   info "Running frontend asset integrity audit"
   (
     cd "$REPO_ROOT"
-    bash scripts/run-local-private-check.sh tests/test_frontend_asset_integrity.js -- node tests/test_frontend_asset_integrity.js
+    node scripts/qa/test_frontend_asset_integrity.js
   )
   ok "Frontend predeploy checks complete"
   echo ""

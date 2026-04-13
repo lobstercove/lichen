@@ -57,6 +57,8 @@ lichen/
 
 The public repository does not ship the local-private `tests/` harness. Tracked automation now skips those checks when the private bundle is absent, while local operator workflows can still use the same paths when that harness is present.
 
+Tracked CI-facing static and integration QA checks now live under `scripts/qa/`.
+
 Four binaries ship from this repo:
 
 | Binary | Default port | Purpose |
