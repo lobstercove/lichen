@@ -129,8 +129,8 @@
                 <a href="rpc-reference.html" class="hub-card">
                     <div class="hub-card-icon blue"><i class="fas fa-plug"></i></div>
                     <div class="hub-card-title">JSON-RPC API</div>
-                    <div class="hub-card-desc">Complete reference for all RPC methods — query state, submit
-                        transactions, subscribe to events.</div>
+                    <div class="hub-card-desc">Complete reference for the RPC surface — query state, submit
+                        transactions, and inspect method coverage.</div>
                 </a>
 
                 <a href="ws-reference.html" class="hub-card">
@@ -201,6 +201,57 @@
                     <div class="hub-card-title">Programs IDE</div>
                     <div class="hub-card-desc">Browser-based IDE for writing, compiling, and deploying Lichen smart
                         contracts instantly.</div>
+                </a>
+
+            </div>
+        </div>
+    </section>
+
+    <section class="hub-section">
+        <div class="container">
+            <div class="hub-section-title">Live Network Surfaces</div>
+            <div class="hub-grid">
+
+                <a href="#" data-lichen-app="wallet" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-wallet"></i></div>
+                    <div class="hub-card-title">Wallet</div>
+                    <div class="hub-card-desc">Open the browser wallet used by dApps, popup sessions, and
+                        extension-backed signing flows.</div>
+                </a>
+
+                <a href="#" data-lichen-app="dex" class="hub-card">
+                    <div class="hub-card-icon green"><i class="fas fa-chart-line"></i></div>
+                    <div class="hub-card-title">SporeSwap DEX</div>
+                    <div class="hub-card-desc">Trade through the live DEX UI backed by the same RPC, WebSocket, and
+                        contract surfaces documented here.</div>
+                </a>
+
+                <a href="#" data-lichen-app="explorer" class="hub-card">
+                    <div class="hub-card-icon purple"><i class="fas fa-cube"></i></div>
+                    <div class="hub-card-title">Explorer</div>
+                    <div class="hub-card-desc">Inspect blocks, transactions, accounts, contracts, and live chain state
+                        from the production explorer.</div>
+                </a>
+
+                <a href="#" data-lichen-app="marketplace" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-store"></i></div>
+                    <div class="hub-card-title">Marketplace</div>
+                    <div class="hub-card-desc">Browse NFT listings, sales, and marketplace flows that build on the
+                        contracts and APIs documented in the portal.</div>
+                </a>
+
+                <a href="#" data-lichen-app="programs" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-code"></i></div>
+                    <div class="hub-card-title">Programs IDE</div>
+                    <div class="hub-card-desc">Write, compile, deploy, and test contracts from the live browser IDE
+                        without leaving the Lichen toolchain.</div>
+                </a>
+
+                <a href="#" data-lichen-app="faucet" class="hub-card">
+                    <div class="hub-card-icon green"><i class="fas fa-droplet"></i></div>
+                    <div class="hub-card-title">Faucet</div>
+                    <div class="hub-card-desc">Fund testnet identities and wallets before exercising the RPC, CLI, SDK,
+                        wallet, and DEX integration paths.</div>
                 </a>
 
             </div>
@@ -294,7 +345,7 @@ async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
                         <span class="code-lang">CLI</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code># Check balance of the current wallet
+                    <pre><code># Check balance of the default identity
 $ lichen balance
 42.500000000 LICN
 
@@ -303,7 +354,7 @@ $ lichen balance Mo1t...YourAddress
 42.500000000 LICN
 
 # Use a specific RPC endpoint
-$ lichen balance --url https://testnet-rpc.lichen.network Mo1t...YourAddress
+$ lichen --rpc-url https://testnet-rpc.lichen.network balance Mo1t...YourAddress
 42.500000000 LICN</code></pre>
                 </div>
             </div>
@@ -316,6 +367,8 @@ $ lichen balance --url https://testnet-rpc.lichen.network Mo1t...YourAddress
             <div class="dev-footer-links">
                 <a href="https://github.com/lobstercove/lichen" target="_blank"><i class="fab fa-github"></i>
                     GitHub</a>
+                <a href="#" data-lichen-app="wallet"><i class="fas fa-wallet"></i> Wallet</a>
+                <a href="#" data-lichen-app="dex"><i class="fas fa-chart-line"></i> DEX</a>
                 <a href="#" data-lichen-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
                 <a href="#" data-lichen-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
                 <a href="#" data-lichen-app="programs"><i class="fas fa-code"></i> Programs</a>
