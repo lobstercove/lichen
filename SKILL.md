@@ -56,9 +56,10 @@ description: Complete operational reference for autonomous agents working in the
 | Faucet | Port 9100 |
 | Custody | Port 9105 |
 | Monitoring | Port 9100 (Prometheus metrics) |
-| Contracts deployed at genesis | 29 |
+| Contracts deployed at genesis | 28 |
 | Trading pairs at genesis | 7 |
-| Total RPC methods | ~172 (JSON-RPC) + ~65 REST routes |
+| Total JSON-RPC method names | 155 (native + Solana compat + EVM compat) |
+| Total REST routes | 72 |
 | Total contract opcodes | 147 (DEX) + named exports (22 contracts) |
 | Achievements | 90+ auto-detected |
 
@@ -91,6 +92,22 @@ description: Complete operational reference for autonomous agents working in the
 | Discord | `https://discord.gg/gkQmsHXRXp` |
 | X | `https://x.com/LichenHQ` |
 | Telegram | `https://t.me/lichenhq` |
+
+### Canonical Reference Entry Points
+
+Use these pages when you need the public developer surface documentation rather than the exhaustive implementation inventory in this skill book.
+
+| Surface | Primary entry point |
+|---------|---------------------|
+| JSON-RPC | `developers/rpc-reference.html` |
+| WebSocket | `developers/ws-reference.html` |
+| SDKs | `developers/sdk-js.html`, `developers/sdk-python.html`, `developers/sdk-rust.html` |
+| Contracts | `developers/contracts.html`, `developers/contract-reference.html` |
+| CLI | `developers/cli-reference.html` |
+| Validator Ops | `developers/validator.html` |
+| Identity & Privacy | `developers/lichenid.html`, `developers/zk-privacy.html` |
+| Wallet / DEX / Explorer | `https://wallet.lichen.network`, `https://dex.lichen.network`, `https://explorer.lichen.network` |
+| Marketplace / Programs / Faucet | `https://marketplace.lichen.network`, `https://programs.lichen.network`, `https://faucet.lichen.network` |
 
 ### Seed Validators
 

@@ -359,15 +359,15 @@ const SEARCH_INDEX = [
 
     // JSON-RPC API
     { title: 'JSON-RPC API Reference', desc: 'Complete list of all RPC endpoints', url: 'rpc-reference.html', category: 'API' },
-    { title: 'licn_getBalance', desc: 'Get account balance by address', url: 'rpc-reference.html#getBalance', category: 'API' },
-    { title: 'licn_getBlock', desc: 'Retrieve a block by number or hash', url: 'rpc-reference.html#getBlock', category: 'API' },
-    { title: 'licn_sendTransaction', desc: 'Submit a signed transaction', url: 'rpc-reference.html#sendTransaction', category: 'API' },
-    { title: 'licn_getTransaction', desc: 'Get transaction details by hash', url: 'rpc-reference.html#getTransaction', category: 'API' },
-    { title: 'licn_simulateTransaction', desc: 'Simulate a transaction without sending', url: 'rpc-reference.html#simulateTransaction', category: 'API' },
-    { title: 'licn_getAccountInfo', desc: 'Get full account info including data', url: 'rpc-reference.html#getAccountInfo', category: 'API' },
+    { title: 'getBalance', desc: 'Get account balance by address', url: 'rpc-reference.html#getBalance', category: 'API' },
+    { title: 'getBlock', desc: 'Retrieve a block by number or hash', url: 'rpc-reference.html#getBlock', category: 'API' },
+    { title: 'sendTransaction', desc: 'Submit a signed transaction', url: 'rpc-reference.html#sendTransaction', category: 'API' },
+    { title: 'getTransaction', desc: 'Get transaction details by hash', url: 'rpc-reference.html#getTransaction', category: 'API' },
+    { title: 'simulateTransaction', desc: 'Simulate a transaction without sending', url: 'rpc-reference.html#simulateTransaction', category: 'API' },
+    { title: 'getAccountInfo', desc: 'Get full account info including data', url: 'rpc-reference.html#getAccountInfo', category: 'API' },
     { title: 'WebSocket Subscriptions', desc: 'Subscribe to real-time events via WebSocket', url: 'ws-reference.html#subscribeSlots', category: 'API' },
-    { title: 'licn_getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
-    { title: 'licn_getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
+    { title: 'getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
+    { title: 'getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
 
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },
@@ -382,7 +382,7 @@ const SEARCH_INDEX = [
     { title: 'Contract Setup', desc: 'Tools and patterns for contract development', url: 'contracts.html#setup', category: 'Contracts' },
     { title: 'Deploying Contracts', desc: 'Deploy smart contracts to Lichen networks', url: 'contracts.html#deploy', category: 'Contracts' },
     { title: 'Cross-Contract Calls', desc: 'Call between contracts on-chain', url: 'contracts.html#crosscall', category: 'Contracts' },
-    { title: 'Contract Reference', desc: 'Full reference for all 27 on-chain contracts', url: 'contract-reference.html', category: 'Contracts' },
+    { title: 'Contract Reference', desc: 'Full reference for all 28 on-chain contracts', url: 'contract-reference.html', category: 'Contracts' },
     { title: 'LichenID Identity', desc: 'On-chain identity, naming, and reputation', url: 'lichenid.html', category: 'Contracts' },
 
     // CLI
@@ -390,7 +390,7 @@ const SEARCH_INDEX = [
     { title: 'lichen call', desc: 'Invoke a smart contract function', url: 'cli-reference.html#call', category: 'CLI' },
     { title: 'lichen deploy', desc: 'Deploy a contract to the network', url: 'cli-reference.html#deploy', category: 'CLI' },
     { title: 'lichen transfer', desc: 'Send LICN between addresses', url: 'cli-reference.html#transfer', category: 'CLI' },
-    { title: 'lichen wallet-create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
+    { title: 'lichen wallet create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
     { title: 'lichen balance', desc: 'Check address balance', url: 'cli-reference.html#balance', category: 'CLI' },
 
     // Tokens
@@ -434,6 +434,8 @@ const SEARCH_INDEX = [
     { title: 'DEX Contracts', desc: 'Core DEX programs, governance and rewards', url: 'contract-reference.html#dex-core', category: 'Contracts' },
 
     // Tools
+    { title: 'Wallet App', desc: 'Browser wallet with popup bridge and extension-backed signing flows', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet) || '../wallet/index.html', category: 'Tools' },
+    { title: 'SporeSwap DEX', desc: 'Trade, route swaps, and access live liquidity from the DEX app', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.dex) || '../dex/index.html', category: 'Tools' },
     { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.explorer) || '../explorer/index.html', category: 'Tools' },
     { title: 'Faucet', desc: 'Get testnet LICN tokens', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.faucet) || '../faucet/index.html', category: 'Tools' },
     { title: 'Marketplace', desc: 'Lichen NFT and token marketplace', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace) || '../marketplace/index.html', category: 'Tools' },

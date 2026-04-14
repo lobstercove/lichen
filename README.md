@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated for release tag `v0.5.4`.
+**Release-ready status:** main validated for release tag `v0.5.6`.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -266,13 +266,13 @@ The validator starts an RPC server at `http://localhost:9899` and a WebSocket en
 
 ```bash
 # Create a new wallet
-cargo run --release -p lichen-cli -- wallet new
+cargo run --release -p lichen-cli -- wallet create
 
 # Check balance
 cargo run --release -p lichen-cli -- balance <ADDRESS>
 
 # Transfer LICN
-cargo run --release -p lichen-cli -- transfer --to <ADDRESS> --amount 10
+cargo run --release -p lichen-cli -- transfer <ADDRESS> 10
 
 # Export/decrypt a validator keypair (requires LICHEN_KEYPAIR_PASSWORD)
 lichen identity export --keypair /path/to/validator-keypair.json
@@ -344,8 +344,8 @@ cargo build --target wasm32-unknown-unknown --release
 # Deploy (costs 25.001 LICN)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
-# Call a contract function
-lichen call <contract_address> <function_name> [args]
+# Call a contract function with JSON array args
+lichen call <contract_address> <function_name> --args '[1,2,3]'
 ```
 
 **Two SDKs — different purposes:**
@@ -354,9 +354,9 @@ lichen call <contract_address> <function_name> [args]
 | `lichen-contract-sdk` | Write on-chain WASM contracts (`#![no_std]`) |
 | `lichen-client-sdk` | Call RPC from Rust apps (`tokio`/`reqwest`) |
 
-**Don't need custom logic?** Create a standard token without writing code:
+**Want a standard token contract?** Deploy a standard token WASM without writing new contract logic:
 ```bash
-lichen token create "My Token" MYTOK --supply 1000000 --decimals 9
+lichen token create "My Token" MYTOK --wasm ./path/to/token.wasm --decimals 9
 ```
 
 ---
@@ -448,7 +448,7 @@ Cryptographic on-chain identity with reputation tiers, skill attestations, and f
 Write WASM programs in Rust. Deploy with the CLI or the browser-based **Programs IDE**.
 
 ```bash
-lichen deploy --program ./target/wasm32-unknown-unknown/release/counter.wasm
+lichen deploy ./target/wasm32-unknown-unknown/release/counter.wasm
 ```
 
 ### Built-In DeFi
@@ -481,12 +481,23 @@ Micro-unit: **1 LICN = 1,000,000,000 spores**
 
 ## Developer Portal
 
-Canonical developer-facing API docs:
+README stays high-level. These are the canonical entry points for the callable developer surfaces and live apps:
 
-- **[JSON-RPC API](developers/rpc-reference.html)** — Canonical RPC method index
-- **[WebSocket API](developers/ws-reference.html)** — Canonical WS subscriptions index
-- **[Detailed RPC Guide](docs/guides/RPC_API_REFERENCE.md)** — Full request/response examples
-- **[Validator Setup](docs/guides/VALIDATOR_SETUP.md)** — Runtime validator operations baseline
+| Surface | Entry point |
+|---|---|
+| JSON-RPC | [developers/rpc-reference.html](developers/rpc-reference.html) |
+| WebSocket | [developers/ws-reference.html](developers/ws-reference.html) |
+| SDKs | [developers/sdk-js.html](developers/sdk-js.html), [developers/sdk-python.html](developers/sdk-python.html), [developers/sdk-rust.html](developers/sdk-rust.html) |
+| Contracts | [developers/contracts.html](developers/contracts.html), [developers/contract-reference.html](developers/contract-reference.html) |
+| CLI | [developers/cli-reference.html](developers/cli-reference.html) |
+| Validator Ops | [developers/validator.html](developers/validator.html) |
+| Identity & Privacy | [developers/lichenid.html](developers/lichenid.html), [developers/zk-privacy.html](developers/zk-privacy.html) |
+| Wallet | https://wallet.lichen.network |
+| DEX | https://dex.lichen.network |
+| Explorer | https://explorer.lichen.network |
+| Marketplace | https://marketplace.lichen.network |
+| Programs IDE | https://programs.lichen.network |
+| Faucet | https://faucet.lichen.network |
 
 ---
 
