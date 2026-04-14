@@ -642,6 +642,43 @@ document.addEventListener('DOMContentLoaded', () => {
     initNetworkSelector();
 });
 
+function isBridgePopupSession() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('bridge') === 'popup' && Boolean(window.opener);
+    } catch {
+        return false;
+    }
+}
+
+const BRIDGE_POPUP_UNLOCK_SESSION_KEY = 'lichen_wallet_bridge_popup_unlocked';
+
+function hasBridgePopupUnlockSession() {
+    if (!isBridgePopupSession()) return false;
+    try {
+        return sessionStorage.getItem(BRIDGE_POPUP_UNLOCK_SESSION_KEY) === '1';
+    } catch {
+        return false;
+    }
+}
+
+function markBridgePopupUnlockSession() {
+    if (!isBridgePopupSession()) return;
+    try {
+        sessionStorage.setItem(BRIDGE_POPUP_UNLOCK_SESSION_KEY, '1');
+    } catch {
+        // Ignore sessionStorage failures.
+    }
+}
+
+function clearBridgePopupUnlockSession() {
+    try {
+        sessionStorage.removeItem(BRIDGE_POPUP_UNLOCK_SESSION_KEY);
+    } catch {
+        // Ignore sessionStorage failures.
+    }
+}
+
 function normalizeWalletActionArg(actionName, rawValue) {
     if (rawValue === undefined) return undefined;
     if (rawValue === 'true') return true;
@@ -765,9 +802,16 @@ function saveWalletState() {
 // Check if wallet exists and show appropriate screen
 function checkWalletStatus() {
     if (walletState.wallets.length === 0) {
+        clearBridgePopupUnlockSession();
         showScreen('welcomeScreen');
     } else {
-        // Always require unlock on page load for security
+        if (isBridgePopupSession() && hasBridgePopupUnlockSession() && walletState.isLocked === false) {
+            void showDashboard();
+            return;
+        }
+
+        // Always require unlock on page load for the full wallet app.
+        clearBridgePopupUnlockSession();
         walletState.isLocked = true;
         showUnlockScreen();
     }
@@ -821,6 +865,7 @@ async function unlockWallet() {
         // Success - unlock and show dashboard
         walletState.isLocked = false;
         saveWalletState();
+        markBridgePopupUnlockSession();
         showToast('Wallet unlocked!');
         showDashboard();
         resetLockTimer();
@@ -1078,6 +1123,7 @@ async function finishCreateWallet() {
     walletState.activeWalletId = wallet.id;
     walletState.isLocked = false;
     saveWalletState();
+    markBridgePopupUnlockSession();
 
     showToast('Wallet created successfully!');
     showDashboard();
@@ -1198,6 +1244,7 @@ async function importWalletSeed() {
     walletState.activeWalletId = wallet.id;
     walletState.isLocked = false;
     saveWalletState();
+    markBridgePopupUnlockSession();
 
     showToast('Wallet imported successfully!');
     showDashboard();
@@ -1242,6 +1289,7 @@ async function importWalletPrivateKey() {
     walletState.activeWalletId = wallet.id;
     walletState.isLocked = false;
     saveWalletState();
+    markBridgePopupUnlockSession();
 
     showToast('Wallet imported successfully!');
     showDashboard();
@@ -1319,6 +1367,7 @@ async function importWalletJson() {
             walletState.activeWalletId = wallet.id;
             walletState.isLocked = false;
             saveWalletState();
+            markBridgePopupUnlockSession();
 
             showToast('✅ Wallet imported from JSON keystore!');
             showDashboard();
@@ -3560,6 +3609,7 @@ function lockWallet() {
     stopBalancePolling();
     disconnectBalanceWebSocket();
     clearAllInputs();
+    clearBridgePopupUnlockSession();
     walletState.isLocked = true;
     saveWalletState();
     showToast('Wallet locked');
@@ -3594,6 +3644,7 @@ function logoutWallet() {
         }).forEach(function (k) { sessionStorage.removeItem(k); });
 
         // Reset state completely (isLocked false — no wallet exists to lock)
+        clearBridgePopupUnlockSession();
         walletState = {
             hasWallet: false,
             isLocked: false,

@@ -43,6 +43,15 @@
     startAuto();
 })();
 
+function isBridgePopupSession() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('bridge') === 'popup' && Boolean(window.opener);
+    } catch {
+        return false;
+    }
+}
+
 // Service Worker registration with auto-update
 (function registerWalletServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
@@ -58,7 +67,9 @@
 
             newWorker.addEventListener('statechange', () => {
                 if (newWorker.state === 'activated') {
-                    window.location.reload();
+                    if (!isBridgePopupSession()) {
+                        window.location.reload();
+                    }
                 }
             });
         });

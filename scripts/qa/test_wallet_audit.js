@@ -51,6 +51,8 @@ function readFirstExisting(paths) {
 
 const cryptoSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'crypto.js'), 'utf8');
 const walletSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'wallet.js'), 'utf8');
+const walletBridgeSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'dapp-bridge.js'), 'utf8');
+const walletBootstrapSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'wallet-bootstrap.js'), 'utf8');
 const walletSharedUtilsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'shared', 'utils.js'), 'utf8');
 const shieldedSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'shielded.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'identity.js'), 'utf8');
@@ -552,9 +554,71 @@ test('wallet-connect.js does not generate fake addresses from random bytes', () 
     assert(!hasFakeAddrPattern,
         'Must not generate fake addresses from random bytes (H6-01)');
 
-    // Must throw error instead of silently generating fake addresses
+    // Must fail closed instead of silently generating fake addresses or local key material.
     assert(walletConnectSrc.includes('throw new Error'),
-        'Must throw error when wallet extension is unavailable');
+        'Must throw error when no wallet provider is available');
+    assert(walletConnectSrc.includes('No wallet provider available. Install the extension or connect through the web wallet.'),
+        'Must fail closed with an explicit extension/web-wallet error');
+});
+
+test('wallet-connect.js exposes popup-backed web wallet provider without local custody fallback', () => {
+    const walletConnectSrc = readFirstExisting([
+        path.join(__dirname, '..', '..', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'dex', 'shared', 'wallet-connect.js'),
+    ]);
+
+    assert(walletConnectSrc.includes('function PopupLichenProvider('), 'PopupLichenProvider must exist');
+    assert(walletConnectSrc.includes('function getPopupLichenProvider()'), 'Popup provider singleton accessor missing');
+    assert(walletConnectSrc.includes("window.getPopupLichenProvider = window.getPopupLichenProvider || getPopupLichenProvider;"), 'Popup provider must be exported globally');
+    assert(walletConnectSrc.includes("var WALLET_POPUP_STATE_KEY = 'lichen_web_wallet_popup_state_v1';"), 'Popup provider must persist approved web-wallet session state locally');
+    assert(!walletConnectSrc.includes('createWallet') && !walletConnectSrc.includes('LichenPQ.generateKeypair'),
+        'Popup provider must not fall back to local wallet generation');
+    assert(walletConnectSrc.includes("url.searchParams.set('network', getDexSelectedNetwork());"),
+        'Popup wallet URL must carry the active DEX network');
+});
+
+test('wallet index loads dapp bridge before wallet bootstrap', () => {
+    const bridgeIndex = walletHtml.indexOf('js/dapp-bridge.js');
+    const bootstrapIndex = walletHtml.indexOf('js/wallet-bootstrap.js');
+
+    assert(bridgeIndex >= 0, 'wallet/index.html must load js/dapp-bridge.js');
+    assert(bootstrapIndex > bridgeIndex, 'wallet bootstrap must load after the dapp bridge');
+});
+
+test('dapp-bridge restricts popup flow to trusted origins with expiring approvals', () => {
+    assert(walletBridgeSrc.includes("params.get('bridge') !== 'popup' || !window.opener"), 'Bridge must only run for popup mode with an opener');
+    assert(walletBridgeSrc.includes('const TRUSTED_ORIGINS = buildTrustedOrigins();'), 'Bridge must build a trusted-origin allowlist');
+    assert(walletBridgeSrc.includes('const APPROVED_ORIGIN_TTL_MS = 30 * 24 * 60 * 60 * 1000;'), 'Bridge approvals must expire');
+    assert(walletBridgeSrc.includes('const RETURN_TO_URL = params.get(\'returnTo\');'), 'Bridge must inspect the popup return target');
+    assert(walletBridgeSrc.includes('if (returnToOrigin && isLoopbackOrigin(window.location.origin) && isLoopbackOrigin(returnToOrigin)) {'), 'Bridge must trust loopback return origins during local development');
+    assert(walletBridgeSrc.includes('Untrusted dApp origin'), 'Bridge must reject untrusted origins');
+});
+
+test('dapp-bridge requires password-gated approval for signing and uses canonical wallet helpers', () => {
+    assert(walletBridgeSrc.includes("'licn_signMessage', 'licn_signTransaction', 'licn_sendTransaction'"), 'Bridge must mark signing methods as privileged');
+    assert(walletBridgeSrc.includes('const approvalValues = await requestApproval(request);'), 'Bridge must require explicit approval before connect/sign actions');
+    assert(walletBridgeSrc.includes('const REQUESTED_NETWORK = normalizeRequestedNetwork(params.get(\'network\'));'), 'Bridge must honor the requested popup network');
+    assert(walletBridgeSrc.includes('const networkReady = await ensureRequestedNetwork();'), 'Bridge must wait for the requested network before interactive actions');
+    assert(walletBridgeSrc.includes('function schedulePopupClose()'), 'Bridge must close the popup after interactive requests complete');
+    assert(walletBridgeSrc.includes('overflow-wrap:anywhere') && walletBridgeSrc.includes('word-break:break-word'), 'Bridge approval and hint UI must wrap long origins and addresses inside the popup');
+    assert(walletBridgeSrc.includes('const values = await showPasswordModal({'), 'Bridge signing flow must use the wallet password modal');
+    assert(walletBridgeSrc.includes('serializeMessageBincode(txObject.message || {})'), 'Bridge must sign canonical serialized transaction messages');
+    assert(walletBridgeSrc.includes('rpc.sendTransaction(signResult.result.signedTransactionBase64)'), 'Bridge send flow must broadcast through the wallet RPC helper');
+});
+
+test('popup wallet sessions are not forcibly reloaded or re-locked mid-flow', () => {
+    const walletConnectSrc = readFirstExisting([
+        path.join(__dirname, '..', '..', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'dex', 'shared', 'wallet-connect.js'),
+    ]);
+
+    assert(walletSrc.includes('const BRIDGE_POPUP_UNLOCK_SESSION_KEY = \'lichen_wallet_bridge_popup_unlocked\';'), 'Popup sessions must track unlock state in sessionStorage');
+    assert(walletSrc.includes('if (isBridgePopupSession() && hasBridgePopupUnlockSession() && walletState.isLocked === false) {'), 'Popup sessions must preserve an unlocked wallet state only within the current popup window');
+    assert(walletBootstrapSrc.includes('if (!isBridgePopupSession()) {'), 'Service worker updates must not auto-reload the popup session');
+    assert(walletConnectSrc.includes('if (!this.popup || this.popup.closed) {'), 'Popup provider must reuse an existing popup window');
+    assert(!walletConnectSrc.includes('this.popup.location.href = popupUrl;'), 'Popup provider must not renavigate an already-open popup during repeated requests');
+    assert(walletConnectSrc.includes('return Promise.resolve(this._lastState);'), 'Closing the popup must not discard the cached provider session');
+    assert(walletConnectSrc.includes('self._handlePopupClosed();'), 'Popup close monitoring must use the non-disconnecting close handler');
 });
 
 test('encryptPrivateKey/decryptPrivateKey roundtrip', async () => {

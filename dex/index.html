@@ -1574,7 +1574,7 @@
             </div>
             <div class="wallet-modal-tabs">
                 <button class="wm-tab active" data-wm-tab="wallets">Wallets</button>
-                <button class="wm-tab" data-wm-tab="extension">Extension</button>
+                <button class="wm-tab" data-wm-tab="extension">Connect</button>
             </div>
             <!-- Wallets Tab -->
             <div class="wm-tab-content" id="wmTabWallets">
@@ -1583,21 +1583,27 @@
                         <i class="fas fa-wallet"></i>
                         <p>No wallets connected</p>
                         <button class="btn btn-primary btn-small" id="wmOpenExtensionTabBtn">Connect
-                            Extension</button>
+                            Wallet</button>
                     </div>
                 </div>
             </div>
-            <!-- Extension Tab — wallet extension -->
+            <!-- Connect Tab — external wallet providers -->
             <div class="wm-tab-content hidden" id="wmTabExtension">
                 <div class="wm-create-info">
                     <i class="fas fa-plug" id="wmExtensionIcon"></i>
                     <div class="wm-extension-status hidden" id="wmExtensionStatus"></div>
-                    <h4 id="wmExtensionTitle">Connect Wallet Extension</h4>
-                    <p id="wmExtensionDescription">Connect your Lichen Wallet browser extension to trade securely. Your private keys never leave the
-                        extension.</p>
+                    <h4 id="wmExtensionTitle">Connect Wallet</h4>
+                    <p id="wmExtensionDescription">Connect your Lichen Wallet browser extension or web wallet to trade
+                        securely.
+                        Private keys never leave the wallet provider.</p>
+                    <p class="wm-extension-helper hidden" id="wmExtensionHelper"></p>
                 </div>
-                <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect
-                    Extension</button>
+                <div class="wm-extension-actions">
+                    <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect
+                        Extension</button>
+                    <button class="btn btn-secondary btn-full hidden" id="wmOpenWebWalletBtn"><i
+                            class="fas fa-arrow-up-right-from-square"></i> Open Web Wallet</button>
+                </div>
             </div>
         </div>
     </div>

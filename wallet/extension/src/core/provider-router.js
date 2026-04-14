@@ -215,6 +215,21 @@ function createPendingRequest(payload, context) {
   return requestId;
 }
 
+function findPendingRequestByOriginAndMethod(origin, method) {
+  prunePendingRequests();
+  const targetOrigin = String(origin || '').trim();
+  const targetMethod = normalizeMethod(method);
+
+  for (const request of pendingRequests.values()) {
+    if (!request || request.finalized) continue;
+    if (String(request.origin || '').trim() !== targetOrigin) continue;
+    if (normalizeMethod(request.payload?.method) !== targetMethod) continue;
+    return request;
+  }
+
+  return null;
+}
+
 function normalizeParams(payload) {
   const params = payload?.params;
   if (Array.isArray(params)) {
@@ -624,7 +639,9 @@ export async function handleProviderRequest(payload, context = {}) {
 
   const method = normalizeMethod(payload?.method);
   const origin = context.origin || null;
-  const connected = await isOriginApproved(origin);
+  const approved = await isOriginApproved(origin);
+  const hasWallet = Boolean(context.hasWallet);
+  const connected = approved && hasWallet;
   const chainId = getChainId(context);
   const isLocked = Boolean(context.isLocked);
   const activeAddress = connected && !isLocked ? (context.activeAddress || null) : null;
@@ -639,6 +656,7 @@ export async function handleProviderRequest(payload, context = {}) {
           chainId,
           network: context.network || 'local-testnet',
           accounts: activeAddress ? [activeAddress] : [],
+          hasWallet,
           isLocked: Boolean(context.isLocked),
           version: context.appVersion || '0.1.0'
         }
@@ -776,6 +794,41 @@ export async function handleProviderRequest(payload, context = {}) {
         result: true
       };
 
+    case 'licn_openExtension': {
+      const params = normalizeParams(payload);
+      const requestConnect = Boolean(params?.requestConnect);
+      const connectRequest = requestConnect && origin && !approved
+        ? (findPendingRequestByOriginAndMethod(origin, 'licn_requestAccounts')
+          || { requestId: createPendingRequest({ method: 'licn_requestAccounts', params: [] }, context) })
+        : null;
+      const popupUrl = new URL(chrome.runtime.getURL('src/popup/popup.html'));
+      if (connectRequest?.requestId) {
+        popupUrl.searchParams.set('requestId', connectRequest.requestId);
+      }
+      try {
+        if (chrome.windows?.create) {
+          await chrome.windows.create({
+            url: popupUrl.toString(),
+            type: 'popup',
+            focused: true,
+            width: 420,
+            height: 760
+          });
+        } else {
+          await chrome.tabs.create({ url: popupUrl.toString() });
+        }
+      } catch {
+        await chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') });
+      }
+      return {
+        ok: true,
+        result: {
+          opened: true,
+          requestId: connectRequest?.requestId || null
+        }
+      };
+    }
+
     case 'licn_permissions': {
       const accounts = activeAddress ? [activeAddress] : [];
       if (!connected || !accounts.length) {
@@ -847,11 +900,15 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_requestAccounts': {
+      if (!hasWallet) {
+        return { ok: false, error: 'No wallet is configured in the extension' };
+      }
+
       if (isLocked) {
         return { ok: false, error: 'Wallet is locked' };
       }
 
-      if (connected) {
+      if (approved) {
         if (!activeAddress) {
           return { ok: false, error: 'No active wallet' };
         }
@@ -903,7 +960,9 @@ export async function handleProviderRequest(payload, context = {}) {
 
 export async function getProviderStateSnapshot(context = {}) {
   const origin = context.origin || null;
-  const connected = await isOriginApproved(origin);
+  const approved = await isOriginApproved(origin);
+  const hasWallet = Boolean(context.hasWallet);
+  const connected = approved && hasWallet;
   const chainId = getChainId(context);
   const activeAddress = connected ? (context.activeAddress || null) : null;
 
@@ -914,6 +973,7 @@ export async function getProviderStateSnapshot(context = {}) {
     network: context.network || 'local-testnet',
     activeAddress,
     accounts: activeAddress ? [activeAddress] : [],
+    hasWallet,
     isLocked: Boolean(context.isLocked)
   };
 }

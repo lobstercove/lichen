@@ -265,49 +265,53 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wallet
     // ═══════════════════════════════════════════════════════════════════════
     const wallet = {
-        keypair: null, address: null, shortAddr: null, _lichenWallet: null, signingReady: false,
+        keypair: null, address: null, shortAddr: null, _lichenWallet: null, signingReady: false, providerType: null,
 
         async _ensureWallet() {
             if (this._lichenWallet) return this._lichenWallet;
-            // Try wallet extension first
             if (typeof LichenWallet !== 'undefined') {
                 this._lichenWallet = new LichenWallet({ rpcUrl: RPC_BASE, persist: false });
                 return this._lichenWallet;
             }
             return null;
         },
-        async connect() {
+        async connect(options = {}) {
             const w = await this._ensureWallet();
-            if (!w) throw new Error('Lichen Wallet extension not found — install it from the wallet page');
-            const result = await w.connect();
+            if (!w) throw new Error('Lichen Wallet not available — install the extension or use the web wallet');
+            const result = await w.connect(options);
             if (result && result.address) {
                 this.address = result.address;
                 this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
                 this.keypair = { connected: true }; // Compatibility flag — no actual key material
                 this.signingReady = true;
+                this.providerType = result.provider || 'extension';
                 return this;
             }
             throw new Error('Wallet connection failed');
         },
         async connectAddress(addr, options = {}) {
-            const { signingReady = false } = options;
+            const { signingReady = false, providerType = null } = options;
             // Connect to a known address (e.g. from saved wallets list) — read-only until extension signs
             this.address = addr;
             this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
             this.signingReady = !!signingReady;
             this.keypair = this.signingReady ? { connected: true } : null;
+            this.providerType = providerType || this.providerType || null;
             return this;
         },
         async sendTransaction(instructions, messageOptions = {}) {
             if (!this.address) throw new Error('Wallet not connected');
             if (!this.signingReady) {
-                throw new Error('Signing session not active. Reconnect the matching wallet extension account to sign.');
+                throw new Error('Signing session not active. Reconnect the matching wallet provider to sign.');
             }
-            const provider = await resolveExtensionProviderForAddress(this.address, 800);
+            const resolvedProvider = await resolveWalletProviderForAddress(this.address, 800, this.providerType);
+            const provider = resolvedProvider ? resolvedProvider.provider : null;
             if (!provider || typeof provider.sendTransaction !== 'function') {
                 this.signingReady = false;
                 this.keypair = null;
-                throw new Error('Lichen wallet extension not available for transaction approval');
+                throw new Error(this.providerType === 'web-wallet'
+                    ? 'Lichen web wallet not available for transaction approval'
+                    : 'Lichen wallet extension not available for transaction approval');
             }
             const blockhash = normalizeRecentBlockhash(await api.rpc('getRecentBlockhash'));
             const normalizedIx = instructions.map(ix => normalizeRpcInstruction(ix, this.address));
@@ -2797,8 +2801,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const ACTIVE_WALLET_KEY = 'dexActiveWallet';
     const LEGACY_LOCAL_WALLET_SESSION_KEY = 'dexWalletSessionsV1';
     const LEGACY_LOCAL_WALLET_PASSWORD_PREFIX = 'dexWalletPassword:';
-    let lastExtensionProviderState = { available: false, connected: false, isLocked: false, accounts: [], activeAddress: '', provider: null };
-    let extensionProviderEventsBound = false;
+    let lastExtensionProviderState = {
+        available: false,
+        connected: false,
+        isLocked: false,
+        accounts: [],
+        activeAddress: '',
+        provider: null,
+        providerType: 'none',
+        extensionDetected: false,
+        webWalletSupported: typeof getPopupLichenProvider === 'function',
+        webWalletWindowOpen: false,
+        extensionProvider: null,
+        webWalletProvider: null,
+    };
+    const extensionProviderEventsBound = new WeakSet();
     let savedWallets = (() => {
         try {
             const parsed = JSON.parse(localStorage.getItem('dexWallets') || '[]');
@@ -2813,7 +2830,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             ? w.short.trim()
                             : address.slice(0, 8) + '...' + address.slice(-6),
                         added: typeof w.added === 'number' && Number.isFinite(w.added) ? w.added : Date.now(),
-                        provider: 'extension',
+                        provider: w.provider === 'web-wallet' ? 'web-wallet' : 'extension',
                     };
                 });
         } catch {
@@ -2839,18 +2856,31 @@ document.addEventListener('DOMContentLoaded', () => {
         return normalized.slice(0, 8) + '...' + normalized.slice(-6);
     }
 
-    function ensureSavedExtensionWallet(address) {
+    function getSavedWalletEntry(address) {
         const normalized = normalizeWalletAddress(address);
         if (!normalized) return null;
-        let existing = savedWallets.find((walletEntry) => walletEntry.address === normalized);
-        if (existing) return existing;
-        existing = {
-            address: normalized,
-            short: shortWalletAddress(normalized),
-            added: Date.now(),
-            provider: 'extension',
-        };
-        savedWallets.push(existing);
+        return savedWallets.find((walletEntry) => walletEntry.address === normalized) || null;
+    }
+
+    function getSavedWalletProvider(address) {
+        return getSavedWalletEntry(address)?.provider || null;
+    }
+
+    function ensureSavedConnectedWallet(address, providerType = 'extension') {
+        const normalized = normalizeWalletAddress(address);
+        if (!normalized) return null;
+        let existing = getSavedWalletEntry(normalized);
+        if (!existing) {
+            existing = {
+                address: normalized,
+                short: shortWalletAddress(normalized),
+                added: Date.now(),
+                provider: providerType,
+            };
+            savedWallets.push(existing);
+        } else if (providerType && existing.provider !== providerType) {
+            existing.provider = providerType;
+        }
         persistSavedWallets();
         return existing;
     }
@@ -2864,31 +2894,56 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { }
     }
 
-    async function tryHydrateExtensionSigner(targetAddress) {
+    async function tryHydrateWalletSigner(targetAddress, providerType = null) {
         if (!targetAddress) return false;
-        return !!(await resolveExtensionProviderForAddress(targetAddress));
+        return !!(await resolveWalletProviderForAddress(targetAddress, 0, providerType));
     }
 
-    async function resolveWalletSigningState(address) {
-        const extensionReady = await tryHydrateExtensionSigner(address);
-        return { signingReady: extensionReady, source: extensionReady ? 'extension' : 'none' };
+    async function resolveWalletSigningState(address, providerType = null) {
+        const resolvedProviderType = providerType || getSavedWalletProvider(address) || null;
+        const signerReady = await tryHydrateWalletSigner(address, resolvedProviderType);
+        return { signingReady: signerReady, source: signerReady ? (resolvedProviderType || 'extension') : 'none' };
     }
 
-    async function getExtensionProviderState(timeoutMs = 0) {
-        let provider = null;
+    async function resolveWalletProviderCandidate(providerType, timeoutMs = 0) {
+        if (providerType === 'extension') {
+            let provider = null;
 
-        if (typeof getInjectedLichenProvider === 'function') {
-            provider = getInjectedLichenProvider();
-        } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
-            provider = window.licnwallet;
+            if (typeof getInjectedLichenProvider === 'function') {
+                provider = getInjectedLichenProvider();
+            } else if (typeof window !== 'undefined' && window.licnwallet && window.licnwallet.isLichenWallet) {
+                provider = window.licnwallet;
+            }
+
+            if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
+                provider = await waitForInjectedLichenProvider(timeoutMs);
+            }
+
+            return provider;
         }
 
-        if (!provider && timeoutMs > 0 && typeof waitForInjectedLichenProvider === 'function') {
-            provider = await waitForInjectedLichenProvider(timeoutMs);
+        if (providerType === 'web-wallet' && typeof getPopupLichenProvider === 'function') {
+            return getPopupLichenProvider();
         }
+
+        return null;
+    }
+
+    async function readWalletProviderSnapshot(providerType, provider) {
+        const disconnected = {
+            available: false,
+            connected: false,
+            hasWallet: false,
+            isLocked: false,
+            accounts: [],
+            activeAddress: '',
+            provider,
+            providerType,
+            windowOpen: false,
+        };
 
         if (!provider) {
-            return { available: false, connected: false, isLocked: false, accounts: [], activeAddress: '', provider: null };
+            return disconnected;
         }
 
         const providerState = typeof provider.getProviderState === 'function'
@@ -2897,22 +2952,273 @@ document.addEventListener('DOMContentLoaded', () => {
         const accounts = Array.isArray(providerState?.accounts)
             ? providerState.accounts.map(normalizeWalletAddress).filter(Boolean)
             : [];
+        const windowOpen = providerType === 'web-wallet' && typeof provider.isWindowOpen === 'function'
+            ? provider.isWindowOpen()
+            : false;
 
         return {
-            available: true,
+            available: providerType === 'extension'
+                ? true
+                : Boolean(windowOpen || providerState?.connected || accounts.length > 0),
             connected: Boolean(providerState?.connected),
+            hasWallet: providerType === 'extension'
+                ? (providerState && Object.prototype.hasOwnProperty.call(providerState, 'hasWallet')
+                    ? Boolean(providerState.hasWallet)
+                    : true)
+                : false,
             isLocked: Boolean(providerState?.isLocked),
             accounts,
             activeAddress: accounts[0] || '',
             provider,
+            providerType,
+            windowOpen,
         };
     }
 
-    function walletReconnectPromptHtml() {
+    async function resolveWalletProviderForAddress(address, timeoutMs = 0, preferredProvider = null) {
+        const targetAddress = normalizeWalletAddress(address);
+        const order = preferredProvider === 'web-wallet'
+            ? ['web-wallet', 'extension']
+            : preferredProvider === 'extension'
+                ? ['extension', 'web-wallet']
+                : ['extension', 'web-wallet'];
+
+        for (const providerType of order) {
+            const provider = await resolveWalletProviderCandidate(providerType, providerType === 'extension' ? timeoutMs : 0);
+            if (!provider) continue;
+
+            if (!targetAddress || typeof provider.getProviderState !== 'function') {
+                return { provider, providerType };
+            }
+
+            const state = await provider.getProviderState().catch(() => null);
+            const accounts = Array.isArray(state?.accounts)
+                ? state.accounts.map(normalizeWalletAddress).filter(Boolean)
+                : [];
+
+            if (accounts.includes(targetAddress)) {
+                return { provider, providerType };
+            }
+        }
+
+        return null;
+    }
+
+    async function getWalletProviderState(timeoutMs = 0) {
+        const currentAddress = normalizeWalletAddress(state.walletAddress || wallet.address || '');
+        const preferredProvider = wallet.providerType || getSavedWalletProvider(currentAddress) || null;
+        const extensionProvider = await resolveWalletProviderCandidate('extension', timeoutMs);
+        const webWalletProvider = await resolveWalletProviderCandidate('web-wallet', 0);
+        const extensionState = await readWalletProviderSnapshot('extension', extensionProvider);
+        const webWalletState = await readWalletProviderSnapshot('web-wallet', webWalletProvider);
+
+        let activeState;
+        if (preferredProvider === 'web-wallet') {
+            activeState = (webWalletState.available || webWalletState.connected || webWalletState.windowOpen || currentAddress)
+                ? webWalletState
+                : (extensionState.available ? extensionState : webWalletState);
+        } else if (preferredProvider === 'extension') {
+            activeState = extensionState.available
+                ? extensionState
+                : ((webWalletState.available || webWalletState.connected || webWalletState.windowOpen)
+                    ? webWalletState
+                    : extensionState);
+        } else {
+            activeState = extensionState.available ? extensionState : webWalletState;
+        }
+
+        return {
+            ...activeState,
+            preferredProvider: preferredProvider || activeState.providerType || 'extension',
+            extensionDetected: extensionState.available,
+            extensionProvider,
+            extensionState,
+            webWalletSupported: Boolean(webWalletProvider),
+            webWalletProvider,
+            webWalletState,
+            webWalletWindowOpen: webWalletState.windowOpen,
+        };
+    }
+
+    function providerTypeTitle(providerType) {
+        return providerType === 'web-wallet' ? 'Web Wallet' : 'Extension';
+    }
+
+    function providerTypeLabel(providerType) {
+        return providerType === 'web-wallet' ? 'web wallet' : 'extension';
+    }
+
+    function walletReconnectPromptHtml(providerType = wallet.providerType || getSavedWalletProvider(state.walletAddress || wallet.address || '') || lastExtensionProviderState.providerType || 'extension') {
+        if (providerType === 'web-wallet') {
+            if (lastExtensionProviderState.isLocked) {
+                return '<i class="fas fa-lock"></i> Unlock Web Wallet to Sign';
+            }
+            return '<i class="fas fa-arrow-up-right-from-square"></i> Reopen Web Wallet to Sign';
+        }
+        if (lastExtensionProviderState.extensionDetected && lastExtensionProviderState.hasWallet === false) {
+            return '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension to Import Wallet';
+        }
         if (lastExtensionProviderState.isLocked) {
-            return '<i class="fas fa-lock"></i> Unlock Extension to Sign';
+            return '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension to Unlock';
         }
         return '<i class="fas fa-plug"></i> Reconnect Extension to Sign';
+    }
+
+    function walletAppUrl(entry) {
+        const base = typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet
+            ? LICHEN_CONFIG.wallet
+            : 'https://wallet.lichen.network';
+        const url = new URL(base, window.location.origin);
+        url.searchParams.set('source', 'dex');
+        if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.currentNetwork === 'function') {
+            url.searchParams.set('network', LICHEN_CONFIG.currentNetwork('dexNetwork'));
+        }
+        if (entry) {
+            url.searchParams.set('entry', entry);
+        }
+        return url.toString();
+    }
+
+    const EXTENSION_BROWSER_LABELS = Object.freeze({
+        chrome: 'Chrome',
+        brave: 'Brave',
+        edge: 'Edge',
+        browser: 'Browser',
+    });
+    let detectedExtensionBrowser = detectExtensionBrowser();
+
+    function detectExtensionBrowser() {
+        const userAgentDataBrands = Array.isArray(navigator.userAgentData?.brands)
+            ? navigator.userAgentData.brands.map((brand) => String(brand?.brand || ''))
+            : [];
+        const userAgent = String(navigator.userAgent || '');
+
+        if (userAgentDataBrands.some((brand) => /Microsoft Edge/i.test(brand)) || /\bEdg\//.test(userAgent)) {
+            return 'edge';
+        }
+
+        if (/\bBrave\//.test(userAgent)) {
+            return 'brave';
+        }
+
+        if (userAgentDataBrands.some((brand) => /Chrom(e|ium)/i.test(brand)) || /\bChrome\//.test(userAgent) || /\bChromium\//.test(userAgent)) {
+            return 'chrome';
+        }
+
+        return 'browser';
+    }
+
+    function extensionBrowserLabel(browser = detectedExtensionBrowser) {
+        return EXTENSION_BROWSER_LABELS[browser] || EXTENSION_BROWSER_LABELS.browser;
+    }
+
+    function extensionDownloadCopy(browser = detectedExtensionBrowser) {
+        const browserName = extensionBrowserLabel(browser);
+        return browserName === 'Browser' ? 'browser extension' : `${browserName} extension`;
+    }
+
+    function extensionDownloadButtonLabel(browser = detectedExtensionBrowser) {
+        const browserName = extensionBrowserLabel(browser);
+        return browserName === 'Browser'
+            ? '<i class="fas fa-download"></i> Download Extension'
+            : `<i class="fas fa-download"></i> Download for ${browserName}`;
+    }
+
+    function readExtensionInstallUrls() {
+        return typeof window !== 'undefined' && window.LICHEN_EXTENSION_INSTALL_URLS && typeof window.LICHEN_EXTENSION_INSTALL_URLS === 'object'
+            ? window.LICHEN_EXTENSION_INSTALL_URLS
+            : null;
+    }
+
+    function resolveExtensionInstallUrl(browser = detectedExtensionBrowser) {
+        const installUrls = readExtensionInstallUrls();
+        const directUrl = installUrls && typeof installUrls[browser] === 'string'
+            ? installUrls[browser].trim()
+            : '';
+        const fallbackUrl = installUrls && typeof installUrls.default === 'string'
+            ? installUrls.default.trim()
+            : '';
+        const targetUrl = directUrl || fallbackUrl;
+
+        return {
+            browser,
+            url: targetUrl || walletAppUrl('extension'),
+            configured: Boolean(targetUrl),
+        };
+    }
+
+    function openWalletApp(entry) {
+        window.open(walletAppUrl(entry), '_blank', 'noopener,noreferrer');
+    }
+
+    function openExtensionInstallPage() {
+        const installTarget = resolveExtensionInstallUrl();
+        window.open(installTarget.url, '_blank', 'noopener,noreferrer');
+        return installTarget;
+    }
+
+    async function hydrateExtensionBrowserDetection() {
+        const braveApi = typeof navigator !== 'undefined' ? navigator.brave : null;
+        if (!braveApi || typeof braveApi.isBrave !== 'function') {
+            return;
+        }
+
+        try {
+            if (await braveApi.isBrave()) {
+                if (detectedExtensionBrowser !== 'brave') {
+                    detectedExtensionBrowser = 'brave';
+                    updateExtensionTabUi(lastExtensionProviderState);
+                }
+            }
+        } catch {
+            // Ignore Brave detection failures and keep the synchronous browser guess.
+        }
+    }
+
+    function focusWebWallet(entry = 'web-wallet') {
+        if (typeof getPopupLichenProvider === 'function') {
+            const provider = getPopupLichenProvider();
+            if (provider && typeof provider.focus === 'function') {
+                provider.focus(entry);
+                return;
+            }
+        }
+
+        openWalletApp(entry);
+    }
+
+    async function openInstalledExtensionUi() {
+        const provider = await resolveWalletProviderCandidate('extension', 250);
+        if (!provider) {
+            return { opened: false, reason: 'missing' };
+        }
+
+        if (typeof provider.openExtension !== 'function') {
+            return { opened: false, reason: 'reload-required' };
+        }
+
+        try {
+            await provider.openExtension({ requestConnect: true });
+            return { opened: true, reason: 'opened' };
+        } catch (error) {
+            const message = String(error?.message || error || '');
+            if (/Unsupported provider method:\s*licn_openExtension/i.test(message)) {
+                return { opened: false, reason: 'reload-required' };
+            }
+            return { opened: false, reason: 'error', error };
+        }
+    }
+
+    function setWalletActionButton(button, options = {}) {
+        const { label = '', action = '', hidden = false } = options;
+        if (!button) return;
+
+        button.classList.toggle('hidden', hidden);
+        button.disabled = false;
+        button.dataset.walletAction = hidden ? '' : action;
+        if (!hidden) {
+            button.innerHTML = label;
+        }
     }
 
     function updateExtensionTabUi(providerState) {
@@ -2920,17 +3226,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const title = document.getElementById('wmExtensionTitle');
         const description = document.getElementById('wmExtensionDescription');
         const status = document.getElementById('wmExtensionStatus');
+        const helper = document.getElementById('wmExtensionHelper');
+        const webWalletBtn = document.getElementById('wmOpenWebWalletBtn');
         const currentAddress = normalizeWalletAddress(state.walletAddress || wallet.address || '');
         const activeAddress = normalizeWalletAddress(providerState.activeAddress);
         const currentLabel = shortWalletAddress(currentAddress);
         const activeLabel = shortWalletAddress(activeAddress);
+        const currentProviderType = wallet.providerType || getSavedWalletProvider(currentAddress) || providerState.preferredProvider || providerState.providerType || 'extension';
+        const usingWebWallet = providerState.providerType === 'web-wallet';
+        const extensionHasWallet = providerState.hasWallet !== false;
+        const extensionDownloadActionLabel = extensionDownloadButtonLabel();
+        const extensionDownloadTarget = extensionDownloadCopy();
 
         if (!title || !description || !wmExtensionBtn) {
             return;
         }
 
-        wmExtensionBtn.disabled = false;
-        wmExtensionBtn.innerHTML = '<i class="fas fa-plug"></i> Connect Extension';
+        setWalletActionButton(wmExtensionBtn, {
+            label: '<i class="fas fa-plug"></i> Connect Extension',
+            action: 'connect-extension',
+        });
+        setWalletActionButton(webWalletBtn, { hidden: true });
 
         if (icon) {
             icon.className = 'fas fa-plug';
@@ -2941,13 +3257,173 @@ document.addEventListener('DOMContentLoaded', () => {
             status.textContent = '';
         }
 
-        if (!providerState.available) {
-            title.textContent = 'Extension Not Detected';
-            description.textContent = 'Install or open the Lichen Wallet browser extension to approve trades securely.';
-            wmExtensionBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Retry Detection';
+        if (helper) {
+            helper.className = 'wm-extension-helper hidden';
+            helper.textContent = '';
+        }
+
+        if (usingWebWallet) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+
+            if (providerState.extensionDetected) {
+                setWalletActionButton(webWalletBtn, {
+                    label: '<i class="fas fa-plug"></i> Connect Extension',
+                    action: 'connect-extension',
+                });
+            } else {
+                setWalletActionButton(webWalletBtn, {
+                    label: extensionDownloadActionLabel,
+                    action: 'get-extension',
+                });
+            }
+
+            if (providerState.isLocked) {
+                title.textContent = 'Web Wallet Locked';
+                description.textContent = currentLabel
+                    ? `${currentLabel} is connected in read-only mode. Unlock the web wallet popup to sign orders, approvals, and cancellations.`
+                    : 'Unlock the web wallet popup to approve orders, approvals, and cancellations.';
+                setWalletActionButton(wmExtensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Focus Web Wallet',
+                    action: 'focus-web-wallet',
+                });
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Locked';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'Unlock and approve in the popup. After approval the popup can close and the DEX will stay connected.';
+                }
+                return;
+            }
+
+            if (providerState.connected && activeAddress) {
+                if (currentAddress && activeAddress === currentAddress && wallet.signingReady) {
+                    title.textContent = 'Web Wallet Connected';
+                    description.textContent = `${activeLabel} is connected. The popup will reopen only when the web wallet needs your approval again.`;
+                    setWalletActionButton(wmExtensionBtn, {
+                        label: '<i class="fas fa-arrow-up-right-from-square"></i> Focus Web Wallet',
+                        action: 'focus-web-wallet',
+                    });
+                    if (icon) {
+                        icon.className = 'fas fa-circle-check';
+                    }
+                    if (status) {
+                        status.className = 'wm-extension-status ready';
+                        status.textContent = 'Ready to sign';
+                    }
+                    if (helper) {
+                        helper.className = 'wm-extension-helper';
+                        helper.textContent = 'The web wallet keeps keys outside the DEX. After approval the popup can close, and it will reopen automatically when signing needs confirmation.';
+                    }
+                    return;
+                }
+
+                if (currentAddress && activeAddress !== currentAddress) {
+                    title.textContent = 'Switch to Active Web Wallet';
+                    description.textContent = `${activeLabel} is active in the web wallet right now. Connecting here will switch the DEX signer to that wallet.`;
+                    setWalletActionButton(wmExtensionBtn, {
+                        label: `<i class="fas fa-right-left"></i> Use ${activeLabel}`,
+                        action: 'connect-web-wallet',
+                    });
+                    if (status) {
+                        status.className = 'wm-extension-status warning';
+                        status.textContent = 'Different wallet active';
+                    }
+                    return;
+                }
+            }
+
+            if (currentAddress && currentProviderType === 'web-wallet') {
+                title.textContent = 'Reconnect Web Wallet Session';
+                description.textContent = `${currentLabel} is connected in read-only mode. Reopen the web wallet popup and approve access again to resume signing.`;
+                setWalletActionButton(wmExtensionBtn, {
+                    label: '<i class="fas fa-arrow-up-right-from-square"></i> Reconnect Web Wallet',
+                    action: 'connect-web-wallet',
+                });
+                if (status) {
+                    status.className = 'wm-extension-status warning';
+                    status.textContent = 'Read-only mode';
+                }
+                if (helper) {
+                    helper.className = 'wm-extension-helper';
+                    helper.textContent = 'The secure popup can be reopened whenever you need to sign again.';
+                }
+                return;
+            }
+
+            title.textContent = 'Connect with Web Wallet';
+            description.textContent = 'Open the Lichen web wallet in a secure popup to create or import a wallet and approve trading requests.';
+            setWalletActionButton(wmExtensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet',
+            });
             if (status) {
                 status.className = 'wm-extension-status info';
-                status.textContent = 'Not detected';
+                status.textContent = providerState.webWalletWindowOpen ? 'Approval required' : 'Popup flow';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = `The web wallet keeps keys outside the DEX and signs only after approval. You can still download the ${extensionDownloadTarget} later for an in-page signer.`;
+            }
+            return;
+        }
+
+        if (!providerState.extensionDetected) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+            title.textContent = currentAddress ? 'Extension Not Detected' : 'Connect a Wallet';
+            description.textContent = currentAddress
+                ? `${currentLabel} is connected in read-only mode. Connect with the Lichen web wallet now, or download the ${extensionDownloadTarget} to resume signing.`
+                : `Connect with the Lichen web wallet in a secure popup, or download the ${extensionDownloadTarget} for an in-page signer.`;
+            setWalletActionButton(wmExtensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet',
+            });
+            setWalletActionButton(webWalletBtn, {
+                label: extensionDownloadActionLabel,
+                action: 'get-extension',
+            });
+            if (status) {
+                status.className = 'wm-extension-status info';
+                status.textContent = 'Extension missing';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = `The web wallet opens in a secure popup and keeps signing outside the DEX. Download the ${extensionDownloadTarget} later if you want a persistent in-page signer.`;
+            }
+            return;
+        }
+
+        if (providerState.webWalletSupported && !(providerState.connected && activeAddress)) {
+            setWalletActionButton(webWalletBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Connect with Web Wallet',
+                action: 'connect-web-wallet',
+            });
+        }
+
+        if (!extensionHasWallet) {
+            if (icon) {
+                icon.className = 'fas fa-wallet';
+            }
+            title.textContent = currentLabel ? 'Extension Has No Wallet Loaded' : 'Set Up Extension Wallet';
+            description.textContent = currentLabel
+                ? `${currentLabel} is still available in read-only mode in the DEX. Open the extension to import or create a wallet, then reconnect signing.`
+                : 'The extension is installed, but no wallet is loaded right now. Open it to create or import a wallet, then approve the DEX connection.';
+            setWalletActionButton(wmExtensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension',
+                action: 'open-extension',
+            });
+            if (status) {
+                status.className = 'wm-extension-status info';
+                status.textContent = 'No wallet in extension';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = 'Opening the extension lets you import or create a wallet before reconnecting the signer.';
             }
             return;
         }
@@ -2957,13 +3433,20 @@ document.addEventListener('DOMContentLoaded', () => {
             description.textContent = currentLabel
                 ? `${currentLabel} is connected in read-only mode. Unlock the extension to sign orders, approvals, and cancellations.`
                 : 'Unlock the extension to approve orders, approvals, and cancellations.';
-            wmExtensionBtn.innerHTML = '<i class="fas fa-lock"></i> Refresh After Unlock';
+            setWalletActionButton(wmExtensionBtn, {
+                label: '<i class="fas fa-arrow-up-right-from-square"></i> Open Extension',
+                action: 'open-extension',
+            });
             if (icon) {
                 icon.className = 'fas fa-lock';
             }
             if (status) {
                 status.className = 'wm-extension-status warning';
                 status.textContent = 'Locked';
+            }
+            if (helper) {
+                helper.className = 'wm-extension-helper';
+                helper.textContent = 'Open the extension to unlock it. The DEX refreshes automatically when you come back.';
             }
             return;
         }
@@ -2972,7 +3455,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentAddress && activeAddress === currentAddress && wallet.signingReady) {
                 title.textContent = 'Extension Connected';
                 description.textContent = `${activeLabel} is ready to sign. If you switch the active wallet inside the extension, the DEX will follow it automatically.`;
-                wmExtensionBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Refresh Extension';
+                setWalletActionButton(wmExtensionBtn, {
+                    label: '<i class="fas fa-rotate-right"></i> Refresh Extension',
+                    action: 'refresh-provider',
+                });
                 if (icon) {
                     icon.className = 'fas fa-circle-check';
                 }
@@ -2986,7 +3472,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentAddress && activeAddress !== currentAddress) {
                 title.textContent = 'Switch to Active Extension Wallet';
                 description.textContent = `${activeLabel} is active in the extension right now. Connecting here will switch the DEX signer to that wallet.`;
-                wmExtensionBtn.innerHTML = `<i class="fas fa-right-left"></i> Use ${activeLabel}`;
+                setWalletActionButton(wmExtensionBtn, {
+                    label: `<i class="fas fa-right-left"></i> Use ${activeLabel}`,
+                    action: 'connect-extension',
+                });
                 if (status) {
                     status.className = 'wm-extension-status warning';
                     status.textContent = 'Different wallet active';
@@ -2998,7 +3487,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentAddress) {
             title.textContent = 'Reconnect Extension Session';
             description.textContent = `${currentLabel} is connected in read-only mode. Reconnect the same extension wallet to resume signing.`;
-            wmExtensionBtn.innerHTML = '<i class="fas fa-plug"></i> Reconnect Extension';
+            setWalletActionButton(wmExtensionBtn, {
+                label: '<i class="fas fa-plug"></i> Reconnect Extension',
+                action: 'connect-extension',
+            });
             if (status) {
                 status.className = 'wm-extension-status warning';
                 status.textContent = 'Read-only mode';
@@ -3015,10 +3507,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function bindExtensionProviderEvents(provider) {
-        if (!provider || extensionProviderEventsBound || typeof provider.on !== 'function') {
+        if (!provider || typeof provider.on !== 'function' || extensionProviderEventsBound.has(provider)) {
             return;
         }
-        extensionProviderEventsBound = true;
+
+        extensionProviderEventsBound.add(provider);
 
         const refreshState = () => {
             syncDexWithExtensionState({ notify: true }).catch(() => { });
@@ -3031,7 +3524,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function refreshExtensionTabState(timeoutMs = 0) {
-        lastExtensionProviderState = await getExtensionProviderState(timeoutMs);
+        lastExtensionProviderState = await getWalletProviderState(timeoutMs);
+        bindExtensionProviderEvents(lastExtensionProviderState.extensionProvider);
+        bindExtensionProviderEvents(lastExtensionProviderState.webWalletProvider);
         bindExtensionProviderEvents(lastExtensionProviderState.provider);
         updateExtensionTabUi(lastExtensionProviderState);
         return lastExtensionProviderState;
@@ -3041,8 +3536,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const { notify = false, timeoutMs = 0 } = options;
         const providerState = await refreshExtensionTabState(timeoutMs);
         const currentAddress = normalizeWalletAddress(state.walletAddress || wallet.address || '');
+        const reconnectProviderType = wallet.providerType || getSavedWalletProvider(currentAddress) || providerState.providerType || 'extension';
 
         if (!currentAddress) {
+            if (providerState.available && providerState.connected && !providerState.isLocked && providerState.activeAddress) {
+                const connectedAddress = shortWalletAddress(providerState.activeAddress);
+                const modalVisible = Boolean(walletModal && !walletModal.classList.contains('hidden'));
+
+                await connectWalletTo(providerState.activeAddress, connectedAddress, {
+                    signingReady: true,
+                    providerType: providerState.providerType,
+                });
+
+                if (modalVisible) {
+                    closeWalletModalFn();
+                }
+
+                if (notify || modalVisible) {
+                    showNotification(`${providerTypeTitle(providerState.providerType)} connected: ${connectedAddress}`, 'success');
+                }
+
+                return providerState;
+            }
+
             applyWalletGateAll();
             renderWalletList();
             return providerState;
@@ -3052,36 +3568,43 @@ document.addEventListener('DOMContentLoaded', () => {
             const wasReady = wallet.signingReady;
             wallet.signingReady = false;
             wallet.keypair = null;
+            wallet.providerType = reconnectProviderType;
             applyWalletGateAll();
             renderWalletList();
             if (notify && wasReady) {
                 showNotification(
                     providerState.isLocked
-                        ? 'Extension locked. Unlock it to sign new orders.'
-                        : 'Extension session not active. Reconnect to sign new orders.',
+                        ? `${providerTypeTitle(reconnectProviderType)} locked. Unlock it to sign new orders.`
+                        : reconnectProviderType === 'web-wallet'
+                            ? 'Web wallet session not active. Reopen it to sign new orders.'
+                            : 'Extension session not active. Reconnect it to sign new orders.',
                     'warning'
                 );
             }
             return providerState;
         }
 
-        ensureSavedExtensionWallet(providerState.activeAddress);
+        ensureSavedConnectedWallet(providerState.activeAddress, providerState.providerType);
 
         if (providerState.activeAddress === currentAddress) {
-            const becameReady = !wallet.signingReady;
+            const becameReady = !wallet.signingReady || wallet.providerType !== providerState.providerType;
             wallet.signingReady = true;
             wallet.keypair = { connected: true };
+            wallet.providerType = providerState.providerType;
             applyWalletGateAll();
             renderWalletList();
             if (notify && becameReady) {
-                showNotification('Extension wallet ready to sign.', 'success');
+                showNotification(`${providerTypeTitle(providerState.providerType)} ready to sign.`, 'success');
             }
             return providerState;
         }
 
-        await connectWalletTo(providerState.activeAddress, shortWalletAddress(providerState.activeAddress), { signingReady: true });
+        await connectWalletTo(providerState.activeAddress, shortWalletAddress(providerState.activeAddress), {
+            signingReady: true,
+            providerType: providerState.providerType,
+        });
         if (notify) {
-            showNotification(`DEX switched to active extension wallet ${shortWalletAddress(providerState.activeAddress)}.`, 'info');
+            showNotification(`DEX switched to active ${providerTypeLabel(providerState.providerType)} ${shortWalletAddress(providerState.activeAddress)}.`, 'info');
         }
         return providerState;
     }
@@ -3102,7 +3625,73 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function switchWmTab(t) { wmTabs.forEach(x => x.classList.toggle('active', x.dataset.wmTab === t)); Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== t); }); }
     function resetWalletModalInputs() {
-        // DEX only supports extension-backed wallets.
+        // DEX only supports external wallet providers.
+    }
+
+    async function handleWalletConnect(providerType) {
+        const label = providerTypeTitle(providerType);
+        await wallet.connect({ provider: providerType });
+        ensureSavedConnectedWallet(wallet.address, providerType);
+        await connectWalletTo(wallet.address, wallet.shortAddr, {
+            signingReady: true,
+            providerType,
+        });
+        closeWalletModalFn();
+        showNotification(`${label} connected: ${wallet.shortAddr}`, 'success');
+    }
+
+    async function handleWalletProviderAction(action) {
+        switch (action) {
+            case 'connect-extension':
+                await handleWalletConnect('extension');
+                return;
+            case 'connect-web-wallet':
+                await handleWalletConnect('web-wallet');
+                return;
+            case 'focus-web-wallet':
+                focusWebWallet('web-wallet');
+                showNotification('Focused the web wallet popup.', 'info');
+                return;
+            case 'open-extension':
+                {
+                    const openState = await openInstalledExtensionUi();
+                    if (openState.opened) {
+                        showNotification('Opened the Lichen Wallet extension.', 'info');
+                        return;
+                    }
+                    if (openState.reason === 'reload-required') {
+                        showNotification('Reload the unpacked extension in your browser, then try again. The new direct-open hook is not active yet.', 'warning');
+                        return;
+                    }
+                    if (openState.reason === 'missing') {
+                        openWalletApp('extension');
+                        showNotification('Extension not detected. Opened the wallet site instead.', 'info');
+                        return;
+                    }
+                    throw openState.error || new Error('Unable to open the extension');
+                }
+            case 'get-extension':
+                {
+                    const installTarget = openExtensionInstallPage();
+                    const browserName = extensionBrowserLabel(installTarget.browser);
+                    if (installTarget.configured) {
+                        showNotification(
+                            browserName === 'Browser'
+                                ? 'Opened the extension download page.'
+                                : `Opened the ${browserName} extension download page.`,
+                            'info'
+                        );
+                    } else {
+                        showNotification('Opened the wallet site with extension install details.', 'info');
+                    }
+                }
+                return;
+            case 'refresh-provider':
+                await refreshExtensionTabState(400);
+                return;
+            default:
+                return;
+        }
     }
 
     if (connectBtn) connectBtn.addEventListener('click', () => { openWalletModal().catch(() => { }); });
@@ -3116,32 +3705,43 @@ document.addEventListener('DOMContentLoaded', () => {
             syncDexWithExtensionState().catch(() => { });
         }
     });
+    void hydrateExtensionBrowserDetection();
 
     // Extension tab — connect via wallet extension
     const wmExtensionBtn = document.getElementById('wmExtensionBtn');
+    const wmOpenWebWalletBtn = document.getElementById('wmOpenWebWalletBtn');
     const wmOpenExtensionTabBtn = document.getElementById('wmOpenExtensionTabBtn');
     if (wmOpenExtensionTabBtn) wmOpenExtensionTabBtn.addEventListener('click', () => switchWmTab('extension'));
+    if (wmOpenWebWalletBtn) wmOpenWebWalletBtn.addEventListener('click', async () => {
+        try {
+            await handleWalletProviderAction(wmOpenWebWalletBtn.dataset.walletAction || '');
+        } catch (e) {
+            showNotification(`Wallet action failed: ${e.message}`, 'error');
+        }
+    });
     if (wmExtensionBtn) wmExtensionBtn.addEventListener('click', async () => {
         try {
-            await wallet.connect();
-            ensureSavedExtensionWallet(wallet.address);
-            await connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
-            closeWalletModalFn();
-            showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
-        } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
+            await handleWalletProviderAction(wmExtensionBtn.dataset.walletAction || '');
+        } catch (e) {
+            showNotification(`Wallet action failed: ${e.message}`, 'error');
+        }
     });
 
     async function connectWalletTo(address, shortAddr, options = {}) {
-        const { signingReady = false } = options;
+        const { signingReady = false, providerType = null } = options;
         state.connected = true; state.walletAddress = address;
         localStorage.setItem(ACTIVE_WALLET_KEY, address);
+        const resolvedProviderType = providerType || wallet.providerType || getSavedWalletProvider(address) || null;
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
         let resolvedSigningReady = !!signingReady;
         if (!resolvedSigningReady) {
-            const resolved = await resolveWalletSigningState(address);
+            const resolved = await resolveWalletSigningState(address, resolvedProviderType);
             resolvedSigningReady = !!resolved.signingReady;
         }
-        await wallet.connectAddress(address, { signingReady: resolvedSigningReady });
+        if (resolvedProviderType) {
+            ensureSavedConnectedWallet(address, resolvedProviderType);
+        }
+        await wallet.connectAddress(address, { signingReady: resolvedSigningReady, providerType: resolvedProviderType });
         // M16: Resolve .lichen name and fetch LichenID profile for connected trader
         let displayLabel = shortAddr;
         try {
@@ -3179,7 +3779,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function disconnectWallet() {
-        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet._lichenWallet = null;
+        try { wallet._lichenWallet?.disconnect?.(); } catch { }
+        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet.providerType = null; wallet._lichenWallet = null;
         localStorage.removeItem(ACTIVE_WALLET_KEY);
         state.lichenName = null; state.lichenIdProfile = null; state.reputation = 0; state.trustTier = 0;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
@@ -3209,7 +3810,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function renderWalletList() {
         const list = document.getElementById('wmWalletsList'); if (!list) return;
         if (!savedWallets.length) {
-            list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyExtension">Connect Extension</button></div>`;
+            list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyExtension">Connect a Wallet</button></div>`;
             const b = document.getElementById('wmEmptyExtension');
             if (b) b.addEventListener('click', () => switchWmTab('extension'));
             return;
@@ -3228,11 +3829,12 @@ document.addEventListener('DOMContentLoaded', () => {
         list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', async () => {
             const w = savedWallets[parseInt(btn.dataset.idx)];
             if (w) {
-                const { signingReady } = await resolveWalletSigningState(w.address);
+                const providerType = w.provider || 'extension';
+                const { signingReady } = await resolveWalletSigningState(w.address, providerType);
                 if (!signingReady) {
-                    showNotification('Switched wallet in read-only mode. Connect the matching extension account to sign.', 'warning');
+                    showNotification(`Switched wallet in read-only mode. Connect the matching ${providerTypeLabel(providerType)} to sign.`, 'warning');
                 }
-                await connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady });
+                await connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady, providerType });
                 renderWalletList();
             }
         }));
@@ -3247,11 +3849,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (state.walletAddress === removedWallet.address) {
                 const fallbackWallet = savedWallets[0] || null;
                 if (fallbackWallet) {
-                    const { signingReady } = await resolveWalletSigningState(fallbackWallet.address);
+                    const fallbackProviderType = fallbackWallet.provider || 'extension';
+                    const { signingReady } = await resolveWalletSigningState(fallbackWallet.address, fallbackProviderType);
                     await connectWalletTo(
                         fallbackWallet.address,
                         fallbackWallet.short || fallbackWallet.address.slice(0, 8) + '...',
-                        { signingReady }
+                        { signingReady, providerType: fallbackProviderType }
                     );
                     showNotification('Wallet removed. Switched to another wallet', 'info');
                 } else {
@@ -7328,8 +7931,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const restored = savedWallets.find(w => w.address === activeWalletAddress) || savedWallets[savedWallets.length - 1];
             if (restored && restored.address) {
                 const shortAddr = restored.short || restored.address.slice(0, 8) + '...';
-                const { signingReady } = await resolveWalletSigningState(restored.address);
-                await connectWalletTo(restored.address, shortAddr, { signingReady });
+                const providerType = restored.provider || 'extension';
+                const { signingReady } = await resolveWalletSigningState(restored.address, providerType);
+                await connectWalletTo(restored.address, shortAddr, { signingReady, providerType });
             }
         }
         await refreshExtensionTabState(400);

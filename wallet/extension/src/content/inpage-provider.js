@@ -128,6 +128,7 @@
     requestAccounts: () => sendRequest({ method: 'licn_requestAccounts' }),
     connect: () => sendRequest({ method: 'licn_connect' }),
     disconnect: () => sendRequest({ method: 'licn_disconnect' }),
+    openExtension: (options = {}) => sendRequest({ method: 'licn_openExtension', params: [options] }),
     getPermissions: () => sendRequest({ method: 'licn_getPermissions' }),
     revokePermissions: () => sendRequest({ method: 'wallet_revokePermissions' }),
     getBalance: (address) => sendRequest({ method: 'licn_getBalance', params: [{ address }] }),
