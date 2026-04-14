@@ -4580,6 +4580,27 @@
     margin-bottom: 16px;
 }
 
+.wm-extension-helper {
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: #9fb0d1;
+    margin: -4px auto 16px;
+    max-width: 28rem;
+}
+
+.wm-extension-helper.hidden {
+    display: none;
+}
+
+.wm-extension-actions {
+    display: grid;
+    gap: 12px;
+}
+
+.wm-extension-actions .hidden {
+    display: none;
+}
+
 .wm-extension-status {
     display: inline-flex;
     align-items: center;

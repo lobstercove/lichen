@@ -91,9 +91,9 @@ const LICHEN_CONFIG = (() => {
     if (isLocalhost) {
         apps = {
             explorer: 'http://localhost:3007',
-            wallet: 'http://localhost:3008',
+            wallet: 'http://localhost:3009',
             marketplace: 'http://localhost:3009',
-            dex: 'http://localhost:3011',
+            dex: 'http://localhost:3008',
             website: 'http://localhost:9090',
             developers: 'http://localhost:3010',
             programs: 'http://localhost:3012',

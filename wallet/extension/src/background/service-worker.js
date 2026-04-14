@@ -105,10 +105,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     loadState()
       .then((state) => {
         const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;
+        const hasWallet = Array.isArray(state.wallets) && state.wallets.length > 0;
         return handleProviderRequest(message?.payload, {
           origin,
           network: state?.network?.selected || 'local-testnet',
           activeAddress: activeWallet?.address || null,
+          hasWallet,
           isLocked: Boolean(state?.isLocked),
           appVersion: APP_VERSION
         });
@@ -134,10 +136,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     loadState()
       .then(async (state) => {
         const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;
+        const hasWallet = Array.isArray(state.wallets) && state.wallets.length > 0;
         const providerState = await getProviderStateSnapshot({
           origin: request.origin,
           network: state?.network?.selected || 'local-testnet',
           activeAddress: activeWallet?.address || null,
+          hasWallet,
           isLocked: Boolean(state?.isLocked)
         });
 

@@ -68,6 +68,48 @@ function isFullPageMode() {
   return params.get('mode') === 'full';
 }
 
+function getPendingConnectRequestId() {
+  const params = new URLSearchParams(window.location.search);
+  return String(params.get('requestId') || '').trim();
+}
+
+let pendingConnectRedirectInFlight = false;
+
+async function loadPendingConnectRequest(requestId) {
+  if (!requestId) return null;
+  const response = await chrome.runtime.sendMessage({
+    type: 'LICHEN_PROVIDER_PENDING_GET',
+    requestId
+  });
+
+  if (!response?.ok) {
+    return null;
+  }
+
+  return response.result || null;
+}
+
+async function maybeResumePendingConnectFlow() {
+  const requestId = getPendingConnectRequestId();
+  if (!requestId || pendingConnectRedirectInFlight) {
+    return false;
+  }
+
+  if (!state || state.isLocked || !getActiveWallet()) {
+    return false;
+  }
+
+  const pendingRequest = await loadPendingConnectRequest(requestId).catch(() => null);
+  if (!pendingRequest) {
+    setStatus('Pending connection request expired. Return to the site and try again.');
+    return false;
+  }
+
+  pendingConnectRedirectInFlight = true;
+  window.location.replace(chrome.runtime.getURL(`src/pages/approve.html?requestId=${encodeURIComponent(requestId)}`));
+  return true;
+}
+
 function applyViewMode() {
   if (isFullPageMode()) {
     document.body.classList.add('full-page');
@@ -1210,6 +1252,7 @@ async function createWalletFromMnemonic(mnemonic, password, walletName) {
 
   // Register EVM address on-chain in background
   registerEvmAddress({ wallet, privateKeyHex: keypair.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => { });
+  await maybeResumePendingConnectFlow();
 }
 
 async function createWalletFromPrivateKeyHex(privateKeyHex, password, walletName) {
@@ -1236,6 +1279,7 @@ async function createWalletFromPrivateKeyHex(privateKeyHex, password, walletName
 
   // Register EVM address on-chain in background
   registerEvmAddress({ wallet, privateKeyHex: keypair.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => { });
+  await maybeResumePendingConnectFlow();
 }
 
 function normalizePrivateKeyHex(privateKeyHex) {
@@ -1458,6 +1502,7 @@ async function handleUnlock() {
     });
     await scheduleAutoLock(state.settings?.lockTimeout || 300000);
     document.getElementById('unlockPassword').value = '';
+    await maybeResumePendingConnectFlow();
   } catch (error) {
     alert('Incorrect password');
   }
@@ -2295,7 +2340,11 @@ async function boot() {
   if (!state.isLocked) {
     await scheduleAutoLock(state.settings?.lockTimeout || 300000);
   }
+  if (await maybeResumePendingConnectFlow()) {
+    return;
+  }
   await render();
+  await maybeResumePendingConnectFlow();
 }
 
 boot();
