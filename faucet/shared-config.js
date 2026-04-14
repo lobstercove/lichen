@@ -54,21 +54,11 @@ const LICHEN_CONFIG = (() => {
     }
 
     // ── Default Network ─────────────────────────────────────────────────
-    const defaultNetwork = isProduction ? productionPrimaryNetwork : 'local-testnet';
+    const defaultNetwork = isProduction ? 'testnet' : 'local-testnet';
 
     const INCIDENT_STATUS_RPC_METHOD = 'getIncidentStatus';
     const INCIDENT_BANNER_ID = 'lichen-incident-banner';
-    const INCIDENT_NETWORK_STORAGE_KEYS = [
-        'lichen_wallet_network',
-        'lichen_mon_network',
-        'lichen_website_network',
-        'lichen_dex_network',
-        'lichen_developers_network',
-        'lichen_explorer_network',
-        'lichen_marketplace_network',
-        'lichen_programs_network',
-        'lichen_faucet_network',
-    ];
+    const INCIDENT_NETWORK_STORAGE_KEY = 'lichen_faucet_network';
     let incidentBannerRequestId = 0;
 
     function hasSavedIncidentNetworkSelection() {
@@ -79,7 +69,7 @@ const LICHEN_CONFIG = (() => {
             }
         }
 
-        return INCIDENT_NETWORK_STORAGE_KEYS.some((key) => Boolean(localStorage.getItem(key)));
+        return Boolean(localStorage.getItem(INCIDENT_NETWORK_STORAGE_KEY));
     }
 
     function shouldAutoRefreshIncidentStatusBanner() {
@@ -197,14 +187,7 @@ const LICHEN_CONFIG = (() => {
             return currentNetwork(window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY);
         }
 
-        for (const key of INCIDENT_NETWORK_STORAGE_KEYS) {
-            const saved = localStorage.getItem(key);
-            if (saved) {
-                return resolveNetwork(saved);
-            }
-        }
-
-        return defaultNetwork;
+        return currentNetwork('lichen_faucet_network');
     }
 
     async function incidentRpcCall(networkKey, method, params = []) {
