@@ -4,7 +4,7 @@
  * Tests all SDK features against live validators
  */
 
-import { Connection, PublicKey } from './src/index';
+import { Connection, PublicKey } from './src/index.js';
 
 interface TestResult {
   name: string;

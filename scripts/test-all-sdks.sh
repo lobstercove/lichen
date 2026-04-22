@@ -36,6 +36,27 @@ run_and_expect() {
     return 1
 }
 
+run_typescript_comprehensive() {
+    local ts_out_dir=""
+    local status=0
+    ts_out_dir="$PWD/.sdk-test-dist"
+    rm -rf "$ts_out_dir"
+
+    if ! npx tsc -p tsconfig.test.json --outDir "$ts_out_dir"; then
+        status=$?
+        rm -rf "$ts_out_dir"
+        return $status
+    fi
+
+    if ! node "$ts_out_dir/test-all-features.js"; then
+        status=$?
+        rm -rf "$ts_out_dir"
+        return $status
+    fi
+
+    rm -rf "$ts_out_dir"
+}
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -144,8 +165,11 @@ else
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-# Run comprehensive test
-if run_and_expect "TypeScript SDK Test Complete" npx ts-node test-all-features.ts; then
+# Run comprehensive test via compiled NodeNext output.
+# The SDK source tree uses explicit `.js` ESM specifiers, so executing the
+# source directly through ts-node is less reliable than compiling the test
+# bundle and running the emitted JS with plain node.
+if run_and_expect "TypeScript SDK Test Complete" run_typescript_comprehensive; then
     echo -e "${GREEN}✅ TypeScript comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
