@@ -4,7 +4,9 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
+        || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;

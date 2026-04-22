@@ -5,7 +5,10 @@
 //! values as field elements.
 
 use ark_bn254::Fr;
-use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
+use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
+#[cfg(test)]
+use ark_crypto_primitives::sponge::poseidon::PoseidonSponge;
+#[cfg(test)]
 use ark_crypto_primitives::sponge::CryptographicSponge;
 use ark_ff::{BigInteger, Field, PrimeField};
 use sha2::{Digest, Sha256};
@@ -13,7 +16,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use super::merkle::TREE_DEPTH;
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn poseidon_hash_fr(left: Fr, right: Fr) -> Fr {
     let config = poseidon_config();
     let mut sponge = PoseidonSponge::<Fr>::new(&config);
@@ -31,7 +34,6 @@ pub(crate) fn fr_to_bytes(fr: &Fr) -> [u8; 32] {
     output
 }
 
-#[allow(dead_code)]
 pub(crate) fn bytes_to_fr(bytes: &[u8; 32]) -> Fr {
     Fr::from_le_bytes_mod_order(bytes)
 }

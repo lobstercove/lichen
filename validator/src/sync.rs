@@ -25,10 +25,6 @@ pub enum SyncPhase {
 pub enum SyncMode {
     /// Full TX re-execution (signatures, state transitions) for every block.
     Full,
-    /// Header-only validation (producer signature, parent hash, slot sequence).
-    /// Used during fast catch-up; the last N blocks switch to `Full` for state
-    /// verification. Requires trust in PoS finality (2/3+ stake signed).
-    HeaderOnly,
     /// Warp sync: download the latest state snapshot directly, verify the
     /// state root against the finalized block header, then switch to `Full`
     /// for the final blocks at the tip. Zero block replay for the bulk of
@@ -36,14 +32,10 @@ pub enum SyncMode {
     Warp,
 }
 
-/// Minimum gap (in blocks) to trigger warp sync instead of header-only sync.
-/// Below this threshold, header-only sync is more efficient because the
-/// overhead of downloading a full state snapshot exceeds replaying headers.
+/// Minimum gap (in blocks) to trigger warp sync instead of full replay.
+/// Below this threshold, continuing sequential full validation is more
+/// efficient than downloading and verifying a state snapshot.
 pub const WARP_SYNC_THRESHOLD: u64 = 10_000;
-
-/// Number of blocks at the chain tip that always use full re-execution,
-/// even during header-only sync. This ensures the final state is verified.
-pub const HEADER_SYNC_FULL_EXECUTION_WINDOW: u64 = 100;
 
 /// Maximum blocks to request in a single sync batch.
 /// This is the overall catch-up window; actual P2P requests are chunked
@@ -102,7 +94,7 @@ pub struct SyncManager {
     /// Consecutive sync failures for exponential backoff on cooldown
     consecutive_failures: Arc<Mutex<u32>>,
 
-    /// Current sync mode (header-only vs full re-execution)
+    /// Current sync mode (full re-execution vs warp snapshot)
     sync_mode: Arc<Mutex<SyncMode>>,
 
     /// Current sync phase (initial catch-up vs live)
@@ -222,6 +214,7 @@ impl SyncManager {
     /// Force-decay `highest_seen_slot` to current tip, ignoring the timestamp.
     /// Used by the bounded freeze guard to break out of the death spiral when
     /// the node has been frozen for too long.
+    #[cfg(test)]
     pub async fn force_decay(&self, current_tip: u64) {
         let mut highest = self.highest_seen_slot.lock().await;
         if *highest > current_tip {
@@ -391,7 +384,7 @@ impl SyncManager {
         }
     }
 
-    /// Set sync mode (header-only vs full re-execution)
+    /// Set sync mode (full re-execution vs warp snapshot)
     pub async fn set_sync_mode(&self, mode: SyncMode) {
         let mut current = self.sync_mode.lock().await;
         if *current != mode {
@@ -401,7 +394,6 @@ impl SyncManager {
     }
 
     /// Get the current sync mode
-    #[allow(dead_code)]
     pub async fn get_sync_mode(&self) -> SyncMode {
         *self.sync_mode.lock().await
     }
@@ -429,35 +421,12 @@ impl SyncManager {
         }
     }
 
-    /// Get the last slot at which sync made progress.
-    pub async fn get_last_progress_slot(&self) -> u64 {
-        *self.last_progress_slot.lock().await
-    }
-
     /// Determine whether a given block slot should use full transaction
     /// replay.  Always returns `true` — every synced block must replay its
     /// transactions so the joining node builds byte-identical state.
     /// This matches Bitcoin / Ethereum / Cosmos full-node behaviour.
     pub async fn should_full_validate(&self, _block_slot: u64) -> bool {
         true
-    }
-
-    /// Get sync progress relative to highest seen slot
-    pub async fn get_sync_progress(&self, current_slot: u64) -> Option<SyncProgress> {
-        let is_syncing = *self.is_syncing.lock().await;
-        if !is_syncing {
-            return None;
-        }
-
-        let highest = *self.highest_seen_slot.lock().await;
-        let batch = *self.current_sync_batch.lock().await;
-
-        Some(SyncProgress {
-            current_slot,
-            target_slot: highest,
-            current_batch: batch,
-            blocks_behind: highest.saturating_sub(current_slot),
-        })
     }
 
     /// Check if we're caught up with the network (within 2 slots)
@@ -486,7 +455,7 @@ impl SyncManager {
     }
 
     /// Check if a slot has been requested
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn is_requested(&self, slot: u64) -> bool {
         let requested = self.requested_slots.lock().await;
         requested.contains(&slot)
@@ -588,14 +557,6 @@ pub struct SyncStats {
     pub pending_blocks: usize,
     pub is_syncing: bool,
     pub highest_seen: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SyncProgress {
-    pub current_slot: u64,
-    pub target_slot: u64,
-    pub current_batch: Option<(u64, u64)>,
-    pub blocks_behind: u64,
 }
 
 #[cfg(test)]
@@ -971,15 +932,15 @@ mod tests {
         assert_eq!(SYNC_BATCH_SIZE / P2P_BLOCK_RANGE_LIMIT, 4);
     }
 
-    /// P1-1: SyncMode enum and header-only validation
+    /// P1-1: SyncMode enum round-trips for runtime-supported modes
     #[tokio::test]
-    async fn test_sync_mode_header_only() {
+    async fn test_sync_mode_round_trip() {
         let sm = SyncManager::new();
         // Default is Full
         assert_eq!(sm.get_sync_mode().await, SyncMode::Full);
 
-        sm.set_sync_mode(SyncMode::HeaderOnly).await;
-        assert_eq!(sm.get_sync_mode().await, SyncMode::HeaderOnly);
+        sm.set_sync_mode(SyncMode::Warp).await;
+        assert_eq!(sm.get_sync_mode().await, SyncMode::Warp);
 
         sm.set_sync_mode(SyncMode::Full).await;
         assert_eq!(sm.get_sync_mode().await, SyncMode::Full);
@@ -997,11 +958,10 @@ mod tests {
         assert!(sm.should_full_validate(500).await);
         assert!(sm.should_full_validate(999).await);
 
-        // HeaderOnly mode → still always validates (simplified to always true)
-        sm.set_sync_mode(SyncMode::HeaderOnly).await;
+        // Warp mode → still always validates (simplified to always true)
+        sm.set_sync_mode(SyncMode::Warp).await;
         assert!(sm.should_full_validate(0).await);
-        assert!(sm.should_full_validate(899).await);
-        assert!(sm.should_full_validate(900).await);
+        assert!(sm.should_full_validate(950).await);
         assert!(sm.should_full_validate(999).await);
     }
 
@@ -1054,8 +1014,6 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn test_warp_sync_threshold() {
         assert_eq!(WARP_SYNC_THRESHOLD, 10_000);
-        // Warp threshold must be greater than header-only full-execution window
-        assert!(WARP_SYNC_THRESHOLD > HEADER_SYNC_FULL_EXECUTION_WINDOW * 2);
     }
 
     /// P3-1: SyncMode::Warp exists and round-trips
@@ -1075,17 +1033,5 @@ mod tests {
         // Simplified: always returns true regardless of mode or distance from tip
         assert!(sm.should_full_validate(0).await);
         assert!(sm.should_full_validate(19950).await);
-    }
-
-    /// P3-1: Mode auto-detection boundaries
-    #[test]
-    fn test_warp_sync_mode_detection_boundaries() {
-        // gap <= 200 → Full
-        let gap_full = HEADER_SYNC_FULL_EXECUTION_WINDOW * 2;
-        assert!(gap_full <= WARP_SYNC_THRESHOLD);
-
-        // gap > 200 and <= 10000 → HeaderOnly
-        // gap > 10000 → Warp
-        assert!(gap_full < WARP_SYNC_THRESHOLD);
     }
 }

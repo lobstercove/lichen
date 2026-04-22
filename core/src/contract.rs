@@ -345,7 +345,8 @@ fn wasm_valtype_to_abi(vt: &wasmer::Type) -> AbiType {
 pub struct ContractAccount {
     /// WASM bytecode
     pub code: Vec<u8>,
-    /// Contract state storage (key-value)
+    /// Compatibility-only embedded snapshot of contract storage.
+    /// Live reads and writes must use StateStore's canonical CF_CONTRACT_STORAGE helpers.
     /// Keys are byte arrays from WASM but must serialize as strings for JSON.
     /// We try UTF-8 first (most keys are valid UTF-8 like "admin", "pair:X_Y"),
     /// falling back to hex encoding with a "0x" prefix for binary keys.
@@ -460,17 +461,17 @@ impl ContractAccount {
         }
     }
 
-    /// Get value from contract storage
+    /// Get value from the embedded compatibility snapshot.
     pub fn get_storage(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.storage.get(key).cloned()
     }
 
-    /// Set value in contract storage
+    /// Set value in the embedded compatibility snapshot.
     pub fn set_storage(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.storage.insert(key, value);
     }
 
-    /// Remove value from contract storage
+    /// Remove value from the embedded compatibility snapshot.
     pub fn remove_storage(&mut self, key: &[u8]) -> Option<Vec<u8>> {
         self.storage.remove(key)
     }
@@ -671,6 +672,55 @@ impl ContractContext {
             storage_bytes_used,
         }
     }
+}
+
+const PREDICTION_MARKET_LICHENID_ADDR_KEY: &[u8] = b"pm_lichenid_addr";
+const GOVERNANCE_LICHENID_ADDR_KEY: &[u8] = b"gov_lichenid_addr";
+
+fn configured_lichenid_program(storage: &HashMap<Vec<u8>, Vec<u8>>) -> Option<Pubkey> {
+    storage
+        .get(PREDICTION_MARKET_LICHENID_ADDR_KEY)
+        .or_else(|| storage.get(GOVERNANCE_LICHENID_ADDR_KEY))
+        .and_then(|value| {
+            if value.len() == 32 && value.iter().any(|&byte| byte != 0) {
+                let mut program = Pubkey([0u8; 32]);
+                program.0.copy_from_slice(value);
+                Some(program)
+            } else {
+                None
+            }
+        })
+}
+
+pub fn lichenid_reputation_storage_key(caller: &Pubkey) -> Vec<u8> {
+    let hex_chars: &[u8; 16] = b"0123456789abcdef";
+    let mut rep_key = Vec::with_capacity(68);
+    rep_key.extend_from_slice(b"rep:");
+    for &byte in caller.0.iter() {
+        rep_key.push(hex_chars[(byte >> 4) as usize]);
+        rep_key.push(hex_chars[(byte & 0x0f) as usize]);
+    }
+    rep_key
+}
+
+/// Build the top-level contract execution context shared by transaction-time,
+/// simulation, and read-only RPC execution.
+pub fn build_top_level_call_context(
+    mut context: ContractContext,
+    state_store: StateStore,
+    compute_limit: u64,
+) -> ContractContext {
+    if let Some(lichenid_program) = configured_lichenid_program(&context.storage) {
+        let rep_key = lichenid_reputation_storage_key(&context.caller);
+        if let Ok(Some(rep_data)) = state_store.get_contract_storage(&lichenid_program, &rep_key) {
+            context.cross_contract_storage.insert(rep_key, rep_data);
+        }
+    }
+
+    context.state_store = Some(state_store);
+    context.compute_limit = compute_limit;
+    context.compute_remaining = compute_limit.min(DEFAULT_COMPUTE_LIMIT);
+    context
 }
 
 /// Contract execution result
@@ -2672,6 +2722,39 @@ mod tests {
         assert_eq!(ctx.args, args);
         assert_eq!(ctx.value, 500);
         assert_eq!(ctx.slot, 42);
+    }
+
+    #[test]
+    fn test_build_top_level_call_context_injects_reputation_and_runtime_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let caller = Pubkey::new([7u8; 32]);
+        let contract = Pubkey::new([8u8; 32]);
+        let lichenid_program = Pubkey::new([9u8; 32]);
+        let rep_key = lichenid_reputation_storage_key(&caller);
+        let rep_data = 42u64.to_le_bytes().to_vec();
+
+        state
+            .put_contract_storage(&lichenid_program, &rep_key, &rep_data)
+            .unwrap();
+
+        let mut storage = HashMap::new();
+        storage.insert(
+            PREDICTION_MARKET_LICHENID_ADDR_KEY.to_vec(),
+            lichenid_program.0.to_vec(),
+        );
+
+        let ctx = build_top_level_call_context(
+            ContractContext::with_args(caller, contract, 0, 42, storage, vec![1, 2, 3]),
+            state.clone(),
+            1_234,
+        );
+
+        assert_eq!(ctx.args, vec![1, 2, 3]);
+        assert!(ctx.state_store.is_some());
+        assert_eq!(ctx.compute_limit, 1_234);
+        assert_eq!(ctx.compute_remaining, 1_234);
+        assert_eq!(ctx.cross_contract_storage.get(&rep_key), Some(&rep_data));
     }
 
     #[test]

@@ -1769,7 +1769,7 @@ rustc --target wasm32-unknown-unknown \
   src/lib.rs -o counter.wasm
 
 # Deploy
-lichen deploy counter.wasm
+lichen deploy counter.wasm --rpc-url https://testnet-rpc.lichen.network
 
 # Output:
 # <i class="fa-solid fa-cube"></i> Deploying contract...
@@ -1789,7 +1789,8 @@ lichen deploy counter.wasm
                                 <span class="code-title">JavaScript</span>
                             </div>
                             <div class="code-content">
-                                <pre><code>const RPC_URL = 'http://localhost:8899'; // or rpc.lichen.network
+                                <pre><code>const RPC_URL = 'https://testnet-rpc.lichen.network';
+// Switch to https://rpc.lichen.network for mainnet.
 
 const response = await fetch(RPC_URL, {
   method: 'POST',
@@ -1803,7 +1804,8 @@ const response = await fetch(RPC_URL, {
 });
 
 const { result } = await response.json();
-console.log('Balance:', result); // { spores, licn }</code></pre>
+console.log(`Balance: ${result.licn} LICN`);
+// Balance: 42 LICN</code></pre>
                             </div>
                         </div>
                     </div>
@@ -1960,10 +1962,11 @@ console.log('Balance:', result); // { spores, licn }</code></pre>
                 </div>
 
                 <div class="api-footer">
-                    <p><strong>Base URL:</strong> <code>http://localhost:8899</code> (local) ·
-                        <code>https://rpc.lichen.network</code> (production)
+                    <p><strong>Base URLs:</strong> <code>https://testnet-rpc.lichen.network</code> (testnet) ·
+                        <code>https://rpc.lichen.network</code> (mainnet)
                     </p>
-                    <p><strong>Protocol:</strong> JSON-RPC 2.0 · <strong>WebSocket:</strong> Port 8900 for subscriptions
+                    <p><strong>Protocol:</strong> JSON-RPC 2.0 · <strong>WebSocket:</strong>
+                        <code>wss://testnet-rpc.lichen.network/ws</code> · <code>wss://rpc.lichen.network/ws</code>
                     </p>
                     <a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html"
                         class="btn btn-secondary btn-large" target="_blank" style="margin-top: 1rem;">

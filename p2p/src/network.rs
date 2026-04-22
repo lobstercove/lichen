@@ -1,7 +1,6 @@
 // P2P Network Manager
 
 use crate::gossip::GossipManager;
-use crate::kademlia::{KademliaTable, NodeId};
 use crate::message::{
     validator_announcement_signing_message, MessageType, P2PMessage, SnapshotKind,
 };
@@ -23,6 +22,30 @@ fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
         || ip.is_unspecified()
         || ip.is_multicast()
         || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast())
+}
+
+fn supplemental_kademlia_peer_infos(
+    closest: Vec<([u8; 32], String)>,
+    seen_addrs: &std::collections::HashSet<SocketAddr>,
+    limit: usize,
+) -> Vec<crate::message::PeerInfoMsg> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    closest
+        .into_iter()
+        .filter_map(|(_, addr_str)| addr_str.parse::<SocketAddr>().ok())
+        .filter(|addr| !seen_addrs.contains(addr))
+        .take(limit)
+        .map(|address| crate::message::PeerInfoMsg {
+            address,
+            last_seen: now,
+            reputation: 500,
+            validator_pubkey: None,
+        })
+        .collect()
 }
 
 /// Node role determines connection limits and relay behavior for a 500-validator network.
@@ -307,9 +330,6 @@ pub struct P2PNetwork {
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
-
-    /// Kademlia DHT routing table for structured peer discovery (H-8/H-9).
-    dht: Arc<std::sync::Mutex<KademliaTable>>,
 }
 
 impl P2PNetwork {
@@ -393,19 +413,6 @@ impl P2PNetwork {
             config.listen_addr,
         ));
 
-        // Create Kademlia DHT routing table for structured peer discovery (H-8/H-9).
-        // Node ID derived from SHA-256 of the listen address for uniqueness.
-        let local_node_id: NodeId = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(config.listen_addr.to_string().as_bytes());
-            let hash = hasher.finalize();
-            let mut id = [0u8; 32];
-            id.copy_from_slice(&hash);
-            id
-        };
-        let dht = Arc::new(std::sync::Mutex::new(KademliaTable::new(local_node_id)));
-
         Ok(P2PNetwork {
             peer_manager,
             gossip_manager,
@@ -432,7 +439,6 @@ impl P2PNetwork {
             prevote_tx,
             precommit_tx,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
-            dht,
         })
     }
 
@@ -573,20 +579,9 @@ impl P2PNetwork {
                     peer_addr,
                     peer_infos.len()
                 );
-                // Update DHT with received peer addresses
-                {
-                    use sha2::{Digest, Sha256};
-                    if let Ok(mut table) = self.dht.lock() {
-                        for pi in &peer_infos {
-                            let mut hasher = Sha256::new();
-                            hasher.update(pi.address.to_string().as_bytes());
-                            let hash = hasher.finalize();
-                            let mut node_id = [0u8; 32];
-                            node_id.copy_from_slice(&hash);
-                            table.insert(node_id, pi.address);
-                        }
-                    }
-                }
+                // PeerInfo gossip advertises candidate addresses only. Canonical
+                // node identities come from authenticated handshakes and
+                // FindNode responses, not from hashing third-party socket strings.
                 let gm = self.gossip_manager.clone();
                 tokio::spawn(async move {
                     gm.handle_peer_info(peer_infos).await;
@@ -616,30 +611,16 @@ impl P2PNetwork {
                     })
                     .collect();
 
-                // Supplement with DHT nodes not already in peer manager
-                if let Ok(table) = self.dht.lock() {
-                    use sha2::{Digest, Sha256};
-                    let mut hasher = Sha256::new();
-                    hasher.update(peer_addr.to_string().as_bytes());
-                    let hash = hasher.finalize();
-                    let mut target_id = [0u8; 32];
-                    target_id.copy_from_slice(&hash);
-                    for entry in table.closest(&target_id, 10) {
-                        if peer_infos.len() >= 50 {
-                            break;
-                        }
-                        if !seen_addrs.contains(&entry.address) {
-                            peer_infos.push(crate::message::PeerInfoMsg {
-                                address: entry.address,
-                                last_seen: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs(),
-                                reputation: 500,
-                                validator_pubkey: None,
-                            });
-                        }
-                    }
+                // Supplement with canonical Kademlia entries keyed by the
+                // requester's authenticated node identity, not by hashing its
+                // socket address.
+                if let Some(target_id) = self.peer_manager.peer_node_id(&peer_addr) {
+                    let closest = self.peer_manager.kademlia_closest(&target_id, 10);
+                    peer_infos.extend(supplemental_kademlia_peer_infos(
+                        closest,
+                        &seen_addrs,
+                        50usize.saturating_sub(peer_infos.len()),
+                    ));
                 }
 
                 let response = P2PMessage::new(MessageType::PeerInfo(peer_infos), self.local_addr);
@@ -1044,10 +1025,8 @@ impl P2PNetwork {
                 // P3-5: Tag the peer as a validator in the peer manager
                 self.peer_manager.mark_validator(&peer_addr, pubkey);
 
-                // Update DHT with validator's peer address (use pubkey as node ID)
-                if let Ok(mut table) = self.dht.lock() {
-                    table.insert(pubkey.0, peer_addr);
-                }
+                // Validator pubkeys remain metadata only. Canonical routing
+                // identity comes from the authenticated transport handshake.
                 let announcement = ValidatorAnnouncement {
                     pubkey,
                     stake,
@@ -1432,5 +1411,44 @@ mod tests {
     fn test_p2p_config_reserved_peers_empty_by_default() {
         let config = P2PConfig::default();
         assert!(config.reserved_relay_peers.is_empty());
+    }
+
+    #[test]
+    fn test_supplemental_kademlia_peer_infos_preserve_overlay_order() {
+        let seen_addrs =
+            std::collections::HashSet::from(["10.0.0.1:7001".parse::<SocketAddr>().unwrap()]);
+        let closest = vec![
+            ([1u8; 32], "10.0.0.1:7001".to_string()),
+            ([2u8; 32], "10.0.0.2:7001".to_string()),
+            ([3u8; 32], "10.0.0.3:7001".to_string()),
+        ];
+
+        let infos = supplemental_kademlia_peer_infos(closest, &seen_addrs, 2);
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(
+            infos[0].address,
+            "10.0.0.2:7001".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            infos[1].address,
+            "10.0.0.3:7001".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_supplemental_kademlia_peer_infos_drop_invalid_addresses() {
+        let closest = vec![
+            ([1u8; 32], "not-a-socket".to_string()),
+            ([2u8; 32], "10.0.0.4:7001".to_string()),
+        ];
+
+        let infos = supplemental_kademlia_peer_infos(closest, &std::collections::HashSet::new(), 4);
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(
+            infos[0].address,
+            "10.0.0.4:7001".parse::<SocketAddr>().unwrap()
+        );
     }
 }

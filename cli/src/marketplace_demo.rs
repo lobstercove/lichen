@@ -5,15 +5,11 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Parser;
 use lichen_core::{
-    ContractInstruction, CreateCollectionData, Hash, Instruction, Keypair, Message, MintNftData,
-    Pubkey, Transaction, CONTRACT_PROGRAM_ID, SYSTEM_PROGRAM_ID,
+    ContractInstruction, CreateCollectionData, Hash, Instruction, Keypair, KeypairFile, Message,
+    MintNftData, Pubkey, Transaction, CONTRACT_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
-
-mod keypair_manager;
-
-use keypair_manager::KeypairManager;
 
 #[derive(Parser, Debug)]
 #[command(name = "marketplace-demo")]
@@ -256,8 +252,16 @@ fn derive_pubkey(seed: &[u8]) -> Pubkey {
 }
 
 fn load_demo_keypair(path: &Path) -> Result<Keypair> {
-    let keypair_manager = KeypairManager::new();
-    keypair_manager.load_keypair(path)
+    let keypair_file = KeypairFile::load(path)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| {
+            format!(
+                "Unsupported keypair format in {}. Expected the canonical KeypairFile JSON shape",
+                path.display()
+            )
+        })?;
+
+    keypair_file.to_keypair().map_err(anyhow::Error::msg)
 }
 
 async fn send_tx(

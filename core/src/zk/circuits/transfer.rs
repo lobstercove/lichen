@@ -336,13 +336,10 @@ mod tests {
     use ark_std::rand::rngs::OsRng;
 
     /// Helper: insert two notes into a tree, return (tree, proofs, note data)
-    #[allow(dead_code)]
     struct TestInput {
-        value: u64,
         blinding: Fr,
         serial: Fr,
         sk: Fr,
-        commitment_fr: Fr,
         nullifier_fr: Fr,
         merkle_path: Vec<Fr>,
         path_bits: Vec<bool>,
@@ -361,11 +358,9 @@ mod tests {
                 let nullifier_fr = poseidon_hash_fr(serial, sk);
                 tree.insert(commitment_fr);
                 TestInput {
-                    value: val,
                     blinding,
                     serial,
                     sk,
-                    commitment_fr,
                     nullifier_fr,
                     merkle_path: vec![], // filled after tree complete
                     path_bits: vec![],

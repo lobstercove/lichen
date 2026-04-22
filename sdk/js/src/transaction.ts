@@ -1,9 +1,9 @@
 // Lichen SDK - Transaction Types and Builder
 
-import { PublicKey } from './publickey';
-import { Keypair } from './keypair';
-import { encodeMessage } from './bincode';
-import { PqSignature } from './pq';
+import { PublicKey } from './publickey.js';
+import { Keypair } from './keypair.js';
+import { encodeMessage } from './bincode.js';
+import { PqSignature } from './pq.js';
 
 /**
  * Transaction instruction

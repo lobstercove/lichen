@@ -14,6 +14,7 @@ pub mod block;
 pub mod consensus;
 pub mod contract;
 pub mod contract_instruction;
+pub mod dex;
 pub mod event_stream;
 pub mod evm;
 pub mod genesis;

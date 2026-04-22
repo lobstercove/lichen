@@ -911,7 +911,11 @@ async function discoverTokenWatches(config, protocolWalletDiscoveryResult) {
     const tokenAccountResults = new Map();
     await Promise.all(ownerEntries.map(async (ownerEntry) => {
         try {
-            const result = await rpcRequest(config.rpcUrl, 'getTokenAccountsByOwner', [ownerEntry.pubkey]);
+            const result = await rpcRequest(config.rpcUrl, 'getTokenAccountsByOwner', [
+                ownerEntry.pubkey,
+                { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+                { encoding: 'jsonParsed' },
+            ]);
             tokenAccountResults.set(
                 ownerEntry.pubkey,
                 extractTokenAccountsByOwner(result, ownerEntry.pubkey),

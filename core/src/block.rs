@@ -568,7 +568,6 @@ fn current_timestamp() -> u64 {
 /// All validators produce the same timestamp for a given slot:
 ///   `genesis_time_secs + (slot * slot_duration_ms / 1000)`
 /// NOTE: Production now uses wall-clock timestamps; this is retained for tests.
-#[allow(dead_code)]
 pub fn derive_slot_timestamp(genesis_time_secs: u64, slot: u64, slot_duration_ms: u64) -> u64 {
     genesis_time_secs + (slot * slot_duration_ms / 1000)
 }
@@ -577,7 +576,6 @@ pub fn derive_slot_timestamp(genesis_time_secs: u64, slot: u64, slot_duration_ms
 /// of the expected slot-derived timestamp.
 /// Returns Ok(()) if timestamp is within `max_drift_secs`, Err with drift otherwise.
 /// NOTE: Production now uses wall-clock future-only validation; retained for tests.
-#[allow(dead_code)]
 pub fn validate_timestamp(
     block_timestamp: u64,
     genesis_time_secs: u64,

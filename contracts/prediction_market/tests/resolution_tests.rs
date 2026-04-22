@@ -5,6 +5,7 @@
 // double-redemption prevention, LP settlement.
 
 use prediction_market::*;
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // TEST HELPERS
@@ -125,11 +126,61 @@ fn read_market_record(market_id: u64) -> Option<Vec<u8>> {
     lichen_sdk::test_mock::get_storage(&key)
 }
 
+fn read_full_attestation_hash(market_id: u64) -> Option<[u8; 32]> {
+    let mut key = Vec::from(&b"pm_att_"[..]);
+    key.extend_from_slice(&itoa_test(market_id));
+    let data = lichen_sdk::test_mock::get_storage(&key)?;
+    if data.len() < 32 {
+        return None;
+    }
+
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&data[..32]);
+    Some(hash)
+}
+
 fn market_status_from_record(data: &[u8]) -> u8 {
     data[64]
 }
 fn market_winning_outcome_from_record(data: &[u8]) -> u8 {
     data[66]
+}
+
+fn market_close_slot_from_record(data: &[u8]) -> u64 {
+    u64::from_le_bytes(data[48..56].try_into().unwrap())
+}
+
+fn market_question_hash_from_record(data: &[u8]) -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&data[124..156]);
+    hash
+}
+
+fn resolution_attestation_hash_for_test(
+    market_id: u64,
+    question_hash: &[u8; 32],
+    winning_outcome: u8,
+    close_slot: u64,
+) -> [u8; 32] {
+    let mut preimage = Vec::with_capacity(b"PM_RESOLVE".len() + 8 + 32 + 1 + 8);
+    preimage.extend_from_slice(b"PM_RESOLVE");
+    preimage.extend_from_slice(&market_id.to_le_bytes());
+    preimage.extend_from_slice(question_hash);
+    preimage.push(winning_outcome);
+    preimage.extend_from_slice(&close_slot.to_le_bytes());
+
+    let digest = Sha256::digest(&preimage);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn mock_oracle_attestation_response(att_hash: &[u8; 32], sig_count: u8, timestamp: u64) {
+    let mut data = Vec::with_capacity(41);
+    data.push(sig_count);
+    data.extend_from_slice(&timestamp.to_le_bytes());
+    data.extend_from_slice(att_hash);
+    lichen_sdk::test_mock::set_cross_call_response(Some(data));
 }
 
 // ============================================================================
@@ -909,32 +960,8 @@ fn test_voided_reclaim_with_mint_position() {
 }
 
 // ============================================================================
-// ORACLE ATTESTATION TESTS (with mocked oracle storage)
+// ORACLE ATTESTATION TESTS (with mocked oracle cross-call responses)
 // ============================================================================
-
-fn hex_encode_for_test(data: &[u8]) -> Vec<u8> {
-    let hex_chars: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Vec::with_capacity(data.len() * 2);
-    for &b in data {
-        out.push(hex_chars[(b >> 4) as usize]);
-        out.push(hex_chars[(b & 0x0f) as usize]);
-    }
-    out
-}
-
-/// Set up a mock oracle attestation in storage.
-/// The key format is `attestation_{hex_of_hash}` and the data
-/// is 33+ bytes: 32-byte data hash + 1-byte sig_count.
-fn mock_oracle_attestation(att_hash: &[u8; 32], sig_count: u8) {
-    let mut key = Vec::from(&b"attestation_"[..]);
-    key.extend_from_slice(&hex_encode_for_test(att_hash));
-    let mut data = Vec::with_capacity(33);
-    data.extend_from_slice(att_hash);
-    data.push(sig_count);
-    lichen_sdk::test_mock::STORAGE.with(|s| {
-        s.borrow_mut().insert(key, data);
-    });
-}
 
 #[test]
 fn test_resolution_with_oracle_attestation() {
@@ -950,21 +977,27 @@ fn test_resolution_with_oracle_attestation() {
     lichen_sdk::test_mock::set_caller(admin);
     close_market(admin.as_ptr(), mid);
 
-    // Mock attestation in local storage — but post-fix submit_resolution uses
-    // call_contract (cross-contract call) which returns Ok(Vec::new()) in mock,
-    // so the oracle check correctly rejects (attestation not found on oracle).
-    let att_hash = [99u8; 32];
-    mock_oracle_attestation(&att_hash, 3);
+    let record = read_market_record(mid).unwrap();
+    let att_hash = resolution_attestation_hash_for_test(
+        mid,
+        &market_question_hash_from_record(&record),
+        0,
+        market_close_slot_from_record(&record),
+    );
+    mock_oracle_attestation_response(&att_hash, 3, 777_777);
 
-    // Submit resolution — correctly rejects because call_contract returns empty
-    // data (attestation not found on oracle contract).
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
     let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    assert_eq!(r, 1, "Matching oracle attestation should succeed");
+
+    let rec = read_market_record(mid).unwrap();
     assert_eq!(
-        r, 0,
-        "Oracle cross-contract call returns empty data in mock — correctly rejects"
+        market_status_from_record(&rec),
+        3,
+        "Status should be RESOLVING (3)"
     );
+    assert_eq!(read_full_attestation_hash(mid), Some(att_hash));
 }
 
 #[test]
@@ -979,9 +1012,14 @@ fn test_resolution_with_insufficient_attestation() {
     lichen_sdk::test_mock::set_caller(admin);
     close_market(admin.as_ptr(), mid);
 
-    // Only 2 attestations (< threshold of 3)
-    let att_hash = [99u8; 32];
-    mock_oracle_attestation(&att_hash, 2);
+    let record = read_market_record(mid).unwrap();
+    let att_hash = resolution_attestation_hash_for_test(
+        mid,
+        &market_question_hash_from_record(&record),
+        0,
+        market_close_slot_from_record(&record),
+    );
+    mock_oracle_attestation_response(&att_hash, 2, 777_777);
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
@@ -1001,13 +1039,93 @@ fn test_resolution_with_missing_attestation() {
     lichen_sdk::test_mock::set_caller(admin);
     close_market(admin.as_ptr(), mid);
 
-    // No attestation stored
-    let att_hash = [99u8; 32];
+    let record = read_market_record(mid).unwrap();
+    let att_hash = resolution_attestation_hash_for_test(
+        mid,
+        &market_question_hash_from_record(&record),
+        0,
+        market_close_slot_from_record(&record),
+    );
 
     let resolver = [2u8; 32];
     lichen_sdk::test_mock::set_caller(resolver);
     let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    assert_eq!(r, 0, "Should fail with missing attestation");
+    assert_eq!(r, 0, "Should fail with missing oracle response");
+}
+
+#[test]
+fn test_resolution_rejects_payload_bound_to_other_market() {
+    let (admin, mid) = setup_large_market();
+
+    let oracle_addr = [20u8; 32];
+    lichen_sdk::test_mock::set_caller(admin);
+    set_oracle_address(admin.as_ptr(), oracle_addr.as_ptr());
+
+    lichen_sdk::test_mock::set_slot(101_001);
+    lichen_sdk::test_mock::set_caller(admin);
+    close_market(admin.as_ptr(), mid);
+
+    let other_creator = [9u8; 32];
+    let other_qh = [11u8; 32];
+    let other_q = b"Will LICN flip SOL?";
+    lichen_sdk::test_mock::set_caller(other_creator);
+    lichen_sdk::test_mock::set_value(10_000_000);
+    let other_mid = create_market(
+        other_creator.as_ptr(),
+        2,
+        202_000,
+        2,
+        other_qh.as_ptr(),
+        other_q.as_ptr(),
+        other_q.len() as u32,
+    ) as u64;
+    assert!(other_mid > 0);
+
+    let other_record = read_market_record(other_mid).unwrap();
+    let other_hash = resolution_attestation_hash_for_test(
+        other_mid,
+        &market_question_hash_from_record(&other_record),
+        0,
+        market_close_slot_from_record(&other_record),
+    );
+
+    let resolver = [2u8; 32];
+    let last_cross_call_before = lichen_sdk::test_mock::get_last_cross_call();
+    lichen_sdk::test_mock::set_caller(resolver);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, other_hash.as_ptr(), 100_000_000);
+    assert_eq!(r, 0, "Should reject attestation hash from another market");
+    assert!(
+        lichen_sdk::test_mock::get_last_cross_call() == last_cross_call_before,
+        "Context mismatch should fail before oracle lookup"
+    );
+}
+
+#[test]
+fn test_resolution_rejects_payload_mismatch_even_with_matching_hash() {
+    let (admin, mid) = setup_large_market();
+
+    let oracle_addr = [20u8; 32];
+    lichen_sdk::test_mock::set_caller(admin);
+    set_oracle_address(admin.as_ptr(), oracle_addr.as_ptr());
+
+    lichen_sdk::test_mock::set_slot(101_001);
+    lichen_sdk::test_mock::set_caller(admin);
+    close_market(admin.as_ptr(), mid);
+
+    let record = read_market_record(mid).unwrap();
+    let att_hash = resolution_attestation_hash_for_test(
+        mid,
+        &market_question_hash_from_record(&record),
+        0,
+        market_close_slot_from_record(&record),
+    );
+    let mismatched_payload = [0xABu8; 32];
+    mock_oracle_attestation_response(&mismatched_payload, 5, 888_888);
+
+    let resolver = [2u8; 32];
+    lichen_sdk::test_mock::set_caller(resolver);
+    let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
+    assert_eq!(r, 0, "Should reject attestation payload mismatch");
 }
 
 // ============================================================================
@@ -1085,11 +1203,13 @@ fn test_resolution_with_both_oracle_and_reputation() {
     lichen_sdk::test_mock::set_caller(admin);
     close_market(admin.as_ptr(), mid);
 
-    // Mock attestation and reputation in local storage — but post-fix
-    // submit_resolution uses call_contract for oracle, which returns empty
-    // data in mock mode. Oracle check correctly rejects first.
-    let att_hash = [99u8; 32];
-    mock_oracle_attestation(&att_hash, 5);
+    let record = read_market_record(mid).unwrap();
+    let att_hash = resolution_attestation_hash_for_test(
+        mid,
+        &market_question_hash_from_record(&record),
+        0,
+        market_close_slot_from_record(&record),
+    );
     let resolver = [2u8; 32];
     mock_lichenid_reputation(&resolver, 2000);
 
@@ -1097,7 +1217,7 @@ fn test_resolution_with_both_oracle_and_reputation() {
     let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
     assert_eq!(
         r, 0,
-        "Oracle cross-contract call returns empty data in mock — correctly rejects"
+        "Shared mock response should fail closed on invalid oracle payload"
     );
 }
 

@@ -2,8 +2,8 @@
 // AUDIT-FIX H1-01: Private key protected from accidental exposure via
 // toString(), toJSON(), and console.log(). Use getSecretKey() explicitly.
 
-import { PublicKey } from './publickey';
-import { bytesToHex, generateMlDsa65Seed, PqPublicKey, PqSignature } from './pq';
+import { PublicKey } from './publickey.js';
+import { bytesToHex, generateMlDsa65Seed, PqPublicKey, PqSignature } from './pq.js';
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 
 export class Keypair {

@@ -2,7 +2,7 @@
 // Production-ready keypair loading with proper file handling
 // Note: This is the validator-specific keypair loader. CLI uses cli/src/keygen.rs.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use lichen_core::{
     keypair_file::{
         copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
@@ -158,17 +158,6 @@ pub fn shared_validator_keypair_path(network: &str) -> PathBuf {
         .join(format!("validator-{}.json", network))
 }
 
-/// Load keypair from file
-fn load_keypair(path: &Path) -> Result<Keypair> {
-    let password =
-        require_runtime_keypair_password("validator keypair load").map_err(anyhow::Error::msg)?;
-    load_keypair_with_options(
-        path,
-        password.as_deref(),
-        plaintext_keypair_compat_allowed(),
-    )
-}
-
 fn load_keypair_with_options(
     path: &Path,
     password: Option<&str>,
@@ -181,34 +170,6 @@ fn save_keypair_with_options(keypair: &Keypair, path: &Path, password: Option<&s
     KeypairFile::from_keypair(keypair)
         .save_with_password(path, password, password.is_some())
         .map_err(anyhow::Error::msg)
-}
-
-/// Load keypair from environment variable or file
-#[allow(dead_code)]
-pub fn load_from_env_or_file(env_var: &str, fallback_path: Option<&Path>) -> Result<Keypair> {
-    // Try environment variable first
-    if let Ok(path_str) = std::env::var(env_var) {
-        let path = PathBuf::from(path_str);
-        info!(
-            "Loading keypair from {} env var: {}",
-            env_var,
-            path.display()
-        );
-        return load_keypair(&path);
-    }
-
-    // Try fallback path
-    if let Some(path) = fallback_path {
-        if path.exists() {
-            info!("Loading keypair from: {}", path.display());
-            return load_keypair(path);
-        }
-    }
-
-    bail!(
-        "No keypair found. Set {} or provide --keypair argument",
-        env_var
-    );
 }
 
 #[cfg(test)]

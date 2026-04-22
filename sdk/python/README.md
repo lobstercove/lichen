@@ -48,7 +48,7 @@ asyncio.run(main())
 
 ## Documentation
 
-See the [full documentation](../../docs/SDK.md) for detailed API reference.
+See the [Python SDK reference](https://developers.lichen.network/sdk-python.html) for detailed API reference.
 
 ## License
 

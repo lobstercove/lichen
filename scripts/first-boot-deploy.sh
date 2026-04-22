@@ -49,6 +49,8 @@ SKIP_BUILD=false
 MAX_RETRIES=30
 RETRY_DELAY=2
 SIGNED_METADATA_MANIFEST="${SIGNED_METADATA_MANIFEST:-${LICHEN_SIGNED_METADATA_MANIFEST_FILE:-}}"
+# Legacy fallback keeps older operator flows working, but the preferred path is
+# a transient SIGNED_METADATA_KEYPAIR exported only for bootstrap.
 SIGNED_METADATA_KEYPAIR="${SIGNED_METADATA_KEYPAIR:-${LICHEN_SIGNED_METADATA_KEYPAIR_FILE:-}}"
 SIGNED_METADATA_NETWORK="${SIGNED_METADATA_NETWORK:-}"
 SIGNED_METADATA_TARGET_HINT=""
@@ -197,20 +199,15 @@ PY
 resolve_signed_metadata_defaults() {
     local env_file="/etc/lichen/env-${DEPLOY_NETWORK}"
     local configured_manifest=""
-    local configured_keypair=""
 
     if [[ -f "$env_file" ]]; then
         SIGNED_METADATA_REQUIRED=true
         configured_manifest="$(read_env_file_value "$env_file" "LICHEN_SIGNED_METADATA_MANIFEST_FILE")"
-        configured_keypair="$(read_env_file_value "$env_file" "LICHEN_SIGNED_METADATA_KEYPAIR_FILE")"
         if [[ -n "$configured_manifest" ]]; then
             SIGNED_METADATA_TARGET_HINT="$configured_manifest"
-            if [[ -z "$SIGNED_METADATA_MANIFEST" && -w "$(dirname "$configured_manifest")" ]]; then
+            if [[ -z "$SIGNED_METADATA_MANIFEST" ]] && { [[ -f "$configured_manifest" ]] || [[ -w "$(dirname "$configured_manifest")" ]]; }; then
                 SIGNED_METADATA_MANIFEST="$configured_manifest"
             fi
-        fi
-        if [[ -z "$SIGNED_METADATA_KEYPAIR" && -n "$configured_keypair" ]]; then
-            SIGNED_METADATA_KEYPAIR="$configured_keypair"
         fi
     fi
 
@@ -610,10 +607,10 @@ if [[ -n "$SIGNED_METADATA_KEYPAIR" && -f "$SIGNED_METADATA_KEYPAIR" ]] && comma
     fi
 elif [[ -z "$SIGNED_METADATA_KEYPAIR" ]]; then
     if $SIGNED_METADATA_REQUIRED; then
-        echo -e "\n  ${RED}❌ Deployment aborted: LICHEN_SIGNED_METADATA_KEYPAIR_FILE or SIGNED_METADATA_KEYPAIR must be set${NC}"
-        exit 1
+        echo -e "\n  ${YELLOW}⚠  No transient SIGNED_METADATA_KEYPAIR configured; reusing an existing signed metadata artifact if one is already present${NC}"
+    else
+        echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because no signing keypair was configured${NC}"
     fi
-    echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because no signing keypair was configured${NC}"
 elif ! command -v node >/dev/null 2>&1; then
     if $SIGNED_METADATA_REQUIRED; then
         echo -e "\n  ${RED}❌ Deployment aborted: Node.js is required to generate signed metadata on VPS deploys${NC}"
@@ -622,10 +619,14 @@ elif ! command -v node >/dev/null 2>&1; then
     echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because Node.js is unavailable${NC}"
 else
     if $SIGNED_METADATA_REQUIRED; then
-        echo -e "\n  ${RED}❌ Deployment aborted: signing keypair missing at ${SIGNED_METADATA_KEYPAIR}${NC}"
-        exit 1
+        echo -e "\n  ${YELLOW}⚠  signing keypair missing at ${SIGNED_METADATA_KEYPAIR}; expecting an existing signed metadata artifact instead${NC}"
+    else
+        echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because ${SIGNED_METADATA_KEYPAIR} is missing${NC}"
     fi
-    echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because ${SIGNED_METADATA_KEYPAIR} is missing${NC}"
+fi
+
+if [[ ! -f "$SIGNED_METADATA_MANIFEST" && -n "$SIGNED_METADATA_TARGET_HINT" && -f "$SIGNED_METADATA_TARGET_HINT" ]]; then
+    SIGNED_METADATA_MANIFEST="$SIGNED_METADATA_TARGET_HINT"
 fi
 
 if [ -f "$SIGNED_METADATA_MANIFEST" ] \
@@ -655,6 +656,9 @@ if [ -f "$SIGNED_METADATA_MANIFEST" ]; then
             exit 1
         fi
     fi
+elif $SIGNED_METADATA_REQUIRED; then
+    echo -e "  ${RED}❌ Deployment aborted: no signed metadata artifact was available and no transient SIGNED_METADATA_KEYPAIR was provided${NC}"
+    exit 1
 fi
 
 echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"

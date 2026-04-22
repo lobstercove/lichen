@@ -1006,17 +1006,27 @@ async function renderValidators() {
 
     if (cluster && cluster.cluster_nodes && cluster.cluster_nodes.length > 0) {
         // Dynamic path: build probe list from live cluster data
-        probes = cluster.cluster_nodes.map((node, idx) => ({
-            name: `V${idx + 1}`,
-            rpc: rpcUrl,
-            pubkey: node.pubkey || null,
-            slot: currentSlot,
-            online: node.active !== false && (currentSlot === null || currentSlot - (node.last_active_slot || 0) <= 100),
-            stake: node.stake || 0,
-            reputation: node.reputation || 0,
-            blocks_proposed: node.blocks_proposed || 0,
-            last_active_slot: node.last_active_slot || 0,
-        }));
+        probes = cluster.cluster_nodes
+            .filter((node) => {
+                const stake = Number(node.stake || 0);
+                const blocks = Number(node.blocks_proposed || 0);
+                const lastActive = Number(node.last_active_slot || 0);
+                return stake > 0 || blocks > 0 || lastActive > 0;
+            })
+            .map((node, idx) => {
+                const lastActive = Number(node.last_active_slot || 0);
+                return {
+                    name: `V${idx + 1}`,
+                    rpc: rpcUrl,
+                    pubkey: node.pubkey || null,
+                    slot: lastActive,
+                    online: node.active !== false && (currentSlot === null || currentSlot - lastActive <= 100),
+                    stake: node.stake || 0,
+                    reputation: node.reputation || 0,
+                    blocks_proposed: node.blocks_proposed || 0,
+                    last_active_slot: lastActive,
+                };
+            });
     } else {
         // Fallback: if getClusterInfo not available, use getValidators
         const vals = await rpc('getValidators');
@@ -1028,7 +1038,7 @@ async function renderValidators() {
                     name: `V${idx + 1}`,
                     rpc: rpcUrl,
                     pubkey: v.pubkey || null,
-                    slot: currentSlot,
+                    slot: lastActive,
                     online: isOnline,
                     stake: v.stake || 0,
                     reputation: v.reputation || 0,
@@ -2986,7 +2996,11 @@ async function updateGovernanceWatchBoard() {
 
     const wallets = buildGovernedWalletEntries(rewardInfo);
     const tokenWatchEntries = (await Promise.all(wallets.map(async (wallet) => {
-        const envelope = await solanaCompatRpc('getTokenAccountsByOwner', [wallet.pubkey]).catch(() => null);
+        const envelope = await solanaCompatRpc('getTokenAccountsByOwner', [
+            wallet.pubkey,
+            { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+            { encoding: 'jsonParsed' },
+        ]).catch(() => null);
         const values = Array.isArray(envelope?.value) ? envelope.value : [];
         const discovered = [];
         const seen = new Set();

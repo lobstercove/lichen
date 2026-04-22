@@ -239,8 +239,10 @@
                     <tr>
                         <td><code>--rpc-url</code></td>
                         <td>string</td>
-                        <td><code>http://localhost:8899</code></td>
-                        <td>RPC server URL to connect to</td>
+                        <td><code>configured endpoint</code></td>
+                        <td>RPC server URL to connect to. Public docs examples use
+                            <code>https://testnet-rpc.lichen.network</code> or <code>https://rpc.lichen.network</code>.
+                        </td>
                     </tr>
                     <tr>
                         <td><code>--output</code></td>
@@ -461,6 +463,8 @@ lichen 0.5.6</code></pre>
             <div class="cmd-section" id="wallet-balance">
                 <h3><code>lichen wallet balance</code></h3>
                 <p>Query the on-chain balance for a named wallet, broken down by spendable, staked, and locked amounts.
+                    Like every CLI command, this honors the global <code>--rpc-url</code> flag when it appears before
+                    <code>wallet</code>.
                 </p>
 
                 <div class="code-block">
@@ -1092,8 +1096,9 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
             <!-- deploy -->
             <div class="cmd-section" id="deploy">
                 <h3><code>lichen deploy</code></h3>
-                <p>Deploy a compiled WASM contract binary to the chain. Cost is a flat fee of 25 LICN
-                    (CONTRACT_DEPLOY_FEE). Optionally register the contract in the symbol registry
+                <p>Deploy a compiled WASM contract binary to the chain. Cost is 25.001 LICN total
+                    (25 LICN deploy premium + 0.001 LICN base fee). Optionally register the contract in the symbol
+                    registry
                     by providing <code>--symbol</code>.</p>
 
                 <div class="code-block">
@@ -1101,7 +1106,7 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen deploy &lt;contract.wasm&gt; [--symbol &lt;SYM&gt;] [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--supply &lt;amount&gt;] [--metadata &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen deploy &lt;contract.wasm&gt; [--symbol &lt;SYM&gt;] [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--metadata &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1146,20 +1151,13 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
                             <td>Decimal precision (for tokens)</td>
                         </tr>
                         <tr>
-                            <td><code>--supply</code></td>
-                            <td>u64</td>
-                            <td>&mdash;</td>
-                            <td>Initial total supply in whole tokens (auto-converted to spores via decimals)</td>
-                        </tr>
-                        <tr>
                             <td><code>--metadata</code></td>
                             <td>JSON string</td>
                             <td>&mdash;</td>
-                            <td>Custom metadata JSON attached to the registry entry. Recognized fields:
+                            <td>Custom metadata JSON attached to the registry entry. Use a flat object of strings,
+                                numbers, and booleans only (1024 bytes max). Common profile fields:
                                 <code>description</code>, <code>website</code>, <code>logo_url</code>,
-                                <code>twitter</code>, <code>telegram</code>, <code>discord</code>,
-                                <code>mintable</code>, <code>burnable</code>.
-                                Any additional keys are stored as-is.
+                                <code>twitter</code>, <code>telegram</code>, <code>discord</code>.
                             </td>
                         </tr>
                         <tr>
@@ -1177,9 +1175,8 @@ Total: 2 validators, 205000.0 LICN staked</code></pre>
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code>$ lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template token --decimals 9 \
-    --supply 1000000 \
-    --metadata '{"description":"Community token","website":"https://mytoken.io","logo_url":"https://mytoken.io/logo.png","twitter":"https://x.com/mytoken","telegram":"https://t.me/mytoken","discord":"https://discord.gg/mytoken","mintable":true,"burnable":false}'
+    --symbol MYTK --name "My Token" --template mt20 --decimals 9 \
+    --metadata '{"description":"Community token","website":"https://mytoken.io","logo_url":"https://mytoken.io/logo.png","twitter":"https://x.com/mytoken","telegram":"https://t.me/mytoken","discord":"https://discord.gg/mytoken"}'
 
 <i class="fa-solid fa-shrimp"></i> Deploying contract...
 
@@ -1467,7 +1464,7 @@ Total: 2 contracts</code></pre>
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code>$ lichen contract register 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
-    --symbol VYRN --name "VYRN Token" --template token --decimals 9
+    --symbol VYRN --name "VYRN Token" --template mt20 --decimals 9
 
 <i class="fa-solid fa-check"></i> Symbol registered: VYRN → 5A19vK...9RxBWL</code></pre>
                 </div>
@@ -2156,7 +2153,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen network info</code></pre>
+                    <pre><code>lichen network info --rpc-url https://testnet-rpc.lichen.network</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -2164,13 +2161,13 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ lichen network info
+                    <pre><code>$ lichen network info --rpc-url https://testnet-rpc.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Network Information
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<i class="fa-solid fa-globe"></i> Network ID:  lichen-mainnet-1
-<i class="fa-solid fa-link"></i>  Chain ID:    1337
-<i class="fa-solid fa-link"></i> RPC Endpoint: http://localhost:8899
+<i class="fa-solid fa-globe"></i> Network ID:  lichen-testnet-1
+<i class="fa-solid fa-link"></i>  Chain ID:    lichen-testnet-1
+<i class="fa-solid fa-link"></i> RPC Endpoint: https://testnet-rpc.lichen.network
 
 <i class="fa-solid fa-chart-bar"></i> Statistics:
    Current slot: 483,201
@@ -2189,15 +2186,18 @@ Total: 2 peers</code></pre>
             <div class="cmd-section" id="token-create">
                 <h3><code>lichen token create</code></h3>
                 <p>Deploy a WASM token contract and automatically register it in the symbol registry
-                    with <code>template=&quot;token&quot;</code>. Requires a compiled WASM binary.
-                    Cost is 25.001 LICN (same as <code>lichen deploy</code>).</p>
+                    with <code>template=&quot;mt20&quot;</code>. Requires a compiled WASM binary.
+                    This shortcut is for standard MT-20 named-export contracts; it initializes token ownership,
+                    attaches token profile metadata, and can mint the initial owner supply on-chain.
+                    Cost is 25.001 LICN (same as <code>lichen deploy</code>).
+                </p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>lichen token create &lt;name&gt; &lt;symbol&gt; --wasm &lt;path&gt; [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen token create &lt;name&gt; &lt;symbol&gt; --wasm &lt;path&gt; [--decimals &lt;n&gt;] [--initial-supply &lt;amount&gt;] [--description &lt;text&gt;] [--website &lt;url&gt;] [--logo-url &lt;url&gt;] [--twitter &lt;url&gt;] [--telegram &lt;url&gt;] [--discord &lt;url&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2226,13 +2226,55 @@ Total: 2 peers</code></pre>
                             <td><code>--wasm, -w</code></td>
                             <td>path</td>
                             <td><em>required</em></td>
-                            <td>Path to compiled WASM token contract</td>
+                            <td>Path to a compiled standard MT-20 token contract</td>
                         </tr>
                         <tr>
                             <td><code>--decimals, -d</code></td>
                             <td>u8</td>
                             <td><code>9</code></td>
                             <td>Decimal precision</td>
+                        </tr>
+                        <tr>
+                            <td><code>--initial-supply</code></td>
+                            <td>u64</td>
+                            <td><code>0</code></td>
+                            <td>Initial supply in whole tokens, minted to the owner immediately after deploy</td>
+                        </tr>
+                        <tr>
+                            <td><code>--description</code></td>
+                            <td>string</td>
+                            <td>&mdash;</td>
+                            <td>Short token description stored in the registry profile</td>
+                        </tr>
+                        <tr>
+                            <td><code>--website</code></td>
+                            <td>url</td>
+                            <td>&mdash;</td>
+                            <td>Project website URL</td>
+                        </tr>
+                        <tr>
+                            <td><code>--logo-url</code></td>
+                            <td>url</td>
+                            <td>&mdash;</td>
+                            <td>Square logo URL used by Explorer and Wallet</td>
+                        </tr>
+                        <tr>
+                            <td><code>--twitter</code></td>
+                            <td>url</td>
+                            <td>&mdash;</td>
+                            <td>Twitter/X profile URL</td>
+                        </tr>
+                        <tr>
+                            <td><code>--telegram</code></td>
+                            <td>url</td>
+                            <td>&mdash;</td>
+                            <td>Telegram group or channel URL</td>
+                        </tr>
+                        <tr>
+                            <td><code>--discord</code></td>
+                            <td>url</td>
+                            <td>&mdash;</td>
+                            <td>Discord invite URL</td>
                         </tr>
                         <tr>
                             <td><code>--keypair, -k</code></td>
@@ -2248,22 +2290,30 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ lichen token create "VYRN Token" VYRN --wasm target/wasm32-unknown-unknown/release/vyrn_token.wasm --decimals 9
+                    <pre><code>$ lichen token create "VYRN Token" VYRN \
+        --wasm target/wasm32-unknown-unknown/release/vyrn_token.wasm \
+        --decimals 9 \
+        --initial-supply 1000000 \
+        --description "Community token" \
+        --website https://vyrn.example \
+        --logo-url https://vyrn.example/logo.png \
+        --twitter https://x.com/vyrn
 
 <i class="fa-solid fa-shrimp"></i> Deploying token contract...
   Name:     VYRN Token
   Symbol:   VYRN
   Decimals: 9
+    Initial:  1000000 VYRN -> owner balance
   Address:  5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL
   Fee:      25.001000000 LICN
-<i class="fa-solid fa-circle-check"></i> Token created!</code></pre>
+<i class="fa-solid fa-circle-check"></i> Token deployed!</code></pre>
                 </div>
             </div>
 
             <!-- token info -->
             <div class="cmd-section" id="token-info">
                 <h3><code>lichen token info</code></h3>
-                <p>Show metadata and supply information for a token.</p>
+                <p>Show metadata and supply information for a token by symbol or contract address.</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
@@ -2303,6 +2353,7 @@ Total: 2 peers</code></pre>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Address:   Mo1tToken1234567890abcdefghijk
 <i class="fa-solid fa-user"></i> Owner:     Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+<i class="fa-solid fa-tag"></i> Template:  token
 <i class="fa-solid fa-coins"></i> Supply:    500,000 MOSS
 <i class="fa-solid fa-hashtag"></i> Decimals:  6</code></pre>
                 </div>
@@ -2336,7 +2387,7 @@ Total: 2 peers</code></pre>
                             <td><code>token</code></td>
                             <td>string</td>
                             <td><em>required</em></td>
-                            <td>Token address</td>
+                            <td>Token address or symbol</td>
                         </tr>
                         <tr>
                             <td><code>amount</code></td>
@@ -2366,8 +2417,8 @@ Total: 2 peers</code></pre>
                     </div>
                     <pre><code>$ lichen token mint Mo1tToken1234567890abcdefghijk 10000
 
-<i class="fa-solid fa-shrimp"></i> Minting 10,000 MOSS...
-<i class="fa-solid fa-circle-check"></i> Minted! New supply: 510,000 MOSS</code></pre>
+<i class="fa-solid fa-shrimp"></i> Minting 10,000 whole tokens to Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+<i class="fa-solid fa-circle-check"></i> Tokens minted! Sig: 8bN2...kLm4</code></pre>
                 </div>
             </div>
 
@@ -2398,7 +2449,7 @@ Total: 2 peers</code></pre>
                             <td><code>token</code></td>
                             <td>string</td>
                             <td><em>required</em></td>
-                            <td>Token address</td>
+                            <td>Token address or symbol</td>
                         </tr>
                         <tr>
                             <td><code>to</code></td>
@@ -2428,8 +2479,8 @@ Total: 2 peers</code></pre>
                     </div>
                     <pre><code>$ lichen token send Mo1tToken1234567890abcdefghijk Mo1tRecipient... 500
 
-<i class="fa-solid fa-shrimp"></i> Sending 500 MOSS → Mo1tRecipient...
-<i class="fa-solid fa-circle-check"></i> Transfer confirmed!
+<i class="fa-solid fa-shrimp"></i> Sending 500 whole tokens to Mo1tRecipient...
+<i class="fa-solid fa-circle-check"></i> Tokens sent!
 <i class="fa-solid fa-file-signature"></i> Tx: 8bN2...kLm4</code></pre>
                 </div>
             </div>
@@ -2461,7 +2512,7 @@ Total: 2 peers</code></pre>
                             <td><code>token</code></td>
                             <td>string</td>
                             <td><em>required</em></td>
-                            <td>Token address</td>
+                            <td>Token address or symbol</td>
                         </tr>
                         <tr>
                             <td><code>--address, -a</code></td>
@@ -2486,7 +2537,9 @@ Total: 2 peers</code></pre>
                     <pre><code>$ lichen token balance Mo1tToken1234567890abcdefghijk
 
 <i class="fa-solid fa-shrimp"></i> Token Balance
-   MOSS: 499,500</code></pre>
+<i class="fa-solid fa-location-dot"></i> Token:   Mo1tToken1234567890abcdefghijk
+<i class="fa-solid fa-user"></i> Account: Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+<i class="fa-solid fa-coins"></i> Balance: 499,500 MOSS (499500000000 base units)</code></pre>
                 </div>
             </div>
 
@@ -2866,11 +2919,13 @@ Total: 2 active proposals</code></pre>
                 <h3><code>lichen upgrade</code></h3>
                 <p>Upgrade an existing contract in place by submitting a new WASM binary for a contract you own.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen upgrade &lt;address&gt; &lt;contract.wasm&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen upgrade Mo1tProg1D12345abcdefghijklmnop target/wasm32-unknown-unknown/release/my_contract_v2.wasm
 
 <i class="fa-solid fa-shrimp"></i> Upgrading contract...
@@ -2883,11 +2938,13 @@ Total: 2 active proposals</code></pre>
                 <h3><code>lichen tx</code></h3>
                 <p>Fetch a transaction by signature and print the decoded transaction summary.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen tx &lt;signature&gt;</code></pre>
                 </div>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen tx 7zQ3...bRtW
 
 <i class="fa-solid fa-file-signature"></i> Transaction: 7zQ3...bRtW
@@ -2901,11 +2958,13 @@ Total: 2 active proposals</code></pre>
                 <h3><code>lichen version</code></h3>
                 <p>Print the CLI version and build identity without using the global <code>--version</code> flag.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen version</code></pre>
                 </div>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen version
 lichen 0.5.6</code></pre>
                 </div>
@@ -2915,7 +2974,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen supply</code></h3>
                 <p>Show total supply, circulating supply, burned LICN, and other chain economics summary data.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen supply</code></pre>
                 </div>
             </div>
@@ -2924,7 +2984,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen fees</code></h3>
                 <p>Show the current fee schedule and fee-calculation inputs used by the runtime.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen fees</code></pre>
                 </div>
             </div>
@@ -2933,7 +2994,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen epoch</code></h3>
                 <p>Display the current epoch, slots remaining, and epoch-boundary timing information.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen epoch</code></pre>
                 </div>
             </div>
@@ -2942,7 +3004,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen host-functions</code></h3>
                 <p>Print the currently available WASM host functions for contract developers and SDK authors.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen host-functions</code></pre>
                 </div>
             </div>
@@ -2957,7 +3020,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen config show</code></h3>
                 <p>Print the current CLI configuration.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen config show</code></pre>
                 </div>
             </div>
@@ -2965,13 +3029,16 @@ lichen 0.5.6</code></pre>
             <div class="cmd-section" id="config-set">
                 <h3><code>lichen config set</code></h3>
                 <p>Persist a config key locally. Supported keys: <code>rpc_url</code>, <code>ws_url</code>,
-                    <code>keypair</code>.</p>
+                    <code>keypair</code>.
+                </p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen config set &lt;key&gt; &lt;value&gt;</code></pre>
                 </div>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen config set rpc_url https://rpc.lichen.network</code></pre>
                 </div>
             </div>
@@ -2980,7 +3047,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen config reset</code></h3>
                 <p>Reset stored configuration values back to the CLI defaults.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen config reset</code></pre>
                 </div>
             </div>
@@ -2995,7 +3063,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen symbol lookup</code></h3>
                 <p>Look up a symbol entry by its registry symbol.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen symbol lookup &lt;symbol&gt;</code></pre>
                 </div>
             </div>
@@ -3004,7 +3073,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen symbol list</code></h3>
                 <p>List all currently registered registry entries.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen symbol list</code></pre>
                 </div>
             </div>
@@ -3013,7 +3083,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen symbol by-address</code></h3>
                 <p>Resolve a contract address back to its registry entry.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen symbol by-address &lt;address&gt;</code></pre>
                 </div>
             </div>
@@ -3028,7 +3099,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen nft list</code></h3>
                 <p>List NFTs owned by an address or the active identity.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen nft list [--owner &lt;address&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
             </div>
@@ -3037,7 +3109,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen nft collection</code></h3>
                 <p>List NFTs belonging to a specific collection.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen nft collection &lt;address&gt;</code></pre>
                 </div>
             </div>
@@ -3046,7 +3119,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen nft marketplace</code></h3>
                 <p>Show recent or active NFT marketplace listings from the connected network.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen nft marketplace [--limit &lt;n&gt;]</code></pre>
                 </div>
             </div>
@@ -3055,13 +3129,15 @@ lichen 0.5.6</code></pre>
             <!--                             DEFI                                  -->
             <!-- ================================================================ -->
             <h2>DeFi Commands</h2>
-            <p>Read aggregated protocol stats for SporeSwap, the AMM, ThallLend, and the broader on-chain DeFi stack.</p>
+            <p>Read aggregated protocol stats for SporeSwap, the AMM, ThallLend, and the broader on-chain DeFi stack.
+            </p>
 
             <div class="cmd-section" id="defi-dex">
                 <h3><code>lichen defi dex</code></h3>
                 <p>Show SporeSwap DEX overview statistics.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen defi dex</code></pre>
                 </div>
             </div>
@@ -3070,7 +3146,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen defi amm</code></h3>
                 <p>Show AMM pool and liquidity metrics.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen defi amm</code></pre>
                 </div>
             </div>
@@ -3079,7 +3156,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen defi lending</code></h3>
                 <p>Show ThallLend protocol statistics and lending activity summaries.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen defi lending</code></pre>
                 </div>
             </div>
@@ -3088,7 +3166,8 @@ lichen 0.5.6</code></pre>
                 <h3><code>lichen defi overview</code></h3>
                 <p>Show the combined DeFi overview across supported on-chain protocols.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Shell</span><button class="code-copy-btn">Copy</button></div>
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen defi overview</code></pre>
                 </div>
             </div>

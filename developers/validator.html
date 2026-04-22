@@ -723,7 +723,8 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td><code>bind_address</code></td>
                         <td>String</td>
                         <td><code>"0.0.0.0"</code></td>
-                        <td>Bind address. Use <code>127.0.0.1</code> for localhost-only access.</td>
+                        <td>Bind address. Use a private interface or reverse proxy when access should stay internal.
+                        </td>
                     </tr>
                     <tr>
                         <td><code>enable_cors</code></td>
@@ -1195,7 +1196,7 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Fetch metrics
-curl -s http://localhost:9100/metrics | grep lichen_
+curl -s http://127.0.0.1:9100/metrics | grep lichen_
 
 # Example output
 lichen_block_height 1205247
@@ -1213,7 +1214,7 @@ lichen_mempool_size 127</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>curl -s http://localhost:8899 \
+                <pre><code>curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
@@ -1272,12 +1273,12 @@ services:
       - LICHEN_RPC_PORT=8899
       - LICHEN_WS_PORT=8900
       - LICHEN_P2P_PORT=7001
-    - LICHEN_SIGNER_BIND=127.0.0.1:9201
+            - LICHEN_SIGNER_BIND=127.0.0.1:9201
       - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
       - lichen
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
+            test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -1825,7 +1826,7 @@ lichen stake status --rpc-url https://testnet-rpc.lichen.network</code></pre>
 nc -zv seed-01.lichen.network 7001
 
 # Check current block height via RPC (testnet port 8899)
-curl -s http://localhost:8899 \
+curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBlockHeight"}' | jq .result</code></pre>
             </div>
@@ -1856,17 +1857,17 @@ df -h /var/lib/lichen/
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Full node status dump (testnet RPC port)
-curl -s http://localhost:8899 \
+curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq
 
 # Peer list
-curl -s http://localhost:8899 \
+curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' | jq
 
 # Validator set
-curl -s http://localhost:8899 \
+curl -s https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getValidators"}' | jq
 

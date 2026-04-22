@@ -117,12 +117,17 @@
                 blocks, transactions, account changes, contract logs, NFT activity, and marketplace events — and receive
                 push notifications as they happen.</p>
 
+            <div class="callout callout-info">
+                <p><strong>Coverage:</strong> Lichen currently exposes 20 live subscription families: 18 direct JSON-RPC
+                    subscription methods plus DEX and prediction-market multiplexed channels.</p>
+            </div>
+
             <!-- Connection -->
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
-                    <p><strong>Production endpoint:</strong> <code>wss://rpc.lichen.network/ws</code></p>
-                    <p><strong>Local development:</strong> <code>ws://localhost:8900</code></p>
+                    <p><strong>Mainnet WebSocket:</strong> <code>wss://rpc.lichen.network/ws</code></p>
+                    <p><strong>Testnet WebSocket:</strong> <code>wss://testnet-rpc.lichen.network/ws</code></p>
                     <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
                         format.</p>
                 </div>
@@ -140,9 +145,11 @@
                         <pre><code>import { Connection } from '@lichen/sdk';
 
 const conn = new Connection(
-  'http://localhost:8899',  // RPC
-  'ws://localhost:8900'     // WebSocket
+    'https://testnet-rpc.lichen.network',
+    'wss://testnet-rpc.lichen.network/ws'
 );
+
+// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
 
 // Subscribe to new slots
 const subId = await conn.onSlot((slot) => {
@@ -163,9 +170,11 @@ from lichen import Connection
 
 async def main():
     conn = Connection(
-        'http://localhost:8899',
-        ws_url='ws://localhost:8900'
+        'https://testnet-rpc.lichen.network',
+        ws_url='wss://testnet-rpc.lichen.network/ws'
     )
+
+    # Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
 
     sub_id = await conn.on_slot(lambda slot: print(f'New slot: {slot}'))
 
@@ -184,7 +193,7 @@ asyncio.run(main())</code></pre>
                         <div class="code-block-header"><span class="code-lang">wscat</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code># Install: npm install -g wscat
-wscat -c ws://localhost:8900
+wscat -c wss://testnet-rpc.lichen.network/ws
 
 # Subscribe to slots
 &gt; {"jsonrpc":"2.0","id":1,"method":"subscribeSlots","params":null}

@@ -1,197 +1,46 @@
-# Lichen Skills - For Autonomous Agents 🦞
+# Lichen Skills
 
-**Agent-readable guides for participating in the Lichen ecosystem**
+This directory holds repo-local skills for repeatable agent work inside the Lichen workspace.
 
----
-
-## What Are Skills?
-
-Skills are **self-contained modules** that teach AI agents how to perform specific tasks on Lichen. Each skill includes:
-- 📖 **SKILL.md** - Agent-readable documentation
-- 🛠️ **Scripts** - One-command automation
-- 💡 **Examples** - Working code samples
-- 📊 **Economics** - Cost/reward analysis
-
----
+These skills are intentionally smaller and more execution-oriented than the root `SKILL.md`.
+Use them when you want step-by-step task flow instead of the full protocol reference.
 
 ## Available Skills
 
-### 🦞 Validator Skill ([validator/](./validator/))
-Run a Lichen validator and earn LICN rewards.
+### Workspace Skill
 
-**What you'll do:**
-- Secure the network by producing blocks
-- Earn 5-200 LICN/day (depending on activity)
-- Participate in reputation-weighted consensus
+- Path: [workspace/SKILL.md](workspace/SKILL.md)
+- Use for: session bootstrap, repo navigation, validation planning, and handover hygiene
+- Read first when you are entering the repo cold or after compaction
 
-**Prerequisites:**
-- Rust installed
-- 2GB RAM, 50GB disk
-- Permission to run background processes
+### Validator Skill
 
-**Quickstart:**
-```bash
-cd validator/
-./setup-and-run.sh
-```
+- Path: [validator/SKILL.md](validator/SKILL.md)
+- Use for: local validator bring-up, validator operations, and operator workflows
+- Supplement with: `docs/deployment/PRODUCTION_DEPLOYMENT.md` for VPS and production paths
 
-**Expected time:** 2-5 minutes to first block  
-**Expected earnings:** transaction-fee share plus epoch-settled staking rewards  
-**Learn more:** [validator/SKILL.md](./validator/SKILL.md)
+## Related References
 
----
+- [AGENTS.md](../AGENTS.md): compact workspace bootstrap
+- [memories/repo/README.md](../memories/repo/README.md): tracked repo memory layer
+- [SKILL.md](../SKILL.md): exhaustive protocol and operator reference
+- [docs/README.md](../docs/README.md): human-readable docs hub
 
-### 💻 Developer Skill ([developer/](./developer/))
-Deploy smart contracts and build dApps on Lichen.
+## Adding New Skills
 
-**What you'll do:**
-- Write contracts in Rust (compiled to WASM)
-- Deploy to testnet/mainnet
-- Interact with deployed programs
+Preferred layout:
 
-**Prerequisites:**
-- SDK installed (Rust, JS, or Python)
-- Basic programming knowledge
-- Test LICN from faucet
-
-**Quickstart:**
-```bash
-npm install -g @lichen/cli
-lichen deploy my-contract.js
-```
-
-**Deployment cost:** 0.0001 LICN (~$0.00001)  
-**Learn more:** [developer/SKILL.md](./developer/SKILL.md) *(coming soon)*
-
----
-
-### 📈 Trader Skill ([trader/](./trader/))
-Use Lichen DeFi protocols (SporeSwap, ThallLend, SporePump).
-
-**What you'll do:**
-- Swap tokens on SporeSwap DEX
-- Provide liquidity and earn fees
-- Launch tokens via SporePump (0.1 LICN)
-- Lend/borrow on ThallLend
-
-**Prerequisites:**
-- LICN for gas fees
-- Understanding of DeFi primitives
-- Risk management protocol
-
-**Quickstart:**
-```bash
-lichen swap 100 LICN SOL  # Swap on SporeSwap
-lichen launch MyToken --supply 1000000  # Launch token
-```
-
-**Gas cost:** ~0.00001 LICN per transaction  
-**Learn more:** [trader/SKILL.md](./trader/SKILL.md) *(coming soon)*
-
----
-
-### 🗳️ Governance Skill ([governance/](./governance/))
-Participate in Lichen DAO governance.
-
-**What you'll do:**
-- Vote on proposals (quadratic voting)
-- Submit improvement proposals
-- Delegate voting power
-- Track treasury allocation
-
-**Prerequisites:**
-- LICN holdings (voting power)
-- Understanding of governance process
-
-**Quickstart:**
-```bash
-lichen governance vote 42 --choice yes
-lichen governance propose "Add new feature X"
-```
-
-**Learn more:** [governance/SKILL.md](./governance/SKILL.md) *(coming soon)*
-
----
-
-## How to Use Skills (For Agents)
-
-### 1. **Choose a skill** based on your human's goals
-   - Want to earn? → Validator
-   - Want to build? → Developer  
-   - Want to trade? → Trader
-   - Want to govern? → Governance
-
-### 2. **Read the SKILL.md** for that capability
-   - Each skill is self-contained
-   - Prerequisites clearly listed
-   - Commands are copy-paste ready
-
-### 3. **Run the setup script**
-   - One command to get started
-   - Automated prerequisite checks
-   - Safe defaults, minimal config
-
-### 4. **Monitor and automate**
-   - Use provided monitoring commands
-   - Set up cron jobs for uptime
-   - Track earnings/costs
-
----
-
-## Skill Development Philosophy
-
-**Agent-First Design:**
-- ✅ Clear prerequisites (no assumptions)
-- ✅ One-command setup (minimize steps)
-- ✅ Economic transparency (costs/rewards upfront)
-- ✅ Troubleshooting included (common errors documented)
-- ✅ Automation-friendly (scripts, not GUIs)
-
-**Proof of Contribution Aligned:**
-- Validators earn by securing network
-- Developers earn by building useful programs
-- Traders earn by providing liquidity
-- Governors earn reputation by good decisions
-
----
-
-## Contributing New Skills
-
-Want to create a new skill for agents? Follow this template:
-
-```
+```text
 skills/<skill-name>/
-├── SKILL.md                 # Agent-readable guide
-├── setup.sh                 # One-command setup
-├── examples/                # Working code examples
-└── README.md                # Human-readable overview
+├── SKILL.md
+├── README.md              # optional human overview
+├── scripts/               # optional helpers
+└── examples/              # optional examples
 ```
 
-**SKILL.md Template:**
-1. **What is this?** - Clear description
-2. **Prerequisites** - System requirements
-3. **Quick Start** - Copy-paste commands
-4. **Economics** - Costs and rewards
-5. **Monitoring** - How to track progress
-6. **Troubleshooting** - Common issues
-7. **Advanced** - Optional optimizations
+Guidelines:
 
----
-
-## Resources
-
-**Main Documentation:** [../docs/](../docs/)  
-**Examples:** [../examples/](../examples/)  
-**Tools:** [../tools/](../tools/)  
-**Community:** [Discord](https://discord.gg/lichen)
-
-**Support:**
-- Questions: Discord #agent-help
-- Bug reports: GitHub Issues
-- Skill requests: Discord #feature-requests
-
----
-
-*Last updated: February 7, 2026*  
-*Compatible with: Lichen v1.0.0+*  
-*Agent tested: ✅ Claude, GPT-4, DeepSeek, Gemini*
+- Keep skills task-oriented and short enough to survive compaction
+- Link to source-of-truth docs instead of copying large reference sections
+- Prefer validation commands and exact file paths over general advice
+- Update this index when adding or removing a tracked skill

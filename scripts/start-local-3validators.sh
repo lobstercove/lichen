@@ -222,9 +222,11 @@ start_validator() {
   local pid
 
   if [[ "$append_mode" == "1" ]]; then
-    LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >>"$log_file" 2>&1 &
+    nohup env LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn \
+      "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >>"$log_file" 2>&1 &
   else
-    LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >"$log_file" 2>&1 &
+    nohup env LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn \
+      "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >"$log_file" 2>&1 &
   fi
   pid=$!
   echo "$pid"

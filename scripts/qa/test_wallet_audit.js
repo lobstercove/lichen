@@ -617,8 +617,28 @@ test('popup wallet sessions are not forcibly reloaded or re-locked mid-flow', ()
     assert(walletBootstrapSrc.includes('if (!isBridgePopupSession()) {'), 'Service worker updates must not auto-reload the popup session');
     assert(walletConnectSrc.includes('if (!this.popup || this.popup.closed) {'), 'Popup provider must reuse an existing popup window');
     assert(!walletConnectSrc.includes('this.popup.location.href = popupUrl;'), 'Popup provider must not renavigate an already-open popup during repeated requests');
-    assert(walletConnectSrc.includes('return Promise.resolve(this._lastState);'), 'Closing the popup must not discard the cached provider session');
+    assert(walletConnectSrc.includes('this._setDisconnected();') && walletConnectSrc.includes('return Promise.resolve(this._lastState);'), 'Closing the popup must fail closed before returning cached provider state');
     assert(walletConnectSrc.includes('self._handlePopupClosed();'), 'Popup close monitoring must use the non-disconnecting close handler');
+});
+
+test('shared wallet-connect copies revalidate stored provider sessions before connected UX', () => {
+    const sharedWalletConnectPaths = [
+        path.join(__dirname, '..', '..', 'wallet', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'explorer', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'marketplace', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'developers', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'monitoring', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'faucet', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'programs', 'shared', 'wallet-connect.js'),
+        path.join(__dirname, '..', '..', 'dex', 'shared', 'wallet-connect.js'),
+    ];
+
+    sharedWalletConnectPaths.forEach((filePath) => {
+        const source = fs.readFileSync(filePath, 'utf8');
+        assert(source.includes('LichenWallet.prototype._readProviderAccounts = async function (provider)'), `${filePath} should read live provider accounts during restore`);
+        assert(source.includes('self._restoreValidatedConnection(data, restoredAddress'), `${filePath} should only restore after live provider validation`);
+        assert(!source.includes('this.address = data.address;\n                this._walletData = data;\n                this._startBalancePolling();\n                this.refreshBalance();'), `${filePath} should not trust raw stored provider state before validation`);
+    });
 });
 
 test('encryptPrivateKey/decryptPrivateKey roundtrip', async () => {
@@ -890,6 +910,16 @@ test('wallet settings explain that critical metadata stays pinned to trusted end
         'wallet settings should explain the signed metadata and trusted transport split');
     assert(normalizedWalletHtml.includes('Leave a field blank to use the official endpoint.'),
         'wallet settings should explain how to clear custom RPC overrides');
+    assert(normalizedWalletHtml.includes('Enable unsafe custom RPC mode'),
+        'wallet settings should require an explicit unsafe-mode toggle for custom RPC endpoints');
+    assert(normalizedWalletHtml.includes('Untrusted RPCs can spoof balances, recent blockhashes, and confirmation state.'),
+        'wallet settings should explain the trust risk of custom RPC endpoints');
+    assert(normalizedWalletHtml.includes('id="unsafeRpcMode"'),
+        'wallet settings should render the unsafe RPC mode toggle');
+    assert(walletSrc.includes('function isUnsafeRpcModeEnabled()'),
+        'wallet.js should gate custom RPC overrides behind explicit unsafe mode');
+    assert(walletSrc.includes('settings.allowUnsafeRpc'),
+        'wallet.js should persist explicit unsafe RPC mode state');
 });
 
 // ============================================================================

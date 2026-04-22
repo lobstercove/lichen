@@ -238,13 +238,6 @@ impl StateOracle {
     pub fn new(state: Arc<crate::state::StateStore>) -> Self {
         Self { state }
     }
-
-    /// Read the raw LICN consensus price.
-    /// Returns (price_raw, decimals, slot) or None if unavailable.
-    #[allow(dead_code)]
-    fn read_licn_price_feed(&self) -> Option<(u64, u8, u64)> {
-        read_licn_price_feed_from_state(&self.state)
-    }
 }
 
 impl PriceOracle for StateOracle {

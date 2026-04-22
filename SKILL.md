@@ -2097,20 +2097,19 @@ See `docs/guides/CONTRACT_DEVELOPMENT.md` for the complete guide.
 | Contract SDK | `lichen-contract-sdk` | Write on-chain WASM contracts | `#![no_std]`, `wasm32-unknown-unknown` |
 | Client SDK (Rust) | `lichen-client-sdk` | Call RPC from Rust apps | `tokio`, `reqwest` |
 
-### `lichen deploy` vs `licn token create`
+### `lichen deploy` vs `lichen token create`
 
 | Command | What it does | Fee |
 |---------|-------------|-----|
 | `lichen deploy contract.wasm` | Deploy WASM contract (no symbol registration) | 25.001 LICN |
-| `lichen deploy wasm --symbol X --name Y --template token` | Deploy + auto-register in symbol registry | 25.001 LICN |
-| `lichen deploy wasm --symbol X --supply 1000000 --decimals 9` | Deploy + register with initial total supply | 25.001 LICN |
-| `lichen deploy wasm --metadata '{"website":"...","logo":"..."}'` | Deploy with custom metadata JSON | 25.001 LICN |
-| `licn token create "Name" SYM --wasm token.wasm` | Deploy token WASM + register with template="token" | 25.001 LICN |
+| `lichen deploy contract.wasm --symbol X --name Y --template mt20` | Deploy + auto-register in symbol registry | 25.001 LICN |
+| `lichen deploy contract.wasm --metadata '{"website":"...","logo_url":"..."}'` | Deploy with custom registry metadata JSON | 25.001 LICN |
+| `lichen token create "Name" SYM --wasm token.wasm --initial-supply 1000000` | Deploy standard MT-20 token WASM + register + initialize + optional owner mint | 25.001 LICN |
 | `lichen contract register <addr> --symbol X` | Retroactively register deployed contract in symbol registry | 0.001 LICN |
 
-All tokens on Lichen are WASM contracts. Use `lichen deploy --symbol` or `licn token create --wasm` to deploy and register in one step. Use `lichen contract register` to fix contracts deployed without symbol metadata.
+All tokens on Lichen are WASM contracts. Use `lichen deploy --symbol` when you need custom init logic or fully custom metadata. Use `lichen token create --wasm` for standard MT-20 named-export contracts; it initializes owner state and can mint the initial owner supply on-chain. There is no metadata-only `lichen deploy --supply` path. Use `lichen contract register` to fix contracts deployed without symbol metadata.
 
-`--supply <amount>` sets initial total supply (in whole tokens, auto-converted to spores via decimals). `--metadata <json>` attaches arbitrary metadata to the symbol registry entry. After deploy, the CLI automatically verifies the contract is live on-chain by polling `getAccountInfo`.
+`--metadata <json>` attaches flat scalar registry metadata (string/number/boolean values, 1024 bytes max) to the symbol registry entry. After deploy, the CLI automatically verifies the contract is live on-chain by polling `getAccountInfo`.
 
 ### Template Categories
 
@@ -2118,9 +2117,9 @@ The `--template` flag sets the contract category in the symbol registry. The exp
 
 | Template | Explorer Category | Used By |
 |----------|------------------|---------|
-| `token` | Token | Fungible tokens (MT-20) |
+| `mt20` | Token | Fungible tokens (standard MT-20; `token` remains a legacy alias) |
 | `wrapped` | Wrapped | Bridge-wrapped tokens (LUSD, WSOL, WETH, WBNB) |
-| `nft` | NFT | NFT collections (MT-721) |
+| `nft` | NFT | NFT collections (`mt721` is also accepted) |
 | `marketplace` | NFT | NFT marketplaces |
 | `auction` | NFT | Auction contracts |
 | `dex` | DEX | Exchange contracts |
@@ -2145,7 +2144,7 @@ The template is a free-form string — any value is accepted. Unrecognized value
 #[no_mangle]
 pub extern "C" fn my_function(addr_ptr: *const u8, amount: u64) -> u32 {
     // addr_ptr = 32-byte address pointer
-    // Returns: 1 = success, 0 = failure
+  // Returns a contract-specific status code (document your convention)
     1
 }
 ```
@@ -2194,14 +2193,20 @@ cargo test
 
 # Deploy with symbol registration (need 25.001 LICN)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-  --symbol MYTK --name "My Token" --template token --decimals 9 \
-  --supply 1000000 --metadata '{"website":"https://example.com"}'
+  --symbol MYTK --name "My Token" --template mt20 --decimals 9 \
+  --metadata '{"website":"https://example.com","description":"Community token"}'
+
+# Standard MT-20 launch with owner mint
+lichen token create "My Token" MYTK \
+  --wasm target/wasm32-unknown-unknown/release/mt20_token.wasm \
+  --decimals 9 --initial-supply 1000000 \
+  --website https://example.com
 
 # Or deploy without registration
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
 # Retroactively register an already-deployed contract
-lichen contract register <address> --symbol MYTK --name "My Token" --template token
+lichen contract register <address> --symbol MYTK --name "My Token" --template mt20
 
 # Call a function
 lichen call <address> <function_name> [args]

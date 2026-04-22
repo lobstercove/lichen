@@ -4,7 +4,9 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
+        || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
@@ -16,7 +18,13 @@
     var allListings = [];
     var marketplaceProgram = null;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
-    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || function (method, params) {
+        return trustedLichenRpcCall(
+            method,
+            params,
+            typeof window.getTrustedMarketNetwork === 'function' ? window.getTrustedMarketNetwork() : undefined
+        );
+    };
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
@@ -365,10 +373,10 @@
                 var nft = null;
                 try {
                     if (fav.collection && fav.token_id !== undefined && fav.token_id !== null && String(fav.token_id) !== '') {
-                        nft = await rpcCall('getNFT', [fav.collection, String(fav.token_id)]);
+                        nft = await marketTrustedRpcCall('getNFT', [fav.collection, String(fav.token_id)]);
                     }
                     if (!nft && fav.id) {
-                        nft = await rpcCall('getNFT', [fav.id]);
+                        nft = await marketTrustedRpcCall('getNFT', [fav.id]);
                     }
                 } catch (_) { }
 
@@ -425,7 +433,7 @@
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;opacity:0.5;"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
 
         try {
-            var result = await rpcCall('getMarketOffers', [{ include_collection_offers: true, limit: 200 }]);
+            var result = await marketTrustedRpcCall('getMarketOffers', [{ include_collection_offers: true, limit: 200 }]);
             var offerList = result && result.offers ? result.offers : (Array.isArray(result) ? result : []);
 
             // Split into incoming (to my NFTs) and outgoing (I made)
@@ -547,7 +555,7 @@
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;opacity:0.5;"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
 
         try {
-            var sales = await rpcCall('getMarketSales', [{ limit: 200 }]);
+            var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: 200 }]);
             var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
 
             var activity = saleList.filter(function (s) {

@@ -254,10 +254,6 @@ function formatLicn(spores) {
     }) + ' LICN';
 }
 
-function formatLicnSpores(spores) {
-    return formatLicn(spores);
-}
-
 /**
  * Format a LICN amount preserving all significant decimals (up to 9).
  * Accepts a number or string. Strips trailing zeros but keeps at least 2 decimals.
@@ -390,6 +386,7 @@ var LICHEN_SIGNED_METADATA_SIGNERS = Object.freeze({
 });
 
 var _signedMetadataManifestCache = new Map();
+var SIGNED_METADATA_MANIFEST_CACHE_TTL_MS = 2000;
 var _signedMetadataVerifierPromise = null;
 var _sharedPqScriptPromise = null;
 var SHARED_PQ_SCRIPT_ID = 'lichen-shared-pq-module';
@@ -682,13 +679,28 @@ async function getSignedMetadataManifest(networkKey, options) {
     var cacheKey = normalizedNetwork || '__default__';
     var forceRefresh = Boolean(options && options.forceRefresh);
     if (!forceRefresh && _signedMetadataManifestCache.has(cacheKey)) {
-        return _signedMetadataManifestCache.get(cacheKey);
+        var cachedEntry = _signedMetadataManifestCache.get(cacheKey);
+        if (cachedEntry && (Date.now() - cachedEntry.cachedAt) < SIGNED_METADATA_MANIFEST_CACHE_TTL_MS) {
+            return cachedEntry.manifest;
+        }
+        _signedMetadataManifestCache.delete(cacheKey);
     }
 
     var envelope = await trustedLichenRpcCall('getSignedMetadataManifest', [], normalizedNetwork || undefined);
     var manifest = await verifySignedMetadataEnvelope(envelope, normalizedNetwork);
-    _signedMetadataManifestCache.set(cacheKey, manifest);
+    _signedMetadataManifestCache.set(cacheKey, {
+        manifest: manifest,
+        cachedAt: Date.now(),
+    });
     return manifest;
+}
+
+async function getSignedMetadataManifestOrNull(networkKey, options) {
+    try {
+        return await getSignedMetadataManifest(networkKey, options);
+    } catch (_) {
+        return null;
+    }
 }
 
 function clearSignedMetadataManifestCache(networkKey) {
@@ -701,15 +713,92 @@ function clearSignedMetadataManifestCache(networkKey) {
 }
 
 async function getSignedRegistryEntry(symbol, networkKey) {
-    var manifest = await getSignedMetadataManifest(networkKey);
+    var manifest = await getSignedMetadataManifestOrNull(networkKey);
     var key = String(symbol || '').trim().toUpperCase();
-    return key && manifest.registryBySymbol[key] ? cloneSignedRegistryEntry(manifest.registryBySymbol[key]) : null;
+    return key && manifest && manifest.registryBySymbol[key] ? cloneSignedRegistryEntry(manifest.registryBySymbol[key]) : null;
 }
 
 async function getSignedRegistryEntryByProgram(programId, networkKey) {
-    var manifest = await getSignedMetadataManifest(networkKey);
+    var manifest = await getSignedMetadataManifestOrNull(networkKey);
     var key = String(programId || '').trim();
-    return key && manifest.registryByProgram[key] ? cloneSignedRegistryEntry(manifest.registryByProgram[key]) : null;
+    return key && manifest && manifest.registryByProgram[key] ? cloneSignedRegistryEntry(manifest.registryByProgram[key]) : null;
+}
+
+function normalizeRegistryEntries(entries) {
+    return (Array.isArray(entries) ? entries : [])
+        .map(cloneSignedRegistryEntry)
+        .filter(function (entry) { return entry && entry.symbol && entry.program; });
+}
+
+function mergeSignedAndLiveRegistryEntries(signedEntries, liveEntries) {
+    var merged = normalizeRegistryEntries(liveEntries);
+    var programIndex = Object.create(null);
+    var symbolIndex = Object.create(null);
+
+    merged.forEach(function (entry, index) {
+        programIndex[String(entry.program)] = index;
+        symbolIndex[String(entry.symbol).toUpperCase()] = index;
+    });
+
+    normalizeRegistryEntries(signedEntries).forEach(function (entry) {
+        var programKey = String(entry.program);
+        var symbolKey = String(entry.symbol).toUpperCase();
+        var existingIndex = Object.prototype.hasOwnProperty.call(programIndex, programKey)
+            ? programIndex[programKey]
+            : (Object.prototype.hasOwnProperty.call(symbolIndex, symbolKey) ? symbolIndex[symbolKey] : -1);
+
+        if (existingIndex >= 0) {
+            merged[existingIndex] = entry;
+        } else {
+            existingIndex = merged.length;
+            merged.push(entry);
+        }
+
+        programIndex[programKey] = existingIndex;
+        symbolIndex[symbolKey] = existingIndex;
+    });
+
+    return merged.sort(function (left, right) {
+        return String(left.symbol).localeCompare(String(right.symbol));
+    });
+}
+
+async function getLiveRegistryEntries(method, fallbackRpcCall) {
+    if (typeof fallbackRpcCall !== 'function') {
+        return [];
+    }
+
+    try {
+        var liveResponse = await fallbackRpcCall(method, [{ limit: 2000 }]);
+        if (liveResponse && Array.isArray(liveResponse.entries)) {
+            return normalizeRegistryEntries(liveResponse.entries);
+        }
+        if (Array.isArray(liveResponse)) {
+            return normalizeRegistryEntries(liveResponse);
+        }
+    } catch (_) {
+        return [];
+    }
+
+    return [];
+}
+
+async function getSignedRegistryEntryOrFallback(signedEntryPromise, method, params, networkKey, fallbackRpcCall) {
+    var signedEntry = null;
+    try {
+        signedEntry = await signedEntryPromise;
+    } catch (_) {
+        signedEntry = null;
+    }
+    if (signedEntry) {
+        return signedEntry;
+    }
+
+    if (typeof fallbackRpcCall === 'function') {
+        return fallbackRpcCall(method, params || []);
+    }
+
+    return trustedLichenRpcCall(method, params || [], networkKey);
 }
 
 async function signedMetadataRpcCall(method, params, networkKey, fallbackRpcCall) {
@@ -717,12 +806,34 @@ async function signedMetadataRpcCall(method, params, networkKey, fallbackRpcCall
         case 'getSignedMetadataManifest':
             return (await getSignedMetadataManifest(networkKey)).payload;
         case 'getAllSymbolRegistry':
-        case 'getAllSymbols':
-            return shapeSignedMetadataListResponse((await getSignedMetadataManifest(networkKey)).registryEntries, params);
+        case 'getAllSymbols': {
+            var manifest = await getSignedMetadataManifestOrNull(networkKey);
+            if (!manifest) {
+                if (typeof fallbackRpcCall === 'function') {
+                    return fallbackRpcCall(method, params || []);
+                }
+                return trustedLichenRpcCall(method, params || [], networkKey);
+            }
+            var signedEntries = manifest.registryEntries;
+            var liveEntries = await getLiveRegistryEntries(method, fallbackRpcCall);
+            return shapeSignedMetadataListResponse(mergeSignedAndLiveRegistryEntries(signedEntries, liveEntries), params);
+        }
         case 'getSymbolRegistry':
-            return getSignedRegistryEntry(Array.isArray(params) ? params[0] : params, networkKey);
+            return getSignedRegistryEntryOrFallback(
+                getSignedRegistryEntry(Array.isArray(params) ? params[0] : params, networkKey),
+                method,
+                params,
+                networkKey,
+                fallbackRpcCall,
+            );
         case 'getSymbolRegistryByProgram':
-            return getSignedRegistryEntryByProgram(Array.isArray(params) ? params[0] : params, networkKey);
+            return getSignedRegistryEntryOrFallback(
+                getSignedRegistryEntryByProgram(Array.isArray(params) ? params[0] : params, networkKey),
+                method,
+                params,
+                networkKey,
+                fallbackRpcCall,
+            );
         default:
             if (typeof fallbackRpcCall === 'function') {
                 return fallbackRpcCall(method, params || []);
@@ -776,9 +887,6 @@ async function lichenRpcCall(method, params, rpcUrl) {
 async function trustedLichenRpcCall(method, params, networkKey) {
     return lichenRpcCall(method, params, getTrustedLichenRpcUrl(networkKey));
 }
-
-// Legacy alias used by some files
-var rpcCall = lichenRpcCall;
 
 // ── Binary Helpers ──
 
@@ -956,12 +1064,12 @@ if (typeof module !== 'undefined' && module.exports) {
         getTrustTier, getTrustTierNumber,
         escapeHtml, escapeJsAttr, formatNumber, formatHash, formatAddress, normalizeTxType,
         formatLicnExact,
-        formatLicn, formatLicnSpores, formatTime, timeAgo,
+        formatLicn, formatTime, timeAgo,
         formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatSpores,
         updatePagination,
         bs58encode, bs58decode, base58Encode, base58Decode,
         readLeU64, serializeMessageBincode,
-        getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall, rpcCall,
+        getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall,
         SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
         LICHEN_SIGNED_METADATA_SIGNERS,
         stableJsonStringify,
@@ -970,6 +1078,7 @@ if (typeof module !== 'undefined' && module.exports) {
         clearSignedMetadataManifestCache,
         getSignedRegistryEntry,
         getSignedRegistryEntryByProgram,
+        mergeSignedAndLiveRegistryEntries,
         signedMetadataRpcCall,
     };
 }

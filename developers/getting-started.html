@@ -332,7 +332,7 @@ command -v lichen</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ lichen transfer 1.5 Mo1tRecipientAddress123456789abcdefghijk \
+                <pre><code>$ lichen transfer Mo1tRecipientAddress123456789abcdefghijk 1.5 \
     --rpc-url https://testnet-rpc.lichen.network
 
 <i class="fa-solid fa-shrimp"></i> Sending 1.5 LICN...
@@ -369,9 +369,12 @@ command -v lichen</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ cargo new --lib hello-world
-$ cd hello-world
-$ cargo add lichen-contract-sdk</code></pre>
+                <pre><code>$ cd contracts
+$ cargo new --lib hello_world
+$ cd hello_world
+
+# Add the contract SDK from this repo in Cargo.toml:
+# lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }</code></pre>
             </div>
 
             <div class="step">
@@ -387,31 +390,39 @@ $ cargo add lichen-contract-sdk</code></pre>
                     <span class="code-lang">Rust</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>use lichen_sdk::prelude::*;
+                <pre><code>#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
 
-#[lichen_contract]
-mod hello_world {
-    use super::*;
+extern crate alloc;
 
-    /// Store a greeting message on-chain.
-    pub fn set_greeting(ctx: Context, message: String) -> Result&lt;()&gt; {
-        let greeting_account = &amp;mut ctx.accounts.greeting;
-        greeting_account.message = message.clone();
-        greeting_account.author = ctx.caller();
-        emit_event("GreetingSet", &amp;message);
-        Ok(())
-    }
+use lichen_sdk::{contract, storage};
 
-    /// Read the current greeting.
-    pub fn get_greeting(ctx: Context) -> Result&lt;String&gt; {
-        Ok(ctx.accounts.greeting.message.clone())
-    }
+#[no_mangle]
+pub extern "C" fn initialize() -> u32 {
+    storage::set(b"greeting", b"Hello, Lichen!");
+    0
 }
 
-#[account]
-pub struct GreetingAccount {
-    pub message: String,
-    pub author: Pubkey,
+#[no_mangle]
+pub extern "C" fn set_greeting() -> u32 {
+    let args = contract::args();
+    if args.is_empty() {
+        return 1;
+    }
+
+    storage::set(b"greeting", &args);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn get_greeting() -> u32 {
+    match storage::get(b"greeting") {
+        Some(value) =&gt; {
+            contract::set_return(&amp;value);
+            0
+        }
+        None =&gt; 1,
+    }
 }</code></pre>
             </div>
 
@@ -463,8 +474,10 @@ pub struct GreetingAccount {
 
 <i class="fa-solid fa-check"></i> Contract deployed successfully!
 
-  Interact via:
-    lichen call Mo1tProg1D...xYz789 set_greeting '["Hello, Lichen!"]'</code></pre>
+    Interact via:
+        lichen call Mo1tProg1D...xYz789 set_greeting \
+            --args '["Hello, Lichen!"]' \
+            --rpc-url https://testnet-rpc.lichen.network</code></pre>
             </div>
 
             <div class="callout callout-tip">

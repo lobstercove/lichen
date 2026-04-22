@@ -348,6 +348,23 @@ class Connection:
     async def get_transaction_history(self, pubkey: PublicKey, limit: int = 10) -> Dict[str, Any]:
         """Get transaction history"""
         return await self._rpc("getTransactionHistory", [str(pubkey), limit])
+
+    async def call_readonly_contract(
+        self,
+        contract_id: PublicKey,
+        function_name: str,
+        args: bytes = b"",
+        from_pubkey: Optional[PublicKey] = None,
+    ) -> Dict[str, Any]:
+        """Execute a read-only contract call without submitting a transaction."""
+        params: List[str] = [
+            str(contract_id),
+            function_name,
+            base64.b64encode(args).decode("ascii"),
+        ]
+        if from_pubkey is not None:
+            params.append(str(from_pubkey))
+        return await self._rpc("callContract", params)
     
     # ============================================================================
     # CONTRACT ENDPOINTS
@@ -364,6 +381,62 @@ class Connection:
     async def get_all_contracts(self) -> Dict[str, Any]:
         """Get all deployed contracts"""
         return await self._rpc("getAllContracts")
+
+    async def get_symbol_registry(self, symbol: str) -> Dict[str, Any]:
+        """Get a symbol-registry entry."""
+        return await self._rpc("getSymbolRegistry", [symbol])
+
+    async def get_lichenid_profile(self, pubkey: PublicKey) -> Dict[str, Any]:
+        """Get the complete LichenID profile for an address."""
+        return await self._rpc("getLichenIdProfile", [str(pubkey)])
+
+    async def get_lichenid_reputation(self, pubkey: PublicKey) -> Dict[str, Any]:
+        """Get the LichenID reputation summary for an address."""
+        return await self._rpc("getLichenIdReputation", [str(pubkey)])
+
+    async def get_lichenid_skills(self, pubkey: PublicKey) -> Dict[str, Any]:
+        """Get LichenID skills for an address."""
+        return await self._rpc("getLichenIdSkills", [str(pubkey)])
+
+    async def get_lichenid_vouches(self, pubkey: PublicKey) -> Dict[str, Any]:
+        """Get LichenID vouches for an address."""
+        return await self._rpc("getLichenIdVouches", [str(pubkey)])
+
+    async def resolve_lichen_name(self, name: str) -> Dict[str, Any]:
+        """Resolve a .lichen name to its owner."""
+        return await self._rpc("resolveLichenName", [name])
+
+    async def get_name_auction(self, name: str) -> Dict[str, Any]:
+        """Get premium-name auction state for a .lichen label."""
+        return await self._rpc("getNameAuction", [name])
+
+    async def get_lichenid_agent_directory(self, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Get the LichenID agent directory."""
+        return await self._rpc("getLichenIdAgentDirectory", [options or {}])
+
+    async def get_lichenid_stats(self) -> Dict[str, Any]:
+        """Get aggregated LichenID statistics."""
+        return await self._rpc("getLichenIdStats")
+
+    async def get_sporepay_stats(self) -> Dict[str, Any]:
+        """Get aggregated SporePay streaming statistics."""
+        return await self._rpc("getSporePayStats")
+
+    async def get_lichenswap_stats(self) -> Dict[str, Any]:
+        """Get aggregated LichenSwap AMM statistics."""
+        return await self._rpc("getLichenSwapStats")
+
+    async def get_thalllend_stats(self) -> Dict[str, Any]:
+        """Get aggregated ThallLend lending statistics."""
+        return await self._rpc("getThallLendStats")
+
+    async def get_sporevault_stats(self) -> Dict[str, Any]:
+        """Get aggregated SporeVault yield-vault statistics."""
+        return await self._rpc("getSporeVaultStats")
+
+    async def get_bountyboard_stats(self) -> Dict[str, Any]:
+        """Get aggregated BountyBoard marketplace statistics."""
+        return await self._rpc("getBountyBoardStats")
 
     # ============================================================================
     # PROGRAM ENDPOINTS (DRAFT)

@@ -235,21 +235,6 @@ const Playground = {
         await this.applyActiveWallet();
     },
 
-    async trustedMetadataRpc(method, params = []) {
-        if (typeof signedMetadataRpcCall === 'function') {
-            return signedMetadataRpcCall(method, params, this.network, (resolvedMethod, resolvedParams) => {
-                if (typeof trustedLichenRpcCall === 'function') {
-                    return trustedLichenRpcCall(resolvedMethod, resolvedParams, this.network);
-                }
-                return this.rpc.call(resolvedMethod, resolvedParams);
-            });
-        }
-        if (typeof trustedLichenRpcCall === 'function') {
-            return trustedLichenRpcCall(method, params, this.network);
-        }
-        return this.rpc.call(method, params);
-    },
-
     // Initialize Monaco Editor
     async initMonacoEditor() {
         return new Promise((resolve) => {
@@ -458,17 +443,11 @@ const Playground = {
         });
 
         document.getElementById('copyProgramIdPreviewBtn')?.addEventListener('click', () => {
-            const value = document.getElementById('programIdPreview')?.value;
-            if (value) {
-                navigator.clipboard.writeText(value);
-            }
+            this.copyProgramIdFromElement('programIdPreview');
         });
 
         document.getElementById('copyProgramInfoIdBtn')?.addEventListener('click', () => {
-            const value = document.getElementById('infoProgramId')?.textContent?.trim();
-            if (value && value !== '-') {
-                navigator.clipboard.writeText(value);
-            }
+            this.copyProgramIdFromElement('infoProgramId');
         });
 
         // Build & Deploy button (sidebar)
@@ -689,7 +668,7 @@ const Playground = {
 
                     if (tpsEl) tpsEl.textContent = metrics.tps.toFixed(2);
                     if (totalTxsEl) totalTxsEl.textContent = metrics.total_transactions.toLocaleString();
-                    if (blockTimeEl) blockTimeEl.textContent = `${(metrics.average_block_time * 1000).toFixed(0)}ms`;
+                    if (blockTimeEl) blockTimeEl.textContent = `${(metrics.average_block_time * 1000).toFixed(0)} ms`;
                     if (burnedEl) burnedEl.textContent = `${(metrics.total_burned / 1_000_000_000).toFixed(2)} LICN`;
                 } catch (e) {
                     // Ignore errors
@@ -771,7 +750,7 @@ const Playground = {
         localStorage.setItem('playground_files', JSON.stringify(Array.from(this.files.entries())));
 
         this.updateFileModifiedIndicator();
-        this.addTerminalLine(`💾 Saved ${this.currentFile}`, 'success');
+        this.addTerminalLine(`💾 Saved ${this.currentFile} `, 'success');
     },
 
     debouncedSave: (() => {
@@ -839,8 +818,8 @@ const Playground = {
         const name = this.projectName || 'workspace';
         this.updateProjectNameInSource(name);
         this.updateProjectNameInCargoToml(name);
-        this.addTerminalLine(`✅ Renamed files + code to ${name}`, 'success');
-        this.showToast(`Renamed files + code to ${name}`, 'success');
+        this.addTerminalLine(`✅ Renamed files + code to ${name} `, 'success');
+        this.showToast(`Renamed files + code to ${name} `, 'success');
     },
 
     updateProjectNameInSource(name) {
@@ -920,6 +899,38 @@ const Playground = {
         }
         navigator.clipboard.writeText(url);
         this.showToast('RPC URL copied', 'success');
+    },
+
+    copyProgramIdFromElement(elementId) {
+        const element = document.getElementById(elementId);
+        const programId = (element && 'value' in element ? element.value : element?.textContent || '').trim();
+        if (!programId || programId === '-' || programId === 'Build to preview' || programId === 'Build and connect wallet' || programId === 'Enter override program id') {
+            this.showToast('Program ID not available', 'warning');
+            return;
+        }
+        navigator.clipboard.writeText(programId);
+        this.showToast('Program ID copied', 'success');
+    },
+
+    async trustedMetadataRpc(method, params = []) {
+        if (typeof signedMetadataRpcCall === 'function') {
+            return signedMetadataRpcCall(method, params, this.network, (resolvedMethod, resolvedParams) => {
+                if (typeof trustedLichenRpcCall === 'function') {
+                    return trustedLichenRpcCall(resolvedMethod, resolvedParams, this.network);
+                }
+                if (typeof lichenRpcCall === 'function' && typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') {
+                    return lichenRpcCall(resolvedMethod, resolvedParams, LICHEN_CONFIG.rpc(this.network));
+                }
+                throw new Error('Trusted metadata RPC unavailable');
+            });
+        }
+        if (typeof trustedLichenRpcCall === 'function') {
+            return trustedLichenRpcCall(method, params, this.network);
+        }
+        if (typeof lichenRpcCall === 'function' && typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') {
+            return lichenRpcCall(method, params, LICHEN_CONFIG.rpc(this.network));
+        }
+        throw new Error('Trusted metadata RPC unavailable');
     },
 
     saveSnapshot() {
@@ -1286,7 +1297,7 @@ const Playground = {
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
-                        <div class="template-options-note">Owner is the connected wallet at deploy time.</div>
+                        <div class="template-options-note">Owner is the connected wallet used for the automatic initialize step after deploy.</div>
                     </div>
                     <label class="template-option-toggle">
                         <input type="checkbox" id="tokenMintableToggle">
@@ -1297,7 +1308,7 @@ const Playground = {
                         Burnable (holders burn their own balance)
                     </label>
                 </div>
-                <div class="template-options-note">If mintable is off, the initial supply is fixed at deploy time.</div>
+                <div class="template-options-note">If mintable is off, the automatic initialize step fixes the initial supply permanently.</div>
                 <div class="template-options-note">Changing options regenerates the template code.</div>
             `;
 
@@ -2882,6 +2893,12 @@ pub extern "C" fn total_minted() -> u64 {
         try {
             // Call compiler API
             const compilerUrl = this.rpc.compilerUrl;
+            if (!compilerUrl) {
+                this.addTerminalLine('❌ Remote compilation is disabled for this network.', 'error');
+                this.addTerminalLine('ℹ️  Switch to a local environment or configure a trusted compiler endpoint first.', 'info');
+                document.getElementById('buildStatus').innerHTML = '<i class="fas fa-times-circle"></i> <span>Compiler unavailable</span>';
+                return;
+            }
             const response = await fetch(compilerUrl, {
                 method: 'POST',
                 headers: {
@@ -2944,6 +2961,62 @@ pub extern "C" fn total_minted() -> u64 {
             this.addTerminalLine(`   ${error.message}`, 'error');
 
             document.getElementById('buildStatus').innerHTML = '<i class="fas fa-exclamation-circle"></i> <span>Error</span>';
+        }
+    },
+
+    getTemplatePostDeploySetupSpec() {
+        if (!this.wallet?.address) return null;
+
+        const templateId = this.currentTemplateId;
+        if (templateId === 'token' || templateId === 'mt20') {
+            const opts = this.readTokenOptionsFromUI();
+            const amountLabel = opts?.supply || '0';
+            const symbolLabel = opts?.symbol || 'token';
+            const initializesSupply = Boolean(opts && opts.initialSupplyBase && opts.initialSupplyBase !== '0');
+            return {
+                kind: 'MT-20 token',
+                functionName: 'initialize',
+                args: [this.wallet.address],
+                pendingMessage: initializesSupply
+                    ? `⏳ Initializing MT-20 token and minting ${amountLabel} ${symbolLabel} to the owner...`
+                    : '⏳ Initializing MT-20 token owner state...',
+                successMessage: initializesSupply
+                    ? '✅ MT-20 token initialized and initial supply minted'
+                    : '✅ MT-20 token initialized'
+            };
+        }
+
+        if (templateId === 'nft' || templateId === 'mt721') {
+            return {
+                kind: 'MT-721 collection',
+                functionName: 'initialize',
+                args: [this.wallet.address],
+                pendingMessage: '⏳ Initializing MT-721 collection state...',
+                successMessage: '✅ MT-721 collection initialized'
+            };
+        }
+
+        return null;
+    },
+
+    async runTemplatePostDeploySetup(deployer, programId) {
+        const setup = this.getTemplatePostDeploySetupSpec();
+        if (!setup) {
+            return null;
+        }
+
+        this.addTerminalLine(setup.pendingMessage, 'info');
+
+        try {
+            const callResult = await deployer.call(programId, setup.functionName, setup.args);
+            this.addTerminalLine(`${setup.successMessage} (sig: ${callResult.signature})`, 'success');
+            return {
+                ...setup,
+                signature: callResult.signature
+            };
+        } catch (error) {
+            error.templateSetup = setup;
+            throw error;
         }
     },
 
@@ -3021,7 +3094,27 @@ pub extern "C" fn total_minted() -> u64 {
                 programIdOverride
             });
 
-            this.addTerminalLine('✅ Program deployed successfully!', 'success');
+            let postDeploySetup = null;
+            let postDeploySetupError = null;
+            try {
+                postDeploySetup = await this.runTemplatePostDeploySetup(deployer, result.programId);
+            } catch (error) {
+                postDeploySetupError = error;
+            }
+
+            if (postDeploySetupError) {
+                const setup = postDeploySetupError.templateSetup || this.getTemplatePostDeploySetupSpec();
+                this.addTerminalLine('⚠️  Program code deployed, but template initialization failed.', 'warning');
+                this.addTerminalLine(`   ${postDeploySetupError.message}`, 'warning');
+                if (setup) {
+                    this.addTerminalLine(
+                        `   Recovery: call ${setup.functionName}(["${this.wallet.address}"]) before using this ${setup.kind}.`,
+                        'warning'
+                    );
+                }
+            } else {
+                this.addTerminalLine('✅ Program deployed successfully!', 'success');
+            }
             this.addTerminalLine(`   Program ID: ${result.programId}`, 'info');
             this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
             this.addTerminalLine(`   Explorer: ${this.getExplorerUrl()}/program/${result.programId}`, 'link');
@@ -3037,6 +3130,8 @@ pub extern "C" fn total_minted() -> u64 {
             }
 
             result.owner = result.owner || this.wallet?.address || null;
+            result.postDeploySetup = postDeploySetup;
+            result.ready = !postDeploySetupError;
 
             // Save deployed program
             this.deployedPrograms.push(result);
@@ -3167,10 +3262,6 @@ pub extern "C" fn total_minted() -> u64 {
                 payload.symbol = opts.symbol;
                 payload.name = opts.name;
                 payload.template = 'mt20';
-                const social = {};
-                if (opts.twitter) social.twitter = opts.twitter;
-                if (opts.telegram) social.telegram = opts.telegram;
-                if (opts.discord) social.discord = opts.discord;
                 payload.metadata = {
                     decimals: opts.decimals,
                     initial_supply: opts.initialSupplyBase,
@@ -3181,8 +3272,7 @@ pub extern "C" fn total_minted() -> u64 {
                     logo_url: opts.logo_url || undefined,
                     twitter: opts.twitter || undefined,
                     telegram: opts.telegram || undefined,
-                    discord: opts.discord || undefined,
-                    social_urls: Object.keys(social).length ? social : undefined
+                    discord: opts.discord || undefined
                 };
             }
         } else if (templateId === 'nft' || templateId === 'mt721') {
@@ -3252,6 +3342,11 @@ pub extern "C" fn total_minted() -> u64 {
         try {
             // Build first, then run tests via compiler
             const compilerUrl = this.rpc.compilerUrl;
+            if (!compilerUrl) {
+                this.addTerminalLine('❌ Remote test compilation is disabled for this network.', 'error');
+                this.addTerminalLine('ℹ️  Switch to a local environment or configure a trusted compiler endpoint first.', 'info');
+                return;
+            }
             const response = await fetch(compilerUrl, {
                 method: 'POST',
                 headers: {
@@ -4703,161 +4798,139 @@ pub extern "C" fn initialize() -> Result<()> {
 
 #![no_std]
 #![no_main]
-#![allow(static_mut_refs)]
 
-use lichen_sdk::{Token, Address, log_info};
+use lichen_sdk::{get_caller, log_info, storage_get, storage_set, Address, Token};
 
-// Initialize token
-static mut TOKEN: Option<Token> = None;
-static mut OWNER: Option<Address> = None;
+const TOKEN_PREFIX: &str = "mtk";
+const OWNER_KEY: &[u8] = b"mtk_owner";
 
-fn get_token() -> &'static mut Token {
-    unsafe {
-        TOKEN.as_mut().expect("Token not initialized")
-    }
+fn token() -> Token {
+    Token::new("MyToken", "MTK", 9, TOKEN_PREFIX)
 }
 
-fn get_owner() -> Address {
+fn read_address(ptr: *const u8) -> [u8; 32] {
+    let mut out = [0u8; 32];
     unsafe {
-        OWNER.expect("Owner not set")
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
     }
+    out
 }
 
-/// Initialize the token contract
+fn load_owner() -> Option<[u8; 32]> {
+    storage_get(OWNER_KEY).and_then(|bytes| {
+        if bytes.len() < 32 {
+            return None;
+        }
+        let mut owner = [0u8; 32];
+        owner.copy_from_slice(&bytes[..32]);
+        Some(owner)
+    })
+}
+
 #[no_mangle]
-pub extern "C" fn initialize(owner_ptr: *const u8) {
-    let owner_bytes = unsafe {
-        core::slice::from_raw_parts(owner_ptr, 32)
-    };
-    let mut owner_array = [0u8; 32];
-    owner_array.copy_from_slice(owner_bytes);
-    let owner = Address::new(owner_array);
-
-    unsafe {
-        OWNER = Some(owner);
-        TOKEN = Some(Token::new("MyToken", "MTK", 9));
+pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
+    let owner = read_address(owner_ptr);
+    if get_caller().0 != owner {
+        return 200;
+    }
+    if load_owner().is_some() {
+        return 1;
     }
 
-    // Initialize with 1 million tokens
-    let initial_supply = 1_000_000 * 1_000_000_000; // 1M with 9 decimals
-    get_token().initialize(initial_supply, owner).expect("Initialization failed");
-
-    log_info("MyToken initialized");
+    storage_set(OWNER_KEY, &owner);
+    let mut mt20 = token();
+    let initial_supply = 1_000_000 * 1_000_000_000;
+    match mt20.initialize(initial_supply, Address::new(owner)) {
+        Ok(_) => {
+            log_info("MyToken initialized");
+            0
+        }
+        Err(_) => 2,
+    }
 }
 
-/// Get balance of an account
 #[no_mangle]
 pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
-    let account_bytes = unsafe {
-        core::slice::from_raw_parts(account_ptr, 32)
-    };
-    let mut account_array = [0u8; 32];
-    account_array.copy_from_slice(account_bytes);
-    let account = Address::new(account_array);
-
-    get_token().balance_of(account)
+    let account = read_address(account_ptr);
+    token().balance_of(Address::new(account))
 }
 
-/// Transfer tokens
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
-    let to_bytes = unsafe { core::slice::from_raw_parts(to_ptr, 32) };
+    let from = read_address(from_ptr);
+    if get_caller().0 != from {
+        return 200;
+    }
+    let to = read_address(to_ptr);
 
-    let mut from_array = [0u8; 32];
-    let mut to_array = [0u8; 32];
-    from_array.copy_from_slice(from_bytes);
-    to_array.copy_from_slice(to_bytes);
-
-    let from = Address::new(from_array);
-    let to = Address::new(to_array);
-
-    match get_token().transfer(from, to, amount) {
+    match token().transfer(Address::new(from), Address::new(to), amount) {
         Ok(_) => {
             log_info("Transfer successful");
-            1
-        }
-        Err(_) => {
-            log_info("Transfer failed");
             0
         }
+        Err(_) => 1,
     }
 }
 
-/// Mint new tokens (owner only)
 #[no_mangle]
 pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    let caller_bytes = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let to_bytes = unsafe { core::slice::from_raw_parts(to_ptr, 32) };
+    let caller = read_address(caller_ptr);
+    if get_caller().0 != caller {
+        return 200;
+    }
+    let owner = match load_owner() {
+        Some(owner) => owner,
+        None => return 3,
+    };
+    let to = read_address(to_ptr);
 
-    let mut caller_array = [0u8; 32];
-    let mut to_array = [0u8; 32];
-    caller_array.copy_from_slice(caller_bytes);
-    to_array.copy_from_slice(to_bytes);
-
-    let caller = Address::new(caller_array);
-    let to = Address::new(to_array);
-    let owner = get_owner();
-
-    match get_token().mint(to, amount, caller, owner) {
+    let mut mt20 = token();
+    match mt20.mint(Address::new(to), amount, Address::new(caller), Address::new(owner)) {
         Ok(_) => {
             log_info("Mint successful");
-            1
-        }
-        Err(_) => {
-            log_info("Mint failed - unauthorized");
             0
         }
+        Err(_) => 1,
     }
 }
 
-/// Burn tokens
 #[no_mangle]
 pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
-    let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
-    let mut from_array = [0u8; 32];
-    from_array.copy_from_slice(from_bytes);
-    let from = Address::new(from_array);
+    let from = read_address(from_ptr);
+    if get_caller().0 != from {
+        return 200;
+    }
 
-    match get_token().burn(from, amount) {
+    let mut mt20 = token();
+    match mt20.burn(Address::new(from), amount) {
         Ok(_) => {
             log_info("Burn successful");
-            1
-        }
-        Err(_) => {
-            log_info("Burn failed");
             0
         }
+        Err(_) => 1,
     }
 }
 
-/// Approve spender
 #[no_mangle]
 pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: u64) -> u32 {
-    let owner_bytes = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
-    let spender_bytes = unsafe { core::slice::from_raw_parts(spender_ptr, 32) };
+    let owner = read_address(owner_ptr);
+    if get_caller().0 != owner {
+        return 200;
+    }
+    let spender = read_address(spender_ptr);
 
-    let mut owner_array = [0u8; 32];
-    let mut spender_array = [0u8; 32];
-    owner_array.copy_from_slice(owner_bytes);
-    spender_array.copy_from_slice(spender_bytes);
-
-    let owner = Address::new(owner_array);
-    let spender = Address::new(spender_array);
-
-    match get_token().approve(owner, spender, amount) {
+    match token().approve(Address::new(owner), Address::new(spender), amount) {
         Ok(_) => {
             log_info("Approval successful");
-            1
+            0
         }
-        Err(_) => 0,
+        Err(_) => 1,
     }
 }
 
-/// Get total supply
 #[no_mangle]
 pub extern "C" fn total_supply() -> u64 {
-    get_token().total_supply
+    token().get_total_supply()
 }
 `,
             'Cargo.toml': `[package]

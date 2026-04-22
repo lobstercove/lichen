@@ -5,7 +5,9 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
+        || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
     var CONTRACT_PROGRAM_ID = null; // resolved lazily
     var SYSTEM_PROGRAM_ID = null;   // resolved lazily
     var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily
@@ -20,7 +22,13 @@
     var userCollections = [];
     var userBalance = 0;
     var marketplaceProgram = null;
-    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || function (method, params) {
+        return trustedLichenRpcCall(
+            method,
+            params,
+            typeof window.getTrustedMarketNetwork === 'function' ? window.getTrustedMarketNetwork() : undefined
+        );
+    };
 
     function lazyAddresses() {
         if (!SYSTEM_PROGRAM_ID) SYSTEM_PROGRAM_ID = bs58encode(new Uint8Array(32));
@@ -717,7 +725,7 @@
                 }]);
 
                 try {
-                    var mintedToken = await rpcCall('getNFT', [collectionAddress, tokenId]);
+                    var mintedToken = await marketTrustedRpcCall('getNFT', [collectionAddress, tokenId]);
                     if (mintedToken && mintedToken.token && mintedToken.token !== tokenAccount) {
                         throw new Error('Token account derivation mismatch with runtime for token #' + tokenId);
                     }

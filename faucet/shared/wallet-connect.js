@@ -21,16 +21,18 @@ function formatHash(hash, len) {
 }
 
 /**
- * Resolve the RPC URL from config or default
- * Checks window.lichenConfig, window.lichenMarketConfig, window.lichenExplorerConfig
+ * Resolve the RPC URL from loaded app config.
  * @returns {string}
  */
 function getLichenRpcUrl() {
     if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') return LICHEN_CONFIG.rpc();
-    if (window.lichenConfig && window.lichenConfig.rpcUrl) return window.lichenConfig.rpcUrl;
-    if (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) return window.lichenMarketConfig.rpcUrl;
-    if (window.lichenExplorerConfig && window.lichenExplorerConfig.rpcUrl) return window.lichenExplorerConfig.rpcUrl;
-    return 'http://localhost:8899';
+    if (typeof window !== 'undefined') {
+        if (window.LICHEN_CONFIG && typeof window.LICHEN_CONFIG.rpc === 'function') return window.LICHEN_CONFIG.rpc();
+        if (window.lichenConfig && window.lichenConfig.rpcUrl) return window.lichenConfig.rpcUrl;
+        if (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) return window.lichenMarketConfig.rpcUrl;
+        if (window.lichenExplorerConfig && window.lichenExplorerConfig.rpcUrl) return window.lichenExplorerConfig.rpcUrl;
+    }
+    throw new Error('RPC URL unavailable. Load shared-config.js before wallet-connect.js.');
 }
 
 /**
@@ -342,31 +344,111 @@ LichenWallet.prototype._stopBalancePolling = function () {
     }
 };
 
+LichenWallet.prototype._emitRestoredConnection = function () {
+    var info = { address: this.address, balance: this.balance };
+    for (var i = 0; i < this._connectCallbacks.length; i++) {
+        try { this._connectCallbacks[i](info); } catch (e) { console.error(e); }
+    }
+    this._updateButton();
+};
+
+LichenWallet.prototype._readProviderAccounts = async function (provider) {
+    var accounts = [];
+    if (!provider) return accounts;
+
+    if (typeof provider.getProviderState === 'function') {
+        var state = await provider.getProviderState().catch(function () { return null; });
+        if (state && state.connected && Array.isArray(state.accounts)) {
+            accounts = state.accounts;
+        }
+    }
+
+    if (!accounts.length && typeof provider.accounts === 'function') {
+        accounts = await provider.accounts().catch(function () { return []; });
+    }
+
+    if (!Array.isArray(accounts)) return [];
+    return accounts.map(function (address) { return String(address || '').trim(); }).filter(Boolean);
+};
+
+LichenWallet.prototype._restoreValidatedConnection = function (data, address) {
+    var restoredAddress = String(address || data.address || '').trim();
+    if (!restoredAddress) {
+        this._clearConnectionState(false);
+        this._updateButton();
+        return;
+    }
+
+    this.address = restoredAddress;
+    this._walletData = {
+        address: restoredAddress,
+        hasKeys: false,
+        provider: 'extension',
+        created: data && data.created ? data.created : Date.now()
+    };
+
+    if (this.persist) {
+        try { localStorage.setItem(this.storageKey, JSON.stringify(this._walletData)); } catch (e) { }
+    }
+
+    this._startBalancePolling();
+    var self = this;
+    var refreshPromise = this.refreshBalance();
+    if (refreshPromise && typeof refreshPromise.then === 'function') {
+        refreshPromise.then(function () {
+            self._emitRestoredConnection();
+        }, function () {
+            self._emitRestoredConnection();
+        });
+        return;
+    }
+
+    this._emitRestoredConnection();
+};
+
 /** Restore wallet from localStorage */
 LichenWallet.prototype._restore = function () {
     var self = this;
     try {
         var stored = localStorage.getItem(this.storageKey);
-        if (stored) {
-            var data = JSON.parse(stored);
-            if (data && data.address) {
-                if (data.provider !== 'extension') {
-                    localStorage.removeItem(this.storageKey);
-                    return;
-                }
-                this.address = data.address;
-                this._walletData = data;
-                this._startBalancePolling();
-                this.refreshBalance();
+        if (!stored) return;
 
-                if (data.provider === 'extension') {
-                    waitForInjectedLichenProvider(1000).then(function (provider) {
-                        if (!provider) return;
-                        self._bindInjectedProvider(provider);
-                    });
-                }
-            }
+        var data = JSON.parse(stored);
+        if (!data || !data.address) return;
+
+        var providerType = typeof data.provider === 'string' && data.provider.trim()
+            ? data.provider.trim()
+            : 'extension';
+        if (providerType !== 'extension') {
+            self._clearConnectionState(false);
+            self._updateButton();
+            return;
         }
+
+        waitForInjectedLichenProvider(1000).then(async function (provider) {
+            if (!provider) {
+                self._clearConnectionState(false);
+                self._updateButton();
+                return;
+            }
+
+            self._bindInjectedProvider(provider);
+            var accounts = await self._readProviderAccounts(provider);
+            if (!accounts.length) {
+                self._clearConnectionState(false);
+                self._updateButton();
+                return;
+            }
+
+            var storedAddress = String(data.address || '').trim();
+            var restoredAddress = storedAddress && accounts.indexOf(storedAddress) !== -1
+                ? storedAddress
+                : accounts[0];
+            self._restoreValidatedConnection(data, restoredAddress);
+        }).catch(function () {
+            self._clearConnectionState(false);
+            self._updateButton();
+        });
     } catch (e) { /* invalid stored data */ }
 };
 

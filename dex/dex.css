@@ -175,6 +175,48 @@
     padding: 12px 20px 0;
 }
 
+.unsafe-endpoint-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+    margin: 12px 24px 0;
+    padding: 12px 16px;
+    border-radius: 14px;
+    border: 1px solid var(--warning, #ffd166);
+    background: rgba(255, 209, 102, 0.08);
+}
+
+.unsafe-endpoint-banner.hidden {
+    display: none;
+}
+
+.unsafe-endpoint-banner.ignored {
+    border-color: rgba(0, 201, 219, 0.28);
+    background: rgba(0, 201, 219, 0.08);
+}
+
+.unsafe-endpoint-banner i {
+    margin-top: 2px;
+    color: var(--warning, #ffd166);
+}
+
+.unsafe-endpoint-banner.ignored i {
+    color: var(--teal-primary);
+}
+
+.unsafe-endpoint-banner strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+}
+
+.unsafe-endpoint-banner span {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.5;
+}
+
 .trade-layout {
     display: grid;
     grid-template-columns: 1fr 360px;

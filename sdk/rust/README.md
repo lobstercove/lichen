@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lichen-client-sdk = { path = "../path/to/sdk/rust" }
+lichen-client-sdk = "0.1.0"
 tokio = { version = "1.35", features = ["full"] }
 ```
 
@@ -52,8 +52,8 @@ Run examples with:
 
 ```bash
 cargo run --example basic
-cargo run --example transfer
-cargo run --example query
+cargo run --example comprehensive_test
+cargo run --example test_transactions
 ```
 
 ## API Reference
@@ -106,7 +106,7 @@ assert!(Keypair::verify(&pubkey, message, &signature));
 ### Transaction Building
 
 ```rust
-use lichen_sdk::{TransactionBuilder, Instruction, Hash};
+use lichen_client_sdk::{Hash, Instruction, TransactionBuilder};
 
 // Build transaction
 let tx = TransactionBuilder::new()
@@ -148,11 +148,11 @@ MIT OR Apache-2.0
 
 ## Contributing
 
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](https://github.com/lobstercove/lichen/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## Resources
 
-- [Documentation](https://developers.lichen.network)
-- [Examples](./examples/)
-- [Lichen CLI](../../cli/)
-- [Python SDK](../python/)
+- [Rust SDK Reference](https://developers.lichen.network/sdk-rust.html)
+- [Examples](https://github.com/lobstercove/lichen/tree/main/sdk/rust/examples)
+- [Lichen CLI](https://github.com/lobstercove/lichen/tree/main/cli)
+- [Python SDK](https://github.com/lobstercove/lichen/tree/main/sdk/python)

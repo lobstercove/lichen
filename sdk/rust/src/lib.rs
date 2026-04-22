@@ -31,16 +31,59 @@
 //! }
 //! ```
 
+pub mod bountyboard;
 pub mod client;
 pub mod error;
 pub mod keypair;
+pub mod lichenid;
+pub mod lichenswap;
+pub mod sporepay;
+pub mod sporevault;
+pub mod thalllend;
 pub mod transaction;
 pub mod types;
 
 // Re-exports for convenience
-pub use client::{Client, ClientBuilder};
+pub use bountyboard::{
+    ApproveWorkParams, BountyBoardBountyInfo, BountyBoardClient, BountyBoardPlatformStats,
+    BountyBoardStats, CreateBountyParams, SubmitWorkParams, BOUNTY_STATUS_CANCELLED,
+    BOUNTY_STATUS_COMPLETED, BOUNTY_STATUS_OPEN,
+};
+pub use client::{Client, ClientBuilder, ReadonlyContractResult};
 pub use error::{Error, Result};
 pub use keypair::{Address, Keypair, PqPublicKey, PqSignature, Pubkey};
+pub use lichenid::{
+    estimate_lichenid_name_registration_cost, AddSkillParams, ApproveRecoveryParams,
+    AttestSkillParams, BidNameAuctionParams, CreateNameAuctionParams, ExecuteRecoveryParams,
+    FinalizeNameAuctionParams, LichenIdAchievement, LichenIdAgentConfig, LichenIdAgentDirectory,
+    LichenIdAgentDirectoryEntry, LichenIdAgentDirectoryOptions, LichenIdAvailability,
+    LichenIdClient, LichenIdContributions, LichenIdDelegateRecord, LichenIdGivenVouch,
+    LichenIdIdentitySummary, LichenIdNameAuction, LichenIdNameResolution, LichenIdProfile,
+    LichenIdReceivedVouch, LichenIdReputation, LichenIdReputationSummary, LichenIdSkill,
+    LichenIdStats, LichenIdVouches, RegisterIdentityParams, RegisterNameParams,
+    RevokeAttestationParams, SetAvailabilityAsParams, SetAvailabilityParams, SetDelegateParams,
+    SetEndpointAsParams, SetEndpointParams, SetMetadataAsParams, SetMetadataParams,
+    SetRateAsParams, SetRateParams, SetRecoveryGuardiansParams, UpdateAgentTypeAsParams,
+    LICHENID_DELEGATE_PERM_AGENT_TYPE, LICHENID_DELEGATE_PERM_NAMING,
+    LICHENID_DELEGATE_PERM_PROFILE, LICHENID_DELEGATE_PERM_SKILLS,
+};
+pub use lichenswap::{
+    AddLiquidityParams, CreatePoolParams, LichenSwapClient, LichenSwapPoolInfo,
+    LichenSwapProtocolFees, LichenSwapStats, LichenSwapSwapStats, LichenSwapTwapCumulatives,
+    LichenSwapVolumeTotals, SwapParams, SwapWithDeadlineParams,
+};
+pub use sporepay::{
+    CreateStreamParams, CreateStreamWithCliffParams, SporePayClient, SporePayStats, SporePayStream,
+    SporePayStreamInfo, TransferStreamParams, WithdrawFromStreamParams,
+};
+pub use sporevault::{
+    SporeVaultClient, SporeVaultStats, SporeVaultStrategyInfo, SporeVaultUserPosition,
+    SporeVaultVaultStats,
+};
+pub use thalllend::{
+    LiquidateParams, ThallLendAccountInfo, ThallLendClient, ThallLendInterestRate,
+    ThallLendProtocolStats, ThallLendStats,
+};
 pub use transaction::TransactionBuilder;
 pub use types::{Balance, Block, NetworkInfo, Transaction};
 

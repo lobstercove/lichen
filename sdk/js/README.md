@@ -33,7 +33,7 @@ connection.onBlock((block) => {
 
 ## Documentation
 
-See the [full documentation](../../docs/SDK.md) for detailed API reference.
+See the [JavaScript SDK reference](https://developers.lichen.network/sdk-js.html) for detailed API reference.
 
 ## Features
 

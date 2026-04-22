@@ -3440,6 +3440,7 @@ dependencies = [
  "chrono",
  "criterion",
  "derive_more 1.0.0",
+ "ed25519-dalek",
  "getrandom 0.4.2",
  "hex",
  "lru 0.16.3",
@@ -3576,6 +3577,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58",
+ "chrono",
  "dashmap",
  "dirs",
  "futures-util",
@@ -3594,6 +3596,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber 0.3.23",
+ "wat",
 ]
 
 [[package]]

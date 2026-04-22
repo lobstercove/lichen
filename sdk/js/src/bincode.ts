@@ -1,14 +1,14 @@
 // Minimal bincode encoder for Lichen transactions
 
-import { PublicKey } from './publickey';
+import { PublicKey } from './publickey.js';
 import {
   bytesToHex as pqBytesToHex,
   hexToBytes as pqHexToBytes,
   PqPublicKey,
   PqSignature,
   toPqSignature,
-} from './pq';
-import type { Instruction, Message, Transaction } from './transaction';
+} from './pq.js';
+import type { Instruction, Message, Transaction } from './transaction.js';
 
 const textEncoder = new TextEncoder();
 

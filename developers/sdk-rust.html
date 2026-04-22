@@ -76,7 +76,7 @@
                 <a href="#client-contract" class="sidebar-link">Contract Deploy &amp; Call</a>
                 <a href="#client-program" class="sidebar-link">Program Methods</a>
                 <a href="#client-nft" class="sidebar-link">NFT Methods</a>
-                <a href="#client-ws" class="sidebar-link">WebSocket Subscriptions</a>
+                <a href="#client-ws" class="sidebar-link">WebSocket Coverage</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Keypair</h3>
@@ -132,19 +132,16 @@
                                 class="fas fa-copy"></i></button></div>
                     <pre><code># Cargo.toml
 [dependencies]
-lichen-client-sdk = "1.0"
+lichen-client-sdk = { git = "https://github.com/lobstercove/lichen.git", package = "lichen-client-sdk" }
 tokio = { version = "1", features = ["full"] }
 </code></pre>
                 </div>
-                <p>Or via the command line:</p>
-                <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">bash</span></div>
-                    <pre><code>cargo add lichen-client-sdk</code></pre>
-                </div>
                 <div class="callout callout-info">
                     <p>Re-exports:
-                        <code>lichen_client_sdk::{Client, ClientBuilder, Keypair, TransactionBuilder, Balance, Block, NetworkInfo}</code>
+                        <code>lichen_client_sdk::{Client, ClientBuilder, Error, Result, Keypair, Pubkey, TransactionBuilder, Balance, Block, NetworkInfo, Transaction}</code>
                     </p>
+                    <p>The current in-tree crate version is <code>0.1.0</code>. The examples below use public testnet;
+                        switch to <code>https://rpc.lichen.network</code> for mainnet.</p>
                 </div>
             </section>
 
@@ -154,31 +151,115 @@ tokio = { version = "1", features = ["full"] }
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>use lichen_client_sdk::{Client, Keypair, TransactionBuilder, Balance};
+                    <pre><code>use lichen_client_sdk::{Client, Keypair, Pubkey, Result};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to local validator
-    let client = Client::new("http://localhost:8899");
+async fn main() -> Result&lt;()&gt; {
+    let client = Client::new("https://testnet-rpc.lichen.network");
 
-    // Generate a keypair
     let kp = Keypair::new();
     println!("Address: {}", kp.pubkey());
 
-    // Check balance
-    let balance = client.get_balance(&kp.pubkey().to_string()).await?;
-    println!("Balance: {} spores", balance.spores());
+    let balance = client.get_balance(&kp.pubkey()).await?;
+    println!("Balance: {:.9} LICN ({} spores)", balance.licn(), balance.spores());
 
-    // Build and send a transfer
-    let blockhash = client.get_recent_blockhash().await?;
-    let tx = TransactionBuilder::new()
-        .add_instruction(/* transfer instruction */)
-        .recent_blockhash(&blockhash)
-        .build_and_sign(&kp)?;
-
-    let sig = client.send_transaction(&tx).await?;
+    let recipient = Pubkey::from_base58("11111111111111111111111111111112")?;
+    let sig = client.transfer(&kp, &recipient, 1_000_000_000).await?;
     println!("Signature: {sig}");
 
+    Ok(())
+}</code></pre>
+                </div>
+
+                <div class="callout callout-info">
+                    <p><strong>LichenID helper:</strong> use <code>LichenIdClient</code> for profile and metadata
+                        reads, skills, vouches, premium-name auctions, delegate lifecycle and delegated profile
+                        writes, recovery approvals, and skill attestation flows. It resolves the <code>YID</code>
+                        program via the symbol registry and handles the ABI byte layout for the wrapped LichenID
+                        methods.</p>
+                    <p><strong>SporePay helper:</strong> use <code>SporePayClient</code> for stream creation,
+                        stream/cliff reads, withdrawable balance checks, withdrawals, cancellations, transfers, and
+                        aggregated stats. Use raw <code>call_contract()</code> only for admin-only or newly added
+                        contract methods that are not wrapped yet.
+                    </p>
+                    <p><strong>LichenSwap helper:</strong> use <code>LichenSwapClient</code> for symbol-registry
+                        resolution, pool/quote/liquidity reads, TWAP and protocol-fee reads, aggregate stats, and the
+                        common create-pool, add-liquidity, and swap flows. Flash loans,
+                        <code>remove_liquidity</code>, <code>get_reserves</code>, and admin controls still use raw
+                        <code>call_contract()</code>.
+                    </p>
+                    <p><strong>ThallLend helper:</strong> use <code>ThallLendClient</code> for symbol-registry
+                        resolution, account/protocol/interest reads, counter reads, aggregate stats, and the common
+                        deposit, withdraw, borrow, repay, and liquidate flows. Flash loans and admin controls stay on
+                        raw <code>call_contract()</code>.</p>
+                    <p><strong>SporeVault helper:</strong> use <code>SporeVaultClient</code> for symbol-registry
+                        resolution, vault/user/strategy reads, aggregate stats, and the common deposit, withdraw, and
+                        harvest flow. Admin-only fee, cap, risk-tier, and strategy-management paths stay on raw
+                        <code>call_contract()</code>.
+                    </p>
+                    <p><strong>BountyBoard helper:</strong> use <code>BountyBoardClient</code> for symbol-registry
+                        resolution, bounty reads (single + count + platform stats), aggregate stats, and the
+                        full bounty lifecycle: create, submit work, approve, and cancel. Admin-only identity-gate,
+                        token-address, fee, and pause controls stay on raw <code>call_contract()</code>.
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>use lichen_client_sdk::{
+    AddSkillParams, Client, Keypair, LichenIdAvailability, LichenIdClient, LichenSwapClient,
+    RegisterIdentityParams, Result, SetAvailabilityParams, SetDelegateParams,
+    SetMetadataParams, SporePayClient, SporeVaultClient, ThallLendClient,
+    LICHENID_DELEGATE_PERM_PROFILE,
+};
+
+#[tokio::main]
+async fn main() -> Result&lt;()&gt; {
+    let client = Client::new("https://testnet-rpc.lichen.network");
+    let lichen_id = LichenIdClient::new(client.clone());
+    let lichenswap = LichenSwapClient::new(client.clone());
+    let spore_pay = SporePayClient::new(client.clone());
+    let spore_vault = SporeVaultClient::new(client.clone());
+    let thalllend = ThallLendClient::new(client.clone());
+    let keypair = Keypair::new();
+    let delegate = Keypair::new();
+
+    lichen_id.register_identity(&keypair, RegisterIdentityParams {
+        agent_type: 5,
+        name: "Infra Agent".into(),
+    }).await?;
+
+    lichen_id.add_skill(&keypair, AddSkillParams {
+        name: "infra-ops".into(),
+        proficiency: 93,
+    }).await?;
+
+    lichen_id.set_availability(&keypair, SetAvailabilityParams {
+        status: LichenIdAvailability::Available,
+    }).await?;
+
+    lichen_id.set_metadata(&keypair, SetMetadataParams {
+        metadata_json: r#"{"region":"sea","role":"infra"}"#.into(),
+    }).await?;
+
+    let profile = lichen_id.get_profile(&keypair.pubkey()).await?;
+    lichen_id.set_delegate(&keypair, SetDelegateParams {
+        delegate: delegate.pubkey(),
+        permissions: LICHENID_DELEGATE_PERM_PROFILE,
+        expires_at_ms: 1_700_000_000_000,
+    }).await?;
+
+    let delegation = lichen_id.get_delegate(&keypair.pubkey(), &delegate.pubkey()).await?;
+    let pool = lichenswap.get_pool_info().await?;
+    let quote = lichenswap.get_quote(1_000_000_000, true).await?;
+    let swap_stats = lichenswap.get_stats().await?;
+    let stream = spore_pay.get_stream_info(0).await?;
+    let vault_stats = spore_vault.get_vault_stats().await?;
+    let vault_position = spore_vault.get_user_position(&keypair.pubkey()).await?;
+    let vault_summary = spore_vault.get_stats().await?;
+    let lending_account = thalllend.get_account_info(&keypair.pubkey()).await?;
+    let lending_stats = thalllend.get_stats().await?;
+    println!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", profile, delegation, pool, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats);
     Ok(())
 }</code></pre>
                 </div>
@@ -190,11 +271,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             <h2>Client</h2>
 
             <div class="method-card" id="client-constructor">
-                <h3 class="method-name">Client::new(rpc_url: &amp;str) -&gt; Client</h3>
+                <h3 class="method-name">Client::new(rpc_url: impl Into&lt;String&gt;) -&gt; Client</h3>
                 <p class="method-desc">Create a client pointing at the given JSON-RPC endpoint.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <pre><code>let client = Client::new("http://localhost:8899");</code></pre>
+                    <pre><code>let client = Client::new("https://testnet-rpc.lichen.network");</code></pre>
                 </div>
             </div>
 
@@ -205,7 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>let client = Client::builder()
-    .rpc_url("http://localhost:8899")
+    .rpc_url("https://testnet-rpc.lichen.network")
     .timeout(std::time::Duration::from_secs(30))
     .build()?;</code></pre>
                 </div>
@@ -277,8 +358,10 @@ println!("Slot: {slot}");</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async health(&amp;self) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">Liveness probe. Returns <code>{"status": "ok"}</code>.</p>
+                <h3 class="method-name">async health(&amp;self) -&gt; Result&lt;bool&gt;</h3>
+                <p class="method-desc">Liveness probe. Returns <code>true</code> when the RPC server reports
+                    <code>{"status": "ok"}</code>.
+                </p>
             </div>
 
             <div class="method-card">
@@ -305,24 +388,27 @@ println!("Chain: {} v{}", info.chain_id, info.version);</code></pre>
             <h3 id="client-account">Account Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">async get_balance(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Balance&gt;</h3>
+                <h3 class="method-name">async get_balance(&amp;self, pubkey: &amp;Pubkey) -&gt; Result&lt;Balance&gt;
+                </h3>
                 <p class="method-desc">Get account balance. Returns a strongly-typed <code>Balance</code>.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>let bal = client.get_balance("7xKXtg2CW87d...").await?;
+                    <pre><code>let pubkey = Pubkey::from_base58("11111111111111111111111111111112")?;
+let bal = client.get_balance(&amp;pubkey).await?;
 println!("{} spores  ({} LICN)", bal.spores(), bal.licn());</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_account_info(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_account_info(&amp;self, pubkey: &amp;Pubkey) -&gt; Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get enhanced account information with metadata.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_transaction_history(&amp;self, pubkey: &amp;str, limit: u64) -&gt;
+                <h3 class="method-name">async get_transaction_history(&amp;self, pubkey: &amp;Pubkey, limit:
+                    Option&lt;u64&gt;) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get paginated transaction history for an account.</p>
             </div>
@@ -331,21 +417,30 @@ println!("{} spores  ({} LICN)", bal.spores(), bal.licn());</code></pre>
             <h3 id="client-tx">Transaction Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">async send_transaction(&amp;self, tx_json: &amp;Value) -&gt;
+                <h3 class="method-name">async send_transaction(&amp;self, tx: &amp;Transaction) -&gt;
                     Result&lt;String&gt;</h3>
-                <p class="method-desc">Submit a signed transaction JSON. Returns the signature string.</p>
+                <p class="method-desc">Serialize a signed transaction into the wire envelope, base64-encode it, and
+                    submit it. Returns the signature string.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>let blockhash = client.get_recent_blockhash().await?;
+                    <pre><code>use lichen_client_sdk::{Hash, Instruction, SYSTEM_PROGRAM_ID, TransactionBuilder};
+
+let recipient = Pubkey::from_base58("11111111111111111111111111111112")?;
+let blockhash = Hash::from_hex(&client.get_recent_blockhash().await?)?;
+
+let mut data = vec![0u8];
+data.extend_from_slice(&1_000_000_000_u64.to_le_bytes());
+
+let instruction = Instruction {
+    program_id: SYSTEM_PROGRAM_ID,
+    accounts: vec![kp.pubkey(), recipient],
+    data,
+};
+
 let tx = TransactionBuilder::new()
-    .add_instruction(serde_json::json!({
-        "type": 0,
-        "from": kp.pubkey(),
-        "to": "RecipientAddress...",
-        "amount": 1_000_000_000_u64
-    }))
-    .recent_blockhash(&blockhash)
+    .add_instruction(instruction)
+    .recent_blockhash(blockhash)
     .build_and_sign(&kp)?;
 
 let sig = client.send_transaction(&tx).await?;</code></pre>
@@ -355,7 +450,7 @@ let sig = client.send_transaction(&tx).await?;</code></pre>
             <div class="method-card">
                 <h3 class="method-name">async send_raw_transaction(&amp;self, raw_tx: &amp;str) -&gt;
                     Result&lt;String&gt;</h3>
-                <p class="method-desc">Submit a pre-serialized transaction string.</p>
+                <p class="method-desc">Submit a pre-serialized base64-encoded bincode transaction string.</p>
             </div>
 
             <div class="method-card">
@@ -381,51 +476,57 @@ let sig = client.transfer(&kp, &recipient, 5_000_000_000).await?; // 5 LICN</cod
             <h3 id="client-validator">Validator &amp; Staking</h3>
 
             <div class="method-card">
-                <h3 class="method-name">async get_validators(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <h3 class="method-name">async get_validators(&amp;self) -&gt; Result&lt;Vec&lt;Value&gt;&gt;</h3>
                 <p class="method-desc">Get all registered validators.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_validator_info(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_validator_info(&amp;self, pubkey: &amp;Pubkey) -&gt;
+                    Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get detailed validator information.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_validator_performance(&amp;self, pubkey: &amp;str) -&gt;
+                <h3 class="method-name">async get_validator_performance(&amp;self, pubkey: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get validator performance metrics.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async stake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt;
+                <h3 class="method-name">async stake(&amp;self, staker: &amp;Keypair, validator: &amp;Pubkey, amount:
+                    u64) -&gt;
                     Result&lt;String&gt;</h3>
                 <p class="method-desc">Stake LICN to a validator. Amount in spores.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>let sig = client.stake(
-    &kp.pubkey(),
-    "ValidatorPubkey...",
+                    <pre><code>let validator = Pubkey::from_base58("11111111111111111111111111111112")?;
+let sig = client.stake(
+    &kp,
+    &validator,
     10_000_000_000  // 10 LICN
 ).await?;</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async unstake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt;
+                <h3 class="method-name">async unstake(&amp;self, staker: &amp;Keypair, validator: &amp;Pubkey, amount:
+                    u64) -&gt;
                     Result&lt;String&gt;</h3>
                 <p class="method-desc">Unstake LICN from a validator.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_staking_status(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_staking_status(&amp;self, pubkey: &amp;Pubkey) -&gt;
+                    Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get staking status for an account.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_staking_rewards(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_staking_rewards(&amp;self, pubkey: &amp;Pubkey) -&gt;
+                    Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get accumulated staking rewards.</p>
             </div>
@@ -467,13 +568,30 @@ let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</cod
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_contract_info(&amp;self, contract_id: &amp;str) -&gt;
+                <h3 class="method-name">async call_readonly_contract(&amp;self, contract: &amp;Pubkey, function:
+                    &amp;str,
+                    args: Vec&lt;u8&gt;, from: Option&lt;&amp;Pubkey&gt;) -&gt; Result&lt;ReadonlyContractResult&gt;
+                </h3>
+                <p class="method-desc">Execute a read-only contract call with no state change. This is the transport
+                    primitive used by <code>LichenSwapClient</code> and the fallback path for helper gaps.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <pre><code>let entry = client.get_symbol_registry("LICHENSWAP").await?;
+let program = Pubkey::from_base58(entry["program"].as_str().expect("registry program"))?;
+let result = client.call_readonly_contract(&program, "get_pool_info", vec![], None).await?;
+
+println!("{:?}", result);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_contract_info(&amp;self, contract_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get information about a deployed smart contract.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_contract_logs(&amp;self, contract_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_contract_logs(&amp;self, contract_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get execution logs emitted by a contract.</p>
             </div>
@@ -487,9 +605,22 @@ let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</cod
             <h3 id="client-program">Program Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">async get_program(&amp;self, program_id: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_program(&amp;self, program_id: &amp;Pubkey) -&gt; Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get program information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_symbol_registry(&amp;self, symbol: &amp;str) -&gt; Result&lt;Value&gt;
+                </h3>
+                <p class="method-desc">Resolve a registry symbol such as <code>YID</code>, <code>SPOREPAY</code>, or
+                    <code>LICHENSWAP</code> to its deployed program entry.
+                </p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <pre><code>let entry = client.get_symbol_registry("LICHENSWAP").await?;
+println!("{}", entry["program"]);</code></pre>
+                </div>
             </div>
 
             <div class="method-card">
@@ -498,52 +629,74 @@ let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</cod
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_program_stats(&amp;self, program_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_program_stats(&amp;self, program_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get execution statistics for a program.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_program_calls(&amp;self, program_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_program_calls(&amp;self, program_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get recent call history for a program.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_program_storage(&amp;self, program_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_program_storage(&amp;self, program_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_sporepay_stats(&amp;self) -&gt; Result&lt;Value&gt; / async
+                    get_lichenswap_stats(&amp;self) -&gt; Result&lt;Value&gt; / async get_thalllend_stats(&amp;self)
+                    -&gt; Result&lt;Value&gt; / async get_sporevault_stats(&amp;self) -&gt; Result&lt;Value&gt; / async
+                    get_bountyboard_stats(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
+                    LichenSwap
+                    for typed access.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <pre><code>let sporepay_stats = client.get_sporepay_stats().await?;
+let lichenswap_stats = client.get_lichenswap_stats().await?;
+let thalllend_stats = client.get_thalllend_stats().await?;
+let sporevault_stats = client.get_sporevault_stats().await?;
+let bountyboard_stats = client.get_bountyboard_stats().await?;
+
+println!("{:?} {:?} {:?} {:?} {:?}", sporepay_stats, lichenswap_stats, thalllend_stats, sporevault_stats, bountyboard_stats);</code></pre>
+                </div>
             </div>
 
             <!-- NFT Methods -->
             <h3 id="client-nft">NFT Methods</h3>
 
             <div class="method-card">
-                <h3 class="method-name">async get_collection(&amp;self, collection_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_collection(&amp;self, collection_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get NFT collection metadata.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_nft(&amp;self, collection_id: &amp;str, token_id: u64) -&gt;
+                <h3 class="method-name">async get_nft(&amp;self, collection_id: &amp;Pubkey, token_id: u64) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get a specific NFT by collection and token ID.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_nfts_by_owner(&amp;self, owner: &amp;str) -&gt; Result&lt;Value&gt;
+                <h3 class="method-name">async get_nfts_by_owner(&amp;self, owner: &amp;Pubkey) -&gt; Result&lt;Value&gt;
                 </h3>
                 <p class="method-desc">Get all NFTs owned by an address.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_nfts_by_collection(&amp;self, collection_id: &amp;str) -&gt;
+                <h3 class="method-name">async get_nfts_by_collection(&amp;self, collection_id: &amp;Pubkey) -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get all NFTs in a collection.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">async get_nft_activity(&amp;self, collection_id: &amp;str, token_id: u64) -&gt;
+                <h3 class="method-name">async get_nft_activity(&amp;self, collection_id: &amp;Pubkey, token_id: u64)
+                    -&gt;
                     Result&lt;Value&gt;</h3>
                 <p class="method-desc">Get activity history for a specific NFT.</p>
             </div>
@@ -553,7 +706,8 @@ let sig = client.call_contract(&kp, &contract, "transfer", args, 0).await?;</cod
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2>Keypair</h2>
             <p>ML-DSA-65 keypair wrapper around <code>lichen_core::Keypair</code>. Thread-safe and
-                <code>Clone</code>-able.</p>
+                <code>Clone</code>-able.
+            </p>
 
             <div class="method-card" id="keypair-new">
                 <h3 class="method-name">Keypair::new() -&gt; Keypair</h3>
@@ -611,32 +765,38 @@ let kp = Keypair::from_seed(&seed);</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">.add_instruction(value: Value) -&gt; Self</h3>
-                <p class="method-desc">Append an instruction JSON value. Can be called multiple times.</p>
+                <h3 class="method-name">.add_instruction(instruction: Instruction) -&gt; Self</h3>
+                <p class="method-desc">Append an <code>Instruction</code>. Can be called multiple times.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">.recent_blockhash(hash: &amp;str) -&gt; Self</h3>
-                <p class="method-desc">Set the recent blockhash.</p>
+                <h3 class="method-name">.recent_blockhash(hash: Hash) -&gt; Self</h3>
+                <p class="method-desc">Set the recent blockhash as a parsed <code>Hash</code>.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">.build_and_sign(keypair: &amp;Keypair) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">Sign the instructions and return a transaction JSON object ready to submit.</p>
+                <h3 class="method-name">.build_and_sign(keypair: &amp;Keypair) -&gt; Result&lt;Transaction&gt;</h3>
+                <p class="method-desc">Sign the instructions and return a typed transaction ready to submit.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>use serde_json::json;
+                    <pre><code>use lichen_client_sdk::{Hash, Instruction, SYSTEM_PROGRAM_ID};
 
-let blockhash = client.get_recent_blockhash().await?;
+let recipient = Pubkey::from_base58("11111111111111111111111111111112")?;
+let blockhash = Hash::from_hex(&client.get_recent_blockhash().await?)?;
+
+let mut data = vec![0u8];
+data.extend_from_slice(&5_000_000_000_u64.to_le_bytes());
+
+let instruction = Instruction {
+    program_id: SYSTEM_PROGRAM_ID,
+    accounts: vec![kp.pubkey(), recipient],
+    data,
+};
+
 let tx = TransactionBuilder::new()
-    .add_instruction(json!({
-        "type": 0,
-        "from": kp.pubkey(),
-        "to": recipient,
-        "amount": 5_000_000_000_u64
-    }))
-    .recent_blockhash(&blockhash)
+    .add_instruction(instruction)
+    .recent_blockhash(blockhash)
     .build_and_sign(&kp)?;
 
 let sig = client.send_transaction(&tx).await?;
@@ -667,9 +827,9 @@ println!("Transfer complete: {sig}");</code></pre>
                             <td>Create from raw spore count</td>
                         </tr>
                         <tr>
-                            <td>Balance::from_licn(n: f64)</td>
-                            <td><span class="param-type">Balance</span></td>
-                            <td>Create from LICN (1 LICN = 10<sup>9</sup> spores)</td>
+                            <td>Balance::from_licn(n: &amp;str)</td>
+                            <td><span class="param-type">Result&lt;Balance, BalanceParseError&gt;</span></td>
+                            <td>Create from a decimal LICN string without floating-point rounding</td>
                         </tr>
                         <tr>
                             <td>balance.spores()</td>
@@ -685,7 +845,7 @@ println!("Transfer complete: {sig}");</code></pre>
                 </table>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <pre><code>let b = Balance::from_licn(25.0);
+                    <pre><code>let b = Balance::from_licn("25.0").unwrap();
 assert_eq!(b.spores(), 25_000_000_000);
 assert_eq!(b.licn(), 25.0);</code></pre>
                 </div>
@@ -698,11 +858,13 @@ assert_eq!(b.licn(), 25.0);</code></pre>
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
                     <pre><code>#[derive(Debug, Deserialize)]
 pub struct Block {
-    pub slot: u64,
     pub hash: String,
     pub parent_hash: String,
+    pub slot: u64,
+    pub state_root: String,
     pub timestamp: u64,
-    pub transactions: Vec<Value>,
+    pub transaction_count: u64,
+    pub validator: String,
 }</code></pre>
                 </div>
             </div>
@@ -715,11 +877,11 @@ pub struct Block {
                     <pre><code>#[derive(Debug, Deserialize)]
 pub struct NetworkInfo {
     pub chain_id: String,
+    pub current_slot: u64,
     pub network_id: String,
-    pub version: String,
-    pub slot: u64,
-    pub validator_count: u64,
     pub peer_count: u64,
+    pub validator_count: u64,
+    pub version: String,
 }</code></pre>
                 </div>
             </div>
@@ -728,13 +890,17 @@ pub struct NetworkInfo {
             <!-- ERROR HANDLING -->
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2 id="error-handling">Error Handling</h2>
-            <p>All client methods return <code>Result&lt;T, Box&lt;dyn std::error::Error&gt;&gt;</code>. RPC errors
-                surface with their JSON-RPC error code and message.</p>
+            <p>All client methods return <code>lichen_client_sdk::Result&lt;T&gt;</code>, which aliases
+                <code>std::result::Result&lt;T, lichen_client_sdk::Error&gt;</code>. RPC errors surface with their
+                JSON-RPC error payloads; parse and config issues use typed SDK error variants.
+            </p>
 
             <div class="code-block">
                 <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                             class="fas fa-copy"></i></button></div>
-                <pre><code>match client.get_balance("7xKXtg2CW87d...").await {
+                <pre><code>let pubkey = Pubkey::from_base58("11111111111111111111111111111112")?;
+
+match client.get_balance(&pubkey).await {
     Ok(balance) => println!("{} LICN", balance.licn()),
     Err(e) => {
         let msg = e.to_string();
@@ -762,69 +928,16 @@ pub struct NetworkInfo {
                     timeout and wrap calls in a retry loop with exponential backoff for transient network errors.</p>
             </div>
 
-            <!-- WebSocket Subscriptions -->
-            <h3 id="client-ws">WebSocket Subscriptions</h3>
-            <p>The Rust SDK supports real-time event streaming via WebSocket. Create a <code>WsClient</code> and
-                subscribe to on-chain events with typed callbacks.</p>
+            <!-- WebSocket Coverage -->
+            <h3 id="client-ws">WebSocket Coverage</h3>
+            <p>The Rust client crate currently wraps HTTP JSON-RPC only. There is no <code>WsClient</code>
+                implementation in <code>sdk/rust/src</code> today.</p>
 
-            <div class="code-block">
-                <div class="code-header"><span>WebSocket — Subscribe to Slots &amp; Accounts</span><button
-                        class="code-copy-btn">Copy</button></div>
-                <pre><code>use lichen_client_sdk::{WsClient, Pubkey};
-
-#[tokio::main]
-async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
-    let ws = WsClient::connect("ws://localhost:8900").await?;
-
-    // Subscribe to slot updates
-    let slot_sub = ws.on_slot(|slot| {
-        println!("New slot: {}", slot);
-    }).await?;
-
-    // Subscribe to account changes
-    let acct = Pubkey::from_base58("YourAccountBase58Here")?;
-    let acct_sub = ws.on_account_change(&amp;acct, |account| {
-        println!("Balance changed: {} spores", account.spores);
-    }).await?;
-
-    // Unsubscribe when done
-    ws.off_slot(slot_sub).await?;
-    ws.off_account_change(acct_sub).await?;
-
-    // Close all subscriptions
-    ws.close().await;
-    Ok(())
-}</code></pre>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">WsClient::connect(url: &amp;str) -&gt; Result&lt;WsClient&gt;</h3>
-                <p class="method-desc">Open a WebSocket connection to the given endpoint.</p>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">on_slot(callback) / off_slot(sub_id)</h3>
-                <p class="method-desc">Subscribe to slot updates. Returns a subscription ID for unsubscribing.</p>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">on_block(callback) / off_block(sub_id)</h3>
-                <p class="method-desc">Subscribe to new blocks.</p>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">on_account_change(pubkey, callback) / off_account_change(sub_id)</h3>
-                <p class="method-desc">Watch a specific account for balance or data changes.</p>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">on_logs(callback, contract_id?) / off_logs(sub_id)</h3>
-                <p class="method-desc">Stream contract logs. Optionally filter by contract ID.</p>
-            </div>
-
-            <div class="method-card">
-                <h3 class="method-name">close()</h3>
-                <p class="method-desc">Close the WebSocket connection and clear all active subscriptions.</p>
+            <div class="callout callout-info">
+                <p>For real-time subscriptions, connect directly to
+                    <code>wss://testnet-rpc.lichen.network/ws</code> or <code>wss://rpc.lichen.network/ws</code>, or
+                    use the JavaScript and Python SDKs, which already expose high-level subscription helpers.
+                </p>
             </div>
         </main>
     </div>

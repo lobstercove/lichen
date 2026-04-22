@@ -10,9 +10,12 @@
 // Storage keys:
 //   data_{hash}          → StorageEntry (owner, size, replication, confirmations, expiry, providers)
 //   provider_{addr}      → ProviderInfo (capacity, stored_count, active, registered_slot, stake, price)
-//   reward_{addr}        → accumulated reward balance (u64)
+//   reward_{addr}        → matured reward balance / legacy pending reward balance (u64)
+//   reward_idx_{addr}    → concatenated 32-byte data hashes confirmed by provider
+//   reward_pos_{addr}_{hash} → last rewarded slot for that provider/data confirmation (u64)
 //   data_count           → total registered data entries (u64)
 //   challenge_{hash}_{addr} → Challenge (slot, response_deadline, nonce, answered)
+//   challenge_challenger_{hash}_{addr} → challenger address bound to the open challenge
 //   challenge_window     → slots allowed for challenge response (u64)
 //   slash_percent        → percentage of stake slashed on failure (u64)
 //   moss_admin           → admin address (32 bytes)
@@ -49,6 +52,10 @@ const LICN_TOKEN_KEY: &[u8] = b"moss_licn_token";
 
 const MOSS_TOTAL_BYTES_KEY: &[u8] = b"moss_total_bytes";
 const MOSS_CHALLENGE_COUNT_KEY: &[u8] = b"moss_challenge_count";
+const CHALLENGE_RECORD_SIZE: usize = 25;
+const CHALLENGE_STATUS_OPEN: u8 = 0;
+const CHALLENGE_STATUS_RESPONDED: u8 = 1;
+const CHALLENGE_STATUS_SLASHED: u8 = 2;
 
 // ============================================================================
 // REENTRANCY GUARD
@@ -167,9 +174,34 @@ fn reward_key(addr: &[u8; 32]) -> Vec<u8> {
     key
 }
 
+fn reward_index_key(addr: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(11 + 64);
+    key.extend_from_slice(b"reward_idx_");
+    key.extend_from_slice(&hex_encode(addr));
+    key
+}
+
+fn reward_position_key(addr: &[u8; 32], data_hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(11 + 64 + 1 + 64);
+    key.extend_from_slice(b"reward_pos_");
+    key.extend_from_slice(&hex_encode(addr));
+    key.push(b'_');
+    key.extend_from_slice(&hex_encode(data_hash));
+    key
+}
+
 fn challenge_key(data_hash: &[u8; 32], provider: &[u8; 32]) -> Vec<u8> {
     let mut key = Vec::with_capacity(10 + 64 + 1 + 64);
     key.extend_from_slice(b"challenge_");
+    key.extend_from_slice(&hex_encode(data_hash));
+    key.push(b'_');
+    key.extend_from_slice(&hex_encode(provider));
+    key
+}
+
+fn challenge_challenger_key(data_hash: &[u8; 32], provider: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(21 + 64 + 1 + 64);
+    key.extend_from_slice(b"challenge_challenger_");
     key.extend_from_slice(&hex_encode(data_hash));
     key.push(b'_');
     key.extend_from_slice(&hex_encode(provider));
@@ -265,6 +297,29 @@ fn decode_data_entry_provider(data: &[u8], index: u8) -> [u8; 32] {
     let mut addr = [0u8; 32];
     addr.copy_from_slice(&data[offset..offset + 32]);
     addr
+}
+
+fn data_entry_has_provider(data: &[u8], provider: &[u8; 32]) -> bool {
+    let prov_count = decode_data_entry_provider_count(data);
+    for i in 0..prov_count {
+        if decode_data_entry_provider(data, i) == *provider {
+            return true;
+        }
+    }
+    false
+}
+
+fn reward_index_contains(index_data: &[u8], data_hash: &[u8; 32]) -> bool {
+    index_data
+        .chunks_exact(32)
+        .any(|chunk| chunk == data_hash.as_slice())
+}
+
+fn compute_vested_reward(last_reward_slot: u64, reward_until_slot: u64, data_size: u64) -> u64 {
+    reward_until_slot
+        .saturating_sub(last_reward_slot)
+        .saturating_mul(data_size)
+        .saturating_mul(REWARD_PER_SLOT_PER_BYTE)
 }
 
 // ============================================================================
@@ -446,7 +501,7 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
 
     // Check data entry exists
     let dk = data_key(&data_hash);
-    let mut entry = match storage_get(&dk) {
+    let entry = match storage_get(&dk) {
         Some(data) => data,
         None => {
             log_info("Data entry not found");
@@ -489,13 +544,10 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
 
     // Check provider hasn't already confirmed
     let prov_count = decode_data_entry_provider_count(&entry);
-    for i in 0..prov_count {
-        let existing = decode_data_entry_provider(&entry, i);
-        if existing == provider_arr {
-            log_info("Provider already confirmed for this data");
-            reentrancy_exit();
-            return 6;
-        }
+    if data_entry_has_provider(&entry, &provider_arr) {
+        log_info("Provider already confirmed for this data");
+        reentrancy_exit();
+        return 6;
     }
 
     // Check replication limit
@@ -506,13 +558,6 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
         return 7;
     }
 
-    // Add provider to the entry
-    entry[41] = entry[41].saturating_add(1); // increment confirmations
-    entry[58] = prov_count + 1; // increment provider count
-    entry.extend_from_slice(&provider_arr); // append provider address
-    storage_set(&dk, &entry);
-
-    // Update provider stats
     let capacity = bytes_to_u64(&prov_data[0..8]);
     let used = bytes_to_u64(&prov_data[8..16]);
     let stored_count = bytes_to_u64(&prov_data[16..24]);
@@ -526,17 +571,23 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
         return 8;
     }
 
-    let updated_prov = encode_provider(capacity, new_used, stored_count + 1, true, reg_slot);
-    storage_set(&pk, &updated_prov);
+    let mut updated_entry = entry;
+    updated_entry[41] = updated_entry[41].saturating_add(1);
+    updated_entry[58] = prov_count + 1;
+    updated_entry.extend_from_slice(&provider_arr);
 
-    // Accumulate reward for future claiming
-    let rk = reward_key(&provider_arr);
-    let prev_reward = storage_get(&rk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
-    let duration_remaining = expiry.saturating_sub(current_slot);
-    let reward = duration_remaining
-        .saturating_mul(data_size)
-        .saturating_mul(REWARD_PER_SLOT_PER_BYTE);
-    storage_set(&rk, &u64_to_bytes(prev_reward.saturating_add(reward)));
+    let updated_prov = encode_provider(capacity, new_used, stored_count + 1, true, reg_slot);
+    let reward_pos_key = reward_position_key(&provider_arr, &data_hash);
+    let reward_idx_key = reward_index_key(&provider_arr);
+    let mut reward_index = storage_get(&reward_idx_key).unwrap_or_default();
+    if !reward_index_contains(&reward_index, &data_hash) {
+        reward_index.extend_from_slice(&data_hash);
+    }
+
+    storage_set(&dk, &updated_entry);
+    storage_set(&pk, &updated_prov);
+    storage_set(&reward_pos_key, &u64_to_bytes(current_slot));
+    storage_set(&reward_idx_key, &reward_index);
 
     log_info("Storage confirmed by provider");
     reentrancy_exit();
@@ -654,8 +705,48 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
         return 200;
     }
 
+    let current_slot = get_slot();
     let rk = reward_key(&provider_arr);
-    let reward = storage_get(&rk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    let mut reward = storage_get(&rk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    let reward_idx_key = reward_index_key(&provider_arr);
+    let reward_index = storage_get(&reward_idx_key).unwrap_or_default();
+    let mut reward_updates = Vec::new();
+
+    for hash_chunk in reward_index.chunks_exact(32) {
+        let mut data_hash = [0u8; 32];
+        data_hash.copy_from_slice(hash_chunk);
+
+        let entry = match storage_get(&data_key(&data_hash)) {
+            Some(data) if data.len() >= DATA_HEADER_SIZE => data,
+            _ => continue,
+        };
+
+        if !data_entry_has_provider(&entry, &provider_arr) {
+            continue;
+        }
+
+        let reward_pos_key = reward_position_key(&provider_arr, &data_hash);
+        let last_reward_slot = storage_get(&reward_pos_key)
+            .map(|d| {
+                if d.len() >= 8 {
+                    bytes_to_u64(&d)
+                } else {
+                    current_slot
+                }
+            })
+            .unwrap_or(current_slot);
+        let reward_until_slot = decode_data_entry_expiry(&entry).min(current_slot);
+        if reward_until_slot <= last_reward_slot {
+            continue;
+        }
+
+        reward = reward.saturating_add(compute_vested_reward(
+            last_reward_slot,
+            reward_until_slot,
+            decode_data_entry_size(&entry),
+        ));
+        reward_updates.push((reward_pos_key, reward_until_slot));
+    }
 
     if reward == 0 {
         log_info("No rewards to claim");
@@ -663,16 +754,16 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
         return 1;
     }
 
-    // Reset reward balance to zero
-    storage_set(&rk, &u64_to_bytes(0));
-
     // G27-02: Transfer reward tokens to provider
     if !transfer_licn_out(&provider_arr, reward) {
-        // Revert: restore reward balance
-        storage_set(&rk, &u64_to_bytes(reward));
         log_info("Reward transfer failed");
         reentrancy_exit();
         return 2;
+    }
+
+    storage_set(&rk, &u64_to_bytes(0));
+    for (reward_pos_key, reward_until_slot) in reward_updates {
+        storage_set(&reward_pos_key, &u64_to_bytes(reward_until_slot));
     }
 
     // Return reward amount
@@ -943,7 +1034,8 @@ pub extern "C" fn get_provider_stake(provider_ptr: *const u8) -> u64 {
 /// Issue a proof-of-storage challenge to a provider for specific data.
 /// Anyone can issue challenges (permissionless — keeps providers honest).
 ///
-/// Challenge layout: [issued_slot(8), deadline_slot(8), nonce(8), answered(1)] = 25 bytes
+/// Challenge layout: [issued_slot(8), deadline_slot(8), nonce(8), answered(1)] = 25 bytes.
+/// Challenger identity is stored separately under `challenge_challenger_{hash}_{provider}`.
 ///
 /// Parameters:
 ///   - data_hash_ptr: 32-byte hash of data to challenge
@@ -998,7 +1090,7 @@ pub extern "C" fn issue_challenge(
     // Check no active challenge already
     let ck = challenge_key(&hash_arr, &prov_arr);
     if let Some(chal) = storage_get(&ck) {
-        if chal.len() >= 25 && chal[24] == 0 {
+        if chal.len() >= CHALLENGE_RECORD_SIZE && chal[24] == CHALLENGE_STATUS_OPEN {
             // Open challenge exists — check if deadline passed
             let deadline = bytes_to_u64(&chal[8..16]);
             if current_slot <= deadline {
@@ -1014,13 +1106,17 @@ pub extern "C" fn issue_challenge(
         .unwrap_or(DEFAULT_CHALLENGE_WINDOW);
     let deadline = current_slot.saturating_add(window);
 
-    let mut chal = Vec::with_capacity(25);
+    let mut chal = Vec::with_capacity(CHALLENGE_RECORD_SIZE);
     chal.extend_from_slice(&u64_to_bytes(current_slot)); // issued_slot
     chal.extend_from_slice(&u64_to_bytes(deadline)); // deadline_slot
     chal.extend_from_slice(&u64_to_bytes(nonce)); // nonce
-    chal.push(0); // answered = false
+    chal.push(CHALLENGE_STATUS_OPEN);
 
     storage_set(&ck, &chal);
+    storage_set(
+        &challenge_challenger_key(&hash_arr, &prov_arr),
+        &get_caller().0,
+    );
 
     // Track challenge count
     let chc = storage_get(MOSS_CHALLENGE_COUNT_KEY)
@@ -1033,20 +1129,20 @@ pub extern "C" fn issue_challenge(
 }
 
 /// Provider responds to a proof-of-storage challenge.
-/// In production, response_hash would be verified against expected hash.
-/// Here we accept any non-zero response as valid (placeholder for merkle proof).
+/// The response pointer must reference the full committed data bytes.
+/// A response is valid only when `simple_hash(response_bytes) == data_hash`.
 ///
 /// Parameters:
 ///   - provider_ptr: 32-byte provider address
 ///   - data_hash_ptr: 32-byte data hash
-///   - response_hash_ptr: 32-byte proof response
+///   - response_ptr: full challenged data bytes; expected length is the stored data size
 ///
 /// Returns 0 on success.
 #[no_mangle]
 pub extern "C" fn respond_challenge(
     provider_ptr: *const u8,
     data_hash_ptr: *const u8,
-    response_hash_ptr: *const u8,
+    response_ptr: *const u8,
 ) -> u32 {
     let mut prov_arr = [0u8; 32];
     unsafe {
@@ -1056,11 +1152,6 @@ pub extern "C" fn respond_challenge(
     unsafe {
         core::ptr::copy_nonoverlapping(data_hash_ptr, hash_arr.as_mut_ptr(), 32);
     }
-    let mut response = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(response_hash_ptr, response.as_mut_ptr(), 32);
-    }
-
     // Verify caller matches provider
     let real_caller = get_caller();
     if real_caller.0 != prov_arr {
@@ -1071,13 +1162,13 @@ pub extern "C" fn respond_challenge(
     // Load challenge
     let ck = challenge_key(&hash_arr, &prov_arr);
     let mut chal = match storage_get(&ck) {
-        Some(data) if data.len() >= 25 => data,
+        Some(data) if data.len() >= CHALLENGE_RECORD_SIZE => data,
         _ => {
             return 1;
         }
     };
 
-    if chal[24] != 0 {
+    if chal[24] != CHALLENGE_STATUS_OPEN {
         log_info("Challenge already answered");
         return 2;
     }
@@ -1090,34 +1181,28 @@ pub extern "C" fn respond_challenge(
         return 3;
     }
 
-    // Verify the response is a valid Merkle proof against the stored data commitment.
-    // The response must be a 32-byte hash that, when combined with the challenge
-    // nonce and data hash, produces a valid proof-of-retrievability.
-    if response.iter().all(|&b| b == 0) {
-        log_info("Invalid response (all zeros)");
+    let entry = match storage_get(&data_key(&hash_arr)) {
+        Some(data) if data.len() >= DATA_HEADER_SIZE => data,
+        _ => {
+            log_info("Challenge data entry missing");
+            return 1;
+        }
+    };
+
+    let data_size = decode_data_entry_size(&entry) as usize;
+    if data_size == 0 {
+        log_info("Invalid committed data size");
         return 4;
     }
 
-    // Verify proof-of-retrievability: H(data_hash || challenge_nonce || response)
-    // must match the expected commitment pattern. The challenge nonce is stored
-    // at bytes [16..24] of the challenge record.
-    let challenge_nonce = &chal[16..24];
-    let mut proof_input = Vec::with_capacity(96);
-    proof_input.extend_from_slice(&hash_arr);
-    proof_input.extend_from_slice(challenge_nonce);
-    proof_input.extend_from_slice(&response);
-    let proof_hash = simple_hash(&proof_input);
-    // The proof is valid if the first byte of the hash is below difficulty threshold.
-    // This provides probabilistic proof-of-retrievability: the provider must hold
-    // the actual data to produce a response that hashes below the threshold.
-    // Difficulty: first byte must be < 128 (50% of keyspace per challenge).
-    if proof_hash[0] >= 128 {
-        log_info("Invalid proof-of-retrievability: hash above difficulty threshold");
+    let response = unsafe { core::slice::from_raw_parts(response_ptr, data_size) };
+    if simple_hash(response) != hash_arr {
+        log_info("Invalid proof-of-retrievability: commitment mismatch");
         return 4;
     }
 
     // Mark as answered
-    chal[24] = 1;
+    chal[24] = CHALLENGE_STATUS_RESPONDED;
     storage_set(&ck, &chal);
     log_info("Challenge responded successfully");
     0
@@ -1145,14 +1230,14 @@ pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const 
     // Load challenge
     let ck = challenge_key(&hash_arr, &prov_arr);
     let chal = match storage_get(&ck) {
-        Some(data) if data.len() >= 25 => data,
+        Some(data) if data.len() >= CHALLENGE_RECORD_SIZE => data,
         _ => {
             return 1;
         }
     };
 
     // Must be unanswered
-    if chal[24] != 0 {
+    if chal[24] != CHALLENGE_STATUS_OPEN {
         log_info("Challenge was answered — no slash");
         return 2;
     }
@@ -1177,30 +1262,33 @@ pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const 
     if slash_amount > 0 {
         storage_set(&sk, &u64_to_bytes(stake.saturating_sub(slash_amount)));
 
-        // H-10: Redistribute slashed tokens — 50% to challenger (caller), 50% to treasury
-        let caller = get_caller();
+        // Redistribute slashed tokens — 50% to the recorded challenger, 50% to treasury.
         let half = slash_amount / 2;
-        let remainder = slash_amount - half;
-        // Reward the challenger who reported the failure
-        if half > 0 {
-            transfer_licn_out(&caller.0, half);
+        let mut treasury_amount = slash_amount;
+        if let Some(challenger_data) = storage_get(&challenge_challenger_key(&hash_arr, &prov_arr))
+        {
+            if challenger_data.len() >= 32 && half > 0 {
+                let mut challenger = [0u8; 32];
+                challenger.copy_from_slice(&challenger_data[..32]);
+                transfer_licn_out(&challenger, half);
+                treasury_amount = slash_amount - half;
+            }
         }
-        // Send remainder to platform treasury (admin)
-        if remainder > 0 {
+
+        if treasury_amount > 0 {
             if let Some(admin_data) = storage_get(ADMIN_KEY) {
                 if admin_data.len() >= 32 {
                     let mut treasury = [0u8; 32];
                     treasury.copy_from_slice(&admin_data[..32]);
-                    transfer_licn_out(&treasury, remainder);
+                    transfer_licn_out(&treasury, treasury_amount);
                 }
             }
-            // If no admin set, remainder stays in contract as unclaimed
         }
     }
 
     // Mark challenge as answered (so it can't be double-slashed)
     let mut updated_chal = chal;
-    updated_chal[24] = 2; // 2 = slashed
+    updated_chal[24] = CHALLENGE_STATUS_SLASHED;
     storage_set(&ck, &updated_chal);
 
     lichen_sdk::set_return_data(&u64_to_bytes(slash_amount));
@@ -1245,15 +1333,18 @@ mod tests {
         test_mock::reset();
     }
 
-    /// G27-02: Configure admin + LICN token + mock cross-contract transfers
-    /// so claim_storage_rewards can succeed in unit tests.
-    fn enable_reward_transfers() {
-        let admin = [9u8; 32];
+    fn configure_licn_transfers(admin: [u8; 32]) {
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let licn_token = [0xDD; 32];
         set_licn_token(admin.as_ptr(), licn_token.as_ptr());
         test_mock::set_cross_call_response(Some(alloc::vec![1u8]));
+    }
+
+    /// G27-02: Configure admin + LICN token + mock cross-contract transfers
+    /// so claim_storage_rewards can succeed in unit tests.
+    fn enable_reward_transfers() {
+        configure_licn_transfers([9u8; 32]);
     }
 
     #[test]
@@ -1350,11 +1441,52 @@ mod tests {
         let stored = bytes_to_u64(&prov[16..24]);
         assert_eq!(stored, 1);
 
-        // Verify reward accumulated
+        // Verify reward vesting starts at confirmation time rather than front-loading.
         let rk = reward_key(&provider_addr);
-        let reward = test_mock::get_storage(&rk).unwrap();
-        let reward_amount = bytes_to_u64(&reward);
-        assert!(reward_amount > 0);
+        assert!(test_mock::get_storage(&rk).is_none());
+
+        let reward_pos =
+            test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
+        assert_eq!(bytes_to_u64(&reward_pos), 100);
+
+        let reward_index = test_mock::get_storage(&reward_index_key(&provider_addr)).unwrap();
+        assert_eq!(reward_index.as_slice(), &data_hash);
+    }
+
+    #[test]
+    fn test_confirm_storage_capacity_failure_is_atomic() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xCE; 32];
+        let provider_addr = [2u8; 32];
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(register_provider(provider_addr.as_ptr(), 1_000), 0);
+
+        test_mock::set_caller(owner);
+        test_mock::set_value(51_200_000);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000),
+            0
+        );
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(
+            confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr()),
+            8
+        );
+
+        let entry = test_mock::get_storage(&data_key(&data_hash)).unwrap();
+        assert_eq!(decode_data_entry_confirmations(&entry), 0);
+        assert_eq!(decode_data_entry_provider_count(&entry), 0);
+
+        let prov = test_mock::get_storage(&provider_key(&provider_addr)).unwrap();
+        assert_eq!(bytes_to_u64(&prov[8..16]), 0);
+        assert_eq!(bytes_to_u64(&prov[16..24]), 0);
+        assert!(test_mock::get_storage(&reward_index_key(&provider_addr)).is_none());
+        assert!(test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).is_none());
     }
 
     #[test]
@@ -1426,17 +1558,61 @@ mod tests {
         test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
 
+        assert_eq!(claim_storage_rewards(provider_addr.as_ptr()), 1);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 150);
+
         let result = claim_storage_rewards(provider_addr.as_ptr());
         assert_eq!(result, 0);
 
         let ret = test_mock::get_return_data();
         let reward = bytes_to_u64(&ret);
-        assert!(reward > 0);
+        assert_eq!(reward, 50_000);
 
         // Reward should now be zero
         let rk = reward_key(&provider_addr);
         let stored = test_mock::get_storage(&rk).unwrap();
         assert_eq!(bytes_to_u64(&stored), 0);
+
+        let reward_pos =
+            test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
+        assert_eq!(bytes_to_u64(&reward_pos), 150);
+    }
+
+    #[test]
+    fn test_claim_storage_rewards_preserves_vesting_when_transfer_fails() {
+        setup();
+        enable_reward_transfers();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xEF; 32];
+        let provider_addr = [2u8; 32];
+
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        test_mock::set_caller(owner);
+        test_mock::set_value(5_000_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 150);
+        test_mock::set_cross_call_should_fail(true);
+        assert_eq!(claim_storage_rewards(provider_addr.as_ptr()), 2);
+
+        let reward_pos =
+            test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
+        assert_eq!(bytes_to_u64(&reward_pos), 100);
+
+        test_mock::set_cross_call_should_fail(false);
+        assert_eq!(claim_storage_rewards(provider_addr.as_ptr()), 0);
+        let reward = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(reward, 50_000);
+
+        let reward_pos =
+            test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
+        assert_eq!(bytes_to_u64(&reward_pos), 150);
     }
 
     // =============================================
@@ -1512,30 +1688,40 @@ mod tests {
         initialize(admin.as_ptr());
 
         let owner = [1u8; 32];
-        let data_hash = [0xCC; 32];
+        let payload = [0xAC; 64];
+        let data_hash = simple_hash(&payload);
         let provider_addr = [2u8; 32];
+        let challenger = [7u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
-        test_mock::set_value(153_600_000); // cost = 1024 * 3 * 5000 * 10
-        store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 3, 5000);
+        test_mock::set_value(9_600_000); // cost = 64 * 3 * 5000 * 10
+        store_data(
+            owner.as_ptr(),
+            data_hash.as_ptr(),
+            payload.len() as u64,
+            3,
+            5000,
+        );
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
 
         // Issue challenge
+        test_mock::set_caller(challenger);
         let result = issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
         assert_eq!(result, 0);
+        assert_eq!(
+            test_mock::get_storage(&challenge_challenger_key(&data_hash, &provider_addr)).unwrap(),
+            challenger.to_vec()
+        );
 
         // Respond to challenge
-        let response = [0xBB; 32]; // non-zero = valid
-        let result = respond_challenge(
-            provider_addr.as_ptr(),
-            data_hash.as_ptr(),
-            response.as_ptr(),
-        );
+        test_mock::set_caller(provider_addr);
+        let result =
+            respond_challenge(provider_addr.as_ptr(), data_hash.as_ptr(), payload.as_ptr());
         assert_eq!(result, 0);
     }
 
@@ -1576,13 +1762,13 @@ mod tests {
     fn test_slash_unanswered_challenge() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
-        // AUDIT-FIX P2: Set caller for security check
-        test_mock::set_caller([9u8; 32]);
-        initialize([9u8; 32].as_ptr());
+        let challenger = [9u8; 32];
+        configure_licn_transfers(challenger);
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        let slash_caller = [8u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824);
@@ -1594,11 +1780,13 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+        test_mock::set_caller(challenger);
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
         // Advance past deadline
         test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
 
+        test_mock::set_caller(slash_caller);
         let result = slash_provider(data_hash.as_ptr(), provider_addr.as_ptr());
         assert_eq!(result, 0);
 
@@ -1609,6 +1797,15 @@ mod tests {
         // Return data should have slash amount
         let ret = test_mock::get_return_data();
         assert_eq!(bytes_to_u64(&ret), 1_000_000);
+
+        let (_, function, args, value) = test_mock::get_last_cross_call()
+            .expect("slash should perform recorded challenger payout");
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        let mut recipient = [0u8; 32];
+        recipient.copy_from_slice(&args[32..64]);
+        assert_eq!(recipient, challenger);
+        assert_ne!(recipient, slash_caller);
     }
 
     #[test]
@@ -1620,7 +1817,8 @@ mod tests {
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
-        let data_hash = [0xCC; 32];
+        let payload = [0xBD; 64];
+        let data_hash = simple_hash(&payload);
         let provider_addr = [2u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1628,19 +1826,21 @@ mod tests {
         stake_collateral(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
-        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
-        store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        test_mock::set_value(3_200_000); // cost = 64 * 1 * 5000 * 10
+        store_data(
+            owner.as_ptr(),
+            data_hash.as_ptr(),
+            payload.len() as u64,
+            1,
+            5000,
+        );
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
         // Respond correctly
-        respond_challenge(
-            provider_addr.as_ptr(),
-            data_hash.as_ptr(),
-            [0xBB; 32].as_ptr(),
-        );
+        respond_challenge(provider_addr.as_ptr(), data_hash.as_ptr(), payload.as_ptr());
 
         // Advance past deadline
         test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
@@ -1697,7 +1897,7 @@ mod tests {
     }
 
     #[test]
-    fn test_challenge_zero_response_rejected() {
+    fn test_challenge_wrong_preimage_rejected() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
         // AUDIT-FIX P2: Set caller for security check
@@ -1705,26 +1905,34 @@ mod tests {
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
-        let data_hash = [0xCC; 32];
+        let payload = [0xC1; 64];
+        let data_hash = simple_hash(&payload);
+        let wrong_payload = [0u8; 64];
         let provider_addr = [2u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
-        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
-        store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        test_mock::set_value(3_200_000); // cost = 64 * 1 * 5000 * 10
+        store_data(
+            owner.as_ptr(),
+            data_hash.as_ptr(),
+            payload.len() as u64,
+            1,
+            5000,
+        );
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
-        // Zero response = invalid
+        // Wrong preimage = invalid
         assert_eq!(
             respond_challenge(
                 provider_addr.as_ptr(),
                 data_hash.as_ptr(),
-                [0u8; 32].as_ptr()
+                wrong_payload.as_ptr()
             ),
             4
         );
@@ -1776,7 +1984,7 @@ mod tests {
         store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
         test_mock::set_caller(provider);
         confirm_storage(provider.as_ptr(), data_hash.as_ptr());
-        // Claim rewards — graceful degradation (LICN token not configured)
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 125);
         let result = claim_storage_rewards(provider.as_ptr());
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
@@ -1812,7 +2020,10 @@ mod tests {
         let new_token = [0xDE; 32];
         assert_eq!(set_licn_token(admin.as_ptr(), token.as_ptr()), 0);
         assert_eq!(set_licn_token(admin.as_ptr(), new_token.as_ptr()), 2);
-        assert_eq!(test_mock::get_storage(LICN_TOKEN_KEY).unwrap().as_slice(), &token);
+        assert_eq!(
+            test_mock::get_storage(LICN_TOKEN_KEY).unwrap().as_slice(),
+            &token
+        );
     }
 
     #[test]

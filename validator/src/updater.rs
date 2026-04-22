@@ -141,9 +141,8 @@ impl Default for UpdateConfig {
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    prerelease: bool,
+    #[serde(rename = "prerelease", default)]
+    _prerelease: bool,
     #[serde(default)]
     draft: bool,
     #[serde(default)]

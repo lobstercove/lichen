@@ -68,6 +68,9 @@ const MAX_ATTESTATION_AGE_SLOTS: u64 = EPOCH_SLOTS;
 const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed
 #[allow(dead_code)]
 const RESERVE_WARNING_BPS: u64 = 10_200; // 102% — warn if close to floor
+const ERR_CIRCUIT_BREAKER: u32 = 10;
+const ERR_EPOCH_CAP: u32 = 11;
+const ERR_ARITHMETIC_OVERFLOW: u32 = 12;
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"lusd_admin";
@@ -107,6 +110,14 @@ fn load_u64(key: &[u8]) -> u64 {
 }
 fn save_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
+}
+
+fn checked_add_u64(lhs: u64, rhs: u64) -> Result<u64, u32> {
+    lhs.checked_add(rhs).ok_or(ERR_ARITHMETIC_OVERFLOW)
+}
+
+fn checked_sub_u64(lhs: u64, rhs: u64) -> Result<u64, u32> {
+    lhs.checked_sub(rhs).ok_or(ERR_ARITHMETIC_OVERFLOW)
 }
 
 fn load_addr(key: &[u8]) -> [u8; 32] {
@@ -217,11 +228,15 @@ fn is_bootstrap_complete() -> bool {
         .unwrap_or(false)
 }
 
-// Reserve circuit breaker: block minting if supply would exceed attested reserves
-fn check_reserve_circuit_breaker(additional_mint: u64) -> bool {
+// Reserve circuit breaker: block minting if supply would exceed attested reserves.
+fn check_reserve_circuit_breaker(additional_mint: u64) -> Result<(), u32> {
     let attested = load_u64(RESERVE_ATTESTED_KEY);
     if attested == 0 {
-        return !is_bootstrap_complete();
+        return if is_bootstrap_complete() {
+            Err(ERR_CIRCUIT_BREAKER)
+        } else {
+            Ok(())
+        };
     }
     if is_bootstrap_complete() {
         let last_attestation_slot = load_u64(RESERVE_SLOT_KEY);
@@ -229,29 +244,37 @@ fn check_reserve_circuit_breaker(additional_mint: u64) -> bool {
         if last_attestation_slot == 0
             || current_slot > last_attestation_slot.saturating_add(MAX_ATTESTATION_AGE_SLOTS)
         {
-            return false;
+            return Err(ERR_CIRCUIT_BREAKER);
         }
     }
     let supply = load_u64(TOTAL_SUPPLY_KEY);
-    let new_supply = supply.saturating_add(additional_mint);
-    // new_supply must not exceed attested reserves
-    new_supply <= attested
+    let new_supply = checked_add_u64(supply, additional_mint)?;
+    if new_supply > attested {
+        return Err(ERR_CIRCUIT_BREAKER);
+    }
+
+    Ok(())
 }
 
-// Epoch rate limiting: check if mint cap exceeded for current epoch
-fn check_epoch_cap(amount: u64) -> bool {
+// Epoch rate limiting: derive the next epoch counters without mutating state.
+fn next_epoch_state(amount: u64) -> Result<(u64, u64), u32> {
     let current_slot = get_slot();
     let epoch_start = load_u64(EPOCH_START_KEY);
     let epoch_minted = load_u64(EPOCH_MINTED_KEY);
 
-    if current_slot >= epoch_start + EPOCH_SLOTS {
-        // New epoch — reset
-        save_u64(EPOCH_START_KEY, current_slot);
-        save_u64(EPOCH_MINTED_KEY, amount);
-        return amount <= MINT_CAP_PER_EPOCH;
+    if current_slot >= epoch_start.saturating_add(EPOCH_SLOTS) {
+        if amount > MINT_CAP_PER_EPOCH {
+            return Err(ERR_EPOCH_CAP);
+        }
+        return Ok((current_slot, amount));
     }
 
-    epoch_minted.saturating_add(amount) <= MINT_CAP_PER_EPOCH
+    let next_epoch_minted = checked_add_u64(epoch_minted, amount)?;
+    if next_epoch_minted > MINT_CAP_PER_EPOCH {
+        return Err(ERR_EPOCH_CAP);
+    }
+
+    Ok((epoch_start, next_epoch_minted))
 }
 
 // ============================================================================
@@ -347,54 +370,65 @@ pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
         return 4;
     }
 
-    // Circuit breaker: check reserves
-    if !check_reserve_circuit_breaker(amount) {
+    if let Err(code) = check_reserve_circuit_breaker(amount) {
         reentrancy_exit();
-        log_info("CIRCUIT BREAKER: mint blocked \u{2014} would exceed attested reserves");
-        return 10;
+        if code == ERR_CIRCUIT_BREAKER {
+            log_info("CIRCUIT BREAKER: mint blocked - would exceed attested reserves");
+        }
+        return code;
     }
 
-    // Epoch rate limit
-    if !check_epoch_cap(amount) {
-        reentrancy_exit();
-        log_info("RATE LIMIT: epoch mint cap reached");
-        return 11;
-    }
+    let (next_epoch_start, next_epoch_minted) = match next_epoch_state(amount) {
+        Ok(values) => values,
+        Err(code) => {
+            reentrancy_exit();
+            if code == ERR_EPOCH_CAP {
+                log_info("RATE LIMIT: epoch mint cap reached");
+            }
+            return code;
+        }
+    };
 
-    // Update epoch counter
-    let current_slot = get_slot();
-    let epoch_start = load_u64(EPOCH_START_KEY);
-    if current_slot >= epoch_start + EPOCH_SLOTS {
-        save_u64(EPOCH_START_KEY, current_slot);
-        save_u64(EPOCH_MINTED_KEY, amount);
-    } else {
-        save_u64(
-            EPOCH_MINTED_KEY,
-            load_u64(EPOCH_MINTED_KEY).saturating_add(amount),
-        );
-    }
-
-    // Credit recipient
     let bk = balance_key(&to_addr);
     let bal = load_u64(&bk);
-    save_u64(&bk, bal.saturating_add(amount));
+    let next_balance = match checked_add_u64(bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_total_supply = match checked_add_u64(load_u64(TOTAL_SUPPLY_KEY), amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_total_minted = match checked_add_u64(load_u64(TOTAL_MINTED_KEY), amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_evt_count = match checked_add_u64(load_u64(MINT_EVENT_COUNT_KEY), 1) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
 
-    // Update totals
-    save_u64(
-        TOTAL_SUPPLY_KEY,
-        load_u64(TOTAL_SUPPLY_KEY).saturating_add(amount),
-    );
-    save_u64(
-        TOTAL_MINTED_KEY,
-        load_u64(TOTAL_MINTED_KEY).saturating_add(amount),
-    );
-
-    // Log mint event
-    let evt_count = load_u64(MINT_EVENT_COUNT_KEY);
-    save_u64(MINT_EVENT_COUNT_KEY, evt_count.saturating_add(1));
+    save_u64(EPOCH_START_KEY, next_epoch_start);
+    save_u64(EPOCH_MINTED_KEY, next_epoch_minted);
+    save_u64(&bk, next_balance);
+    save_u64(TOTAL_SUPPLY_KEY, next_total_supply);
+    save_u64(TOTAL_MINTED_KEY, next_total_minted);
+    save_u64(MINT_EVENT_COUNT_KEY, next_evt_count);
 
     let mut msg = Vec::from(&b"MINT #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(evt_count.saturating_add(1)));
+    msg.extend_from_slice(&u64_to_decimal(next_evt_count));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(amount));
     msg.extend_from_slice(b" lUSD to 0x");
@@ -436,21 +470,42 @@ pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
         return 5;
     } // Insufficient balance
 
-    save_u64(&bk, bal - amount);
-    save_u64(
-        TOTAL_SUPPLY_KEY,
-        load_u64(TOTAL_SUPPLY_KEY).saturating_sub(amount),
-    );
-    save_u64(
-        TOTAL_BURNED_KEY,
-        load_u64(TOTAL_BURNED_KEY).saturating_add(amount),
-    );
+    let next_balance = match checked_sub_u64(bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_total_supply = match checked_sub_u64(load_u64(TOTAL_SUPPLY_KEY), amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_total_burned = match checked_add_u64(load_u64(TOTAL_BURNED_KEY), amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_evt_count = match checked_add_u64(load_u64(BURN_EVENT_COUNT_KEY), 1) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
 
-    let evt_count = load_u64(BURN_EVENT_COUNT_KEY);
-    save_u64(BURN_EVENT_COUNT_KEY, evt_count.saturating_add(1));
+    save_u64(&bk, next_balance);
+    save_u64(TOTAL_SUPPLY_KEY, next_total_supply);
+    save_u64(TOTAL_BURNED_KEY, next_total_burned);
+    save_u64(BURN_EVENT_COUNT_KEY, next_evt_count);
 
     let mut msg = Vec::from(&b"BURN #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(evt_count.saturating_add(1)));
+    msg.extend_from_slice(&u64_to_decimal(next_evt_count));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(amount));
     msg.extend_from_slice(b" lUSD from 0x");
@@ -509,13 +564,31 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
 
-    save_u64(&from_bk, from_bal - amount);
-    save_u64(&to_bk, to_bal.saturating_add(amount));
+    let next_from_balance = match checked_sub_u64(from_bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_to_balance = match checked_add_u64(to_bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_transfer_count = match checked_add_u64(load_u64(TRANSFER_COUNT_KEY), 1) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
 
-    save_u64(
-        TRANSFER_COUNT_KEY,
-        load_u64(TRANSFER_COUNT_KEY).saturating_add(1),
-    );
+    save_u64(&from_bk, next_from_balance);
+    save_u64(&to_bk, next_to_balance);
+    save_u64(TRANSFER_COUNT_KEY, next_transfer_count);
 
     reentrancy_exit();
     0
@@ -618,15 +691,39 @@ pub extern "C" fn transfer_from(
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
 
-    // Execute transfer
-    save_u64(&from_bk, from_bal - amount);
-    save_u64(&to_bk, to_bal.saturating_add(amount));
-    save_u64(&ak, allowed - amount);
+    let next_from_balance = match checked_sub_u64(from_bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_to_balance = match checked_add_u64(to_bal, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_allowance = match checked_sub_u64(allowed, amount) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
+    let next_transfer_count = match checked_add_u64(load_u64(TRANSFER_COUNT_KEY), 1) {
+        Ok(value) => value,
+        Err(code) => {
+            reentrancy_exit();
+            return code;
+        }
+    };
 
-    save_u64(
-        TRANSFER_COUNT_KEY,
-        load_u64(TRANSFER_COUNT_KEY).saturating_add(1),
-    );
+    save_u64(&from_bk, next_from_balance);
+    save_u64(&to_bk, next_to_balance);
+    save_u64(&ak, next_allowance);
+    save_u64(TRANSFER_COUNT_KEY, next_transfer_count);
 
     reentrancy_exit();
     0
@@ -662,13 +759,18 @@ pub extern "C" fn attest_reserves(
         return 2;
     }
 
+    let count = load_u64(ATTESTATION_COUNT_KEY);
+    let next_count = match checked_add_u64(count, 1) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+
     // Store current attestation
     save_u64(RESERVE_ATTESTED_KEY, reserve_amount);
     save_u64(RESERVE_SLOT_KEY, get_slot());
     storage_set(RESERVE_HASH_KEY, &hash);
 
     // Store in history
-    let count = load_u64(ATTESTATION_COUNT_KEY);
     let ak = attestation_key(count);
     // Pack: [amount(8)] [slot(8)] [hash(32)] = 48 bytes
     let mut record = Vec::with_capacity(48);
@@ -676,10 +778,10 @@ pub extern "C" fn attest_reserves(
     record.extend_from_slice(&u64_to_bytes(get_slot()));
     record.extend_from_slice(&hash);
     storage_set(&ak, &record);
-    save_u64(ATTESTATION_COUNT_KEY, count.saturating_add(1));
+    save_u64(ATTESTATION_COUNT_KEY, next_count);
 
     let mut msg = Vec::from(&b"RESERVE ATTESTATION #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(count.saturating_add(1)));
+    msg.extend_from_slice(&u64_to_decimal(next_count));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(reserve_amount));
     msg.extend_from_slice(b" lUSD backing declared");
@@ -764,11 +866,15 @@ pub extern "C" fn get_attestation_count() -> u64 {
 pub extern "C" fn get_epoch_remaining() -> u64 {
     let current_slot = get_slot();
     let epoch_start = load_u64(EPOCH_START_KEY);
-    if current_slot >= epoch_start + EPOCH_SLOTS {
+    if current_slot >= epoch_start.saturating_add(EPOCH_SLOTS) {
         return MINT_CAP_PER_EPOCH; // New epoch hasn't started — full capacity
     }
     let minted = load_u64(EPOCH_MINTED_KEY);
-    MINT_CAP_PER_EPOCH.saturating_sub(minted)
+    if minted >= MINT_CAP_PER_EPOCH {
+        0
+    } else {
+        MINT_CAP_PER_EPOCH - minted
+    }
 }
 
 /// Get transfer count.
@@ -1100,6 +1206,30 @@ mod tests {
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1), 11);
     }
 
+    #[test]
+    fn test_mint_overflow_preserves_state() {
+        reset_store();
+        let admin = addr(1);
+        let user = addr(2);
+        initialize(admin.as_ptr());
+        save_u64(&balance_key(&user), u64::MAX);
+        save_u64(TOTAL_SUPPLY_KEY, 41);
+        save_u64(TOTAL_MINTED_KEY, 7);
+        save_u64(EPOCH_START_KEY, get_slot());
+        save_u64(EPOCH_MINTED_KEY, 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(
+            mint(admin.as_ptr(), user.as_ptr(), 1),
+            ERR_ARITHMETIC_OVERFLOW
+        );
+        assert_eq!(balance_of(user.as_ptr()), u64::MAX);
+        assert_eq!(total_supply(), 41);
+        assert_eq!(total_minted(), 7);
+        assert_eq!(load_u64(EPOCH_MINTED_KEY), 0);
+        assert_eq!(load_u64(MINT_EVENT_COUNT_KEY), 0);
+    }
+
     // ---- Burning ----
 
     #[test]
@@ -1128,6 +1258,24 @@ mod tests {
         mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
         test_mock::set_caller(user);
         assert_eq!(burn(user.as_ptr(), 2_000_000), 5);
+    }
+
+    #[test]
+    fn test_burn_underflow_preserves_state() {
+        reset_store();
+        let admin = addr(1);
+        let user = addr(2);
+        initialize(admin.as_ptr());
+        save_u64(&balance_key(&user), 1);
+        save_u64(TOTAL_SUPPLY_KEY, 0);
+        save_u64(TOTAL_BURNED_KEY, 9);
+
+        test_mock::set_caller(user);
+        assert_eq!(burn(user.as_ptr(), 1), ERR_ARITHMETIC_OVERFLOW);
+        assert_eq!(balance_of(user.as_ptr()), 1);
+        assert_eq!(total_supply(), 0);
+        assert_eq!(total_burned(), 9);
+        assert_eq!(load_u64(BURN_EVENT_COUNT_KEY), 0);
     }
 
     // ---- Transfers ----
@@ -1159,6 +1307,26 @@ mod tests {
         mint(admin.as_ptr(), alice.as_ptr(), 1_000_000);
         test_mock::set_caller(alice);
         assert_eq!(transfer(alice.as_ptr(), bob.as_ptr(), 5_000_000), 5);
+    }
+
+    #[test]
+    fn test_transfer_overflow_preserves_state() {
+        reset_store();
+        let admin = addr(1);
+        let alice = addr(2);
+        let bob = addr(3);
+        initialize(admin.as_ptr());
+        save_u64(&balance_key(&alice), 5);
+        save_u64(&balance_key(&bob), u64::MAX);
+
+        test_mock::set_caller(alice);
+        assert_eq!(
+            transfer(alice.as_ptr(), bob.as_ptr(), 1),
+            ERR_ARITHMETIC_OVERFLOW
+        );
+        assert_eq!(balance_of(alice.as_ptr()), 5);
+        assert_eq!(balance_of(bob.as_ptr()), u64::MAX);
+        assert_eq!(load_u64(TRANSFER_COUNT_KEY), 0);
     }
 
     #[test]

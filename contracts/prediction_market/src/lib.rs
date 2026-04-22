@@ -22,6 +22,7 @@
 //   pm_lusd_addr                         → [u8; 32]  lUSD token contract address
 //   pm_dex_gov_addr                      → [u8; 32]  DEX governance address (disputes)
 //   pm_m_{id}                            → [u8; 192] Market record
+//   pm_att_{id}                          → [u8; 32]  Full oracle attestation hash for resolution
 //   pm_q_{id}                            → Vec<u8>   Question text (UTF-8, up to 512)
 //   pm_o_{id}_{outcome}                  → [u8; 64]  Outcome pool data
 //   pm_on_{id}_{outcome}                 → Vec<u8>   Outcome name/label (up to 64)
@@ -52,6 +53,7 @@ use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_slot, get_value, log_info, storage_get,
     storage_set, u64_to_bytes, Address, CrossCall,
 };
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // CONSTANTS
@@ -124,6 +126,7 @@ const MAX_CATEGORY: u8 = 7;
 
 // --- Outcome constants ---
 const UNRESOLVED: u8 = 0xFF;
+const RESOLUTION_ATTESTATION_DOMAIN: &[u8] = b"PM_RESOLVE";
 
 // --- Sizes ---
 const MARKET_RECORD_SIZE: usize = 192;
@@ -220,9 +223,136 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+struct OracleAttestationData {
+    signature_count: u8,
+    timestamp: u64,
+    data: [u8; 32],
+}
+
+fn sha256(input: &[u8]) -> [u8; 32] {
+    let digest = Sha256::digest(input);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn decode_oracle_attestation_data(data: &[u8]) -> Option<OracleAttestationData> {
+    if data.len() != 41 {
+        return None;
+    }
+
+    let mut payload = [0u8; 32];
+    payload.copy_from_slice(&data[9..41]);
+
+    Some(OracleAttestationData {
+        signature_count: data[0],
+        timestamp: bytes_to_u64(&data[1..9]),
+        data: payload,
+    })
+}
+
+fn resolution_attestation_hash(
+    market_id: u64,
+    question_hash: &[u8; 32],
+    winning_outcome: u8,
+    close_slot: u64,
+) -> [u8; 32] {
+    let mut preimage = Vec::with_capacity(RESOLUTION_ATTESTATION_DOMAIN.len() + 8 + 32 + 1 + 8);
+    preimage.extend_from_slice(RESOLUTION_ATTESTATION_DOMAIN);
+    preimage.extend_from_slice(&u64_to_bytes(market_id));
+    preimage.extend_from_slice(question_hash);
+    preimage.push(winning_outcome);
+    preimage.extend_from_slice(&u64_to_bytes(close_slot));
+    sha256(&preimage)
+}
+
 /// Load the contract's own address (needed as source for token transfers).
 fn load_self_addr() -> [u8; 32] {
     load_addr(SELF_ADDR_KEY)
+}
+
+fn load_contract_escrow_addr() -> Option<[u8; 32]> {
+    let runtime_addr = lichen_sdk::get_contract_address().0;
+    if !is_zero(&runtime_addr) {
+        return Some(runtime_addr);
+    }
+
+    let configured_addr = load_self_addr();
+    if is_zero(&configured_addr) {
+        None
+    } else {
+        Some(configured_addr)
+    }
+}
+
+fn decode_lusd_transfer_from_result(result: &[u8]) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if result.is_empty() {
+        return true;
+    }
+
+    match result.first().copied().unwrap_or(255) {
+        0 => true,
+        1 => {
+            log_info("lUSD transfer_from failed: token contract is paused");
+            false
+        }
+        5 => {
+            log_info("lUSD transfer_from failed: insufficient token balance");
+            false
+        }
+        7 => {
+            log_info("lUSD transfer_from failed: insufficient token allowance");
+            false
+        }
+        100 => {
+            log_info("lUSD transfer_from failed: reentrancy guard active");
+            false
+        }
+        200 => {
+            log_info("lUSD transfer_from failed: caller mismatch");
+            false
+        }
+        _ => {
+            log_info("lUSD transfer_from failed: token contract returned error");
+            false
+        }
+    }
+}
+
+fn escrow_lusd_in(payer: &[u8], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+
+    let lusd_addr = load_addr(LUSD_ADDR_KEY);
+    if is_zero(&lusd_addr) {
+        log_info("lUSD address not configured — escrow rejected");
+        return false;
+    }
+
+    let contract_addr = match load_contract_escrow_addr() {
+        Some(addr) => addr,
+        None => {
+            log_info("Self address not configured — escrow rejected");
+            return false;
+        }
+    };
+
+    let mut args = Vec::with_capacity(104);
+    args.extend_from_slice(&contract_addr);
+    args.extend_from_slice(payer);
+    args.extend_from_slice(&contract_addr);
+    args.extend_from_slice(&u64_to_bytes(amount));
+
+    let call = CrossCall::new(Address(lusd_addr), "transfer_from", args);
+    match call_contract(call) {
+        Ok(result) => decode_lusd_transfer_from_result(&result),
+        Err(_) => {
+            log_info("lUSD transfer_from failed: cross-contract call error");
+            false
+        }
+    }
 }
 
 /// Transfer lUSD tokens from the contract to a recipient.
@@ -234,7 +364,13 @@ fn transfer_lusd_out(recipient: &[u8], amount: u64) -> bool {
         log_info("lUSD address not configured — transfer rejected");
         return false;
     }
-    let self_addr = load_self_addr();
+    let self_addr = match load_contract_escrow_addr() {
+        Some(addr) => addr,
+        None => {
+            log_info("Self address not configured — transfer rejected");
+            return false;
+        }
+    };
     if is_zero(&self_addr) {
         log_info("Self address not configured — transfer rejected");
         return false;
@@ -259,6 +395,12 @@ fn transfer_lusd_out(recipient: &[u8], amount: u64) -> bool {
 
 fn market_key(market_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"pm_m_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
+fn market_attestation_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_att_"[..]);
     k.extend_from_slice(&u64_to_decimal(market_id));
     k
 }
@@ -559,6 +701,12 @@ fn challenger_key(market_id: u64) -> Vec<u8> {
     k
 }
 
+fn resolver_reward_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_rw_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
 // ============================================================================
 // SECURITY: REENTRANCY + PAUSE
 // ============================================================================
@@ -614,7 +762,7 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 // Bytes 156..164 : dispute_end_slot (u64)
 // Bytes 164..172 : fees_collected (u64)
 // Bytes 172..180 : lp_total_shares (u64)
-// Bytes 180..188 : oracle_attestation_hash (first 8 bytes)
+// Bytes 180..188 : oracle_attestation_hash preview (first 8 bytes; full hash in pm_att_{id})
 // Bytes 188..192 : pad (4 bytes)
 
 fn encode_market(
@@ -673,7 +821,7 @@ fn encode_market(
     data.extend_from_slice(&u64_to_bytes(dispute_end_slot)); // 156..164
     data.extend_from_slice(&u64_to_bytes(fees_collected)); // 164..172
     data.extend_from_slice(&u64_to_bytes(lp_total_shares)); // 172..180
-                                                            // oracle_attestation_hash: first 8 bytes
+                                                            // oracle_attestation_hash preview: first 8 bytes
     if oracle_attestation_hash.len() >= 8 {
         data.extend_from_slice(&oracle_attestation_hash[..8]);
     } else {
@@ -791,6 +939,21 @@ fn load_market(market_id: u64) -> Option<Vec<u8>> {
 /// Save a market record to storage.
 fn save_market(market_id: u64, data: &[u8]) {
     storage_set(&market_key(market_id), data);
+}
+
+fn save_market_attestation_hash(market_id: u64, attestation_hash: &[u8; 32]) {
+    storage_set(&market_attestation_key(market_id), attestation_hash);
+}
+
+fn load_market_attestation_hash(market_id: u64) -> Option<[u8; 32]> {
+    let data = storage_get(&market_attestation_key(market_id))?;
+    if data.len() < 32 {
+        return None;
+    }
+
+    let mut attestation_hash = [0u8; 32];
+    attestation_hash.copy_from_slice(&data[..32]);
+    Some(attestation_hash)
 }
 
 // ============================================================================
@@ -1705,13 +1868,6 @@ pub fn add_initial_liquidity(
         return 0;
     }
 
-    // G21-01: Verify attached value covers liquidity deposit
-    if get_value() < amount_lusd {
-        log_info("Insufficient value for initial liquidity");
-        reentrancy_exit();
-        return 0;
-    }
-
     // Load market
     let mut record = match load_market(market_id) {
         Some(r) => r,
@@ -1842,6 +1998,11 @@ pub fn add_initial_liquidity(
         }
     }
 
+    if !escrow_lusd_in(provider, amount_lusd) {
+        reentrancy_exit();
+        return 0;
+    }
+
     // Write outcome pools with initial reserves
     for i in 0..outcome_count {
         let price = calculate_price(&reserves, i);
@@ -1901,13 +2062,6 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_lusd: u64) 
         return 0;
     }
 
-    // G21-01: Verify attached value covers liquidity deposit
-    if get_value() < amount_lusd {
-        log_info("Insufficient value for liquidity");
-        reentrancy_exit();
-        return 0;
-    }
-
     let mut record = match load_market(market_id) {
         Some(r) => r,
         None => {
@@ -1951,6 +2105,11 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     } else {
         (existing_lp_total as u128 * amount_lusd as u128 / existing_collateral as u128) as u64
     };
+
+    if !escrow_lusd_in(provider, amount_lusd) {
+        reentrancy_exit();
+        return 0;
+    }
 
     // Add to each outcome pool's reserve proportionally
     for i in 0..outcome_count {
@@ -2017,13 +2176,6 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
 
     let caller = lichen_sdk::get_caller();
     if caller.0[..] != trader[..] {
-        reentrancy_exit();
-        return 0;
-    }
-
-    // G21-01: Verify attached value covers share purchase
-    if get_value() < amount_lusd {
-        log_info("Insufficient value for share purchase");
         reentrancy_exit();
         return 0;
     }
@@ -2096,6 +2248,11 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
     // Calculate buy
     let (shares_received, fee_shares) = calculate_buy(&reserves, outcome, amount_lusd);
     if shares_received == 0 {
+        reentrancy_exit();
+        return 0;
+    }
+
+    if !escrow_lusd_in(trader, amount_lusd) {
         reentrancy_exit();
         return 0;
     }
@@ -2376,13 +2533,6 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
         return 0;
     }
 
-    // G21-01: Verify attached value covers complete set mint
-    if get_value() < amount_lusd {
-        log_info("Insufficient value for complete set mint");
-        reentrancy_exit();
-        return 0;
-    }
-
     let mut record = match load_market(market_id) {
         Some(r) => r,
         None => {
@@ -2415,6 +2565,11 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     // Collateral checks
     let existing_coll = market_total_collateral(&record);
     if existing_coll + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
+        reentrancy_exit();
+        return 0;
+    }
+
+    if !escrow_lusd_in(user, amount_lusd) {
         reentrancy_exit();
         return 0;
     }
@@ -2632,7 +2787,6 @@ pub fn submit_resolution(
     unsafe {
         core::ptr::copy_nonoverlapping(attestation_hash_ptr, attestation_hash.as_mut_ptr(), 32);
     }
-    let attestation_hash = &attestation_hash[..];
 
     let caller = lichen_sdk::get_caller();
     if caller.0[..] != resolver[..] {
@@ -2668,6 +2822,14 @@ pub fn submit_resolution(
         return 0;
     }
 
+    let question_hash = market_question_hash(&record);
+    let expected_attestation_hash = resolution_attestation_hash(
+        market_id,
+        &question_hash,
+        winning_outcome,
+        market_close_slot(&record),
+    );
+
     // Validate bond
     if bond < DISPUTE_BOND {
         reentrancy_exit();
@@ -2697,25 +2859,41 @@ pub fn submit_resolution(
     // If oracle is not configured, skip verification (allows testing/genesis).
     let oracle_addr = load_addr(ORACLE_ADDR_KEY);
     if !is_zero(&oracle_addr) {
+        if attestation_hash != expected_attestation_hash {
+            log_info("Oracle attestation hash does not match market resolution context");
+            reentrancy_exit();
+            return 0;
+        }
+
         let cross_call = CrossCall::new(
             Address(oracle_addr),
             "get_attestation_data",
             attestation_hash.to_vec(),
         );
         match call_contract(cross_call) {
-            Ok(att_data) if att_data.len() >= 33 => {
-                let sig_count = att_data[32];
-                if sig_count < RESOLUTION_THRESHOLD {
+            Ok(att_data) => {
+                let oracle_attestation = match decode_oracle_attestation_data(&att_data) {
+                    Some(attestation) => attestation,
+                    None => {
+                        log_info("Oracle attestation payload invalid");
+                        reentrancy_exit();
+                        return 0;
+                    }
+                };
+
+                if oracle_attestation.signature_count < RESOLUTION_THRESHOLD {
                     log_info("Insufficient oracle attestation signatures");
                     reentrancy_exit();
                     return 0;
                 }
-            }
-            Ok(_) => {
-                // Empty or too-short response means attestation not found
-                log_info("Oracle attestation not found");
-                reentrancy_exit();
-                return 0;
+
+                if oracle_attestation.data != expected_attestation_hash {
+                    log_info("Oracle attestation payload does not match market resolution context");
+                    reentrancy_exit();
+                    return 0;
+                }
+
+                let _timestamp = oracle_attestation.timestamp;
             }
             Err(_) => {
                 log_info("Oracle cross-contract call failed");
@@ -2733,9 +2911,10 @@ pub fn submit_resolution(
     set_market_resolution_bond(&mut record, bond);
     set_market_resolver(&mut record, resolver);
     set_market_dispute_end_slot(&mut record, current_slot + DISPUTE_PERIOD);
-    // Store attestation hash (first 8 bytes) in the oracle_attestation_hash field
+    // Store attestation hash preview in-record and persist the full hash separately.
     record[180..188].copy_from_slice(&attestation_hash[..8]);
     save_market(market_id, &record);
+    save_market_attestation_hash(market_id, &attestation_hash);
 
     log_info("Resolution submitted — dispute period started!");
     reentrancy_exit();
@@ -2874,31 +3053,36 @@ pub fn finalize_resolution(caller_ptr: *const u8, market_id: u64) -> u32 {
 
     // Finalize
     set_market_status(&mut record, STATUS_RESOLVED);
-    save_market(market_id, &record);
 
     // Remove from active markets
     remove_active_market(market_id);
-    let open = load_u64(OPEN_MARKETS_KEY);
-    // The remove_active_market already decremented, no need to double-decrement
 
     // Pay resolver reward: 0.5% of total collateral
     let total_coll = market_total_collateral(&record);
     let reward = (total_coll as u128 * RESOLUTION_REWARD_BPS as u128 / 10_000) as u64;
     let resolver = market_resolver(&record);
-    // Store resolver reward in a dedicated key
-    let reward_key = {
-        let mut k = Vec::from(&b"pm_rw_"[..]);
-        k.extend_from_slice(&u64_to_decimal(market_id));
-        k
-    };
-    save_u64(&reward_key, reward);
 
     // G21-01: Transfer reward to resolver
+    let mut paid_reward = 0;
     if reward > 0 {
         if !transfer_lusd_out(&resolver, reward) {
             log_info("finalize_resolution: resolver reward transfer failed");
+        } else {
+            paid_reward = reward;
         }
     }
+
+    if paid_reward > 0 {
+        set_market_total_collateral(&mut record, total_coll.saturating_sub(paid_reward));
+        let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
+        save_u64(
+            TOTAL_COLLATERAL_KEY,
+            platform_coll.saturating_sub(paid_reward),
+        );
+    }
+
+    save_market(market_id, &record);
+    save_u64(&resolver_reward_key(market_id), paid_reward);
 
     reentrancy_exit();
     1
@@ -4257,6 +4441,7 @@ mod tests {
         let self_addr = [0xBB; 32];
         storage_set(LUSD_ADDR_KEY, &musd);
         storage_set(SELF_ADDR_KEY, &self_addr);
+        test_mock::set_contract_address(self_addr);
     }
 
     /// Create a binary market (2 outcomes) and return the market_id.
@@ -4282,8 +4467,8 @@ mod tests {
 
     /// Add initial liquidity to transition market from PENDING → ACTIVE.
     fn activate_market(creator: &[u8; 32], market_id: u64, amount: u64) {
+        configure_escrow();
         test_mock::set_caller(*creator);
-        // G21-01: Attach value covering liquidity deposit
         test_mock::set_value(amount);
         let result =
             add_initial_liquidity(creator.as_ptr(), market_id, amount, core::ptr::null(), 0);
@@ -4752,7 +4937,7 @@ mod tests {
     #[test]
     fn test_submit_resolution_with_oracle_rejects_in_mock() {
         // With oracle address set, call_contract returns Ok(Vec::new()),
-        // which is too short (< 33 bytes), so submit_resolution should reject.
+        // which is not a valid 41-byte attestation payload, so submit_resolution rejects.
         setup();
         init_contract();
         let creator = [2u8; 32];
@@ -4771,15 +4956,56 @@ mod tests {
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
         test_mock::set_value(DISPUTE_BOND);
-        let att_hash = [0xCC; 32];
+        let record = load_market(mid).unwrap();
+        let att_hash = resolution_attestation_hash(
+            mid,
+            &market_question_hash(&record),
+            0,
+            market_close_slot(&record),
+        );
         let result = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
         let (_, function, args, value) = test_mock::get_last_cross_call()
             .expect("oracle attestation lookup must perform a cross-contract call");
         assert_eq!(function, "get_attestation_data");
         assert_eq!(args, att_hash.to_vec());
         assert_eq!(value, 0);
-        // Mock returns empty vec → "attestation not found" → rejection
-        assert_eq!(result, 0, "Should reject when oracle returns empty data");
+        assert_eq!(result, 0, "Should reject when oracle returns invalid data");
+    }
+
+    #[test]
+    fn test_submit_resolution_with_oracle_accepts_matching_attestation() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        let oracle = [0xEE; 32];
+        storage_set(ORACLE_ADDR_KEY, &oracle);
+
+        let resolver = [5u8; 32];
+        let record = load_market(mid).unwrap();
+        let att_hash = resolution_attestation_hash(
+            mid,
+            &market_question_hash(&record),
+            0,
+            market_close_slot(&record),
+        );
+        let mut oracle_payload = Vec::with_capacity(41);
+        oracle_payload.push(RESOLUTION_THRESHOLD);
+        oracle_payload.extend_from_slice(&123_456u64.to_le_bytes());
+        oracle_payload.extend_from_slice(&att_hash);
+        test_mock::set_cross_call_response(Some(oracle_payload));
+
+        test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
+        let result = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
+        assert_eq!(result, 1, "Matching oracle attestation should be accepted");
+        assert_eq!(load_market_attestation_hash(mid), Some(att_hash));
     }
 
     #[test]
@@ -4844,8 +5070,42 @@ mod tests {
         assert_eq!(finalize_resolution(resolver.as_ptr(), mid), 1);
 
         let record = load_market(mid).unwrap();
+        let reward = 10_000_000 * RESOLUTION_REWARD_BPS / 10_000;
         assert_eq!(market_status(&record), STATUS_RESOLVED);
         assert_eq!(market_winning_outcome(&record), 0);
+        assert_eq!(market_total_collateral(&record), 10_000_000 - reward);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), 10_000_000 - reward);
+        assert_eq!(load_u64(&resolver_reward_key(mid)), reward);
+    }
+
+    #[test]
+    fn test_finalize_resolution_preserves_collateral_when_reward_transfer_fails() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
+        let att_hash = [0xCC; 32];
+        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
+
+        test_mock::set_cross_call_should_fail(true);
+        test_mock::set_slot(100_001 + DISPUTE_PERIOD + 1);
+        assert_eq!(finalize_resolution(resolver.as_ptr(), mid), 1);
+        test_mock::set_cross_call_should_fail(false);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_RESOLVED);
+        assert_eq!(market_total_collateral(&record), 10_000_000);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), 10_000_000);
+        assert_eq!(load_u64(&resolver_reward_key(mid)), 0);
     }
 
     // ========================================================================
@@ -5449,7 +5709,7 @@ mod tests {
     }
 
     #[test]
-    fn test_buy_shares_insufficient_value() {
+    fn test_buy_shares_rejects_failed_lusd_escrow() {
         setup();
         init_contract();
         let creator = [2u8; 32];
@@ -5459,13 +5719,13 @@ mod tests {
         let trader = [3u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(5000);
-        test_mock::set_value(999_999); // less than 1_000_000
+        test_mock::set_cross_call_response(Some(7u32.to_le_bytes().to_vec()));
         let r = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
-        assert_eq!(r, 0, "Should reject insufficient value for buy_shares");
+        assert_eq!(r, 0, "Should reject failed lUSD escrow for buy_shares");
     }
 
     #[test]
-    fn test_mint_complete_set_insufficient_value() {
+    fn test_mint_complete_set_rejects_failed_lusd_escrow() {
         setup();
         init_contract();
         let creator = [2u8; 32];
@@ -5474,11 +5734,11 @@ mod tests {
 
         let user = [3u8; 32];
         test_mock::set_caller(user);
-        test_mock::set_value(4_999_999); // less than 5_000_000
+        test_mock::set_cross_call_response(Some(7u32.to_le_bytes().to_vec()));
         let r = mint_complete_set(user.as_ptr(), mid, 5_000_000);
         assert_eq!(
             r, 0,
-            "Should reject insufficient value for mint_complete_set"
+            "Should reject failed lUSD escrow for mint_complete_set"
         );
     }
 
@@ -5554,7 +5814,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_liquidity_insufficient_value() {
+    fn test_add_liquidity_rejects_failed_lusd_escrow() {
         setup();
         init_contract();
         let creator = [2u8; 32];
@@ -5562,9 +5822,27 @@ mod tests {
         activate_market(&creator, mid, 10_000_000);
 
         test_mock::set_caller(creator);
-        test_mock::set_value(4_999_999); // less than 5_000_000
+        test_mock::set_cross_call_response(Some(7u32.to_le_bytes().to_vec()));
         let r = add_liquidity(creator.as_ptr(), mid, 5_000_000);
-        assert_eq!(r, 0, "Should reject insufficient value for add_liquidity");
+        assert_eq!(r, 0, "Should reject failed lUSD escrow for add_liquidity");
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_rejects_failed_lusd_escrow() {
+        setup();
+        init_contract();
+        configure_escrow();
+
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_cross_call_response(Some(7u32.to_le_bytes().to_vec()));
+        let r = add_initial_liquidity(creator.as_ptr(), mid, 10_000_000, core::ptr::null(), 0);
+        assert_eq!(
+            r, 0,
+            "Should reject failed lUSD escrow for initial liquidity"
+        );
     }
 
     // ====================================================================

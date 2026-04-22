@@ -192,6 +192,12 @@ fn is_paused() -> bool {
 fn require_not_paused() -> bool {
     !is_paused()
 }
+
+fn rewards_pool_matches_self(self_addr: &[u8; 32]) -> bool {
+    let configured = load_addr(REWARDS_POOL_KEY);
+    is_zero(&configured) || configured == *self_addr
+}
+
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
@@ -265,8 +271,12 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Record a trade for reward calculation (called by dex_core)
-/// Returns: 0=success, 5=unauthorized caller
+/// Returns: 0=success, 5=unauthorized caller, 6=paused
 pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
+    if !require_not_paused() {
+        log_info("record_trade: paused");
+        return 6;
+    }
     if !is_authorized_caller() {
         log_info("record_trade: unauthorized caller");
         return 5;
@@ -357,7 +367,8 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
 /// Claim trading rewards — transfers LICN from contract's own balance to trader.
 /// The contract itself holds the reward tokens (self-custody pattern).
 /// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
-///          4=transfer failed, 5=lichencoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured,
+///          6=paused, 7=rewards pool misconfigured
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -372,6 +383,11 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if real_caller.0 != t {
         reentrancy_exit();
         return 200;
+    }
+
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 6;
     }
 
     let pending = load_u64(&trader_pending_key(&t));
@@ -390,6 +406,10 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
+    if !rewards_pool_matches_self(&self_addr.0) {
+        reentrancy_exit();
+        return 7;
+    }
     if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(t), pending) {
         reentrancy_exit();
         return 4;
@@ -410,7 +430,8 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
 
 /// Claim LP rewards for a position — transfers LICN from contract's own balance to provider.
 /// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
-///          4=transfer failed, 5=lichencoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured,
+///          6=paused, 7=rewards pool misconfigured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -425,6 +446,11 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if real_caller.0 != p {
         reentrancy_exit();
         return 200;
+    }
+
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 6;
     }
 
     let lp_k = lp_pending_key(position_id);
@@ -442,6 +468,10 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
+    if !rewards_pool_matches_self(&self_addr.0) {
+        reentrancy_exit();
+        return 7;
+    }
     if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(p), pending) {
         reentrancy_exit();
         return 4;
@@ -503,7 +533,8 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
 /// AUDIT-FIX G7-02: referral earnings were recorded in record_trade but had
 /// no claim path. This function completes the referral economy.
 /// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
-///          4=transfer failed, 5=lichencoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured,
+///          6=paused, 7=rewards pool misconfigured
 pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -520,6 +551,11 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
         return 200;
     }
 
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 6;
+    }
+
     let earnings = load_u64(&referrer_earnings_key(&r));
     if earnings == 0 {
         reentrancy_exit();
@@ -533,6 +569,10 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
+    if !rewards_pool_matches_self(&self_addr.0) {
+        reentrancy_exit();
+        return 7;
+    }
     if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(r), earnings) {
         reentrancy_exit();
         return 4;
@@ -567,8 +607,12 @@ pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u
 }
 
 /// Accrue LP rewards for a position (called by dex_amm)
-/// Returns: 0=success, 1=zero rate, 5=unauthorized caller
+/// Returns: 0=success, 1=zero rate, 5=unauthorized caller, 6=paused
 pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 {
+    if !require_not_paused() {
+        log_info("accrue_lp_rewards: paused");
+        return 6;
+    }
     if !is_authorized_caller() {
         log_info("accrue_lp_rewards: unauthorized caller");
         return 5;
@@ -672,7 +716,10 @@ pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     0
 }
 
-/// Set the rewards pool address that holds LICN tokens (admin only)
+/// Confirm the rewards pool custody address (admin only).
+/// The rewards contract uses self-custody, so the only valid pool address is
+/// the contract's own address. Legacy non-self values can be corrected by
+/// calling this function with the contract address.
 pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
@@ -691,7 +738,11 @@ pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
     if is_zero(&a) {
         return 2;
     }
-    if has_configured_address(REWARDS_POOL_KEY) {
+    let self_addr = get_contract_address().0;
+    if a != self_addr {
+        return 4;
+    }
+    if load_addr(REWARDS_POOL_KEY) == self_addr {
         return 3;
     }
     storage_set(REWARDS_POOL_KEY, &a);
@@ -940,7 +991,8 @@ pub extern "C" fn call() -> u32 {
         // 20: set_authorized_caller(caller[32], contract_addr[32], enabled[1])
         20 => {
             if args.len() >= 66 {
-                let r = set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr(), args[65]);
+                let r =
+                    set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr(), args[65]);
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
                 _rc = r as u32;
@@ -1238,18 +1290,22 @@ mod tests {
         let trader = [2u8; 32];
 
         test_mock::set_caller([0xFFu8; 32]);
-        record_trade(trader.as_ptr(), 5000, 5_000_000);
+        assert_eq!(record_trade(trader.as_ptr(), 5000, 5_000_000), 0);
 
         test_mock::set_caller(admin);
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
         assert!(is_paused());
 
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader.as_ptr(), 5000, 5_000_000), 6);
+
         test_mock::set_caller(trader);
-        assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 6);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 5000);
     }
 
     #[test]
-    fn test_claim_lp_rewards_still_work_when_paused() {
+    fn test_claim_lp_rewards_blocked_when_paused() {
         let admin = setup();
         let provider = [2u8; 32];
 
@@ -1262,12 +1318,16 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
 
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, 100_000, 1), 6);
+
         test_mock::set_caller(provider);
-        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 6);
+        assert!(load_u64(&lp_pending_key(1)) > 0);
     }
 
     #[test]
-    fn test_claim_referral_rewards_still_work_when_paused() {
+    fn test_claim_referral_rewards_blocked_when_paused() {
         let admin = setup();
         let trader = [2u8; 32];
         let referrer = [3u8; 32];
@@ -1283,7 +1343,8 @@ mod tests {
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
 
         test_mock::set_caller(referrer);
-        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 0);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 6);
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 1000);
     }
 
     #[test]
@@ -1380,7 +1441,7 @@ mod tests {
     #[test]
     fn test_set_rewards_pool() {
         let admin = setup();
-        let pool = [11u8; 32];
+        let pool = [0xAAu8; 32];
         test_mock::set_caller(admin);
         assert_eq!(set_rewards_pool(admin.as_ptr(), pool.as_ptr()), 0);
         assert_eq!(load_addr(REWARDS_POOL_KEY), pool);
@@ -1389,15 +1450,14 @@ mod tests {
     #[test]
     fn test_set_rewards_pool_rejects_reconfiguration() {
         let admin = setup();
-        let first_pool = [11u8; 32];
-        let second_pool = [12u8; 32];
+        let contract_self = [0xAAu8; 32];
 
         test_mock::set_caller(admin);
-        assert_eq!(set_rewards_pool(admin.as_ptr(), first_pool.as_ptr()), 0);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), contract_self.as_ptr()), 0);
 
         test_mock::set_caller(admin);
-        assert_eq!(set_rewards_pool(admin.as_ptr(), second_pool.as_ptr()), 3);
-        assert_eq!(load_addr(REWARDS_POOL_KEY), first_pool);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), contract_self.as_ptr()), 3);
+        assert_eq!(load_addr(REWARDS_POOL_KEY), contract_self);
     }
 
     #[test]
@@ -1409,12 +1469,33 @@ mod tests {
     }
 
     #[test]
+    fn test_set_rewards_pool_rejects_non_self_address() {
+        let admin = setup();
+        let pool = [11u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), pool.as_ptr()), 4);
+        assert!(is_zero(&load_addr(REWARDS_POOL_KEY)));
+    }
+
+    #[test]
     fn test_set_rewards_pool_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
-        let pool = [11u8; 32];
+        let pool = [0xAAu8; 32];
         test_mock::set_caller(rando);
         assert_eq!(set_rewards_pool(rando.as_ptr(), pool.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_rewards_pool_allows_legacy_migration_to_self() {
+        let admin = setup();
+        let legacy_pool = [0xBBu8; 32];
+        let contract_self = [0xAAu8; 32];
+        storage_set(REWARDS_POOL_KEY, &legacy_pool);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_pool(admin.as_ptr(), contract_self.as_ptr()), 0);
+        assert_eq!(load_addr(REWARDS_POOL_KEY), contract_self);
     }
 
     #[test]
@@ -1505,6 +1586,20 @@ mod tests {
         // separate pool address. In the real runtime, CCC sets caller to the
         // calling contract, so caller == from == 0xAA... is guaranteed.
         assert_eq!(get_contract_address().0, contract_self);
+    }
+
+    #[test]
+    fn test_claim_trading_rewards_rejects_misconfigured_rewards_pool() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        let legacy_pool = [0xBBu8; 32];
+
+        storage_set(REWARDS_POOL_KEY, &legacy_pool);
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+
+        test_mock::set_caller(trader);
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 7);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 5000);
     }
 
     #[test]
@@ -1628,24 +1723,21 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_grants_stored_as_rewards_pool() {
-        // Verify the REWARDS_POOL_KEY storage mechanism works.
-        // At genesis, set_rewards_pool is called with builder_grants pubkey.
+    fn test_rewards_pool_is_fixed_to_contract_self() {
+        // The rewards pool control now explicitly confirms self-custody.
         let admin = setup();
-        let builder_grants = [0xBB; 32];
+        let contract_self = [0xAAu8; 32];
 
-        // Simulate genesis setup: set rewards pool address (must be called by admin)
         test_mock::set_caller(admin);
-        let result = set_rewards_pool(admin.as_ptr(), builder_grants.as_ptr());
+        let result = set_rewards_pool(admin.as_ptr(), contract_self.as_ptr());
         assert_eq!(result, 0, "set_rewards_pool should succeed");
 
-        // Verify the pool address is stored
         let stored = storage_get(REWARDS_POOL_KEY).unwrap();
         assert_eq!(stored.len(), 32);
         assert_eq!(
             &stored[..],
-            &builder_grants[..],
-            "rewards pool must be builder_grants"
+            &contract_self[..],
+            "rewards pool must match contract self-custody"
         );
     }
 }

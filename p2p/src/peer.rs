@@ -179,7 +179,6 @@ pub struct PeerManager {
     endpoint: Endpoint,
 
     /// Local address
-    #[allow(dead_code)]
     local_addr: SocketAddr,
 
     /// Channel for incoming messages (bounded — T4.7)
@@ -1042,6 +1041,18 @@ impl PeerManager {
             .iter()
             .map(|entry| (*entry.key(), entry.value().score))
             .collect()
+    }
+
+    /// Return the authenticated node ID learned during the PQ transport
+    /// handshake for a connected peer.
+    pub fn peer_node_id(&self, peer_addr: &SocketAddr) -> Option<[u8; 32]> {
+        self.peers.get(peer_addr).and_then(|peer| {
+            if peer.node_id == [0u8; 32] {
+                None
+            } else {
+                Some(peer.node_id)
+            }
+        })
     }
 
     /// Record a peer violation (rate limit or invalid request)
@@ -2854,6 +2865,62 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0], "10.0.0.1:7001".parse::<SocketAddr>().unwrap());
         assert_eq!(targets[1], "10.0.0.2:7001".parse::<SocketAddr>().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_peer_node_id_returns_authenticated_identity() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-auth-node-id-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.0.9:7001".parse().unwrap();
+        let mut peer = PeerInfo::new(addr);
+        peer.node_id = [9u8; 32];
+        mgr.peers.insert(addr, peer);
+
+        assert_eq!(mgr.peer_node_id(&addr), Some([9u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn test_peer_node_id_ignores_unknown_identity() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-unknown-node-id-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr: SocketAddr = "10.0.0.10:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+
+        assert_eq!(mgr.peer_node_id(&addr), None);
     }
 
     #[tokio::test]

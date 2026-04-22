@@ -565,7 +565,7 @@ for net in "${NETWORKS[@]}"; do
     SIGNER_AUTH_TOKEN=""
     INCIDENT_STATUS_FILE=""
     SIGNED_METADATA_MANIFEST_FILE=""
-    SIGNED_METADATA_KEYPAIR_FILE=""
+    SIGNED_METADATA_KEYPAIR_HINT="$SECRETS_DIR/release-signing-keypair-${net}.json"
     SERVICE_FLEET_CONFIG_FILE=""
     SERVICE_FLEET_UPSTREAM_RPC_URL=""
     SERVICE_FLEET_STATUS_FILE=""
@@ -575,7 +575,6 @@ for net in "${NETWORKS[@]}"; do
         SIGNER_AUTH_TOKEN="$(read_env_value "$ENV_FILE" "LICHEN_SIGNER_AUTH_TOKEN")"
         INCIDENT_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_INCIDENT_STATUS_FILE")"
         SIGNED_METADATA_MANIFEST_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SIGNED_METADATA_MANIFEST_FILE")"
-        SIGNED_METADATA_KEYPAIR_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SIGNED_METADATA_KEYPAIR_FILE")"
         SERVICE_FLEET_CONFIG_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_CONFIG_FILE")"
         SERVICE_FLEET_UPSTREAM_RPC_URL="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL")"
         SERVICE_FLEET_STATUS_FILE="$(read_env_value "$ENV_FILE" "LICHEN_SERVICE_FLEET_STATUS_FILE")"
@@ -589,9 +588,6 @@ for net in "${NETWORKS[@]}"; do
     fi
     if [ -z "$SIGNED_METADATA_MANIFEST_FILE" ]; then
         SIGNED_METADATA_MANIFEST_FILE="$CONFIG_DIR/signed-metadata-manifest-${net}.json"
-    fi
-    if [ -z "$SIGNED_METADATA_KEYPAIR_FILE" ]; then
-        SIGNED_METADATA_KEYPAIR_FILE="$SECRETS_DIR/release-signing-keypair-${net}.json"
     fi
     if [ -z "$SERVICE_FLEET_CONFIG_FILE" ]; then
         SERVICE_FLEET_CONFIG_FILE="$CONFIG_DIR/service-fleet-${net}.json"
@@ -625,7 +621,6 @@ LICHEN_CONTRACTS_DIR=$DATA_DIR/contracts
 RUST_LOG=info
 LICHEN_INCIDENT_STATUS_FILE=$INCIDENT_STATUS_FILE
 LICHEN_SIGNED_METADATA_MANIFEST_FILE=$SIGNED_METADATA_MANIFEST_FILE
-LICHEN_SIGNED_METADATA_KEYPAIR_FILE=$SIGNED_METADATA_KEYPAIR_FILE
 LICHEN_SERVICE_FLEET_CONFIG_FILE=$SERVICE_FLEET_CONFIG_FILE
 LICHEN_SERVICE_FLEET_UPSTREAM_RPC_URL=$SERVICE_FLEET_UPSTREAM_RPC_URL
 LICHEN_SERVICE_FLEET_STATUS_FILE=$SERVICE_FLEET_STATUS_FILE
@@ -659,7 +654,8 @@ EOF
 
     chmod 600 "$ENV_FILE"
     echo "   ✅ Created $ENV_FILE"
-    echo "   ⚠  Provision offline release signing key → $SIGNED_METADATA_KEYPAIR_FILE before first-boot deploy"
+    echo "   ⚠  Runtime env no longer stores the release-signing key"
+    echo "      Use SIGNED_METADATA_KEYPAIR=$SIGNED_METADATA_KEYPAIR_HINT only when running first-boot deploy"
 
     write_incident_status_template "$INCIDENT_STATUS_FILE" "$net"
     write_service_fleet_config_template "$SERVICE_FLEET_CONFIG_FILE" "$net"
@@ -871,14 +867,14 @@ echo ""
 echo "   6. Install post-genesis key material from the live state:"
 echo "      cd ~/lichen && bash scripts/vps-post-genesis.sh <net>"
 echo ""
-echo "   7. Provision the offline release-signing key on the validator host:"
-echo "      sudo install -m 640 -o root -g lichen /secure/offline-mounted/release-signing-keypair-<net>.json $SECRETS_DIR/release-signing-keypair-<net>.json"
+echo "   7. Temporarily mount or stage the offline release-signing key only for bootstrap:"
+echo "      Example path: /secure/offline-mounted/release-signing-keypair-<net>.json"
 echo ""
 echo "   8. Run post-genesis bootstrap from the repo checkout (auto-bootstraps Python deps if needed):"
-echo "      cd ~/lichen && DEPLOY_NETWORK=<net> ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:<rpc-port> --skip-build"
+echo "      cd ~/lichen && SIGNED_METADATA_KEYPAIR=/secure/offline-mounted/release-signing-keypair-<net>.json DEPLOY_NETWORK=<net> ./scripts/first-boot-deploy.sh --rpc http://127.0.0.1:<rpc-port> --skip-build"
 echo "      testnet rpc-port=8899, mainnet rpc-port=9899"
 echo ""
-echo "   9. If signed metadata was generated into the repo checkout, install it into /etc/lichen:"
+echo "   9. If signed metadata was generated into the repo checkout, install it into /etc/lichen, then unmount/remove the staged signing key:"
 echo "      sudo install -m 640 -o root -g lichen ~/lichen/signed-metadata-manifest-<net>.json /etc/lichen/signed-metadata-manifest-<net>.json"
 echo ""
 echo "   10. Start custody and faucet after post-genesis key setup + first-boot deploy complete:"
