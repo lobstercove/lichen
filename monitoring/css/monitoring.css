@@ -1285,7 +1285,7 @@ body {
 
 .attack-log-header {
     display: grid;
-    grid-template-columns: 90px 80px 140px 130px 100px 1fr 80px;
+    grid-template-columns: 90px 80px 140px 130px 100px 1fr;
     padding: 0.5rem 0.75rem;
     font-size: 0.7rem;
     font-weight: 700;
@@ -1304,7 +1304,7 @@ body {
 
 .attack-row {
     display: grid;
-    grid-template-columns: 90px 80px 140px 130px 100px 1fr 80px;
+    grid-template-columns: 90px 80px 140px 130px 100px 1fr;
     padding: 0.5rem 0.75rem;
     font-size: 0.78rem;
     border-bottom: 1px solid var(--border);

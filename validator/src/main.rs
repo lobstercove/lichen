@@ -399,6 +399,9 @@ impl TokenBucket {
     }
 }
 
+type SnapshotExportCursorKey = (std::net::SocketAddr, String, u64);
+type SnapshotExportCursorState = (u64, Option<Vec<u8>>);
+
 #[derive(Debug, Deserialize)]
 struct SeedsFile {
     testnet: Option<SeedNetwork>,
@@ -2312,6 +2315,15 @@ impl SnapshotSync {
     }
 }
 
+const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
+    "accounts",
+    "contract_storage",
+    "programs",
+    "validator_set",
+    "stake_pool",
+    "mossstake_pool",
+];
+
 fn block_vote_weight(
     slot: u64,
     block_hash: &Hash,
@@ -3949,29 +3961,58 @@ fn latest_verified_checkpoint(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
-    let (meta, path) = StateStore::latest_checkpoint(data_dir)?;
     let finalized_slot = state.get_last_finalized_slot().ok()?;
-    if meta.slot == 0 || meta.slot > finalized_slot {
-        return None;
+    let checkpoints = StateStore::list_checkpoints(data_dir);
+
+    for (_, path) in checkpoints.into_iter().rev() {
+        let meta_path = std::path::Path::new(&path).join("checkpoint_meta.json");
+        let Ok(data) = std::fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<lichen_core::CheckpointMeta>(&data) else {
+            continue;
+        };
+
+        if meta.slot == 0 || meta.slot > finalized_slot {
+            continue;
+        }
+
+        let Some(block) = state.get_block_by_slot(meta.slot).ok().flatten() else {
+            continue;
+        };
+        let checkpoint_store = match StateStore::open_checkpoint(&path) {
+            Ok(store) => store,
+            Err(err) => {
+                warn!(
+                    "⚠️  Rejecting checkpoint at slot {}: failed to open checkpoint store: {}",
+                    meta.slot, err
+                );
+                continue;
+            }
+        };
+        let checkpoint_root = checkpoint_store.compute_state_root_cached();
+        if checkpoint_root.0 != meta.state_root {
+            let rebuilt_root = checkpoint_store.compute_state_root_cold_start();
+            if rebuilt_root.0 != meta.state_root {
+                warn!(
+                    "⚠️  Rejecting checkpoint at slot {}: metadata root does not match checkpoint contents",
+                    meta.slot
+                );
+                continue;
+            }
+        }
+        if let Err(err) = verify_committed_block_authenticity(&block, validator_set, stake_pool) {
+            warn!(
+                "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
+                meta.slot, err
+            );
+            continue;
+        }
+
+        return Some((meta, path, block));
     }
 
-    let block = state.get_block_by_slot(meta.slot).ok().flatten()?;
-    if block.header.state_root.0 != meta.state_root {
-        warn!(
-            "⚠️  Rejecting checkpoint at slot {}: state root does not match committed block",
-            meta.slot
-        );
-        return None;
-    }
-    if let Err(err) = verify_committed_block_authenticity(&block, validator_set, stake_pool) {
-        warn!(
-            "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
-            meta.slot, err
-        );
-        return None;
-    }
-
-    Some((meta, path, block))
+    None
 }
 
 fn verify_committed_block_authenticity(
@@ -3995,22 +4036,22 @@ fn verify_committed_block_authenticity(
 
 fn verify_checkpoint_anchor(
     slot: u64,
-    state_root: [u8; 32],
+    _state_root: [u8; 32],
     checkpoint_header: Option<&lichen_core::BlockHeader>,
     commit_round: u32,
     commit_signatures: &[lichen_core::CommitSignature],
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), String> {
+    // The signed committed header authenticates the finalized slot. The
+    // checkpoint state_root itself is corroborated independently across peers
+    // and then verified against the downloaded checkpoint contents.
     let header = checkpoint_header.ok_or_else(|| "missing checkpoint header".to_string())?;
     if header.slot != slot {
         return Err(format!(
             "checkpoint header slot mismatch: expected {}, got {}",
             slot, header.slot
         ));
-    }
-    if header.state_root.0 != state_root {
-        return Err("checkpoint header state root mismatch".to_string());
     }
 
     let block = Block {
@@ -4114,7 +4155,7 @@ fn should_add_announced_validator_as_pending(
 }
 
 fn checkpoint_anchor_support(
-    anchors: &HashMap<SocketAddr, (u64, [u8; 32])>,
+    anchors: &HashMap<Pubkey, (u64, [u8; 32])>,
     slot: u64,
     state_root: [u8; 32],
 ) -> usize {
@@ -7000,7 +7041,8 @@ async fn run_validator() {
                     _ = sync_check_interval.tick() => {
                         let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
                         if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
-                            let gap = end.saturating_sub(current_slot);
+                            let highest_seen = sync_mgr.get_highest_seen().await;
+                            let gap = highest_seen.saturating_sub(current_slot);
                             if gap > sync::WARP_SYNC_THRESHOLD {
                                 sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                             } else {
@@ -7008,6 +7050,29 @@ async fn run_validator() {
                             }
                             info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
                             sync_mgr.start_sync(start, end).await;
+                            let current_mode = sync_mgr.get_sync_mode().await;
+                            if current_mode == sync::SyncMode::Warp {
+                                info!(
+                                    "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                    gap
+                                );
+                                let peer_infos = peer_mgr_for_sync.get_peer_infos();
+                                for (peer_addr, _) in peer_infos.iter().take(3) {
+                                    let meta_request = P2PMessage::new(
+                                        MessageType::CheckpointMetaRequest,
+                                        local_addr,
+                                    );
+                                    if let Err(e) = peer_mgr_for_sync
+                                        .send_to_peer(peer_addr, meta_request)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "checkpoint meta request to peer failed: {e}"
+                                        );
+                                    }
+                                }
+                                continue;
+                            }
                             let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
                             peer_infos.sort_by(|a, b| {
                                 b.1.cmp(&a.1)
@@ -7074,6 +7139,7 @@ async fn run_validator() {
                                             "🔄 Periodic sync progress: {} → {} (target {})",
                                             sync_start_slot, current, sync_end
                                         );
+                                        return;
                                     }
                                 } else {
                                     sync_mgr_complete.record_sync_failure().await;
@@ -8300,7 +8366,10 @@ async fn run_validator() {
                     };
 
                     {
-                        let gap = end.saturating_sub(post_genesis_slot);
+                        let highest_seen = sync_mgr.get_highest_seen().await;
+                        let gap = highest_seen
+                            .saturating_sub(post_genesis_slot)
+                            .max(end.saturating_sub(post_genesis_slot));
                         if gap > sync::WARP_SYNC_THRESHOLD {
                             sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                         } else {
@@ -8308,6 +8377,28 @@ async fn run_validator() {
                         }
                         info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
                         sync_mgr.start_sync(start, end).await;
+                        let current_mode = sync_mgr.get_sync_mode().await;
+                        if current_mode == sync::SyncMode::Warp {
+                            info!(
+                                "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                gap
+                            );
+                            let peer_infos = peer_mgr_for_sync.get_peer_infos();
+                            for (peer_addr, _) in peer_infos.iter().take(3) {
+                                let meta_request =
+                                    P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
+                                if let Err(e) = peer_mgr_for_sync
+                                    .send_to_peer(peer_addr, meta_request)
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️  Failed checkpoint meta request to {}: {}",
+                                        peer_addr, e
+                                    );
+                                }
+                            }
+                            continue;
+                        }
 
                         let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
                         peer_infos.sort_by(|a, b| {
@@ -8365,11 +8456,19 @@ async fn run_validator() {
                         let sync_mgr_complete = sync_mgr.clone();
                         let state_for_sync_check = state_for_blocks.clone();
                         let sync_start_slot = post_genesis_slot;
+                        let sync_end = end;
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
                             if current > sync_start_slot {
                                 sync_mgr_complete.record_sync_success().await;
+                                if current < sync_end {
+                                    info!(
+                                        "🔄 Post-genesis sync progress: {} → {} (target {})",
+                                        sync_start_slot, current, sync_end
+                                    );
+                                    return;
+                                }
                             } else {
                                 sync_mgr_complete.record_sync_failure().await;
                             }
@@ -8885,7 +8984,10 @@ async fn run_validator() {
                         // If enormously far behind (> warp threshold), use warp sync
                         // to download state snapshot instead of replaying blocks.
                         // If moderately far behind, use header-only. Otherwise, full.
-                        let gap = end.saturating_sub(current_slot);
+                        let highest_seen = sync_mgr.get_highest_seen().await;
+                        let gap = highest_seen
+                            .saturating_sub(current_slot)
+                            .max(end.saturating_sub(current_slot));
                         if gap > sync::WARP_SYNC_THRESHOLD {
                             sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
                         } else {
@@ -9032,6 +9134,7 @@ async fn run_validator() {
                                         "🔄 Sync progress: {} → {} (target {}), continuing",
                                         sync_start_slot, current, sync_end
                                     );
+                                    return;
                                 }
                             } else {
                                 // Zero progress — something is wrong, backoff
@@ -10207,14 +10310,13 @@ async fn run_validator() {
         tokio::spawn(async move {
             info!("🔄 Snapshot request handler started");
             let mut snapshot_tokens: HashMap<std::net::SocketAddr, TokenBucket> = HashMap::new();
-            #[allow(clippy::type_complexity)]
             let mut snapshot_export_cursors: std::collections::HashMap<
-                (std::net::SocketAddr, String, u64),
-                (u64, Option<Vec<u8>>, u64),
+                SnapshotExportCursorKey,
+                SnapshotExportCursorState,
             > = std::collections::HashMap::new();
             // AUDIT-FIX M1: Track cursor last-access time for TTL eviction
             let mut cursor_last_access: std::collections::HashMap<
-                (std::net::SocketAddr, String, u64),
+                SnapshotExportCursorKey,
                 std::time::Instant,
             > = std::collections::HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
@@ -10339,6 +10441,65 @@ async fn run_validator() {
                     };
 
                     if let Some((store, meta)) = checkpoint_store {
+                        let singleton_chunk = match category.as_str() {
+                            "validator_set" if chunk_index == 0 => {
+                                let set = store.load_validator_set().unwrap_or_default();
+                                Some(vec![(
+                                    b"validator_set".to_vec(),
+                                    bincode::serialize(&set).unwrap_or_default(),
+                                )])
+                            }
+                            "stake_pool" if chunk_index == 0 => {
+                                let pool =
+                                    store.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+                                Some(vec![(
+                                    b"stake_pool".to_vec(),
+                                    bincode::serialize(&pool).unwrap_or_default(),
+                                )])
+                            }
+                            "mossstake_pool" if chunk_index == 0 => {
+                                let pool = store
+                                    .get_mossstake_pool()
+                                    .unwrap_or_else(|_| lichen_core::MossStakePool::new());
+                                Some(vec![(
+                                    b"mossstake_pool".to_vec(),
+                                    bincode::serialize(&pool).unwrap_or_default(),
+                                )])
+                            }
+                            "validator_set" | "stake_pool" | "mossstake_pool" => Some(Vec::new()),
+                            _ => None,
+                        };
+
+                        if let Some(chunk) = singleton_chunk {
+                            let entries_bytes = bincode::serialize(&chunk).unwrap_or_default();
+                            let msg = P2PMessage::new(
+                                MessageType::StateSnapshotResponse {
+                                    category: category.clone(),
+                                    chunk_index,
+                                    total_chunks: 1,
+                                    snapshot_slot: meta.slot,
+                                    state_root: meta.state_root,
+                                    entries: entries_bytes,
+                                },
+                                local_addr_for_snapshot,
+                            );
+                            if let Err(e) = peer_mgr_for_snapshot
+                                .send_to_peer(&request.requester, msg)
+                                .await
+                            {
+                                warn!("⚠️  Failed to send state snapshot chunk: {}", e);
+                            } else {
+                                info!(
+                                    "📤 Sent {} snapshot chunk {}/{} to {}",
+                                    category,
+                                    chunk_index + 1,
+                                    1,
+                                    request.requester
+                                );
+                            }
+                            continue;
+                        }
+
                         // RPC-M06 FIX: Use cursor-paginated export so serving
                         // chunk N no longer rescans O(N*chunk_size) from start.
                         let chunk_sz = chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
@@ -10348,24 +10509,11 @@ async fn run_validator() {
                             snapshot_export_cursors.remove(&cache_key);
                         }
 
-                        let total_entries = match category.as_str() {
-                            "accounts" => meta.total_accounts,
-                            "contract_storage" => {
-                                store.count_contract_storage_entries().unwrap_or(0)
-                            }
-                            "programs" => store.get_program_count(),
-                            _ => 0,
-                        };
-                        let total_chunks = total_entries.div_ceil(chunk_sz).max(1);
-
-                        let entry = snapshot_export_cursors.entry(cache_key.clone()).or_insert((
-                            0,
-                            None,
-                            total_chunks,
-                        ));
+                        let entry = snapshot_export_cursors
+                            .entry(cache_key.clone())
+                            .or_insert((0, None));
                         // AUDIT-FIX M1: Track cursor access time
                         cursor_last_access.insert(cache_key.clone(), std::time::Instant::now());
-                        entry.2 = total_chunks;
 
                         if chunk_index != entry.0 {
                             // Rebuild cursor position for out-of-order requests.
@@ -10373,14 +10521,19 @@ async fn run_validator() {
                             let mut replay_index = 0u64;
                             while replay_index < chunk_index {
                                 let replay_page = match category.as_str() {
-                                    "accounts" => store
-                                        .export_accounts_cursor(replay_cursor.as_deref(), chunk_sz),
-                                    "contract_storage" => store.export_contract_storage_cursor(
+                                    "accounts" => store.export_accounts_cursor_untracked(
                                         replay_cursor.as_deref(),
                                         chunk_sz,
                                     ),
-                                    "programs" => store
-                                        .export_programs_cursor(replay_cursor.as_deref(), chunk_sz),
+                                    "contract_storage" => store
+                                        .export_contract_storage_cursor_untracked(
+                                            replay_cursor.as_deref(),
+                                            chunk_sz,
+                                        ),
+                                    "programs" => store.export_programs_cursor_untracked(
+                                        replay_cursor.as_deref(),
+                                        chunk_sz,
+                                    ),
                                     _ => Ok(lichen_core::state::KvPage {
                                         entries: Vec::new(),
                                         total: 0,
@@ -10407,13 +10560,14 @@ async fn run_validator() {
 
                         let page = match category.as_str() {
                             "accounts" => {
-                                store.export_accounts_cursor(entry.1.as_deref(), chunk_sz)
+                                store.export_accounts_cursor_untracked(entry.1.as_deref(), chunk_sz)
                             }
-                            "contract_storage" => {
-                                store.export_contract_storage_cursor(entry.1.as_deref(), chunk_sz)
-                            }
+                            "contract_storage" => store.export_contract_storage_cursor_untracked(
+                                entry.1.as_deref(),
+                                chunk_sz,
+                            ),
                             "programs" => {
-                                store.export_programs_cursor(entry.1.as_deref(), chunk_sz)
+                                store.export_programs_cursor_untracked(entry.1.as_deref(), chunk_sz)
                             }
                             _ => Ok(lichen_core::state::KvPage {
                                 entries: Vec::new(),
@@ -10431,6 +10585,11 @@ async fn run_validator() {
 
                         entry.0 = chunk_index.saturating_add(1);
                         entry.1 = page.next_cursor.clone();
+                        let total_chunks = if page.has_more {
+                            chunk_index.saturating_add(2)
+                        } else {
+                            chunk_index.saturating_add(1)
+                        };
                         if !page.has_more {
                             snapshot_export_cursors.remove(&cache_key);
                         }
@@ -10560,7 +10719,7 @@ async fn run_validator() {
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
                 std::collections::HashMap::new(); // category -> (received_chunks, total_chunks)
             let mut verified_checkpoint_anchors: std::collections::HashMap<
-                std::net::SocketAddr,
+                Pubkey,
                 (u64, [u8; 32]),
             > = std::collections::HashMap::new();
             let mut active_snapshot_anchor: Option<(u64, [u8; 32])> = None;
@@ -10585,18 +10744,37 @@ async fn run_validator() {
                 )) = response.checkpoint_meta
                 {
                     if slot > 0 && total_accounts > 0 {
+                        let Some(anchor_validator) =
+                            peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
+                        else {
+                            warn!(
+                                "⚠️  Ignoring checkpoint metadata from {} without a verified validator identity",
+                                response.requester
+                            );
+                            continue;
+                        };
                         let anchor_verified = {
                             let vs = validator_set_for_snapshot_apply.read().await;
-                            let pool = stake_pool_for_snapshot_apply.read().await;
-                            verify_checkpoint_anchor(
-                                slot,
-                                state_root,
-                                checkpoint_header.as_ref(),
-                                commit_round,
-                                &commit_signatures,
-                                &vs,
-                                &pool,
-                            )
+                            if vs
+                                .get_validator(&anchor_validator)
+                                .is_none_or(|validator| validator.pending_activation)
+                            {
+                                Err(format!(
+                                    "peer validator {} is not in the active validator set",
+                                    anchor_validator.to_base58()
+                                ))
+                            } else {
+                                let pool = stake_pool_for_snapshot_apply.read().await;
+                                verify_checkpoint_anchor(
+                                    slot,
+                                    state_root,
+                                    checkpoint_header.as_ref(),
+                                    commit_round,
+                                    &commit_signatures,
+                                    &vs,
+                                    &pool,
+                                )
+                            }
                         };
                         if let Err(err) = anchor_verified {
                             warn!(
@@ -10606,14 +10784,15 @@ async fn run_validator() {
                             peer_mgr_for_snapshot_apply.record_violation(&response.requester);
                             continue;
                         }
-                        verified_checkpoint_anchors.insert(response.requester, (slot, state_root));
+                        verified_checkpoint_anchors.insert(anchor_validator, (slot, state_root));
                         let support = checkpoint_anchor_support(
                             &verified_checkpoint_anchors,
                             slot,
                             state_root,
                         );
                         info!(
-                            "📋 Peer {} has checkpoint at slot {} ({} accounts, {} corroboration{})",
+                            "📋 Validator {} via peer {} has checkpoint at slot {} ({} accounts, {} corroboration{})",
+                            anchor_validator.to_base58(),
                             response.requester,
                             slot,
                             total_accounts,
@@ -10656,9 +10835,11 @@ async fn run_validator() {
                                 slot
                             );
 
-                            // P3-1: Send StateSnapshotRequest for each category
+                            // P3-1: Send StateSnapshotRequest for each checkpoint-aligned
+                            // state component so warp verification uses one
+                            // coherent checkpoint snapshot.
                             let chunk_size = 1000u64;
-                            for category in &["accounts", "contract_storage", "programs"] {
+                            for category in WARP_SNAPSHOT_CATEGORIES {
                                 let snap_request = P2PMessage::new(
                                     MessageType::StateSnapshotRequest {
                                         category: category.to_string(),
@@ -10679,7 +10860,11 @@ async fn run_validator() {
                             }
                         }
                     } else {
-                        verified_checkpoint_anchors.remove(&response.requester);
+                        if let Some(anchor_validator) =
+                            peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
+                        {
+                            verified_checkpoint_anchors.remove(&anchor_validator);
+                        }
                         warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // Warp sync is impossible without a checkpoint.  Complete the
                         // current sync batch and switch to Full so the next
@@ -10715,7 +10900,16 @@ async fn run_validator() {
                     ref entries_bytes,
                 )) = response.state_snapshot_data
                 {
-                    match verified_checkpoint_anchors.get(&response.requester) {
+                    let Some(anchor_validator) =
+                        peer_mgr_for_snapshot_apply.peer_validator_pubkey(&response.requester)
+                    else {
+                        warn!(
+                            "⚠️  Rejecting {} snapshot chunk from {} without a verified validator identity",
+                            category, response.requester
+                        );
+                        continue;
+                    };
+                    match verified_checkpoint_anchors.get(&anchor_validator) {
                         Some((expected_slot, expected_root))
                             if *expected_slot == snapshot_slot && *expected_root == state_root => {}
                         Some((expected_slot, expected_root)) => {
@@ -10801,28 +10995,21 @@ async fn run_validator() {
                         }
                     }
 
-                    // Check if all categories are complete
-                    let accounts_done = state_snap_progress
-                        .get("accounts")
-                        .map(|(r, t)| r >= t)
-                        .unwrap_or(false);
-                    let storage_done = state_snap_progress
-                        .get("contract_storage")
-                        .map(|(r, t)| r >= t)
-                        .unwrap_or(false);
-                    let programs_done = state_snap_progress
-                        .get("programs")
-                        .map(|(r, t)| r >= t)
-                        .unwrap_or(false);
+                    let all_categories_done =
+                        WARP_SNAPSHOT_CATEGORIES.iter().all(|category_name| {
+                            state_snap_progress
+                                .get(*category_name)
+                                .map(|(r, t)| r >= t)
+                                .unwrap_or(false)
+                        });
 
-                    if accounts_done && storage_done && programs_done {
+                    if all_categories_done {
                         info!("✅ All snapshot categories received — verifying on staging DB");
 
                         // ── Staged Verification ─────────────────────────────
                         // Open a throw-away StateStore, import the buffered
-                        // entries there, copy the singleton pools from the live
-                        // DB, and verify the state root.  Only if it matches do
-                        // we commit entries to the live DB.
+                        // entries there, verify the checkpoint-aligned state
+                        // root, and only then commit to the live DB.
                         let staging_dir = format!(
                             "{}/staging-snapshot-{}",
                             data_dir_for_snapshot_apply, snapshot_slot
@@ -10845,25 +11032,54 @@ async fn run_validator() {
                                         staging_state.import_contract_storage(entries)
                                     }
                                     "programs" => staging_state.import_programs(entries),
+                                    "validator_set" => {
+                                        let Some((_, data)) = entries.first() else {
+                                            break 'staging false;
+                                        };
+                                        match bincode::deserialize::<ValidatorSet>(data) {
+                                            Ok(set) => staging_state
+                                                .save_validator_set(&set)
+                                                .map(|_| set.validators().len()),
+                                            Err(e) => Err(format!(
+                                                "Failed to deserialize validator_set snapshot: {}",
+                                                e
+                                            )),
+                                        }
+                                    }
+                                    "stake_pool" => {
+                                        let Some((_, data)) = entries.first() else {
+                                            break 'staging false;
+                                        };
+                                        match bincode::deserialize::<StakePool>(data) {
+                                            Ok(pool) => staging_state
+                                                .put_stake_pool(&pool)
+                                                .map(|_| pool.stake_entries().len()),
+                                            Err(e) => Err(format!(
+                                                "Failed to deserialize stake_pool snapshot: {}",
+                                                e
+                                            )),
+                                        }
+                                    }
+                                    "mossstake_pool" => {
+                                        let Some((_, data)) = entries.first() else {
+                                            break 'staging false;
+                                        };
+                                        match bincode::deserialize::<lichen_core::MossStakePool>(
+                                            data,
+                                        ) {
+                                            Ok(pool) => {
+                                                staging_state.put_mossstake_pool(&pool).map(|_| 1)
+                                            }
+                                            Err(e) => Err(format!(
+                                                "Failed to deserialize mossstake_pool snapshot: {}",
+                                                e
+                                            )),
+                                        }
+                                    }
                                     _ => Ok(0),
                                 };
                                 if let Err(e) = res {
                                     warn!("⚠️  Staging import of {} failed: {}", cat, e);
-                                    break 'staging false;
-                                }
-                            }
-
-                            // Copy singleton pools from live DB so the full
-                            // state root (accounts + contracts + stake + mossstake) matches.
-                            if let Ok(pool) = state_for_snapshot_apply.get_stake_pool() {
-                                if let Err(e) = staging_state.put_stake_pool(&pool) {
-                                    warn!("⚠️  Staging stake pool copy failed: {}", e);
-                                    break 'staging false;
-                                }
-                            }
-                            if let Ok(pool) = state_for_snapshot_apply.get_mossstake_pool() {
-                                if let Err(e) = staging_state.put_mossstake_pool(&pool) {
-                                    warn!("⚠️  Staging mossstake pool copy failed: {}", e);
                                     break 'staging false;
                                 }
                             }
@@ -10907,6 +11123,77 @@ async fn run_validator() {
                                     state_for_snapshot_apply.import_contract_storage(&entries)
                                 }
                                 "programs" => state_for_snapshot_apply.import_programs(&entries),
+                                "validator_set" => {
+                                    let Some((_, data)) = entries.first() else {
+                                        warn!("⚠️  Missing validator_set snapshot payload");
+                                        continue;
+                                    };
+                                    match bincode::deserialize::<ValidatorSet>(data) {
+                                        Ok(set) => {
+                                            let count = set.validators().len();
+                                            let res = state_for_snapshot_apply
+                                                .save_validator_set(&set)
+                                                .map(|_| count);
+                                            if res.is_ok() {
+                                                let mut vs =
+                                                    validator_set_for_snapshot_apply.write().await;
+                                                *vs = set.clone();
+                                                drop(vs);
+                                                snapshot_sync_for_apply
+                                                    .lock()
+                                                    .await
+                                                    .validator_set = !set.validators().is_empty();
+                                            }
+                                            res
+                                        }
+                                        Err(e) => Err(format!(
+                                            "Failed to deserialize validator_set snapshot: {}",
+                                            e
+                                        )),
+                                    }
+                                }
+                                "stake_pool" => {
+                                    let Some((_, data)) = entries.first() else {
+                                        warn!("⚠️  Missing stake_pool snapshot payload");
+                                        continue;
+                                    };
+                                    match bincode::deserialize::<StakePool>(data) {
+                                        Ok(pool) => {
+                                            let count = pool.stake_entries().len();
+                                            let res = state_for_snapshot_apply
+                                                .put_stake_pool(&pool)
+                                                .map(|_| count);
+                                            if res.is_ok() {
+                                                let mut live_pool =
+                                                    stake_pool_for_snapshot_apply.write().await;
+                                                *live_pool = pool.clone();
+                                                drop(live_pool);
+                                                snapshot_sync_for_apply.lock().await.stake_pool =
+                                                    !pool.stake_entries().is_empty();
+                                            }
+                                            res
+                                        }
+                                        Err(e) => Err(format!(
+                                            "Failed to deserialize stake_pool snapshot: {}",
+                                            e
+                                        )),
+                                    }
+                                }
+                                "mossstake_pool" => {
+                                    let Some((_, data)) = entries.first() else {
+                                        warn!("⚠️  Missing mossstake_pool snapshot payload");
+                                        continue;
+                                    };
+                                    match bincode::deserialize::<lichen_core::MossStakePool>(data) {
+                                        Ok(pool) => state_for_snapshot_apply
+                                            .put_mossstake_pool(&pool)
+                                            .map(|_| 1),
+                                        Err(e) => Err(format!(
+                                            "Failed to deserialize mossstake_pool snapshot: {}",
+                                            e
+                                        )),
+                                    }
+                                }
                                 _ => Ok(0),
                             };
                             match res {
@@ -10927,6 +11214,17 @@ async fn run_validator() {
                                 snapshot_slot, e
                             );
                         }
+                        {
+                            let pool = stake_pool_for_snapshot_apply.read().await.clone();
+                            activate_pending_validators_for_height(
+                                &state_for_snapshot_apply,
+                                &validator_set_for_snapshot_apply,
+                                &pool,
+                                snapshot_slot,
+                                min_validator_stake,
+                            )
+                            .await;
+                        }
                         // Create a local checkpoint from the imported state
                         let checkpoint_path = format!(
                             "{}/checkpoints/slot-{}",
@@ -10944,7 +11242,6 @@ async fn run_validator() {
                         active_snapshot_anchor = None;
                         state_snap_progress.clear();
                         verified_checkpoint_anchors.clear();
-                        verified_checkpoint_anchors.remove(&response.requester);
                     }
 
                     continue;
@@ -14452,6 +14749,180 @@ mod tests {
     }
 
     #[test]
+    fn latest_verified_checkpoint_accepts_post_effects_checkpoint_root() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let committed_state_root = state.compute_state_root();
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            committed_state_root,
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
+        block.commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        state.put_block(&block).expect("put block");
+        state
+            .put_stake_pool(&stake_pool)
+            .expect("put post-effects stake pool");
+
+        let checkpoint_path = temp_dir.path().join("checkpoints/slot-1");
+        std::fs::create_dir_all(
+            checkpoint_path
+                .parent()
+                .expect("checkpoint parent directory exists"),
+        )
+        .expect("create checkpoints dir");
+        let meta = state
+            .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
+            .expect("create checkpoint");
+        state
+            .set_last_finalized_slot(1)
+            .expect("set finalized slot");
+
+        assert_ne!(meta.state_root, block.header.state_root.0);
+
+        let (verified_meta, _, verified_block) = latest_verified_checkpoint(
+            temp_dir.path().to_str().expect("data dir"),
+            &state,
+            &validator_set,
+            &stake_pool,
+        )
+        .expect("post-effects checkpoint should still verify");
+
+        assert_eq!(verified_meta.slot, 1);
+        assert_eq!(verified_meta.state_root, meta.state_root);
+        assert_eq!(verified_block.header.state_root, block.header.state_root);
+    }
+
+    #[test]
+    fn latest_verified_checkpoint_falls_back_to_older_valid_checkpoint() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        for slot in 1..=2 {
+            let committed_state_root = state.compute_state_root();
+            let mut block = Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                committed_state_root,
+                validator_pk.0,
+                Vec::new(),
+                1_000 + slot,
+            );
+            block.sign(&validator_kp);
+            block.commit_round = 0;
+
+            let block_hash = block.hash();
+            let signable = Precommit::signable_bytes(slot, 0, &Some(block_hash), 1_000 + slot);
+            block.commit_signatures = vec![lichen_core::CommitSignature {
+                validator: validator_pk.0,
+                signature: validator_kp.sign(&signable),
+                timestamp: 1_000 + slot,
+            }];
+
+            state.put_block(&block).expect("put block");
+
+            let checkpoint_path = temp_dir.path().join(format!("checkpoints/slot-{slot}"));
+            std::fs::create_dir_all(
+                checkpoint_path
+                    .parent()
+                    .expect("checkpoint parent directory exists"),
+            )
+            .expect("create checkpoints dir");
+            state
+                .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), slot)
+                .expect("create checkpoint");
+        }
+
+        state
+            .set_last_finalized_slot(2)
+            .expect("set finalized slot");
+
+        let latest_meta_path = temp_dir
+            .path()
+            .join("checkpoints/slot-2/checkpoint_meta.json");
+        let mut latest_meta: lichen_core::CheckpointMeta = serde_json::from_str(
+            &std::fs::read_to_string(&latest_meta_path).expect("read checkpoint meta"),
+        )
+        .expect("parse checkpoint meta");
+        latest_meta.state_root = [0xAA; 32];
+        std::fs::write(
+            &latest_meta_path,
+            serde_json::to_string_pretty(&latest_meta).expect("serialize checkpoint meta"),
+        )
+        .expect("write checkpoint meta");
+
+        let (meta, _, _) = latest_verified_checkpoint(
+            temp_dir.path().to_str().expect("data dir"),
+            &state,
+            &validator_set,
+            &stake_pool,
+        )
+        .expect("should fall back to older valid checkpoint");
+
+        assert_eq!(meta.slot, 1);
+    }
+
+    #[test]
     fn verify_checkpoint_anchor_requires_signed_committed_header() {
         let validator_kp = Keypair::generate();
         let validator_pk = validator_kp.pubkey();
@@ -14516,6 +14987,62 @@ mod tests {
             &stake_pool,
         )
         .is_err());
+    }
+
+    #[test]
+    fn verify_checkpoint_anchor_accepts_checkpoint_root_distinct_from_header_root() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"committed-block-root"),
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
+        let commit_signatures = vec![lichen_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        assert!(verify_checkpoint_anchor(
+            1,
+            [0xAB; 32],
+            Some(&block.header),
+            0,
+            &commit_signatures,
+            &validator_set,
+            &stake_pool,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -14603,22 +15130,13 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_anchor_support_counts_matching_peers() {
+    fn checkpoint_anchor_support_counts_matching_validators() {
         let root_a = [1u8; 32];
         let root_b = [2u8; 32];
         let anchors = HashMap::from([
-            (
-                "127.0.0.1:7001".parse::<SocketAddr>().expect("socket addr"),
-                (42u64, root_a),
-            ),
-            (
-                "127.0.0.1:7002".parse::<SocketAddr>().expect("socket addr"),
-                (42u64, root_a),
-            ),
-            (
-                "127.0.0.1:7003".parse::<SocketAddr>().expect("socket addr"),
-                (42u64, root_b),
-            ),
+            (Pubkey([1u8; 32]), (42u64, root_a)),
+            (Pubkey([2u8; 32]), (42u64, root_a)),
+            (Pubkey([3u8; 32]), (42u64, root_b)),
         ]);
 
         assert_eq!(checkpoint_anchor_support(&anchors, 42, root_a), 2);

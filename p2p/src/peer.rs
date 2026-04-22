@@ -1055,6 +1055,13 @@ impl PeerManager {
         })
     }
 
+    /// Return the verified validator pubkey announced by this peer, if known.
+    pub fn peer_validator_pubkey(&self, peer_addr: &SocketAddr) -> Option<Pubkey> {
+        self.peers
+            .get(peer_addr)
+            .and_then(|peer| peer.validator_pubkey)
+    }
+
     /// Record a peer violation (rate limit or invalid request)
     pub fn record_violation(&self, peer_addr: &SocketAddr) {
         if let Some(mut peer) = self.peers.get_mut(peer_addr) {

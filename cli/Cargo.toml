@@ -1,6 +1,6 @@
 [package]
 name = "lichen-cli"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen command-line interface"
@@ -22,7 +22,7 @@ name = "zk-prove"
 path = "src/zk_prove.rs"
 
 [dependencies]
-lichen-core = { version = "=0.5.6", path = "../core" }
+lichen-core = { version = "=0.5.7", path = "../core" }
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

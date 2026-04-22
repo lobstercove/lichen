@@ -1,6 +1,6 @@
 [package]
 name = "lichen-rpc"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen JSON-RPC server"

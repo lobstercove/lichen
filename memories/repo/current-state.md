@@ -1,10 +1,10 @@
 # Current State
 
-Last reviewed: 2026-04-22
+Last reviewed: 2026-04-23
 
 ## Durable Facts
 
-- Repo root README and recent handover context treat `v0.5.6` as the active release line.
+- Repo root README and release docs now treat `v0.5.7` as the active release line.
 - The Rust workspace is the 8-crate set declared in root `Cargo.toml`.
 - `contracts/` contains 29 contract directories, while genesis currently deploys 28 contracts from `GENESIS_CONTRACT_CATALOG`.
 - The large CLI modularization effort is complete:
@@ -19,12 +19,11 @@ Last reviewed: 2026-04-22
 
 ## Known Source Drift To Keep In Mind
 
-- `DEPLOYMENT_STATUS.md` is last updated `2026-04-13` and says:
-  - current phase is `v0.5.6 release, clean testnet redeploy pending`
-  - network is `Testnet pending redeploy (v0.5.5 -> v0.5.6)`
+- `DEPLOYMENT_STATUS.md` may lag live operations until the current rollout is recorded there.
 - The 2026-04-22 user handover says:
   - testnet is live on 3 VPSes with BFT consensus
   - current status is already `v0.5.6`
+- The 2026-04-23 production-pass handover records the pending `v0.5.7` hardening release contents.
 - Treat deployment state as requiring date-aware reconciliation before making operational decisions.
 
 ## Likely Next Workstreams

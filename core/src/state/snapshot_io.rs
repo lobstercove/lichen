@@ -8,7 +8,7 @@ use super::*;
 pub struct CheckpointMeta {
     /// Finalized slot at which the checkpoint was taken.
     pub slot: u64,
-    /// State root hash at the checkpoint slot.
+    /// State root hash of the checkpoint contents.
     pub state_root: [u8; 32],
     /// Timestamp (unix seconds) when the checkpoint was created.
     pub created_at: u64,
@@ -52,13 +52,14 @@ impl StateStore {
                 .map_err(|e| format!("Failed to remove old checkpoint: {}", e))?;
         }
 
-        let state_root = self.compute_state_root();
-        let total_accounts = self.count_accounts().unwrap_or(0);
-
         let cp = Checkpoint::new(&self.db)
             .map_err(|e| format!("Failed to create checkpoint object: {}", e))?;
         cp.create_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to create checkpoint: {}", e))?;
+        let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
+            .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
+        let state_root = checkpoint_store.compute_state_root_cached();
+        let total_accounts = checkpoint_store.metrics.get_total_accounts();
         let meta = CheckpointMeta {
             slot,
             state_root: state_root.0,
@@ -147,13 +148,22 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
-        self.export_cf_page_cursor(
+        self.export_cf_page_cursor_counted(
             CF_ACCOUNTS,
             "Accounts",
             after_key,
             limit,
             Some(self.metrics.get_total_accounts()),
         )
+    }
+
+    /// Export a cursor-paginated page of accounts without computing totals.
+    pub fn export_accounts_cursor_untracked(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor_uncounted(CF_ACCOUNTS, "Accounts", after_key, limit)
     }
 
     /// Export a page of contract storage entries as (key_bytes, value_bytes).
@@ -167,12 +177,26 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
-        self.export_cf_page_cursor(
+        self.export_cf_page_cursor_counted(
             CF_CONTRACT_STORAGE,
             "Contract storage",
             after_key,
             limit,
             None,
+        )
+    }
+
+    /// Export a cursor-paginated page of contract storage without computing totals.
+    pub fn export_contract_storage_cursor_untracked(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor_uncounted(
+            CF_CONTRACT_STORAGE,
+            "Contract storage",
+            after_key,
+            limit,
         )
     }
 
@@ -204,13 +228,22 @@ impl StateStore {
         after_key: Option<&[u8]>,
         limit: u64,
     ) -> Result<KvPage, String> {
-        self.export_cf_page_cursor(
+        self.export_cf_page_cursor_counted(
             CF_PROGRAMS,
             "Programs",
             after_key,
             limit,
             Some(self.get_program_count()),
         )
+    }
+
+    /// Export a cursor-paginated page of programs without computing totals.
+    pub fn export_programs_cursor_untracked(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor_uncounted(CF_PROGRAMS, "Programs", after_key, limit)
     }
 
     /// Generic helper: read a page of (key, value) pairs from a column family.
@@ -236,8 +269,13 @@ impl StateStore {
         let mut advanced = 0u64;
 
         while advanced < pages_to_advance {
-            let page =
-                self.export_cf_page_cursor(cf_name, display_name, cursor.as_deref(), limit, None)?;
+            let page = self.export_cf_page_cursor_counted(
+                cf_name,
+                display_name,
+                cursor.as_deref(),
+                limit,
+                None,
+            )?;
 
             if !page.has_more && page.entries.is_empty() {
                 return Ok(KvPage {
@@ -256,7 +294,7 @@ impl StateStore {
             }
         }
 
-        let mut page = self.export_cf_page_cursor(
+        let mut page = self.export_cf_page_cursor_counted(
             cf_name,
             display_name,
             cursor.as_deref(),
@@ -288,7 +326,7 @@ impl StateStore {
         Ok(page)
     }
 
-    fn export_cf_page_cursor(
+    fn export_cf_page_cursor_counted(
         &self,
         cf_name: &str,
         display_name: &str,
@@ -296,24 +334,50 @@ impl StateStore {
         limit: u64,
         total_hint: Option<u64>,
     ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor_impl(cf_name, display_name, after_key, limit, total_hint, true)
+    }
+
+    fn export_cf_page_cursor_uncounted(
+        &self,
+        cf_name: &str,
+        display_name: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor_impl(cf_name, display_name, after_key, limit, None, false)
+    }
+
+    fn export_cf_page_cursor_impl(
+        &self,
+        cf_name: &str,
+        display_name: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        total_hint: Option<u64>,
+        include_total: bool,
+    ) -> Result<KvPage, String> {
         let cf = self
             .db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("{} CF not found", display_name))?;
 
-        let total = match total_hint {
-            Some(value) => value,
-            None => {
-                let mut count = 0u64;
-                for _ in self
-                    .db
-                    .iterator_cf(&cf, rocksdb::IteratorMode::Start)
-                    .flatten()
-                {
-                    count = count.saturating_add(1);
+        let total = if include_total {
+            match total_hint {
+                Some(value) => value,
+                None => {
+                    let mut count = 0u64;
+                    for _ in self
+                        .db
+                        .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                        .flatten()
+                    {
+                        count = count.saturating_add(1);
+                    }
+                    count
                 }
-                count
             }
+        } else {
+            0
         };
 
         let iter = if let Some(after) = after_key {

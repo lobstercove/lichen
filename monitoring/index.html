@@ -1287,54 +1287,16 @@
                     <span>Source</span>
                     <span>Method</span>
                     <span>Details</span>
-                    <span>Action</span>
                 </div>
                 <div class="attack-log" id="attackLog">
                     <div class="ir-empty">No threats detected - system clear</div>
                 </div>
 
-                <!-- Active Restrictions -->
                 <div class="ir-section">
-                    <h4 class="ir-section-title"><i class="fas fa-gavel"></i> Active Restrictions</h4>
-                    <div class="ban-list" id="banList">
-                        <div class="ir-empty">No active restrictions</div>
-                    </div>
-                </div>
-
-                <!-- Kill Switch Controls (AUDIT-FIX I8-01 / P0-7: per-action admin auth, never stored in browser) -->
-                <div class="ir-section">
-                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches <span
-                            style="font-size:0.7rem;opacity:0.6;margin-left:8px;"><i class="fas fa-lock"></i> Per-action
-                            auth
-                            required</span></h4>
-                    <div class="killswitch-grid">
-                        <button class="killswitch" id="killswitchBanIpBtn">
-                            <i class="fas fa-ban"></i>
-                            <span>Ban IP</span>
-                        </button>
-                        <button class="killswitch" id="killswitchRateLimitBtn">
-                            <i class="fas fa-tachometer-alt"></i>
-                            <span>Throttle</span>
-                        </button>
-                        <button class="killswitch" id="killswitchBlockMethodBtn">
-                            <i class="fas fa-lock"></i>
-                            <span>Block Method</span>
-                        </button>
-                        <button class="killswitch" id="killswitchFreezeAccountBtn">
-                            <i class="fas fa-snowflake"></i>
-                            <span>Freeze Account</span>
-                        </button>
-                        <button class="killswitch emergency" id="killswitchEmergencyShutdownBtn">
-                            <i class="fas fa-power-off"></i>
-                            <span>Emergency Stop</span>
-                        </button>
-                        <button class="killswitch emergency" id="killswitchDenyAllBtn">
-                            <i class="fas fa-shield-alt"></i>
-                            <span>Deny All</span>
-                        </button>
-                    </div>
-                    <div style="margin-top:8px;opacity:0.72;font-size:0.75rem;line-height:1.5;">
-                        Admin token is requested for every kill-switch action and is never stored in browser storage.
+                    <h4 class="ir-section-title"><i class="fas fa-toolbox"></i> Operator Actions</h4>
+                    <div class="ir-empty" id="banList">
+                        Monitoring is read-only on production networks. Use SSH or the validator CLI for bans, throttles,
+                        account freezes, and shutdown procedures.
                     </div>
                 </div>
             </div>

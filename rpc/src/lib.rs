@@ -8700,8 +8700,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
                     .unwrap_or(0)
             };
 
-            // A validator is "active" if it produced a block within the last 100 slots
-            let is_active = v.last_active_slot + 100 >= current_slot || v.last_active_slot == 0;
+            let is_active = validator_is_active(current_slot, v.last_active_slot);
 
             serde_json::json!({
                 "pubkey": v.pubkey.to_base58(),
@@ -8746,6 +8745,13 @@ async fn handle_get_network_info(state: &RpcState) -> Result<serde_json::Value, 
     }))
 }
 
+const VALIDATOR_ACTIVE_WINDOW_SLOTS: u64 = 100;
+
+fn validator_is_active(current_slot: u64, last_active_slot: u64) -> bool {
+    last_active_slot == 0
+        || current_slot.saturating_sub(last_active_slot) <= VALIDATOR_ACTIVE_WINDOW_SLOTS
+}
+
 // ============================================================================
 // VALIDATOR ENDPOINTS
 // ============================================================================
@@ -8781,9 +8787,8 @@ async fn handle_get_validator_info(
         message: "Validator not found".to_string(),
     })?;
 
-    // F10: Compute is_active from last_active_slot vs current slot (active = within 1000 slots)
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let is_active = current_slot.saturating_sub(validator.last_active_slot) < 1000;
+    let is_active = validator_is_active(current_slot, validator.last_active_slot);
 
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),

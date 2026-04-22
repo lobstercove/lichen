@@ -1020,6 +1020,7 @@ async function renderValidators() {
                     rpc: rpcUrl,
                     pubkey: node.pubkey || null,
                     slot: lastActive,
+                    head_hash: node.head_hash || node.tip_hash || node.block_hash || node.last_block_hash || null,
                     online: node.active !== false && (currentSlot === null || currentSlot - lastActive <= 100),
                     stake: node.stake || 0,
                     reputation: node.reputation || 0,
@@ -1039,6 +1040,7 @@ async function renderValidators() {
                     rpc: rpcUrl,
                     pubkey: v.pubkey || null,
                     slot: lastActive,
+                    head_hash: v.head_hash || v.tip_hash || v.block_hash || v.last_block_hash || null,
                     online: isOnline,
                     stake: v.stake || 0,
                     reputation: v.reputation || 0,
@@ -1056,6 +1058,7 @@ async function renderValidators() {
             rpc: rpcUrl,
             pubkey: null,
             slot: currentSlot,
+            head_hash: null,
             online: currentSlot !== null,
             stake: 0,
             reputation: 0,
@@ -1311,24 +1314,8 @@ function renderThreats() {
             <span class="attack-source">${escaped.source}</span>
             <span class="attack-method">${escaped.method}</span>
             <span class="attack-details">${escaped.details}</span>
-            <span class="attack-actions">
-                <button class="btn-xs danger" data-ban-source="${escaped.source}" title="Ban Source">
-                    <i class="fas fa-ban"></i>
-                </button>
-                <button class="btn-xs warning" data-throttle-source="${escaped.source}" title="Throttle">
-                    <i class="fas fa-tachometer-alt"></i>
-                </button>
-            </span>
         </div>`;
     }).join('') || '<div class="ir-empty">No threats detected - system clear</div>';
-
-    // F17.2 fix: attach click handlers via data-attributes (no inline JS eval)
-    log.querySelectorAll('[data-ban-source]').forEach(btn => {
-        btn.addEventListener('click', () => quickBan(btn.dataset.banSource));
-    });
-    log.querySelectorAll('[data-throttle-source]').forEach(btn => {
-        btn.addEventListener('click', () => quickThrottle(btn.dataset.throttleSource));
-    });
 }
 
 function updateThreatLevel() {
@@ -1375,86 +1362,43 @@ function promptAdminToken(actionLabel) {
     return normalized || null;
 }
 
+function showIncidentControlUnavailable(actionLabel) {
+    const label = actionLabel || 'This incident control';
+    showAlert(`${label} is not exposed by production RPC. Use the validator CLI / SSH operator runbook instead.`);
+}
+
 async function killswitchBanIP() {
-    const ip = prompt('Enter IP address to ban:');
-    if (!ip) return;
-    const token = promptAdminToken(`ban IP ${ip}`); if (!token) return;
-    const result = await rpc('admin_banIP', [ip, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
-    addBan('ip-ban', ip, result?.error ? 'Local ban (admin RPC pending)' : 'IP banned via admin RPC');
-    addEvent('danger', 'ban', `Banned IP: ${ip}`);
+    showIncidentControlUnavailable('Ban IP');
 }
 
 async function killswitchRateLimit() {
-    const target = prompt('Enter IP or method to throttle:');
-    if (!target) return;
-    const limit = prompt('Requests per minute:', '10');
-    if (!limit) return;
-    const token = promptAdminToken(`throttle ${target}`); if (!token) return;
-    addBan('throttle', target, `Rate limited to ${limit} rpm`);
-    addEvent('warning', 'tachometer-alt', `Throttled: ${target} @ ${limit} rpm`);
+    showIncidentControlUnavailable('Throttle');
 }
 
 async function killswitchBlockMethod() {
-    const method = prompt('Enter RPC method to block (e.g. sendTransaction):');
-    if (!method) return;
-    const token = promptAdminToken(`block method ${method}`); if (!token) return;
-    const result = await rpc('admin_blockMethod', [method, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
-    addBan('method-block', method, 'Method blocked');
-    addEvent('danger', 'lock', `Blocked method: ${method}`);
+    showIncidentControlUnavailable('Block Method');
 }
 
 async function killswitchFreezeAccount() {
-    const address = prompt('Enter account address to freeze:');
-    if (!address) return;
-    const token = promptAdminToken(`freeze account ${truncAddr(address)}`); if (!token) return;
-    const result = await rpc('admin_freezeAccount', [address, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — token rejected or RPC unavailable'); return; }
-    addBan('freeze', truncAddr(address), `Account frozen: ${address}`);
-    addEvent('danger', 'snowflake', `Frozen account: ${truncAddr(address)}`);
+    showIncidentControlUnavailable('Freeze Account');
 }
 
 async function killswitchEmergencyShutdown() {
-    if (!confirm('EMERGENCY SHUTDOWN\n\nThis will halt ALL validator nodes immediately.\nAre you absolutely sure?')) return;
-    if (!confirm('FINAL CONFIRMATION\n\nThis action cannot be undone remotely.\nProceed with emergency shutdown?')) return;
-    const token = promptAdminToken('emergency shutdown'); if (!token) return;
-    addEvent('danger', 'power-off', 'EMERGENCY SHUTDOWN initiated across all nodes');
-    // Dynamically discover validators via cluster info (no hardcoded list)
-    const cluster = await rpc('getClusterInfo');
-    const nodes = (cluster && cluster.cluster_nodes) ? cluster.cluster_nodes : [];
-    if (nodes.length === 0) {
-        // Fallback: shutdown this node directly
-        await rpc('admin_shutdown', [{ admin_token: token }]);
-    } else {
-        for (const node of nodes) {
-            const nodeRpc = node.rpc_url || rpcUrl;
-            await rpc('admin_shutdown', [{ admin_token: token }], nodeRpc);
-        }
-    }
-    showAlert('EMERGENCY SHUTDOWN executed - ' + Math.max(1, nodes.length) + ' node(s) signaled');
+    showIncidentControlUnavailable('Emergency Stop');
 }
 
 async function killswitchDenyAll() {
-    if (!confirm('DENY ALL TRAFFIC\n\nThis will reject ALL incoming RPC requests.\nContinue?')) return;
-    const token = promptAdminToken('deny all traffic'); if (!token) return;
-    addBan('deny-all', 'ALL TRAFFIC', 'Emergency deny-all active');
-    addEvent('danger', 'shield-alt', 'DENY ALL mode activated');
-    showAlert('DENY ALL mode active - all requests blocked');
+    showIncidentControlUnavailable('Deny All');
 }
 
 function quickBan(source) {
     if (!source || source === 'System' || source === 'Network') return;
-    const token = promptAdminToken(`quick ban ${source}`); if (!token) return;
-    addBan('ip-ban', source, 'Quick ban from threat log');
-    addEvent('danger', 'ban', `Quick ban: ${source}`);
+    showIncidentControlUnavailable('Threat-log ban');
 }
 
 function quickThrottle(source) {
     if (!source || source === 'System' || source === 'Network') return;
-    const token = promptAdminToken(`quick throttle ${source}`); if (!token) return;
-    addBan('throttle', source, 'Quick throttle from threat log');
-    addEvent('warning', 'tachometer-alt', `Quick throttle: ${source}`);
+    showIncidentControlUnavailable('Threat-log throttle');
 }
 
 function addBan(type, target, reason) {
@@ -1496,6 +1440,57 @@ function renderBans() {
 
 // ── Threat Detection ────────────────────────────────────────
 
+function shortHash(hash) {
+    if (!hash || typeof hash !== 'string') return null;
+    if (hash.length <= 12) return hash;
+    return `${hash.slice(0, 8)}...${hash.slice(-4)}`;
+}
+
+function classifyConsensusIssue(onlineProbes) {
+    if (onlineProbes.length < 2) return null;
+
+    const slots = onlineProbes.map(p => p.slot);
+    const maxDiff = Math.max(...slots) - Math.min(...slots);
+
+    // A real fork requires conflicting block hashes for the same slot.
+    // Mere last_active_slot spread is validator lag, not proof of divergent chain state.
+    const hashesBySlot = new Map();
+    for (const probe of onlineProbes) {
+        if (probe.slot === null || !probe.head_hash) continue;
+        if (!hashesBySlot.has(probe.slot)) hashesBySlot.set(probe.slot, new Set());
+        hashesBySlot.get(probe.slot).add(probe.head_hash);
+    }
+
+    for (const [slot, hashes] of hashesBySlot.entries()) {
+        if (hashes.size > 1) {
+            const conflictingHashes = Array.from(hashes).map(shortHash).join(' vs ');
+            return {
+                severity: 'critical',
+                title: 'Consensus Fork',
+                details: `Conflicting block hashes at slot ${slot} (${conflictingHashes})`,
+            };
+        }
+    }
+
+    if (maxDiff > 5) {
+        return {
+            severity: 'high',
+            title: 'Validator Lag',
+            details: `Validator activity divergence: ${maxDiff} blocks (last_active_slot ${slots.join(' vs ')})`,
+        };
+    }
+
+    if (maxDiff > 2) {
+        return {
+            severity: 'medium',
+            title: 'Slot Drift',
+            details: `Minor slot drift: ${maxDiff} blocks`,
+        };
+    }
+
+    return null;
+}
+
 function detectThreats(metrics, probes) {
     // Throttle: max once per 5s
     if (Date.now() - lastThreatCheck < 5000) return;
@@ -1509,18 +1504,12 @@ function detectThreats(metrics, probes) {
         addThreat('high', 'Node Offline', n.rpc, 'P2P', `${n.name} not responding on :${n.rpc.split(':').pop()}`);
     });
 
-    // Consensus fork detection
+    // Consensus/finality health detection
     const onlineProbes = probes.filter(p => p.online && p.slot !== null);
-    if (onlineProbes.length >= 2) {
-        const slots = onlineProbes.map(p => p.slot);
-        const maxDiff = Math.max(...slots) - Math.min(...slots);
-        if (maxDiff > 5) {
-            addThreat('critical', 'Consensus Fork', 'Network', 'Consensus',
-                `Slot divergence: ${maxDiff} blocks (${slots.join(' vs ')})`);
-        } else if (maxDiff > 2) {
-            addThreat('medium', 'Slot Drift', 'Network', 'Consensus',
-                `Minor slot drift: ${maxDiff} blocks`);
-        }
+    const consensusIssue = classifyConsensusIssue(onlineProbes);
+    if (consensusIssue) {
+        addThreat(consensusIssue.severity, consensusIssue.title, 'Network', 'Consensus',
+            consensusIssue.details);
     }
 
     // Stake anomaly detection
@@ -1694,7 +1683,7 @@ async function updateDexMonitor() {
                     deployed = true;
                 }
             } else if (sub.id === 'lichenswap') {
-                const stats = await rpc('getLichenswapStats');
+                const stats = await rpc('getLichenSwapStats');
                 if (stats) {
                     metricsData = {
                         swaps_24h: stats.swap_count || 0, volume: (stats.volume_a || 0) + (stats.volume_b || 0),
@@ -1972,7 +1961,7 @@ async function updateTradingMetrics() {
         rpc('getDexMarginStats').catch(() => null),
         rpc('getDexRouterStats').catch(() => null),
         rpc('getDexAnalyticsStats').catch(() => null),
-        rpc('getLichenswapStats').catch(() => null),
+        rpc('getLichenSwapStats').catch(() => null),
         rpc('getDexRewardsStats').catch(() => null),
         rpc('getDexGovernanceStats').catch(() => null),
         rpc('getMetrics').catch(() => null),

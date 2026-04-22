@@ -262,17 +262,25 @@ impl SyncManager {
             return None;
         }
 
-        // If already syncing a batch, allow re-trigger only when very far behind
-        // (> SYNC_BATCH_SIZE / 2 slots) — otherwise wait for current batch.
-        if is_syncing && current_batch.is_some() {
+        // If already syncing a batch, don't overlap requests until the current
+        // in-flight range is almost exhausted. Completing a batch after only a
+        // few applied blocks causes the node to re-request largely identical
+        // ranges, which saturates the sync queues and slows catch-up.
+        if is_syncing {
+            let (_, batch_end) = current_batch?;
+            let remaining_in_batch = batch_end.saturating_sub(current_slot);
+            if remaining_in_batch > P2P_BLOCK_RANGE_LIMIT {
+                return None;
+            }
             let gap = highest.saturating_sub(current_slot);
             if gap <= SYNC_BATCH_SIZE / 2 {
                 return None;
             }
-            // Very far behind — allow overlapping sync request
+            // We're near the end of the current batch and still far behind —
+            // allow the next batch to prefetch ahead.
             info!(
-                "🔁 Re-triggering sync while already syncing ({} slots behind)",
-                gap
+                "🔁 Re-triggering sync near batch end (remaining={}, gap={})",
+                remaining_in_batch, gap
             );
         }
 
@@ -415,9 +423,22 @@ impl SyncManager {
 
     /// Record that sync made progress at a given slot (for completion tracking).
     pub async fn record_progress(&self, slot: u64) {
-        let mut last = self.last_progress_slot.lock().await;
-        if slot > *last {
-            *last = slot;
+        {
+            let mut last = self.last_progress_slot.lock().await;
+            if slot > *last {
+                *last = slot;
+            }
+        }
+
+        let reached_batch_end = {
+            let batch = self.current_sync_batch.lock().await;
+            matches!(*batch, Some((_, end)) if slot >= end)
+        };
+
+        if reached_batch_end {
+            info!("✅ Sync batch reached requested target at slot {}", slot);
+            self.record_sync_success().await;
+            self.complete_sync().await;
         }
     }
 
@@ -676,6 +697,39 @@ mod tests {
         let (start, end) = batch.unwrap();
         assert_eq!(start, 50); // Overlap for fork resolution
         assert!(end <= 100);
+    }
+
+    #[tokio::test]
+    async fn test_should_not_overlap_while_current_batch_has_runway() {
+        let sm = SyncManager::new();
+        sm.note_seen(5_000).await;
+        sm.start_sync(1_000, 3_000).await;
+
+        // Still have far more than one chunk of already-requested range left.
+        let batch = sm.should_sync(1_500).await;
+        assert!(
+            batch.is_none(),
+            "should not overlap while the current batch still has substantial coverage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_progress_completes_batch_at_target() {
+        let sm = SyncManager::new();
+        sm.start_sync(100, 150).await;
+        assert!(*sm.is_syncing.lock().await);
+
+        sm.record_progress(149).await;
+        assert!(
+            *sm.is_syncing.lock().await,
+            "batch should stay active until the requested target is reached"
+        );
+
+        sm.record_progress(150).await;
+        assert!(
+            !*sm.is_syncing.lock().await,
+            "batch should complete once progress reaches the requested end"
+        );
     }
 
     /// AUDIT-FIX V5.1: Verify that RPC port derivation formula used in genesis

@@ -23,7 +23,7 @@ p3-goldilocks = "0.5.2"
 p3-symmetric = "0.5.2"
 
 [dev-dependencies]
-lichen-core = { version = "=0.5.6", path = "../core" }
+lichen-core = { version = "=0.5.7", path = "../core" }
 
 [features]
 default = []
