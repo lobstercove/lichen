@@ -106,8 +106,53 @@ function bindProfileLogoFallback(profileEl) {
     }
 }
 
+function normalizeExternalUrl(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const text = value.trim();
+    if (!text) {
+        return '';
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(text);
+    } catch (_) {
+        return '';
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return '';
+    }
+
+    return parsed.toString();
+}
+
+function normalizeProfileSocialUrls(value) {
+    const social = value && typeof value === 'object' ? value : {};
+    const sanitized = {
+        twitter: normalizeExternalUrl(social.twitter),
+        telegram: normalizeExternalUrl(social.telegram),
+        discord: normalizeExternalUrl(social.discord),
+    };
+
+    return Object.values(sanitized).some(Boolean) ? sanitized : undefined;
+}
+
+function buildExternalMetadataLink(url, iconClass, label) {
+    const normalizedUrl = normalizeExternalUrl(url);
+    if (!normalizedUrl) {
+        return '';
+    }
+
+    const safeUrl = escapeHtml(normalizedUrl);
+    return '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer"><i class="' + escapeHtml(iconClass) + '"></i> ' + escapeHtml(label) + '</a>';
+}
+
 function isLikelyUrl(value) {
-    return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+    return Boolean(normalizeExternalUrl(value));
 }
 
 function formatMetadataValue(value) {
@@ -126,8 +171,9 @@ function formatMetadataValue(value) {
     if (typeof value === 'string') {
         const text = value.trim();
         if (!text) return '<span style="color:var(--text-muted);">--</span>';
-        if (isLikelyUrl(text)) {
-            const safeUrl = escapeHtml(text);
+        const normalizedUrl = normalizeExternalUrl(text);
+        if (normalizedUrl) {
+            const safeUrl = escapeHtml(normalizedUrl);
             return '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + safeUrl + '</a>';
         }
         return escapeHtml(text);
@@ -203,11 +249,13 @@ function normalizeProfileMetadata(registryMetadata, tokenMetadata) {
 
     const merged = { ...token, ...reg };
 
-    const logoUrl = merged.logo_url || merged.logo || merged.icon || merged.icon_url || merged.image || '';
-    const website = merged.website || merged.homepage || merged.project_url || '';
-    const twitter = merged.twitter || merged.x || merged.x_url || merged.social_urls?.twitter || '';
-    const telegram = merged.telegram || merged.social_urls?.telegram || '';
-    const discord = merged.discord || merged.social_urls?.discord || '';
+    const socialUrls = normalizeProfileSocialUrls(merged.social_urls);
+
+    const logoUrl = normalizeExternalUrl(merged.logo_url || merged.logo || merged.icon || merged.icon_url || merged.image || '');
+    const website = normalizeExternalUrl(merged.website || merged.homepage || merged.project_url || '');
+    const twitter = normalizeExternalUrl(merged.twitter || merged.x || merged.x_url || socialUrls?.twitter || '');
+    const telegram = normalizeExternalUrl(merged.telegram || socialUrls?.telegram || '');
+    const discord = normalizeExternalUrl(merged.discord || socialUrls?.discord || '');
     const description = merged.description || merged.desc || '';
 
     return {
@@ -217,7 +265,41 @@ function normalizeProfileMetadata(registryMetadata, tokenMetadata) {
         twitter,
         telegram,
         discord,
+        social_urls: socialUrls,
         description,
+    };
+}
+
+function mergeRegistryEntrySources(preferredRegistry, fallbackRegistry) {
+    const preferred = preferredRegistry && typeof preferredRegistry === 'object' ? preferredRegistry : null;
+    const fallback = fallbackRegistry && typeof fallbackRegistry === 'object' ? fallbackRegistry : null;
+
+    if (!preferred && !fallback) {
+        return null;
+    }
+    if (!preferred) {
+        return fallback;
+    }
+    if (!fallback) {
+        return preferred;
+    }
+
+    const preferredMeta = preferred.metadata && typeof preferred.metadata === 'object' ? preferred.metadata : {};
+    const fallbackMeta = fallback.metadata && typeof fallback.metadata === 'object' ? fallback.metadata : {};
+
+    return {
+        ...fallback,
+        ...preferred,
+        metadata: {
+            ...fallbackMeta,
+            ...preferredMeta,
+        },
+        decimals: preferred.decimals ?? fallback.decimals ?? null,
+        name: preferred.name || fallback.name || null,
+        symbol: preferred.symbol || fallback.symbol || null,
+        template: preferred.template || fallback.template || null,
+        owner: preferred.owner || fallback.owner || null,
+        program: preferred.program || fallback.program || null,
     };
 }
 
@@ -238,24 +320,41 @@ async function loadContract() {
     document.title = 'Contract ' + contractAddress.slice(0, 12) + '... - Lichen Explorer';
 
     // Fetch all data in parallel
-    const [info, registry, abi, program, calls, events] = await Promise.all([
+    const [info, trustedRegistry, liveRegistry, abi, program, calls, events] = await Promise.all([
         trustedRpcCall('getContractInfo', [contractAddress]).catch(() => null),
         trustedRpcCall('getSymbolRegistryByProgram', [contractAddress]).catch(() => null),
+        rpc.call('getSymbolRegistryByProgram', [contractAddress]).catch(() => null),
         rpc.call('getContractAbi', [contractAddress]).catch(() => null),
         rpc.call('getProgram', [contractAddress]).catch(() => null),
         rpc.call('getProgramCalls', [contractAddress, { limit: 200 }]).catch(() => null),
         rpc.call('getContractLogs', [contractAddress, 200]).catch(() => null),
     ]);
 
+    const registry = mergeRegistryEntrySources(trustedRegistry, liveRegistry);
+
+    let contractCatalogEntry = null;
+    if (!registry?.template || !registry?.name || !registry?.symbol) {
+        try {
+            const catalog = await trustedRpcCall('getAllContracts', []);
+            const contracts = Array.isArray(catalog?.contracts) ? catalog.contracts : [];
+            contractCatalogEntry = contracts.find((entry) => entry?.program_id === contractAddress) || null;
+        } catch (e) { }
+    }
+
     // Determine template/category
-    const template = registry?.template || (abi?.template && abi.template !== 'unknown' ? abi.template : '') || '';
+    const template = registry?.template
+        || contractCatalogEntry?.template
+        || program?.template
+        || program?.metadata?.template
+        || (abi?.template && abi.template !== 'unknown' ? abi.template : '')
+        || '';
     const category = TEMPLATE_CATEGORY[template] || 'infra';
     const faIcon = TEMPLATE_FA_ICON[template] || 'fa-file-code';
 
     // Header — registry name takes priority over ABI name (ABI defaults to "unknown")
     const abiName = (abi?.name && abi.name !== 'unknown') ? abi.name : '';
-    const name = registry?.name || abiName || '';
-    const symbol = registry?.symbol || '';
+    const name = registry?.name || contractCatalogEntry?.name || abiName || program?.metadata?.name || '';
+    const symbol = registry?.symbol || contractCatalogEntry?.symbol || info?.token_metadata?.token_symbol || program?.metadata?.symbol || '';
     const title = name ? name + (symbol ? ' (' + symbol + ')' : '') : (symbol || formatHash(contractAddress));
 
     // Set icon (Font Awesome only)
@@ -270,7 +369,7 @@ async function loadContract() {
     document.title = title + ' - Lichen Explorer';
 
     // Overview stats
-    const owner = info?.owner || program?.owner || registry?.owner || '';
+    const owner = info?.owner || contractCatalogEntry?.owner || program?.owner || registry?.owner || '';
     const addressNames = (typeof batchResolveLichenNames === 'function')
         ? await batchResolveLichenNames([
             owner,
@@ -343,7 +442,7 @@ async function loadContract() {
 
         if (supply !== null && supply !== undefined) {
             document.getElementById('tokenSupply').textContent =
-                formatNumber(supply / Math.pow(10, decimals)) + (symbol ? ' ' + symbol : '');
+                formatNumber(supply / Math.pow(10, decimals));
         }
 
         // Mintable/burnable: check registry metadata first, then contract info, then ABI
@@ -404,10 +503,14 @@ async function loadContract() {
             }
 
             const links = [];
-            if (website) links.push('<a href="' + escapeHtml(website) + '" target="_blank" rel="noopener noreferrer"><i class="fas fa-globe"></i> Website</a>');
-            if (twitter) links.push('<a href="' + escapeHtml(twitter) + '" target="_blank" rel="noopener noreferrer"><i class="fab fa-x-twitter"></i> Twitter</a>');
-            if (telegram) links.push('<a href="' + escapeHtml(telegram) + '" target="_blank" rel="noopener noreferrer"><i class="fab fa-telegram"></i> Telegram</a>');
-            if (discord) links.push('<a href="' + escapeHtml(discord) + '" target="_blank" rel="noopener noreferrer"><i class="fab fa-discord"></i> Discord</a>');
+            const websiteLink = buildExternalMetadataLink(website, 'fas fa-globe', 'Website');
+            const twitterLink = buildExternalMetadataLink(twitter, 'fab fa-x-twitter', 'Twitter');
+            const telegramLink = buildExternalMetadataLink(telegram, 'fab fa-telegram', 'Telegram');
+            const discordLink = buildExternalMetadataLink(discord, 'fab fa-discord', 'Discord');
+            if (websiteLink) links.push(websiteLink);
+            if (twitterLink) links.push(twitterLink);
+            if (telegramLink) links.push(telegramLink);
+            if (discordLink) links.push(discordLink);
 
             if (links.length > 0) {
                 html += '<div class="token-profile-links">' + links.join('') + '</div>';

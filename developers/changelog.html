@@ -363,8 +363,10 @@
                 <div class="changelog-section" data-type="new">
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
-                        <li>CLI: <code>--supply &lt;amount&gt;</code> flag sets initial total supply on deploy
-                            (auto-converted to spores via decimals)</li>
+                        <li>CLI: historical note only — the old <code>--supply &lt;amount&gt;</code> deploy flag
+                            from v0.2.17 has since been removed; current releases use
+                            <code>lichen token create --initial-supply</code> for canonical MT-20 launches
+                        </li>
                         <li>CLI: <code>--metadata &lt;json&gt;</code> flag attaches custom metadata to the symbol
                             registry entry</li>
                         <li>CLI: On-chain verification after deploy &mdash; polls <code>getAccountInfo</code> to confirm
@@ -502,15 +504,15 @@
                         <li>CONTRIBUTING.md — full developer guide with setup, testing, code quality, WASM builds, and
                             PR process</li>
                         <li>Centralized frontend URL config (shared-config.js) — auto-detects dev vs production,
-                            replaces 15 hardcoded localhost URLs</li>
+                            replaces 15 hardcoded development URLs</li>
                     </ul>
                 </div>
 
                 <div class="changelog-section" data-type="improved">
                     <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
                     <ul>
-                        <li>Faucet CORS: explicit origin allowlist replaces permissive policy — restricted to localhost
-                            dev ports + production domains</li>
+                        <li>Faucet CORS: explicit origin allowlist replaces permissive policy — restricted to approved
+                            development origins + production domains</li>
                         <li>Wallet: fixed 4 async function declarations that caused SyntaxError breaking all wallet JS
                         </li>
                         <li>Wallet CSS: added display:none/block for create-step and import-method (wizard step

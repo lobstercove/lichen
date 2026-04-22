@@ -28,21 +28,21 @@ const LICHEN_SDK_CONFIG = (() => {
                 rpc: 'https://rpc.lichen.network',
                 ws: 'wss://rpc.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
-                compiler: 'https://rpc.lichen.network/compile',
+                compiler: null,
                 chainId: 1
             },
             testnet: {
                 rpc: 'https://testnet-rpc.lichen.network',
                 ws: 'wss://testnet-rpc.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
-                compiler: 'https://testnet-rpc.lichen.network/compile',
+                compiler: null,
                 chainId: 2
             },
             local: {
                 rpc: 'http://localhost:8899',
                 ws: 'ws://localhost:8900',
-                explorer: 'http://localhost:8080',
-                compiler: 'http://localhost:8900/compile',
+                explorer: 'http://localhost:3007',
+                compiler: 'http://localhost:8901/compile',
                 chainId: 999
             }
         },
@@ -67,7 +67,7 @@ const LICHEN_SDK_CONFIG = (() => {
             rpc: s.rpc || net.rpc,
             ws: s.ws || net.ws,
             explorer: s.explorer || net.explorer,
-            compiler: net.compiler,
+            compiler: s.compiler || net.compiler || null,
             chainId: net.chainId,
             ...(s.local !== undefined ? { local: s.local } : {}),
         };
@@ -314,7 +314,7 @@ class LichenRPC {
             throw new Error(`Unknown network: ${network}`);
         }
         this.rpcUrl = this.config.rpc;
-        this.compilerUrl = this.config.compiler || `${this.config.rpc}/compile`;
+        this.compilerUrl = this.config.compiler || null;
         this.requestId = 1;
         this.cache = new Map();
     }
@@ -1336,11 +1336,42 @@ class ProgramDeployer {
     }
 
     /**
+     * Call a deployed program function.
+     */
+    async call(programId, functionName, args = [], value = 0) {
+        const tx = new TransactionBuilder(this.rpc);
+        await tx.setRecentBlockhash();
+
+        tx.addInstruction(TransactionBuilder.call(this.wallet.address, programId, functionName, args, value));
+        await tx.sign(this.wallet);
+
+        const signature = await tx.send();
+        console.log(`✅ Program call sent: ${signature}`);
+
+        const confirmed = await this.waitForConfirmation(signature);
+        if (!confirmed) {
+            throw new Error('Program call transaction not confirmed');
+        }
+
+        return {
+            programId,
+            functionName,
+            signature,
+            caller: this.wallet.address,
+            args,
+            timestamp: Date.now()
+        };
+    }
+
+    /**
      * Derive program address from deployer + code
      */
     async deriveProgramAddress(deployer, code) {
         const deployerBytes = base58Decode(deployer);
-        const payload = concatBytes(deployerBytes, code);
+        const codeHash = new Uint8Array(await crypto.subtle.digest('SHA-256', code));
+        const slotNonceRaw = await this.rpc.getSlot();
+        const slotNonce = Number.isFinite(Number(slotNonceRaw)) ? Number(slotNonceRaw) : 0;
+        const payload = concatBytes(deployerBytes, codeHash, encodeU64LE(slotNonce));
         const digest = await crypto.subtle.digest('SHA-256', payload);
         return base58Encode(new Uint8Array(digest));
     }

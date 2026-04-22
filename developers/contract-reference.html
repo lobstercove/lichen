@@ -94,6 +94,23 @@
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
             <p>Lichen's 28 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
                 Governance — all compiled to WASM and deployable on-chain. LICN is the native coin (no contract).</p>
+            <div class="callout callout-info">
+                <p><strong>Integration tiers:</strong> when a contract has a first-class SDK helper, prefer that
+                    surface over generic ABI packing. Today the JS, Python, and Rust SDKs ship
+                    <code>LichenIdClient</code> for identity registration, profile/name reads, skills, vouches,
+                    premium-name auction flows, metadata/delegate/recovery flows, and agent
+                    endpoint/rate/availability updates, <code>SporePayClient</code> for the common streaming-payment
+                    flows, <code>LichenSwapClient</code> for pool discovery, quotes, liquidity reads, stats, and the
+                    common swap/liquidity writes, and <code>ThallLendClient</code> for the stable lending flow:
+                    deposits, withdrawals, borrows, repayments, liquidations, account/protocol reads, interest-rate
+                    reads, and stats, plus <code>SporeVaultClient</code> for vault/user/strategy reads, aggregate
+                    stats, and the common deposit/withdraw/harvest flow. BountyBoard does not have a first-class
+                    helper yet, but the shared SDK transports expose aggregate stats reads for it.
+                </p>
+                <p><strong>Everything else:</strong> most contracts in this catalog currently use the generic SDK
+                    contract-call surface plus contract-specific JSON-RPC reads. Use this reference page and the ABI
+                    docs below as the source of truth for those integrations.</p>
+            </div>
             <div class="arch-grid">
                 <div class="arch-box"><i class="fas fa-coins arch-icon-defi"></i>
                     <div class="arch-label">DeFi</div>
@@ -365,14 +382,14 @@
 
             <div class="sub-heading">Return Code Conventions</div>
             <p>The runtime records the WASM return value in <code>return_code</code> (visible in
-                <code>getTransaction</code> and <code>callContract</code> responses). For opcode-dispatch contracts
-                (<code>call() → u32</code>), the processor treats a non-zero return with no state changes as a failed
-                transaction. For named-export contracts, the same heuristic applies: non-zero + no storage writes =
-                error.
+                <code>getTransaction</code> and <code>callContract</code> responses), but there is
+                <strong>no chain-wide success code</strong>. Different contracts use different conventions. Treat
+                <code>return_code</code> as a raw contract-defined value and consult the ABI or contract docs for the
+                specific meaning.
             </p>
             <table class="const-table">
                 <tr>
-                    <th>Convention</th>
+                    <th>Observed Convention</th>
                     <th>Contracts</th>
                 </tr>
                 <tr>
@@ -385,8 +402,10 @@
                     <td>LichenOracle (queries), LichenPunks (mutations), LichenSwap (get_pool_info)</td>
                 </tr>
                 <tr>
-                    <td>i64 return value (amount/balance)</td>
-                    <td>LichenSwap (swaps, add_liquidity), SporePump (buy/sell), all token contracts (balance_of)</td>
+                    <td>Numeric return value (amount/balance/count)</td>
+                    <td>LichenSwap (swaps, add_liquidity), SporePump (buy/sell), token getters like
+                        <code>balance_of</code> and <code>total_supply</code>
+                    </td>
                 </tr>
                 <tr>
                     <td>void (no return)</td>
@@ -581,6 +600,30 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_pool_count</span><span class="fn-chip">set_platform_fee</span><span
                             class="fn-chip">get_swap_count</span><span class="fn-chip">get_total_volume</span><span
                             class="fn-chip">get_swap_stats</span></div>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>LichenSwapClient</code> now wraps the common
+                            LichenSwap flow across JS, Python, and Rust: symbol-registry resolution, pool/quote and
+                            liquidity reads, TWAP and protocol-fee reads, aggregate stats, create-pool,
+                            add-liquidity, and the common swap variants.</p>
+                        <p><strong>Generic fallback:</strong> flash loans, <code>remove_liquidity</code>,
+                            <code>get_reserves</code>, and admin-only fee/identity/pause controls remain on the raw
+                            contract-call surface described in the ABI section of this page.
+                        </p>
+                    </div>
+                    <div class="sub-heading">Real Commands</div>
+                    <div class="code-block">
+                        <div class="code-header"><span>LichenSwap Discovery &amp; Reads</span><button
+                                class="code-copy-btn">Copy</button></div>
+                        <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LICHENSWAP
+
+# Replace &lt;LICHENSWAP_ADDRESS&gt; with the program from the lookup result.
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+  call &lt;LICHENSWAP_ADDRESS&gt; get_quote --args '[1000000000, true]'
+
+curl -X POST https://testnet-rpc.lichen.network \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getLichenSwapStats","params":[]}'</code></pre>
+                    </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -644,6 +687,15 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_interest_rate</span><span class="fn-chip">get_deposit_count</span><span
                             class="fn-chip">get_borrow_count</span><span
                             class="fn-chip">get_liquidation_count</span><span class="fn-chip">get_platform_stats</span>
+                    </div>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>ThallLendClient</code> now wraps the stable
+                            ThallLend user flow across JS, Python, and Rust: deposit, withdraw, borrow, repay,
+                            liquidate, account reads, protocol stats, interest-rate reads, counters, and aggregated
+                            stats. The helper resolves the live program from the <code>LEND</code> symbol registry
+                            entry for you.</p>
+                        <p><strong>Generic fallback:</strong> flash-loan methods and admin-only configuration such as
+                            pause, reserve, deposit-cap, and oracle wiring stay on the raw contract surface.</p>
                     </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
                 </div>
@@ -747,6 +799,14 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">get_stream_count</span><span
                             class="fn-chip">get_platform_stats</span></div>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>SporePayClient</code> now wraps the user-facing
+                            SporePay flow across JS, Python, and Rust: stream creation, cliff streams, stream reads,
+                            withdrawable balance reads, withdrawals, cancellations, transfers, and aggregated stats.</p>
+                        <p><strong>Generic fallback:</strong> admin-only configuration such as pause, identity-gate
+                            updates, token/self-address setup, and other low-frequency ops remain on the raw contract
+                            surface described in the ABI section of this page.</p>
+                    </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -825,6 +885,16 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">withdraw_protocol_fees</span><span
                             class="fn-chip">update_strategy_allocation</span><span class="fn-chip">set_licn_token</span>
                     </div>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>SporeVaultClient</code> now wraps the stable
+                            SporeVault user flow across JS, Python, and Rust: symbol-registry resolution,
+                            <code>get_vault_stats</code>, <code>get_user_position</code>,
+                            <code>get_strategy_info</code>, aggregate stats, deposits, withdrawals, and harvests.
+                        </p>
+                        <p><strong>Generic fallback:</strong> admin-only fee, cap, risk-tier, strategy-management,
+                            protocol-address wiring, and protocol-fee withdrawal paths remain on the raw contract
+                            surface described in the ABI section of this page.</p>
+                    </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
                 </div>
             </div>
@@ -865,6 +935,16 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <li><strong>Agent Profiles</strong> — metadata, endpoint URL, availability status, rate</li>
                         <li><strong>Trust Tiers</strong> — computed from reputation score</li>
                     </ul>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>LichenIdClient</code> now wraps the common
+                            LichenID client flows across JS, Python, and Rust: identity registration, direct
+                            name registration, skills, vouches, premium-name auctions, metadata reads and writes,
+                            delegate lifecycle and delegated profile writes, recovery approvals, and skill
+                            attestation.</p>
+                        <p><strong>Generic fallback:</strong> admin-only reputation and achievement operations,
+                            naming-delegate flows, and other less-common methods still go through the raw contract-call
+                            surface described in the ABI section of this page.</p>
+                    </div>
                     <div class="sub-heading">Reputation Constants</div>
                     <table class="const-table">
                         <tr>
@@ -1364,6 +1444,19 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_bounty_count</span><span class="fn-chip">set_platform_fee</span><span
                             class="fn-chip">bb_pause</span><span class="fn-chip">bb_unpause</span><span
                             class="fn-chip">get_platform_stats</span></div>
+                    <div class="callout callout-info">
+                        <p><strong>SDK helper coverage:</strong> <code>BountyBoardClient</code> now wraps the stable
+                            BountyBoard user flow across JS, Python, and Rust: symbol-registry resolution,
+                            bounty reads (<code>get_bounty</code>, <code>get_bounty_count</code>,
+                            <code>get_platform_stats</code>), aggregate stats, and the full bounty lifecycle
+                            (<code>create_bounty</code>, <code>submit_work</code>, <code>approve_work</code>,
+                            <code>cancel_bounty</code>). Admin-only controls (identity-gate, token-address, fees,
+                            pause) remain on raw contract calls.
+                        </p>
+                        <p><strong>Registry symbol:</strong> resolve <code>BOUNTY</code> through the symbol registry
+                            before calling <code>get_bounty_count</code>, <code>get_bounty</code>, or mutation
+                            methods.</p>
+                    </div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -1686,7 +1779,8 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">add_allowed_quote</span><span
                             class="fn-chip">remove_allowed_quote</span><span
                             class="fn-chip">get_allowed_quote_count</span><span
-                            class="fn-chip">get_preferred_quote</span></div>
+                            class="fn-chip">get_preferred_quote</span>
+                    </div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -2050,7 +2144,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <h3>lUSD Stablecoin</h3>
                         <div class="subtitle">Treasury-Backed Stablecoin</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">1,178 lines</span><span class="meta-chip">20
+                    <div class="contract-meta"><span class="meta-chip">1,458 lines</span><span class="meta-chip">24
                             fns</span><span class="meta-chip">23.5 KB</span></div>
                 </div>
                 <div class="contract-body">
@@ -2065,14 +2159,14 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         </tr>
                         <tr>
                             <td>EPOCH_RATE_LIMIT</td>
-                            <td>100,000 lUSD/epoch</td>
+                            <td>100,000,000 lUSD/epoch</td>
                         </tr>
                         <tr>
                             <td>CIRCUIT_BREAKER_THRESHOLD</td>
                             <td>50,000 lUSD</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (20)</div>
+                    <div class="sub-heading">Functions (24)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2084,7 +2178,9 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_attestation_count</span><span
                             class="fn-chip">get_epoch_remaining</span><span
                             class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
-                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
                             class="badge badge-defi">Stablecoin</span></div>
                 </div>
@@ -2100,7 +2196,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <h3>Wrapped ETH</h3>
                         <div class="subtitle">Wrapped ETH Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">853 lines</span><span class="meta-chip">20
+                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
                             fns</span><span class="meta-chip">23.5 KB</span></div>
                 </div>
                 <div class="contract-body">
@@ -2115,14 +2211,14 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         </tr>
                         <tr>
                             <td>EPOCH_RATE_LIMIT</td>
-                            <td>500 ETH/epoch</td>
+                            <td>50,000 ETH/epoch</td>
                         </tr>
                         <tr>
                             <td>CIRCUIT_BREAKER_THRESHOLD</td>
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (20)</div>
+                    <div class="sub-heading">Functions (24)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2134,7 +2230,9 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_attestation_count</span><span
                             class="fn-chip">get_epoch_remaining</span><span
                             class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
-                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
                     <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
                             class="badge badge-defi">Token</span></div>
                 </div>
@@ -2150,7 +2248,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <h3>Wrapped SOL</h3>
                         <div class="subtitle">Wrapped SOL Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">853 lines</span><span class="meta-chip">20
+                    <div class="contract-meta"><span class="meta-chip">1,137 lines</span><span class="meta-chip">24
                             fns</span><span class="meta-chip">23.5 KB</span></div>
                 </div>
                 <div class="contract-body">
@@ -2165,14 +2263,14 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         </tr>
                         <tr>
                             <td>EPOCH_RATE_LIMIT</td>
-                            <td>50,000 SOL/epoch</td>
+                            <td>500,000 SOL/epoch</td>
                         </tr>
                         <tr>
                             <td>CIRCUIT_BREAKER_THRESHOLD</td>
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (20)</div>
+                    <div class="sub-heading">Functions (24)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2184,7 +2282,9 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_attestation_count</span><span
                             class="fn-chip">get_epoch_remaining</span><span
                             class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
-                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
                     <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
                             class="badge badge-defi">Token</span></div>
                 </div>
@@ -2200,7 +2300,7 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         <h3>Wrapped BNB</h3>
                         <div class="subtitle">Wrapped BNB Bridge Token</div>
                     </div>
-                    <div class="contract-meta"><span class="meta-chip">854 lines</span><span class="meta-chip">20
+                    <div class="contract-meta"><span class="meta-chip">1,128 lines</span><span class="meta-chip">24
                             fns</span><span class="meta-chip">23.5 KB</span></div>
                 </div>
                 <div class="contract-body">
@@ -2215,14 +2315,14 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                         </tr>
                         <tr>
                             <td>EPOCH_RATE_LIMIT</td>
-                            <td>5,000 BNB/epoch</td>
+                            <td>100,000 BNB/epoch</td>
                         </tr>
                         <tr>
                             <td>CIRCUIT_BREAKER_THRESHOLD</td>
                             <td>Configurable</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (20)</div>
+                    <div class="sub-heading">Functions (24)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
                             class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
                             class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
@@ -2234,7 +2334,9 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                             class="fn-chip">get_attestation_count</span><span
                             class="fn-chip">get_epoch_remaining</span><span
                             class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
-                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
                     <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
                             class="badge badge-defi">Token</span></div>
                 </div>
@@ -2448,21 +2550,24 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
-                        emergency_pause, emergency_unpause, transfer_admin</td>
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
                     <td>weth_token</td>
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
-                        emergency_pause, emergency_unpause, transfer_admin</td>
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
                     <td>wsol_token</td>
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
-                        emergency_pause, emergency_unpause, transfer_admin</td>
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
                     <td>shielded_pool</td>
@@ -2474,7 +2579,8 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
-                        emergency_pause, emergency_unpause, transfer_admin</td>
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
                 </tr>
             </table>
         </div>

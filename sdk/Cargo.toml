@@ -5,6 +5,9 @@ edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen Smart Contract SDK"
 license = "Apache-2.0"
+repository = "https://github.com/lobstercove/lichen"
+homepage = "https://lichen.network"
+documentation = "https://developers.lichen.network"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -20,7 +23,7 @@ p3-goldilocks = "0.5.2"
 p3-symmetric = "0.5.2"
 
 [dev-dependencies]
-lichen-core = { path = "../core" }
+lichen-core = { version = "=0.5.6", path = "../core" }
 
 [features]
 default = []

@@ -339,6 +339,79 @@ async fn test_get_version() {
     assert!(result.is_object(), "getVersion should return an object");
 }
 
+#[tokio::test]
+async fn test_get_contract_info_includes_registry_profile_metadata() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let program = Pubkey([44u8; 32]);
+    let mut contract = ContractAccount::new(vec![1, 2, 3], Pubkey([2u8; 32]));
+    contract.storage.insert(
+        b"dv581100_supply".to_vec(),
+        123_456_789u64.to_le_bytes().to_vec(),
+    );
+
+    let mut account = Account::new(0, CONTRACT_PROGRAM_ID);
+    account.owner = CONTRACT_PROGRAM_ID;
+    account.executable = true;
+    account.data = serde_json::to_vec(&contract).expect("serialize contract");
+    state.put_account(&program, &account).expect("put contract");
+
+    state
+        .register_symbol(
+            "DV581100",
+            SymbolRegistryEntry {
+                symbol: "DV581100".to_string(),
+                program,
+                owner: Pubkey([2u8; 32]),
+                name: Some("DevLifecycle581100".to_string()),
+                template: Some("mt20".to_string()),
+                metadata: Some(json!({
+                    "description": "Developer lifecycle token",
+                    "website": "https://dev.example/token",
+                    "logo_url": "https://dev.example/token.png",
+                    "twitter": "https://x.com/devtoken",
+                    "telegram": "https://t.me/devtoken",
+                    "discord": "https://discord.gg/devtoken",
+                    "decimals": 9
+                })),
+                decimals: Some(9),
+            },
+        )
+        .expect("register symbol");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let response = rpc_call_with_params(&app, "/", "getContractInfo", json!([program.to_base58()]))
+        .await
+        .unwrap();
+
+    let meta = &response["result"]["token_metadata"];
+    assert_eq!(meta["token_symbol"], json!("DV581100"));
+    assert_eq!(meta["token_name"], json!("DevLifecycle581100"));
+    assert_eq!(meta["total_supply"], json!(123_456_789u64));
+    assert_eq!(meta["decimals"], json!(9));
+    assert_eq!(meta["description"], json!("Developer lifecycle token"));
+    assert_eq!(meta["website"], json!("https://dev.example/token"));
+    assert_eq!(meta["logo_url"], json!("https://dev.example/token.png"));
+    assert_eq!(meta["twitter"], json!("https://x.com/devtoken"));
+    assert_eq!(meta["telegram"], json!("https://t.me/devtoken"));
+    assert_eq!(meta["discord"], json!("https://discord.gg/devtoken"));
+}
+
 // ============================================================================
 // getSlot
 // ============================================================================

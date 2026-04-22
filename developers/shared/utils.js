@@ -254,10 +254,6 @@ function formatLicn(spores) {
     }) + ' LICN';
 }
 
-function formatLicnSpores(spores) {
-    return formatLicn(spores);
-}
-
 /**
  * Format a LICN amount preserving all significant decimals (up to 9).
  * Accepts a number or string. Strips trailing zeros but keeps at least 2 decimals.
@@ -390,6 +386,7 @@ var LICHEN_SIGNED_METADATA_SIGNERS = Object.freeze({
 });
 
 var _signedMetadataManifestCache = new Map();
+var SIGNED_METADATA_MANIFEST_CACHE_TTL_MS = 2000;
 var _signedMetadataVerifierPromise = null;
 var _sharedPqScriptPromise = null;
 var SHARED_PQ_SCRIPT_ID = 'lichen-shared-pq-module';
@@ -682,12 +679,19 @@ async function getSignedMetadataManifest(networkKey, options) {
     var cacheKey = normalizedNetwork || '__default__';
     var forceRefresh = Boolean(options && options.forceRefresh);
     if (!forceRefresh && _signedMetadataManifestCache.has(cacheKey)) {
-        return _signedMetadataManifestCache.get(cacheKey);
+        var cachedEntry = _signedMetadataManifestCache.get(cacheKey);
+        if (cachedEntry && (Date.now() - cachedEntry.cachedAt) < SIGNED_METADATA_MANIFEST_CACHE_TTL_MS) {
+            return cachedEntry.manifest;
+        }
+        _signedMetadataManifestCache.delete(cacheKey);
     }
 
     var envelope = await trustedLichenRpcCall('getSignedMetadataManifest', [], normalizedNetwork || undefined);
     var manifest = await verifySignedMetadataEnvelope(envelope, normalizedNetwork);
-    _signedMetadataManifestCache.set(cacheKey, manifest);
+    _signedMetadataManifestCache.set(cacheKey, {
+        manifest: manifest,
+        cachedAt: Date.now(),
+    });
     return manifest;
 }
 
@@ -776,9 +780,6 @@ async function lichenRpcCall(method, params, rpcUrl) {
 async function trustedLichenRpcCall(method, params, networkKey) {
     return lichenRpcCall(method, params, getTrustedLichenRpcUrl(networkKey));
 }
-
-// Legacy alias used by some files
-var rpcCall = lichenRpcCall;
 
 // ── Binary Helpers ──
 
@@ -956,12 +957,12 @@ if (typeof module !== 'undefined' && module.exports) {
         getTrustTier, getTrustTierNumber,
         escapeHtml, escapeJsAttr, formatNumber, formatHash, formatAddress, normalizeTxType,
         formatLicnExact,
-        formatLicn, formatLicnSpores, formatTime, timeAgo,
+        formatLicn, formatTime, timeAgo,
         formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatSpores,
         updatePagination,
         bs58encode, bs58decode, base58Encode, base58Decode,
         readLeU64, serializeMessageBincode,
-        getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall, rpcCall,
+        getLichenRpcUrl, getTrustedLichenRpcUrl, lichenRpcCall, trustedLichenRpcCall,
         SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
         LICHEN_SIGNED_METADATA_SIGNERS,
         stableJsonStringify,

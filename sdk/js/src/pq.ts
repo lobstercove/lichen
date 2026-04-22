@@ -1,7 +1,7 @@
 import { createHash, randomBytes as nodeRandomBytes } from 'crypto';
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 
-import { PublicKey } from './publickey';
+import { PublicKey } from './publickey.js';
 
 export const PQ_SCHEME_ML_DSA_65 = 0x01;
 export const ML_DSA_65_PUBLIC_KEY_BYTES = 1952;

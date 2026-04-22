@@ -4,9 +4,41 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
+        || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
+    var gradientFromHash = (window.marketplaceUtils && window.marketplaceUtils.gradientFromHash) || function (seed) {
+        var hash = 0;
+        var input = String(seed || 'market');
+        for (var i = 0; i < input.length; i++) {
+            hash = (hash << 5) - hash + input.charCodeAt(i);
+            hash |= 0;
+        }
+        hash = Math.abs(hash);
+        function color(n) {
+            return '#' + ((n & 0xff0000) >> 16).toString(16).padStart(2, '0') + ((n & 0x00ff00) >> 8).toString(16).padStart(2, '0') + (n & 0x0000ff).toString(16).padStart(2, '0');
+        }
+        return 'linear-gradient(135deg, ' + color(hash ^ 0x4f9cf5) + ', ' + color(hash ^ 0x19d3a2) + ')';
+    };
+
+    function normalizeMarketImage(uri, seed) {
+        if (!uri || typeof uri !== 'string') return gradientFromHash(seed || 'market');
+        uri = uri.trim();
+        if (!uri) return gradientFromHash(seed || 'market');
+        if (uri.indexOf('linear-gradient') === 0) return uri;
+        if (uri.indexOf('ipfs://') === 0) return 'https://ipfs.io/ipfs/' + uri.slice('ipfs://'.length);
+        if (uri.indexOf('http://') === 0 || uri.indexOf('https://') === 0) return uri;
+        return gradientFromHash(seed || 'market');
+    }
+
+    function buildMarketBackgroundStyle(uri, seed) {
+        var normalizedImage = normalizeMarketImage(uri, seed);
+        return normalizedImage && normalizedImage.indexOf('http') === 0
+            ? 'background-image:url(' + encodeURI(normalizedImage) + ');background-size:cover;background-position:center;'
+            : 'background:' + normalizedImage + ';';
+    }
 
     // Inline toast notification (avoids alert() for user feedback)
     function showMarketToast(msg, type) {
@@ -107,10 +139,10 @@
 
         container.innerHTML = collections.map(function (collection) {
             var collectionId = escapeHtml(collection.id);
-            var banner = collection.banner ? escapeHtml(collection.banner) : escapeHtml(collection.image || '');
+            var bannerStyle = buildMarketBackgroundStyle(collection.banner || collection.image || '', collection.id || collection.name || 'collection');
             var avatar = collection.avatar ? escapeHtml(collection.avatar) : '';
             return '<div class="collection-card" data-marketplace-href="browse.html?collection=' + encodeURIComponent(collectionId) + '">' +
-                '<div class="collection-banner" style="background: ' + banner + '"></div>' +
+                '<div class="collection-banner" style="' + bannerStyle + '"></div>' +
                 '<div class="collection-avatar">' + avatar + '</div>' +
                 '<div class="collection-info">' +
                 '<div class="collection-name">' + escapeHtml(collection.name) + '</div>' +
@@ -144,8 +176,9 @@
             var buyBtnHtml = currentWallet
                 ? '<button class="nft-action" data-marketplace-action="buy" data-nft-id="' + escapedNftId + '">Buy Now</button>'
                 : '';
+            var imageStyle = buildMarketBackgroundStyle(nft.image, nft.id || nft.name || 'nft');
             return '<div class="nft-card" data-marketplace-href="item.html?id=' + encodeURIComponent(nft.id || '') + '">' +
-                '<div class="nft-image" style="background: ' + escapeHtml(nft.image) + '"></div>' +
+                '<div class="nft-image" style="' + imageStyle + '"></div>' +
                 '<div class="nft-info">' +
                 '<div class="nft-collection">' + escapeHtml(nft.collection) + '</div>' +
                 '<div class="nft-name">' + escapeHtml(nft.name) + '</div>' +
@@ -202,8 +235,9 @@
 
         tbody.innerHTML = sales.map(function (sale) {
             var saleId = escapeHtml(sale.id);
+            var saleImageStyle = buildMarketBackgroundStyle(sale.image, sale.id || sale.nft || 'sale');
             return '<tr data-marketplace-href="item.html?id=' + encodeURIComponent(saleId) + '" style="cursor:pointer;">' +
-                '<td><div class="sale-nft"><div class="sale-nft-image" style="background: ' + escapeHtml(sale.image) + '"></div><div><div class="sale-nft-name">' + escapeHtml(sale.nft) + '</div><div class="sale-nft-collection">' + escapeHtml(sale.collection) + '</div></div></div></td>' +
+                '<td><div class="sale-nft"><div class="sale-nft-image" style="' + saleImageStyle + '"></div><div><div class="sale-nft-name">' + escapeHtml(sale.nft) + '</div><div class="sale-nft-collection">' + escapeHtml(sale.collection) + '</div></div></div></td>' +
                 '<td>' + escapeHtml(sale.collection) + '</td>' +
                 '<td class="sale-price">' + escapeHtml(sale.price) + ' LICN</td>' +
                 '<td><span class="sale-address" data-from="' + escapeHtml(sale.from) + '">' + formatHash(sale.from, 8) + '</span></td>' +

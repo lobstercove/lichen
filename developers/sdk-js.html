@@ -120,19 +120,15 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>npm install @lichen/sdk</code></pre>
+                    <pre><code>npm install ./sdk/js</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>The SDK requires Node.js 18+ or a browser environment with <code>fetch</code> support. WebSocket
                         features require the <code>ws</code> package in Node.js (included as a dependency).</p>
-                    <p>The package is not yet published to npm. For now, install from the local source in
-                        <code>sdk/js/</code>:
-                    </p>
-                </div>
-                <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
-                                class="fas fa-copy"></i></button></div>
-                    <pre><code>npm install ./sdk/js</code></pre>
+                    <p>The package name is <code>@lichen/sdk</code>. Until it is published to npm, install from the
+                        monorepo source in <code>sdk/js/</code>. The examples below use public testnet endpoints; swap
+                        to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> for
+                        mainnet.</p>
                 </div>
             </section>
 
@@ -144,8 +140,10 @@
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>import { Connection, Keypair, PublicKey, TransactionBuilder } from '@lichen/sdk';
 
-// Connect to a local validator
-const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');
+// Connect to public testnet
+const conn = new Connection('https://testnet-rpc.lichen.network', 'wss://testnet-rpc.lichen.network/ws');
+
+// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
 
 // Generate a keypair
 const keypair = Keypair.generate();
@@ -166,6 +164,77 @@ const tx = new TransactionBuilder()
 
 const signature = await conn.sendTransaction(tx);
 console.log('TX Signature:', signature);</code></pre>
+                </div>
+
+                <div class="callout callout-info">
+                    <p><strong>LichenID helper:</strong> import <code>LichenIdClient</code> for profile and metadata
+                        reads, skills, vouches, premium-name auctions, delegate lifecycle and delegated profile
+                        writes, recovery approvals, and skill attestation flows. It resolves the <code>YID</code>
+                        program via the symbol registry and handles the ABI byte layout for the wrapped LichenID
+                        methods.</p>
+                    <p><strong>SporePay helper:</strong> import <code>SporePayClient</code> for stream creation,
+                        stream/cliff reads, withdrawable balance checks, withdrawals, cancellations, transfers, and
+                        aggregated stats. Raw <code>callContract()</code> remains the escape hatch for admin-only or
+                        newly added contract methods that are not wrapped yet.
+                    </p>
+                    <p><strong>LichenSwap helper:</strong> import <code>LichenSwapClient</code> for symbol-registry
+                        program discovery, pool/quote/liquidity reads, TWAP and protocol-fee reads, aggregate stats,
+                        and the common create-pool, add-liquidity, and swap flows. Flash loans,
+                        <code>remove_liquidity</code>, <code>get_reserves</code>, and admin controls still use raw
+                        <code>callContract()</code> when you need them.
+                    </p>
+                    <p><strong>ThallLend helper:</strong> import <code>ThallLendClient</code> for symbol-registry
+                        resolution, account/protocol/interest reads, counter reads, aggregate stats, and the common
+                        deposit, withdraw, borrow, repay, and liquidate flows. Flash loans and admin-only controls
+                        still use raw <code>callContract()</code>.</p>
+                    <p><strong>SporeVault helper:</strong> import <code>SporeVaultClient</code> for symbol-registry
+                        resolution, vault/user/strategy reads, aggregate stats, and the common deposit, withdraw, and
+                        harvest flow. Admin-only fee, cap, risk-tier, and strategy-management paths still use raw
+                        <code>callContract()</code>.
+                    </p>
+                    <p><strong>BountyBoard helper:</strong> import <code>BountyBoardClient</code> for symbol-registry
+                        resolution, bounty reads (single + count + platform stats), aggregate stats, and the
+                        full bounty lifecycle: create, submit work, approve, and cancel. Admin-only identity-gate,
+                        token-address, fee, and pause controls still use raw <code>callContract()</code>.
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button
+                            class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>import { Connection, Keypair, LichenIdClient, LichenSwapClient, SporePayClient, SporeVaultClient, ThallLendClient } from '@lichen/sdk';
+
+const conn = new Connection('https://testnet-rpc.lichen.network', 'wss://testnet-rpc.lichen.network/ws');
+const lichenId = new LichenIdClient(conn);
+const lichenSwap = new LichenSwapClient(conn);
+const sporePay = new SporePayClient(conn);
+const sporeVault = new SporeVaultClient(conn);
+const thallLend = new ThallLendClient(conn);
+const keypair = Keypair.generate();
+const delegateKey = Keypair.generate();
+
+await lichenId.registerIdentity(keypair, { agentType: 1, name: 'Market Maker Alpha' });
+await lichenId.addSkill(keypair, { name: 'market-making', proficiency: 92 });
+await lichenId.setMetadata(keypair, { metadata: { region: 'us-east', role: 'maker' } });
+await lichenId.setDelegate(keypair, {
+    delegate: delegateKey.pubkey(),
+    permissions: 1,
+    expiresAtMs: Date.now() + 86_400_000,
+});
+await lichenId.setAvailability(keypair, { status: 'available' });
+
+const profile = await lichenId.getProfile(keypair.pubkey());
+const delegation = await lichenId.getDelegate(keypair.pubkey(), delegateKey.pubkey());
+const poolInfo = await lichenSwap.getPoolInfo();
+const quote = await lichenSwap.getQuote(1_000_000_000n, true);
+const swapStats = await lichenSwap.getStats();
+const stream = await sporePay.getStreamInfo(0n);
+const vaultStats = await sporeVault.getVaultStats();
+const vaultPosition = await sporeVault.getUserPosition(keypair.pubkey());
+const vaultSummary = await sporeVault.getStats();
+const lendingAccount = await thallLend.getAccountInfo(keypair.pubkey());
+const lendingStats = await thallLend.getStats();
+
+console.log({ profile, delegation, poolInfo, quote, swapStats, stream, vaultStats, vaultPosition, vaultSummary, lendingAccount, lendingStats });</code></pre>
                 </div>
             </section>
 
@@ -213,7 +282,10 @@ console.log('TX Signature:', signature);</code></pre>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button
                             class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <pre><code>const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');</code></pre>
+                    <pre><code>const conn = new Connection(
+  'https://testnet-rpc.lichen.network',
+  'wss://testnet-rpc.lichen.network/ws'
+);</code></pre>
                 </div>
             </div>
 
@@ -536,6 +608,23 @@ const sig = await conn.callContract(keypair, contract, 'transfer', args);</code>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">callReadonlyContract(contract: PublicKey, functionName: string, args?:
+                    Uint8Array,
+                    from?: PublicKey): Promise&lt;ReadonlyContractResult&gt;</h3>
+                <p class="method-desc">Execute a read-only contract call with no state change. This is the transport
+                    primitive used by <code>LichenSwapClient</code> and the fallback path for helper gaps.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button
+                            class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const entry = await conn.getSymbolRegistry('LICHENSWAP');
+const program = new PublicKey(entry.program);
+const result = await conn.callReadonlyContract(program, 'get_pool_info');
+
+console.log(result.returnCode, result.returnData);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">upgradeContract(owner: Keypair, contract: PublicKey, code: Uint8Array):
                     Promise&lt;string&gt;</h3>
                 <p class="method-desc">Upgrade a deployed contract with new WASM bytecode (owner only).</p>
@@ -585,6 +674,23 @@ const sig = await conn.callContract(keypair, contract, 'transfer', args);</code>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">getSymbolRegistry(symbol: string): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Resolve a registry symbol such as <code>YID</code>, <code>SPOREPAY</code>, or
+                    <code>LICHENSWAP</code> to its deployed program entry.
+                </p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const entry = await conn.getSymbolRegistry('LICHENSWAP');
+console.log(entry.program);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getProgramAccounts(programId: PublicKey): Promise&lt;any[]&gt;</h3>
+                <p class="method-desc">List all accounts currently owned by a program.</p>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">getPrograms(): Promise&lt;any&gt;</h3>
                 <p class="method-desc">List all deployed programs.</p>
             </div>
@@ -602,6 +708,27 @@ const sig = await conn.callContract(keypair, contract, 'transfer', args);</code>
             <div class="method-card">
                 <h3 class="method-name">getProgramStorage(programId: PublicKey): Promise&lt;any&gt;</h3>
                 <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getSporePayStats(): Promise&lt;any&gt; / getLichenSwapStats():
+                    Promise&lt;any&gt; / getThallLendStats(): Promise&lt;any&gt; / getSporeVaultStats():
+                    Promise&lt;any&gt; /
+                    getBountyBoardStats(): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
+                    LichenSwap
+                    for typed access.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const sporePayStats = await conn.getSporePayStats();
+const lichenSwapStats = await conn.getLichenSwapStats();
+const thallLendStats = await conn.getThallLendStats();
+const sporeVaultStats = await conn.getSporeVaultStats();
+const bountyBoardStats = await conn.getBountyBoardStats();
+
+console.log({ sporePayStats, lichenSwapStats, thallLendStats, sporeVaultStats, bountyBoardStats });</code></pre>
+                </div>
             </div>
 
             <!-- NFT Methods -->

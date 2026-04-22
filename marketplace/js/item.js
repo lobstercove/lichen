@@ -3,7 +3,9 @@
 (function () {
     'use strict';
 
-    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : 'https://rpc.lichen.network');
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl)
+        || (typeof window.getMarketRpcUrl === 'function' ? window.getMarketRpcUrl() : null)
+        || (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function' ? LICHEN_CONFIG.rpc() : null);
     var CONTRACT_PROGRAM_ID = null;
     var SYSTEM_PROGRAM_ID = null;
 
@@ -14,7 +16,13 @@
     var marketplaceProgram = null;
     var userBalance = 0;
     var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
-    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || function (method, params) {
+        return trustedLichenRpcCall(
+            method,
+            params,
+            typeof window.getTrustedMarketNetwork === 'function' ? window.getTrustedMarketNetwork() : undefined
+        );
+    };
 
     var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function (v, isLicn) { var n = Number(isLicn ? v : v / 1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
@@ -228,10 +236,10 @@
                 currentNFT = await ds.getNFTDetail(parsed.id);
             }
             if (!currentNFT && parsed.contract && parsed.tokenId) {
-                currentNFT = await rpcCall('getNFT', [parsed.contract, parsed.tokenId]);
+                currentNFT = await marketTrustedRpcCall('getNFT', [parsed.contract, parsed.tokenId]);
             }
             if (!currentNFT && parsed.id) {
-                currentNFT = await rpcCall('getNFT', [parsed.id]);
+                currentNFT = await marketTrustedRpcCall('getNFT', [parsed.id]);
             }
         } catch (err) {
             console.warn('RPC getNFT failed:', err);
@@ -270,7 +278,7 @@
             var mp = await resolveMarketplaceProgram();
             if (mp) {
                 var collectionId = currentNFT.collection || currentNFT.contract_id || '';
-                var listingResp = await rpcCall('getMarketListings', [{ collection: collectionId, limit: 100 }]);
+                var listingResp = await marketTrustedRpcCall('getMarketListings', [{ collection: collectionId, limit: 100 }]);
                 var listings = Array.isArray(listingResp)
                     ? listingResp
                     : ((listingResp && Array.isArray(listingResp.listings)) ? listingResp.listings : []);
@@ -308,12 +316,12 @@
             var collectionId = currentNFT.collection || currentNFT.contract_id || '';
             var tokenId = String(currentNFT.token_id || currentNFT.id || '');
 
-            var auctionsResp = await rpcCall('getMarketAuctions', [{ collection: collectionId, limit: 200 }]);
+            var auctionsResp = await marketTrustedRpcCall('getMarketAuctions', [{ collection: collectionId, limit: 200 }]);
             var auctions = Array.isArray(auctionsResp)
                 ? auctionsResp
                 : ((auctionsResp && Array.isArray(auctionsResp.auctions)) ? auctionsResp.auctions : []);
 
-            var activityResp = await rpcCall('getMarketActivity', [{ collection: collectionId, limit: 200 }]);
+            var activityResp = await marketTrustedRpcCall('getMarketActivity', [{ collection: collectionId, limit: 200 }]);
             var activity = Array.isArray(activityResp)
                 ? activityResp
                 : ((activityResp && Array.isArray(activityResp.activity)) ? activityResp.activity : []);
@@ -1130,7 +1138,7 @@
 
         try {
             var collectionId = currentNFT.collection || currentNFT.contract_id || '';
-            var offers = await rpcCall('getMarketOffers', [{ collection: collectionId, token_id: currentNFT.token_id, include_collection_offers: true, limit: 50 }]);
+            var offers = await marketTrustedRpcCall('getMarketOffers', [{ collection: collectionId, token_id: currentNFT.token_id, include_collection_offers: true, limit: 50 }]);
             var offerItems = Array.isArray(offers) ? offers : ((offers && Array.isArray(offers.offers)) ? offers.offers : []);
 
             if (offerItems.length === 0) {

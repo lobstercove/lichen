@@ -1,0 +1,135 @@
+{
+    "contract": "mt20_token",
+    "version": "1.0",
+    "functions": [
+        {
+            "name": "initialize",
+            "opcode": 0,
+            "params": [
+                {
+                    "name": "owner",
+                    "type": "Pubkey"
+                }
+            ]
+        },
+        {
+            "name": "mint",
+            "opcode": 1,
+            "params": [
+                {
+                    "name": "caller",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "to",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "amount",
+                    "type": "u64"
+                }
+            ]
+        },
+        {
+            "name": "burn",
+            "opcode": 2,
+            "params": [
+                {
+                    "name": "from",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "amount",
+                    "type": "u64"
+                }
+            ]
+        },
+        {
+            "name": "balance_of",
+            "opcode": 3,
+            "params": [
+                {
+                    "name": "account",
+                    "type": "Pubkey"
+                }
+            ]
+        },
+        {
+            "name": "transfer",
+            "opcode": 4,
+            "params": [
+                {
+                    "name": "from",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "to",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "amount",
+                    "type": "u64"
+                }
+            ]
+        },
+        {
+            "name": "approve",
+            "opcode": 5,
+            "params": [
+                {
+                    "name": "owner",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "spender",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "amount",
+                    "type": "u64"
+                }
+            ]
+        },
+        {
+            "name": "allowance",
+            "opcode": 6,
+            "params": [
+                {
+                    "name": "owner",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "spender",
+                    "type": "Pubkey"
+                }
+            ]
+        },
+        {
+            "name": "transfer_from",
+            "opcode": 7,
+            "params": [
+                {
+                    "name": "caller",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "from",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "to",
+                    "type": "Pubkey"
+                },
+                {
+                    "name": "amount",
+                    "type": "u64"
+                }
+            ]
+        },
+        {
+            "name": "total_supply",
+            "opcode": 8,
+            "params": []
+        }
+    ]
+}

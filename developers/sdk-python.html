@@ -120,12 +120,15 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>pip install lichen</code></pre>
+                    <pre><code>pip install ./sdk/python</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>,
                         <code>PyNaCl</code>, <code>base58</code>.
                     </p>
+                    <p>The import package is <code>lichen</code>. The examples below use public testnet endpoints; swap
+                        to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> for
+                        mainnet.</p>
                 </div>
             </section>
 
@@ -139,23 +142,23 @@
 from lichen import Connection, Keypair, PublicKey, TransactionBuilder
 
 async def main():
-    # Connect to a local validator
-    conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")
+    # Connect to public testnet
+    conn = Connection("https://testnet-rpc.lichen.network", ws_url="wss://testnet-rpc.lichen.network/ws")
 
     # Generate a keypair
     kp = Keypair.generate()
-    print(f"Address: {kp.public_key()}")
+    print(f"Address: {kp.pubkey()}")
 
     # Check balance
-    balance = await conn.get_balance(kp.public_key())
-    print(f"Balance: {balance['spores']} spores")
+    balance = await conn.get_balance(kp.pubkey())
+    print(f"Balance: {balance['licn']:.9f} LICN ({balance['spores']} spores)")
 
     # Build and send a transfer
     recipient = PublicKey("RecipientBase58Address...")
     blockhash = await conn.get_recent_blockhash()
 
     tx = (TransactionBuilder()
-        .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
+        .add(TransactionBuilder.transfer(kp.pubkey(), recipient, 1_000_000_000))
         .set_recent_blockhash(blockhash)
         .build_and_sign(kp))
 
@@ -165,6 +168,91 @@ async def main():
     await conn.close()
 
 asyncio.run(main())</code></pre>
+                </div>
+
+                <div class="callout callout-info">
+                    <p><strong>LichenID helper:</strong> import <code>LichenIdClient</code> for profile and metadata
+                        reads, skills, vouches, premium-name auctions, delegate lifecycle and delegated profile
+                        writes, recovery approvals, and skill attestation flows. It resolves the <code>YID</code>
+                        program via the symbol registry and handles the ABI byte layout for the wrapped LichenID
+                        methods.</p>
+                    <p><strong>SporePay helper:</strong> import <code>SporePayClient</code> for stream creation,
+                        stream/cliff reads, withdrawable balance checks, withdrawals, cancellations, transfers, and
+                        aggregated stats. Drop to raw <code>call_contract()</code> for admin-only or newly added
+                        contract methods that are not wrapped yet.
+                    </p>
+                    <p><strong>LichenSwap helper:</strong> import <code>LichenSwapClient</code> for symbol-registry
+                        resolution, pool/quote/liquidity reads, TWAP and protocol-fee reads, aggregate stats, and the
+                        common create-pool, add-liquidity, and swap flows. Flash loans,
+                        <code>remove_liquidity</code>, <code>get_reserves</code>, and admin methods stay on the raw
+                        contract-call path.
+                    </p>
+                    <p><strong>ThallLend helper:</strong> import <code>ThallLendClient</code> for symbol-registry
+                        resolution, account/protocol/interest reads, counter reads, aggregate stats, and the common
+                        deposit, withdraw, borrow, repay, and liquidate flows. Flash loans and admin methods stay on
+                        raw <code>call_contract()</code>.</p>
+                    <p><strong>SporeVault helper:</strong> import <code>SporeVaultClient</code> for symbol-registry
+                        resolution, vault/user/strategy reads, aggregate stats, and the common deposit, withdraw, and
+                        harvest flow. Admin-only fee, cap, risk-tier, and strategy-management paths stay on raw
+                        <code>call_contract()</code>.
+                    </p>
+                    <p><strong>BountyBoard helper:</strong> import <code>BountyBoardClient</code> for symbol-registry
+                        resolution, bounty reads (single + count + platform stats), aggregate stats, and the
+                        full bounty lifecycle: create, submit work, approve, and cancel. Admin-only identity-gate,
+                        token-address, fee, and pause controls stay on raw <code>call_contract()</code>.
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>from lichen import (
+    AddSkillParams,
+    Connection,
+    Keypair,
+    LICHEN_ID_DELEGATE_PERMISSIONS,
+    LichenIdClient,
+    LichenSwapClient,
+    RegisterIdentityParams,
+    SetDelegateParams,
+    SetMetadataParams,
+    SetAvailabilityParams,
+    SporePayClient,
+    SporeVaultClient,
+    ThallLendClient,
+)
+
+conn = Connection("https://testnet-rpc.lichen.network", ws_url="wss://testnet-rpc.lichen.network/ws")
+lichen_id = LichenIdClient(conn)
+lichenswap = LichenSwapClient(conn)
+sporepay = SporePayClient(conn)
+sporevault = SporeVaultClient(conn)
+thalllend = ThallLendClient(conn)
+kp = Keypair.generate()
+delegate_kp = Keypair.generate()
+
+await lichen_id.register_identity(kp, RegisterIdentityParams(agent_type=3, name="Research Agent"))
+await lichen_id.add_skill(kp, AddSkillParams(name="research", proficiency=95))
+await lichen_id.set_metadata(kp, SetMetadataParams(metadata={"region": "eu-west", "role": "research"}))
+await lichen_id.set_delegate(kp, SetDelegateParams(
+    delegate=delegate_kp.pubkey(),
+    permissions=LICHEN_ID_DELEGATE_PERMISSIONS["PROFILE"],
+    expires_at_ms=1_700_000_000_000,
+))
+await lichen_id.set_availability(kp, SetAvailabilityParams(status="available"))
+
+profile = await lichen_id.get_profile(kp.pubkey())
+delegate = await lichen_id.get_delegate(kp.pubkey(), delegate_kp.pubkey())
+pool_info = await lichenswap.get_pool_info()
+quote = await lichenswap.get_quote(1_000_000_000, True)
+swap_stats = await lichenswap.get_stats()
+stream = await sporepay.get_stream_info(0)
+vault_stats = await sporevault.get_vault_stats()
+vault_position = await sporevault.get_user_position(kp.pubkey())
+vault_summary = await sporevault.get_stats()
+lending_account = await thalllend.get_account_info(kp.pubkey())
+lending_stats = await thalllend.get_stats()
+
+print(profile, delegate, pool_info, quote, swap_stats, stream, vault_stats, vault_position, vault_summary, lending_account, lending_stats)</code></pre>
                 </div>
             </section>
 
@@ -205,7 +293,10 @@ asyncio.run(main())</code></pre>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
-                    <pre><code>conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")</code></pre>
+                    <pre><code>conn = Connection(
+    "https://testnet-rpc.lichen.network",
+    ws_url="wss://testnet-rpc.lichen.network/ws"
+)</code></pre>
                 </div>
             </div>
 
@@ -310,7 +401,7 @@ print(balance["licn"])    # 5.0</code></pre>
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>blockhash = await conn.get_recent_blockhash()
 tx = (TransactionBuilder()
-    .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
+    .add(TransactionBuilder.transfer(kp.pubkey(), recipient, 1_000_000_000))
     .set_recent_blockhash(blockhash)
     .build_and_sign(kp))
 
@@ -322,6 +413,13 @@ print(f"Signature: {sig}")</code></pre>
             <div class="method-card">
                 <h3 class="method-name">await get_transaction(signature: str) -&gt; Dict[str, Any]</h3>
                 <p class="method-desc">Look up a transaction by its signature hash.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await confirm_transaction(signature: str, timeout: float = 30.0) -&gt;
+                    Optional[Dict[str, Any]]</h3>
+                <p class="method-desc">Poll until a transaction is observed or the timeout expires. Returns the
+                    transaction payload when confirmed, otherwise <code>None</code>.</p>
             </div>
 
             <div class="method-card">
@@ -432,6 +530,21 @@ sig = await conn.call_contract(kp, contract, "transfer", args)</code></pre>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">await call_readonly_contract(contract_id: PublicKey, function_name: str,
+                    args: bytes = b"", from_pubkey: Optional[PublicKey] = None) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Execute a read-only contract call with no state change. This is the transport
+                    primitive used by <code>LichenSwapClient</code> and the fallback path for helper gaps.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <pre><code>entry = await conn.get_symbol_registry("LICHENSWAP")
+program = PublicKey(entry["program"])
+result = await conn.call_readonly_contract(program, "get_pool_info")
+
+print(result["returnCode"], result["returnData"])</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">await upgrade_contract(owner: Keypair, contract: PublicKey, code: bytes) -&gt;
                     str</h3>
                 <p class="method-desc">Upgrade a deployed contract with new WASM bytecode (owner only).</p>
@@ -461,6 +574,18 @@ sig = await conn.call_contract(kp, contract, "transfer", args)</code></pre>
             </div>
 
             <div class="method-card">
+                <h3 class="method-name">await get_symbol_registry(symbol: str) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Resolve a registry symbol such as <code>YID</code>, <code>SPOREPAY</code>, or
+                    <code>LICHENSWAP</code> to its deployed program entry.
+                </p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <pre><code>entry = await conn.get_symbol_registry("LICHENSWAP")
+print(entry["program"])</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
                 <h3 class="method-name">await get_programs() -&gt; Dict[str, Any]</h3>
                 <p class="method-desc">List all deployed programs.</p>
             </div>
@@ -478,6 +603,27 @@ sig = await conn.call_contract(kp, contract, "transfer", args)</code></pre>
             <div class="method-card">
                 <h3 class="method-name">await get_program_storage(program_id: PublicKey) -&gt; Dict[str, Any]</h3>
                 <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_sporepay_stats() -&gt; Dict[str, Any] / await get_lichenswap_stats()
+                    -&gt; Dict[str, Any] / await get_thalllend_stats() -&gt; Dict[str, Any] / await
+                    get_sporevault_stats() -&gt; Dict[str, Any] / await get_bountyboard_stats() -&gt; Dict[str, Any]
+                </h3>
+                <p class="method-desc">Fetch aggregated stats from the public SporePay, LichenSwap, ThallLend,
+                    SporeVault, and BountyBoard RPC routes. Helper clients wrap SporeVault, ThallLend, SporePay, and
+                    LichenSwap
+                    for typed access.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <pre><code>sporepay_stats = await conn.get_sporepay_stats()
+lichenswap_stats = await conn.get_lichenswap_stats()
+thalllend_stats = await conn.get_thalllend_stats()
+sporevault_stats = await conn.get_sporevault_stats()
+bountyboard_stats = await conn.get_bountyboard_stats()
+
+print(sporepay_stats, lichenswap_stats, thalllend_stats, sporevault_stats, bountyboard_stats)</code></pre>
+                </div>
             </div>
 
             <!-- NFT Methods -->
@@ -595,7 +741,7 @@ await conn.off_slot(sub_id)</code></pre>
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>kp = Keypair.generate()
-print(f"Address: {kp.public_key()}")</code></pre>
+print(f"Address: {kp.pubkey()}")</code></pre>
                 </div>
             </div>
 
@@ -625,7 +771,7 @@ kp.save(Path("my-wallet.json"))
 
 # Later
 kp2 = Keypair.load(Path("my-wallet.json"))
-assert kp.public_key() == kp2.public_key()</code></pre>
+assert kp.pubkey() == kp2.pubkey()</code></pre>
                 </div>
             </div>
 
@@ -635,8 +781,14 @@ assert kp.public_key() == kp2.public_key()</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">keypair.public_key() -&gt; PublicKey</h3>
-                <p class="method-desc">Get the public key as a <code>PublicKey</code> object.</p>
+                <h3 class="method-name">keypair.public_key() -&gt; PqPublicKey</h3>
+                <p class="method-desc">Get the ML-DSA-65 public key object used for signature verification.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.pubkey() -&gt; PublicKey</h3>
+                <p class="method-desc">Get the native 32-byte address used for balances, transfers, staking, and
+                    contract calls.</p>
             </div>
 
             <div class="method-card">

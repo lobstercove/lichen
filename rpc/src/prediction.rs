@@ -329,23 +329,17 @@ struct PredictionTradeJson {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct TradeRequest {
     #[serde(rename = "marketId")]
     market_id: u64,
     outcome: u8,
     amount: u64,
-    trader: String,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct CreateMarketRequest {
     question: String,
     category: String,
-    #[serde(rename = "initialLiquidity")]
-    #[serde(default)]
-    initial_liquidity: u64,
     creator: String,
     /// Optional outcome names for multi-outcome markets (2-8). Omit for binary (Yes/No).
     #[serde(default)]
@@ -358,9 +352,6 @@ struct CreateMarketRequest {
     #[serde(rename = "closeSlot")]
     #[serde(default)]
     close_slot: Option<u64>,
-    /// FIX F13: Admin token required for market creation
-    #[serde(default)]
-    admin_token: Option<String>,
 }
 
 #[derive(Serialize)]

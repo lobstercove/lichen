@@ -249,10 +249,8 @@ export LICHEN_REAL_HOME="$REAL_HOME"
 # Contract directory for genesis auto-deploy to find WASM artifacts
 export LICHEN_CONTRACTS_DIR="${LICHEN_CONTRACTS_DIR:-${REAL_HOME}/lichen/contracts}"
 
-# ── Banner ──
-echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║       🦞 Lichen Validator — Production Start         ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+# ── Startup summary ──
+echo -e "${CYAN}Lichen validator startup${NC}"
 echo -e ""
 echo -e "  ${BOLD}Network:${NC}    $NETWORK"
 echo -e "  ${BOLD}Chain ID:${NC}   $CHAIN_ID"
@@ -286,7 +284,7 @@ GENESIS_BIN="./target/release/lichen-genesis"
 if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ] || [ ! -x "$CLI_BIN" ]; then
     echo -e "${CYAN}[1/4]${NC} Building lichen binaries..."
     cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen-faucet --bin lichen 2>&1 | tail -5
-    echo -e "  ${GREEN}✅ Build complete${NC}"
+    echo -e "  ${GREEN}Build complete${NC}"
 else
     echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN, $CLI_BIN"
 fi
@@ -315,11 +313,11 @@ VALIDATOR_CMD+=(--listen-addr 0.0.0.0)
 # ── Start validator ──
 if $IS_GENESIS; then
     echo -e "${CYAN}[2/4]${NC} Running ${GREEN}GENESIS${NC} creation..."
-    echo -e "  🎯 Creating genesis block and treasury"
+    echo -e "  Creating genesis block and treasury"
     echo -e "     Treasury keys will be saved to: ${DB_PATH}/genesis-keys/"
 
     # Fetch real-time prices from Binance for genesis pool pricing
-    echo -e "  📈 Fetching real-time prices for genesis pools..."
+    echo -e "  Fetching real-time prices for genesis pools..."
     PRICE_JSON=$(curl -gsf --max-time 10 \
         'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
         || curl -gsf --max-time 10 \
@@ -362,10 +360,10 @@ except: pass
 
     VALIDATOR_PUBKEY=$(grep -m1 '"publicKeyBase58"' "$VALIDATOR_KEYPAIR_FILE" | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
     if [ -z "$VALIDATOR_PUBKEY" ]; then
-        echo -e "  ${RED}❌ Failed to determine validator pubkey from ${VALIDATOR_KEYPAIR_FILE}${NC}"
+        echo -e "  ${RED}Failed to determine validator pubkey from ${VALIDATOR_KEYPAIR_FILE}${NC}"
         exit 1
     fi
-    echo -e "  👤 Primary validator: ${VALIDATOR_PUBKEY}"
+    echo -e "  Primary validator: ${VALIDATOR_PUBKEY}"
 
     # Verify wallet+keypair consistency: if genesis-wallet.json exists but its
     # treasury_pubkey does NOT match the treasury keypair file, the artifacts
@@ -410,24 +408,24 @@ except:
     fi
 
     if [ ! -f "$GENESIS_WALLET_FILE" ]; then
-        echo -e "  👜 Preparing genesis wallet artifacts..."
+        echo -e "  Preparing genesis wallet artifacts..."
         "$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$GENESIS_ARTIFACT_DIR"
         PREPARE_EXIT=$?
         if [ $PREPARE_EXIT -ne 0 ]; then
-            echo -e "  ${RED}❌ Genesis wallet preparation failed (exit code: $PREPARE_EXIT)${NC}"
+            echo -e "  ${RED}Genesis wallet preparation failed (exit code: $PREPARE_EXIT)${NC}"
             exit 1
         fi
-        echo -e "  ${GREEN}✅ Genesis wallet prepared: ${GENESIS_WALLET_FILE}${NC}"
+        echo -e "  ${GREEN}Genesis wallet prepared: ${GENESIS_WALLET_FILE}${NC}"
     fi
 
-    echo -e "  🔨 Running lichen-genesis..."
+    echo -e "  Running lichen-genesis..."
     "$GENESIS_BIN" --network "$NETWORK" --wallet-file "$GENESIS_WALLET_FILE" --initial-validator "$VALIDATOR_PUBKEY" --db-path "$DB_PATH"
     GENESIS_EXIT=$?
     if [ $GENESIS_EXIT -ne 0 ]; then
-        echo -e "  ${RED}❌ Genesis creation failed (exit code: $GENESIS_EXIT)${NC}"
+        echo -e "  ${RED}Genesis creation failed (exit code: $GENESIS_EXIT)${NC}"
         exit 1
     fi
-    echo -e "  ${GREEN}✅ Genesis block created successfully${NC}"
+    echo -e "  ${GREEN}Genesis block created successfully${NC}"
     echo ""
     echo -e "  Starting validator on top of genesis state..."
 else
@@ -449,14 +447,14 @@ fi
 "$SUPERVISOR_PATH" "${NETWORK}-primary-p${P2P_PORT}" -- "${VALIDATOR_CMD[@]}" >"${LOG_DIR}/validator.log" 2>&1 &
 VALIDATOR_PID=$!
 SUPERVISOR_PID="$VALIDATOR_PID"
-echo -e "  ${GREEN}✅ Validator supervisor started (PID: $SUPERVISOR_PID)${NC}"
+echo -e "  ${GREEN}Validator supervisor started (PID: $SUPERVISOR_PID)${NC}"
 echo -e "     Log: ${LOG_DIR}/validator.log"
 echo ""
 
 # Verify validator is running after a moment
 sleep 2
 if ! kill -0 "$VALIDATOR_PID" 2>/dev/null; then
-    echo -e "${RED}❌ Validator crashed on startup. Last 20 lines of log:${NC}"
+    echo -e "${RED}Validator crashed on startup. Last 20 lines of log:${NC}"
     tail -20 "${LOG_DIR}/validator.log" 2>/dev/null || true
     exit 1
 fi
@@ -473,7 +471,7 @@ if $IS_GENESIS && ! $NO_DEPLOY; then
         --rpc "http://127.0.0.1:${RPC_PORT}" \
         >"${LOG_DIR}/first-boot-deploy.log" 2>&1 &
     DEPLOY_PID=$!
-    echo -e "  ${GREEN}✅ First-boot deployer started (PID: $DEPLOY_PID)${NC}"
+    echo -e "  ${GREEN}First-boot deployer started (PID: $DEPLOY_PID)${NC}"
     echo -e "     Log: ${LOG_DIR}/first-boot-deploy.log"
     echo -e "     Deploys: 28 contracts, DEX pairs, AMM pools, insurance fund"
 else
@@ -502,7 +500,7 @@ if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ]; then
         RUST_LOG=info \
             "$FAUCET_BIN" >"${LOG_DIR}/faucet.log" 2>&1 &
         FAUCET_PID=$!
-        echo -e "  ${GREEN}✅ Faucet started (PID: $FAUCET_PID)${NC}"
+        echo -e "  ${GREEN}Faucet started (PID: $FAUCET_PID)${NC}"
         echo -e "     Log: ${LOG_DIR}/faucet.log"
     else
         echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — port $FAUCET_PORT already in use"
@@ -522,7 +520,7 @@ if $START_CUSTODY; then
     "${REPO_ROOT}/scripts/run-custody.sh" "$NETWORK" \
         >"${LOG_DIR}/custody.log" 2>&1 &
     CUSTODY_PID=$!
-    echo -e "  ${GREEN}✅ Custody started (PID: $CUSTODY_PID)${NC}"
+    echo -e "  ${GREEN}Custody started (PID: $CUSTODY_PID)${NC}"
     echo -e "     Log: ${LOG_DIR}/custody.log"
 else
     CUSTODY_PID=""
@@ -531,9 +529,7 @@ fi
 
 # ── Summary ──
 echo -e ""
-echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  Lichen Validator Running                             ║${NC}"
-echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+echo -e "${CYAN}Lichen validator running${NC}"
 echo -e ""
 echo -e "  ${BOLD}Validator PID:${NC}  $VALIDATOR_PID"
 echo -e "  ${BOLD}Supervisor PID:${NC} $SUPERVISOR_PID"
@@ -561,7 +557,7 @@ if $FOREGROUND && $IS_GENESIS; then
     echo -e "  Waiting for first-boot deployment to finish, then switching to foreground..."
     if [ -n "${DEPLOY_PID:-}" ]; then
         wait "$DEPLOY_PID" 2>/dev/null || true
-        echo -e "  ${GREEN}✅ First-boot deployment complete${NC}"
+        echo -e "  ${GREEN}First-boot deployment complete${NC}"
     fi
     echo -e "  ${BOLD}Switching to foreground (Ctrl+C to stop)...${NC}"
     echo -e ""
@@ -581,4 +577,4 @@ RPC_PORT=$RPC_PORT
 P2P_PORT=$P2P_PORT
 EOF
 
-echo -e "  ${GREEN}🦞 Lichen is running!${NC}"
+echo -e "  ${GREEN}Startup complete${NC}"

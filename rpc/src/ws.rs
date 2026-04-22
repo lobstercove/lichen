@@ -175,8 +175,8 @@ const WS_CONNECTION_QUEUE_CAPACITY: usize = 100;
 /// WebSocket subscription request
 #[derive(Debug, Clone, Deserialize)]
 struct SubscriptionRequest {
-    #[allow(dead_code)]
-    jsonrpc: String,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
     id: serde_json::Value,
     method: String,
     params: Option<serde_json::Value>,
@@ -381,7 +381,6 @@ impl SubscriptionManager {
 /// WebSocket state
 #[derive(Clone)]
 pub struct WsState {
-    #[allow(dead_code)]
     state: StateStore,
     finality: Option<FinalityTracker>,
     event_tx: broadcast::Sender<Event>,
@@ -2235,7 +2234,7 @@ mod tests {
 
     fn make_req(method: &str, params: Option<serde_json::Value>) -> SubscriptionRequest {
         SubscriptionRequest {
-            jsonrpc: "2.0".to_string(),
+            _jsonrpc: "2.0".to_string(),
             id: serde_json::json!(1),
             method: method.to_string(),
             params,
@@ -2537,7 +2536,7 @@ mod tests {
         let hash = Hash([0x11; 32]);
         let response = handle_subscription_request(
             SubscriptionRequest {
-                jsonrpc: "2.0".to_string(),
+                _jsonrpc: "2.0".to_string(),
                 id: serde_json::json!(1),
                 method: "signatureSubscribe".to_string(),
                 params: Some(serde_json::json!([bs58::encode(hash.0).into_string()])),
@@ -2559,7 +2558,7 @@ mod tests {
         let subscription_manager = SubscriptionManager::new();
         let response = handle_subscription_request(
             SubscriptionRequest {
-                jsonrpc: "2.0".to_string(),
+                _jsonrpc: "2.0".to_string(),
                 id: serde_json::json!(1),
                 method: "signatureSubscribe".to_string(),
                 params: Some(serde_json::json!(["not-a-signature"])),

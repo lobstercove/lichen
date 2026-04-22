@@ -48,6 +48,15 @@
             </div>
             <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
 
+            <div class="warning-box">
+                <i class="fas fa-hourglass-half warning-icon"></i>
+                <div>
+                    <strong>This web wallet is session-only.</strong>
+                    <p>Encrypted keys stay in this tab and are removed from persistent browser storage. Use the
+                        extension for long-lived wallet custody.</p>
+                </div>
+            </div>
+
             <div class="welcome-carousel">
                 <div class="carousel-track">
                     <div class="carousel-slide active">
@@ -111,6 +120,15 @@
         <div class="wallet-container">
             <div class="wallet-header">
                 <h2>Create New Wallet</h2>
+            </div>
+
+            <div class="warning-box">
+                <i class="fas fa-hourglass-half warning-icon"></i>
+                <div>
+                    <strong>This web wallet is session-only.</strong>
+                    <p>Your encrypted keys stay only in this tab. Export your recovery phrase or use the extension
+                        before closing the tab.</p>
+                </div>
             </div>
 
             <div class="wizard-steps">
@@ -202,6 +220,15 @@
         <div class="wallet-container">
             <div class="wallet-header">
                 <h2>Import Wallet</h2>
+            </div>
+
+            <div class="warning-box">
+                <i class="fas fa-hourglass-half warning-icon"></i>
+                <div>
+                    <strong>This web wallet is session-only.</strong>
+                    <p>Imported encrypted keys stay only in this tab and are cleared from persistent browser storage.
+                        Use the extension for long-lived wallet custody.</p>
+                </div>
             </div>
 
             <div class="import-tabs">
@@ -820,6 +847,21 @@
                             <select id="networkSelect" class="form-input">
                             </select>
                         </div>
+                        <div class="settings-info-box warning">
+                            <i class="fas fa-triangle-exclamation"></i>
+                            <div>
+                                <strong>Unsafe custom RPC mode</strong>
+                                <div>Untrusted RPCs can spoof balances, recent blockhashes, and confirmation state.
+                                    Signed metadata manifests and bridge routing stay pinned to trusted endpoints.</div>
+                            </div>
+                        </div>
+                        <div class="settings-info-item">
+                            <span class="info-label">Enable unsafe custom RPC mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="unsafeRpcMode">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
                         <div class="form-group">
                             <label>Mainnet RPC</label>
                             <input type="text" id="mainnetRPC" class="form-input"
@@ -831,11 +873,11 @@
                                 placeholder="https://testnet-rpc.lichen.network">
                         </div>
                         <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.5;">
-                            Custom RPC overrides only affect transaction transport and generic account reads. Token
-                            contracts and contract resolution are verified against signed metadata manifests, while
-                            bridge
-                            routing stays pinned to trusted network endpoints.
-                            Leave a field blank to use the official endpoint.
+                            Custom RPC overrides only affect transaction transport and generic account reads, and they
+                            only activate when unsafe custom RPC mode is explicitly enabled. Token contracts and
+                            contract resolution are verified against signed metadata manifests, while bridge routing
+                            stays pinned to trusted network endpoints. Leave a field blank to use the official
+                            endpoint.
                         </p>
                         <button class="btn btn-primary" data-wallet-action="saveNetworkSettings">
                             <i class="fas fa-save"></i> Save Changes

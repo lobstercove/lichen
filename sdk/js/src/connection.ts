@@ -2,10 +2,10 @@
 
 import WebSocket from 'ws';
 import { createHash } from 'crypto';
-import { PublicKey } from './publickey';
-import { Keypair } from './keypair';
-import { Transaction, TransactionBuilder } from './transaction';
-import { encodeTransaction, hexToBytes, bytesToHex } from './bincode';
+import { PublicKey } from './publickey.js';
+import { Keypair } from './keypair.js';
+import { Transaction, TransactionBuilder } from './transaction.js';
+import { encodeTransaction, hexToBytes, bytesToHex } from './bincode.js';
 
 /** SHA-256 hash as Uint8Array */
 function sha256(data: Uint8Array): Uint8Array {
@@ -117,6 +117,18 @@ export interface TransactionProof {
   tx_hash: string;
   root: string;
   proof: ProofStep[];
+}
+
+/**
+ * Read-only contract call result.
+ */
+export interface ReadonlyContractResult {
+  success: boolean;
+  returnData?: string | null;
+  returnCode?: number | null;
+  logs?: string[];
+  error?: string | null;
+  computeUsed?: number;
 }
 
 /**
@@ -527,6 +539,22 @@ export class Connection {
     return this.rpc('simulateTransaction', [txBase64]);
   }
 
+  /**
+   * Execute a read-only contract call without submitting a transaction.
+   */
+  async callReadonlyContract(
+    contractId: PublicKey,
+    functionName: string,
+    args: Uint8Array = new Uint8Array(),
+    from?: PublicKey,
+  ): Promise<ReadonlyContractResult> {
+    const params: string[] = [contractId.toBase58(), functionName, Buffer.from(args).toString('base64')];
+    if (from) {
+      params.push(from.toBase58());
+    }
+    return this.rpc('callContract', params);
+  }
+
   // ============================================================================
   // CONTRACT ENDPOINTS
   // ============================================================================
@@ -564,6 +592,110 @@ export class Connection {
    */
   async getAllContracts(): Promise<any> {
     return this.rpc('getAllContracts');
+  }
+
+  /**
+   * Get a symbol-registry entry.
+   */
+  async getSymbolRegistry(symbol: string): Promise<any> {
+    return this.rpc('getSymbolRegistry', [symbol]);
+  }
+
+  /**
+   * Get the complete LichenID profile for an address.
+   */
+  async getLichenIdProfile(pubkey: PublicKey): Promise<any> {
+    return this.rpc('getLichenIdProfile', [pubkey.toBase58()]);
+  }
+
+  /**
+   * Get the LichenID reputation summary for an address.
+   */
+  async getLichenIdReputation(pubkey: PublicKey): Promise<any> {
+    return this.rpc('getLichenIdReputation', [pubkey.toBase58()]);
+  }
+
+  /**
+   * Get LichenID skills for an address.
+   */
+  async getLichenIdSkills(pubkey: PublicKey): Promise<any> {
+    return this.rpc('getLichenIdSkills', [pubkey.toBase58()]);
+  }
+
+  /**
+   * Get LichenID vouches for an address.
+   */
+  async getLichenIdVouches(pubkey: PublicKey): Promise<any> {
+    return this.rpc('getLichenIdVouches', [pubkey.toBase58()]);
+  }
+
+  /**
+   * Resolve a .lichen name to its owner.
+   */
+  async resolveLichenName(name: string): Promise<any> {
+    return this.rpc('resolveLichenName', [name]);
+  }
+
+  /**
+   * Get premium-name auction state for a .lichen label.
+   */
+  async getNameAuction(name: string): Promise<any> {
+    return this.rpc('getNameAuction', [name]);
+  }
+
+  /**
+   * Get the LichenID agent directory.
+   */
+  async getLichenIdAgentDirectory(options: {
+    type?: number;
+    available?: boolean;
+    min_reputation?: number;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<any> {
+    return this.rpc('getLichenIdAgentDirectory', [options]);
+  }
+
+  /**
+   * Get aggregated LichenID statistics.
+   */
+  async getLichenIdStats(): Promise<any> {
+    return this.rpc('getLichenIdStats');
+  }
+
+  /**
+   * Get aggregated SporePay streaming statistics.
+   */
+  async getSporePayStats(): Promise<any> {
+    return this.rpc('getSporePayStats');
+  }
+
+  /**
+   * Get aggregated LichenSwap AMM statistics.
+   */
+  async getLichenSwapStats(): Promise<any> {
+    return this.rpc('getLichenSwapStats');
+  }
+
+  /**
+   * Get aggregated ThallLend lending statistics.
+   */
+  async getThallLendStats(): Promise<any> {
+    return this.rpc('getThallLendStats');
+  }
+
+  /**
+   * Get aggregated SporeVault yield-vault statistics.
+   */
+  async getSporeVaultStats(): Promise<any> {
+    return this.rpc('getSporeVaultStats');
+  }
+
+  /**
+   * Get aggregated BountyBoard marketplace statistics.
+   */
+  async getBountyBoardStats(): Promise<any> {
+    return this.rpc('getBountyBoardStats');
   }
 
   // ==========================================================================

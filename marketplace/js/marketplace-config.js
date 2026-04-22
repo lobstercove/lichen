@@ -41,13 +41,13 @@
                 if (typeof trustedLichenRpcCall === 'function') {
                     return trustedLichenRpcCall(resolvedMethod, resolvedParams, window.getTrustedMarketNetwork());
                 }
-                return rpcCall(resolvedMethod, resolvedParams, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
+                return lichenRpcCall(resolvedMethod, resolvedParams, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
             });
         }
         if (typeof trustedLichenRpcCall === 'function') {
             return trustedLichenRpcCall(method, params, window.getTrustedMarketNetwork());
         }
-        return rpcCall(method, params, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
+        return lichenRpcCall(method, params, LICHEN_CONFIG.rpc(window.getTrustedMarketNetwork()));
     };
 
     window.setMarketNetwork = function (name) {

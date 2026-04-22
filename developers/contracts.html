@@ -149,11 +149,21 @@
                     <div>
                         <strong><code>lichen token create</code> &mdash; Token Deploy Shortcut</strong>
                         <p>Convenience wrapper for deploying a token WASM contract with
-                            <code>template=&quot;token&quot;</code> preset.
+                            <code>template=&quot;mt20&quot;</code> preset.
                         </p>
                         <ul>
-                            <li>Requires <code>--wasm</code> flag with a compiled WASM token contract</li>
-                            <li>Automatically registers in symbol registry with template=&quot;token&quot;</li>
+                            <li>Requires <code>--wasm</code> with a compiled standard MT-20 token contract that exports
+                                <code>initialize</code>, <code>mint</code>, <code>transfer</code>,
+                                <code>balance_of</code>, and <code>total_supply</code>
+                            </li>
+                            <li>Automatically registers in the symbol registry with
+                                <code>template=&quot;mt20&quot;</code>
+                            </li>
+                            <li>Initializes the token owner, stores full token profile metadata, and can mint the
+                                initial owner supply immediately with <code>--initial-supply</code></li>
+                            <li>Use <code>lichen deploy</code> instead when you need custom init logic or a
+                                non-standard contract interface
+                            </li>
                             <li>Same fee as <code>lichen deploy</code>: <strong>25.001 LICN</strong></li>
                         </ul>
                     </div>
@@ -183,13 +193,14 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td><code>lichen deploy wasm --symbol X</code></td>
+                            <td><code>lichen deploy /path/to/contract.wasm --symbol X</code></td>
                             <td>Deploy WASM + register in symbol registry</td>
                             <td>25.001 LICN</td>
                         </tr>
                         <tr>
                             <td><code>lichen token create "Name" SYM --wasm token.wasm</code></td>
-                            <td>Deploy token WASM + register (template=token)</td>
+                            <td>Deploy standard MT-20 token WASM + register + initialize owner state + optional owner
+                                mint</td>
                             <td>25.001 LICN</td>
                         </tr>
                         <tr>
@@ -247,29 +258,29 @@
                         <tr>
                             <td><code>mintable</code></td>
                             <td>boolean</td>
-                            <td>Whether the supply can grow after deploy</td>
+                            <td>Optional template hint. Authoritative capability flags in RPC are derived from the
+                                contract ABI.</td>
                         </tr>
                         <tr>
                             <td><code>burnable</code></td>
                             <td>boolean</td>
-                            <td>Whether holders can burn their tokens</td>
+                            <td>Optional template hint. Authoritative capability flags in RPC are derived from the
+                                contract ABI.</td>
                         </tr>
                         <tr>
                             <td><code>decimals</code></td>
                             <td>number</td>
                             <td>Decimal precision (0&ndash;18, default 9)</td>
-                        </tr>
                         <tr>
-                            <td><code>initial_supply</code></td>
-                            <td>string</td>
-                            <td>Initial supply in base units (spores)</td>
-                        </tr>
-                    </tbody>
+                            <td><code>lichen deploy /path/to/contract.wasm --symbol X</code></td>
                 </table>
 
-                <p>Additional custom keys are allowed and stored as-is. The Explorer, Wallet, and DEX
+                <p>Registry metadata accepts flat scalar values only: strings, numbers, and booleans. Nested
+                    objects and arrays are rejected during contract registration. The Explorer, Wallet, and DEX
                     frontends read <code>logo_url</code>, <code>description</code>, and social links to render
                     token profiles automatically.</p>
+                <p><code>total_supply</code> is not a registry field. For standard MT-20 contracts it is derived from
+                    live on-chain state through the contract's <code>total_supply()</code> export.</p>
             </section>
 
             <!-- ============================================================ -->
@@ -760,7 +771,115 @@ match call_contract(call) {
                     </div>
                 </div>
 
+                <div class="info-box">
+                    <i class="fas fa-layer-group"></i>
+                    <div>
+                        <strong>Client Integration Rule</strong>
+                        <p>For off-chain apps, prefer first-class SDK helpers when they exist. Today the
+                            JavaScript, Python, and Rust SDKs ship <code>LichenIdClient</code> for identity
+                            registration, profile and metadata reads, skills, vouches, premium-name auctions,
+                            delegate lifecycle, delegated profile writes, recovery approvals, and skill
+                            attestation flows. They also ship <code>SporePayClient</code> for stream creation,
+                            reads, withdrawals, cancellations, transfers, and stats,
+                            <code>LichenSwapClient</code> for pool discovery, quotes, liquidity reads, TWAP/protocol
+                            fee reads, aggregate stats, and the common swap/liquidity writes, and
+                            <code>ThallLendClient</code> for the stable lending flow: deposit, withdraw, borrow,
+                            repay, liquidate, account/protocol reads, interest reads, and stats, plus
+                            <code>SporeVaultClient</code> for vault/user/strategy reads, aggregate stats, and the
+                            common deposit/withdraw/harvest flow. BountyBoard still does not have a first-class
+                            helper, but the base transports expose its aggregate stats method. Most other contracts
+                            still use the generic
+                            <code>callContract()</code>, <code>call_contract()</code>, or
+                            <code>Client::call_contract()</code> surface plus contract-specific RPC reads.
+                        </p>
+                    </div>
+                </div>
+
+                <h3>LichenSwap Off-Chain Example</h3>
+                <p>Use the symbol registry to resolve the deployed program, then either use a first-class helper in the
+                    SDK pages or call the contract directly with JSON ABI arguments when you need an uncovered path.</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Real CLI / RPC Commands</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LICHENSWAP
+
+# Replace &lt;LICHENSWAP_ADDRESS&gt; with the program from the lookup result.
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+  call &lt;LICHENSWAP_ADDRESS&gt; get_quote --args '[1000000000, true]'
+
+curl -X POST https://testnet-rpc.lichen.network \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getLichenSwapStats","params":[]}'</code></pre>
+                </div>
+
+                <h3>ThallLend Off-Chain Example</h3>
+                <p>Use the first-class helper when you want the standard lending flow. When you need the raw contract
+                    surface, resolve <code>LEND</code> through the symbol registry first, then use the contract and
+                    public stats routes directly.</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Real CLI / RPC Commands</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup LEND
+
+# Replace &lt;LEND_ADDRESS&gt; with the program from the lookup result.
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;LEND_ADDRESS&gt; get_protocol_stats
+
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;LEND_ADDRESS&gt; get_interest_rate
+
+curl -X POST https://testnet-rpc.lichen.network \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getThallLendStats","params":[]}'</code></pre>
+                </div>
+
+                <h3>SporeVault Off-Chain Example</h3>
+                <p>Use the first-class helper when you want the standard vault flow. When you need admin or raw
+                    contract coverage, resolve <code>SPOREVAULT</code> once, then use readonly calls for vault- and
+                    strategy-level reads and the public stats route for aggregate monitoring.</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Real CLI / RPC Commands</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup SPOREVAULT
+
+# Replace &lt;SPOREVAULT_ADDRESS&gt; with the program from the lookup result.
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;SPOREVAULT_ADDRESS&gt; get_vault_stats
+
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;SPOREVAULT_ADDRESS&gt; get_strategy_info --args '[0]'
+
+curl -X POST https://testnet-rpc.lichen.network \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getSporeVaultStats","params":[]}'</code></pre>
+                </div>
+
+                <h3>BountyBoard Off-Chain Example</h3>
+                <p>Given first-class helper client coverage, resolve <code>BOUNTY</code> once, then use
+                    <code>BountyBoardClient</code> for bounty reads, stats, and the full create/submit/approve/cancel
+                    lifecycle. CLI and raw RPC calls remain available for admin paths:
+                </p>
+                <div class="code-block">
+                    <div class="code-header"><span>Real CLI / RPC Commands</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen --rpc-url https://testnet-rpc.lichen.network --output json symbol lookup BOUNTY
+
+# Replace &lt;BOUNTY_ADDRESS&gt; with the program from the lookup result.
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;BOUNTY_ADDRESS&gt; get_bounty_count
+
+lichen --rpc-url https://testnet-rpc.lichen.network --output json \
+    call &lt;BOUNTY_ADDRESS&gt; get_platform_stats
+
+curl -X POST https://testnet-rpc.lichen.network \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getBountyBoardStats","params":[]}'</code></pre>
+                </div>
+
                 <h3>LichenID Integration Pattern</h3>
+                <p>The example below is the raw cross-contract path for contracts running on-chain. Wallets, bots,
+                    and backend services should use <code>LichenIdClient</code> instead of hand-packing this ABI when
+                    the helper already covers the flow.</p>
                 <div class="code-block">
                     <div class="code-header"><span>Identity Gate Example</span><button
                             class="code-copy-btn">Copy</button></div>
@@ -793,11 +912,15 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                 </p>
 
                 <div class="method-card">
-                    <div class="method-header"><span class="method-name">Token::new(name, symbol, decimals) &rarr;
+                    <div class="method-header"><span class="method-name">Token::new(name, symbol, decimals, prefix)
+                            &rarr;
                             Token</span></div>
                     <div class="method-body">
-                        <p>Create a new token definition. Call <code>initialize()</code> afterwards to set initial
-                            supply.</p>
+                        <p>Create a new MT-20 token definition. The <code>prefix</code> namespaces storage keys like
+                            <code>{prefix}_bal_*</code>, <code>{prefix}_alw_*</code>, and
+                            <code>{prefix}_supply</code>. Call <code>initialize()</code> afterwards to set the initial
+                            supply.
+                        </p>
                     </div>
                 </div>
 
@@ -813,7 +936,9 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                     <div class="method-header"><span class="method-name">balance_of(&amp;self, account) &rarr;
                             u64</span></div>
                     <div class="method-body">
-                        <p>Get the token balance for an account. Storage key: <code>balance:{address_bytes}</code>.</p>
+                        <p>Get the token balance for an account. Storage key:
+                            <code>{prefix}_bal_{hex_address}</code>.
+                        </p>
                     </div>
                 </div>
 
@@ -847,7 +972,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                             &rarr; ContractResult&lt;()&gt;</span></div>
                     <div class="method-body">
                         <p>Approve a spender to transfer up to <code>amount</code> from the owner's balance. Storage
-                            key: <code>allowance:{owner}:{spender}</code>.</p>
+                            key: <code>{prefix}_alw_{hex_owner}_{hex_spender}</code>.</p>
                     </div>
                 </div>
 
@@ -1197,18 +1322,24 @@ wasm-opt -Oz -o optimized.wasm \
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
                     <pre><code># Deploy with full symbol registration (recommended)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template token --decimals 9 \
-    --supply 1000000 --metadata '{"website":"https://example.com","logo":"https://example.com/logo.png"}'
+    --symbol MYTK --name "My Token" --template mt20 --decimals 9 \
+    --metadata '{"website":"https://example.com","logo_url":"https://example.com/logo.png","description":"Community token"}'
+
+# Standard MT-20 launch with owner mint and token profile metadata
+lichen token create "My Token" MYTK \
+    --wasm target/wasm32-unknown-unknown/release/mt20_token.wasm \
+    --decimals 9 --initial-supply 1000000 \
+    --website https://example.com --logo-url https://example.com/logo.png
 
 # Deploy with just symbol + name (minimum for explorer visibility)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-    --symbol MYTK --name "My Token" --template token --decimals 9
+    --symbol MYTK --name "My Token" --template mt20 --decimals 9
 
 # Deploy without registration (can register later)
 lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
 # Register an already-deployed contract retroactively
-lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --template token
+lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --template mt20
 
 # Output:
 # 🦐 Deploying contract: my_contract.wasm
@@ -1237,11 +1368,14 @@ lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --templ
                                 <code>payments</code>, etc.
                             </li>
                             <li><code>--decimals</code> — Token decimal places (default: 9 for LICN-compatible).</li>
-                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to spores
-                                via decimals).</li>
                             <li><code>--metadata</code> — JSON object with arbitrary metadata (website, logo,
                                 description, etc.).</li>
                         </ul>
+                        <p><strong>Initial supply:</strong> <code>lichen deploy</code> no longer has a metadata-only
+                            <code>--supply</code> path. For standard MT-20 launches, use
+                            <code>lichen token create --initial-supply</code> so the owner actually receives minted
+                            tokens on-chain.
+                        </p>
                         <p><strong>Fee:</strong> 25.001 LICN (25 LICN deploy premium + 0.001 LICN base fee). If deploy
                             fails, the 25 LICN premium is automatically refunded.</p>
                         <p><strong>Auto-register:</strong> If the symbol doesn't appear in the registry after deploy,
@@ -1253,7 +1387,7 @@ lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --templ
                 <div class="code-block">
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
                     <pre><code># Call a function on the deployed contract
-lichen call 7xK9...mN2q initialize '[]'
+lichen call 7xK9...mN2q initialize --args '["AdminPubkey..."]'
 
 # Call with arguments
 lichen call 7xK9...mN2q set_value --args '[42]'</code></pre>

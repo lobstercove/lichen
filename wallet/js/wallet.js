@@ -13,6 +13,11 @@ let walletState = {
     }
 };
 
+const LEGACY_WALLET_STATE_KEY = 'lichenWalletState';
+const SESSION_WALLET_STATE_KEY = 'lichenWalletSessionState';
+const WALLET_PREFERENCES_KEY = 'lichenWalletPreferences';
+let pendingWalletSecurityNotice = null;
+
 // ── Number formatting helpers ──
 function fmtToken(value, maxDecimals) {
     const d = maxDecimals !== undefined ? maxDecimals : (walletState?.settings?.decimals || 9);
@@ -91,7 +96,12 @@ function isLocalNetwork(network = getSelectedNetwork()) {
     return Boolean(LICHEN_CONFIG.networks?.[network]?.local);
 }
 
+function isUnsafeRpcModeEnabled() {
+    return Boolean(walletState.settings && walletState.settings.allowUnsafeRpc);
+}
+
 function getConfiguredRpcOverride(network = getSelectedNetwork()) {
+    if (!isUnsafeRpcModeEnabled()) return '';
     const settings = walletState.settings || {};
     if (network === 'mainnet') return String(settings.mainnetRPC || '').trim();
     if (network === 'testnet') return String(settings.testnetRPC || '').trim();
@@ -640,6 +650,11 @@ document.addEventListener('DOMContentLoaded', () => {
     checkWalletStatus();
     setupEventListeners();
     initNetworkSelector();
+
+    if (pendingWalletSecurityNotice) {
+        showToast(pendingWalletSecurityNotice);
+        pendingWalletSecurityNotice = null;
+    }
 });
 
 function isBridgePopupSession() {
@@ -767,36 +782,210 @@ function bindStaticControls() {
     });
 }
 
-// WL-09: Load wallet state from localStorage.
-// Private keys are encrypted at rest; the lock screen gates access on reopen.
-function loadWalletState() {
-    const stored = localStorage.getItem('lichenWalletState');
-    if (stored) {
-        try {
-            const parsed = JSON.parse(stored);
-            // AUDIT-FIX W-9: Validate structure before trusting parsed data
-            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.wallets)) {
-                walletState = {
-                    wallets: parsed.wallets,
-                    activeWalletId: parsed.activeWalletId || null,
-                    isLocked: parsed.isLocked !== false,
-                    network: parsed.network || LICHEN_CONFIG.defaultNetwork,
-                    settings: {
-                        currency: (parsed.settings && parsed.settings.currency) || 'USD',
-                        lockTimeout: (parsed.settings && typeof parsed.settings.lockTimeout === 'number') ? parsed.settings.lockTimeout : 300000,
-                        ...(parsed.settings || {})
-                    }
-                };
-            }
-        } catch (e) {
-            console.warn('Failed to parse wallet state, using defaults:', e);
-        }
+function defaultWalletSettings() {
+    return {
+        currency: 'USD',
+        lockTimeout: 300000,
+        allowUnsafeRpc: false
+    };
+}
+
+function getWalletDefaultNetwork() {
+    return (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.defaultNetwork)
+        ? LICHEN_CONFIG.defaultNetwork
+        : 'mainnet';
+}
+
+function createDefaultWalletState() {
+    return {
+        wallets: [],
+        activeWalletId: null,
+        isLocked: true,
+        network: getWalletDefaultNetwork(),
+        settings: defaultWalletSettings()
+    };
+}
+
+function sanitizeWalletSettings(rawSettings) {
+    const raw = rawSettings && typeof rawSettings === 'object' ? rawSettings : {};
+    const settings = defaultWalletSettings();
+
+    if (typeof raw.currency === 'string' && raw.currency.trim()) {
+        settings.currency = raw.currency.trim();
+    }
+    if (typeof raw.lockTimeout === 'number' && Number.isFinite(raw.lockTimeout) && raw.lockTimeout >= 0) {
+        settings.lockTimeout = raw.lockTimeout;
+    }
+    if (typeof raw.autoLockMinutes === 'number' && Number.isFinite(raw.autoLockMinutes) && raw.autoLockMinutes >= 0) {
+        settings.autoLockMinutes = raw.autoLockMinutes;
+    }
+    if (typeof raw.decimals === 'number' && Number.isFinite(raw.decimals)) {
+        settings.decimals = raw.decimals;
+    }
+    if (typeof raw.mainnetRPC === 'string' && raw.mainnetRPC.trim()) {
+        settings.mainnetRPC = raw.mainnetRPC.trim();
+    }
+    if (typeof raw.testnetRPC === 'string' && raw.testnetRPC.trim()) {
+        settings.testnetRPC = raw.testnetRPC.trim();
+    }
+    if (raw.allowUnsafeRpc === true && (settings.mainnetRPC || settings.testnetRPC)) {
+        settings.allowUnsafeRpc = true;
+    }
+
+    return settings;
+}
+
+function loadWalletPreferences() {
+    try {
+        const stored = localStorage.getItem(WALLET_PREFERENCES_KEY);
+        if (!stored) return defaultWalletSettings();
+
+        const parsed = JSON.parse(stored);
+        const rawSettings = parsed && typeof parsed === 'object' && parsed.settings
+            ? parsed.settings
+            : parsed;
+
+        return sanitizeWalletSettings(rawSettings);
+    } catch (error) {
+        console.warn('Failed to parse wallet preferences, using defaults:', error);
+        return defaultWalletSettings();
     }
 }
 
-// WL-09: Save wallet state to localStorage
+function saveWalletPreferences() {
+    try {
+        localStorage.setItem(WALLET_PREFERENCES_KEY, JSON.stringify({
+            settings: sanitizeWalletSettings(walletState.settings)
+        }));
+    } catch (error) {
+        console.warn('Failed to persist wallet preferences:', error);
+    }
+}
+
+function clearLegacyWalletState() {
+    try {
+        localStorage.removeItem(LEGACY_WALLET_STATE_KEY);
+    } catch {
+        // Ignore localStorage failures.
+    }
+
+    try {
+        sessionStorage.removeItem(LEGACY_WALLET_STATE_KEY);
+    } catch {
+        // Ignore sessionStorage failures.
+    }
+}
+
+function parseStoredWalletState(stored) {
+    try {
+        const parsed = JSON.parse(stored);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.wallets)) {
+            return null;
+        }
+
+        return {
+            ...createDefaultWalletState(),
+            wallets: parsed.wallets,
+            activeWalletId: parsed.activeWalletId || null,
+            isLocked: parsed.isLocked !== false,
+            network: parsed.network || getWalletDefaultNetwork(),
+            settings: sanitizeWalletSettings(parsed.settings)
+        };
+    } catch (error) {
+        console.warn('Failed to parse wallet state, using defaults:', error);
+        return null;
+    }
+}
+
+function persistSessionWalletState() {
+    try {
+        sessionStorage.setItem(SESSION_WALLET_STATE_KEY, JSON.stringify({
+            ...walletState,
+            settings: sanitizeWalletSettings(walletState.settings)
+        }));
+    } catch (error) {
+        console.warn('Failed to persist session wallet state:', error);
+    }
+}
+
+function renderSessionOnlyWarningBox() {
+    return `
+        <div class="warning-box">
+            <i class="fas fa-hourglass-half warning-icon"></i>
+            <div>
+                <strong>This web wallet is session-only.</strong>
+                <p>Encrypted keys stay in this tab and are removed from persistent browser storage. Use the extension for long-lived wallet custody.</p>
+            </div>
+        </div>
+    `;
+}
+
+function showSessionOnlyWalletToast(actionMessage) {
+    showToast(`${actionMessage} This web wallet now stores secrets for this tab only.`);
+}
+
+// WL-09 / D-01: Load wallet state from sessionStorage.
+// Legacy localStorage wallet material is migrated into the active tab once and then purged.
+function loadWalletState() {
+    const persistedSettings = loadWalletPreferences();
+    walletState = createDefaultWalletState();
+    walletState.settings = persistedSettings;
+
+    let stored = null;
+    let migratedLegacySecrets = false;
+
+    try {
+        stored = sessionStorage.getItem(SESSION_WALLET_STATE_KEY);
+    } catch {
+        // Ignore sessionStorage failures.
+    }
+
+    if (!stored) {
+        try {
+            const legacySessionState = sessionStorage.getItem(LEGACY_WALLET_STATE_KEY);
+            if (legacySessionState) {
+                stored = legacySessionState;
+            }
+        } catch {
+            // Ignore sessionStorage failures.
+        }
+    }
+
+    if (!stored) {
+        try {
+            const legacyPersistentState = localStorage.getItem(LEGACY_WALLET_STATE_KEY);
+            if (legacyPersistentState) {
+                stored = legacyPersistentState;
+                migratedLegacySecrets = true;
+            }
+        } catch {
+            // Ignore localStorage failures.
+        }
+    }
+
+    const parsedState = stored ? parseStoredWalletState(stored) : null;
+    if (parsedState) {
+        walletState = parsedState;
+        walletState.settings = {
+            ...persistedSettings,
+            ...sanitizeWalletSettings(parsedState.settings)
+        };
+        persistSessionWalletState();
+
+        if (migratedLegacySecrets) {
+            pendingWalletSecurityNotice = 'Legacy browser wallet storage was moved into this tab only.';
+        }
+    }
+
+    clearLegacyWalletState();
+}
+
+// WL-09 / D-01: Save wallet secrets in sessionStorage only.
 function saveWalletState() {
-    localStorage.setItem('lichenWalletState', JSON.stringify(walletState));
+    walletState.settings = sanitizeWalletSettings(walletState.settings);
+    persistSessionWalletState();
+    saveWalletPreferences();
+    clearLegacyWalletState();
 }
 
 // Check if wallet exists and show appropriate screen
@@ -828,6 +1017,7 @@ function showUnlockScreen() {
                 <h1>LichenWallet</h1>
             </div>
             <p class="unlock-greeting">Welcome back!</p>
+            ${renderSessionOnlyWarningBox()}
             
             <div class="unlock-form">
                 <label class="unlock-label">Enter Password</label>
@@ -1125,7 +1315,7 @@ async function finishCreateWallet() {
     saveWalletState();
     markBridgePopupUnlockSession();
 
-    showToast('Wallet created successfully!');
+    showSessionOnlyWalletToast('Wallet created successfully.');
     showDashboard();
 
     // AUDIT-FIX W-9: Zero sensitive globals immediately after use
@@ -1246,7 +1436,7 @@ async function importWalletSeed() {
     saveWalletState();
     markBridgePopupUnlockSession();
 
-    showToast('Wallet imported successfully!');
+    showSessionOnlyWalletToast('Wallet imported successfully.');
     showDashboard();
 
     // Auto-register EVM address for MetaMask compatibility (non-blocking)
@@ -1291,7 +1481,7 @@ async function importWalletPrivateKey() {
     saveWalletState();
     markBridgePopupUnlockSession();
 
-    showToast('Wallet imported successfully!');
+    showSessionOnlyWalletToast('Wallet imported successfully.');
     showDashboard();
 
     // Auto-register EVM address for MetaMask compatibility (non-blocking)
@@ -1369,7 +1559,7 @@ async function importWalletJson() {
             saveWalletState();
             markBridgePopupUnlockSession();
 
-            showToast('✅ Wallet imported from JSON keystore!');
+            showSessionOnlyWalletToast('Wallet imported from JSON keystore.');
             showDashboard();
 
             // Auto-register EVM address for MetaMask compatibility (non-blocking)
@@ -3645,14 +3835,9 @@ function logoutWallet() {
 
         // Reset state completely (isLocked false — no wallet exists to lock)
         clearBridgePopupUnlockSession();
-        walletState = {
-            hasWallet: false,
-            isLocked: false,
-            wallets: [],
-            activeWalletId: null,
-            network: 'testnet',
-            settings: {}
-        };
+        walletState = createDefaultWalletState();
+        walletState.isLocked = false;
+        walletState.settings = {};
         saveWalletState();
 
         // Reset identity cache
@@ -4356,13 +4541,19 @@ function updateNetworkDisplay() {
 function saveNetworkSettings() {
     let mainnetRPC;
     let testnetRPC;
+    const unsafeRpcMode = Boolean(document.getElementById('unsafeRpcMode')?.checked);
 
-    try {
-        mainnetRPC = normalizeRpcOverride(document.getElementById('mainnetRPC').value, 'mainnet');
-        testnetRPC = normalizeRpcOverride(document.getElementById('testnetRPC').value, 'testnet');
-    } catch (error) {
-        showToast(`❌ ${error.message}`);
-        return;
+    if (unsafeRpcMode) {
+        try {
+            mainnetRPC = normalizeRpcOverride(document.getElementById('mainnetRPC').value, 'mainnet');
+            testnetRPC = normalizeRpcOverride(document.getElementById('testnetRPC').value, 'testnet');
+        } catch (error) {
+            showToast(`❌ ${error.message}`);
+            return;
+        }
+    } else {
+        mainnetRPC = '';
+        testnetRPC = '';
     }
 
     walletState.settings = walletState.settings || {};
@@ -4370,14 +4561,16 @@ function saveNetworkSettings() {
     else delete walletState.settings.mainnetRPC;
     if (testnetRPC) walletState.settings.testnetRPC = testnetRPC;
     else delete walletState.settings.testnetRPC;
+    if (unsafeRpcMode && (mainnetRPC || testnetRPC)) walletState.settings.allowUnsafeRpc = true;
+    else delete walletState.settings.allowUnsafeRpc;
 
     saveWalletState();
     loadSettingsValues();
 
     rpc.url = getRpcEndpoint();
 
-    if (mainnetRPC || testnetRPC) {
-        showToast('✅ Custom RPC transport saved. Bridge routing stays pinned to trusted endpoints, and token or contract metadata is verified against signed manifests.');
+    if (walletState.settings.allowUnsafeRpc) {
+        showToast('⚠️ Unsafe custom RPC mode saved. Untrusted RPC reads can spoof balances and confirmations; bridge routing and signed metadata remain pinned to trusted endpoints.');
     } else {
         showToast('✅ Network settings reset to official endpoints and signed metadata sources.');
     }
@@ -4635,9 +4828,16 @@ function showDeleteWallet() {
 // Load settings values when opening settings modal
 function loadSettingsValues() {
     const settings = walletState.settings || {};
+    const unsafeRpcMode = Boolean(settings.allowUnsafeRpc && (settings.mainnetRPC || settings.testnetRPC));
 
     if (document.getElementById('networkSelect')) {
         document.getElementById('networkSelect').value = getSelectedNetwork();
+    }
+
+    const unsafeRpcToggle = document.getElementById('unsafeRpcMode');
+    if (unsafeRpcToggle) {
+        unsafeRpcToggle.checked = unsafeRpcMode;
+        unsafeRpcToggle.onchange = updateUnsafeRpcControls;
     }
 
     if (document.getElementById('mainnetRPC')) {
@@ -4661,6 +4861,17 @@ function loadSettingsValues() {
     if (document.getElementById('decimalPlaces')) {
         document.getElementById('decimalPlaces').value = settings.decimals || 6;
     }
+
+    updateUnsafeRpcControls();
+}
+
+function updateUnsafeRpcControls() {
+    const unsafeRpcToggle = document.getElementById('unsafeRpcMode');
+    const unsafeRpcEnabled = Boolean(unsafeRpcToggle && unsafeRpcToggle.checked);
+    ['mainnetRPC', 'testnetRPC'].forEach((fieldId) => {
+        const field = document.getElementById(fieldId);
+        if (field) field.disabled = !unsafeRpcEnabled;
+    });
 }
 
 // Override showSettings to load values when modal opens

@@ -50,8 +50,10 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use chrono::{SecondsFormat, Utc};
 use lichen_core::account::Keypair as TreasuryKeypair;
-use lichen_core::contract::{ContractAccount, ContractContext, ContractEvent, ContractRuntime};
+use lichen_core::contract::{ContractAccount, ContractEvent, ContractRuntime};
+use lichen_core::keypair_file::KeypairFile;
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
@@ -73,6 +75,11 @@ const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
 const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
 const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 const SERVICE_FLEET_CACHE_TTL_MS: u128 = 10_000;
+const SIGNED_METADATA_MANIFEST_SCHEMA_VERSION: u64 = 1;
+const LIVE_SIGNED_METADATA_SOURCE_RPC: &str = "live-rpc";
+const SOLANA_SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
+const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
 
 /// P9-RPC-02: Maximum size for bincode transaction deserialization.
 /// Prevents OOM/DoS from maliciously large payloads.  4 MiB matches
@@ -101,7 +108,7 @@ use std::io::Read;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
@@ -430,7 +437,305 @@ fn load_incident_status_record(state: &RpcState) -> IncidentStatusRecord {
     }
 }
 
-fn load_signed_metadata_manifest_value(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+fn stable_json_stringify(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(boolean) => boolean.to_string(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::String(text) => {
+            serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
+        }
+        serde_json::Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(stable_json_stringify).collect();
+            format!("[{}]", parts.join(","))
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            let parts: Vec<String> = keys
+                .into_iter()
+                .filter_map(|key| {
+                    map.get(key).map(|entry| {
+                        format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                            stable_json_stringify(entry)
+                        )
+                    })
+                })
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+    }
+}
+
+fn signed_metadata_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn live_signed_metadata_source_rpc() -> &'static str {
+    LIVE_SIGNED_METADATA_SOURCE_RPC
+}
+
+fn env_var_enabled(name: &str) -> bool {
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1")
+            | Some("true")
+            | Some("TRUE")
+            | Some("yes")
+            | Some("YES")
+            | Some("on")
+            | Some("ON")
+    )
+}
+
+fn live_signed_metadata_runtime_enabled() -> bool {
+    env_var_enabled("LICHEN_ENABLE_LIVE_SIGNED_METADATA")
+}
+
+fn signed_metadata_keypair_path_from_env() -> Option<PathBuf> {
+    let path = std::env::var("LICHEN_SIGNED_METADATA_KEYPAIR_FILE")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())?;
+
+    if live_signed_metadata_runtime_enabled() {
+        return Some(path);
+    }
+
+    warn!(
+        "ignoring LICHEN_SIGNED_METADATA_KEYPAIR_FILE for this RPC runtime; serve a persisted signed metadata manifest unless LICHEN_ENABLE_LIVE_SIGNED_METADATA=1"
+    );
+    None
+}
+
+const SIGNED_METADATA_REGISTRY_PAGE_SIZE: usize = 512;
+
+fn load_live_signed_metadata_registry_entries(
+    state: &RpcState,
+) -> Result<Vec<SymbolRegistryEntry>, RpcError> {
+    let mut entries = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let mut page = state
+            .state
+            .get_all_symbol_registry_paginated(
+                SIGNED_METADATA_REGISTRY_PAGE_SIZE,
+                cursor.as_deref(),
+            )
+            .map_err(|error| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", error),
+            })?;
+
+        if page.is_empty() {
+            break;
+        }
+
+        let has_more = page.len() == SIGNED_METADATA_REGISTRY_PAGE_SIZE;
+        cursor = page.last().map(|entry| entry.symbol.clone());
+        entries.append(&mut page);
+
+        if !has_more {
+            break;
+        }
+    }
+
+    entries.sort_by(|left, right| left.symbol.cmp(&right.symbol));
+    entries.dedup_by(|left, right| left.symbol == right.symbol);
+    Ok(entries)
+}
+
+fn build_live_signed_metadata_snapshot(
+    state: &RpcState,
+) -> Result<(serde_json::Value, String), RpcError> {
+    let entries = load_live_signed_metadata_registry_entries(state)?;
+
+    let registry_entries: Vec<serde_json::Value> = entries
+        .into_iter()
+        .map(symbol_registry_entry_to_json)
+        .collect();
+    let snapshot = serde_json::json!({
+        "schema_version": SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
+        "network": state.network_id.clone(),
+        "source_rpc": live_signed_metadata_source_rpc(),
+        "symbol_registry": registry_entries,
+    });
+    let snapshot_key = stable_json_stringify(&snapshot);
+    Ok((snapshot, snapshot_key))
+}
+
+fn build_signed_metadata_payload(
+    snapshot: &serde_json::Value,
+    generated_at: &str,
+) -> Result<serde_json::Value, RpcError> {
+    let mut payload = snapshot.as_object().cloned().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Signed metadata snapshot must be a JSON object".to_string(),
+    })?;
+    payload.insert(
+        "generated_at".to_string(),
+        serde_json::Value::String(generated_at.to_string()),
+    );
+    Ok(serde_json::Value::Object(payload))
+}
+
+fn signed_metadata_snapshot_key_from_payload(
+    payload: &serde_json::Value,
+) -> Result<String, RpcError> {
+    let object = payload.as_object().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Signed metadata payload must be a JSON object".to_string(),
+    })?;
+    let snapshot = serde_json::json!({
+        "schema_version": object
+            .get("schema_version")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::from(SIGNED_METADATA_MANIFEST_SCHEMA_VERSION)),
+        "network": object.get("network").cloned().unwrap_or(serde_json::Value::Null),
+        "source_rpc": object
+            .get("source_rpc")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        "symbol_registry": object
+            .get("symbol_registry")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+    });
+    Ok(stable_json_stringify(&snapshot))
+}
+
+fn decode_signed_metadata_key_bytes(
+    value: &serde_json::Value,
+    field_name: &str,
+    path: &Path,
+) -> Result<Vec<u8>, String> {
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_u64()
+                    .filter(|byte| *byte <= u8::MAX as u64)
+                    .map(|byte| byte as u8)
+                    .ok_or_else(|| {
+                        format!(
+                            "{} field in signed metadata keypair {} must be a byte array",
+                            field_name,
+                            path.display()
+                        )
+                    })
+            })
+            .collect(),
+        serde_json::Value::String(encoded) => {
+            let normalized = encoded
+                .strip_prefix("0x")
+                .or_else(|| encoded.strip_prefix("0X"))
+                .unwrap_or(encoded);
+            hex::decode(normalized).map_err(|error| {
+                format!(
+                    "{} field in signed metadata keypair {} must be valid hex: {}",
+                    field_name,
+                    path.display(),
+                    error
+                )
+            })
+        }
+        _ => Err(format!(
+            "{} field in signed metadata keypair {} must be a byte array or hex string",
+            field_name,
+            path.display()
+        )),
+    }
+}
+
+fn load_seed_only_signed_metadata_keypair(path: &Path) -> Result<lichen_core::Keypair, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|error| format!("Failed to parse {}: {}", path.display(), error))?;
+    let object = value.as_object().ok_or_else(|| {
+        format!(
+            "Signed metadata keypair {} must be a JSON object",
+            path.display()
+        )
+    })?;
+
+    let seed_value = object
+        .get("privateKey")
+        .or_else(|| object.get("seed"))
+        .ok_or_else(|| {
+            format!(
+                "Signed metadata keypair {} is missing privateKey/seed",
+                path.display()
+            )
+        })?;
+    let seed_bytes = decode_signed_metadata_key_bytes(seed_value, "privateKey", path)?;
+    if seed_bytes.len() != 32 {
+        return Err(format!(
+            "Signed metadata keypair {} has invalid private seed length {} (expected 32 bytes)",
+            path.display(),
+            seed_bytes.len()
+        ));
+    }
+
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&seed_bytes);
+    let keypair = lichen_core::Keypair::from_seed(&seed);
+    seed.fill(0);
+
+    if let Some(public_key_value) = object.get("publicKey") {
+        let public_key_bytes =
+            decode_signed_metadata_key_bytes(public_key_value, "publicKey", path)?;
+        if keypair.public_key().bytes != public_key_bytes {
+            return Err(format!(
+                "Signed metadata keypair {} publicKey does not match the derived PQ verifying key",
+                path.display()
+            ));
+        }
+    }
+
+    if let Some(expected_signer) = object
+        .get("publicKeyBase58")
+        .or_else(|| object.get("address_base58"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if keypair.pubkey().to_base58() != expected_signer {
+            return Err(format!(
+                "Signed metadata keypair {} publicKeyBase58 does not match the derived PQ address",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(keypair)
+}
+
+fn load_signed_metadata_keypair(path: &Path) -> Result<lichen_core::Keypair, RpcError> {
+    KeypairFile::load(path)
+        .and_then(|keypair_file| keypair_file.to_keypair())
+        .or_else(|canonical_error| {
+            load_seed_only_signed_metadata_keypair(path).map_err(|seed_error| {
+                format!(
+                    "canonical loader error: {}; seed-only fallback error: {}",
+                    canonical_error, seed_error
+                )
+            })
+        })
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!(
+                "Failed to load signed metadata keypair from {}: {}",
+                path.display(),
+                error
+            ),
+        })
+}
+
+fn read_signed_metadata_manifest_file_value(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
     let path = state
         .signed_metadata_manifest_path
         .as_ref()
@@ -476,6 +781,180 @@ fn load_signed_metadata_manifest_value(state: &RpcState) -> Result<serde_json::V
             ),
         });
     }
+
+    Ok(manifest)
+}
+
+fn manifest_matches_live_snapshot(
+    manifest: &serde_json::Value,
+    snapshot_key: &str,
+    signer: &str,
+    keypair: &lichen_core::Keypair,
+) -> bool {
+    if manifest
+        .get("manifest_type")
+        .and_then(serde_json::Value::as_str)
+        != Some("signed_metadata")
+    {
+        return false;
+    }
+
+    if manifest.get("signer").and_then(serde_json::Value::as_str) != Some(signer) {
+        return false;
+    }
+
+    let Some(payload) = manifest.get("payload") else {
+        return false;
+    };
+    let Ok(existing_snapshot_key) = signed_metadata_snapshot_key_from_payload(payload) else {
+        return false;
+    };
+    if existing_snapshot_key != snapshot_key {
+        return false;
+    }
+
+    let Some(signature_value) = manifest.get("signature") else {
+        return false;
+    };
+    let Ok(signature) = serde_json::from_value::<PqSignature>(signature_value.clone()) else {
+        return false;
+    };
+
+    let payload_bytes = stable_json_stringify(payload).into_bytes();
+    lichen_core::Keypair::verify(&keypair.pubkey(), &payload_bytes, &signature)
+}
+
+fn generate_signed_metadata_manifest_value(
+    snapshot: &serde_json::Value,
+    keypair: &lichen_core::Keypair,
+) -> Result<serde_json::Value, RpcError> {
+    let generated_at = signed_metadata_timestamp();
+    let payload = build_signed_metadata_payload(snapshot, &generated_at)?;
+    let payload_bytes = stable_json_stringify(&payload).into_bytes();
+    let signature = keypair.sign(&payload_bytes);
+
+    Ok(serde_json::json!({
+        "schema_version": SIGNED_METADATA_MANIFEST_SCHEMA_VERSION,
+        "manifest_type": "signed_metadata",
+        "signed_at": generated_at,
+        "signer": keypair.pubkey().to_base58(),
+        "payload": payload,
+        "signature": signature,
+    }))
+}
+
+fn persist_signed_metadata_manifest_best_effort(state: &RpcState, manifest: &serde_json::Value) {
+    let Some(path) = state.signed_metadata_manifest_path.as_ref() else {
+        return;
+    };
+
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(error) = fs::create_dir_all(parent) {
+        warn!(
+            "failed to create signed metadata manifest directory {}: {}",
+            parent.display(),
+            error
+        );
+        return;
+    }
+
+    let serialized = match serde_json::to_string_pretty(manifest) {
+        Ok(mut json) => {
+            json.push('\n');
+            json
+        }
+        Err(error) => {
+            warn!(
+                "failed to serialize live signed metadata manifest: {}",
+                error
+            );
+            return;
+        }
+    };
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("signed-metadata-manifest.json");
+    let temp_path = path.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()));
+
+    if let Err(error) = fs::write(&temp_path, serialized.as_bytes()) {
+        warn!(
+            "failed to write live signed metadata manifest temp file {}: {}",
+            temp_path.display(),
+            error
+        );
+        return;
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        warn!(
+            "failed to publish live signed metadata manifest to {}: {}",
+            path.display(),
+            error
+        );
+        let _ = fs::remove_file(&temp_path);
+    }
+}
+
+async fn load_signed_metadata_manifest_value(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    let Some(keypair_path) = state.signed_metadata_keypair_path.as_ref() else {
+        return read_signed_metadata_manifest_file_value(state);
+    };
+
+    let (snapshot, snapshot_key) = build_live_signed_metadata_snapshot(state)?;
+
+    {
+        let guard = state.signed_metadata_manifest_cache.read().await;
+        if let Some(cached) = guard.as_ref() {
+            if cached.snapshot_key == snapshot_key {
+                return Ok(cached.manifest.clone());
+            }
+        }
+    }
+
+    let keypair = match load_signed_metadata_keypair(keypair_path) {
+        Ok(keypair) => keypair,
+        Err(error) => {
+            if state.signed_metadata_manifest_path.is_some() {
+                warn!(
+                    "{}; serving persisted signed metadata manifest instead",
+                    error.message
+                );
+                return read_signed_metadata_manifest_file_value(state);
+            }
+            return Err(error);
+        }
+    };
+    let signer = keypair.pubkey().to_base58();
+
+    if let Some(path) = state.signed_metadata_manifest_path.as_ref() {
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if manifest_matches_live_snapshot(&manifest, &snapshot_key, &signer, &keypair) {
+                    let mut guard = state.signed_metadata_manifest_cache.write().await;
+                    *guard = Some(SignedMetadataManifestCacheEntry {
+                        snapshot_key,
+                        manifest: manifest.clone(),
+                    });
+                    return Ok(manifest);
+                }
+            }
+        }
+    }
+
+    let manifest = generate_signed_metadata_manifest_value(&snapshot, &keypair)?;
+    persist_signed_metadata_manifest_best_effort(state, &manifest);
+
+    let mut guard = state.signed_metadata_manifest_cache.write().await;
+    *guard = Some(SignedMetadataManifestCacheEntry {
+        snapshot_key,
+        manifest: manifest.clone(),
+    });
 
     Ok(manifest)
 }
@@ -1321,8 +1800,8 @@ fn verify_bridge_access_auth_at(
 /// JSON-RPC request
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
-    #[allow(dead_code)]
-    jsonrpc: String,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
     id: serde_json::Value,
     method: String,
     params: Option<serde_json::Value>,
@@ -1557,7 +2036,6 @@ struct RpcState {
     /// DEX real-time event broadcaster (WS push to subscribers)
     _dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
     /// Prediction market real-time event broadcaster
-    #[allow(dead_code)]
     prediction_broadcaster: Arc<ws::PredictionEventBroadcaster>,
     /// Cached validators list — refreshed at most once per slot (~400ms).
     /// Avoids 6+ full CF_VALIDATORS scans per RPC cycle.
@@ -1578,8 +2056,13 @@ struct RpcState {
     custody_auth_token: Option<String>,
     /// Optional incident-response manifest consumed by getIncidentStatus.
     incident_status_path: Option<PathBuf>,
-    /// Optional signed metadata manifest consumed by getSignedMetadataManifest.
+    /// Optional signed metadata manifest file used as a fallback and best-effort persisted cache.
     signed_metadata_manifest_path: Option<PathBuf>,
+    /// Optional release-signing keypair used to synthesize a live signed metadata manifest.
+    /// Intended for local development or explicit opt-in runtimes only.
+    signed_metadata_keypair_path: Option<PathBuf>,
+    /// Cached live signed metadata manifest keyed by the current registry snapshot.
+    signed_metadata_manifest_cache: Arc<RwLock<Option<SignedMetadataManifestCacheEntry>>>,
     /// Optional service-fleet probe config consumed by getServiceFleetStatus.
     service_fleet_config_path: Option<PathBuf>,
     /// Optional authoritative RPC endpoint used to proxy service fleet status.
@@ -1591,6 +2074,12 @@ struct RpcState {
     /// Treasury keypair for signing consensus-based airdrop transactions.
     /// Loaded from the treasury keypair file at startup.
     treasury_keypair: Option<Arc<TreasuryKeypair>>,
+}
+
+#[derive(Debug, Clone)]
+struct SignedMetadataManifestCacheEntry {
+    snapshot_key: String,
+    manifest: serde_json::Value,
 }
 
 const AIRDROP_COOLDOWN_SECS: u64 = 60;
@@ -1754,6 +2243,22 @@ async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcEr
     })?;
     *guard = (Instant::now(), validators.clone());
     Ok(validators)
+}
+
+fn should_expose_public_validator(state: &RpcState, validator: &ValidatorInfo) -> bool {
+    // Hide discovery-only validator records that never obtained stake or
+    // produced any consensus-visible activity. These can appear when an
+    // external peer broadcasts validator announcements solely for P2P routing.
+    validator.blocks_proposed > 0
+        || validator.votes_cast > 0
+        || validator.stake > 0
+        || state
+            .state
+            .get_account(&validator.pubkey)
+            .ok()
+            .flatten()
+            .map(|account| account.staked > 0)
+            .unwrap_or(false)
 }
 
 fn program_list_cache_key(method: &str, params: &Option<serde_json::Value>) -> String {
@@ -3091,6 +3596,167 @@ fn validate_solana_encoding(encoding: &str) -> Result<(), RpcError> {
     }
 }
 
+fn validate_solana_token_account_encoding(encoding: &str) -> Result<(), RpcError> {
+    match encoding {
+        "json" | "jsonParsed" | "base58" | "base64" => Ok(()),
+        _ => Err(RpcError {
+            code: -32602,
+            message: format!("Unsupported token account encoding: {}", encoding),
+        }),
+    }
+}
+
+fn token_registry_decimals(registry: Option<&SymbolRegistryEntry>) -> u8 {
+    registry
+        .and_then(|entry| {
+            entry.decimals.or_else(|| {
+                entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("decimals"))
+                    .and_then(|value| value.as_u64())
+                    .and_then(|value| u8::try_from(value).ok())
+            })
+        })
+        .unwrap_or(9)
+}
+
+fn token_ui_amount(balance: u64, decimals: u8) -> f64 {
+    balance as f64 / 10_f64.powi(decimals as i32)
+}
+
+fn token_ui_amount_string(balance: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return balance.to_string();
+    }
+
+    let scale = 10u128.pow(decimals as u32);
+    let whole = (balance as u128) / scale;
+    let fraction = (balance as u128) % scale;
+    if fraction == 0 {
+        return whole.to_string();
+    }
+
+    let mut fraction_str = format!("{:0width$}", fraction, width = decimals as usize);
+    while fraction_str.ends_with('0') {
+        fraction_str.pop();
+    }
+    format!("{}.{}", whole, fraction_str)
+}
+
+#[derive(Clone)]
+struct SolanaTokenAccountSnapshot {
+    token_account: Pubkey,
+    mint: Pubkey,
+    owner: Pubkey,
+    balance: u64,
+    decimals: u8,
+}
+
+fn encode_solana_token_account_state(snapshot: &SolanaTokenAccountSnapshot) -> Vec<u8> {
+    let mut data = Vec::with_capacity(SOLANA_TOKEN_ACCOUNT_SPACE);
+    data.extend_from_slice(&snapshot.mint.0);
+    data.extend_from_slice(&snapshot.owner.0);
+    data.extend_from_slice(&snapshot.balance.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&[0u8; 32]);
+    data.push(1u8);
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&[0u8; 32]);
+    data
+}
+
+fn solana_token_account_data_json(
+    snapshot: &SolanaTokenAccountSnapshot,
+    encoding: &str,
+) -> Result<serde_json::Value, RpcError> {
+    validate_solana_token_account_encoding(encoding)?;
+
+    if matches!(encoding, "json" | "jsonParsed") {
+        return Ok(serde_json::json!({
+            "program": "spl-token",
+            "parsed": {
+                "type": "account",
+                "info": {
+                    "mint": snapshot.mint.to_base58(),
+                    "owner": snapshot.owner.to_base58(),
+                    "tokenAmount": {
+                        "amount": snapshot.balance.to_string(),
+                        "decimals": snapshot.decimals,
+                        "uiAmount": token_ui_amount(snapshot.balance, snapshot.decimals),
+                        "uiAmountString": token_ui_amount_string(snapshot.balance, snapshot.decimals),
+                    },
+                    "state": "initialized",
+                },
+            },
+            "space": SOLANA_TOKEN_ACCOUNT_SPACE,
+        }));
+    }
+
+    let data = encode_solana_token_account_state(snapshot);
+    let encoded = if encoding == "base58" {
+        bs58::encode(data).into_string()
+    } else {
+        use base64::{engine::general_purpose, Engine as _};
+        general_purpose::STANDARD.encode(data)
+    };
+    Ok(serde_json::json!([encoded, encoding]))
+}
+
+fn solana_token_account_response(
+    snapshot: &SolanaTokenAccountSnapshot,
+    encoding: &str,
+) -> Result<serde_json::Value, RpcError> {
+    Ok(serde_json::json!({
+        "data": solana_token_account_data_json(snapshot, encoding)?,
+        "executable": false,
+        "lamports": SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS,
+        "owner": SOLANA_SPL_TOKEN_PROGRAM_ID,
+        "rentEpoch": 0_u64,
+        "space": SOLANA_TOKEN_ACCOUNT_SPACE,
+    }))
+}
+
+fn load_solana_token_account_snapshot(
+    state: &RpcState,
+    token_account: &Pubkey,
+) -> Result<Option<SolanaTokenAccountSnapshot>, RpcError> {
+    let Some((mint, owner)) = state
+        .state
+        .get_solana_token_account_binding(token_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+    else {
+        return Ok(None);
+    };
+
+    let balance = state
+        .state
+        .get_token_balance(&mint, &owner)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+    let registry = state
+        .state
+        .get_symbol_registry_by_program(&mint)
+        .ok()
+        .flatten();
+
+    Ok(Some(SolanaTokenAccountSnapshot {
+        token_account: *token_account,
+        mint,
+        owner,
+        balance,
+        decimals: token_registry_decimals(registry.as_ref()),
+    }))
+}
+
 fn validate_solana_transaction_details(details: &str) -> Result<(), RpcError> {
     match details {
         "full" | "signatures" | "none" => Ok(()),
@@ -3432,6 +4098,8 @@ pub fn build_rpc_router_with_min_validator_stake(
             .ok()
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty()),
+        signed_metadata_keypair_path: signed_metadata_keypair_path_from_env(),
+        signed_metadata_manifest_cache: Arc::new(RwLock::new(None)),
         service_fleet_config_path: std::env::var("LICHEN_SERVICE_FLEET_CONFIG_FILE")
             .ok()
             .map(PathBuf::from)
@@ -6491,6 +7159,51 @@ async fn handle_simulate_transaction(
 // GX-01: callContract — read-only contract call (equivalent to eth_call)
 // ============================================================================
 
+fn execute_readonly_contract_call(
+    state: &RpcState,
+    contract_pubkey: Pubkey,
+    contract: &ContractAccount,
+    caller: Pubkey,
+    function: &str,
+    args: Vec<u8>,
+) -> Result<lichen_core::contract::ContractResult, RpcError> {
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let live_storage = state
+        .state
+        .load_contract_storage_map(&contract_pubkey)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let context = lichen_core::contract::build_top_level_call_context(
+        lichen_core::contract::ContractContext::with_args(
+            caller,
+            contract_pubkey,
+            0,
+            current_slot,
+            live_storage,
+            args,
+        ),
+        state.state.clone(),
+        lichen_core::contract::DEFAULT_COMPUTE_LIMIT,
+    );
+    let exec_args = context.args.clone();
+
+    let mut runtime = ContractRuntime::get_pooled();
+    let exec_result = runtime.execute(contract, function, &exec_args, context);
+    runtime.return_to_pool();
+
+    exec_result.map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Contract execution failed: {}", error),
+    })
+}
+
+fn merged_contract_logs(result: &lichen_core::contract::ContractResult) -> Vec<String> {
+    let mut logs = result.logs.clone();
+    logs.extend(result.cross_call_logs.iter().cloned());
+    logs
+}
+
 /// Execute a read-only contract call without requiring a signed transaction.
 /// Params: { "contract": "<base58_address>", "function": "<fn_name>", "args": [<bytes>] }
 /// or array form: ["<base58_address>", "<fn_name>", "<base64_args_optional>"]
@@ -6615,52 +7328,43 @@ async fn handle_call_contract(
     } else {
         Pubkey::new([0u8; 32])
     };
-    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let result =
+        execute_readonly_contract_call(state, contract_pubkey, &contract, caller, &function, args)?;
+    let return_data_b64 = encode_readonly_return_data_b64(&result);
+    Ok(serde_json::json!({
+        "success": result.success,
+        "returnData": return_data_b64,
+        "returnCode": result.return_code,
+        "logs": merged_contract_logs(&result),
+        "error": result.error,
+        "computeUsed": result.compute_used,
+    }))
+}
 
-    // Load live storage from the canonical DB (CF_CONTRACT_STORAGE), not the
-    // potentially stale in-memory ContractAccount.storage snapshot.
-    let live_storage = state
-        .state
-        .load_contract_storage_map(&contract_pubkey)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+fn encode_readonly_return_data_b64(
+    result: &lichen_core::contract::ContractResult,
+) -> Option<String> {
+    use base64::{engine::general_purpose, Engine as _};
 
-    let context = ContractContext::with_args(
-        caller,
-        contract_pubkey,
-        0, // no value for read-only calls
-        current_slot,
-        live_storage,
-        args.clone(),
-    );
-
-    let mut runtime = ContractRuntime::get_pooled();
-    let exec_result = runtime.execute(&contract, &function, &args, context);
-    runtime.return_to_pool();
-
-    match exec_result {
-        Ok(result) => {
-            let return_data_b64 = if result.return_data.is_empty() {
-                None
-            } else {
-                use base64::{engine::general_purpose, Engine as _};
-                Some(general_purpose::STANDARD.encode(&result.return_data))
-            };
-            Ok(serde_json::json!({
-                "success": result.success,
-                "returnData": return_data_b64,
-                "returnCode": result.return_code,
-                "logs": result.logs,
-                "error": result.error,
-                "computeUsed": result.compute_used,
-            }))
-        }
-        Err(e) => Err(RpcError {
-            code: -32000,
-            message: format!("Contract execution failed: {}", e),
-        }),
+    if !result.return_data.is_empty() {
+        return Some(general_purpose::STANDARD.encode(&result.return_data));
     }
+
+    result
+        .return_code
+        .map(|return_code| general_purpose::STANDARD.encode(return_code.to_le_bytes()))
+}
+
+fn decode_contract_result_u64(result: &lichen_core::contract::ContractResult) -> Option<u64> {
+    if result.return_data.len() >= 8 {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(&result.return_data[..8]);
+        return Some(u64::from_le_bytes(raw));
+    }
+
+    result
+        .return_code
+        .and_then(|return_code| u64::try_from(return_code).ok())
 }
 
 // ============================================================================
@@ -6975,7 +7679,10 @@ async fn handle_solana_get_account_info(
                 "space": account.data.len(),
             })
         }
-        None => serde_json::Value::Null,
+        None => match load_solana_token_account_snapshot(state, &pubkey)? {
+            Some(snapshot) => solana_token_account_response(&snapshot, encoding)?,
+            None => serde_json::Value::Null,
+        },
     };
 
     Ok(serde_json::json!({
@@ -7285,21 +7992,138 @@ async fn handle_solana_get_token_accounts_by_owner(
         message: format!("Invalid owner: {}", e),
     })?;
 
-    let token_balances = state
+    let second = arr.get(1).filter(|value| !value.is_null());
+    let third = arr.get(2).filter(|value| !value.is_null());
+
+    let (filter, config) = match second {
+        Some(value) => {
+            let object = value.as_object().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: filter/config must be an object".to_string(),
+            })?;
+            if object.contains_key("mint") || object.contains_key("programId") {
+                let config = third
+                    .map(|value| {
+                        value.as_object().ok_or_else(|| RpcError {
+                            code: -32602,
+                            message: "Invalid params: config must be an object".to_string(),
+                        })
+                    })
+                    .transpose()?;
+                (Some(object), config)
+            } else {
+                (None, Some(object))
+            }
+        }
+        None => (
+            None,
+            third
+                .map(|value| {
+                    value.as_object().ok_or_else(|| RpcError {
+                        code: -32602,
+                        message: "Invalid params: config must be an object".to_string(),
+                    })
+                })
+                .transpose()?,
+        ),
+    };
+
+    let mint_filter = filter
+        .and_then(|object| object.get("mint"))
+        .map(|value| {
+            value.as_str().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: mint filter must be a string".to_string(),
+            })
+        })
+        .transpose()?
+        .map(|value| {
+            Pubkey::from_base58(value).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid mint filter: {}", e),
+            })
+        })
+        .transpose()?;
+
+    let program_id_filter = filter
+        .and_then(|object| object.get("programId"))
+        .map(|value| {
+            value.as_str().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: programId filter must be a string".to_string(),
+            })
+        })
+        .transpose()?;
+
+    if mint_filter.is_some() && program_id_filter.is_some() {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected either mint or programId filter".to_string(),
+        });
+    }
+
+    if let Some(program_id_filter) = program_id_filter {
+        if program_id_filter != SOLANA_SPL_TOKEN_PROGRAM_ID {
+            return Ok(serde_json::json!({
+                "context": solana_context(state)?,
+                "value": [],
+            }));
+        }
+    }
+
+    let encoding = config
+        .and_then(|object| object.get("encoding"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("jsonParsed");
+    validate_solana_token_account_encoding(encoding)?;
+
+    let mut token_accounts = state
         .state
-        .get_holder_token_balances(&holder, 100)
+        .get_solana_token_accounts_by_owner(&holder, 100)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
 
+    if token_accounts.is_empty() {
+        let legacy_balances = state
+            .state
+            .get_holder_token_balances(&holder, 100)
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })?;
+
+        for (token_program, _) in legacy_balances {
+            let token_account = state
+                .state
+                .ensure_solana_token_account_binding(&token_program, &holder)
+                .map_err(|e| RpcError {
+                    code: -32000,
+                    message: format!("Database error: {}", e),
+                })?;
+            token_accounts.push((token_account, token_program));
+        }
+    }
+
     let ctx = solana_context(state)?;
     let mut accounts: Vec<serde_json::Value> = Vec::new();
 
-    for (token_program, balance) in &token_balances {
-        if *balance == 0 {
+    for (token_account, token_program) in &token_accounts {
+        if mint_filter
+            .as_ref()
+            .is_some_and(|mint| mint != token_program)
+        {
             continue;
         }
+
+        let balance = state
+            .state
+            .get_token_balance(token_program, &holder)
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })?;
 
         let registry = state
             .state
@@ -7307,48 +8131,17 @@ async fn handle_solana_get_token_accounts_by_owner(
             .ok()
             .flatten();
 
-        let decimals = registry
-            .as_ref()
-            .and_then(|r| r.metadata.as_ref())
-            .and_then(|m| m.get("decimals"))
-            .and_then(|d| d.as_u64())
-            .unwrap_or(9) as u8;
-
-        let ui_amount = *balance as f64 / 10_f64.powi(decimals as i32);
-
-        // Build SPL Token Account data in Solana format:
-        // The "data" field contains a JSON representation since we don't use
-        // Solana's binary account layout. Wallets that parse the JSON encoding
-        // will get correct values; wallets expecting raw SPL binary will use
-        // the parsed field instead.
-        let parsed = serde_json::json!({
-            "program": "spl-token",
-            "parsed": {
-                "type": "account",
-                "info": {
-                    "mint": token_program.to_base58(),
-                    "owner": owner_str,
-                    "tokenAmount": {
-                        "amount": balance.to_string(),
-                        "decimals": decimals,
-                        "uiAmount": ui_amount,
-                        "uiAmountString": format!("{:.width$}", ui_amount, width = decimals as usize),
-                    },
-                    "state": "initialized",
-                },
-            },
-            "space": 165,
-        });
+        let snapshot = SolanaTokenAccountSnapshot {
+            token_account: *token_account,
+            mint: *token_program,
+            owner: holder,
+            balance,
+            decimals: token_registry_decimals(registry.as_ref()),
+        };
 
         accounts.push(serde_json::json!({
-            "pubkey": token_program.to_base58(),
-            "account": {
-                "data": parsed,
-                "executable": false,
-                "lamports": 2039280_u64,
-                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-                "rentEpoch": 0_u64,
-            },
+            "pubkey": snapshot.token_account.to_base58(),
+            "account": solana_token_account_response(&snapshot, encoding)?,
         }));
     }
 
@@ -7373,65 +8166,33 @@ async fn handle_solana_get_token_account_balance(
         message: "Expected array params [token_account]".to_string(),
     })?;
 
-    // In Solana, getTokenAccountBalance takes an account pubkey.
-    // We accept either:
-    //   [token_account] — looks up balance for caller via token program address
-    //   [token_program, holder] — explicit lookup (Lichen extension)
-    let token_program_str = arr
+    let token_account_str = arr
         .first()
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
             message: "Missing token account address".to_string(),
         })?;
-    let holder_str = arr.get(1).and_then(|v| v.as_str());
 
-    let token_program = Pubkey::from_base58(token_program_str).map_err(|e| RpcError {
+    let token_account = Pubkey::from_base58(token_account_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid token account: {}", e),
     })?;
 
-    // If holder provided, use it; otherwise return aggregate supply info
-    let balance = if let Some(h) = holder_str {
-        let holder = Pubkey::from_base58(h).map_err(|e| RpcError {
+    let snapshot =
+        load_solana_token_account_snapshot(state, &token_account)?.ok_or_else(|| RpcError {
             code: -32602,
-            message: format!("Invalid holder: {}", e),
+            message: "Invalid param: could not find token account".to_string(),
         })?;
-        state
-            .state
-            .get_token_balance(&token_program, &holder)
-            .map_err(|e| RpcError {
-                code: -32000,
-                message: format!("Database error: {}", e),
-            })?
-    } else {
-        // Without holder, return 0 — Solana convention for unknown accounts
-        0
-    };
-
-    let registry = state
-        .state
-        .get_symbol_registry_by_program(&token_program)
-        .ok()
-        .flatten();
-
-    let decimals = registry
-        .as_ref()
-        .and_then(|r| r.metadata.as_ref())
-        .and_then(|m| m.get("decimals"))
-        .and_then(|d| d.as_u64())
-        .unwrap_or(9) as u8;
-
-    let ui_amount = balance as f64 / 10_f64.powi(decimals as i32);
     let ctx = solana_context(state)?;
 
     Ok(serde_json::json!({
         "context": ctx,
         "value": {
-            "amount": balance.to_string(),
-            "decimals": decimals,
-            "uiAmount": ui_amount,
-            "uiAmountString": format!("{:.width$}", ui_amount, width = decimals as usize),
+            "amount": snapshot.balance.to_string(),
+            "decimals": snapshot.decimals,
+            "uiAmount": token_ui_amount(snapshot.balance, snapshot.decimals),
+            "uiAmountString": token_ui_amount_string(snapshot.balance, snapshot.decimals),
         },
     }))
 }
@@ -7491,21 +8252,7 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
 
     let validator_list: Vec<_> = validators
         .iter()
-        .filter(|v| {
-            // Exclude validators that were only discovered via P2P announcement
-            // and never had any on-chain stake or block production. These are
-            // "phantom" validators from external nodes that connected briefly.
-            v.blocks_proposed > 0
-                || v.votes_cast > 0
-                || v.stake > 0
-                || state
-                    .state
-                    .get_account(&v.pubkey)
-                    .ok()
-                    .flatten()
-                    .map(|a| a.staked > 0)
-                    .unwrap_or(false)
-        })
+        .filter(|v| should_expose_public_validator(state, v))
         .map(|v| {
             // Get stake + bootstrap info from StakePool (authoritative source)
             let (pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) =
@@ -7923,8 +8670,13 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
     // Get all known validators from cache (refreshed per-slot)
     let validators = cached_validators(state).await?;
 
-    // Build per-validator node info
-    let nodes: Vec<serde_json::Value> = validators
+    // Build per-validator node info for the canonical public validator set.
+    let public_validators: Vec<&ValidatorInfo> = validators
+        .iter()
+        .filter(|validator| should_expose_public_validator(state, validator))
+        .collect();
+
+    let nodes: Vec<serde_json::Value> = public_validators
         .iter()
         .map(|v| {
             let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
@@ -7968,7 +8720,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
         "current_slot": current_slot,
         "cluster_nodes": nodes,
         "connected_peers": connected_peers,
-        "validator_count": validators.len(),
+        "validator_count": public_validators.len(),
         "peer_count": connected_peers.len(),
     }))
 }
@@ -8641,7 +9393,10 @@ async fn handle_get_contract_info(
             if let Some(ref entry) = reg_entry {
                 let prefix = entry.symbol.to_lowercase();
                 let supply_key = format!("{}_supply", prefix);
-                if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
+                if let Ok(Some(v)) = state
+                    .state
+                    .get_contract_storage(&contract_id, supply_key.as_bytes())
+                {
                     if v.len() == 8 {
                         let supply =
                             u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
@@ -8663,13 +9418,50 @@ async fn handle_get_contract_info(
                         }
                     }
                 }
-                // Pull name/symbol/decimals from registry metadata
+                if !tmeta.contains_key("total_supply")
+                    && abi_fn_names.iter().any(|name| name == "total_supply")
+                {
+                    if let Ok(result) = execute_readonly_contract_call(
+                        state,
+                        contract_id,
+                        &ca,
+                        Pubkey::new([0u8; 32]),
+                        "total_supply",
+                        Vec::new(),
+                    ) {
+                        if result.success {
+                            if let Some(supply) = decode_contract_result_u64(&result) {
+                                tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                            }
+                        }
+                    }
+                }
+                // Preserve the full live registry profile metadata in token_metadata.
                 if let Some(ref meta) = entry.metadata {
+                    if let Some(obj) = meta.as_object() {
+                        for (key, value) in obj {
+                            tmeta.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
+                    }
+                }
+                if let Some(decimals) = entry.decimals {
+                    tmeta.insert("decimals".to_string(), serde_json::json!(decimals));
+                } else if let Some(ref meta) = entry.metadata {
                     if let Some(v) = meta.get("decimals") {
                         tmeta.insert("decimals".to_string(), v.clone());
                     }
+                }
+                if let Some(ref name) = entry.name {
+                    if !name.trim().is_empty() {
+                        tmeta.insert("token_name".to_string(), serde_json::json!(name));
+                        tmeta
+                            .entry("name".to_string())
+                            .or_insert_with(|| serde_json::json!(name));
+                    }
+                } else if let Some(ref meta) = entry.metadata {
                     if let Some(v) = meta.get("name") {
                         tmeta.insert("token_name".to_string(), v.clone());
+                        tmeta.entry("name".to_string()).or_insert_with(|| v.clone());
                     }
                 }
                 tmeta.insert("token_symbol".to_string(), serde_json::json!(&entry.symbol));
@@ -9738,13 +10530,21 @@ async fn handle_get_program(
             message: format!("Invalid program data: {}", e),
         })?;
 
+    let storage_stats = state
+        .state
+        .get_contract_storage_stats(&program_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
     Ok(serde_json::json!({
         "program": program_pubkey.to_base58(),
         "owner": contract.owner.to_base58(),
         "code_hash": contract.code_hash.to_hex(),
         "code_size": contract.code.len(),
-        "storage_entries": contract.storage.len(),
-        "storage_size": contract.storage.values().map(|v| v.len()).sum::<usize>(),
+        "storage_entries": storage_stats.entry_count,
+        "storage_size": storage_stats.total_value_size,
         "executable": account.executable,
     }))
 }
@@ -9791,6 +10591,14 @@ async fn handle_get_program_stats(
             message: format!("Invalid program data: {}", e),
         })?;
 
+    let storage_stats = state
+        .state
+        .get_contract_storage_stats(&program_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
     let call_count = state
         .state
         .count_program_calls(&program_pubkey)
@@ -9804,7 +10612,7 @@ async fn handle_get_program_stats(
         "owner": contract.owner.to_base58(),
         "code_hash": contract.code_hash.to_hex(),
         "code_size": contract.code.len(),
-        "storage_entries": contract.storage.len(),
+        "storage_entries": storage_stats.entry_count,
         "call_count": call_count,
     }))
 }
@@ -13689,7 +14497,7 @@ async fn handle_get_incident_status(state: &RpcState) -> Result<serde_json::Valu
 async fn handle_get_signed_metadata_manifest(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
-    load_signed_metadata_manifest_value(state)
+    load_signed_metadata_manifest_value(state).await
 }
 
 async fn handle_get_service_fleet_status(state: &RpcState) -> Result<serde_json::Value, RpcError> {
@@ -15249,22 +16057,26 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 mod tests {
     use super::{
         bridge_access_message, classify_method, classify_solana_method_tier, constant_time_eq,
-        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
-        handle_create_bridge_deposit, handle_get_bridge_deposit, handle_get_governance_events,
-        handle_get_incident_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_set_fee_config, parse_bridge_access_auth,
-        parse_get_block_slot_param, parse_governance_event, parse_rpc_request,
-        parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
-        put_cached_program_list_response, validate_incoming_transaction_limits,
+        decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
+        filter_signatures_for_address, get_cached_program_list_response,
+        handle_create_bridge_deposit, handle_get_all_symbol_registry, handle_get_bridge_deposit,
+        handle_get_contract_info, handle_get_governance_events, handle_get_incident_status,
+        handle_get_program, handle_get_program_stats, handle_get_service_fleet_status,
+        handle_get_signed_metadata_manifest, handle_set_fee_config, handle_solana_get_account_info,
+        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
+        live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
+        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
+        pq_signature_json, put_cached_program_list_response, validate_incoming_transaction_limits,
         validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
         verify_bridge_access_auth_at, AirdropCooldowns, MethodTier, RateLimiter, RpcError,
         RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        PROGRAM_LIST_CACHE_TTL_MS,
+        PROGRAM_LIST_CACHE_TTL_MS, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
     };
     use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
     use lichen_core::account::Keypair as LichenKeypair;
-    use lichen_core::contract::ContractEvent;
-    use lichen_core::{Hash, StateStore, SYSTEM_PROGRAM_ID};
+    use lichen_core::contract::{ContractAccount, ContractEvent, ContractResult};
+    use lichen_core::keypair_file::KeypairFile;
+    use lichen_core::{Hash, Pubkey, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID};
     use lru::LruCache;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
@@ -15304,6 +16116,8 @@ mod tests {
             custody_auth_token: None,
             incident_status_path: None,
             signed_metadata_manifest_path: None,
+            signed_metadata_keypair_path: None,
+            signed_metadata_manifest_cache: Arc::new(RwLock::new(None)),
             service_fleet_config_path: None,
             service_fleet_upstream_rpc_url: None,
             service_fleet_status_path: None,
@@ -15319,8 +16133,213 @@ mod tests {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
     }
 
+    fn put_test_contract_account(
+        state: &StateStore,
+        program_pubkey: Pubkey,
+        owner: Pubkey,
+        snapshot_entries: &[(&[u8], &[u8])],
+    ) {
+        put_test_contract_account_with_code(
+            state,
+            program_pubkey,
+            owner,
+            vec![0x00, 0x61, 0x73, 0x6d],
+            snapshot_entries,
+        );
+    }
+
+    fn put_test_contract_account_with_code(
+        state: &StateStore,
+        program_pubkey: Pubkey,
+        owner: Pubkey,
+        code: Vec<u8>,
+        snapshot_entries: &[(&[u8], &[u8])],
+    ) {
+        let mut contract = ContractAccount::new(code, owner);
+        for (key, value) in snapshot_entries {
+            contract.set_storage((*key).to_vec(), (*value).to_vec());
+        }
+
+        let mut account = lichen_core::Account::new(0, program_pubkey);
+        account.data = serde_json::to_vec(&contract).unwrap();
+        account.executable = true;
+        state.put_account(&program_pubkey, &account).unwrap();
+    }
+
     fn make_hash(value: u8) -> Hash {
         Hash([value; 32])
+    }
+
+    fn wat_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("\\{:02x}", byte)).collect()
+    }
+
+    fn reputation_reader_contract_code(rep_key: &[u8]) -> Vec<u8> {
+        wat::parse_str(format!(
+            r#"(module
+                (import "env" "storage_read" (func $storage_read (param i32 i32 i32 i32) (result i32)))
+                (import "env" "set_return_data" (func $set_return_data (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "{rep_key_data}")
+                (func (export "read_reputation") (result i32)
+                    (local $written i32)
+                    (local.set $written
+                        (call $storage_read (i32.const 0) (i32.const {rep_key_len}) (i32.const 96) (i32.const 8)))
+                    (drop (call $set_return_data (i32.const 96) (local.get $written)))
+                    (i32.const 0))
+            )"#,
+            rep_key_data = wat_bytes(rep_key),
+            rep_key_len = rep_key.len(),
+        ))
+        .expect("reputation reader contract should compile")
+    }
+
+    fn make_contract_result(return_data: Vec<u8>, return_code: Option<i64>) -> ContractResult {
+        ContractResult {
+            return_data,
+            logs: Vec::new(),
+            events: Vec::new(),
+            storage_changes: HashMap::new(),
+            success: true,
+            error: None,
+            compute_used: 0,
+            return_code,
+            cross_call_changes: HashMap::new(),
+            cross_call_events: Vec::new(),
+            cross_call_logs: Vec::new(),
+            ccc_value_deltas: HashMap::new(),
+            native_account_ops: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_info_reads_total_supply_from_canonical_storage() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let program = Pubkey([11u8; 32]);
+        let owner = Pubkey([12u8; 32]);
+        let embedded_supply = 10u64.to_le_bytes();
+        let snapshot_entries = [(b"test_supply".as_slice(), embedded_supply.as_slice())];
+        put_test_contract_account(&rpc_state.state, program, owner, &snapshot_entries);
+        rpc_state
+            .state
+            .put_contract_storage(&program, b"test_supply", &42u64.to_le_bytes())
+            .unwrap();
+        rpc_state
+            .state
+            .register_symbol(
+                "TEST",
+                SymbolRegistryEntry {
+                    symbol: String::new(),
+                    program,
+                    owner,
+                    name: Some("Test Token".to_string()),
+                    template: None,
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+
+        let response =
+            handle_get_contract_info(&rpc_state, Some(serde_json::json!([program.to_base58()])))
+                .await
+                .unwrap();
+
+        assert_eq!(
+            response["token_metadata"]["total_supply"],
+            serde_json::json!(42u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn program_endpoints_report_canonical_storage_stats() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let program = Pubkey([13u8; 32]);
+        let owner = Pubkey([14u8; 32]);
+        let snapshot_entries = [
+            (b"ghost".as_slice(), b"stale".as_slice()),
+            (b"shadow".as_slice(), b"value".as_slice()),
+        ];
+        put_test_contract_account(&rpc_state.state, program, owner, &snapshot_entries);
+        rpc_state
+            .state
+            .put_contract_storage(&program, b"alpha", b"one")
+            .unwrap();
+        rpc_state
+            .state
+            .put_contract_storage(&program, b"beta", b"three")
+            .unwrap();
+
+        let program_response =
+            handle_get_program(&rpc_state, Some(serde_json::json!([program.to_base58()])))
+                .await
+                .unwrap();
+        assert_eq!(program_response["storage_entries"], serde_json::json!(2));
+        assert_eq!(program_response["storage_size"], serde_json::json!(8));
+
+        let stats_response =
+            handle_get_program_stats(&rpc_state, Some(serde_json::json!([program.to_base58()])))
+                .await
+                .unwrap();
+        assert_eq!(stats_response["storage_entries"], serde_json::json!(2));
+    }
+
+    #[tokio::test]
+    async fn call_contract_readonly_uses_top_level_runtime_context() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        use base64::Engine as _;
+
+        let caller = Pubkey([21u8; 32]);
+        let program = Pubkey([22u8; 32]);
+        let owner = Pubkey([23u8; 32]);
+        let lichenid_program = Pubkey([24u8; 32]);
+        let rep_key = lichen_core::contract::lichenid_reputation_storage_key(&caller);
+        let rep_data = 42u64.to_le_bytes().to_vec();
+
+        put_test_contract_account_with_code(
+            &rpc_state.state,
+            program,
+            owner,
+            reputation_reader_contract_code(&rep_key),
+            &[],
+        );
+        rpc_state
+            .state
+            .put_contract_storage(&program, b"pm_lichenid_addr", &lichenid_program.0)
+            .unwrap();
+        rpc_state
+            .state
+            .put_contract_storage(&lichenid_program, &rep_key, &rep_data)
+            .unwrap();
+
+        let response = super::handle_call_contract(
+            &rpc_state,
+            Some(serde_json::json!({
+                "contract": program.to_base58(),
+                "function": "read_reputation",
+                "from": caller.to_base58(),
+            })),
+        )
+        .await
+        .unwrap();
+
+        let return_data = response["returnData"]
+            .as_str()
+            .expect("return data should exist");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(return_data)
+            .expect("return data should decode");
+
+        assert_eq!(decoded, rep_data);
+        assert_eq!(response["success"], serde_json::json!(true));
     }
 
     #[tokio::test]
@@ -15574,6 +16593,41 @@ mod tests {
 
         let filtered = filter_signatures_for_address(indexed, None, None, 1);
         assert_eq!(filtered, vec![(h4, 4)]);
+    }
+
+    #[test]
+    fn test_encode_readonly_return_data_b64_prefers_explicit_return_data() {
+        let result = make_contract_result(vec![1, 2, 3, 4], Some(99));
+
+        assert_eq!(
+            encode_readonly_return_data_b64(&result),
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                [1u8, 2, 3, 4],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_encode_readonly_return_data_b64_falls_back_to_scalar_return_code() {
+        let result = make_contract_result(Vec::new(), Some(1_000_000_000_000_000));
+
+        assert_eq!(
+            encode_readonly_return_data_b64(&result),
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                1_000_000_000_000_000i64.to_le_bytes(),
+            ))
+        );
+    }
+
+    #[test]
+    fn test_decode_contract_result_u64_supports_return_data_and_scalar_return_code() {
+        let from_return_data = make_contract_result(42u64.to_le_bytes().to_vec(), Some(7));
+        let from_return_code = make_contract_result(Vec::new(), Some(84));
+
+        assert_eq!(decode_contract_result_u64(&from_return_data), Some(42));
+        assert_eq!(decode_contract_result_u64(&from_return_code), Some(84));
     }
 
     #[test]
@@ -16214,6 +17268,235 @@ mod tests {
         assert_eq!(result["payload"]["network"], "local-testnet");
         assert_eq!(result["payload"]["symbol_registry"][0]["symbol"], "DEX");
         assert_eq!(result["signature"]["scheme_version"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_generates_live_manifest_and_refreshes_file() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let manifest_path = tmp.path().join("signed-metadata-manifest.json");
+        let keypair_path = tmp.path().join("release-signing-keypair.json");
+        let signing_keypair = LichenKeypair::from_seed(&[42u8; 32]);
+
+        std::fs::write(
+            &keypair_path,
+            serde_json::to_string_pretty(&KeypairFile::from_keypair(&signing_keypair)).unwrap(),
+        )
+        .unwrap();
+
+        state
+            .register_symbol(
+                "DEX",
+                SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program: Pubkey([2u8; 32]),
+                    owner: Pubkey([3u8; 32]),
+                    name: Some("SporeSwap Core".to_string()),
+                    template: Some("dex".to_string()),
+                    metadata: Some(serde_json::json!({ "icon_class": "fa-chart-line" })),
+                    decimals: None,
+                },
+            )
+            .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state.clone());
+        rpc_state.signed_metadata_manifest_path = Some(manifest_path.clone());
+        rpc_state.signed_metadata_keypair_path = Some(keypair_path.clone());
+
+        let first = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("live manifest should be generated from state");
+
+        assert_eq!(first["manifest_type"], "signed_metadata");
+        assert_eq!(
+            first["payload"]["symbol_registry"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            first["payload"]["source_rpc"],
+            live_signed_metadata_source_rpc()
+        );
+        assert_eq!(first["signer"], signing_keypair.pubkey().to_base58());
+        assert!(manifest_path.exists());
+
+        state
+            .register_symbol(
+                "YID",
+                SymbolRegistryEntry {
+                    symbol: "YID".to_string(),
+                    program: Pubkey([4u8; 32]),
+                    owner: Pubkey([5u8; 32]),
+                    name: Some("LichenID".to_string()),
+                    template: Some("identity".to_string()),
+                    metadata: Some(serde_json::json!({ "icon_class": "fa-id-card" })),
+                    decimals: None,
+                },
+            )
+            .unwrap();
+
+        let second = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("live manifest should refresh after registry changes");
+
+        let symbols: Vec<String> = second["payload"]["symbol_registry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("symbol").and_then(serde_json::Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(symbols, vec!["DEX".to_string(), "YID".to_string()]);
+
+        let registry = handle_get_all_symbol_registry(&rpc_state, None)
+            .await
+            .expect("registry list should serialize");
+        let registry_symbols: Vec<String> = registry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("symbol").and_then(serde_json::Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(registry_symbols, symbols);
+
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted["payload"]["symbol_registry"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_generates_live_manifest_without_file_path() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let keypair_path = tmp.path().join("release-signing-keypair.json");
+        let signing_keypair = LichenKeypair::from_seed(&[7u8; 32]);
+
+        std::fs::write(
+            &keypair_path,
+            serde_json::to_string_pretty(&KeypairFile::from_keypair(&signing_keypair)).unwrap(),
+        )
+        .unwrap();
+
+        state
+            .register_symbol(
+                "LUSD",
+                SymbolRegistryEntry {
+                    symbol: "LUSD".to_string(),
+                    program: Pubkey([9u8; 32]),
+                    owner: Pubkey([10u8; 32]),
+                    name: Some("Licn USD".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: Some(
+                        serde_json::json!({ "logo_url": "https://example.invalid/lusd.png" }),
+                    ),
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.signed_metadata_keypair_path = Some(keypair_path);
+
+        let manifest = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("live manifest should be served without a configured file path");
+
+        assert_eq!(manifest["payload"]["symbol_registry"][0]["symbol"], "LUSD");
+        assert_eq!(manifest["signer"], signing_keypair.pubkey().to_base58());
+    }
+
+    #[tokio::test]
+    async fn test_get_signed_metadata_manifest_accepts_seed_only_signing_key_file() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let manifest_path = tmp.path().join("signed-metadata-manifest.json");
+        let keypair_path = tmp.path().join("release-signing-keypair.json");
+        let signing_keypair = LichenKeypair::from_seed(&[11u8; 32]);
+
+        std::fs::write(
+            &keypair_path,
+            serde_json::json!({
+                "description": "ML-DSA-65 release signing seed for the Lichen auto-updater",
+                "usage": "Sign SHA256SUMS files for GitHub releases. The public key is embedded in validator/src/updater.rs",
+                "warning": "KEEP THIS FILE SECURE — it controls binary update integrity",
+                "privateKey": signing_keypair.to_seed(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        state
+            .register_symbol(
+                "LSEED",
+                SymbolRegistryEntry {
+                    symbol: "LSEED".to_string(),
+                    program: Pubkey([21u8; 32]),
+                    owner: Pubkey([22u8; 32]),
+                    name: Some("Legacy Seed Token".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: Some(serde_json::json!({ "icon_class": "fa-seedling" })),
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+
+        let mut rpc_state = make_test_rpc_state(state.clone());
+        rpc_state.signed_metadata_manifest_path = Some(manifest_path.clone());
+        rpc_state.signed_metadata_keypair_path = Some(keypair_path.clone());
+
+        let first = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("seed-only signing key should generate a live manifest");
+
+        assert_eq!(first["signer"], signing_keypair.pubkey().to_base58());
+        assert_eq!(first["payload"]["symbol_registry"][0]["symbol"], "LSEED");
+
+        state
+            .register_symbol(
+                "LSEED2",
+                SymbolRegistryEntry {
+                    symbol: "LSEED2".to_string(),
+                    program: Pubkey([23u8; 32]),
+                    owner: Pubkey([24u8; 32]),
+                    name: Some("Legacy Seed Token 2".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: Some(serde_json::json!({ "icon_class": "fa-seedling" })),
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+
+        let second = handle_get_signed_metadata_manifest(&rpc_state)
+            .await
+            .expect("seed-only signing key should refresh the live manifest");
+
+        let symbols: Vec<String> = second["payload"]["symbol_registry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.get("symbol").and_then(serde_json::Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(symbols, vec!["LSEED".to_string(), "LSEED2".to_string()]);
+
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted["payload"]["symbol_registry"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -17093,5 +18376,188 @@ mod tests {
         assert_eq!(result[0], 0xdd);
         assert_eq!(result[1], 0xf2);
         assert_eq!(result[31], 0xef);
+    }
+
+    #[tokio::test]
+    async fn test_solana_token_account_listing_and_balance_lookup_use_ata_pubkeys() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let owner = Pubkey([0x11u8; 32]);
+        let mint = Pubkey([0x22u8; 32]);
+        let amount = 1_250_000_000u64;
+
+        state
+            .register_symbol(
+                "WSOL",
+                SymbolRegistryEntry {
+                    symbol: "WSOL".to_string(),
+                    program: mint,
+                    owner: Pubkey([0x33u8; 32]),
+                    name: Some("Wrapped SOL".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        state.update_token_balance(&mint, &owner, amount).unwrap();
+
+        let expected_token_account =
+            lichen_core::state::derive_solana_associated_token_address(&owner, &mint).unwrap();
+
+        let result = handle_solana_get_token_accounts_by_owner(
+            &rpc_state,
+            Some(serde_json::json!([
+                owner.to_base58(),
+                { "programId": SOLANA_SPL_TOKEN_PROGRAM_ID },
+                { "encoding": "jsonParsed" }
+            ])),
+        )
+        .await
+        .expect("token account listing should succeed");
+
+        let values = result["value"]
+            .as_array()
+            .expect("token account list should be an array");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["pubkey"], expected_token_account.to_base58());
+        assert_eq!(values[0]["account"]["owner"], SOLANA_SPL_TOKEN_PROGRAM_ID);
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["mint"],
+            mint.to_base58()
+        );
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["owner"],
+            owner.to_base58()
+        );
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"],
+            amount.to_string()
+        );
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"],
+            "1.25"
+        );
+
+        let balance = handle_solana_get_token_account_balance(
+            &rpc_state,
+            Some(serde_json::json!([expected_token_account.to_base58()])),
+        )
+        .await
+        .expect("token account balance lookup should succeed");
+
+        assert_eq!(balance["value"]["amount"], amount.to_string());
+        assert_eq!(balance["value"]["decimals"], 9);
+        assert_eq!(balance["value"]["uiAmountString"], "1.25");
+    }
+
+    #[tokio::test]
+    async fn test_solana_token_account_listing_preserves_zero_balance_accounts() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let owner = Pubkey([0x66u8; 32]);
+        let mint = Pubkey([0x77u8; 32]);
+
+        state
+            .register_symbol(
+                "WBNB",
+                SymbolRegistryEntry {
+                    symbol: "WBNB".to_string(),
+                    program: mint,
+                    owner: Pubkey([0x88u8; 32]),
+                    name: Some("Wrapped BNB".to_string()),
+                    template: Some("token".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        state.update_token_balance(&mint, &owner, 9).unwrap();
+        state.update_token_balance(&mint, &owner, 0).unwrap();
+
+        let token_account =
+            lichen_core::state::derive_solana_associated_token_address(&owner, &mint).unwrap();
+
+        let result = handle_solana_get_token_accounts_by_owner(
+            &rpc_state,
+            Some(serde_json::json!([
+                owner.to_base58(),
+                { "programId": SOLANA_SPL_TOKEN_PROGRAM_ID },
+                { "encoding": "jsonParsed" }
+            ])),
+        )
+        .await
+        .expect("zero-balance token account listing should succeed");
+
+        let values = result["value"]
+            .as_array()
+            .expect("token account list should be an array");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["pubkey"], token_account.to_base58());
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"],
+            "0"
+        );
+        assert_eq!(
+            values[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"],
+            "0"
+        );
+
+        let balance = handle_solana_get_token_account_balance(
+            &rpc_state,
+            Some(serde_json::json!([token_account.to_base58()])),
+        )
+        .await
+        .expect("zero-balance token account lookup should succeed");
+
+        assert_eq!(balance["value"]["amount"], "0");
+        assert_eq!(balance["value"]["uiAmountString"], "0");
+    }
+
+    #[tokio::test]
+    async fn test_solana_get_account_info_returns_synthetic_token_account_payload() {
+        use base64::{engine::general_purpose, Engine as _};
+
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let owner = Pubkey([0x44u8; 32]);
+        let mint = Pubkey([0x55u8; 32]);
+        let amount = 42u64;
+
+        state.update_token_balance(&mint, &owner, amount).unwrap();
+        let token_account =
+            lichen_core::state::derive_solana_associated_token_address(&owner, &mint).unwrap();
+
+        let result = handle_solana_get_account_info(
+            &rpc_state,
+            Some(serde_json::json!([
+                token_account.to_base58(),
+                { "encoding": "base64" }
+            ])),
+        )
+        .await
+        .expect("synthetic token account info should resolve");
+
+        assert_eq!(result["value"]["owner"], SOLANA_SPL_TOKEN_PROGRAM_ID);
+        assert_eq!(result["value"]["space"], SOLANA_TOKEN_ACCOUNT_SPACE);
+
+        let encoded = result["value"]["data"][0]
+            .as_str()
+            .expect("base64 token account data should be present");
+        let decoded = general_purpose::STANDARD
+            .decode(encoded)
+            .expect("decode synthetic token account");
+
+        assert_eq!(decoded.len(), SOLANA_TOKEN_ACCOUNT_SPACE);
+        assert_eq!(&decoded[..32], &mint.0);
+        assert_eq!(&decoded[32..64], &owner.0);
+        let encoded_amount = u64::from_le_bytes(decoded[64..72].try_into().unwrap());
+        assert_eq!(encoded_amount, amount);
     }
 }

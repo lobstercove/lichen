@@ -174,7 +174,10 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.6:</strong> the live server exposes <strong>155 JSON-RPC method names</strong> across native, Solana-compatible, and EVM-compatible dispatch, plus <strong>72 REST endpoints</strong> across the DEX, prediction market, launchpad, and shielded route families.</p>
+                    <p><strong>Implementation-verified surface for v0.5.6:</strong> the live server exposes <strong>155
+                            JSON-RPC method names</strong> across native, Solana-compatible, and EVM-compatible
+                        dispatch, plus <strong>72 REST endpoints</strong> across the DEX, prediction market, launchpad,
+                        and shielded route families.</p>
                 </div>
             </section>
 
@@ -182,8 +185,10 @@
             <section id="endpoint">
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
-                    <p><strong>Production endpoint:</strong> <code>https://rpc.lichen.network</code></p>
-                    <p><strong>Local development:</strong> <code>http://localhost:8899</code></p>
+                    <p><strong>Mainnet endpoint:</strong> <code>https://rpc.lichen.network</code></p>
+                    <p><strong>Testnet endpoint:</strong> <code>https://testnet-rpc.lichen.network</code></p>
+                    <p>The request examples below use public testnet. Swap to mainnet when you are ready to target the
+                        live network.</p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
                 <div class="callout callout-warning">
@@ -232,7 +237,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
 
@@ -257,7 +262,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}'
 
@@ -285,7 +290,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getRecentBlockhash","params":[]}'
 
@@ -309,7 +314,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
 
@@ -336,7 +341,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getMetrics","params":[]}'
 
@@ -388,7 +393,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'
 
@@ -464,7 +469,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
 
@@ -506,7 +511,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
@@ -563,7 +568,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountProof","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", {"commitment":"finalized"}]}'
 
@@ -629,7 +634,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountAtSlot","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", 1000]}'</code></pre>
                 </div>
@@ -669,7 +674,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
@@ -745,7 +750,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42]}'
 
@@ -803,8 +808,9 @@
                     </ul>
                     <p><strong>Contract execution fields</strong> (present for contract call transactions):</p>
                     <ul>
-                        <li><code>return_code</code> — <code>u32</code> WASM return value. 0 = success, non-zero = error
-                            code. Omitted when null.</li>
+                        <li><code>return_code</code> — Raw WASM return value. The meaning is contract-specific; many
+                            contracts use <code>0</code> or <code>1</code> as success, while getters may return the
+                            value directly. Omitted when null.</li>
                         <li><code>return_data</code> — Base64-encoded bytes set via <code>set_return_data()</code>.
                             Omitted when empty.</li>
                         <li><code>contract_logs</code> — Array of log strings emitted via <code>log()</code>. Omitted
@@ -814,7 +820,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["a1b2c3d4..."]}'</code></pre>
                 </div>
@@ -853,7 +859,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["BASE64_ENCODED_TX"]}'
 
@@ -893,7 +899,9 @@
                     <p>Object — Simulation result with logs, runtime error messages, and <code>returnCode</code> for
                         contract-level result inspection.</p>
                     <p><strong>Debugging tip:</strong> A transaction can be structurally valid but contract-semantically
-                        rejected; inspect <code>returnCode</code> to detect these cases.</p>
+                        rejected. Inspect <code>success</code>, runtime errors, and the contract-specific
+                        <code>returnCode</code> together.
+                    </p>
                 </div>
             </div>
 
@@ -1042,7 +1050,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Example</h4>
-                    <pre><code>curl -s http://localhost:8899 -H 'Content-Type: application/json' \
+                    <pre><code>curl -s https://testnet-rpc.lichen.network -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionProof","params":["a1b2c3d4..."]}'</code></pre>
                     <pre><code>{
   "jsonrpc": "2.0",
@@ -1093,7 +1101,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}'</code></pre>
                 </div>
@@ -1322,7 +1330,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":[]}'</code></pre>
                 </div>
@@ -1395,7 +1403,9 @@
                             <tr>
                                 <td>total_supply</td>
                                 <td>number</td>
-                                <td>Total supply in base units (resolved from on-chain storage, fallback to registry)
+                                <td>Total supply in base units (resolved from on-chain storage, fallback to registry).
+                                    JavaScript clients should treat large u64 values carefully once they exceed the
+                                    safe-integer range.
                                 </td>
                             </tr>
                             <tr>
@@ -1425,16 +1435,18 @@
                             </tr>
                         </tbody>
                     </table>
-                    <p>The registry <code>metadata</code> JSON (set via <code>--metadata</code> at deploy) can contain
-                        arbitrary fields.
-                        Common fields: <code>description</code>, <code>website</code>, <code>logo_url</code>,
-                        <code>twitter</code>, <code>telegram</code>, <code>discord</code>.
+                    <p>The registry <code>metadata</code> JSON (set via <code>--metadata</code> at deploy) must be a
+                        flat object of strings, numbers, and booleans (1024 bytes max).
+                        Common profile fields: <code>description</code>, <code>website</code>, <code>logo_url</code>,
+                        <code>twitter</code>, <code>telegram</code>, <code>discord</code>. Capability flags such as
+                        <code>mintable</code> and <code>burnable</code> in <code>getContractInfo</code> are derived from
+                        the contract ABI.
                     </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getContractInfo","params":["ContractPubkey..."]}'</code></pre>
                 </div>
@@ -2011,7 +2023,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTotalBurned","params":[]}'
 
@@ -2076,7 +2088,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST https://testnet-rpc.lichen.network \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}'
 
@@ -2086,7 +2098,7 @@
   "manifest_type":"signed_metadata",
   "signed_at":"2026-04-03T12:00:00Z",
   "signer":"7xK...ReleaseSigner",
-  "payload":{"schema_version":1,"network":"mainnet","generated_at":"2026-04-03T12:00:00Z","symbol_registry":[]},
+    "payload":{"schema_version":1,"network":"testnet","generated_at":"2026-04-03T12:00:00Z","symbol_registry":[]},
   "signature":{"scheme_version":1,"public_key":{"scheme_version":1,"bytes":"..."},"sig":"..."}
 }}</code></pre>
                 </div>
@@ -2173,7 +2185,7 @@
                         <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>,
                         <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code>
                     </li>
-                    <li><code>getLichenswapStats</code>, <code>getThallLendStats</code>, <code>getSporePayStats</code>,
+                    <li><code>getLichenSwapStats</code>, <code>getThallLendStats</code>, <code>getSporePayStats</code>,
                         <code>getSporeVaultStats</code>, <code>getBountyBoardStats</code>,
                         <code>getComputeMarketStats</code>, <code>getMossStorageStats</code>,
                         <code>getLichenMarketStats</code>, <code>getLichenAuctionStats</code>,

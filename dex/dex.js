@@ -3,8 +3,40 @@
    Wired to Lichen RPC + WebSocket
    ======================================== */
 
+function normalizeDexEndpoint(value, allowedProtocols) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    try {
+        const parsed = new URL(raw);
+        if (!Array.isArray(allowedProtocols) || allowedProtocols.indexOf(parsed.protocol) === -1) {
+            return '';
+        }
+        return parsed.toString().replace(/\/+$/, '');
+    } catch (_) {
+        return '';
+    }
+}
+
+function resolveDexEndpointOverride(trustedValue, storedValue, windowValue, allowedProtocols, unsafeModeEnabled) {
+    const trustedEndpoint = normalizeDexEndpoint(trustedValue, allowedProtocols)
+        || String(trustedValue || '').trim().replace(/\/+$/, '');
+    const customEndpoint = normalizeDexEndpoint(storedValue, allowedProtocols)
+        || normalizeDexEndpoint(windowValue, allowedProtocols)
+        || trustedEndpoint;
+    const customRequested = Boolean(customEndpoint && customEndpoint !== trustedEndpoint);
+
+    return {
+        endpoint: unsafeModeEnabled ? customEndpoint : trustedEndpoint,
+        customRequested,
+        unsafeModeActive: Boolean(unsafeModeEnabled && customRequested),
+        ignored: Boolean(!unsafeModeEnabled && customRequested),
+    };
+}
+
 if (typeof window !== 'undefined') {
     window.LICHEN_INCIDENT_NETWORK_STORAGE_KEY = 'dexNetwork';
+    window.LICHEN_UNSAFE_ENDPOINT_MODE_STORAGE_KEY = 'dexUnsafeEndpointMode';
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -19,11 +51,59 @@ document.addEventListener('DOMContentLoaded', () => {
         : (localStorage.getItem('dexNetwork') || undefined);
     const _licnRpc = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.rpc(initialNetwork) : 'http://localhost:8899';
     const _licnWs = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.ws(initialNetwork) : 'ws://localhost:8900';
-    const RPC_BASE = (localStorage.getItem('dexRpcUrl') || window.LICHEN_RPC || _licnRpc).replace(/\/$/, '');
-    const WS_URL = (localStorage.getItem('dexWsUrl') || window.LICHEN_WS || _licnWs).replace(/\/$/, '');
+    const unsafeEndpointOptIn = localStorage.getItem('dexUnsafeEndpointMode') === '1'
+        || window.LICHEN_UNSAFE_ENDPOINT_MODE === true;
+    const rpcEndpointConfig = resolveDexEndpointOverride(
+        _licnRpc,
+        localStorage.getItem('dexRpcUrl'),
+        window.LICHEN_RPC,
+        ['http:', 'https:'],
+        unsafeEndpointOptIn
+    );
+    const wsEndpointConfig = resolveDexEndpointOverride(
+        _licnWs,
+        localStorage.getItem('dexWsUrl'),
+        window.LICHEN_WS,
+        ['ws:', 'wss:'],
+        unsafeEndpointOptIn
+    );
+    const RPC_BASE = rpcEndpointConfig.endpoint;
+    const WS_URL = wsEndpointConfig.endpoint;
     const API_BASE = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
     const CONTRACT_TX_COMPUTE_BUDGET = 1_400_000;
+    const UNSAFE_ENDPOINT_MODE_ACTIVE = rpcEndpointConfig.unsafeModeActive || wsEndpointConfig.unsafeModeActive;
+    const CUSTOM_ENDPOINTS_IGNORED = rpcEndpointConfig.ignored || wsEndpointConfig.ignored;
+
+    function syncUnsafeEndpointBanner() {
+        const banner = document.getElementById('unsafeEndpointBanner');
+        const title = document.getElementById('unsafeEndpointBannerTitle');
+        const message = document.getElementById('unsafeEndpointBannerMessage');
+        if (!banner || !title || !message) return;
+
+        if (UNSAFE_ENDPOINT_MODE_ACTIVE) {
+            banner.classList.remove('hidden', 'ignored');
+            title.textContent = 'Unsafe custom endpoint mode active';
+            message.textContent = 'Untrusted RPC and WebSocket endpoints can spoof balances, blockhashes, market data, and confirmations. Signed metadata registry reads stay pinned to trusted endpoints.';
+            return;
+        }
+
+        if (CUSTOM_ENDPOINTS_IGNORED) {
+            banner.classList.remove('hidden');
+            banner.classList.add('ignored');
+            title.textContent = 'Custom endpoints ignored';
+            message.textContent = 'Detected non-official RPC or WebSocket overrides, but unsafe endpoint mode is not enabled so the DEX stayed on trusted network endpoints.';
+            return;
+        }
+
+        banner.classList.add('hidden');
+        banner.classList.remove('ignored');
+    }
+
+    syncUnsafeEndpointBanner();
+    if (CUSTOM_ENDPOINTS_IGNORED) {
+        console.warn('[DEX] Ignoring custom RPC/WS overrides until unsafe endpoint mode is explicitly enabled.');
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // API Client

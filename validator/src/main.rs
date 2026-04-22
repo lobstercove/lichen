@@ -17,7 +17,6 @@ pub mod block_producer;
 pub mod block_receiver;
 pub mod consensus;
 mod keypair_loader;
-#[allow(dead_code)]
 mod sync;
 mod threshold_signer;
 pub mod updater;
@@ -410,8 +409,8 @@ struct SeedsFile {
 #[derive(Debug, Deserialize)]
 struct SeedNetwork {
     /// Retained for seeds.json schema completeness (deserialized but not read directly).
-    #[allow(dead_code)]
-    chain_id: String,
+    #[serde(rename = "chain_id")]
+    _chain_id: String,
     #[serde(default)]
     bootstrap_peers: Vec<String>,
     #[serde(default)]
@@ -4028,7 +4027,7 @@ fn verify_checkpoint_anchor(
     verify_committed_block_authenticity(&block, validator_set, stake_pool)
 }
 
-#[allow(dead_code)] // Used in tests; removed from block processing (see G-3 removal)
+#[cfg(test)]
 fn verify_block_validators_hash(
     block: &Block,
     validator_set: &ValidatorSet,
@@ -4060,7 +4059,7 @@ fn verify_block_validators_hash(
     Ok(())
 }
 
-#[allow(dead_code)] // Used in tests via verify_block_validators_hash
+#[cfg(test)]
 fn compute_promoted_pending_validators_hash(
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
@@ -4918,6 +4917,68 @@ fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| a == name || a.starts_with(&format!("{}=", name)))
 }
 
+fn load_genesis_config_from_disk(genesis_path: &Path) -> Result<GenesisConfig, String> {
+    info!("📜 Loading genesis from: {}", genesis_path.display());
+    let config = GenesisConfig::from_file(genesis_path)
+        .map_err(|e| format!("Failed to load genesis {}: {}", genesis_path.display(), e))?;
+    info!("✓ Genesis loaded successfully");
+    info!("  Chain ID: {}", config.chain_id);
+    info!("  Total supply: {} LICN", config.total_supply_licn());
+    info!("  Initial validators: {}", config.initial_validators.len());
+    Ok(config)
+}
+
+fn load_startup_genesis_config(
+    explicit_genesis_path: Option<&str>,
+    data_dir_genesis: &Path,
+    network_arg: Option<&str>,
+    allow_local_default_genesis: bool,
+) -> Result<GenesisConfig, String> {
+    if let Some(genesis_path) = explicit_genesis_path {
+        return load_genesis_config_from_disk(Path::new(genesis_path));
+    }
+
+    if data_dir_genesis.exists() {
+        return load_genesis_config_from_disk(data_dir_genesis);
+    }
+
+    match network_arg {
+        Some("testnet") if allow_local_default_genesis => {
+            warn!(
+                "⚠️  No genesis file found at {} — using built-in testnet genesis because --dev-mode is enabled",
+                data_dir_genesis.display()
+            );
+            let config = GenesisConfig::default_testnet();
+            info!("✓ Built-in local-development genesis selected");
+            info!("  Chain ID: {}", config.chain_id);
+            info!("  Total supply: {} LICN", config.total_supply_licn());
+            info!("  Initial validators: {}", config.initial_validators.len());
+            Ok(config)
+        }
+        Some("testnet") => Err(format!(
+            "No genesis config found at {}. Refusing to guess testnet genesis. Provide --genesis <path> or place genesis.json in the data directory. Only explicit local --dev-mode starts may use the built-in testnet genesis.",
+            data_dir_genesis.display()
+        )),
+        Some("mainnet") if allow_local_default_genesis => Err(format!(
+            "No genesis config found at {}. Built-in mainnet genesis is disabled. Provide --genesis <path> or place genesis.json in the data directory.",
+            data_dir_genesis.display()
+        )),
+        Some("mainnet") => Err(format!(
+            "No genesis config found at {}. Refusing to guess mainnet genesis. Provide --genesis <path> or place genesis.json in the data directory.",
+            data_dir_genesis.display()
+        )),
+        Some(other) => Err(format!(
+            "Unknown --network '{}'. Refusing to guess genesis. Provide --genesis <path> or place genesis.json at {}.",
+            other,
+            data_dir_genesis.display()
+        )),
+        None => Err(format!(
+            "No genesis config found at {} and --network was not provided. Provide --genesis <path> or place genesis.json in the data directory. Refusing to guess genesis.",
+            data_dir_genesis.display()
+        )),
+    }
+}
+
 fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attached: bool) -> bool {
     if !has_flag(args, "--archive-mode") {
         return false;
@@ -5226,6 +5287,10 @@ async fn run_validator() {
     // Parse --network flag (testnet | mainnet)
     let network_arg = get_flag_value(&args, &["--network"]).map(|s| s.to_lowercase());
 
+    // Parse --dev-mode early because it controls whether built-in local genesis
+    // may be used when no explicit genesis file is present.
+    let dev_mode = has_flag(&args, "--dev-mode");
+
     // Parse --p2p-port flag properly
     let p2p_port = get_flag_value(&args, &["--p2p-port"])
         .and_then(|s| s.parse::<u16>().ok())
@@ -5398,46 +5463,19 @@ async fn run_validator() {
     // GENESIS CONFIGURATION
     // ========================================================================
 
-    // Load genesis configuration from file or use defaults
+    // Load genesis configuration from disk. Built-in defaults are reserved for
+    // explicit local-development starts.
     let data_dir_genesis = data_dir_path.join("genesis.json");
-    let effective_genesis_path = genesis_path.clone().or_else(|| {
-        data_dir_genesis
-            .exists()
-            .then(|| data_dir_genesis.display().to_string())
-    });
-
-    let genesis_config = if let Some(ref genesis_file) = effective_genesis_path {
-        info!("📜 Loading genesis from: {}", genesis_file);
-        match GenesisConfig::from_file(genesis_file) {
-            Ok(config) => {
-                info!("✓ Genesis loaded successfully");
-                info!("  Chain ID: {}", config.chain_id);
-                info!("  Total supply: {} LICN", config.total_supply_licn());
-                info!("  Initial validators: {}", config.initial_validators.len());
-                config
-            }
-            Err(e) => {
-                error!("Failed to load genesis: {}", e);
-                return;
-            }
-        }
-    } else {
-        match network_arg.as_deref() {
-            Some("mainnet") => {
-                info!("⚠️  No genesis file specified, using default mainnet genesis");
-                GenesisConfig::default_mainnet()
-            }
-            Some("testnet") | None => {
-                info!("⚠️  No genesis file specified, using default testnet genesis");
-                GenesisConfig::default_testnet()
-            }
-            Some(other) => {
-                warn!(
-                    "⚠️  Unknown network '{}', defaulting to testnet genesis",
-                    other
-                );
-                GenesisConfig::default_testnet()
-            }
+    let genesis_config = match load_startup_genesis_config(
+        genesis_path.as_deref(),
+        &data_dir_genesis,
+        network_arg.as_deref(),
+        dev_mode,
+    ) {
+        Ok(config) => config,
+        Err(err) => {
+            error!("{}", err);
+            return;
         }
     };
 
@@ -5926,8 +5964,6 @@ async fn run_validator() {
     // VALIDATOR IDENTITY
     // ========================================================================
 
-    // Parse --dev-mode flag (disables machine fingerprint, blocks mainnet)
-    let dev_mode = has_flag(&args, "--dev-mode");
     if dev_mode {
         info!("🔧 Developer mode enabled — machine fingerprint disabled");
         if genesis_config.chain_id.contains("mainnet") {
@@ -6360,8 +6396,13 @@ async fn run_validator() {
         let mut interval = time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let pool = stake_pool_for_save.read().await;
-            if let Err(e) = state_for_stake_save.put_stake_pool(&pool) {
+            // Clone under the read lock, then drop the guard before RocksDB I/O
+            // so block application can still acquire the write lock promptly.
+            let pool_snapshot = {
+                let pool = stake_pool_for_save.read().await;
+                pool.clone()
+            };
+            if let Err(e) = state_for_stake_save.put_stake_pool(&pool_snapshot) {
                 warn!("⚠️  Failed to persist stake pool: {}", e);
             }
         }
@@ -7096,7 +7137,7 @@ async fn run_validator() {
                 // that activated at H is missing from verify_commit's
                 // denominator and the 2/3 check can spuriously fail.
                 if block_slot > 0 {
-                    let pool = stake_pool_for_blocks.read().await;
+                    let pool = stake_pool_for_blocks.read().await.clone();
                     activate_pending_validators_for_height(
                         &state_for_blocks,
                         &validator_set_for_blocks,
@@ -8528,7 +8569,7 @@ async fn run_validator() {
                         // and reject blocks once they enter the full-validation
                         // window due to validators_hash mismatch.
                         {
-                            let pool = stake_pool_for_blocks.read().await;
+                            let pool = stake_pool_for_blocks.read().await.clone();
                             activate_pending_validators_for_height(
                                 &state_for_blocks,
                                 &validator_set_for_blocks,
@@ -14015,7 +14056,7 @@ async fn execute_consensus_actions(
             // path did), causing leader election disagreements when a
             // rejoining node has a different active validator set.
             {
-                let pool = stake_pool.read().await;
+                let pool = stake_pool.read().await.clone();
                 activate_pending_validators_for_height(
                     state,
                     validator_set,
@@ -15584,5 +15625,56 @@ mod tests {
             trader_acc.spores, 600,
             "user should receive margin + capped profit as native LICN"
         );
+    }
+
+    #[test]
+    fn load_startup_genesis_config_requires_explicit_source_without_dev_mode() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir_genesis = temp_dir.path().join("genesis.json");
+
+        let err = load_startup_genesis_config(None, &data_dir_genesis, Some("testnet"), false)
+            .expect_err("startup without a genesis file must fail closed");
+
+        assert!(err.contains("Refusing to guess testnet genesis"));
+    }
+
+    #[test]
+    fn load_startup_genesis_config_rejects_unknown_network() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir_genesis = temp_dir.path().join("genesis.json");
+
+        let err = load_startup_genesis_config(None, &data_dir_genesis, Some("staging"), true)
+            .expect_err("unknown network must not fall back to testnet");
+
+        assert!(err.contains("Unknown --network 'staging'"));
+    }
+
+    #[test]
+    fn load_startup_genesis_config_allows_local_testnet_override() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir_genesis = temp_dir.path().join("genesis.json");
+
+        let config = load_startup_genesis_config(None, &data_dir_genesis, Some("testnet"), true)
+            .expect("local dev override should allow built-in testnet genesis");
+
+        assert!(config.chain_id.contains("testnet"));
+    }
+
+    #[test]
+    fn load_startup_genesis_config_prefers_data_dir_file() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir_genesis = temp_dir.path().join("genesis.json");
+        let mut file_config = GenesisConfig::default_testnet();
+        file_config.chain_id = "lichen-testnet-custom".to_string();
+        fs::write(
+            &data_dir_genesis,
+            serde_json::to_string_pretty(&file_config).expect("serialize genesis config"),
+        )
+        .expect("write genesis config");
+
+        let loaded = load_startup_genesis_config(None, &data_dir_genesis, Some("mainnet"), false)
+            .expect("data-dir genesis should override network defaults");
+
+        assert_eq!(loaded.chain_id, "lichen-testnet-custom");
     }
 }

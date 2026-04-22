@@ -74,14 +74,16 @@ async function loadContracts() {
     tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><div class="loading-spinner"></div> Loading contracts...</td></tr>';
 
     try {
-        // Fetch all deployed programs + symbol registry in parallel
+        // Fetch all deployed programs + registry sources in parallel.
         var results = await Promise.all([
             trustedRpcCall('getAllContracts', []).catch(function () { return null; }),
             trustedRpcCall('getAllSymbolRegistry', []).catch(function () { return null; }),
+            (typeof getSignedMetadataManifest === 'function' ? getSignedMetadataManifest().catch(function () { return null; }) : Promise.resolve(null)),
         ]);
 
         var programs = (results[0] && results[0].contracts) ? results[0].contracts : [];
         var registry = (results[1] && results[1].entries) ? results[1].entries : [];
+        var signedRegistry = (results[2] && Array.isArray(results[2].registryEntries)) ? results[2].registryEntries : [];
 
         // Index registry by program address
         var regByProgram = {};
@@ -90,10 +92,17 @@ async function loadContracts() {
             if (r.program) regByProgram[r.program] = r;
         }
 
+        var signedByProgram = {};
+        for (var j = 0; j < signedRegistry.length; j++) {
+            var signedEntry = signedRegistry[j];
+            if (signedEntry && signedEntry.program) signedByProgram[signedEntry.program] = signedEntry;
+        }
+
         // Enrich each program with contract info + registry
         var enrichPromises = programs.map(async function (prog) {
-            var pid = prog.program_id;
+            var pid = prog.program_id || prog.program || prog.address || '';
             var reg = regByProgram[pid] || null;
+            var signed = signedByProgram[pid] || null;
             var info = null;
             var abi = null;
 
@@ -106,14 +115,38 @@ async function loadContracts() {
                 abi = fetched[1];
             } catch (e) { }
 
-            var template = (reg && reg.template) || prog.template || (prog.metadata && prog.metadata.template) || '';
+            var tokenMetadata = (info && info.token_metadata && typeof info.token_metadata === 'object') ? info.token_metadata : {};
+            var registryMetadata = (reg && reg.metadata && typeof reg.metadata === 'object') ? reg.metadata : {};
+            var signedMetadata = (signed && signed.metadata && typeof signed.metadata === 'object') ? signed.metadata : {};
+            var programMetadata = (prog && prog.metadata && typeof prog.metadata === 'object') ? prog.metadata : {};
+
+            var template = (reg && reg.template)
+                || (signed && signed.template)
+                || prog.template
+                || programMetadata.template
+                || tokenMetadata.template
+                || '';
             var category = TEMPLATE_CATEGORIES[template] || 'infra';
             var iconClass = TEMPLATE_ICONS[template] || 'fa-file-code';
 
             // Registry name takes priority over ABI name (ABI extraction defaults to "unknown")
             var abiName = (abi && abi.name && abi.name !== 'unknown') ? abi.name : '';
-            var name = (reg && reg.name) || abiName || (prog.metadata && prog.metadata.name) || '';
-            var symbol = (reg && reg.symbol) || (prog.metadata && prog.metadata.symbol) || '';
+            var name = (reg && reg.name)
+                || (signed && signed.name)
+                || prog.name
+                || abiName
+                || registryMetadata.name
+                || signedMetadata.name
+                || programMetadata.name
+                || '';
+            var symbol = (reg && reg.symbol)
+                || (signed && signed.symbol)
+                || prog.symbol
+                || tokenMetadata.token_symbol
+                || registryMetadata.symbol
+                || signedMetadata.symbol
+                || programMetadata.symbol
+                || '';
             var displayName = name || symbol || formatHash(pid);
 
             return {
@@ -125,7 +158,7 @@ async function loadContracts() {
                 template: template,
                 codeSize: (info && info.code_size) ? info.code_size : 0,
                 abiFuncs: (info && info.abi_functions) ? info.abi_functions : ((abi && abi.functions) ? abi.functions.length : 0),
-                owner: (info && info.owner) ? info.owner : ((reg && reg.owner) ? reg.owner : ''),
+                owner: (info && info.owner) ? info.owner : ((reg && reg.owner) ? reg.owner : ((signed && signed.owner) ? signed.owner : (prog.owner || ''))),
                 deployedAt: (info && info.deployed_at) ? info.deployed_at : null,
             };
         });
@@ -152,7 +185,12 @@ function renderContracts() {
     var tbody = document.getElementById('contractsTableBody');
     var filtered = currentFilter === 'all'
         ? allContracts
-        : allContracts.filter(function (c) { return c.category === currentFilter; });
+        : allContracts.filter(function (c) {
+            if (currentFilter === 'token') {
+                return c.category === 'token';
+            }
+            return c.category === currentFilter;
+        });
 
     var totalPages = Math.max(1, Math.ceil(filtered.length / CONTRACTS_PER_PAGE));
     if (currentPage > totalPages) currentPage = totalPages;
@@ -235,7 +273,12 @@ function updatePagination(totalItems) {
 function nextPage() {
     var filteredCount = currentFilter === 'all'
         ? allContracts.length
-        : allContracts.filter(function (c) { return c.category === currentFilter; }).length;
+        : allContracts.filter(function (c) {
+            if (currentFilter === 'token') {
+                return c.category === 'token';
+            }
+            return c.category === currentFilter;
+        }).length;
     var totalPages = Math.max(1, Math.ceil(filteredCount / CONTRACTS_PER_PAGE));
     if (currentPage >= totalPages) return;
     currentPage += 1;
@@ -261,7 +304,7 @@ function filterContracts(cat) {
 
 function updateStats() {
     var total = allContracts.length;
-    var tokens = allContracts.filter(function (c) { return c.category === 'token' || c.category === 'wrapped'; }).length;
+    var tokens = allContracts.filter(function (c) { return c.category === 'token'; }).length;
     var dex = allContracts.filter(function (c) { return c.category === 'dex'; }).length;
     var nft = allContracts.filter(function (c) { return c.category === 'nft'; }).length;
     var defi = allContracts.filter(function (c) { return c.category === 'defi'; }).length;

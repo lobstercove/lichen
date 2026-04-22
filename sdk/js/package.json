@@ -2,12 +2,24 @@
   "name": "@lichen/sdk",
   "version": "1.0.0",
   "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "jest",
+    "test": "tsc --noEmit",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -21,8 +33,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobstercove/lichen.git",
+    "url": "git+https://github.com/lobstercove/lichen.git",
     "directory": "sdk/js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.19.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.32",

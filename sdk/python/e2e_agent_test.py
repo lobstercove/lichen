@@ -7,14 +7,14 @@ strict verification that every artifact was actually created:
 
 1. Agent wallet creation
 2. Receive 100 LICN from treasury (genesis) -- verify exact balance
-3. Deploy a PROPER MT-20 token via init_data registration (using lusd_token.wasm)
+3. Deploy a PROPER MT-20 token via init_data registration (using mt20_token.wasm)
 4. Verify token appears in symbol registry with correct name/symbol/template
 5. Deploy an NFT collection -- verify on-chain
 6. Mint an NFT -- verify on-chain
 7. Send 5 LICN back to treasury -- verify deploy fee deducted
 8. Final on-chain verification of everything
 
-Uses lusd_token.wasm (5392 bytes) as the MT-20 WASM template.
+Uses mt20_token.wasm as the MT-20 WASM template.
 Passes init_data JSON to auto-register in symbol registry at deploy time.
 Deploy fee: 25 LICN.
 """
@@ -41,8 +41,8 @@ CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)
 STATE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "state-8000"
 TREASURY_KEY_PATH = STATE_DIR / "genesis-keys" / "treasury-lichen-testnet-1.json"
 
-# Use lusd_token.wasm -- the real MT-20 token template (5392 bytes)
-WASM_PATH = Path(__file__).resolve().parent.parent.parent / "contracts" / "lusd_token" / "target" / "wasm32-unknown-unknown" / "release" / "lusd_token.wasm"
+# Use mt20_token.wasm -- the canonical MT-20 token template
+WASM_PATH = Path(__file__).resolve().parent.parent.parent / "contracts" / "mt20_token" / "target" / "wasm32-unknown-unknown" / "release" / "mt20_token.wasm"
 
 # Agent token details
 AGENT_TOKEN_SYMBOL = "TSYMBIONT"
@@ -261,7 +261,7 @@ async def main():
     # ------------------------------------------------------------------
     # Step 3: Agent deploys a PROPER MT-20 token via deployContract RPC
     #
-    # Uses lusd_token.wasm (5392 bytes) as the WASM template.
+    # Uses mt20_token.wasm as the WASM template.
     # Sends code as base64 + init_data as JSON via the deployContract
     # RPC endpoint (bypasses transaction instruction size limit).
     # Deployer signs SHA-256(code_bytes) to prove ownership.

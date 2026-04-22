@@ -419,14 +419,14 @@ fi
 export CUSTODY_LICHEN_RPC_URL="$CLUSTER_RPC_URL"
 export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
 
-./scripts/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
+nohup ./scripts/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
 CUSTODY_PID=$!
 
 FAUCET_PID=""
 FAUCET_PORT=9100
 if [ "$NETWORK" = "testnet" ]; then
   # The faucet currently serves from the genesis treasury on local networks.
-  PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
+  nohup env PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
     TRUSTED_PROXY="127.0.0.1,::1" \
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
     ./target/release/lichen-faucet >"${LOG_DIR}/faucet.log" 2>&1 &

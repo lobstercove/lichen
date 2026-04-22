@@ -6,6 +6,8 @@ authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen Rust SDK - Build on Lichen with Rust"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lobstercove/lichen"
+homepage = "https://lichen.network"
+documentation = "https://developers.lichen.network"
 keywords = ["blockchain", "cryptocurrency", "lichen"]
 categories = ["cryptography", "network-programming"]
 
@@ -14,7 +16,7 @@ name = "lichen_client_sdk"
 path = "src/lib.rs"
 
 [dependencies]
-lichen-core = { path = "../../core" }
+lichen-core = { version = "=0.5.6", path = "../../core" }
 tokio = { version = "1.35", features = ["full"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -4,11 +4,15 @@
 (function () {
     'use strict';
 
-    var EMOJIS = ['\u{1F99E}', '\u{1F980}', '\u{1F990}', '\u{1F419}', '\u{1F991}', '\u{1F41A}', '\u{1F988}', '\u{1F421}'];
-    var CREATOR_EMOJIS = ['\u{1F3A8}', '\u2728', '\u{1F680}', '\u{1F48E}', '\u{1F525}', '\u26A1', '\u{1F31F}', '\u{1F3AF}', '\u{1F3C6}', '\u{1F451}'];
     var collectionNameCache = {};
     var SPORES_PER_LICN = 1000000000;
-    var marketTrustedRpcCall = window.marketTrustedRpcCall || rpcCall;
+    var marketTrustedRpcCall = window.marketTrustedRpcCall || function (method, params) {
+        return trustedLichenRpcCall(
+            method,
+            params,
+            typeof window.getTrustedMarketNetwork === 'function' ? window.getTrustedMarketNetwork() : undefined
+        );
+    };
 
     // ===== Utility Helpers =====
 
@@ -19,6 +23,19 @@
             hash |= 0;
         }
         return Math.abs(hash);
+    }
+
+    function monogramFromLabel(label, fallback) {
+        var text = String(label || fallback || '').trim();
+        var words = text.split(/[^A-Za-z0-9]+/).filter(Boolean);
+        if (words.length >= 2) {
+            return (words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
+        }
+
+        var compact = text.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        if (compact.length >= 2) return compact.slice(0, 2);
+        if (compact.length === 1) return compact;
+        return 'LI';
     }
 
     function gradientFromHash(seed) {
@@ -71,11 +88,12 @@
             if (!Array.isArray(contracts) || contracts.length === 0) return [];
             var maxItems = Math.max(1, Number(limit) || 6);
             return contracts.slice(0, maxItems).map(function (c) {
+                var label = c.name || c.symbol || c.id || c.program_id || 'Collection';
                 return {
                     id: c.id || c.program_id || '',
                     name: c.name || c.symbol || formatHash(c.id || '', 12),
                     creator: c.owner || c.deployer || '-',
-                    avatar: EMOJIS[hashString(c.id || 'x') % EMOJIS.length],
+                    avatar: monogramFromLabel(label, 'LC'),
                     banner: gradientFromHash(c.id || 'col'),
                     image: gradientFromHash(c.id || 'col'),
                     items: c.token_count || 0,
@@ -92,7 +110,7 @@
     async function getTrendingNFTs(limit, period) {
         try {
             var maxItems = Math.max(1, Number(limit) || 12);
-            var listings = await rpcCall('getMarketListings', [{ limit: maxItems }]);
+            var listings = await marketTrustedRpcCall('getMarketListings', [{ limit: maxItems }]);
             var items = listings && listings.listings ? listings.listings : (Array.isArray(listings) ? listings : []);
             if (items.length === 0) return [];
             var results = [];
@@ -123,7 +141,7 @@
     async function getTopCreators(limit) {
         try {
             var maxItems = Math.max(1, Number(limit) || 8);
-            var sales = await rpcCall('getMarketSales', [{ limit: 200 }]);
+            var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: 200 }]);
             var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
             if (saleList.length === 0) return [];
             var creatorMap = {};
@@ -136,12 +154,11 @@
             });
             var sorted = Object.values(creatorMap).sort(function (a, b) { return b.volume - a.volume; });
             return sorted.slice(0, maxItems).map(function (c, i) {
-                var h = hashString(c.address);
                 return {
                     id: c.address,
                     address: c.address,
                     name: formatHash(c.address, 10),
-                    avatar: CREATOR_EMOJIS[h % CREATOR_EMOJIS.length],
+                    avatar: monogramFromLabel(c.address, 'AG'),
                     volume: formatLicnPrice(c.volume, true),
                     sales: c.sales,
                     rank: i + 1,
@@ -156,7 +173,7 @@
     async function getRecentSales(limit) {
         try {
             var maxItems = Math.max(1, Number(limit) || 10);
-            var sales = await rpcCall('getMarketSales', [{ limit: maxItems }]);
+            var sales = await marketTrustedRpcCall('getMarketSales', [{ limit: maxItems }]);
             var saleList = sales && sales.sales ? sales.sales : (Array.isArray(sales) ? sales : []);
             if (saleList.length === 0) return [];
             var results = [];
@@ -184,13 +201,13 @@
     async function getStats() {
         var stats = { totalNFTs: 0, totalCollections: 0, totalVolume: 0, totalCreators: 0 };
         try {
-            var metrics = await rpcCall('getMetrics', []);
+            var metrics = await marketTrustedRpcCall('getMetrics', []);
             if (metrics) {
                 stats.totalCollections = metrics.total_contracts || 0;
             }
         } catch (err) { console.warn("marketplace-data:", err.message || err); }
         try {
-            var marketStats = await rpcCall('getLichenMarketStats', []);
+            var marketStats = await marketTrustedRpcCall('getLichenMarketStats', []);
             if (marketStats && typeof marketStats === 'object') {
                 stats.totalNFTs = Number(marketStats.listing_count || 0);
                 stats.totalVolume = Number(marketStats.sale_volume || 0) / SPORES_PER_LICN;
@@ -207,7 +224,7 @@
     async function getWalletBalance(address) {
         if (!address) return 0;
         try {
-            var result = await rpcCall('getBalance', [address]);
+            var result = await marketTrustedRpcCall('getBalance', [address]);
             if (result && typeof result === 'object') {
                 return (result.balance || result.value || 0) / SPORES_PER_LICN;
             }
@@ -243,7 +260,7 @@
     async function getNFTsByOwner(address) {
         if (!address) return [];
         try {
-            var result = await rpcCall('getNFTsByOwner', [address, { limit: 200 }]);
+            var result = await marketTrustedRpcCall('getNFTsByOwner', [address, { limit: 200 }]);
             return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
@@ -254,7 +271,7 @@
     async function getNFTDetail(tokenId) {
         if (!tokenId) return null;
         try {
-            return await rpcCall('getNFT', [tokenId]);
+            return await marketTrustedRpcCall('getNFT', [tokenId]);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
             return null;
@@ -264,7 +281,7 @@
     async function getNFTsByCollection(collectionId, limit) {
         if (!collectionId) return [];
         try {
-            var result = await rpcCall('getNFTsByCollection', [collectionId, { limit: limit || 20 }]);
+            var result = await marketTrustedRpcCall('getNFTsByCollection', [collectionId, { limit: limit || 20 }]);
             return result && result.nfts ? result.nfts : (Array.isArray(result) ? result : []);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
@@ -275,7 +292,7 @@
     async function getNFTActivity(collectionId, limit) {
         if (!collectionId) return [];
         try {
-            var result = await rpcCall('getNFTActivity', [collectionId, { limit: limit || 20 }]);
+            var result = await marketTrustedRpcCall('getNFTActivity', [collectionId, { limit: limit || 20 }]);
             return result && result.activity ? result.activity : (Array.isArray(result) ? result : []);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
@@ -292,7 +309,7 @@
             } else {
                 params.limit = limitOrOpts || 500;
             }
-            var result = await rpcCall('getMarketListings', [params]);
+            var result = await marketTrustedRpcCall('getMarketListings', [params]);
             return (result && result.listings) ? result.listings : (Array.isArray(result) ? result : []);
         } catch (err) {
             console.warn("marketplace-data:", err.message || err);
@@ -353,11 +370,10 @@
     window.marketplaceUtils = {
         hashString: hashString,
         gradientFromHash: gradientFromHash,
+        monogramFromLabel: monogramFromLabel,
         normalizeTimestamp: normalizeTimestamp,
         priceToLicn: priceToLicn,
         formatLicnPrice: formatLicnPrice,
-        EMOJIS: EMOJIS,
-        CREATOR_EMOJIS: CREATOR_EMOJIS,
         SPORES_PER_LICN: SPORES_PER_LICN,
     };
 

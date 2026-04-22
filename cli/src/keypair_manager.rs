@@ -13,14 +13,12 @@ impl KeypairManager {
     }
 
     /// Get default keypair directory (~/.lichen/keypairs/)
-    #[allow(dead_code)]
     pub fn default_keypair_dir(&self) -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".lichen").join("keypairs")
     }
 
     /// Get default keypair path (~/.lichen/keypairs/id.json)
-    #[allow(dead_code)]
     pub fn default_keypair_path(&self) -> PathBuf {
         self.default_keypair_dir().join("id.json")
     }
@@ -51,13 +49,6 @@ impl KeypairManager {
             })?;
 
         keypair_file.to_keypair().map_err(anyhow::Error::msg)
-    }
-
-    /// Save seed to file (helper for keypair generation)
-    #[allow(dead_code)]
-    pub fn save_seed(&self, seed: &[u8; 32], path: &Path) -> Result<()> {
-        let keypair = Keypair::from_seed(seed);
-        self.save_keypair(&keypair, path)
     }
 }
 

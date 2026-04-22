@@ -280,14 +280,17 @@
                     </div>
                     <pre><code>import { Connection, PublicKey } from '@lichen/sdk';
 
-// Connect to mainnet
-const connection = new Connection('https://rpc.lichen.network');
+// Connect to public testnet
+const connection = new Connection(
+    'https://testnet-rpc.lichen.network',
+    'wss://testnet-rpc.lichen.network/ws'
+);
 
 // Get balance for an address
-const pubkey = new PublicKey('Mo1t...YourAddress');
+const pubkey = new PublicKey('11111111111111111111111111111112');
 const balance = await connection.getBalance(pubkey);
 
-console.log(`Balance: ${balance / 1e9} LICN`);
+console.log(`Balance: ${balance.licn.toFixed(9)} LICN`);
 // → Balance: 42.500000000 LICN</code></pre>
                 </div>
             </div>
@@ -299,16 +302,22 @@ console.log(`Balance: ${balance / 1e9} LICN`);
                         <span class="code-lang">Python</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>from lichen import Client, PublicKey
+                    <pre><code>import asyncio
+from lichen import Connection, PublicKey
 
-# Connect to mainnet
-client = Client("https://rpc.lichen.network")
+async def main():
+    connection = Connection(
+        "https://testnet-rpc.lichen.network",
+        ws_url="wss://testnet-rpc.lichen.network/ws"
+    )
 
-# Get balance for an address
-pubkey = PublicKey("Mo1t...YourAddress")
-balance = client.get_balance(pubkey)
+    pubkey = PublicKey("11111111111111111111111111111112")
+    balance = await connection.get_balance(pubkey)
+    print(f"Balance: {balance['licn']:.9f} LICN")
 
-print(f"Balance: {balance / 1e9:.9f} LICN")
+    await connection.close()
+
+asyncio.run(main())
 # → Balance: 42.500000000 LICN</code></pre>
                 </div>
             </div>
@@ -320,19 +329,16 @@ print(f"Balance: {balance / 1e9:.9f} LICN")
                         <span class="code-lang">Rust</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>use lichen_client_sdk::{Client, Pubkey};
-use std::str::FromStr;
+                    <pre><code>use lichen_client_sdk::{Client, Pubkey, Result};
 
 #[tokio::main]
-async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
-    // Connect to mainnet
-    let client = Client::new("https://rpc.lichen.network");
+async fn main() -> Result&lt;()&gt; {
+    let client = Client::new("https://testnet-rpc.lichen.network");
 
-    // Get balance for an address
-    let pubkey = Pubkey::from_str("Mo1t...YourAddress")?;
+    let pubkey = Pubkey::from_base58("11111111111111111111111111111112")?;
     let balance = client.get_balance(&amp;pubkey).await?;
 
-    println!("Balance: {:.9} LICN", balance as f64 / 1e9);
+    println!("Balance: {:.9} LICN", balance.licn());
     Ok(())
 }</code></pre>
                 </div>
@@ -346,15 +352,15 @@ async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code># Check balance of the default identity
-$ lichen balance
+$ lichen --rpc-url https://testnet-rpc.lichen.network balance
 42.500000000 LICN
 
 # Check balance of a specific address
-$ lichen balance Mo1t...YourAddress
+$ lichen --rpc-url https://testnet-rpc.lichen.network balance 11111111111111111111111111111112
 42.500000000 LICN
 
-# Use a specific RPC endpoint
-$ lichen --rpc-url https://testnet-rpc.lichen.network balance Mo1t...YourAddress
+# Switch to mainnet by replacing the endpoint
+$ lichen --rpc-url https://rpc.lichen.network balance 11111111111111111111111111111112
 42.500000000 LICN</code></pre>
                 </div>
             </div>

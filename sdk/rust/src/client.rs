@@ -4,9 +4,24 @@ use crate::error::{Error, Result};
 use crate::types::{Balance, Block, NetworkInfo};
 use crate::{Hash, Instruction, Keypair, Pubkey, SYSTEM_PROGRAM_ID, CONTRACT_PROGRAM_ID, ContractInstruction, TransactionBuilder};
 use reqwest;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadonlyContractResult {
+    pub success: bool,
+    #[serde(rename = "returnData")]
+    pub return_data: Option<String>,
+    #[serde(rename = "returnCode")]
+    pub return_code: Option<u32>,
+    #[serde(default)]
+    pub logs: Vec<String>,
+    pub error: Option<String>,
+    #[serde(rename = "computeUsed")]
+    pub compute_used: Option<u64>,
+}
 
 /// Lichen RPC client
 #[derive(Debug, Clone)]
@@ -146,6 +161,24 @@ impl Client {
     pub async fn get_transaction_history(&self, pubkey: &Pubkey, limit: Option<u64>) -> Result<Value> {
         let limit = limit.unwrap_or(10);
         self.rpc_call("getTransactionHistory", json!([pubkey.to_base58(), limit])).await
+    }
+
+    /// Execute a read-only contract call without submitting a transaction.
+    pub async fn call_readonly_contract(
+        &self,
+        contract: &Pubkey,
+        function: &str,
+        args: Vec<u8>,
+        from: Option<&Pubkey>,
+    ) -> Result<ReadonlyContractResult> {
+        let args_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args);
+        let mut params = vec![json!(contract.to_base58()), json!(function), json!(args_b64)];
+        if let Some(from_pubkey) = from {
+            params.push(json!(from_pubkey.to_base58()));
+        }
+
+        let result = self.rpc_call("callContract", Value::Array(params)).await?;
+        serde_json::from_value(result).map_err(|err| Error::ParseError(err.to_string()))
     }
     
     /// Get recent blockhash (for transaction building)
@@ -417,6 +450,79 @@ impl Client {
     /// Get contract execution logs
     pub async fn get_contract_logs(&self, contract_id: &Pubkey) -> Result<Value> {
         self.rpc_call("getContractLogs", json!([contract_id.to_base58()])).await
+    }
+
+    /// Get a symbol-registry entry.
+    pub async fn get_symbol_registry(&self, symbol: &str) -> Result<Value> {
+        self.rpc_call("getSymbolRegistry", json!([symbol])).await
+    }
+
+    /// Get the complete LichenID profile for an address.
+    pub async fn get_lichenid_profile(&self, pubkey: &Pubkey) -> Result<Value> {
+        self.rpc_call("getLichenIdProfile", json!([pubkey.to_base58()])).await
+    }
+
+    /// Get the LichenID reputation summary for an address.
+    pub async fn get_lichenid_reputation(&self, pubkey: &Pubkey) -> Result<Value> {
+        self.rpc_call("getLichenIdReputation", json!([pubkey.to_base58()])).await
+    }
+
+    /// Get LichenID skills for an address.
+    pub async fn get_lichenid_skills(&self, pubkey: &Pubkey) -> Result<Value> {
+        self.rpc_call("getLichenIdSkills", json!([pubkey.to_base58()])).await
+    }
+
+    /// Get LichenID vouches for an address.
+    pub async fn get_lichenid_vouches(&self, pubkey: &Pubkey) -> Result<Value> {
+        self.rpc_call("getLichenIdVouches", json!([pubkey.to_base58()])).await
+    }
+
+    /// Resolve a .lichen name to its owner.
+    pub async fn resolve_lichen_name(&self, name: &str) -> Result<Value> {
+        self.rpc_call("resolveLichenName", json!([name])).await
+    }
+
+    /// Get premium-name auction state for a .lichen label.
+    pub async fn get_name_auction(&self, name: &str) -> Result<Value> {
+        self.rpc_call("getNameAuction", json!([name])).await
+    }
+
+    /// Get the LichenID agent directory.
+    pub async fn get_lichenid_agent_directory(&self, options: Option<Value>) -> Result<Value> {
+        match options {
+            Some(options) => self.rpc_call("getLichenIdAgentDirectory", json!([options])).await,
+            None => self.rpc_call("getLichenIdAgentDirectory", json!([])).await,
+        }
+    }
+
+    /// Get aggregated LichenID statistics.
+    pub async fn get_lichenid_stats(&self) -> Result<Value> {
+        self.rpc_call("getLichenIdStats", json!([])).await
+    }
+
+    /// Get aggregated SporePay streaming statistics.
+    pub async fn get_sporepay_stats(&self) -> Result<Value> {
+        self.rpc_call("getSporePayStats", json!([])).await
+    }
+
+    /// Get aggregated LichenSwap statistics.
+    pub async fn get_lichenswap_stats(&self) -> Result<Value> {
+        self.rpc_call("getLichenSwapStats", json!([])).await
+    }
+
+    /// Get aggregated ThallLend lending statistics.
+    pub async fn get_thalllend_stats(&self) -> Result<Value> {
+        self.rpc_call("getThallLendStats", json!([])).await
+    }
+
+    /// Get aggregated SporeVault yield-vault statistics.
+    pub async fn get_sporevault_stats(&self) -> Result<Value> {
+        self.rpc_call("getSporeVaultStats", json!([])).await
+    }
+
+    /// Get aggregated BountyBoard marketplace statistics.
+    pub async fn get_bountyboard_stats(&self) -> Result<Value> {
+        self.rpc_call("getBountyBoardStats", json!([])).await
     }
 
     // ============================================================================

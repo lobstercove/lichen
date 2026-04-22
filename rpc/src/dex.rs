@@ -2,8 +2,8 @@
 // Lichen RPC — DEX REST API Module
 // Implements /api/v1/* endpoints for Lichen DEX
 //
-// Reads contract storage directly from StateStore using the dex_core, dex_amm,
-// dex_margin, dex_analytics, dex_router, dex_rewards, dex_governance key layouts.
+// Reads DEX state through the shared read-schema in lichen_core::dex and shapes
+// the results into REST responses.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use axum::{
@@ -19,24 +19,31 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use crate::RpcState;
-use lichen_core::account::Pubkey;
+use lichen_core::{account::Pubkey, dex as core_dex};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PRICE_SCALE: u64 = 1_000_000_000;
-const PNL_BIAS: u64 = 1u64 << 63;
-const SLOT_DURATION_MS: u64 = 400;
+const PRICE_SCALE: u64 = core_dex::PRICE_SCALE;
+const PNL_BIAS: u64 = core_dex::PNL_BIAS;
+const SLOT_DURATION_MS: u64 = core_dex::SLOT_DURATION_MS;
 
-// Contract storage key maps — must match genesis symbol registry (uppercase, alphanumeric only)
-const DEX_CORE_PROGRAM: &str = "DEX";
-const DEX_AMM_PROGRAM: &str = "DEXAMM";
-const DEX_MARGIN_PROGRAM: &str = "DEXMARGIN";
-const DEX_ANALYTICS_PROGRAM: &str = "ANALYTICS";
-const DEX_ROUTER_PROGRAM: &str = "DEXROUTER";
-const DEX_REWARDS_PROGRAM: &str = "DEXREWARDS";
-const DEX_GOVERNANCE_PROGRAM: &str = "DEXGOV";
+const DEX_CORE_PROGRAM: &str = core_dex::DEX_CORE_PROGRAM;
+const DEX_AMM_PROGRAM: &str = core_dex::DEX_AMM_PROGRAM;
+const DEX_MARGIN_PROGRAM: &str = core_dex::DEX_MARGIN_PROGRAM;
+const DEX_ANALYTICS_PROGRAM: &str = core_dex::DEX_ANALYTICS_PROGRAM;
+const DEX_ROUTER_PROGRAM: &str = core_dex::DEX_ROUTER_PROGRAM;
+const DEX_REWARDS_PROGRAM: &str = core_dex::DEX_REWARDS_PROGRAM;
+const DEX_GOVERNANCE_PROGRAM: &str = core_dex::DEX_GOVERNANCE_PROGRAM;
+
+const DEX_PAIR_COUNT_KEY: &str = core_dex::DEX_PAIR_COUNT_KEY;
+const DEX_ORDER_COUNT_KEY: &str = core_dex::DEX_ORDER_COUNT_KEY;
+const DEX_TRADE_COUNT_KEY: &str = core_dex::DEX_TRADE_COUNT_KEY;
+const AMM_POOL_COUNT_KEY: &str = core_dex::AMM_POOL_COUNT_KEY;
+const ROUTER_ROUTE_COUNT_KEY: &str = core_dex::ROUTER_ROUTE_COUNT_KEY;
+const MARGIN_POSITION_COUNT_KEY: &str = core_dex::MARGIN_POSITION_COUNT_KEY;
+const GOVERNANCE_PROPOSAL_COUNT_KEY: &str = core_dex::GOVERNANCE_PROPOSAL_COUNT_KEY;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -351,6 +358,145 @@ pub struct ProposalJson {
     pub new_taker_fee: Option<u16>,
 }
 
+impl From<core_dex::DexTradingPair> for TradingPairJson {
+    fn from(value: core_dex::DexTradingPair) -> Self {
+        TradingPairJson {
+            pair_id: value.pair_id,
+            base_token: value.base_token,
+            quote_token: value.quote_token,
+            symbol: None,
+            base_symbol: None,
+            quote_symbol: None,
+            tick_size: value.tick_size,
+            lot_size: value.lot_size,
+            min_order: value.min_order,
+            status: value.status,
+            maker_fee_bps: value.maker_fee_bps,
+            taker_fee_bps: value.taker_fee_bps,
+            daily_volume: value.daily_volume,
+            last_price: None,
+            change_24h: None,
+        }
+    }
+}
+
+impl From<core_dex::DexOrder> for OrderJson {
+    fn from(value: core_dex::DexOrder) -> Self {
+        OrderJson {
+            order_id: value.order_id,
+            trader: value.trader,
+            pair_id: value.pair_id,
+            side: value.side,
+            order_type: value.order_type,
+            price: value.price,
+            price_raw: value.price_raw,
+            quantity: value.quantity,
+            filled: value.filled,
+            status: value.status,
+            created_slot: value.created_slot,
+            expiry_slot: value.expiry_slot,
+        }
+    }
+}
+
+impl From<core_dex::DexTrade> for TradeJson {
+    fn from(value: core_dex::DexTrade) -> Self {
+        TradeJson {
+            trade_id: value.trade_id,
+            pair_id: value.pair_id,
+            price: value.price,
+            price_raw: value.price_raw,
+            quantity: value.quantity,
+            taker: value.taker,
+            maker_order_id: value.maker_order_id,
+            slot: value.slot,
+            side: value.side,
+            timestamp: value.timestamp,
+        }
+    }
+}
+
+impl From<core_dex::DexPool> for PoolJson {
+    fn from(value: core_dex::DexPool) -> Self {
+        PoolJson {
+            pool_id: value.pool_id,
+            token_a: value.token_a,
+            token_b: value.token_b,
+            token_a_symbol: None,
+            token_b_symbol: None,
+            sqrt_price: value.sqrt_price,
+            price: value.price,
+            tick: value.tick,
+            liquidity: value.liquidity,
+            fee_tier: value.fee_tier,
+            protocol_fee: value.protocol_fee,
+        }
+    }
+}
+
+impl From<core_dex::DexCandle> for CandleJson {
+    fn from(value: core_dex::DexCandle) -> Self {
+        CandleJson {
+            open: value.open,
+            high: value.high,
+            low: value.low,
+            close: value.close,
+            volume: value.volume,
+            slot: value.slot,
+            timestamp: value.timestamp,
+        }
+    }
+}
+
+impl From<core_dex::DexStats24h> for Stats24hJson {
+    fn from(value: core_dex::DexStats24h) -> Self {
+        Stats24hJson {
+            volume: value.volume,
+            high: value.high,
+            low: value.low,
+            open: value.open,
+            close: value.close,
+            trade_count: value.trade_count,
+            change: value.change,
+            change_percent: value.change_percent,
+        }
+    }
+}
+
+impl From<core_dex::DexRoute> for RouteJson {
+    fn from(value: core_dex::DexRoute) -> Self {
+        RouteJson {
+            route_id: value.route_id,
+            token_in: value.token_in,
+            token_out: value.token_out,
+            route_type: value.route_type,
+            pool_or_pair_id: value.pool_or_pair_id,
+            secondary_id: value.secondary_id,
+            split_percent: value.split_percent,
+            enabled: value.enabled,
+        }
+    }
+}
+
+impl From<core_dex::DexProposal> for ProposalJson {
+    fn from(value: core_dex::DexProposal) -> Self {
+        ProposalJson {
+            proposal_id: value.proposal_id,
+            proposer: value.proposer,
+            proposal_type: value.proposal_type,
+            status: value.status,
+            created_slot: value.created_slot,
+            end_slot: value.end_slot,
+            yes_votes: value.yes_votes,
+            no_votes: value.no_votes,
+            pair_id: value.pair_id,
+            base_token: value.base_token,
+            new_maker_fee: value.new_maker_fee,
+            new_taker_fee: value.new_taker_fee,
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Query Params
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,15 +634,6 @@ fn read_u64(state: &crate::RpcState, program: &str, key: &str) -> u64 {
     state.state.get_program_storage_u64(program, key.as_bytes())
 }
 
-/// Read a 32-byte address and return as hex
-#[allow(dead_code)]
-fn read_addr_hex(state: &crate::RpcState, program: &str, key: &str) -> String {
-    match read_bytes(state, program, key) {
-        Some(data) if data.len() >= 32 => hex::encode(&data[..32]),
-        _ => String::new(),
-    }
-}
-
 /// Get current slot
 fn current_slot(state: &crate::RpcState) -> u64 {
     state.state.get_last_slot().unwrap_or(0)
@@ -515,6 +652,126 @@ fn normalize_account_lookup(addr: &str) -> String {
     Pubkey::from_base58(trimmed)
         .map(|pubkey| hex::encode(pubkey.0))
         .unwrap_or_else(|_| trimmed.to_lowercase())
+}
+
+fn pair_storage_key(pair_id: u64) -> String {
+    core_dex::pair_key(pair_id)
+}
+
+fn order_storage_key(order_id: u64) -> String {
+    core_dex::order_key(order_id)
+}
+
+fn trade_storage_key(trade_id: u64) -> String {
+    core_dex::trade_key(trade_id)
+}
+
+fn best_bid_storage_key(pair_id: u64) -> String {
+    core_dex::best_bid_key(pair_id)
+}
+
+fn best_ask_storage_key(pair_id: u64) -> String {
+    core_dex::best_ask_key(pair_id)
+}
+
+fn user_order_count_storage_key(account_hex: &str) -> String {
+    core_dex::user_order_count_key(account_hex)
+}
+
+fn user_order_storage_key(account_hex: &str, idx: u64) -> String {
+    core_dex::user_order_key(account_hex, idx)
+}
+
+fn analytics_last_price_storage_key(pair_id: u64) -> String {
+    core_dex::analytics_last_price_key(pair_id)
+}
+
+fn analytics_last_trade_ts_storage_key(pair_id: u64) -> String {
+    core_dex::analytics_last_trade_ts_key(pair_id)
+}
+
+fn analytics_24h_storage_key(pair_id: u64) -> String {
+    core_dex::analytics_24h_key(pair_id)
+}
+
+fn analytics_candle_count_storage_key(pair_id: u64, interval: u64) -> String {
+    core_dex::analytics_candle_count_key(pair_id, interval)
+}
+
+fn analytics_candle_storage_key(pair_id: u64, interval: u64, idx: u64) -> String {
+    core_dex::analytics_candle_key(pair_id, interval, idx)
+}
+
+fn analytics_leaderboard_storage_key(rank: u64) -> String {
+    core_dex::analytics_leaderboard_key(rank)
+}
+
+fn analytics_trader_stats_storage_key(account_hex: &str) -> String {
+    core_dex::analytics_trader_stats_key(account_hex)
+}
+
+fn amm_pool_storage_key(pool_id: u64) -> String {
+    core_dex::amm_pool_key(pool_id)
+}
+
+fn amm_owner_position_count_storage_key(account_hex: &str) -> String {
+    core_dex::amm_owner_position_count_key(account_hex)
+}
+
+fn amm_owner_position_storage_key(account_hex: &str, idx: u64) -> String {
+    core_dex::amm_owner_position_key(account_hex, idx)
+}
+
+fn amm_position_storage_key(position_id: u64) -> String {
+    core_dex::amm_position_key(position_id)
+}
+
+fn route_storage_key(route_id: u64) -> String {
+    core_dex::route_key(route_id)
+}
+
+fn margin_user_position_count_storage_key(account_hex: &str) -> String {
+    core_dex::margin_user_position_count_key(account_hex)
+}
+
+fn margin_user_position_storage_key(account_hex: &str, idx: u64) -> String {
+    core_dex::margin_user_position_key(account_hex, idx)
+}
+
+fn margin_position_storage_key(position_id: u64) -> String {
+    core_dex::margin_position_key(position_id)
+}
+
+fn margin_mark_storage_key(pair_id: u64) -> String {
+    core_dex::margin_mark_key(pair_id)
+}
+
+fn margin_enabled_storage_key(pair_id: u64) -> String {
+    core_dex::margin_enabled_key(pair_id)
+}
+
+fn rewards_pending_storage_key(account_hex: &str) -> String {
+    core_dex::rewards_pending_key(account_hex)
+}
+
+fn rewards_claimed_storage_key(account_hex: &str) -> String {
+    core_dex::rewards_claimed_key(account_hex)
+}
+
+fn rewards_volume_storage_key(account_hex: &str) -> String {
+    core_dex::rewards_volume_key(account_hex)
+}
+
+fn rewards_referral_count_storage_key(account_hex: &str) -> String {
+    core_dex::rewards_referral_count_key(account_hex)
+}
+
+fn rewards_referral_earnings_storage_key(account_hex: &str) -> String {
+    core_dex::rewards_referral_earnings_key(account_hex)
+}
+
+fn governance_proposal_storage_key(proposal_id: u64) -> String {
+    core_dex::governance_proposal_key(proposal_id)
 }
 
 /// Symbol map cache: (last_refresh, cached_map). Refreshes every 30 seconds.
@@ -537,7 +794,7 @@ static PAIR_ORDER_INDEX_CACHE: LazyLock<Mutex<HashMap<u64, PairOrderIndex>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
-    let latest_order_count = read_u64(state, DEX_CORE_PROGRAM, "dex_order_count");
+    let latest_order_count = read_u64(state, DEX_CORE_PROGRAM, DEX_ORDER_COUNT_KEY);
 
     let (mut known_ids, mut scanned_order_count) = {
         let mut cache = PAIR_ORDER_INDEX_CACHE
@@ -549,7 +806,7 @@ fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
 
     if scanned_order_count == 0 {
         for order_id in 1..=latest_order_count {
-            let key = format!("dex_order_{}", order_id);
+            let key = order_storage_key(order_id);
             if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
                 if let Some(order) = decode_order(&data) {
                     if order.pair_id == pair_id {
@@ -561,7 +818,7 @@ fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
         scanned_order_count = latest_order_count;
     } else if latest_order_count > scanned_order_count {
         for order_id in (scanned_order_count + 1)..=latest_order_count {
-            let key = format!("dex_order_{}", order_id);
+            let key = order_storage_key(order_id);
             if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
                 if let Some(order) = decode_order(&data) {
                     if order.pair_id == pair_id {
@@ -631,401 +888,82 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
 
 /// Decode a trading pair from 112-byte blob
 fn decode_pair(data: &[u8]) -> Option<TradingPairJson> {
-    if data.len() < 112 {
-        return None;
-    }
-
-    let base_token = hex::encode(&data[0..32]);
-    let quote_token = hex::encode(&data[32..64]);
-    let pair_id = u64::from_le_bytes(data[64..72].try_into().ok()?);
-    let tick_size = u64::from_le_bytes(data[72..80].try_into().ok()?);
-    let lot_size = u64::from_le_bytes(data[80..88].try_into().ok()?);
-    let min_order = u64::from_le_bytes(data[88..96].try_into().ok()?);
-    let status = match data[96] {
-        0 => "active",
-        1 => "paused",
-        _ => "delisted",
-    };
-    let maker_fee_bps = i16::from_le_bytes(data[97..99].try_into().ok()?);
-    let taker_fee_bps = u16::from_le_bytes(data[99..101].try_into().ok()?);
-    let daily_volume = u64::from_le_bytes(data[101..109].try_into().ok()?);
-
-    Some(TradingPairJson {
-        pair_id,
-        base_token,
-        quote_token,
-        symbol: None,
-        base_symbol: None,
-        quote_symbol: None,
-        tick_size,
-        lot_size,
-        min_order,
-        status,
-        maker_fee_bps,
-        taker_fee_bps,
-        daily_volume,
-        last_price: None,
-        change_24h: None,
-    })
+    core_dex::decode_pair(data).map(Into::into)
 }
 
 /// Decode an order from 128-byte blob
 fn decode_order(data: &[u8]) -> Option<OrderJson> {
-    if data.len() < 128 {
-        return None;
-    }
-
-    let trader = hex::encode(&data[0..32]);
-    let pair_id = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let side = match data[40] {
-        0 => "buy",
-        _ => "sell",
-    };
-    let order_type = match data[41] {
-        0 => "limit",
-        1 => "market",
-        2 => "stop-limit",
-        _ => "post-only",
-    };
-    let price_raw = u64::from_le_bytes(data[42..50].try_into().ok()?);
-    let quantity = u64::from_le_bytes(data[50..58].try_into().ok()?);
-    let filled = u64::from_le_bytes(data[58..66].try_into().ok()?);
-    let status = match data[66] {
-        0 => "open",
-        1 => "partial",
-        2 => "filled",
-        3 => "cancelled",
-        _ => "expired",
-    };
-    let created_slot = u64::from_le_bytes(data[67..75].try_into().ok()?);
-    let expiry_slot = u64::from_le_bytes(data[75..83].try_into().ok()?);
-    let order_id = u64::from_le_bytes(data[83..91].try_into().ok()?);
-
-    Some(OrderJson {
-        order_id,
-        trader,
-        pair_id,
-        side,
-        order_type,
-        price: price_raw as f64 / PRICE_SCALE as f64,
-        price_raw,
-        quantity,
-        filled,
-        status,
-        created_slot,
-        expiry_slot,
-    })
+    core_dex::decode_order(data).map(Into::into)
 }
 
 /// Decode a trade from 80-byte blob.
 /// `side` defaults to "buy" — caller should infer from maker order (opposite side).
 /// `timestamp` defaults to 0 — caller should compute from slot if possible.
 fn decode_trade(data: &[u8]) -> Option<TradeJson> {
-    if data.len() < 80 {
-        return None;
-    }
-
-    let trade_id = u64::from_le_bytes(data[0..8].try_into().ok()?);
-    let pair_id = u64::from_le_bytes(data[8..16].try_into().ok()?);
-    let price_raw = u64::from_le_bytes(data[16..24].try_into().ok()?);
-    let quantity = u64::from_le_bytes(data[24..32].try_into().ok()?);
-    let taker = hex::encode(&data[32..64]);
-    let maker_order_id = u64::from_le_bytes(data[64..72].try_into().ok()?);
-    let slot = u64::from_le_bytes(data[72..80].try_into().ok()?);
-
-    Some(TradeJson {
-        trade_id,
-        pair_id,
-        price: price_raw as f64 / PRICE_SCALE as f64,
-        price_raw,
-        quantity,
-        taker,
-        maker_order_id,
-        slot,
-        side: "buy",  // default; overridden in get_trades
-        timestamp: 0, // default; overridden in get_trades
-    })
+    core_dex::decode_trade(data).map(Into::into)
 }
 
 /// Decode a pool from 96-byte blob
 fn decode_pool(data: &[u8]) -> Option<PoolJson> {
-    if data.len() < 96 {
-        return None;
-    }
-
-    let token_a = hex::encode(&data[0..32]);
-    let token_b = hex::encode(&data[32..64]);
-    let pool_id = u64::from_le_bytes(data[64..72].try_into().ok()?);
-    let sqrt_price = u64::from_le_bytes(data[72..80].try_into().ok()?);
-    let tick = i32::from_le_bytes(data[80..84].try_into().ok()?);
-    let liquidity = u64::from_le_bytes(data[84..92].try_into().ok()?);
-    let fee_tier = match data[92] {
-        0 => "1bps",
-        1 => "5bps",
-        2 => "30bps",
-        _ => "100bps",
-    };
-    let protocol_fee = data[93];
-    let sqrt = sqrt_price as f64 / ((1u64 << 32) as f64);
-    let price = sqrt * sqrt;
-
-    Some(PoolJson {
-        pool_id,
-        token_a,
-        token_b,
-        token_a_symbol: None,
-        token_b_symbol: None,
-        sqrt_price,
-        price,
-        tick,
-        liquidity,
-        fee_tier,
-        protocol_fee,
-    })
+    core_dex::decode_pool(data).map(Into::into)
 }
 
 /// Decode an LP position from 80-byte blob
 fn decode_lp_position(data: &[u8], position_id: u64) -> Option<PositionJson> {
-    if data.len() < 80 {
-        return None;
-    }
-
-    let owner = hex::encode(&data[0..32]);
-    let pool_id = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let lower_tick = i32::from_le_bytes(data[40..44].try_into().ok()?);
-    let upper_tick = i32::from_le_bytes(data[44..48].try_into().ok()?);
-    let liquidity = u64::from_le_bytes(data[48..56].try_into().ok()?);
-    let fee_a_owed = u64::from_le_bytes(data[56..64].try_into().ok()?);
-    let fee_b_owed = u64::from_le_bytes(data[64..72].try_into().ok()?);
-    let created_slot = u64::from_le_bytes(data[72..80].try_into().ok()?);
-
-    Some(PositionJson {
+    core_dex::decode_lp_position(data).map(|value| PositionJson {
         position_id,
-        owner,
-        pool_id,
-        lower_tick,
-        upper_tick,
-        liquidity,
-        fee_a_owed,
-        fee_b_owed,
-        created_slot,
+        owner: value.owner,
+        pool_id: value.pool_id,
+        lower_tick: value.lower_tick,
+        upper_tick: value.upper_tick,
+        liquidity: value.liquidity,
+        fee_a_owed: value.fee_a_owed,
+        fee_b_owed: value.fee_b_owed,
+        created_slot: value.created_slot,
     })
 }
 
 /// Decode a margin position from 112-byte (V1) / 128-byte (V2+) blob
 fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
-    if data.len() < 112 {
-        return None;
-    }
-
-    let trader = hex::encode(&data[0..32]);
-    let position_id = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let pair_id = u64::from_le_bytes(data[40..48].try_into().ok()?);
-    let side = match data[48] {
-        0 => "long",
-        _ => "short",
-    };
-    let margin_type = if data.len() > 122 && data[122] == 1 {
-        "cross"
-    } else {
-        "isolated"
-    };
-    let status = match data[49] {
-        0 => "open",
-        1 => "closed",
-        _ => "liquidated",
-    };
-    let size = u64::from_le_bytes(data[50..58].try_into().ok()?);
-    let margin = u64::from_le_bytes(data[58..66].try_into().ok()?);
-    let entry_price_raw = u64::from_le_bytes(data[66..74].try_into().ok()?);
-    let leverage = u64::from_le_bytes(data[74..82].try_into().ok()?);
-    let created_slot = u64::from_le_bytes(data[82..90].try_into().ok()?);
-    let raw_pnl = u64::from_le_bytes(data[90..98].try_into().ok()?);
-    let realized_pnl = raw_pnl as i64 - PNL_BIAS as i64;
-    let accumulated_funding = u64::from_le_bytes(data[98..106].try_into().ok()?);
-
-    // Decode V2 fields (SL/TP) if present (>= 122 bytes)
-    let sl_price = if data.len() >= 114 {
-        u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
-    } else {
-        0
-    };
-    let tp_price = if data.len() >= 122 {
-        u64::from_le_bytes(data[114..122].try_into().unwrap_or([0; 8]))
-    } else {
-        0
-    };
-
-    Some(MarginPositionJson {
-        position_id,
-        trader,
-        pair_id,
-        side,
-        margin_type,
-        status,
-        size,
-        margin,
-        entry_price: entry_price_raw as f64 / PRICE_SCALE as f64,
-        entry_price_raw,
-        leverage,
-        created_slot,
-        realized_pnl,
-        accumulated_funding,
-        mark_price: 0.0, // populated in handler with pair-specific mark price
-        sl_price,
-        tp_price,
+    core_dex::decode_margin_position(data).map(|value| MarginPositionJson {
+        position_id: value.position_id,
+        trader: value.trader,
+        pair_id: value.pair_id,
+        side: value.side,
+        margin_type: value.margin_type,
+        status: value.status,
+        size: value.size,
+        margin: value.margin,
+        entry_price: value.entry_price,
+        entry_price_raw: value.entry_price_raw,
+        leverage: value.leverage,
+        created_slot: value.created_slot,
+        realized_pnl: value.realized_pnl,
+        accumulated_funding: value.accumulated_funding,
+        mark_price: 0.0,
+        sl_price: value.sl_price,
+        tp_price: value.tp_price,
     })
 }
 
 /// Decode a candle from 48-byte blob
 fn decode_candle(data: &[u8]) -> Option<CandleJson> {
-    if data.len() < 48 {
-        return None;
-    }
-
-    let open = u64::from_le_bytes(data[0..8].try_into().ok()?);
-    let high = u64::from_le_bytes(data[8..16].try_into().ok()?);
-    let low = u64::from_le_bytes(data[16..24].try_into().ok()?);
-    let close = u64::from_le_bytes(data[24..32].try_into().ok()?);
-    let volume = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let slot = u64::from_le_bytes(data[40..48].try_into().ok()?);
-
-    Some(CandleJson {
-        open: open as f64 / PRICE_SCALE as f64,
-        high: high as f64 / PRICE_SCALE as f64,
-        low: low as f64 / PRICE_SCALE as f64,
-        close: close as f64 / PRICE_SCALE as f64,
-        volume,
-        slot,
-        timestamp: 0,
-    })
+    core_dex::decode_candle(data).map(Into::into)
 }
 
 /// Decode 24h stats from 48-byte blob
 fn decode_stats_24h(data: &[u8]) -> Option<Stats24hJson> {
-    if data.len() < 48 {
-        return None;
-    }
-
-    let volume = u64::from_le_bytes(data[0..8].try_into().ok()?);
-    let high = u64::from_le_bytes(data[8..16].try_into().ok()?);
-    let low = u64::from_le_bytes(data[16..24].try_into().ok()?);
-    let open = u64::from_le_bytes(data[24..32].try_into().ok()?);
-    let close = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let trade_count = u64::from_le_bytes(data[40..48].try_into().ok()?);
-
-    let open_f = open as f64 / PRICE_SCALE as f64;
-    let close_f = close as f64 / PRICE_SCALE as f64;
-    let change = close_f - open_f;
-    let change_percent = if open_f > 0.0 {
-        (change / open_f) * 100.0
-    } else {
-        0.0
-    };
-
-    Some(Stats24hJson {
-        volume,
-        high: high as f64 / PRICE_SCALE as f64,
-        low: low as f64 / PRICE_SCALE as f64,
-        open: open_f,
-        close: close_f,
-        trade_count,
-        change,
-        change_percent,
-    })
+    core_dex::decode_stats_24h(data).map(Into::into)
 }
 
 /// Decode a route from 96-byte blob
 fn decode_route(data: &[u8]) -> Option<RouteJson> {
-    if data.len() < 96 {
-        return None;
-    }
-
-    let token_in = hex::encode(&data[0..32]);
-    let token_out = hex::encode(&data[32..64]);
-    let route_id = u64::from_le_bytes(data[64..72].try_into().ok()?);
-    let route_type = match data[72] {
-        0 => "clob",
-        1 => "amm",
-        2 => "split",
-        3 => "multi_hop",
-        _ => return None,
-    };
-    let pool_or_pair_id = u64::from_le_bytes(data[73..81].try_into().ok()?);
-    let secondary_id = u64::from_le_bytes(data[81..89].try_into().ok()?);
-    let split_percent = data[89];
-    let enabled = data[90] == 1;
-
-    Some(RouteJson {
-        route_id,
-        token_in,
-        token_out,
-        route_type,
-        pool_or_pair_id,
-        secondary_id,
-        split_percent,
-        enabled,
-    })
+    core_dex::decode_route(data).map(Into::into)
 }
 
 /// Decode a proposal from 120-byte blob
 fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
-    if data.len() < 120 {
-        return None;
-    }
-
-    let proposer = hex::encode(&data[0..32]);
-    let proposal_id = u64::from_le_bytes(data[32..40].try_into().ok()?);
-    let proposal_type = match data[40] {
-        0 => "new_pair",
-        1 => "fee_change",
-        2 => "delist",
-        _ => "param_change",
-    };
-    let status = match data[41] {
-        0 => "active",
-        1 => "passed",
-        2 => "rejected",
-        3 => "executed",
-        _ => "cancelled",
-    };
-    let created_slot = u64::from_le_bytes(data[42..50].try_into().ok()?);
-    let end_slot = u64::from_le_bytes(data[50..58].try_into().ok()?);
-    let yes_votes = u64::from_le_bytes(data[58..66].try_into().ok()?);
-    let no_votes = u64::from_le_bytes(data[66..74].try_into().ok()?);
-    let pair_id = u64::from_le_bytes(data[74..82].try_into().ok()?);
-
-    // F14.6: Decode evidence fields based on proposal type
-    let base_token = if data[40] == 0 && data.len() >= 114 {
-        // new_pair: evidence bytes 82..114 contain base_token pubkey
-        Some(hex::encode(&data[82..114]))
-    } else {
-        None
-    };
-    let (new_maker_fee, new_taker_fee) = if data[40] == 1 && data.len() >= 118 {
-        // fee_change: bytes 114..116 = maker_fee (i16 LE), 116..118 = taker_fee (u16 LE)
-        (
-            Some(i16::from_le_bytes([data[114], data[115]])),
-            Some(u16::from_le_bytes([data[116], data[117]])),
-        )
-    } else {
-        (None, None)
-    };
-
-    Some(ProposalJson {
-        proposal_id,
-        proposer,
-        proposal_type,
-        status,
-        created_slot,
-        end_slot,
-        yes_votes,
-        no_votes,
-        pair_id,
-        base_token,
-        new_maker_fee,
-        new_taker_fee,
-    })
+    core_dex::decode_proposal(data).map(Into::into)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1034,7 +972,7 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
 
 /// GET /api/v1/pairs — All trading pairs (enriched with symbols + last price)
 async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuery>) -> Response {
-    let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    let count = read_u64(&state, DEX_CORE_PROGRAM, DEX_PAIR_COUNT_KEY);
     let limit = q.limit.unwrap_or(100).min(500) as u64;
     let effective_count = count.min(limit);
     let slot = current_slot(&state);
@@ -1044,7 +982,7 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
     let symbol_map = build_token_symbol_map(&state);
 
     for i in 1..=effective_count {
-        let key = format!("dex_pair_{}", i);
+        let key = pair_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(mut pair) = decode_pair(&data) {
                 // Resolve human-readable symbols
@@ -1057,14 +995,14 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
                 pair.quote_symbol = quote_sym;
 
                 // Read last price from analytics
-                let lp_key = format!("ana_lp_{}", pair.pair_id);
+                let lp_key = analytics_last_price_storage_key(pair.pair_id);
                 let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &lp_key);
                 if lp_raw > 0 {
                     pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
                 }
 
                 // If no real trades, prefer consensus oracle price over genesis seed
-                let trade_ts_key = format!("ana_last_trade_ts_{}", pair.pair_id);
+                let trade_ts_key = analytics_last_trade_ts_storage_key(pair.pair_id);
                 let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
                 if !has_real_trades {
                     if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair.pair_id) {
@@ -1075,7 +1013,7 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
                 }
 
                 // Read 24h stats for change
-                let stats_key = format!("ana_24h_{}", pair.pair_id);
+                let stats_key = analytics_24h_storage_key(pair.pair_id);
                 if let Some(stats_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
                     if stats_data.len() >= 48 {
                         // F18.6: Contract layout: [16..24]=low, [24..32]=open (was reading low as open)
@@ -1098,7 +1036,7 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
 
 /// GET /api/v1/pairs/:id — Pair details (enriched with symbols + last price)
 async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) -> Response {
-    let key = format!("dex_pair_{}", pair_id);
+    let key = pair_storage_key(pair_id);
     let slot = current_slot(&state);
 
     match read_bytes(&state, DEX_CORE_PROGRAM, &key) {
@@ -1115,7 +1053,7 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
                 let lp_raw = read_u64(
                     &state,
                     DEX_ANALYTICS_PROGRAM,
-                    &format!("ana_lp_{}", pair.pair_id),
+                    &analytics_last_price_storage_key(pair.pair_id),
                 );
                 if lp_raw > 0 {
                     pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
@@ -1166,7 +1104,7 @@ async fn get_orderbook(
     let pair_order_ids = get_pair_order_ids(&state, pair_id);
 
     for order_id in pair_order_ids {
-        let key = format!("dex_order_{}", order_id);
+        let key = order_storage_key(order_id);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
                 if order.status != "open" && order.status != "partial" {
@@ -1256,7 +1194,7 @@ async fn get_trades(
     // F4.4: Support optional trader filter using either hex or base58 addresses.
     let trader_filter = normalize_account_lookup(q.trader.as_deref().unwrap_or(""));
     let slot = current_slot(&state);
-    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
+    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
 
     let mut trades = Vec::new();
     // Read from most recent — trade IDs are 1-indexed, trade_count is highest ID
@@ -1273,7 +1211,7 @@ async fn get_trades(
         .as_millis() as u64;
 
     for i in (start..=trade_count).rev() {
-        let key = format!("dex_trade_{}", i);
+        let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(mut trade) = decode_trade(&data) {
                 if trade.pair_id == pair_id {
@@ -1283,7 +1221,7 @@ async fn get_trades(
                     }
                     // F3.2: Infer taker side from maker order
                     // The maker's side is the opposite of the taker's side.
-                    let maker_key = format!("dex_order_{}", trade.maker_order_id);
+                    let maker_key = order_storage_key(trade.maker_order_id);
                     if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
                         if maker_data.len() > 40 {
                             // Byte 40 = side (0=buy, 1=sell); taker is opposite
@@ -1316,7 +1254,7 @@ async fn get_candles(
     let limit = q.limit.unwrap_or(100).min(500);
     let slot = current_slot(&state);
 
-    let count_key = format!("ana_cc_{}_{}", pair_id, interval);
+    let count_key = analytics_candle_count_storage_key(pair_id, interval);
     let candle_count = read_u64(&state, DEX_ANALYTICS_PROGRAM, &count_key);
 
     // F5.1+F5.2: Compute timestamps from slot and use 1-based inclusive range
@@ -1338,7 +1276,7 @@ async fn get_candles(
     let start = candle_count.saturating_sub(effective_limit);
 
     for i in start..candle_count {
-        let key = format!("ana_c_{}_{}_{}", pair_id, interval, i);
+        let key = analytics_candle_storage_key(pair_id, interval, i);
         if let Some(data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
             if let Some(mut candle) = decode_candle(&data) {
                 // The slot field stores the unix timestamp directly (written by
@@ -1373,7 +1311,7 @@ async fn get_candles(
 /// GET /api/v1/pairs/:id/stats — 24h rolling stats
 async fn get_pair_stats(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) -> Response {
     let slot = current_slot(&state);
-    let key = format!("ana_24h_{}", pair_id);
+    let key = analytics_24h_storage_key(pair_id);
 
     match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
         Some(data) => match decode_stats_24h(&data) {
@@ -1414,13 +1352,13 @@ async fn get_pair_stats(State(state): State<Arc<RpcState>>, Path(pair_id): Path<
 async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) -> Response {
     let slot = current_slot(&state);
 
-    let last_price_key = format!("ana_lp_{}", pair_id);
+    let last_price_key = analytics_last_price_storage_key(pair_id);
     let last_price_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &last_price_key);
     let mut last_price = last_price_raw as f64 / PRICE_SCALE as f64;
 
     // If no real trades have occurred, the analytics price is the genesis seed.
     // Prefer the live consensus oracle price so REST and WS sources agree.
-    let trade_ts_key = format!("ana_last_trade_ts_{}", pair_id);
+    let trade_ts_key = analytics_last_trade_ts_storage_key(pair_id);
     let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
     if !has_real_trades {
         if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair_id) {
@@ -1430,18 +1368,10 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
         }
     }
 
-    let best_bid_raw = read_u64(
-        &state,
-        DEX_CORE_PROGRAM,
-        &format!("dex_best_bid_{}", pair_id),
-    );
-    let best_ask_raw = read_u64(
-        &state,
-        DEX_CORE_PROGRAM,
-        &format!("dex_best_ask_{}", pair_id),
-    );
+    let best_bid_raw = read_u64(&state, DEX_CORE_PROGRAM, &best_bid_storage_key(pair_id));
+    let best_ask_raw = read_u64(&state, DEX_CORE_PROGRAM, &best_ask_storage_key(pair_id));
 
-    let stats_key = format!("ana_24h_{}", pair_id);
+    let stats_key = analytics_24h_storage_key(pair_id);
     let (volume_24h, change_24h, high_24h, low_24h, trades_24h) =
         match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
             Some(data) if data.len() >= 48 => {
@@ -1510,7 +1440,7 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
         }
     }
 
-    let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    let count = read_u64(&state, DEX_CORE_PROGRAM, DEX_PAIR_COUNT_KEY);
     // AUDIT-FIX RPC-1: Cap pair iteration to prevent DoS on unbounded loops
     let effective_count = count.min(500);
     let slot = current_slot(&state);
@@ -1520,23 +1450,15 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
         let last_price_raw = read_u64(
             &state,
             DEX_ANALYTICS_PROGRAM,
-            &format!("ana_lp_{}", pair_id),
+            &analytics_last_price_storage_key(pair_id),
         );
-        let best_bid_raw = read_u64(
-            &state,
-            DEX_CORE_PROGRAM,
-            &format!("dex_best_bid_{}", pair_id),
-        );
-        let best_ask_raw = read_u64(
-            &state,
-            DEX_CORE_PROGRAM,
-            &format!("dex_best_ask_{}", pair_id),
-        );
+        let best_bid_raw = read_u64(&state, DEX_CORE_PROGRAM, &best_bid_storage_key(pair_id));
+        let best_ask_raw = read_u64(&state, DEX_CORE_PROGRAM, &best_ask_storage_key(pair_id));
 
         let mut last_price = last_price_raw as f64 / PRICE_SCALE as f64;
 
         // If no real trades, prefer consensus oracle price over genesis seed
-        let trade_ts_key = format!("ana_last_trade_ts_{}", pair_id);
+        let trade_ts_key = analytics_last_trade_ts_storage_key(pair_id);
         let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
         if !has_real_trades {
             if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair_id) {
@@ -1547,7 +1469,7 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
         }
 
         // Read 24h stats
-        let stats_key = format!("ana_24h_{}", pair_id);
+        let stats_key = analytics_24h_storage_key(pair_id);
         let (volume_24h, change_24h, high_24h, low_24h, trades_24h) =
             match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
                 Some(data) if data.len() >= 48 => {
@@ -1624,14 +1546,14 @@ async fn get_orders(State(state): State<Arc<RpcState>>, Query(q): Query<TraderQu
     };
 
     // Read user's order count and order IDs
-    let count_key = format!("dex_uoc_{}", trader_hex);
+    let count_key = user_order_count_storage_key(&trader_hex);
     let count = read_u64(&state, DEX_CORE_PROGRAM, &count_key);
 
     let mut orders = Vec::new();
     for i in 1..=count.min(200) {
-        let idx_key = format!("dex_uo_{}_{}", trader_hex, i);
+        let idx_key = user_order_storage_key(&trader_hex, i);
         let order_id = read_u64(&state, DEX_CORE_PROGRAM, &idx_key);
-        let key = format!("dex_order_{}", order_id);
+        let key = order_storage_key(order_id);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
                 // Filter by status if requested
@@ -1657,7 +1579,7 @@ async fn get_orders(State(state): State<Arc<RpcState>>, Query(q): Query<TraderQu
 /// GET /api/v1/orders/:id — Get specific order
 async fn get_order(State(state): State<Arc<RpcState>>, Path(order_id): Path<u64>) -> Response {
     let slot = current_slot(&state);
-    let key = format!("dex_order_{}", order_id);
+    let key = order_storage_key(order_id);
 
     match read_bytes(&state, DEX_CORE_PROGRAM, &key) {
         Some(data) => match decode_order(&data) {
@@ -1672,13 +1594,13 @@ async fn get_order(State(state): State<Arc<RpcState>>, Path(order_id): Path<u64>
 
 /// GET /api/v1/pools — All AMM pools
 async fn get_pools(State(state): State<Arc<RpcState>>) -> Response {
-    let count = read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count");
+    let count = read_u64(&state, DEX_AMM_PROGRAM, AMM_POOL_COUNT_KEY);
     let slot = current_slot(&state);
     let mut pools = Vec::new();
     let symbol_map = build_token_symbol_map(&state);
 
     for i in 1..=count.min(500) {
-        let key = format!("amm_pool_{}", i);
+        let key = amm_pool_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
             if let Some(mut pool) = decode_pool(&data) {
                 pool.token_a_symbol = symbol_map.get(&pool.token_a).cloned();
@@ -1694,7 +1616,7 @@ async fn get_pools(State(state): State<Arc<RpcState>>) -> Response {
 /// GET /api/v1/pools/:id — Pool details
 async fn get_pool(State(state): State<Arc<RpcState>>, Path(pool_id): Path<u64>) -> Response {
     let slot = current_slot(&state);
-    let key = format!("amm_pool_{}", pool_id);
+    let key = amm_pool_storage_key(pool_id);
 
     match read_bytes(&state, DEX_AMM_PROGRAM, &key) {
         Some(data) => match decode_pool(&data) {
@@ -1717,14 +1639,14 @@ async fn get_lp_positions(
         None => return api_err("owner parameter required"),
     };
 
-    let count_key = format!("amm_opc_{}", owner_hex);
+    let count_key = amm_owner_position_count_storage_key(&owner_hex);
     let count = read_u64(&state, DEX_AMM_PROGRAM, &count_key);
 
     let mut positions = Vec::new();
     for i in 1..=count.min(100) {
-        let idx_key = format!("amm_op_{}_{}", owner_hex, i);
+        let idx_key = amm_owner_position_storage_key(&owner_hex, i);
         let pos_id = read_u64(&state, DEX_AMM_PROGRAM, &idx_key);
-        let key = format!("amm_pos_{}", pos_id);
+        let key = amm_position_storage_key(pos_id);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
             if let Some(pos) = decode_lp_position(&data, pos_id) {
                 positions.push(pos);
@@ -1796,7 +1718,7 @@ fn quote_amm_swap(
     token_in: &str,
     amount_in: u64,
 ) -> Option<(u64, f64)> {
-    let key = format!("amm_pool_{}", pool_id);
+    let key = amm_pool_storage_key(pool_id);
     let data = read_bytes(state, DEX_AMM_PROGRAM, &key)?;
     if data.len() < 96 {
         return None;
@@ -1845,7 +1767,7 @@ fn quote_clob_swap(
     amount_in: u64,
 ) -> Option<(u64, f64)> {
     // Load the pair to determine base/quote tokens
-    let pair_key = format!("dex_pair_{}", pair_id);
+    let pair_key = pair_storage_key(pair_id);
     let pair_data = read_bytes(state, DEX_CORE_PROGRAM, &pair_key)?;
     let pair = decode_pair(&pair_data)?;
 
@@ -1858,7 +1780,7 @@ fn quote_clob_swap(
 
     let pair_order_ids = get_pair_order_ids(state, pair_id);
     for order_id in pair_order_ids {
-        let key = format!("dex_order_{}", order_id);
+        let key = order_storage_key(order_id);
         if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
                 if order.status != "open" && order.status != "partial" {
@@ -1971,13 +1893,13 @@ async fn post_router_swap(
     let token_in = body.token_in.to_lowercase();
 
     // Find the best route for this token pair
-    let route_count = read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count");
+    let route_count = read_u64(&state, DEX_ROUTER_PROGRAM, ROUTER_ROUTE_COUNT_KEY);
     let mut best_route: Option<RouteJson> = None;
     let mut best_output: u64 = 0;
     let mut best_impact: f64 = 0.0;
 
     for i in 1..=route_count {
-        let key = format!("rtr_route_{}", i);
+        let key = route_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
                 if !route.enabled {
@@ -2061,12 +1983,12 @@ async fn post_router_swap(
 
     // Fallback: if no explicit route found, scan all AMM pools for a matching pair
     if best_route.is_none() {
-        let pool_count = read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count");
+        let pool_count = read_u64(&state, DEX_AMM_PROGRAM, AMM_POOL_COUNT_KEY);
         // Hard cap fallback scan to keep quote latency bounded when pool_count is very large.
         // Route registry remains the primary path; this is best-effort compatibility fallback.
         let scan_limit = pool_count.min(10_000);
         for pid in 0..scan_limit {
-            let pk = format!("amm_pool_{}", pid);
+            let pk = amm_pool_storage_key(pid);
             if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                 if data.len() >= 96 {
                     let ta = hex::encode(&data[0..32]);
@@ -2105,7 +2027,7 @@ async fn post_router_swap(
             // F9.12b: Determine fee rate based on route type
             let fee_bps: u64 = if route.route_type == "amm" {
                 // Read pool fee tier
-                let pk = format!("amm_pool_{}", route.pool_or_pair_id);
+                let pk = amm_pool_storage_key(route.pool_or_pair_id);
                 if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                     if data.len() >= 93 {
                         let idx = data[92] as usize;
@@ -2125,7 +2047,7 @@ async fn post_router_swap(
                 let clob_pct = route.split_percent as u64;
                 let amm_pct = 100u64.saturating_sub(clob_pct);
                 let amm_fee = {
-                    let pk = format!("amm_pool_{}", route.secondary_id);
+                    let pk = amm_pool_storage_key(route.secondary_id);
                     if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                         if data.len() >= 93 {
                             let idx = data[92] as usize;
@@ -2180,12 +2102,12 @@ async fn post_router_quote(
 
 /// GET /api/v1/routes — All routes
 async fn get_routes(State(state): State<Arc<RpcState>>) -> Response {
-    let count = read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count");
+    let count = read_u64(&state, DEX_ROUTER_PROGRAM, ROUTER_ROUTE_COUNT_KEY);
     let slot = current_slot(&state);
     let mut routes = Vec::new();
 
     for i in 1..=count.min(500) {
-        let key = format!("rtr_route_{}", i);
+        let key = route_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
                 routes.push(route);
@@ -2220,32 +2142,27 @@ async fn get_margin_positions(
         None => return api_err("trader parameter required"),
     };
 
-    let count_key = format!("mrg_upc_{}", trader_hex);
+    let count_key = margin_user_position_count_storage_key(&trader_hex);
     let count = read_u64(&state, DEX_MARGIN_PROGRAM, &count_key);
 
     let mut positions = Vec::new();
     for i in 1..=count.min(100) {
-        let idx_key = format!("mrg_up_{}_{}", trader_hex, i);
+        let idx_key = margin_user_position_storage_key(&trader_hex, i);
         let pos_id = read_u64(&state, DEX_MARGIN_PROGRAM, &idx_key);
-        let key = format!("mrg_pos_{}", pos_id);
+        let key = margin_position_storage_key(pos_id);
         if let Some(data) = read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
             if let Some(mut pos) = decode_margin_position(&data) {
                 // F24.3 FIX: Populate mark_price from pair's current mark price
-                let mark_key = format!("mrg_mark_{}", pos.pair_id);
+                let mark_key = margin_mark_storage_key(pos.pair_id);
                 let mark_raw = read_u64(&state, DEX_MARGIN_PROGRAM, &mark_key);
                 if mark_raw > 0 {
                     pos.mark_price = mark_raw as f64 / PRICE_SCALE as f64;
                 } else {
                     // Fallback: use analytics last price for the pair
-                    let lp_key = format!("ana_lp_{}", pos.pair_id);
-                    if let Some(lp_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &lp_key) {
-                        if lp_data.len() >= 8 {
-                            let close_raw =
-                                u64::from_le_bytes(lp_data[0..8].try_into().unwrap_or([0u8; 8]));
-                            if close_raw > 0 {
-                                pos.mark_price = close_raw as f64 / PRICE_SCALE as f64;
-                            }
-                        }
+                    let lp_key = analytics_last_price_storage_key(pos.pair_id);
+                    let close_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &lp_key);
+                    if close_raw > 0 {
+                        pos.mark_price = close_raw as f64 / PRICE_SCALE as f64;
                     }
                 }
                 positions.push(pos);
@@ -2262,7 +2179,7 @@ async fn get_margin_position(
     Path(position_id): Path<u64>,
 ) -> Response {
     let slot = current_slot(&state);
-    let key = format!("mrg_pos_{}", position_id);
+    let key = margin_position_storage_key(position_id);
 
     match read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
         Some(data) => match decode_margin_position(&data) {
@@ -2281,7 +2198,7 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
         insurance_fund: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
         last_funding_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_last_fund"),
         maintenance_bps: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_maint_bps"),
-        position_count: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
+        position_count: read_u64(&state, DEX_MARGIN_PROGRAM, MARGIN_POSITION_COUNT_KEY),
         max_leverage: {
             let v = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_max_lev");
             if v > 0 {
@@ -2298,10 +2215,10 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
 /// GET /api/v1/margin/enabled-pairs — List pair IDs that have margin trading enabled
 async fn get_margin_enabled_pairs(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let pair_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    let pair_count = read_u64(&state, DEX_CORE_PROGRAM, DEX_PAIR_COUNT_KEY);
     let mut enabled: Vec<u64> = Vec::new();
     for i in 1..=pair_count.min(500) {
-        let key = format!("mrg_ena_{}", i);
+        let key = margin_enabled_storage_key(i);
         if read_u64(&state, DEX_MARGIN_PROGRAM, &key) == 1 {
             enabled.push(i);
         }
@@ -2379,11 +2296,11 @@ async fn get_leaderboard(
     let mut entries = Vec::new();
 
     for rank in 0..limit as u32 {
-        let key = format!("ana_lb_{}", rank);
+        let key = analytics_leaderboard_storage_key(rank as u64);
         if let Some(addr_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
             if addr_data.len() >= 32 {
                 let addr_hex = hex::encode(&addr_data[..32]);
-                let stats_key = format!("ana_ts_{}", addr_hex);
+                let stats_key = analytics_trader_stats_storage_key(&addr_hex);
                 let (volume, trade_count, pnl) =
                     match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
                         Some(data) if data.len() >= 32 => {
@@ -2421,27 +2338,27 @@ async fn get_rewards(State(state): State<Arc<RpcState>>, Path(addr): Path<String
         pending: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
-            &format!("rew_pend_{}", addr_hex),
+            &rewards_pending_storage_key(&addr_hex),
         ),
         claimed: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
-            &format!("rew_claim_{}", addr_hex),
+            &rewards_claimed_storage_key(&addr_hex),
         ),
         total_volume: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
-            &format!("rew_vol_{}", addr_hex),
+            &rewards_volume_storage_key(&addr_hex),
         ),
         referral_count: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
-            &format!("rew_refc_{}", addr_hex),
+            &rewards_referral_count_storage_key(&addr_hex),
         ),
         referral_earnings: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
-            &format!("rew_refr_{}", addr_hex),
+            &rewards_referral_earnings_storage_key(&addr_hex),
         ),
     };
 
@@ -2455,12 +2372,16 @@ async fn get_proposals(
     State(state): State<Arc<RpcState>>,
     Query(q): Query<StatusQuery>,
 ) -> Response {
-    let count = read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count");
+    let count = read_u64(
+        &state,
+        DEX_GOVERNANCE_PROGRAM,
+        GOVERNANCE_PROPOSAL_COUNT_KEY,
+    );
     let slot = current_slot(&state);
     let mut proposals = Vec::new();
 
     for i in 1..=count.min(500) {
-        let key = format!("gov_prop_{}", i);
+        let key = governance_proposal_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
             if let Some(p) = decode_proposal(&data) {
                 if let Some(ref status) = q.status {
@@ -2482,7 +2403,7 @@ async fn get_proposal(
     Path(proposal_id): Path<u64>,
 ) -> Response {
     let slot = current_slot(&state);
-    let key = format!("gov_prop_{}", proposal_id);
+    let key = governance_proposal_storage_key(proposal_id);
 
     match read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
         Some(data) => match decode_proposal(&data) {
@@ -2502,7 +2423,7 @@ async fn get_trader_stats(
 ) -> Response {
     let slot = current_slot(&state);
     let addr_hex = normalize_account_lookup(&addr);
-    let key = format!("ana_ts_{}", addr_hex);
+    let key = analytics_trader_stats_storage_key(&addr_hex);
 
     let (volume, trade_count, pnl) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
         Some(data) if data.len() >= 32 => {
@@ -2536,7 +2457,7 @@ async fn get_trader_trades(
     let limit = q.limit.unwrap_or(50).min(200);
     let slot = current_slot(&state);
     let addr_hex = normalize_account_lookup(&addr);
-    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
+    let trade_count = read_u64(&state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY);
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2551,11 +2472,11 @@ async fn get_trader_trades(
         1
     };
     for i in (start..=trade_count).rev() {
-        let key = format!("dex_trade_{}", i);
+        let key = trade_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(mut trade) = decode_trade(&data) {
                 if trade.taker == addr_hex {
-                    let maker_key = format!("dex_order_{}", trade.maker_order_id);
+                    let maker_key = order_storage_key(trade.maker_order_id);
                     if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
                         if maker_data.len() > 40 {
                             trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
@@ -2744,9 +2665,9 @@ async fn get_core_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(
         serde_json::json!({
-            "pairCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count"),
-            "orderCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count"),
-            "tradeCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count"),
+            "pairCount": read_u64(&state, DEX_CORE_PROGRAM, DEX_PAIR_COUNT_KEY),
+            "orderCount": read_u64(&state, DEX_CORE_PROGRAM, DEX_ORDER_COUNT_KEY),
+            "tradeCount": read_u64(&state, DEX_CORE_PROGRAM, DEX_TRADE_COUNT_KEY),
             "totalVolume": read_u64(&state, DEX_CORE_PROGRAM, "dex_total_volume"),
             "feeTreasury": read_u64(&state, DEX_CORE_PROGRAM, "dex_fee_treasury"),
         }),
@@ -2759,7 +2680,7 @@ async fn get_amm_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(
         serde_json::json!({
-            "poolCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count"),
+            "poolCount": read_u64(&state, DEX_AMM_PROGRAM, AMM_POOL_COUNT_KEY),
             "positionCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pos_count"),
             "swapCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_swap_count"),
             "totalVolume": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_volume"),
@@ -2774,7 +2695,7 @@ async fn get_margin_stats_rest(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(
         serde_json::json!({
-            "positionCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
+            "positionCount": read_u64(&state, DEX_MARGIN_PROGRAM, MARGIN_POSITION_COUNT_KEY),
             "totalVolume": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_volume"),
             "liquidationCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
             "insuranceFund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
@@ -2788,7 +2709,7 @@ async fn get_router_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(
         serde_json::json!({
-            "routeCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count"),
+            "routeCount": read_u64(&state, DEX_ROUTER_PROGRAM, ROUTER_ROUTE_COUNT_KEY),
             "swapCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_swap_count"),
             "totalVolume": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_total_volume"),
         }),
@@ -2827,10 +2748,14 @@ async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
 async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     // F14.4: Count active proposals
-    let count = read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count");
+    let count = read_u64(
+        &state,
+        DEX_GOVERNANCE_PROGRAM,
+        GOVERNANCE_PROPOSAL_COUNT_KEY,
+    );
     let mut active = 0u64;
     for i in 1..=count.min(500) {
-        let key = format!("gov_prop_{}", i);
+        let key = governance_proposal_storage_key(i);
         if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
             if data.len() > 41 && data[41] == 0 {
                 // status byte at offset 41, 0 = active

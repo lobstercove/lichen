@@ -206,7 +206,6 @@ impl MerkleTree {
         current_level[0]
     }
 
-    #[allow(dead_code)]
     fn rebuild_path(&mut self, _leaf_index: usize) {}
 
     pub fn proof(&self, index: u64) -> Option<MerklePath> {

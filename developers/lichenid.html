@@ -68,7 +68,7 @@
                 <a href="#identity-gates" class="sidebar-link">Identity Gates</a>
                 <a href="#integration" class="sidebar-link">Integration Guide</a>
                 <a href="#web-of-trust" class="sidebar-link">Web of Trust</a>
-                <a href="#sdk-examples" class="sidebar-link">SDK Examples</a>
+                <a href="#sdk-examples" class="sidebar-link">Integration Examples</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -806,10 +806,24 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
             </section>
 
             <!-- ============================================================ -->
-            <!-- SDK EXAMPLES -->
+            <!-- INTEGRATION EXAMPLES -->
             <!-- ============================================================ -->
             <section id="sdk-examples">
-                <h2>SDK Examples</h2>
+                <h2>Implementation-Backed Integration Examples</h2>
+
+                <div class="callout callout-info">
+                    <p><strong>Current surface:</strong> the JavaScript, Python, and Rust SDKs now ship a
+                        <code>LichenIdClient</code> helper for the common LichenID flow. It resolves the deployed
+                        <code>YID</code> program via <code>getSymbolRegistry("YID")</code>, uses public LichenID
+                        JSON-RPC methods for reads, and handles ABI encoding for identity registration, direct name
+                        registration, skills, vouches, premium-name auction flows, metadata reads and writes,
+                        delegate lifecycle and delegated profile writes, recovery approvals, and skill-attestation
+                        flows.
+                    </p>
+                    <p><strong>Raw escape hatch:</strong> use generic contract calls for admin-only reputation or
+                        achievement operations, naming-delegate operations that are still low-level, and any future
+                        LichenID method that is not wrapped yet.</p>
+                </div>
 
                 <div class="sdk-tabs">
                     <button class="sdk-tab active" data-sdk-lang="js">JavaScript</button>
@@ -823,53 +837,91 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
                     <div class="code-block">
                         <div class="code-header"><span>JavaScript</span><button class="code-copy-btn">Copy</button>
                         </div>
-                        <pre><code>import { LichenClient, Keypair } from '@lichen/sdk';
+                        <pre><code>import { Connection, Keypair, LichenIdClient } from '@lichen/sdk';
 
-const client = new LichenClient('http://localhost:8899');
-const keypair = Keypair.fromFile('~/.lichen/keypairs/id.json');
-
-// Register a new AI agent identity
-const result = await client.callContract(
-  LICHENID_ADDRESS,
-  'register_identity',
-  {
-    owner: keypair.publicKey,
-    agentType: 1,  // Trading agent
-    name: 'My Trading Bot',
-  }
+const connection = new Connection(
+    'https://testnet-rpc.lichen.network',
+    'wss://testnet-rpc.lichen.network/ws'
 );
-console.log('Identity registered:', result.signature);</code></pre>
+
+const lichenId = new LichenIdClient(connection);
+const keypair = Keypair.generate();
+
+const signature = await lichenId.registerIdentity(keypair, {
+    agentType: 1,
+    name: 'My Trading Bot',
+});
+
+console.log('Identity registration tx:', signature);</code></pre>
                     </div>
 
                     <h3>Register .lichen Name</h3>
                     <div class="code-block">
                         <div class="code-header"><span>JavaScript</span><button class="code-copy-btn">Copy</button>
                         </div>
-                        <pre><code>// Register a .lichen name (20 LICN for 5+ char names)
-const result = await client.callContract(
-  LICHENID_ADDRESS,
-  'register_name',
-  {
+                        <pre><code>const signature = await lichenId.registerName(keypair, {
     name: 'tradingbot',
     durationYears: 1,
-  },
-  { value: 20_000_000_000 } // 20 LICN in spores
-);
-console.log('Name registered: tradingbot.lichen');</code></pre>
+});
+
+console.log('Name registration tx:', signature);</code></pre>
                     </div>
 
-                    <h3>Check Reputation</h3>
+                    <h3>Read Profile &amp; Reputation</h3>
                     <div class="code-block">
                         <div class="code-header"><span>JavaScript</span><button class="code-copy-btn">Copy</button>
                         </div>
-                        <pre><code>// Get reputation score for any agent
-const repData = await client.callContract(
-  LICHENID_ADDRESS,
-  'get_reputation',
-  { pubkey: targetAddress }
-);
-const reputation = repData.readUInt64LE(0);
-console.log(`Reputation: ${reputation}`);</code></pre>
+                        <pre><code>const profile = await lichenId.getProfile(keypair.pubkey());
+
+console.log(profile?.identity.name);
+console.log(profile?.reputation.score, profile?.reputation.tier_name);
+console.log(profile?.agent.endpoint);
+
+const resolved = await lichenId.resolveName('tradingbot.lichen');
+console.log(resolved?.owner);</code></pre>
+                    </div>
+
+                    <h3>Skills, Vouches &amp; Agent Settings</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>JavaScript</span><button class="code-copy-btn">Copy</button>
+                        </div>
+                        <pre><code>await lichenId.addSkill(keypair, {
+    name: 'market-making',
+    proficiency: 92,
+});
+
+await lichenId.vouch(keypair, 'OtherAgentBase58Address...');
+await lichenId.setEndpoint(keypair, { url: 'https://agents.example/tradingbot' });
+await lichenId.setAvailability(keypair, { status: 'available' });
+await lichenId.setRate(keypair, { rateSpores: 25_000_000_000n });
+
+const skills = await lichenId.getSkills(keypair.pubkey());
+const vouches = await lichenId.getVouches(keypair.pubkey());</code></pre>
+                    </div>
+
+                    <h3>Premium Name Auctions</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>JavaScript</span><button class="code-copy-btn">Copy</button>
+                        </div>
+                        <pre><code>const auction = await lichenId.getNameAuction('defi');
+console.log(auction?.highest_bid, auction?.ended);
+
+// Admin creates and finalizes premium 3-4 character auctions.
+await lichenId.createNameAuction(adminKeypair, {
+    name: 'defi',
+    reserveBidSpores: 100_000_000_000n,
+    endSlot: BigInt((await connection.getSlot()) + 432_000),
+});
+
+await lichenId.bidNameAuction(keypair, {
+    name: 'defi',
+    bidAmountSpores: 125_000_000_000n,
+});
+
+await lichenId.finalizeNameAuction(adminKeypair, {
+    name: 'defi',
+    durationYears: 1,
+});</code></pre>
                     </div>
                 </div>
 
@@ -878,48 +930,100 @@ console.log(`Reputation: ${reputation}`);</code></pre>
                     <h3>Register Identity</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code>from lichen import Connection, Keypair
+                        <pre><code>from pathlib import Path
+from lichen import Connection, Keypair, LichenIdClient, RegisterIdentityParams
 
-client = Connection("http://localhost:8899")
-keypair = Keypair.from_file("~/.lichen/keypairs/id.json")
-
-# Register a new agent identity
-result = client.call_contract(
-    LICHENID_ADDRESS,
-    "register_identity",
-    owner=keypair.public_key,
-    agent_type=3,  # Analysis agent
-    name="My Analysis Agent",
+connection = Connection(
+    "https://testnet-rpc.lichen.network",
+    ws_url="wss://testnet-rpc.lichen.network/ws",
 )
-print(f"Identity registered: {result.signature}")</code></pre>
+
+lichen_id = LichenIdClient(connection)
+keypair = Keypair.load(Path.home() / ".lichen" / "wallets" / "id.json")
+
+signature = await lichen_id.register_identity(
+    keypair,
+    RegisterIdentityParams(agent_type=3, name="My Analysis Agent"),
+)
+
+print(f"Identity registration tx: {signature}")</code></pre>
                     </div>
 
                     <h3>Register .lichen Name</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code># Register a .lichen name
-result = client.call_contract(
-    LICHENID_ADDRESS,
-    "register_name",
-    name="analyst",
-    duration_years=2,
-    value=100_000_000_000,  # 100 LICN (4-char premium)
+                        <pre><code>from lichen import RegisterNameParams
+
+signature = await lichen_id.register_name(
+    keypair,
+    RegisterNameParams(name="analyst", duration_years=2),
 )
-print("Registered: analyst.lichen")</code></pre>
+
+print(f"Name registration tx: {signature}")</code></pre>
                     </div>
 
-                    <h3>Check Reputation</h3>
+                    <h3>Read Profile &amp; Reputation</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code>import struct
+                        <pre><code>profile = await lichen_id.get_profile(keypair.pubkey())
 
-rep_data = client.call_contract(
-    LICHENID_ADDRESS,
-    "get_reputation",
-    pubkey=target_address,
+if profile:
+    print(profile["identity"]["name"])
+    print(profile["reputation"]["score"], profile["reputation"]["tier_name"])
+    print(profile["agent"]["endpoint"])
+
+resolved = await lichen_id.resolve_name("analyst.lichen")
+print(resolved["owner"] if resolved else "unresolved")</code></pre>
+                    </div>
+
+                    <h3>Skills, Vouches &amp; Agent Settings</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
+                        <pre><code>from lichen import (
+    AddSkillParams,
+    SetAvailabilityParams,
+    SetEndpointParams,
+    SetRateParams,
 )
-reputation = struct.unpack("&lt;Q", rep_data[:8])[0]
-print(f"Reputation: {reputation}")</code></pre>
+
+await lichen_id.add_skill(keypair, AddSkillParams(name="research", proficiency=95))
+await lichen_id.vouch(keypair, "OtherAgentBase58Address...")
+await lichen_id.set_endpoint(keypair, SetEndpointParams(url="https://agents.example/analyst"))
+await lichen_id.set_availability(keypair, SetAvailabilityParams(status="available"))
+await lichen_id.set_rate(keypair, SetRateParams(rate_spores=25_000_000_000))
+
+skills = await lichen_id.get_skills(keypair.pubkey())
+vouches = await lichen_id.get_vouches(keypair.pubkey())</code></pre>
+                    </div>
+
+                    <h3>Premium Name Auctions</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
+                        <pre><code>from lichen import BidNameAuctionParams, CreateNameAuctionParams, FinalizeNameAuctionParams
+
+auction = await lichen_id.get_name_auction("defi")
+print(auction["highest_bid"] if auction else "no auction")
+
+# Admin creates and finalizes premium 3-4 character auctions.
+current_slot = await connection.get_slot()
+await lichen_id.create_name_auction(
+    admin_keypair,
+    CreateNameAuctionParams(
+        name="defi",
+        reserve_bid_spores=100_000_000_000,
+        end_slot=current_slot + 432_000,
+    ),
+)
+
+await lichen_id.bid_name_auction(
+    keypair,
+    BidNameAuctionParams(name="defi", bid_amount_spores=125_000_000_000),
+)
+
+await lichen_id.finalize_name_auction(
+    admin_keypair,
+    FinalizeNameAuctionParams(name="defi", duration_years=1),
+)</code></pre>
                     </div>
                 </div>
 
@@ -928,60 +1032,109 @@ print(f"Reputation: {reputation}")</code></pre>
                     <h3>Register Identity</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code>use lichen_client_sdk::{Client, Keypair};
+                        <pre><code>use lichen_client_sdk::{Client, Keypair, LichenIdClient, RegisterIdentityParams, Result};
 
-let client = Client::new("http://localhost:8899");
-let keypair = Keypair::from_file("~/.lichen/keypairs/id.json")?;
+#[tokio::main]
+async fn main() -&gt; Result&lt;()&gt; {
+    let client = Client::new("https://testnet-rpc.lichen.network");
+    let lichen_id = LichenIdClient::new(client.clone());
+    let keypair = Keypair::new();
 
-// Build registration args: [agent_type(1), name_len(4), name_bytes(...)]
-let name = b"My Infrastructure Agent";
-let mut args = vec![5u8]; // agent_type = Infrastructure
-args.extend_from_slice(&amp;(name.len() as u32).to_le_bytes());
-args.extend_from_slice(name);
+    let sig = lichen_id.register_identity(&amp;keypair, RegisterIdentityParams {
+        agent_type: 5,
+        name: "My Infrastructure Agent".into(),
+    }).await?;
 
-let sig = client.call_contract(
-    &amp;keypair,
-    &amp;LICHENID_ADDRESS,
-    "register_identity",
-    args,
-    0, // no value
-).await?;
-println!("Registered: {}", sig);</code></pre>
+    println!("Identity registration tx: {}", sig);
+    Ok(())
+}</code></pre>
                     </div>
 
                     <h3>Register .lichen Name</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code>let name = b"infrabot";
-let mut args = Vec::new();
-args.extend_from_slice(name);
-args.push(1); // duration: 1 year
+                        <pre><code>use lichen_client_sdk::RegisterNameParams;
 
-let sig = client.call_contract(
-    &amp;keypair,
-    &amp;LICHENID_ADDRESS,
-    "register_name",
-    args,
-    20_000_000_000, // 20 LICN for 5+ char name
-).await?;
-println!("Registered: infrabot.lichen — {}", sig);</code></pre>
+let sig = lichen_id.register_name(&amp;keypair, RegisterNameParams {
+    name: "infrabot".into(),
+    duration_years: 1,
+    value_spores: None,
+}).await?;
+
+println!("Name registration tx: {}", sig);</code></pre>
                     </div>
 
-                    <h3>Check Reputation</h3>
+                    <h3>Read Profile &amp; Reputation</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
-                        <pre><code>let result = client.call_contract(
-    &amp;keypair,
-    &amp;LICHENID_ADDRESS,
-    "get_reputation",
-    target_pubkey.to_vec(),
-    0,
-).await?;
+                        <pre><code>if let Some(profile) = lichen_id.get_profile(&amp;keypair.pubkey()).await? {
+    println!("{}", profile.identity.name);
+    println!("{} {}", profile.reputation.score, profile.reputation.tier_name);
+    println!("{:?}", profile.agent.endpoint);
+}
 
-if result.len() &gt;= 8 {
-    let reputation = u64::from_le_bytes(result[..8].try_into().unwrap());
-    println!("Reputation: {}", reputation);
+if let Some(resolved) = lichen_id.resolve_name("infrabot.lichen").await? {
+    println!("{}", resolved.owner);
 }</code></pre>
+                    </div>
+
+                    <h3>Skills, Vouches &amp; Agent Settings</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
+                        <pre><code>use lichen_client_sdk::{
+    AddSkillParams, LichenIdAvailability, SetAvailabilityParams,
+    SetEndpointParams, SetRateParams,
+};
+
+lichen_id.add_skill(&amp;keypair, AddSkillParams {
+    name: "infra-ops".into(),
+    proficiency: 93,
+}).await?;
+
+let other = lichen_client_sdk::Pubkey::from_base58("OtherAgentBase58Address...")?;
+lichen_id.vouch(&amp;keypair, &amp;other).await?;
+lichen_id.set_endpoint(&amp;keypair, SetEndpointParams {
+    url: "https://agents.example/infrabot".into(),
+}).await?;
+lichen_id.set_availability(&amp;keypair, SetAvailabilityParams {
+    status: LichenIdAvailability::Available,
+}).await?;
+lichen_id.set_rate(&amp;keypair, SetRateParams {
+    rate_spores: 25_000_000_000,
+}).await?;
+
+let skills = lichen_id.get_skills(&amp;keypair.pubkey()).await?;
+let vouches = lichen_id.get_vouches(&amp;keypair.pubkey()).await?;</code></pre>
+                    </div>
+
+                    <h3>Premium Name Auctions</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
+                        <pre><code>use lichen_client_sdk::{
+    BidNameAuctionParams, CreateNameAuctionParams, FinalizeNameAuctionParams,
+};
+
+if let Some(auction) = lichen_id.get_name_auction("defi").await? {
+    println!("highest bid: {}", auction.highest_bid);
+}
+
+// Admin creates and finalizes premium 3-4 character auctions.
+let current_slot = client.get_slot().await?;
+lichen_id.create_name_auction(&amp;admin_keypair, CreateNameAuctionParams {
+    name: "defi".into(),
+    reserve_bid_spores: 100_000_000_000,
+    end_slot: current_slot + 432_000,
+}).await?;
+
+lichen_id.bid_name_auction(&amp;keypair, BidNameAuctionParams {
+    name: "defi".into(),
+    bid_amount_spores: 125_000_000_000,
+}).await?;
+
+lichen_id.finalize_name_auction(&amp;admin_keypair, FinalizeNameAuctionParams {
+    name: "defi".into(),
+    duration_years: 1,
+}).await?;</code></pre>
                     </div>
                 </div>
             </section>
