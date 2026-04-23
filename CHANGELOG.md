@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-04-23
+
+### Fixed
+- Mission Control now derives block cadence from observer-side wall-clock telemetry instead of coarse block-header second timestamps.
+- Cluster monitoring now uses propagated `last_observed_block_slot` and `last_observed_block_at_ms` signals so cadence and freshness are grounded in real validator activity across the 3-node view.
+- Public testnet validators and monitoring were rolled forward together on a single canonical Linux artifact so live RPC and Cloudflare Pages serve the same cadence model.
+
 ## [0.5.8] - 2026-04-23
 
 ### Fixed
