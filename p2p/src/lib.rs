@@ -17,9 +17,10 @@ pub use message::{
     PeerInfoMsg, ShortTxId, SnapshotKind, P2P_PROTOCOL_VERSION,
 };
 pub use network::{
-    BlockRangeRequestMsg, CompactBlockMsg, ConsistencyReportMsg, ErasureShardRequestMsg,
-    ErasureShardResponseMsg, GetBlockTxsMsg, NodeRole, P2PConfig, P2PNetwork, SnapshotRequestMsg,
-    SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg, ValidatorAnnouncement,
+    BlockRangeRequestMsg, CompactBlockMsg, ConsensusActivityMsg, ConsistencyReportMsg,
+    ErasureShardRequestMsg, ErasureShardResponseMsg, GetBlockTxsMsg, NodeRole, P2PConfig,
+    P2PNetwork, SnapshotRequestMsg, SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
+    ValidatorAnnouncement,
 };
 pub use peer::{PeerInfo, PeerManager, NON_CONSENSUS_FANOUT};
 pub use peer_ban::PeerBanList;

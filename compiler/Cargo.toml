@@ -14,7 +14,7 @@ tracing-subscriber = "0.3"
 base64 = "0.21"
 tempfile = "3"
 clap = { version = "4", features = ["derive"] }
-lichen-core = { path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", path = "../core" }
 
 [profile.release]
 opt-level = 3

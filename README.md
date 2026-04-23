@@ -286,7 +286,7 @@ lichen identity export --keypair /path/to/validator-keypair.json --reveal-seed
 ### JavaScript
 
 ```js
-import { Connection, PublicKey } from '@lichen/sdk';
+import { Connection, PublicKey } from '@lobstercove/lichen-sdk';
 
 const connection = new Connection('http://localhost:8899');
 const balance = await connection.getBalance(

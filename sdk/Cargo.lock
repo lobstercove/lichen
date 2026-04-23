@@ -2415,7 +2415,7 @@ name = "lichen-contract-sdk"
 version = "1.0.0"
 dependencies = [
  "dlmalloc",
- "lichen-core",
+ "lobstercove-lichen-core",
  "p3-field",
  "p3-goldilocks",
  "p3-symmetric",
@@ -2424,7 +2424,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "lichen-core"
+name = "linux-raw-sys"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "lobstercove-lichen-core"
 version = "0.5.7"
 dependencies = [
  "aes-gcm",
@@ -2478,12 +2484,6 @@ dependencies = [
  "wasmer-compiler-cranelift",
  "wasmer-middlewares",
 ]
-
-[[package]]
-name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lock_api"
