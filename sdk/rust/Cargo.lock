@@ -2733,7 +2733,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
