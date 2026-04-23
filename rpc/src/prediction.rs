@@ -1331,7 +1331,7 @@ async fn get_leaderboard(
     }
 
     // Sort descending by volume
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.1));
     entries.truncate(limit);
 
     let leaderboard: Vec<LeaderboardEntry> = entries

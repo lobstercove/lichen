@@ -124,7 +124,7 @@ impl KademliaTable {
                 all.push((xor_distance(&entry.node_id, target), entry));
             }
         }
-        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all.sort_by_key(|a| a.0);
         all.into_iter()
             .take(count)
             .map(|(_, e)| e.clone())

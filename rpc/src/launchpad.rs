@@ -304,7 +304,7 @@ async fn get_tokens(
                 .partial_cmp(&a.market_cap)
                 .unwrap_or(std::cmp::Ordering::Equal)
         }),
-        _ => tokens.sort_by(|a, b| b.id.cmp(&a.id)), // newest first
+        _ => tokens.sort_by_key(|b| std::cmp::Reverse(b.id)), // newest first
     }
 
     // Paginate

@@ -84,29 +84,21 @@ pub(crate) async fn autodiscover_contract_addresses(
     for (symbol, field_name) in symbol_map {
         if let Some(addr) = addr_by_symbol.get(*symbol) {
             match *field_name {
-                "musd" => {
-                    if config.musd_contract_addr.is_none() {
-                        info!("auto-discovered {} contract: {}", symbol, addr);
-                        config.musd_contract_addr = Some(addr.clone());
-                    }
+                "musd" if config.musd_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.musd_contract_addr = Some(addr.clone());
                 }
-                "wsol" => {
-                    if config.wsol_contract_addr.is_none() {
-                        info!("auto-discovered {} contract: {}", symbol, addr);
-                        config.wsol_contract_addr = Some(addr.clone());
-                    }
+                "wsol" if config.wsol_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.wsol_contract_addr = Some(addr.clone());
                 }
-                "weth" => {
-                    if config.weth_contract_addr.is_none() {
-                        info!("auto-discovered {} contract: {}", symbol, addr);
-                        config.weth_contract_addr = Some(addr.clone());
-                    }
+                "weth" if config.weth_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.weth_contract_addr = Some(addr.clone());
                 }
-                "wbnb" => {
-                    if config.wbnb_contract_addr.is_none() {
-                        info!("auto-discovered {} contract: {}", symbol, addr);
-                        config.wbnb_contract_addr = Some(addr.clone());
-                    }
+                "wbnb" if config.wbnb_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.wbnb_contract_addr = Some(addr.clone());
                 }
                 _ => {}
             }

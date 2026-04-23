@@ -1701,11 +1701,9 @@ fn compute_swap_output_rpc(
         // amount_a_out = L * (new_sqrt - sqrt_p) / (sqrt_p * new_sqrt / 2^32)
         let delta_sqrt = new_sqrt as u128 - sqrt_price as u128;
         let denom = sqrt_price as u128 * new_sqrt as u128 / (1u128 << 32);
-        let amount_out = if denom == 0 {
-            0
-        } else {
-            (liquidity as u128 * delta_sqrt / denom) as u64
-        };
+        let amount_out = (liquidity as u128 * delta_sqrt)
+            .checked_div(denom)
+            .unwrap_or(0) as u64;
         (amount_out, new_sqrt)
     }
 }

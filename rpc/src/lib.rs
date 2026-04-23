@@ -12698,9 +12698,7 @@ async fn handle_get_market_listings(
     if let Some(ref sort_by) = filters.sort_by {
         match sort_by.as_str() {
             "price_asc" => filtered.sort_by_key(|a| a.price.unwrap_or(0)),
-            "price_desc" => {
-                filtered.sort_by(|a, b| b.price.unwrap_or(0).cmp(&a.price.unwrap_or(0)))
-            }
+            "price_desc" => filtered.sort_by_key(|b| std::cmp::Reverse(b.price.unwrap_or(0))),
             "oldest" => filtered.sort_by_key(|a| a.timestamp),
             _ => {} // newest first (default from DB)
         }
@@ -12842,7 +12840,7 @@ async fn handle_get_market_offers(
         })
         .collect();
 
-    filtered.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    filtered.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
     filtered.truncate(limit);
 
@@ -15181,7 +15179,7 @@ async fn handle_get_prediction_leaderboard(
         }
     }
 
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.1));
     entries.truncate(limit);
 
     let leaders: Vec<serde_json::Value> = entries
@@ -15263,7 +15261,7 @@ async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::
         ));
     }
 
-    markets.sort_by(|a, b| b.3.cmp(&a.3));
+    markets.sort_by_key(|b| std::cmp::Reverse(b.3));
     markets.truncate(10);
 
     let items: Vec<serde_json::Value> = markets

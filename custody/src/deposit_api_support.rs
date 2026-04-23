@@ -109,7 +109,7 @@ pub(super) async fn create_deposit(
     let index = next_deposit_index(&state.db, &user_id, &chain, &asset)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
 
-    let derivation_path = bip44_derivation_path(&chain, derivation_account, index as u64)
+    let derivation_path = bip44_derivation_path(&chain, derivation_account, index)
         .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     let deposit_seed_source = active_deposit_seed_source(&state.config).to_string();
     let deposit_seed = deposit_seed_for_source(&state.config, &deposit_seed_source);

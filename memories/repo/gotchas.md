@@ -39,3 +39,5 @@
   On 2026-04-23 `rpc/src/lib.rs::capture_logs_async(...)` had to be serialized with a process-local mutex to keep privileged-audit-log assertions stable in the full workspace run.
 - CI `Cargo Audit` checks every `Cargo.lock` in the repository, not just the workspace root.
   On 2026-04-23 the root lockfile audit was green while `compiler/Cargo.lock`, `sdk/Cargo.lock`, and many contract-local lockfiles still carried vulnerable `rand` versions; reproduce the workflow with `find . -path '*/target' -prune -o -name Cargo.lock -print | sort` and audit each lockfile explicitly.
+- GitHub `Clippy` tracks the current stable toolchain, not whatever local stable happened to be last week.
+  On 2026-04-23 local `rustc 1.94.0` was green while GitHub had already moved to `1.95.0` and surfaced new `unnecessary_sort_by`, `manual_checked_ops`, `collapsible_match`, and `unnecessary_cast` lints; if CI and local lint results disagree, run `rustup update stable` and validate with `cargo +stable clippy --workspace -- -D warnings`.

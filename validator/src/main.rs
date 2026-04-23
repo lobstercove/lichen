@@ -3008,7 +3008,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
     // This ensures contract storage, NFT state, staking mutations, etc.
     // are properly rolled back during a fork switch.
     if !non_revertible_accounts.is_empty() {
-        non_revertible_accounts.sort_by(|a, b| a.0.cmp(&b.0));
+        non_revertible_accounts.sort_by_key(|a| a.0);
         non_revertible_accounts.dedup();
 
         // Find the nearest checkpoint at or below the reverted block's slot
@@ -3543,7 +3543,10 @@ async fn apply_block_effects(
                         .get_stake(validator)
                         .map(|stake_info| stake_info.total_stake())
                         .unwrap_or(0);
-                    (voters_share * stake / total_voter_stake).min(remaining)
+                    (voters_share * stake)
+                        .checked_div(total_voter_stake)
+                        .unwrap_or(0)
+                        .min(remaining)
                 } else {
                     let remaining_validators = (voter_pubkeys.len() - idx) as u64;
                     (remaining / remaining_validators).min(remaining)
@@ -4771,13 +4774,16 @@ async fn binance_ws_loop(
                                 }
                             }
                         }
-                        Ok(tungstenite::Message::Ping(data)) => {
-                            // Respond to keep connection alive
-                            if write.send(tungstenite::Message::Pong(data)).await.is_err() {
-                                warn!("🔮 Binance WebSocket pong send failed");
-                                break;
-                            }
+                        Ok(tungstenite::Message::Ping(data))
+                            if write
+                                .send(tungstenite::Message::Pong(data.clone()))
+                                .await
+                                .is_err() =>
+                        {
+                            warn!("🔮 Binance WebSocket pong send failed");
+                            break;
                         }
+                        Ok(tungstenite::Message::Ping(_)) => {}
                         Ok(tungstenite::Message::Close(_)) => {
                             info!("🔮 Binance WebSocket closed by server");
                             break;

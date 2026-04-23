@@ -432,7 +432,7 @@ pub fn compute_validators_hash(
         })
         .collect();
     // Sort by pubkey bytes for determinism
-    sorted.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+    sorted.sort_by_key(|a| a.0 .0);
 
     let mut data = Vec::with_capacity(sorted.len() * 40);
     for (pk, stake) in &sorted {
