@@ -37,3 +37,5 @@
   On 2026-04-23 the live README, developer portal, guides, and skill docs were updated to `@lobstercove/lichen-sdk`, `lobstercove-lichen-core`, `lichen-client-sdk = "0.1.0"`, and `cargo install --path cli/`, but dated audit/strategy snapshots were left unchanged unless they were still serving as active runbooks.
 - RPC log-capture tests can race under parallel `cargo test --workspace` if they install independent tracing subscribers concurrently.
   On 2026-04-23 `rpc/src/lib.rs::capture_logs_async(...)` had to be serialized with a process-local mutex to keep privileged-audit-log assertions stable in the full workspace run.
+- CI `Cargo Audit` checks every `Cargo.lock` in the repository, not just the workspace root.
+  On 2026-04-23 the root lockfile audit was green while `compiler/Cargo.lock`, `sdk/Cargo.lock`, and many contract-local lockfiles still carried vulnerable `rand` versions; reproduce the workflow with `find . -path '*/target' -prune -o -name Cargo.lock -print | sort` and audit each lockfile explicitly.
