@@ -60,7 +60,7 @@ edition = "2021"
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-lichen-core = { path = "$REPO_ROOT/core" }
+lichen-core = { package = "lobstercove-lichen-core", path = "$REPO_ROOT/core" }
 TOML
 
 mkdir -p "$TEMP_DIR/src"
