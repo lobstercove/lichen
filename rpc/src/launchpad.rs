@@ -16,7 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::RpcState;
+use crate::{RpcError, RpcState};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -128,6 +128,35 @@ struct PlatformStatsJson {
     current_slot: u64,
 }
 
+fn collect_platform_stats(state: &RpcState) -> PlatformStatsJson {
+    let slot = current_slot(state);
+    let token_count = read_u64_key(state, b"cp_token_count");
+    let fees_raw = read_u64_key(state, b"cp_fees_collected");
+
+    // Count graduated tokens.
+    // Cap the scan to avoid unbounded per-request work when token_count becomes very large.
+    let scan_limit = token_count.min(10_000);
+    let mut graduated = 0u64;
+    for id in 1..=scan_limit {
+        let key = format!("cpt:{:016x}", id);
+        if let Some(data) = read_bytes(state, key.as_bytes()) {
+            if data.len() >= 65 && data[64] != 0 {
+                graduated += 1;
+            }
+        }
+    }
+
+    PlatformStatsJson {
+        token_count,
+        fees_collected: fees_raw as f64 / SPORES_PER_LICN,
+        total_graduated: graduated,
+        graduation_threshold: GRADUATION_MCAP_LICN,
+        creation_fee: CREATION_FEE_LICN,
+        platform_fee_pct: PLATFORM_FEE_PCT,
+        current_slot: slot,
+    }
+}
+
 #[derive(Serialize)]
 struct LaunchpadConfigJson {
     creation_fee: f64,
@@ -208,35 +237,16 @@ fn decode_token(state: &RpcState, id: u64) -> Option<TokenJson> {
 /// GET /stats — Platform-wide launchpad statistics
 async fn get_stats(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
     let slot = current_slot(&state);
-    let token_count = read_u64_key(&state, b"cp_token_count");
-    let fees_raw = read_u64_key(&state, b"cp_fees_collected");
+    ApiResponse::ok(collect_platform_stats(&state), slot)
+}
 
-    // Count graduated tokens
-    // P10-VAL-10: Cap iteration to prevent unbounded scan when token_count is large.
-    // At >10k tokens, consider maintaining a persistent graduated counter instead.
-    let scan_limit = token_count.min(10_000);
-    let mut graduated = 0u64;
-    for id in 1..=scan_limit {
-        let key = format!("cpt:{:016x}", id);
-        if let Some(data) = read_bytes(&state, key.as_bytes()) {
-            if data.len() >= 65 && data[64] != 0 {
-                graduated += 1;
-            }
-        }
-    }
-
-    ApiResponse::ok(
-        PlatformStatsJson {
-            token_count,
-            fees_collected: fees_raw as f64 / SPORES_PER_LICN,
-            total_graduated: graduated,
-            graduation_threshold: GRADUATION_MCAP_LICN,
-            creation_fee: CREATION_FEE_LICN,
-            platform_fee_pct: PLATFORM_FEE_PCT,
-            current_slot: slot,
-        },
-        slot,
-    )
+pub(crate) async fn handle_get_sporepump_stats(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    serde_json::to_value(collect_platform_stats(state)).map_err(|err| RpcError {
+        code: -32603,
+        message: format!("Failed to serialize SporePump stats: {err}"),
+    })
 }
 
 /// GET /config — Launchpad protocol constants used by frontend bootstrap UI

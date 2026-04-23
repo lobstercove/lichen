@@ -4,6 +4,11 @@ use crate::block::Block;
 
 use super::*;
 
+const OBSERVED_CADENCE_WINDOW: usize = 120;
+const OBSERVED_CADENCE_MAX_SLOT_DELTA: u64 = 8;
+const OBSERVED_CADENCE_MAX_LIVE_LAG_SECS: u64 = 5;
+const HEARTBEAT_BLOCK_TARGET_MS: u64 = 800;
+
 /// Metrics data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metrics {
@@ -19,6 +24,24 @@ pub struct Metrics {
     pub total_minted: u64,
     /// Transactions counted since midnight UTC (server-side, same for all)
     pub daily_transactions: u64,
+    /// Observer-side rolling median block interval in milliseconds.
+    #[serde(default)]
+    pub observed_block_interval_ms: u64,
+    /// Expected target cadence for the current recent block mix.
+    #[serde(default)]
+    pub cadence_target_ms: u64,
+    /// Milliseconds since this node last observed a new canonical block.
+    #[serde(default)]
+    pub head_staleness_ms: u64,
+    /// Number of samples currently contributing to observed cadence.
+    #[serde(default)]
+    pub cadence_samples: u64,
+    /// Last block slot observed by this node on the canonical chain.
+    #[serde(default)]
+    pub last_observed_block_slot: u64,
+    /// Wall-clock timestamp (ms since Unix epoch) when the last block was observed.
+    #[serde(default)]
+    pub last_observed_block_at_ms: u64,
 }
 
 /// Metrics tracker with rolling window for TPS
@@ -32,6 +55,12 @@ pub struct MetricsStore {
     // Track block times for average calculation
     last_block_time: Mutex<u64>,
     block_times: Mutex<VecDeque<u64>>,
+    /// Observer-side normalized per-slot block intervals in milliseconds.
+    observed_block_intervals_ms: Mutex<VecDeque<u64>>,
+    /// Last slot observed by this node while applying canonical blocks.
+    last_observed_slot: Mutex<u64>,
+    /// Wall-clock time of the last observed canonical block application.
+    last_observed_block_at_ms: Mutex<u64>,
     /// Peak TPS observed (rolling window max)
     peak_tps: Mutex<f64>,
     /// Daily transaction counter (resets at midnight UTC)
@@ -61,6 +90,9 @@ impl MetricsStore {
             active_accounts: Mutex::new(0),
             last_block_time: Mutex::new(0),
             block_times: Mutex::new(VecDeque::new()),
+            observed_block_intervals_ms: Mutex::new(VecDeque::new()),
+            last_observed_slot: Mutex::new(0),
+            last_observed_block_at_ms: Mutex::new(0),
             peak_tps: Mutex::new(0.0),
             daily_transactions: Mutex::new(0),
             daily_date: Mutex::new(today),
@@ -71,13 +103,26 @@ impl MetricsStore {
 
     /// Get current UTC date as YYYY-MM-DD
     fn today_utc() -> String {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let secs = Self::now_unix_ms() / 1000;
         let days = secs / 86400;
         let (year, month, day) = Self::days_to_ymd(days);
         format!("{:04}-{:02}-{:02}", year, month, day)
+    }
+
+    fn now_unix_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    fn median_sample(samples: &VecDeque<u64>) -> u64 {
+        if samples.is_empty() {
+            return 0;
+        }
+        let mut sorted: Vec<u64> = samples.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
     }
 
     /// Convert days since Unix epoch to (year, month, day)
@@ -99,6 +144,10 @@ impl MetricsStore {
     pub fn track_block(&self, block: &Block) {
         let tx_count = block.transactions.len() as u64;
         let timestamp = block.header.timestamp;
+        let observed_at_ms = Self::now_unix_ms();
+        let live_observation = timestamp > 0
+            && (observed_at_ms / 1000).saturating_sub(timestamp)
+                <= OBSERVED_CADENCE_MAX_LIVE_LAG_SECS;
 
         {
             let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
@@ -157,6 +206,44 @@ impl MetricsStore {
             }
             *last_time = timestamp;
         }
+
+        {
+            let mut last_slot = self
+                .last_observed_slot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut last_seen_at_ms = self
+                .last_observed_block_at_ms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let slot_delta = block.header.slot.saturating_sub(*last_slot);
+            let elapsed_ms = observed_at_ms.saturating_sub(*last_seen_at_ms);
+            let mut intervals = self
+                .observed_block_intervals_ms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
+            if live_observation {
+                if *last_seen_at_ms > 0 && slot_delta > 0 {
+                    if slot_delta <= OBSERVED_CADENCE_MAX_SLOT_DELTA {
+                        let normalized_interval_ms = elapsed_ms / slot_delta.max(1);
+                        if normalized_interval_ms > 0 {
+                            intervals.push_back(normalized_interval_ms);
+                            if intervals.len() > OBSERVED_CADENCE_WINDOW {
+                                intervals.pop_front();
+                            }
+                        }
+                    } else {
+                        intervals.clear();
+                    }
+                }
+
+                *last_slot = block.header.slot;
+                *last_seen_at_ms = observed_at_ms;
+            } else {
+                intervals.clear();
+            }
+        }
     }
 
     /// Get current metrics
@@ -167,6 +254,7 @@ impl MetricsStore {
         total_minted: u64,
         total_accounts: u64,
         active_accounts: u64,
+        slot_duration_ms: u64,
     ) -> Metrics {
         let (total_txs_in_window, time_span) = {
             let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
@@ -205,6 +293,47 @@ impl MetricsStore {
             }
         };
 
+        let cadence_target_ms = {
+            let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+            if window.is_empty() {
+                slot_duration_ms.max(1)
+            } else {
+                let targets: VecDeque<u64> = window
+                    .iter()
+                    .map(|(_, tx_count)| {
+                        if *tx_count > 0 {
+                            slot_duration_ms.max(1)
+                        } else {
+                            slot_duration_ms.max(HEARTBEAT_BLOCK_TARGET_MS)
+                        }
+                    })
+                    .collect();
+                Self::median_sample(&targets)
+            }
+        };
+
+        let (observed_block_interval_ms, cadence_samples) = {
+            let samples = self
+                .observed_block_intervals_ms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (Self::median_sample(&samples), samples.len() as u64)
+        };
+
+        let last_observed_block_at_ms = *self
+            .last_observed_block_at_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let last_observed_block_slot = *self
+            .last_observed_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let head_staleness_ms = if last_observed_block_at_ms > 0 {
+            Self::now_unix_ms().saturating_sub(last_observed_block_at_ms)
+        } else {
+            0
+        };
+
         Metrics {
             tps,
             peak_tps,
@@ -223,6 +352,12 @@ impl MetricsStore {
                 .daily_transactions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
+            observed_block_interval_ms,
+            cadence_target_ms,
+            head_staleness_ms,
+            cadence_samples,
+            last_observed_block_slot,
+            last_observed_block_at_ms,
         }
     }
 
@@ -554,6 +689,7 @@ impl StateStore {
             total_minted,
             total_accounts,
             active_accounts,
+            self.get_slot_duration_ms(),
         )
     }
 
@@ -615,5 +751,56 @@ impl StateStore {
         self.metrics.set_active_accounts(actual_count);
         self.metrics.save(&self.db)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash::Hash;
+
+    fn sample_block(slot: u64, timestamp: u64) -> Block {
+        Block {
+            header: crate::block::BlockHeader {
+                slot,
+                parent_hash: Hash::default(),
+                state_root: Hash::default(),
+                tx_root: Hash::default(),
+                timestamp,
+                validators_hash: Hash::default(),
+                validator: [7u8; 32],
+                signature: None,
+            },
+            transactions: Vec::new(),
+            tx_fees_paid: Vec::new(),
+            oracle_prices: Vec::new(),
+            commit_round: 0,
+            commit_signatures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn observed_cadence_ignores_replay_samples_until_live_head() {
+        let metrics = MetricsStore::new();
+        let stale_now_secs = MetricsStore::now_unix_ms() / 1000;
+
+        metrics.track_block(&sample_block(10, stale_now_secs.saturating_sub(30)));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        metrics.track_block(&sample_block(11, stale_now_secs.saturating_sub(29)));
+
+        let replay_metrics = metrics.get_metrics(0, 0, 0, 0, 0, 400);
+        assert_eq!(replay_metrics.observed_block_interval_ms, 0);
+        assert_eq!(replay_metrics.head_staleness_ms, 0);
+
+        let live_now_secs = MetricsStore::now_unix_ms() / 1000;
+        metrics.track_block(&sample_block(12, live_now_secs));
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        metrics.track_block(&sample_block(13, MetricsStore::now_unix_ms() / 1000));
+
+        let live_metrics = metrics.get_metrics(0, 0, 0, 0, 0, 400);
+        assert!(live_metrics.observed_block_interval_ms > 0);
+        assert!(live_metrics.head_staleness_ms < 5_000);
+        assert_eq!(live_metrics.last_observed_block_slot, 13);
+        assert_eq!(live_metrics.cadence_target_ms, HEARTBEAT_BLOCK_TARGET_MS);
     }
 }

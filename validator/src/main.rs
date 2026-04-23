@@ -661,6 +661,7 @@ fn make_sync_observed_validator_info(
     transaction_count: usize,
     reward_already: bool,
 ) -> ValidatorInfo {
+    let observed_at_ms = now_unix_ms();
     ValidatorInfo {
         pubkey: producer,
         stake: stake_amount,
@@ -670,6 +671,9 @@ fn make_sync_observed_validator_info(
         correct_votes: 0,
         joined_slot: slot,
         last_active_slot: slot,
+        last_observed_at_ms: observed_at_ms,
+        last_observed_block_at_ms: observed_at_ms,
+        last_observed_block_slot: slot,
         commission_rate: 500,
         transactions_processed: if reward_already {
             0
@@ -680,6 +684,13 @@ fn make_sync_observed_validator_info(
     }
 }
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 fn note_validator_activity(
     validator_set: &mut ValidatorSet,
     pubkey: &Pubkey,
@@ -687,12 +698,7 @@ fn note_validator_activity(
     count_vote: bool,
 ) -> bool {
     if let Some(validator) = validator_set.get_validator_mut(pubkey) {
-        if slot > validator.last_active_slot {
-            validator.last_active_slot = slot;
-        }
-        if count_vote {
-            validator.votes_cast = validator.votes_cast.saturating_add(1);
-        }
+        validator.note_activity(slot, now_unix_ms(), count_vote);
         true
     } else {
         false
@@ -3172,6 +3178,7 @@ async fn apply_block_effects(
 
     {
         let mut vs = validator_set.write().await;
+        let observed_at_ms = now_unix_ms();
         if let Some(val_info) = vs.get_validator_mut(&producer) {
             if !reward_already {
                 val_info.blocks_proposed += 1;
@@ -3180,7 +3187,7 @@ async fn apply_block_effects(
                 // to prevent double-counting on duplicate apply_block_effects calls
                 val_info.update_reputation(true);
             }
-            val_info.last_active_slot = slot;
+            val_info.note_block_observation(slot, observed_at_ms);
         } else {
             // Header-first sync can observe legitimate historical producers
             // before their RegisterValidator transaction is replayed locally.
@@ -3730,6 +3737,9 @@ async fn activate_pending_validators_for_height(
                         correct_votes: 0,
                         joined_slot: *start_slot,
                         last_active_slot: *start_slot,
+                        last_observed_at_ms: 0,
+                        last_observed_block_at_ms: 0,
+                        last_observed_block_slot: 0,
                         commission_rate: 500,
                         transactions_processed: 0,
                         pending_activation: true,
@@ -6196,6 +6206,9 @@ async fn run_validator() {
                     correct_votes: 0,
                     last_active_slot: 0,
                     joined_slot: 0,
+                    last_observed_at_ms: 0,
+                    last_observed_block_at_ms: 0,
+                    last_observed_block_slot: 0,
                     commission_rate: 500,
                     transactions_processed: 0,
                     pending_activation: false, // Genesis validators active immediately
@@ -6238,6 +6251,9 @@ async fn run_validator() {
                         correct_votes: 0,
                         last_active_slot: current_tip,
                         joined_slot: current_tip,
+                        last_observed_at_ms: 0,
+                        last_observed_block_at_ms: 0,
+                        last_observed_block_slot: 0,
                         commission_rate: 500,
                         transactions_processed: 0,
                         pending_activation: pending,
@@ -6263,6 +6279,9 @@ async fn run_validator() {
                 correct_votes: 0,
                 last_active_slot: current_tip,
                 joined_slot: current_tip,
+                last_observed_at_ms: 0,
+                last_observed_block_at_ms: 0,
+                last_observed_block_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
                 pending_activation: pending,
@@ -8040,6 +8059,9 @@ async fn run_validator() {
                                                 correct_votes: 0,
                                                 last_active_slot: 0,
                                                 joined_slot: 0,
+                                                last_observed_at_ms: 0,
+                                                last_observed_block_at_ms: 0,
+                                                last_observed_block_slot: 0,
                                                 commission_rate: 500,
                                                 transactions_processed: 0,
                                                 pending_activation: false,
@@ -9978,6 +10000,9 @@ async fn run_validator() {
                         stake: on_chain_stake,
                         joined_slot: current_slot,
                         last_active_slot: current_slot,
+                        last_observed_at_ms: 0,
+                        last_observed_block_at_ms: 0,
+                        last_observed_block_slot: 0,
                         commission_rate: 500,
                         transactions_processed: 0,
                         pending_activation: pending,
@@ -11387,6 +11412,11 @@ async fn run_validator() {
                                                 stake: local_pool_stake,
                                                 joined_slot: remote_val.joined_slot,
                                                 last_active_slot: remote_val.last_active_slot,
+                                                last_observed_at_ms: remote_val.last_observed_at_ms,
+                                                last_observed_block_at_ms: remote_val
+                                                    .last_observed_block_at_ms,
+                                                last_observed_block_slot: remote_val
+                                                    .last_observed_block_slot,
                                                 commission_rate: 500,
                                                 transactions_processed: 0,
                                                 pending_activation: our_tip > 0,
@@ -14768,6 +14798,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -14856,6 +14889,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -14938,6 +14974,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15027,6 +15066,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15094,6 +15136,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15150,6 +15195,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15193,6 +15241,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15249,6 +15300,9 @@ mod tests {
             stake: 100_000_000_000_000,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15262,6 +15316,9 @@ mod tests {
             stake: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 1,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,
@@ -15302,6 +15359,9 @@ mod tests {
             stake: MIN_VALIDATOR_STAKE,
             joined_slot: 0,
             last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15315,6 +15375,9 @@ mod tests {
             stake: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 1,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,
@@ -15574,6 +15637,9 @@ mod tests {
         assert_eq!(info.blocks_proposed, 1);
         assert_eq!(info.transactions_processed, 3);
         assert_eq!(info.last_active_slot, 42);
+        assert!(info.last_observed_at_ms > 0);
+        assert!(info.last_observed_block_at_ms > 0);
+        assert_eq!(info.last_observed_block_slot, 42);
         assert!(!info.pending_activation);
     }
 
@@ -15590,6 +15656,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 3,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15604,6 +15673,9 @@ mod tests {
         let validator = validator_set.get_validator(&pubkey).unwrap();
         assert_eq!(validator.last_active_slot, 9);
         assert_eq!(validator.votes_cast, 1);
+        assert!(validator.last_observed_at_ms > 0);
+        assert!(validator.last_observed_block_at_ms > 0);
+        assert_eq!(validator.last_observed_block_slot, 9);
 
         assert!(note_validator_activity(
             &mut validator_set,
@@ -15614,6 +15686,7 @@ mod tests {
         let validator = validator_set.get_validator(&pubkey).unwrap();
         assert_eq!(validator.last_active_slot, 9);
         assert_eq!(validator.votes_cast, 1);
+        assert_eq!(validator.last_observed_block_slot, 9);
     }
 
     #[test]
@@ -15627,6 +15700,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 5,
             last_active_slot: 10,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15671,6 +15747,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,
@@ -15721,6 +15800,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,
@@ -15778,6 +15860,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,
@@ -15852,6 +15937,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -15865,6 +15953,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 1,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 1,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: true,

@@ -2915,6 +2915,22 @@ async fn test_native_get_metrics_with_data() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(!result.is_null(), "metrics should return data");
+    assert!(
+        result.get("observed_block_interval_ms").is_some(),
+        "metrics should expose observer-side cadence interval"
+    );
+    assert!(
+        result.get("slot_pace_pct").is_some(),
+        "metrics should expose observer-side slot pace"
+    );
+    assert!(
+        result.get("cadence_target_ms").is_some(),
+        "metrics should expose cadence target"
+    );
+    assert!(
+        result.get("cadence_source").is_some(),
+        "metrics should expose cadence source"
+    );
 }
 
 // ── getAllContracts returns our deployed contract ─────────────────────────────
@@ -3045,6 +3061,10 @@ async fn test_native_get_cluster_info_returns_data() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(!result.is_null(), "cluster info should return data");
+    assert!(
+        result.get("observer_time_ms").is_some(),
+        "cluster info should expose observer timestamp"
+    );
 }
 
 // ── Solana getHealth returns "ok" ────────────────────────────────────────────

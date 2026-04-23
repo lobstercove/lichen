@@ -65,7 +65,7 @@
                 <span class="vital-value" id="vitalTPS">--</span>
             </div>
             <div class="vital-item">
-                <span class="vital-label">BLOCK TIME</span>
+                <span class="vital-label">BLOCK CADENCE</span>
                 <span class="vital-value" id="vitalBlockTime">--</span>
             </div>
             <div class="vital-item">
@@ -77,7 +77,7 @@
                 <span class="vital-value" id="vitalTotalTx">--</span>
             </div>
             <div class="vital-item">
-                <span class="vital-label">UPTIME</span>
+                <span class="vital-label">CHAIN AGE</span>
                 <span class="vital-value" id="vitalUptime">--</span>
             </div>
         </section>
@@ -118,7 +118,7 @@
                                 <span class="health-pct" id="healthConsensusPct">--</span>
                             </div>
                             <div class="health-item">
-                                <span class="health-label">Block Production</span>
+                                <span class="health-label">Block Cadence</span>
                                 <div class="health-bar-wrap">
                                     <div class="health-bar success" id="healthBlocks" style="width:0%"></div>
                                 </div>
@@ -139,7 +139,7 @@
                                 <span class="health-pct" id="healthP2PPct">--</span>
                             </div>
                             <div class="health-item">
-                                <span class="health-label">Memory Usage</span>
+                                <span class="health-label">Account Footprint</span>
                                 <div class="health-bar-wrap">
                                     <div class="health-bar warning" id="healthMemory" style="width:0%"></div>
                                 </div>
@@ -148,7 +148,7 @@
                         </div>
                         <div class="endpoint-grid">
                             <div class="endpoint-item">
-                                <span class="endpoint-label">RPC Batch</span>
+                                <span class="endpoint-label">RPC Latency</span>
                                 <span class="endpoint-value" id="endpointRpcLatency">--</span>
                                 <span class="endpoint-meta" id="endpointRpcStatus">Waiting for sample</span>
                             </div>
@@ -414,7 +414,7 @@
                     </div>
                     <div class="perf-stats">
                         <div class="perf-stat">
-                            <span class="perf-stat-label">Avg Block Time</span>
+                            <span class="perf-stat-label">Observed Cadence</span>
                             <span class="perf-stat-value" id="perfAvgBlock">--</span>
                         </div>
                         <div class="perf-stat">
@@ -520,11 +520,11 @@
                         <span class="dex-stat-value" id="dexTotalPairs">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">24h Volume</span>
+                        <span class="dex-stat-label">Total Volume</span>
                         <span class="dex-stat-value" id="dexVolume24h">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">TVL</span>
+                        <span class="dex-stat-label">AMM Volume</span>
                         <span class="dex-stat-value" id="dexTVL">--</span>
                     </div>
                     <div class="dex-stat-item">
@@ -536,7 +536,7 @@
                         <span class="dex-stat-value" id="dexMarginPos">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">Prediction Markets</span>
+                        <span class="dex-stat-label">Open Markets</span>
                         <span class="dex-stat-value" id="dexPredictMkts">--</span>
                     </div>
                 </div>
@@ -659,7 +659,7 @@
                         <span class="dex-stat-value" id="tradeOrderCount">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">Fills 24h</span>
+                        <span class="dex-stat-label">Trades</span>
                         <span class="dex-stat-value" id="tradeFills24h">--</span>
                     </div>
                     <div class="dex-stat-item">
@@ -671,7 +671,7 @@
                         <span class="dex-stat-value" id="tradeAmmSwaps">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">AMM TVL</span>
+                        <span class="dex-stat-label">AMM Volume</span>
                         <span class="dex-stat-value" id="tradeAmmTVL">--</span>
                     </div>
                     <div class="dex-stat-item">
@@ -855,7 +855,7 @@
                     <!-- Infrastructure -->
                     <div class="metric-card-group" id="infraStatsBar">
                         <div class="dex-stat-item">
-                            <span class="dex-stat-label">Bridge TXs</span>
+                            <span class="dex-stat-label">Bridge Nonce</span>
                             <span class="dex-stat-value" id="ecoBridgeTxs">--</span>
                         </div>
                         <div class="dex-stat-item">

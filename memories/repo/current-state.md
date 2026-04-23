@@ -4,8 +4,16 @@ Last reviewed: 2026-04-23
 
 ## Durable Facts
 
-- Repo root README and release docs now treat `v0.5.7` as the active release line.
+- Repo root README and release docs now treat `v0.5.8` as the active release line.
 - Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
+- The live 3-VPS testnet fleet is now on the cadence-telemetry validator artifact (`SHA-256 5dacad2e36a93629baf391270b2fdfa03af00b3da37104d9d4a407a7e7043e2c`).
+- Public testnet RPC now serves `getSporePumpStats`, so Mission Control no longer has a missing backend feed for the SporePump ecosystem card.
+- Mission Control monitoring is live on Cloudflare Pages with chain-age uptime, corrected DEX/ecosystem labels, and a health badge driven by validator availability plus consensus/P2P signals instead of the old block-cadence average.
+- Cadence telemetry is now observer-side and wall-clock based:
+  - `getMetrics` exposes `observed_block_interval_ms`, `cadence_target_ms`, `head_staleness_ms`, `cadence_samples`, `last_observed_block_slot`, and `last_observed_block_at_ms`
+  - `slot_pace_pct` is computed from `cadence_target_ms / observed_block_interval_ms`, not second-resolution header timestamps
+  - Mission Control prefers cluster-level cadence derived from `getClusterInfo.cluster_nodes[].last_observed_block_slot` and only falls back to single-node observer metrics when needed
+- `deploy/setup.sh` now keeps `9100/tcp` open on testnet so the authoritative service-fleet probe can reach remote faucet `/health` endpoints on EU and SEA.
 - The Rust workspace is the 8-crate set declared in root `Cargo.toml`.
 - `contracts/` contains 29 contract directories, while genesis currently deploys 28 contracts from `GENESIS_CONTRACT_CATALOG`.
 - The large CLI modularization effort is complete:
@@ -24,7 +32,7 @@ Last reviewed: 2026-04-23
 - The 2026-04-22 user handover says:
   - testnet is live on 3 VPSes with BFT consensus
   - current status is already `v0.5.6`
-- The 2026-04-23 production-pass handover records the pending `v0.5.7` hardening release contents.
+- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents, but the active live release line is now `v0.5.8`.
 - Treat deployment state as requiring date-aware reconciliation before making operational decisions.
 
 ## Likely Next Workstreams

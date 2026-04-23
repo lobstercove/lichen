@@ -69,13 +69,18 @@ function resolveWsUrl(network) {
 let rpcUrl = resolveRpcUrl(currentMonitoringNetwork());
 let tpsHistory = [];
 let lastSlot = 0;
-let startTime = Date.now();
+let genesisTimestampSecs = null;
 let eventLog = [];
 let rejectedTxCount = 0;
 let alertCount = 0;
 let lastRpcLatencyMs = null;
 let lastMetricsSnapshot = null;
 let lastPeersSnapshot = null;
+let lastCadenceSnapshot = null;
+const cadenceTracker = {
+    head: null,
+    validators: new Map(),
+};
 const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
 const wsProbe = {
     socket: null,
@@ -378,17 +383,156 @@ function renderOperatorTierCard(label, value, meta, icon, color, barPct = null) 
     </div>`;
 }
 
-function uptime() {
-    const s = Math.floor((Date.now() - startTime) / 1000);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    return `${h}h ${m}m ${sec}s`;
+function formatDurationSeconds(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    return `${hours}h ${minutes}m ${secs}s`;
+}
+
+async function ensureGenesisTimestamp() {
+    if (Number.isFinite(genesisTimestampSecs) && genesisTimestampSecs > 0) {
+        return genesisTimestampSecs;
+    }
+
+    const genesisBlock = await rpc('getBlock', [0]).catch(() => null);
+    const timestamp = Number(genesisBlock?.timestamp || genesisBlock?.blockTime || 0);
+    if (Number.isFinite(timestamp) && timestamp > 0) {
+        genesisTimestampSecs = timestamp;
+    }
+    return genesisTimestampSecs;
+}
+
+function networkAge() {
+    if (!Number.isFinite(genesisTimestampSecs) || genesisTimestampSecs <= 0) {
+        return '--';
+    }
+    const nowSecs = Math.floor(Date.now() / 1000);
+    return formatDurationSeconds(nowSecs - genesisTimestampSecs);
 }
 
 function setText(id, text) {
     const element = document.getElementById(id);
     if (element) element.textContent = text;
+}
+
+function median(values) {
+    if (!Array.isArray(values) || values.length === 0) return 0;
+    const sorted = values
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value) && value > 0)
+        .sort((a, b) => a - b);
+    if (sorted.length === 0) return 0;
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
+function formatCadenceMs(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return '--';
+    return `${Math.round(numeric)}ms`;
+}
+
+function appendCadenceSample(samples, previousSlot, nextSlot, deltaMs) {
+    const slotDelta = Number(nextSlot) - Number(previousSlot);
+    if (!Number.isFinite(slotDelta) || slotDelta <= 0 || slotDelta > 8) {
+        return;
+    }
+    const elapsedMs = Number(deltaMs);
+    if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+        return;
+    }
+    samples.push(elapsedMs / slotDelta);
+}
+
+function deriveCadenceSnapshot(metrics, cluster, currentSlot) {
+    const sampledAtMs = Date.now();
+    const cadenceTargetMs = Number(metrics?.cadence_target_ms || metrics?.slot_duration_ms || 0);
+    const nodes = Array.isArray(cluster?.cluster_nodes) ? cluster.cluster_nodes : [];
+    const samples = [];
+
+    if (Number.isFinite(currentSlot) && currentSlot > 0) {
+        if (cadenceTracker.head && currentSlot > cadenceTracker.head.slot) {
+            appendCadenceSample(
+                samples,
+                cadenceTracker.head.slot,
+                currentSlot,
+                sampledAtMs - cadenceTracker.head.sampledAtMs,
+            );
+        }
+        cadenceTracker.head = { slot: currentSlot, sampledAtMs };
+    }
+
+    const activePubkeys = new Set();
+    nodes.forEach((node) => {
+        const pubkey = node?.pubkey;
+        const blockSlot = Number(node?.last_observed_block_slot || 0);
+        if (!pubkey) return;
+        activePubkeys.add(pubkey);
+        if (!Number.isFinite(blockSlot) || blockSlot <= 0) {
+            cadenceTracker.validators.set(pubkey, { slot: 0, sampledAtMs });
+            return;
+        }
+
+        const previous = cadenceTracker.validators.get(pubkey);
+        if (previous && blockSlot > previous.slot) {
+            appendCadenceSample(
+                samples,
+                previous.slot,
+                blockSlot,
+                sampledAtMs - previous.sampledAtMs,
+            );
+        }
+        cadenceTracker.validators.set(pubkey, { slot: blockSlot, sampledAtMs });
+    });
+
+    Array.from(cadenceTracker.validators.keys()).forEach((pubkey) => {
+        if (!activePubkeys.has(pubkey)) {
+            cadenceTracker.validators.delete(pubkey);
+        }
+    });
+
+    const clusterStalenessMs = median(nodes
+        .map(node => Number(node?.head_staleness_ms || 0))
+        .filter(value => Number.isFinite(value) && value > 0)
+        .sort((a, b) => a - b)) || 0;
+
+    const intervalMs = median(samples) || Number(metrics?.observed_block_interval_ms || 0);
+    const sampleCount = samples.length > 0 ? samples.length : Number(metrics?.cadence_samples || 0);
+    const pacePct = cadenceTargetMs > 0 && intervalMs > 0
+        ? clampPercentage((cadenceTargetMs / intervalMs) * 100)
+        : clampPercentage(metrics?.slot_pace_pct || 0);
+
+    lastCadenceSnapshot = {
+        intervalMs,
+        targetMs: cadenceTargetMs,
+        pacePct: Math.round(pacePct),
+        sampleCount,
+        source: samples.length > 0 ? 'cluster_level_observer' : (metrics?.cadence_source || 'observer_wall_clock'),
+        headStalenessMs: clusterStalenessMs || Number(metrics?.head_staleness_ms || 0),
+        lastObservedBlockSlot: Number(metrics?.last_observed_block_slot || currentSlot || 0),
+    };
+
+    return lastCadenceSnapshot;
+}
+
+function validatorAvailabilityScore(probes) {
+    const total = Array.isArray(probes) ? probes.length : 0;
+    if (total === 0) return 0;
+    const online = probes.filter((probe) => probe.online).length;
+    return Math.round((online / total) * 100);
+}
+
+function p2pConnectivityScore(probes, peers) {
+    const onlineProbes = Array.isArray(probes) ? probes.filter((probe) => probe.online) : [];
+    const peerCount = Number(peers?.peer_count ?? peers?.count ?? 0);
+    if (onlineProbes.length === 0) return 0;
+    if (onlineProbes.length === 1) return 100;
+    const expectedPeers = Math.max(1, onlineProbes.length - 1);
+    return Math.min(100, Math.round((peerCount / expectedPeers) * 100));
 }
 
 function formatLatency(ms) {
@@ -623,6 +767,9 @@ function resetMonitoringCaches() {
     lastRpcLatencyMs = null;
     lastMetricsSnapshot = null;
     lastPeersSnapshot = null;
+    lastCadenceSnapshot = null;
+    cadenceTracker.head = null;
+    cadenceTracker.validators.clear();
     lastSlot = 0;
 }
 
@@ -808,10 +955,11 @@ async function refresh() {
         const refreshStartedAt = performance.now();
 
         // Fetch all data in parallel
-        const [slot, metrics, peers] = await Promise.all([
+        const [slot, metrics, peers, cluster] = await Promise.all([
             rpc('getSlot'),
             rpc('getMetrics'),
             rpc('getPeers'),
+            rpc('getClusterInfo'),
         ]);
 
         lastRpcLatencyMs = Math.round(performance.now() - refreshStartedAt);
@@ -836,10 +984,10 @@ async function refresh() {
         }
 
         if (metrics) {
+            await ensureGenesisTimestamp();
             flashVital('vitalTPS', metrics.tps !== undefined ? metrics.tps.toFixed(1) : '--');
-            flashVital('vitalBlockTime', metrics.avg_block_time_ms !== undefined ? metrics.avg_block_time_ms.toFixed(0) + 'ms' : '--');
             flashVital('vitalTotalTx', formatNum(metrics.total_transactions || 0));
-            flashVital('vitalUptime', uptime());
+            flashVital('vitalUptime', networkAge());
 
             // TPS history
             tpsHistory.push({ t: Date.now(), v: metrics.tps || 0 });
@@ -897,19 +1045,25 @@ async function refresh() {
             // Contract count
             document.getElementById('contractCount').textContent = metrics.total_contracts || '--';
 
+        }
+
+        // ─ Validators ─
+        const probes = await renderValidators(cluster, slot);
+        const cadence = deriveCadenceSnapshot(metrics, cluster, slot);
+
+        flashVital('vitalBlockTime', formatCadenceMs(cadence.intervalMs));
+
+        if (metrics) {
             // Performance stats
-            document.getElementById('perfAvgBlock').textContent = (metrics.avg_block_time_ms || 0).toFixed(0) + 'ms';
+            document.getElementById('perfAvgBlock').textContent = formatCadenceMs(cadence.intervalMs);
             document.getElementById('perfAvgTxBlock').textContent = (metrics.avg_txs_per_block || 0).toFixed(2);
             document.getElementById('perfAccounts').textContent = formatNum(metrics.total_accounts || 0);
             document.getElementById('perfActive').textContent = formatNum(metrics.active_accounts || 0);
 
             // INF-05: Performance rings are heuristic proxies derived from
             // on-chain metrics, NOT real OS-level CPU/Memory/Disk stats.
-            // Labels updated to reflect what each ring actually measures.
-            const targetBlockTimeSeconds = Math.max(0.4, (metrics.slot_duration_ms || 800) / 1000);
-            const blockRate = metrics.average_block_time > 0
-                ? Math.min(100, Math.round((targetBlockTimeSeconds / metrics.average_block_time) * 100))
-                : 0;
+            // Labels are explicit about what each ring actually measures.
+            const blockRate = cadence.pacePct || 0;
             // TPS vs Peak: current TPS relative to observed peak TPS.
             const peakTps = Math.max(1, metrics.peak_tps || metrics.tps || 1);
             const tpsLoadPct = Math.min(100, Math.round(((metrics.tps || 0) / peakTps) * 100));
@@ -923,11 +1077,8 @@ async function refresh() {
             setRing('perfNet', Math.min(95, blockRate));
         }
 
-        // ─ Validators ─
-        const probes = await renderValidators();
-
         // ─ Network Health ─
-        await updateHealth(metrics, probes, peers);
+        await updateHealth(metrics, probes, peers, cadence);
 
         // ─ Threat Detection ─
         detectThreats(metrics, probes);
@@ -994,13 +1145,9 @@ async function refresh() {
 
 // ── Validator Rendering (DYNAMIC — queries cluster, no hardcoded ports) ──
 
-async function renderValidators() {
+async function renderValidators(cluster, currentSlot) {
     const grid = document.getElementById('validatorGrid');
     const badge = document.getElementById('valClusterBadge');
-
-    // Query the single RPC endpoint for live cluster info
-    const cluster = await rpc('getClusterInfo');
-    const currentSlot = await rpc('getSlot');
 
     let probes = [];
 
@@ -1020,6 +1167,8 @@ async function renderValidators() {
                     rpc: rpcUrl,
                     pubkey: node.pubkey || null,
                     slot: lastActive,
+                    observed_block_slot: Number(node.last_observed_block_slot || 0),
+                    head_staleness_ms: Number(node.head_staleness_ms || 0),
                     head_hash: node.head_hash || node.tip_hash || node.block_hash || node.last_block_hash || null,
                     online: node.active !== false && (currentSlot === null || currentSlot - lastActive <= 100),
                     stake: node.stake || 0,
@@ -1040,6 +1189,8 @@ async function renderValidators() {
                     rpc: rpcUrl,
                     pubkey: v.pubkey || null,
                     slot: lastActive,
+                    observed_block_slot: Number(v.last_observed_block_slot || 0),
+                    head_staleness_ms: Number(v.head_staleness_ms || 0),
                     head_hash: v.head_hash || v.tip_hash || v.block_hash || v.last_block_hash || null,
                     online: isOnline,
                     stake: v.stake || 0,
@@ -1058,6 +1209,8 @@ async function renderValidators() {
             rpc: rpcUrl,
             pubkey: null,
             slot: currentSlot,
+            observed_block_slot: currentSlot,
+            head_staleness_ms: 0,
             head_hash: null,
             online: currentSlot !== null,
             stake: 0,
@@ -1094,7 +1247,7 @@ async function renderValidators() {
 
 // ── Health Update ───────────────────────────────────────────
 
-async function updateHealth(metrics, probes, peers) {
+async function updateHealth(metrics, probes, peers, cadence) {
     // Consensus: based on validator agreement on same slot
     const onlineProbes = probes ? probes.filter(p => p.online) : [];
     const slots = onlineProbes.map(p => p.slot).filter(s => s !== null);
@@ -1104,31 +1257,26 @@ async function updateHealth(metrics, probes, peers) {
         : (onlineProbes.length === 1 ? 100 : 0);
     setBar('healthConsensus', consensusPct);
 
-    // Block production: based on block time
-    const targetBlockTimeSeconds = Math.max(0.4, (metrics?.slot_duration_ms || 800) / 1000);
-    const blockPct = metrics?.average_block_time > 0
-        ? Math.min(100, Math.round((targetBlockTimeSeconds / metrics.average_block_time) * 100))
-        : 0;
+    // Block cadence: measured from observer wall-clock deltas, preferring
+    // cluster-level validator samples over the single-node RPC fallback.
+    const blockPct = clampPercentage(cadence?.pacePct || metrics?.slot_pace_pct || 0);
     setBar('healthBlocks', blockPct);
 
     // TX Rate
     const txPct = Math.min(100, Math.round((metrics?.tps || 0) * 10));
     setBar('healthTxRate', txPct);
 
-    // P2P: for local validators, score based on online probes
-    const peerCount = peers?.peer_count || peers?.count || 0;
-    const localMode = rpcUrl.includes('localhost');
-    const p2pPct = localMode
-        ? Math.min(100, onlineProbes.length * 33 + 1)  // 3 local = 100%
-        : Math.min(100, peerCount * 50 + 20);
+    // P2P: compare current peers to the minimum mesh expected from the visible validator set.
+    const p2pPct = p2pConnectivityScore(probes, peers);
     setBar('healthP2P', p2pPct);
 
-    // Memory: derive from account count (same formula as perf ring)
+    // Account footprint: derive from account count (same formula as perf ring)
     const memPct = Math.min(100, Math.round((metrics?.total_accounts || 0) / 1000));
     setBar('healthMemory', memPct);
 
-    // Overall badge
-    const avg = (consensusPct + blockPct + p2pPct) / 3;
+    // Overall badge uses cluster liveness signals, not cadence heuristics.
+    const availabilityPct = validatorAvailabilityScore(probes || []);
+    const avg = (consensusPct + availabilityPct + p2pPct) / 3;
     const badge = document.getElementById('healthBadge');
     if (avg >= 80) {
         badge.textContent = 'HEALTHY';
@@ -1548,27 +1696,27 @@ function detectThreats(metrics, probes) {
 const DEX_SUBSYSTEMS = [
     {
         id: 'dex_core', symbol: 'DEX', name: 'DEX Core (CLOB)', desc: 'Central Limit Order Book engine', icon: 'fas fa-exchange-alt', color: '#4ea8de',
-        metrics: ['pairs', 'orders', 'fills_24h', 'volume_24h']
+        metrics: ['pairs', 'orders', 'trades', 'volume']
     },
     {
         id: 'dex_amm', symbol: 'DEXAMM', name: 'AMM Pools', desc: 'Concentrated liquidity AMM', icon: 'fas fa-water', color: '#06d6a0',
-        metrics: ['pools', 'tvl', 'volume_24h', 'fees_24h']
+        metrics: ['pools', 'positions', 'swaps', 'volume']
     },
     {
         id: 'dex_router', symbol: 'DEXROUTER', name: 'Smart Router', desc: 'Optimal routing across CLOB + AMM', icon: 'fas fa-route', color: '#ffd166',
-        metrics: ['routes_24h', 'savings', 'split_routes', 'avg_slippage']
+        metrics: ['routes', 'swaps', 'volume', 'status']
     },
     {
         id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 100x)', icon: 'fas fa-chart-line', color: '#ef4444',
-        metrics: ['positions', 'total_collateral', 'liquidations', 'max_leverage']
+        metrics: ['positions', 'volume', 'liquidations', 'max_leverage']
     },
     {
         id: 'dex_governance', symbol: 'DEXGOV', name: 'DEX Governance', desc: 'Proposals, voting, fee updates', icon: 'fas fa-landmark', color: '#a78bfa',
-        metrics: ['proposals', 'active_votes', 'total_voters', 'treasury']
+        metrics: ['proposals', 'votes', 'voters', 'status']
     },
     {
-        id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
-        metrics: ['stakers', 'total_staked', 'distributed', 'apy']
+        id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards Program', desc: 'Trader reward accounting and distribution', icon: 'fas fa-gift', color: '#f59e0b',
+        metrics: ['trades', 'traders', 'distributed', 'epoch']
     },
     {
         id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
@@ -1576,11 +1724,11 @@ const DEX_SUBSYSTEMS = [
     },
     {
         id: 'lichenswap', symbol: 'LICHENSWAP', name: 'LichenSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#00C9DB',
-        metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs']
+        metrics: ['swaps', 'volume_a', 'volume_b', 'status']
     },
     {
         id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + lUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
-        metrics: ['markets', 'volume', 'collateral', 'traders']
+        metrics: ['markets', 'open_markets', 'volume', 'traders']
     },
 ];
 
@@ -1615,7 +1763,7 @@ async function updateDexMonitor() {
                 if (stats) {
                     metricsData = {
                         pairs: stats.pair_count || 0, orders: stats.order_count || 0,
-                        fills_24h: stats.trade_count || 0, volume_24h: stats.total_volume || 0
+                        trades: stats.trade_count || 0, volume: stats.total_volume || 0
                     };
                     deployed = true;
                 }
@@ -1623,8 +1771,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexAmmStats');
                 if (stats) {
                     metricsData = {
-                        pools: stats.pool_count || 0, tvl: stats.total_volume || 0,
-                        volume_24h: stats.swap_count || 0, fees_24h: stats.total_fees || 0
+                        pools: stats.pool_count || 0, positions: stats.position_count || 0,
+                        swaps: stats.swap_count || 0, volume: stats.total_volume || 0
                     };
                     deployed = true;
                 }
@@ -1632,7 +1780,7 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexMarginStats');
                 if (stats) {
                     metricsData = {
-                        positions: stats.position_count || 0, total_collateral: stats.total_volume || 0,
+                        positions: stats.position_count || 0, volume: stats.total_volume || 0,
                         liquidations: stats.liquidation_count || 0, max_leverage: (stats.max_leverage || 100) + 'x'
                     };
                     deployed = true;
@@ -1641,8 +1789,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getPredictionMarketStats');
                 if (stats) {
                     metricsData = {
-                        markets: stats.open_markets || 0, volume: stats.total_volume || 0,
-                        collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0
+                        markets: stats.total_markets || 0, open_markets: stats.open_markets || 0,
+                        volume: stats.total_volume || 0, traders: stats.total_traders || 0
                     };
                     deployed = true;
                 }
@@ -1650,8 +1798,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexRouterStats');
                 if (stats) {
                     metricsData = {
-                        routes_24h: stats.route_count || 0, savings: stats.total_volume || 0,
-                        split_routes: stats.swap_count || 0, avg_slippage: '--'
+                        routes: stats.route_count || 0, swaps: stats.swap_count || 0,
+                        volume: stats.total_volume || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -1659,8 +1807,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexGovernanceStats');
                 if (stats) {
                     metricsData = {
-                        proposals: stats.proposal_count || 0, active_votes: stats.total_votes || 0,
-                        total_voters: stats.voter_count || 0, treasury: 0
+                        proposals: stats.proposal_count || 0, votes: stats.total_votes || 0,
+                        voters: stats.voter_count || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -1668,8 +1816,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexRewardsStats');
                 if (stats) {
                     metricsData = {
-                        stakers: stats.trader_count || 0, total_staked: stats.total_volume || 0,
-                        distributed: stats.total_distributed || 0, apy: '--'
+                        trades: stats.trade_count || 0, traders: stats.trader_count || 0,
+                        distributed: stats.total_distributed || 0, epoch: stats.epoch || 0
                     };
                     deployed = true;
                 }
@@ -1686,8 +1834,8 @@ async function updateDexMonitor() {
                 const stats = await rpc('getLichenSwapStats');
                 if (stats) {
                     metricsData = {
-                        swaps_24h: stats.swap_count || 0, volume: (stats.volume_a || 0) + (stats.volume_b || 0),
-                        unique_users: 0, pairs: stats.pool_count || 0
+                        swaps: stats.swap_count || 0, volume_a: stats.volume_a || 0,
+                        volume_b: stats.volume_b || 0, status: stats.paused ? 'PAUSED' : 'LIVE'
                     };
                     deployed = true;
                 }
@@ -1700,16 +1848,29 @@ async function updateDexMonitor() {
         const statusText = deployed ? 'DEPLOYED' : 'PENDING';
 
         const metricLabels = {
-            pairs: 'Pairs', orders: 'Orders', fills_24h: 'Fills 24h', volume_24h: 'Vol 24h',
-            pools: 'Pools', tvl: 'TVL', fees_24h: 'Fees 24h', routes_24h: 'Routes 24h',
-            savings: 'Saved', split_routes: 'Splits', avg_slippage: 'Slippage',
-            positions: 'Positions', total_collateral: 'Collateral', liquidations: 'Liqs 24h', max_leverage: 'Max Lev',
-            proposals: 'Proposals', active_votes: 'Active', total_voters: 'Voters', treasury: 'Treasury',
-            stakers: 'Stakers', total_staked: 'Staked', distributed: 'Distributed', apy: 'APY',
-            candles: 'Candles', indexed_trades: 'Indexed', pairs_tracked: 'Tracked', uptime: 'Uptime',
-            records: 'Records', tracked: 'Tracked',
-            swaps_24h: 'Swaps 24h', volume: 'Volume', unique_users: 'Users',
-            markets: 'Markets', collateral: 'Collateral', traders: 'Traders'
+            pairs: 'Pairs',
+            orders: 'Orders',
+            trades: 'Trades',
+            pools: 'Pools',
+            positions: 'Positions',
+            swaps: 'Swaps',
+            volume: 'Volume',
+            routes: 'Routes',
+            liquidations: 'Liquidations',
+            max_leverage: 'Max Lev',
+            proposals: 'Proposals',
+            votes: 'Votes',
+            voters: 'Voters',
+            distributed: 'Distributed',
+            epoch: 'Epoch',
+            candles: 'Candles',
+            records: 'Records',
+            traders: 'Traders',
+            volume_a: 'Volume A',
+            volume_b: 'Volume B',
+            markets: 'Markets',
+            open_markets: 'Open',
+            status: 'Status'
         };
 
         const metricsHtml = sub.metrics.map(m => {
@@ -1717,7 +1878,7 @@ async function updateDexMonitor() {
             let display = '--';
             if (val !== undefined && val !== null) {
                 if (typeof val === 'string') display = val;
-                else if (m.includes('volume') || m.includes('tvl') || m.includes('collateral') || m.includes('treasury') || m.includes('staked') || m.includes('distributed') || m.includes('fees') || m.includes('savings')) {
+                else if (['volume', 'volume_a', 'volume_b', 'distributed'].includes(m)) {
                     display = formatLicn(val);
                 } else { display = formatNum(val); }
             }
@@ -2120,9 +2281,10 @@ let ecosystemMonitorLoaded = false;
 async function updateEcosystemMonitor() {
     const badge = document.getElementById('ecosystemBadge');
     const el = id => document.getElementById(id);
+    const totalFeeds = 18;
 
     // Fetch all platform contract stats in parallel
-    const [lusd, weth, wsol, wbnb, lend, sporepay, vault, bridge, dao, oracle,
+    const [lusd, weth, wsol, wbnb, lend, sporepay, vault, pump, bridge, dao, oracle,
         mossStorage, market, auction, punks, bounty, compute, shieldedState] = await Promise.all([
             rpc('getLusdStats').catch(() => null),
             rpc('getWethStats').catch(() => null),
@@ -2131,6 +2293,7 @@ async function updateEcosystemMonitor() {
             rpc('getThallLendStats').catch(() => null),
             rpc('getSporePayStats').catch(() => null),
             rpc('getSporeVaultStats').catch(() => null),
+            rpc('getSporePumpStats').catch(() => null),
             rpc('getLichenBridgeStats').catch(() => null),
             rpc('getLichenDaoStats').catch(() => null),
             rpc('getLichenOracleStats').catch(() => null),
@@ -2179,9 +2342,6 @@ async function updateEcosystemMonitor() {
         activeFeeds++;
         if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatLicn(vault.total_assets || 0);
     }
-
-    // SporePump (REST only, try RPC gracefully)
-    const pump = await rpc('getSporePumpStats').catch(() => null);
     if (pump) {
         activeFeeds++;
         if (el('ecoPumpTokens')) el('ecoPumpTokens').textContent = formatNum(pump.token_count || 0);
@@ -2256,6 +2416,10 @@ async function updateEcosystemMonitor() {
             addCard('Vault Strategies', formatNum(vault.strategy_count || 0), 'layer-group', 'var(--accent-purple)');
             addCard('Vault Earnings', formatLicn(vault.total_earned || 0), 'chart-line', 'var(--accent-green)');
         }
+        if (pump) {
+            addCard('SporePump Tokens', formatNum(pump.token_count || 0), 'rocket', 'var(--accent)');
+            addCard('Graduated Tokens', formatNum(pump.total_graduated || 0), 'arrow-up-right-dots', 'var(--accent-orange)');
+        }
         if (bridge) {
             addCard('Bridge Validators', formatNum(bridge.validator_count || 0), 'link', 'var(--accent-blue)');
             addCard('Required Confirms', formatNum(bridge.required_confirms || 0), 'check-double', 'var(--cyan-accent)');
@@ -2281,8 +2445,9 @@ async function updateEcosystemMonitor() {
     }
 
     if (badge) {
-        badge.textContent = `${activeFeeds}/17 Contracts`;
-        badge.className = 'panel-badge ' + (activeFeeds >= 12 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
+        const healthyThreshold = Math.ceil(totalFeeds * 0.7);
+        badge.textContent = `${activeFeeds}/${totalFeeds} Contracts`;
+        badge.className = 'panel-badge ' + (activeFeeds >= healthyThreshold ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
     }
 
     ecosystemMonitorLoaded = true;

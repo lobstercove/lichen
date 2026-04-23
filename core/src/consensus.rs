@@ -2281,6 +2281,17 @@ pub struct ValidatorInfo {
     pub joined_slot: u64,
     /// Last slot validator was active
     pub last_active_slot: u64,
+    /// Wall-clock timestamp (ms since Unix epoch) when this validator was
+    /// last observed doing any consensus-visible activity on this node.
+    #[serde(default)]
+    pub last_observed_at_ms: u64,
+    /// Wall-clock timestamp (ms since Unix epoch) when this validator was
+    /// last observed producing a canonical block on this node.
+    #[serde(default)]
+    pub last_observed_block_at_ms: u64,
+    /// Last canonical block slot from this validator observed on this node.
+    #[serde(default)]
+    pub last_observed_block_slot: u64,
     /// Commission rate in basis points (0-10000). Default = 500 (5%).
     /// Backward-compatible: existing serialized data without this field defaults to 500.
     #[serde(default = "default_commission_rate")]
@@ -2314,9 +2325,36 @@ impl ValidatorInfo {
             stake: 0,
             joined_slot,
             last_active_slot: joined_slot,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500, // 5% default (basis points)
             transactions_processed: 0,
             pending_activation: false,
+        }
+    }
+
+    pub fn note_activity(&mut self, slot: u64, observed_at_ms: u64, count_vote: bool) {
+        if slot > self.last_active_slot {
+            self.last_active_slot = slot;
+        }
+        if observed_at_ms > self.last_observed_at_ms {
+            self.last_observed_at_ms = observed_at_ms;
+        }
+        if slot >= self.last_observed_block_slot {
+            self.last_observed_block_slot = slot;
+            self.last_observed_block_at_ms = observed_at_ms;
+        }
+        if count_vote {
+            self.votes_cast = self.votes_cast.saturating_add(1);
+        }
+    }
+
+    pub fn note_block_observation(&mut self, slot: u64, observed_at_ms: u64) {
+        self.note_activity(slot, observed_at_ms, false);
+        if slot >= self.last_observed_block_slot {
+            self.last_observed_block_slot = slot;
+            self.last_observed_block_at_ms = observed_at_ms;
         }
     }
 

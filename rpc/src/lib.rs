@@ -4572,6 +4572,7 @@ async fn handle_rpc(
         "getLichenSwapStats" => handle_get_lichenswap_stats(&state).await,
         "getThallLendStats" => handle_get_thalllend_stats(&state).await,
         "getSporePayStats" => handle_get_sporepay_stats(&state).await,
+        "getSporePumpStats" => launchpad::handle_get_sporepump_stats(&state).await,
         "getBountyBoardStats" => handle_get_bountyboard_stats(&state).await,
         "getComputeMarketStats" => handle_get_compute_market_stats(&state).await,
         "getMossStorageStats" => handle_get_moss_storage_stats(&state).await,
@@ -8308,6 +8309,7 @@ async fn handle_get_total_burned(state: &RpcState) -> Result<serde_json::Value, 
 /// Get all validators
 async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let validators = cached_validators(state).await?;
+    let observer_now_ms = now_unix_ms();
 
     // Pre-compute total reputation once (was O(n²) inside the map loop)
     let total_reputation: u64 = validators.iter().map(|val| val.reputation).sum();
@@ -8368,6 +8370,14 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 "correct_votes": v.correct_votes,
                 "last_active_slot": v.last_active_slot,
                 "last_vote_slot": v.last_active_slot,
+                "last_observed_at_ms": v.last_observed_at_ms,
+                "last_observed_block_at_ms": v.last_observed_block_at_ms,
+                "last_observed_block_slot": v.last_observed_block_slot,
+                "head_staleness_ms": if v.last_observed_block_at_ms > 0 {
+                    observer_now_ms.saturating_sub(v.last_observed_block_at_ms)
+                } else {
+                    0
+                },
                 "bootstrap_debt": bootstrap_debt,
                 "vesting_status": vesting_status,
                 "earned_amount": earned_amount,
@@ -8506,6 +8516,14 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         .get_fee_config()
         .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
     let slot_duration_ms = state.state.get_slot_duration_ms();
+    let cadence_target_ms = metrics.cadence_target_ms.max(slot_duration_ms.max(1));
+    let slot_pace_pct = if cadence_target_ms > 0 && metrics.observed_block_interval_ms > 0 {
+        ((cadence_target_ms as f64 / metrics.observed_block_interval_ms as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u64
+    } else {
+        0
+    };
 
     // Projected supply: include theoretical inflation accrued since last epoch boundary.
     // Actual minting happens at epoch boundaries, but this projection gives live feedback.
@@ -8527,6 +8545,14 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "total_blocks": metrics.total_blocks,
         "average_block_time": metrics.average_block_time,
         "avg_block_time_ms": metrics.average_block_time * 1000.0,
+        "observed_block_interval_ms": metrics.observed_block_interval_ms,
+        "cadence_target_ms": cadence_target_ms,
+        "slot_pace_pct": slot_pace_pct,
+        "head_staleness_ms": metrics.head_staleness_ms,
+        "cadence_samples": metrics.cadence_samples,
+        "last_observed_block_slot": metrics.last_observed_block_slot,
+        "last_observed_block_at_ms": metrics.last_observed_block_at_ms,
+        "cadence_source": "observer_wall_clock",
         "avg_txs_per_block": avg_txs_per_block,
         "total_accounts": metrics.total_accounts,
         "active_accounts": metrics.active_accounts,
@@ -8721,6 +8747,7 @@ async fn handle_get_peers(state: &RpcState) -> Result<serde_json::Value, RpcErro
 /// This is the PRODUCTION endpoint for monitoring — no hardcoded ports needed.
 async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let observer_now_ms = now_unix_ms();
 
     // Get connected P2P peers
     let connected_peers: Vec<String> = if let Some(ref p2p) = state.p2p {
@@ -8773,11 +8800,20 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
                 "last_active_slot": v.last_active_slot,
                 "joined_slot": v.joined_slot,
                 "active": is_active,
+                "last_observed_at_ms": v.last_observed_at_ms,
+                "last_observed_block_at_ms": v.last_observed_block_at_ms,
+                "last_observed_block_slot": v.last_observed_block_slot,
+                "head_staleness_ms": if v.last_observed_block_at_ms > 0 {
+                    observer_now_ms.saturating_sub(v.last_observed_block_at_ms)
+                } else {
+                    0
+                },
             })
         })
         .collect();
 
     Ok(serde_json::json!({
+        "observer_time_ms": observer_now_ms,
         "current_slot": current_slot,
         "cluster_nodes": nodes,
         "connected_peers": connected_peers,
@@ -8858,6 +8894,14 @@ async fn handle_get_validator_info(
         "votes_cast": validator.votes_cast,
         "correct_votes": validator.correct_votes,
         "last_active_slot": validator.last_active_slot,
+        "last_observed_at_ms": validator.last_observed_at_ms,
+        "last_observed_block_at_ms": validator.last_observed_block_at_ms,
+        "last_observed_block_slot": validator.last_observed_block_slot,
+        "head_staleness_ms": if validator.last_observed_block_at_ms > 0 {
+            now_unix_ms().saturating_sub(validator.last_observed_block_at_ms)
+        } else {
+            0
+        },
         "joined_slot": validator.joined_slot,
         "commission_rate": validator.commission_rate,
         "is_active": is_active,
@@ -16214,6 +16258,9 @@ mod tests {
             correct_votes: 0,
             joined_slot: 1,
             last_active_slot: 5,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
             pending_activation: false,
@@ -18025,10 +18072,19 @@ mod tests {
             assert!(!user_id.is_empty());
         });
 
-        assert!(logs.contains("Privileged RPC mutation executed"));
-        assert!(logs.contains("createBridgeDeposit"));
-        assert!(logs.contains("bridge_deposit"));
-        assert!(logs.contains("11111111-1111-1111-1111-111111111111"));
+        assert!(
+            logs.contains("Privileged RPC mutation executed"),
+            "captured logs: {logs}"
+        );
+        assert!(
+            logs.contains("createBridgeDeposit"),
+            "captured logs: {logs}"
+        );
+        assert!(logs.contains("bridge_deposit"), "captured logs: {logs}");
+        assert!(
+            logs.contains("11111111-1111-1111-1111-111111111111"),
+            "captured logs: {logs}"
+        );
     }
 
     #[tokio::test]

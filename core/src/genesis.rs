@@ -413,6 +413,9 @@ impl GenesisConfig {
                 correct_votes: 0,
                 last_active_slot: 0,
                 joined_slot: 0,
+                last_observed_at_ms: 0,
+                last_observed_block_at_ms: 0,
+                last_observed_block_slot: 0,
                 commission_rate: 500, // 5% default commission
                 transactions_processed: 0,
                 pending_activation: false, // Genesis validators active immediately
