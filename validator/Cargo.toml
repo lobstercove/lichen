@@ -9,7 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 axum = "0.7"
 bincode = "1.3"
-lichen-core = { path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", path = "../core" }
 lichen-genesis = { path = "../genesis" }
 lichen-p2p = { path = "../p2p" }
 lichen-rpc = { path = "../rpc" }

@@ -5,6 +5,7 @@ Last reviewed: 2026-04-23
 ## Durable Facts
 
 - Repo root README and release docs now treat `v0.5.7` as the active release line.
+- Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
 - The Rust workspace is the 8-crate set declared in root `Cargo.toml`.
 - `contracts/` contains 29 contract directories, while genesis currently deploys 28 contracts from `GENESIS_CONTRACT_CATALOG`.
 - The large CLI modularization effort is complete:

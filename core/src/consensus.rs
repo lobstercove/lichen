@@ -1512,11 +1512,7 @@ impl StakePool {
             .filter(|s| s.is_active && s.meets_minimum())
             .map(|s| s.total_stake())
             .sum();
-        let avg_stake = if active_validators > 0 {
-            active_total / active_validators
-        } else {
-            0
-        };
+        let avg_stake = active_total.checked_div(active_validators).unwrap_or(0);
 
         StakingStats {
             total_staked: self.total_staked,

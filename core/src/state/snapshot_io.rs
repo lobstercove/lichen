@@ -41,6 +41,10 @@ impl StateStore {
     ) -> Result<CheckpointMeta, String> {
         use rocksdb::checkpoint::Checkpoint;
 
+        // Persist in-memory counters first so the checkpoint captures the same
+        // metrics view that the live store is tracking.
+        self.save_metrics_counters()?;
+
         let parent = std::path::Path::new(checkpoint_dir)
             .parent()
             .ok_or_else(|| "Invalid checkpoint path".to_string())?;

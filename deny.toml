@@ -16,9 +16,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste: unmaintained macro utility, build-time only.
     "RUSTSEC-2025-0055", # tracing-subscriber ANSI log poisoning; mitigated by non-TTY structured logs + sanitizer roadmap.
     "RUSTSEC-2025-0057", # fxhash unmaintained; retained for non-cryptographic internal maps.
-    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained; used in controlled deployment paths.
     "RUSTSEC-2025-0141", # bincode unmaintained; pinned pending migration to bincode2/postcard where applicable.
-    "RUSTSEC-2026-0097", # rand unsoundness requires a custom logger with rand::rng(); the workspace does not install a custom logger or call rand::rng directly.
 ]
 
 [licenses]

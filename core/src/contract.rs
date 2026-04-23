@@ -1196,32 +1196,16 @@ impl ContractRuntime {
                                 let data = &args[data_start as usize..];
                                 let off = byte_offset as usize;
                                 let val: i32 = match stride {
-                                    4 => {
-                                        if off + 4 <= data.len() {
-                                            i32::from_le_bytes([
-                                                data[off],
-                                                data[off + 1],
-                                                data[off + 2],
-                                                data[off + 3],
-                                            ])
-                                        } else {
-                                            0
-                                        }
+                                    4 if off + 4 <= data.len() => i32::from_le_bytes([
+                                        data[off],
+                                        data[off + 1],
+                                        data[off + 2],
+                                        data[off + 3],
+                                    ]),
+                                    2 if off + 2 <= data.len() => {
+                                        i16::from_le_bytes([data[off], data[off + 1]]) as i32
                                     }
-                                    2 => {
-                                        if off + 2 <= data.len() {
-                                            i16::from_le_bytes([data[off], data[off + 1]]) as i32
-                                        } else {
-                                            0
-                                        }
-                                    }
-                                    1 => {
-                                        if off < data.len() {
-                                            data[off] as i32
-                                        } else {
-                                            0
-                                        }
-                                    }
+                                    1 if off < data.len() => data[off] as i32,
                                     _ => 0,
                                 };
                                 wasm_args.push(Value::I32(val));

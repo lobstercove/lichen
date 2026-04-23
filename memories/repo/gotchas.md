@@ -33,3 +33,7 @@
   On 2026-04-22 the VPS legal banner contaminated a binary transfer and silently changed the file hash; use `scp -O` or another binary-safe transport instead.
 - Local macOS release binaries are not deployable to the Linux VPS fleet.
   A direct install of the locally built `target/release/lichen-validator` on SEA failed with `Exec format error`; build the canonical deployment artifact on Linux.
+- Historical audit and strategy docs can intentionally retain pre-publish package names.
+  On 2026-04-23 the live README, developer portal, guides, and skill docs were updated to `@lobstercove/lichen-sdk`, `lobstercove-lichen-core`, `lichen-client-sdk = "0.1.0"`, and `cargo install --path cli/`, but dated audit/strategy snapshots were left unchanged unless they were still serving as active runbooks.
+- RPC log-capture tests can race under parallel `cargo test --workspace` if they install independent tracing subscribers concurrently.
+  On 2026-04-23 `rpc/src/lib.rs::capture_logs_async(...)` had to be serialized with a process-local mutex to keep privileged-audit-log assertions stable in the full workspace run.

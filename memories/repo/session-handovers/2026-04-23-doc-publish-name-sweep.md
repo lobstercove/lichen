@@ -1,0 +1,27 @@
+## 2026-04-23 Doc Publish-Name Sweep
+
+- Updated live/public docs to match the published package names and install paths:
+  - JS SDK: `@lobstercove/lichen-sdk`
+  - core package commands: `lobstercove-lichen-core`
+  - Rust client SDK install: `lichen-client-sdk = "0.1.0"`
+  - CLI install in live docs: `cargo install --path cli/`
+- Touched surfaces:
+  - `README.md`
+  - `SKILL.md`
+  - `docs/api/JAVASCRIPT_SDK.md`
+  - `docs/guides/GETTING_STARTED.md`
+  - `docs/guides/GETTING_STARTED_RUST.md`
+  - `docs/guides/CONTRACT_DEVELOPMENT.md`
+  - `docs/architecture/AI_AGENT_SKILLS.md`
+  - `docs/skills/SKILL_BOOK.md`
+  - `docs/foundation/WHITEPAPER.md`
+  - `docs/foundation/TOKENOMICS_OVERHAUL_PLAN.md`
+  - `developers/*.html` pages for getting started, CLI, SDK JS/Rust, WS, architecture, LichenID, contract reference, and index
+  - `sdk/js/README.md`
+- Verification:
+  - negative `rg` sweep over live docs returned no remaining stale references for `@lichen/sdk`, `cargo install lichen-cli`, `cargo test -p lichen-core`, `cargo bench -p lichen-core`, or the old Rust SDK git dependency snippet
+  - deployed `developers` via `scripts/deploy-cloudflare-pages.sh developers`
+  - preview URL: `https://d3aeb31c.lichen-network-developers.pages.dev`
+  - verified live custom-domain content on `developers.lichen.network` for JS SDK, getting-started, and Rust SDK pages
+- Intentionally not mass-edited:
+  - dated audit/strategy snapshot docs that mention old names as part of historical records

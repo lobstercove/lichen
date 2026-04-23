@@ -41,7 +41,7 @@ impl StateStore {
             .multi_get_cf(pubkeys.iter().map(|pk| (&cf, pk.0.as_ref())));
 
         let mut out = std::collections::HashMap::with_capacity(pubkeys.len());
-        for (pk, item) in pubkeys.iter().zip(raw.into_iter()) {
+        for (pk, item) in pubkeys.iter().zip(raw) {
             let maybe_data = item.map_err(|e| format!("Database error: {}", e))?;
             let Some(data) = maybe_data else {
                 continue;

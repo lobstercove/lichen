@@ -1,5 +1,5 @@
 {
-  "name": "@lichen/sdk",
+  "name": "@lobstercove/lichen-sdk",
   "version": "1.0.0",
   "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
   "type": "module",

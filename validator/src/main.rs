@@ -680,6 +680,25 @@ fn make_sync_observed_validator_info(
     }
 }
 
+fn note_validator_activity(
+    validator_set: &mut ValidatorSet,
+    pubkey: &Pubkey,
+    slot: u64,
+    count_vote: bool,
+) -> bool {
+    if let Some(validator) = validator_set.get_validator_mut(pubkey) {
+        if slot > validator.last_active_slot {
+            validator.last_active_slot = slot;
+        }
+        if count_vote {
+            validator.votes_cast = validator.votes_cast.saturating_add(1);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u64> {
     state
         .get_account(validator)
@@ -6654,6 +6673,8 @@ async fn run_validator() {
     let (proposal_tx, mut proposal_rx) = mpsc::channel::<Proposal>(2_000);
     let (prevote_tx, mut prevote_rx) = mpsc::channel::<Prevote>(5_000);
     let (precommit_tx, mut precommit_rx) = mpsc::channel::<Precommit>(5_000);
+    let (consensus_activity_tx, mut consensus_activity_rx) =
+        mpsc::channel::<lichen_p2p::ConsensusActivityMsg>(5_000);
 
     // Create mempool
     let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
@@ -6685,6 +6706,7 @@ async fn run_validator() {
         proposal_tx,
         prevote_tx,
         precommit_tx,
+        consensus_activity_tx,
     )
     .await
     {
@@ -6713,6 +6735,21 @@ async fn run_validator() {
             (None, None)
         }
     };
+
+    {
+        let validator_set_for_consensus_activity = validator_set.clone();
+        tokio::spawn(async move {
+            while let Some(activity) = consensus_activity_rx.recv().await {
+                let mut live_vs = validator_set_for_consensus_activity.write().await;
+                let _ = note_validator_activity(
+                    &mut live_vs,
+                    &activity.validator,
+                    activity.slot,
+                    false,
+                );
+            }
+        });
+    }
 
     // Create sync manager
     let sync_manager = Arc::new(SyncManager::new());
@@ -6980,7 +7017,7 @@ async fn run_validator() {
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
         let processor_for_blocks = processor.clone();
-        let _validator_pubkey_for_blocks = validator_pubkey;
+        let validator_pubkey_for_blocks = validator_pubkey;
         // VOTE-AUTHORITY: Signing key is now owned by VoteAuthority — no need
         // for validator_seed in the block receiver task.
         let sync_mgr = sync_manager.clone();
@@ -8789,6 +8826,16 @@ async fn run_validator() {
                                     // Drop agg + vs before broadcast
                                 }
 
+                                {
+                                    let mut vs = validator_set_for_blocks.write().await;
+                                    let _ = note_validator_activity(
+                                        &mut vs,
+                                        &validator_pubkey_for_blocks,
+                                        block_slot,
+                                        true,
+                                    );
+                                }
+
                                 // PERF-OPT 3: Fire-and-forget vote broadcast.
                                 // P3-5: Route votes through validator mesh for lowest latency.
                                 // Falls back to full broadcast if no validator peers are known.
@@ -9630,12 +9677,7 @@ async fn run_validator() {
                     // and actively processing blocks. Update last_active_slot so the
                     // downtime detector doesn't falsely flag voting validators that
                     // simply aren't the current block leader.
-                    if let Some(val) = vs.get_validator_mut(&vote.validator) {
-                        if vote.slot > val.last_active_slot {
-                            val.last_active_slot = vote.slot;
-                        }
-                        val.votes_cast += 1;
-                    }
+                    let _ = note_validator_activity(&mut vs, &vote.validator, vote.slot, true);
 
                     // Vote added successfully, check if block reached finality
                     let pool = stake_pool_for_votes.read().await;
@@ -9748,9 +9790,12 @@ async fn run_validator() {
                 // Check if validator already exists
                 if is_existing_validator {
                     // Update existing validator's activity
-                    if let Some(val) = vs.get_validator_mut(&announcement.pubkey) {
-                        val.last_active_slot = announcement.current_slot;
-                    }
+                    let _ = note_validator_activity(
+                        &mut vs,
+                        &announcement.pubkey,
+                        announcement.current_slot,
+                        false,
+                    );
 
                     // Check for fingerprint migration (same pubkey, new machine)
                     if announcement.machine_fingerprint != [0u8; 32] {
@@ -11707,12 +11752,14 @@ async fn run_validator() {
     let finality_for_rpc = Some(finality_tracker.clone());
     let dex_bc_for_rpc = ws_dex_broadcaster.clone();
     let pred_bc_for_rpc = ws_prediction_broadcaster.clone();
+    let validator_set_for_rpc = Some(validator_set.clone());
     tokio::spawn(async move {
         if let Err(e) = start_rpc_server(
             state_for_rpc,
             rpc_port,
             tx_sender_for_rpc,
             stake_pool_for_rpc,
+            validator_set_for_rpc,
             p2p_for_rpc,
             chain_id_for_rpc,
             network_id_for_rpc,
@@ -11795,6 +11842,7 @@ async fn run_validator() {
         let validator_pubkey_for_announce = validator_pubkey;
         let stake_pool_for_announce = stake_pool.clone();
         let state_for_announce = state.clone();
+        let validator_set_for_self_announce = validator_set.clone();
         let validator_seed_for_announce = validator_keypair.to_seed();
         let machine_fingerprint_for_announce = machine_fingerprint;
         tokio::spawn(async move {
@@ -11811,6 +11859,15 @@ async fn run_validator() {
                         .unwrap_or(0)
                 };
                 let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
+                {
+                    let mut vs = validator_set_for_self_announce.write().await;
+                    let _ = note_validator_activity(
+                        &mut vs,
+                        &validator_pubkey_for_announce,
+                        current_slot,
+                        false,
+                    );
+                }
 
                 // T2.3 fix: Sign announcement with validator keypair
                 let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
@@ -14140,6 +14197,15 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastProposal(proposal) => {
+            {
+                let mut live_vs = validator_set.write().await;
+                let _ = note_validator_activity(
+                    &mut live_vs,
+                    &proposal.proposer,
+                    proposal.height,
+                    false,
+                );
+            }
             info!(
                 "📡 BFT SEND: Proposal h={} r={} hash={}",
                 proposal.height,
@@ -14163,6 +14229,15 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastPrevote(prevote) => {
+            {
+                let mut live_vs = validator_set.write().await;
+                let _ = note_validator_activity(
+                    &mut live_vs,
+                    &prevote.validator,
+                    prevote.height,
+                    false,
+                );
+            }
             info!(
                 "📡 BFT SEND: Prevote h={} r={} block={}",
                 prevote.height,
@@ -14186,6 +14261,15 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
+            {
+                let mut live_vs = validator_set.write().await;
+                let _ = note_validator_activity(
+                    &mut live_vs,
+                    &precommit.validator,
+                    precommit.height,
+                    false,
+                );
+            }
             info!(
                 "📡 BFT SEND: Precommit h={} r={} block={}",
                 precommit.height,
@@ -15485,6 +15569,45 @@ mod tests {
         assert_eq!(info.transactions_processed, 3);
         assert_eq!(info.last_active_slot, 42);
         assert!(!info.pending_activation);
+    }
+
+    #[test]
+    fn note_validator_activity_updates_slot_and_vote_count() {
+        let pubkey = Keypair::generate().pubkey();
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey,
+            stake: 1,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 3,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        assert!(note_validator_activity(
+            &mut validator_set,
+            &pubkey,
+            9,
+            true
+        ));
+        let validator = validator_set.get_validator(&pubkey).unwrap();
+        assert_eq!(validator.last_active_slot, 9);
+        assert_eq!(validator.votes_cast, 1);
+
+        assert!(note_validator_activity(
+            &mut validator_set,
+            &pubkey,
+            7,
+            false
+        ));
+        let validator = validator_set.get_validator(&pubkey).unwrap();
+        assert_eq!(validator.last_active_slot, 9);
+        assert_eq!(validator.votes_cast, 1);
     }
 
     #[test]

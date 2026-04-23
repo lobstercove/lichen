@@ -5,13 +5,13 @@ Official SDK for interacting with Lichen blockchain.
 ## Installation
 
 ```bash
-npm install @lichen/sdk
+npm install @lobstercove/lichen-sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { Connection, Keypair, PublicKey } from '@lichen/sdk';
+import { Connection, Keypair, PublicKey } from '@lobstercove/lichen-sdk';
 
 // Connect to Lichen
 const connection = new Connection('http://localhost:8899');

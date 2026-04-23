@@ -125,7 +125,7 @@ Use these pages when you need the public developer surface documentation rather 
 
 | Component | Crate | Purpose |
 |-----------|-------|---------|
-| Core | `lichen-core` | State machine, accounts, transactions, WASM VM, ZK verifier, consensus |
+| Core | `lobstercove-lichen-core` | State machine, accounts, transactions, WASM VM, ZK verifier, consensus |
 | RPC | `lichen-rpc` | JSON-RPC server, REST API, WebSocket subscriptions |
 | P2P | `lichen-p2p` | Gossip protocol, block propagation, validator announce |
 | Validator | `lichen-validator` | Block production, slot scheduling, auto-update |
@@ -1402,12 +1402,12 @@ Connect to `ws://localhost:8900` (local) or `wss://rpc.lichen.network/ws` (produ
 
 ## 14. JavaScript SDK
 
-**Package:** `@lichen/sdk` in `sdk/js/src/`
+**Package:** `@lobstercove/lichen-sdk` in `sdk/js/`
 
 ### Key Classes
 
 ```typescript
-import { PublicKey, Keypair, Connection, TransactionBuilder } from '@lichen/sdk';
+import { PublicKey, Keypair, Connection, TransactionBuilder } from '@lobstercove/lichen-sdk';
 
 // Create wallet
 const kp = Keypair.generate();
@@ -2231,7 +2231,7 @@ The `tests/` harness referenced below is local-private operator tooling and is i
 
 | Suite | Command | Tests |
 |-------|---------|-------|
-| Core unit | `cargo test -p lichen-core` | Rust unit tests |
+| Core unit | `cargo test -p lobstercove-lichen-core` | Rust unit tests |
 | RPC unit | `cargo test -p lichen-rpc` | RPC tests |
 | Validator unit | `cargo test -p lichen-validator` | Includes auto-update |
 | All Cargo | `cargo test --workspace` | ~1,296 tests |

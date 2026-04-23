@@ -177,6 +177,13 @@ pub struct StatusResponseMsg {
     pub total_blocks: u64,
 }
 
+/// Verified validator activity observed from signed consensus traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsensusActivityMsg {
+    pub validator: Pubkey,
+    pub slot: u64,
+}
+
 /// Consistency report from peer
 #[derive(Debug, Clone)]
 pub struct ConsistencyReportMsg {
@@ -327,6 +334,9 @@ pub struct P2PNetwork {
     /// BFT: Outgoing precommit channel
     precommit_tx: mpsc::Sender<Precommit>,
 
+    /// Verified validator activity from signed consensus traffic.
+    consensus_activity_tx: mpsc::Sender<ConsensusActivityMsg>,
+
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
@@ -356,6 +366,7 @@ impl P2PNetwork {
         proposal_tx: mpsc::Sender<Proposal>,
         prevote_tx: mpsc::Sender<Prevote>,
         precommit_tx: mpsc::Sender<Precommit>,
+        consensus_activity_tx: mpsc::Sender<ConsensusActivityMsg>,
     ) -> Result<Self, String> {
         let effective_max_peers = config.effective_max_peers();
         info!(
@@ -438,6 +449,7 @@ impl P2PNetwork {
             proposal_tx,
             prevote_tx,
             precommit_tx,
+            consensus_activity_tx,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -529,6 +541,12 @@ impl P2PNetwork {
                     "📥 BFT RECV: Proposal h={} r={} from peer {}",
                     proposal.height, proposal.round, peer_addr
                 );
+                self.record_consensus_activity(
+                    peer_addr,
+                    proposal.proposer,
+                    proposal.height,
+                    proposal.verify_signature(),
+                );
                 if let Err(e) = self.proposal_tx.try_send(proposal) {
                     warn!(
                         "P2P: Proposal channel full, dropping proposal from {} ({})",
@@ -542,6 +560,12 @@ impl P2PNetwork {
                     "📥 BFT RECV: Prevote h={} r={} from peer {}",
                     prevote.height, prevote.round, peer_addr
                 );
+                self.record_consensus_activity(
+                    peer_addr,
+                    prevote.validator,
+                    prevote.height,
+                    prevote.verify_signature(),
+                );
                 if let Err(e) = self.prevote_tx.try_send(prevote) {
                     warn!(
                         "P2P: Prevote channel full, dropping prevote from {} ({})",
@@ -554,6 +578,12 @@ impl P2PNetwork {
                 info!(
                     "📥 BFT RECV: Precommit h={} r={} from peer {}",
                     precommit.height, precommit.round, peer_addr
+                );
+                self.record_consensus_activity(
+                    peer_addr,
+                    precommit.validator,
+                    precommit.height,
+                    precommit.verify_signature(),
                 );
                 if let Err(e) = self.precommit_tx.try_send(precommit) {
                     warn!(
@@ -1273,6 +1303,31 @@ impl P2PNetwork {
         }
 
         Ok(())
+    }
+
+    fn record_consensus_activity(
+        &self,
+        peer_addr: SocketAddr,
+        validator: Pubkey,
+        slot: u64,
+        signature_valid: bool,
+    ) {
+        if !signature_valid {
+            return;
+        }
+
+        if let Err(e) = self
+            .consensus_activity_tx
+            .try_send(ConsensusActivityMsg { validator, slot })
+        {
+            warn!(
+                "P2P: Consensus activity channel full, dropping validator activity from {} for {} at slot {} ({})",
+                peer_addr,
+                validator.to_base58(),
+                slot,
+                e
+            );
+        }
     }
 
     /// Disseminate a block through the non-consensus gossip path.

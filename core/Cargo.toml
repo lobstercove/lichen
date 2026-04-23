@@ -1,5 +1,5 @@
 [package]
-name = "lichen-core"
+name = "lobstercove-lichen-core"
 version = "0.5.7"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
@@ -8,6 +8,9 @@ license = "Apache-2.0"
 repository = "https://github.com/lobstercove/lichen"
 homepage = "https://lichen.network"
 documentation = "https://developers.lichen.network"
+
+[lib]
+name = "lichen_core"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

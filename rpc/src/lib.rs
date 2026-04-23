@@ -58,8 +58,8 @@ use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityK
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     FinalityTracker, Hash, Instruction, MarketActivityKind, Message, PqSignature, Pubkey,
-    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID,
-    EVM_PROGRAM_ID, MAX_CONTRACT_CODE, SYSTEM_PROGRAM_ID,
+    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet,
+    CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE, SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -2020,6 +2020,9 @@ struct RpcState {
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     /// Stake pool (optional, for staking queries)
     stake_pool: Option<Arc<tokio::sync::RwLock<lichen_core::StakePool>>>,
+    /// Live validator set from the embedded validator process, when available.
+    /// This keeps activity-sensitive RPCs aligned with in-memory consensus state.
+    live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
     chain_id: String,
     network_id: String,
     min_validator_stake: u64,
@@ -2224,6 +2227,10 @@ pub(crate) async fn require_single_validator(
 const VALIDATOR_CACHE_TTL_MS: u128 = 400;
 
 async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcError> {
+    if let Some(ref live_validator_set) = state.live_validator_set {
+        return Ok(live_validator_set.read().await.validators().to_vec());
+    }
+
     // Fast path: read lock
     {
         let guard = state.validator_cache.read().await;
@@ -2243,6 +2250,24 @@ async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcEr
     })?;
     *guard = (Instant::now(), validators.clone());
     Ok(validators)
+}
+
+async fn load_validator_info(
+    state: &RpcState,
+    pubkey: &Pubkey,
+) -> Result<Option<ValidatorInfo>, RpcError> {
+    if let Some(ref live_validator_set) = state.live_validator_set {
+        return Ok(live_validator_set
+            .read()
+            .await
+            .get_validator(pubkey)
+            .cloned());
+    }
+
+    state.state.get_validator(pubkey).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })
 }
 
 fn should_expose_public_validator(state: &RpcState, validator: &ValidatorInfo) -> bool {
@@ -3915,6 +3940,7 @@ pub async fn start_rpc_server(
     port: u16,
     tx_sender: Option<mpsc::Sender<Transaction>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
+    live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -3925,10 +3951,11 @@ pub async fn start_rpc_server(
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
     treasury_keypair: Option<TreasuryKeypair>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_rpc_router_with_min_validator_stake(
+    let app = build_rpc_router_internal(
         state,
         tx_sender,
         stake_pool,
+        live_validator_set,
         p2p,
         chain_id,
         network_id,
@@ -3974,10 +4001,11 @@ pub fn build_rpc_router(
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
     treasury_keypair: Option<TreasuryKeypair>,
 ) -> Router {
-    build_rpc_router_with_min_validator_stake(
+    build_rpc_router_internal(
         state,
         tx_sender,
         stake_pool,
+        None,
         p2p,
         chain_id,
         network_id,
@@ -3995,6 +4023,39 @@ pub fn build_rpc_router_with_min_validator_stake(
     state: StateStore,
     tx_sender: Option<mpsc::Sender<Transaction>>,
     stake_pool: Option<Arc<RwLock<StakePool>>>,
+    p2p: Option<Arc<dyn P2PNetworkTrait>>,
+    chain_id: String,
+    network_id: String,
+    min_validator_stake: u64,
+    admin_token: Option<String>,
+    finality: Option<FinalityTracker>,
+    dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
+    prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
+    treasury_keypair: Option<TreasuryKeypair>,
+) -> Router {
+    build_rpc_router_internal(
+        state,
+        tx_sender,
+        stake_pool,
+        None,
+        p2p,
+        chain_id,
+        network_id,
+        min_validator_stake,
+        admin_token,
+        finality,
+        dex_broadcaster,
+        prediction_broadcaster,
+        treasury_keypair,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_rpc_router_internal(
+    state: StateStore,
+    tx_sender: Option<mpsc::Sender<Transaction>>,
+    stake_pool: Option<Arc<RwLock<StakePool>>>,
+    live_validator_set: Option<Arc<RwLock<ValidatorSet>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -4055,6 +4116,7 @@ pub fn build_rpc_router_with_min_validator_stake(
         tx_sender,
         p2p,
         stake_pool,
+        live_validator_set,
         chain_id,
         network_id,
         min_validator_stake,
@@ -8777,15 +8839,12 @@ async fn handle_get_validator_info(
 
     let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
-    let validator = state.state.get_validator(&pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
-
-    let validator = validator.ok_or_else(|| RpcError {
-        code: -32001,
-        message: "Validator not found".to_string(),
-    })?;
+    let validator = load_validator_info(state, &pubkey)
+        .await?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Validator not found".to_string(),
+        })?;
 
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let is_active = validator_is_active(current_slot, validator.last_active_slot);
@@ -8826,15 +8885,12 @@ async fn handle_get_validator_performance(
 
     let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
-    let validator = state.state.get_validator(&pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
-
-    let validator = validator.ok_or_else(|| RpcError {
-        code: -32001,
-        message: "Validator not found".to_string(),
-    })?;
+    let validator = load_validator_info(state, &pubkey)
+        .await?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Validator not found".to_string(),
+        })?;
 
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
@@ -9082,10 +9138,7 @@ async fn handle_get_staking_status(
     let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| invalid_pubkey_format_error())?;
 
     // Check if this is a validator
-    let validator_info = state.state.get_validator(&pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let validator_info = load_validator_info(state, &pubkey).await?;
 
     if let Some(validator) = validator_info {
         let (
@@ -9315,11 +9368,7 @@ async fn handle_get_account_info(
     })?;
 
     // Check if it's a validator
-    let is_validator = state
-        .state
-        .get_validator(&pubkey)
-        .map(|v| v.is_some())
-        .unwrap_or(false);
+    let is_validator = load_validator_info(state, &pubkey).await?.is_some();
 
     Ok(serde_json::json!({
         "pubkey": pubkey.to_base58(),
@@ -9406,6 +9455,16 @@ async fn handle_get_contract_info(
                         let supply =
                             u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
                         tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                    }
+                }
+                if !tmeta.contains_key("total_supply") {
+                    if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
+                        if v.len() == 8 {
+                            let supply = u64::from_le_bytes([
+                                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                            ]);
+                            tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                        }
                     }
                 }
                 // Fallback: if supply not found in storage, check registry metadata
@@ -16081,7 +16140,10 @@ mod tests {
     use lichen_core::account::Keypair as LichenKeypair;
     use lichen_core::contract::{ContractAccount, ContractEvent, ContractResult};
     use lichen_core::keypair_file::KeypairFile;
-    use lichen_core::{Hash, Pubkey, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID};
+    use lichen_core::{
+        consensus::{ValidatorInfo, ValidatorSet},
+        Hash, Pubkey, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID,
+    };
     use lru::LruCache;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
@@ -16099,6 +16161,7 @@ mod tests {
             tx_sender: None,
             p2p: None,
             stake_pool: None,
+            live_validator_set: None,
             chain_id: "lichen-test".to_string(),
             network_id: "local-testnet".to_string(),
             min_validator_stake: 0,
@@ -16136,6 +16199,46 @@ mod tests {
 
     fn make_test_rpc_state(state: StateStore) -> RpcState {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
+    #[tokio::test]
+    async fn cached_validators_prefers_live_validator_set_activity() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let pubkey = Pubkey([7u8; 32]);
+
+        let persisted_validator = ValidatorInfo {
+            pubkey,
+            stake: 1,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 5,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        };
+        let mut persisted_set = ValidatorSet::new();
+        persisted_set.add_validator(persisted_validator);
+        state.save_validator_set(&persisted_set).unwrap();
+
+        let live_validator = ValidatorInfo {
+            last_active_slot: 42,
+            votes_cast: 9,
+            ..persisted_set.validators()[0].clone()
+        };
+        let mut live_set = ValidatorSet::new();
+        live_set.add_validator(live_validator);
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.live_validator_set = Some(Arc::new(RwLock::new(live_set)));
+
+        let validators = super::cached_validators(&rpc_state).await.unwrap();
+        assert_eq!(validators.len(), 1);
+        assert_eq!(validators[0].last_active_slot, 42);
+        assert_eq!(validators[0].votes_cast, 9);
     }
 
     fn put_test_contract_account(
@@ -16543,6 +16646,13 @@ mod tests {
     where
         F: std::future::Future<Output = ()>,
     {
+        static LOG_CAPTURE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        let _capture_guard = LOG_CAPTURE_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+
         let buffer = CapturedLogWriter::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::fmt()
