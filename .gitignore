@@ -188,3 +188,5 @@ deploy-manifest.json
 # ── Internal test artifacts (not for git) ───────────────────
 tests/FIX_PLAN_*.md
 *.pre-rewrite
+/memories
+/memories/repo

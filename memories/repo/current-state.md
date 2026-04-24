@@ -4,9 +4,9 @@ Last reviewed: 2026-04-23
 
 ## Durable Facts
 
-- Repo root README and release docs now treat `v0.5.8` as the active release line.
+- Repo root README and release docs now treat `v0.5.9` as the active release line.
 - Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
-- The live 3-VPS testnet fleet is now on the cadence-telemetry validator artifact (`SHA-256 5dacad2e36a93629baf391270b2fdfa03af00b3da37104d9d4a407a7e7043e2c`).
+- The live 3-VPS testnet fleet is now on the exact published `v0.5.9` Linux validator release artifact (`SHA-256 015f267ee617723416737cc62bacd1110343e02384bf30082bc090e375fd2c80`).
 - Public testnet RPC now serves `getSporePumpStats`, so Mission Control no longer has a missing backend feed for the SporePump ecosystem card.
 - Mission Control monitoring is live on Cloudflare Pages with chain-age uptime, corrected DEX/ecosystem labels, and a health badge driven by validator availability plus consensus/P2P signals instead of the old block-cadence average.
 - Cadence telemetry is now observer-side and wall-clock based:
@@ -32,7 +32,7 @@ Last reviewed: 2026-04-23
 - The 2026-04-22 user handover says:
   - testnet is live on 3 VPSes with BFT consensus
   - current status is already `v0.5.6`
-- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents, but the active live release line is now `v0.5.8`.
+- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents, but the active live release line is now `v0.5.9`.
 - Treat deployment state as requiring date-aware reconciliation before making operational decisions.
 
 ## Likely Next Workstreams
