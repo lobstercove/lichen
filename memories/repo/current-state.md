@@ -4,13 +4,16 @@ Last reviewed: 2026-04-26
 
 ## Durable Facts
 
-- Repo root README and release docs now treat `v0.5.13` as the active release line.
-- `v0.5.13` is the live verified 3-VPS testnet baseline as of 2026-04-26. GitHub Release workflow `24957285876` completed successfully for commit `269b037854cb6395ac62111bc0613505ea8e53f8`; the public release is `https://github.com/lobstercove/lichen/releases/tag/v0.5.13`.
-- The signed `v0.5.13` release uses signer address `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`. The Linux x86_64 archive hash is `f689009d5fa5dd0fcec4f4fbd776783e920ebada396f5032915560d941632ff9`; the installed VPS validator binary hash is `737eb83e25a60aa4512c045a684c0da6bfd8772fd9dc20f42a565515be336c29`.
-- The 2026-04-26 `v0.5.13` clean-slate testnet reset generated genesis hash `4b30ed24177dfad0abed76d9776adcf15cc2a2e90f121e4a0f4a5f981f65b707` and state root `ef9150070f927508fc41e74072da95f45aa1f654d384f2b3da8766c2f8f42904`; all 28 genesis contracts deployed and the signed metadata manifest exposes 28 `symbol_registry` entries.
-- Fresh `v0.5.13` testnet validator identities are US `6Fu5LwYRGtrsu7GhhffcMx4P2739m1ewnjHHby9hZ7T`, EU `8f4dDcPm7R9Hsrb7p3jtzAmEVwZbuMAmZMtG3o43GoV`, and SEA `5wCT5zeJAfHN9eTwY44Y4dm1B42obiazxa6SjSFibKo`. Public RPC verification after the reset reached slot 307 with exactly 3 active validators, 3 stake entries, no ghost validators, and no post-`v0.5.13` state-root/sync/fatal/startup-integrity warnings in VPS logs.
-- Faucet Recent Requests are not chain state: they come from `/var/lib/lichen/airdrops.json`. After the `v0.5.13` reset, that stale file was cleared manually on all 3 VPSes and `scripts/clean-slate-redeploy.sh` now deletes/verifies it during future testnet clean-slate redeploys.
-- `v0.5.10` was published and clean-slate deployed on 2026-04-26, but the testnet reproduced the validator-offline failure at slot 285: SEA hit a state-root mismatch after a stale stake-pool write. Treat `v0.5.10` as superseded by `v0.5.13`.
+- Repo root README and release docs now treat `v0.5.16` as the active release line.
+- `v0.5.16` is the live verified 3-VPS testnet baseline as of 2026-04-26. GitHub Release workflow `24962752572` and main CI workflow `24962752570` both completed successfully for commit `a575caaa1f7d6ce967dd3f33cb3b21c1cdb38090`; the public release is `https://github.com/lobstercove/lichen/releases/tag/v0.5.16`.
+- The signed `v0.5.16` release uses signer address `8HitBNnh8qbhfne5NCv2yHrQFoD6xbmHcWaUSgCGtsk`. The Linux x86_64 archive hash is `2f9139cc2eb22c9d1f42dde0a778b5b96bb5d804849cb90d1303d93a721356f8`; the installed VPS validator binary hash is `da5f5ad5c1e73f3938eff80d9f2794bbbc0ad18311f4993cdcefd7332048a87d`.
+- The 2026-04-26 `v0.5.16` clean-slate testnet reset generated genesis hash `01c9e20ab69f742aa56c8b419c9f37f4840fec518816f08e74693e056c3fe858` and state root `100997fd5d14d84a699e59928b7cabf2ea2b7b25a6a3d38687cd904369dd68c0`; all 28 genesis contracts deployed, contract identities were awarded 28/28, and the signed metadata manifest exposes 28 `symbol_registry` entries.
+- Fresh `v0.5.16` testnet validator identities are US `6i5bbpSsPKioCnjDtVG97dYduTR89boipjZExJdBts3`, EU `8C1x9332veBaZXNxEcbr4xUKCbe5qbAAj5KmDfEU4k7`, and SEA `5f5nSwiGmwgRNzZCaot54Y61ydtge8tVxzKrF4r4qp5`. Public RPC verification after the reset reached slot 254 with exactly 3 active validators and peer count 2 on the public seed observer.
+- Bridge and oracle are production-bootstrapped on the fresh testnet reset: `getLichenBridgeStats` reports `validator_count=3`, `required_confirms=2`, `quorum_ready=true`, `operational=true`; `getLichenOracleStats` reports 4 contract feeds, 4 consensus feeds, 12 native attestations, and `operational=true`.
+- P2P self-endpoint filtering is now external-address aware. `LICHEN_EXTERNAL_ADDR` is advertised in gossip/outgoing messages and used by `PeerManager` reconnect/discovery preflight, so VPS nodes bound to `0.0.0.0:7001` reject their own public `IP:7001` without treating every remote `:7001` peer as self.
+- Post-`v0.5.16` VPS verification found no self-identity, self-connect, stale `Transaction already processed`, state-root mismatch, panic, or error lines in `lichen-validator-testnet` journals since the new service starts. Each `/var/lib/lichen/state-testnet/known-peers.json` contains only the other two VPS endpoints.
+- Faucet Recent Requests are not chain state: they come from `/var/lib/lichen/airdrops.json`. The clean-slate redeploy deletes and verifies that file on testnet; after the `v0.5.16` reset, `https://faucet.lichen.network/faucet/airdrops?limit=5` returned `[]`.
+- `v0.5.10` was published and clean-slate deployed on 2026-04-26, but the testnet reproduced the validator-offline failure at slot 285: SEA hit a state-root mismatch after a stale stake-pool write. Treat `v0.5.10` as superseded by `v0.5.16`.
 - `v0.5.11` fixed the stake-pool persistence race and passed the previous slot-285 failure point on testnet, but the clean-slate script still performed an unnecessary post-manifest validator restart that triggered startup integrity warnings during rollout. `v0.5.12` removed that restart.
 - `v0.5.13` removes the flawed post-effects startup root marker. The marker was recorded before later deterministic post-block hooks finished, so clean snapshot restarts could log false `STATE INTEGRITY` warnings even when block import/commit root checks were healthy.
 - Validator stake-pool persistence is consensus-owned only. The former background "persist in-memory stake pool every 30s" task was removed because it could clone a stale pool, then overwrite RocksDB after a block committed, causing the next block's state root to diverge on that node.
@@ -18,7 +21,7 @@ Last reviewed: 2026-04-26
 - Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
 - Validator sync pending storage now keeps multiple block candidates per slot and chooses the candidate that chains from the current tip, preventing a wrong-parent candidate from permanently poisoning catch-up.
 - Validator identity admission is stake-backed only: block headers and validator announcements no longer create `ValidatorSet` entries, P2P validator-route status is granted only to existing or locally stake-backed validators, and startup drops persisted unbacked validator metadata.
-- The failed `v0.5.10` run, the restart-noisy `v0.5.11` run, and the marker-noisy `v0.5.12` run should be treated as superseded by the verified `v0.5.13` clean-slate baseline.
+- The failed `v0.5.10` run, the restart-noisy `v0.5.11` run, the marker-noisy `v0.5.12` run, and the bridge/oracle/P2P bootstrap hardening releases through `v0.5.15` should be treated as superseded by the verified `v0.5.16` clean-slate baseline.
 - Public testnet RPC now serves `getSporePumpStats`, so Mission Control no longer has a missing backend feed for the SporePump ecosystem card.
 - Mission Control monitoring is live on Cloudflare Pages with chain-age uptime, corrected DEX/ecosystem labels, and a health badge driven by validator availability plus consensus/P2P signals instead of the old block-cadence average.
 - Cadence telemetry is now observer-side and wall-clock based:
@@ -46,7 +49,7 @@ Last reviewed: 2026-04-26
 - The 2026-04-22 user handover says:
   - testnet is live on 3 VPSes with BFT consensus
   - current status is already `v0.5.6`
-- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents; release docs and the live testnet now target `v0.5.13` after clean-slate verification on 2026-04-26, while older deployment docs may still lag.
+- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents; release docs and the live testnet now target `v0.5.16` after clean-slate verification on 2026-04-26, while older deployment docs may still lag.
 - Treat deployment state as requiring date-aware reconciliation before making operational decisions.
 
 ## Likely Next Workstreams
