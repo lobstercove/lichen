@@ -181,6 +181,9 @@ pub struct PeerManager {
     /// Local address
     local_addr: SocketAddr,
 
+    /// Externally advertised address, when the bind address is not routable.
+    external_addr: Option<SocketAddr>,
+
     /// Channel for incoming messages (bounded — T4.7)
     message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
 
@@ -250,6 +253,17 @@ fn is_self_connection_addr(peer_addr: SocketAddr, local_addr: SocketAddr) -> boo
     peer_addr == local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair))
 }
 
+fn is_self_endpoint_addr(
+    peer_addr: SocketAddr,
+    local_addr: SocketAddr,
+    external_addr: Option<SocketAddr>,
+) -> bool {
+    is_self_connection_addr(peer_addr, local_addr)
+        || external_addr
+            .map(|addr| is_self_connection_addr(peer_addr, addr))
+            .unwrap_or(false)
+}
+
 /// M-10: Compute an AS-level bucket ID for eclipse defense.
 /// Uses /16 prefix for IPv4 and /32 prefix for IPv6 as a lightweight
 /// approximation of AS-number grouping (most ASNs own contiguous /16 blocks).
@@ -280,9 +294,41 @@ impl PeerManager {
         self.local_addr
     }
 
+    /// Get the externally advertised address, falling back to the bind address.
+    pub fn advertised_addr(&self) -> SocketAddr {
+        self.external_addr.unwrap_or(self.local_addr)
+    }
+
+    /// Check whether an endpoint is one of this node's own endpoints.
+    pub fn is_self_endpoint(&self, peer_addr: &SocketAddr) -> bool {
+        is_self_endpoint_addr(*peer_addr, self.local_addr, self.external_addr)
+    }
+
     /// Create new peer manager
     pub async fn new(
         local_addr: SocketAddr,
+        message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
+        runtime_home: Option<PathBuf>,
+        peer_store: Option<Arc<PeerStore>>,
+        max_peers: usize,
+        reserved_peers: Vec<SocketAddr>,
+    ) -> Result<Self, String> {
+        Self::new_with_external_addr(
+            local_addr,
+            None,
+            message_tx,
+            runtime_home,
+            peer_store,
+            max_peers,
+            reserved_peers,
+        )
+        .await
+    }
+
+    /// Create new peer manager with a distinct advertised external address.
+    pub async fn new_with_external_addr(
+        local_addr: SocketAddr,
+        external_addr: Option<SocketAddr>,
         message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
         runtime_home: Option<PathBuf>,
         peer_store: Option<Arc<PeerStore>>,
@@ -388,6 +434,7 @@ impl PeerManager {
             peers: Arc::new(DashMap::new()),
             endpoint,
             local_addr,
+            external_addr,
             message_tx,
             peer_store,
             ban_list: Arc::new(Mutex::new(PeerBanList::new(ban_list_path))),
@@ -500,14 +547,10 @@ impl PeerManager {
 
     /// Connect to a peer
     pub async fn connect_peer(&self, peer_addr: SocketAddr) -> Result<(), String> {
-        let same_port = peer_addr.port() == self.local_addr.port();
-        let same_ip = peer_addr.ip() == self.local_addr.ip();
-        let loopback_pair = peer_addr.ip().is_loopback() && self.local_addr.ip().is_loopback();
-        let unspecified_pair =
-            peer_addr.ip().is_unspecified() && self.local_addr.ip().is_unspecified();
-        if peer_addr == self.local_addr
-            || (same_port && (same_ip || loopback_pair || unspecified_pair))
-        {
+        if self.is_self_endpoint(&peer_addr) {
+            if let Some(store) = &self.peer_store {
+                store.remove_peer(&peer_addr);
+            }
             return Err(format!(
                 "Refusing to connect to self endpoint {}",
                 peer_addr
@@ -595,6 +638,9 @@ impl PeerManager {
                 "P2P: Rejecting self-connection attempt to {} (same node identity)",
                 peer_addr
             );
+            if let Some(store) = &self.peer_store {
+                store.remove_peer(&peer_addr);
+            }
             connection.close(quinn::VarInt::from_u32(1), b"self_connection");
             return Err("Refusing self-connection (same node identity)".to_string());
         }
@@ -1146,6 +1192,7 @@ impl PeerManager {
         let kademlia = self.kademlia.clone();
         let max_peers = self.max_peers;
         let local_addr = self.local_addr;
+        let external_addr = self.external_addr;
         let node_identity = self.node_identity.clone();
         let local_node_address = self.local_node_address;
         let identity_store = self.identity_store.clone();
@@ -1165,7 +1212,7 @@ impl PeerManager {
                     match connecting.await {
                         Ok(connection) => {
                             let peer_addr = connection.remote_address();
-                            if is_self_connection_addr(peer_addr, local_addr) {
+                            if is_self_endpoint_addr(peer_addr, local_addr, external_addr) {
                                 warn!("P2P: Rejected self inbound connection from {}", peer_addr);
                                 connection.close(quinn::VarInt::from_u32(1), b"self_connection");
                                 return;
@@ -1231,6 +1278,9 @@ impl PeerManager {
                                     "P2P: Rejected inbound self-identity connection from {}",
                                     peer_addr
                                 );
+                                if let Some(store) = &peer_store {
+                                    store.remove_peer(&peer_addr);
+                                }
                                 connection.close(quinn::VarInt::from_u32(1), b"self_connection");
                                 return;
                             }
@@ -2553,6 +2603,45 @@ mod tests {
         let peer: SocketAddr = "10.0.1.8:7001".parse().unwrap();
         let local: SocketAddr = "10.0.2.8:7001".parse().unwrap();
         assert!(!is_self_connection_addr(peer, local));
+    }
+
+    #[test]
+    fn test_self_endpoint_requires_external_addr_for_unspecified_bind() {
+        let peer: SocketAddr = "15.204.229.189:7001".parse().unwrap();
+        let bind: SocketAddr = "0.0.0.0:7001".parse().unwrap();
+
+        assert!(!is_self_endpoint_addr(peer, bind, None));
+        assert!(is_self_endpoint_addr(peer, bind, Some(peer)));
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_rejects_configured_external_addr_before_dial() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lichen-test-self-external-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let external: SocketAddr = "15.204.229.189:7001".parse().unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let mgr = PeerManager::new_with_external_addr(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(external),
+            tx,
+            Some(tmp.clone()),
+            None,
+            10,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(mgr.advertised_addr(), external);
+        let error = mgr.connect_peer(external).await.unwrap_err();
+        assert!(error.contains("self endpoint"));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

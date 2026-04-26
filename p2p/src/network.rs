@@ -260,6 +260,11 @@ impl P2PConfig {
         self.max_peers
             .unwrap_or_else(|| self.role.default_max_peers())
     }
+
+    /// Address advertised in gossip and outgoing P2P messages.
+    pub fn advertise_addr(&self) -> SocketAddr {
+        self.external_addr.unwrap_or(self.listen_addr)
+    }
 }
 
 /// T2.3 fix: Signed validator announcement (self-reported reputation removed)
@@ -493,6 +498,13 @@ impl P2PNetwork {
             "🦞 P2P: Initializing network on {} (role={}, max_peers={})",
             config.listen_addr, config.role, effective_max_peers
         );
+        let advertise_addr = config.advertise_addr();
+        if advertise_addr != config.listen_addr {
+            info!(
+                "🦞 P2P: Advertising external endpoint {} for bind address {}",
+                advertise_addr, config.listen_addr
+            );
+        }
 
         // T4.7: Use bounded internal message channel to prevent memory exhaustion from peer floods.
         // Capacity 10K messages provides ~20MB buffer before backpressure kicks in.
@@ -520,8 +532,9 @@ impl P2PNetwork {
 
         // Create peer manager with configurable max_peers and reserved peers
         let peer_manager = Arc::new(
-            PeerManager::new(
+            PeerManager::new_with_external_addr(
                 config.listen_addr,
+                config.external_addr,
                 message_tx,
                 config.runtime_home.clone(),
                 peer_store.clone(),
@@ -541,13 +554,13 @@ impl P2PNetwork {
             config.gossip_interval,
             config.cleanup_timeout,
             peer_store,
-            config.listen_addr,
+            advertise_addr,
         ));
 
         Ok(P2PNetwork {
             peer_manager,
             gossip_manager,
-            local_addr: config.listen_addr,
+            local_addr: advertise_addr,
             role: config.role,
             message_rx,
             block_tx,
@@ -1582,6 +1595,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(config.effective_max_peers(), 100);
+    }
+
+    #[test]
+    fn test_p2p_config_advertise_addr_prefers_external_endpoint() {
+        let external = "15.204.229.189:7001".parse().unwrap();
+        let config = P2PConfig {
+            listen_addr: "0.0.0.0:7001".parse().unwrap(),
+            external_addr: Some(external),
+            ..Default::default()
+        };
+
+        assert_eq!(config.advertise_addr(), external);
     }
 
     #[test]
