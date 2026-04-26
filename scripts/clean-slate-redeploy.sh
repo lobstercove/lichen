@@ -805,7 +805,15 @@ url = sys.argv[1]
 
 def rpc(method):
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
-    request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "lichen-clean-slate-redeploy/1.0",
+        },
+    )
     with urllib.request.urlopen(request, timeout=10) as response:
         body = json.loads(response.read().decode())
     result = body.get("result")
