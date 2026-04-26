@@ -473,7 +473,7 @@ async fn ws_handler(
 ) -> Response {
     let ip = addr.ip();
     if let Err(response) = try_reserve_ws_connection(&state, ip) {
-        return response;
+        return *response;
     }
 
     let failed_upgrade_state = state.clone();
@@ -488,7 +488,7 @@ async fn ws_handler(
         .on_upgrade(move |socket| handle_socket(socket, state, ip))
 }
 
-fn try_reserve_ws_connection(state: &WsState, ip: IpAddr) -> Result<(), Response> {
+fn try_reserve_ws_connection(state: &WsState, ip: IpAddr) -> Result<(), Box<Response>> {
     loop {
         let current = state.active_connections.load(Ordering::SeqCst);
         if current >= MAX_WS_CONNECTIONS {
@@ -496,7 +496,10 @@ fn try_reserve_ws_connection(state: &WsState, ip: IpAddr) -> Result<(), Response
                 "WebSocket connection limit reached ({}/{}), rejecting",
                 current, MAX_WS_CONNECTIONS
             );
-            return Err(ws_limit_response(503, "Too many WebSocket connections"));
+            return Err(Box::new(ws_limit_response(
+                503,
+                "Too many WebSocket connections",
+            )));
         }
 
         if state
@@ -514,7 +517,10 @@ fn try_reserve_ws_connection(state: &WsState, ip: IpAddr) -> Result<(), Response
         if count >= MAX_CONNECTIONS_PER_IP {
             state.active_connections.fetch_sub(1, Ordering::SeqCst);
             warn!("Per-IP connection limit reached for {}: {}", ip, count);
-            return Err(ws_limit_response(429, "Too many connections from this IP"));
+            return Err(Box::new(ws_limit_response(
+                429,
+                "Too many connections from this IP",
+            )));
         }
         *conns.entry(ip).or_insert(0) += 1;
     }
