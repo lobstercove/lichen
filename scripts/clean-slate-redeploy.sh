@@ -58,6 +58,7 @@ VPS_RELEASE_ARCHIVES=()
 case $NETWORK in
   testnet)
     RPC_PORT=8899
+    P2P_PORT=7001
     CUSTODY_SERVICE="lichen-custody"
     CUSTODY_DB_NAME="custody-db"
     CUSTODY_PORT=9105
@@ -67,6 +68,7 @@ case $NETWORK in
     ;;
   mainnet)
     RPC_PORT=9899
+    P2P_PORT=8001
     CUSTODY_SERVICE="lichen-custody-mainnet"
     CUSTODY_DB_NAME="custody-db-mainnet"
     CUSTODY_PORT=9106
@@ -351,6 +353,27 @@ for VPS in "${ALL_VPSES[@]}"; do
     sudo mkdir -p $CUSTODY_DB_PATH
     sudo chown lichen:lichen $CUSTODY_DB_PATH
   "
+done
+phase_done
+
+# ============================================================================
+# Phase 2b: Pin external P2P address in node env
+# ============================================================================
+phase "Pin external P2P addresses"
+for VPS in "${ALL_VPSES[@]}"; do
+  echo "  Configuring external address on $VPS..."
+  REMOTE_IP=$(ssh_run "$VPS" "hostname -I 2>/dev/null | awk '{print \$1}'" | tail -1)
+  if [ -z "$REMOTE_IP" ]; then
+    echo -e "${RED}Failed to detect primary IP on $VPS${NC}"
+    exit 1
+  fi
+  ssh_run "$VPS" "
+    set -euo pipefail
+    ENV_FILE=$VPS_CONFIG/env-$NETWORK
+    sudo sed -i '/^LICHEN_EXTERNAL_ADDR=/d' \"\$ENV_FILE\"
+    printf 'LICHEN_EXTERNAL_ADDR=%s\n' '$REMOTE_IP:$P2P_PORT' | sudo tee -a \"\$ENV_FILE\" >/dev/null
+  "
+  echo -e "  ${GREEN}✓${NC} $VPS external P2P: $REMOTE_IP:$P2P_PORT"
 done
 phase_done
 

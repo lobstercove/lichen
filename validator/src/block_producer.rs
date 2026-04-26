@@ -76,8 +76,32 @@ pub fn build_block(
     oracle_prices: Vec<(String, u64)>,
     bft_timestamp: Option<u64>,
 ) -> (Block, Vec<Hash>) {
-    // Collect pending transactions (up to 2000)
-    let pending = mempool.get_top_transactions(2000);
+    // Collect pending transactions (up to 2000).  Drop transactions that the
+    // local ledger has already committed before they reach the processor; they
+    // can arrive late through RPC retries or P2P relay after block inclusion.
+    let mut stale_hashes = Vec::new();
+    let pending: Vec<_> = mempool
+        .get_top_transactions(2000)
+        .into_iter()
+        .filter(|tx| {
+            let tx_hash = tx.hash();
+            match state.get_transaction(&tx_hash) {
+                Ok(Some(_)) => {
+                    stale_hashes.push(tx_hash);
+                    false
+                }
+                _ => true,
+            }
+        })
+        .collect();
+    if !stale_hashes.is_empty() {
+        debug!(
+            "🧹 Dropping {} already-committed tx(s) from mempool before height {}",
+            stale_hashes.len(),
+            height
+        );
+        mempool.remove_transactions_bulk(&stale_hashes);
+    }
     let pending_count = pending.len();
 
     // Process in parallel (non-conflicting TXs run simultaneously)
@@ -318,5 +342,44 @@ mod tests {
         let delay = wall_clock_safe_delay(&state, &parent_hash, 800);
         // Should be base (800) + 50 pad = 850
         assert_eq!(delay, 850);
+    }
+
+    #[test]
+    fn build_block_drops_already_committed_transactions_without_reprocessing() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+        let parent = Block::genesis(Hash::hash(b"parent-state"), 1, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+
+        let tx = lichen_core::Transaction::new(lichen_core::Message::new(
+            vec![lichen_core::Instruction {
+                program_id: Pubkey([1u8; 32]),
+                accounts: vec![Pubkey([2u8; 32])],
+                data: vec![1],
+            }],
+            parent_hash,
+        ));
+        let tx_hash = tx.hash();
+        state.put_transaction(&tx).unwrap();
+        mempool.add_transaction(tx, 1, 0).unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            None,
+        );
+
+        assert!(block.transactions.is_empty());
+        assert!(processed.is_empty());
+        assert!(!mempool.contains(&tx_hash));
     }
 }

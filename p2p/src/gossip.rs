@@ -86,6 +86,15 @@ impl ReconnectTracker {
     }
 }
 
+fn is_self_endpoint(peer_addr: SocketAddr, local_addr: SocketAddr) -> bool {
+    let same_port = peer_addr.port() == local_addr.port();
+    let same_ip = peer_addr.ip() == local_addr.ip();
+    let loopback_pair = peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
+    let unspecified_pair = peer_addr.ip().is_unspecified() && local_addr.ip().is_unspecified();
+
+    peer_addr == local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair))
+}
+
 /// Manages peer discovery and gossip
 pub struct GossipManager {
     /// Peer manager
@@ -277,6 +286,7 @@ impl GossipManager {
     ) {
         let connected = peer_manager.get_peers();
         let connected_count = connected.len();
+        let local_addr = peer_manager.local_addr();
 
         // Build the set of candidate addresses to reconnect.
         // Always include seed peers; if below MIN_PEER_COUNT also include
@@ -300,6 +310,14 @@ impl GossipManager {
         }
 
         for addr in &candidates {
+            if is_self_endpoint(*addr, local_addr) {
+                if let Some(store) = peer_store {
+                    store.remove_peer(addr);
+                }
+                tracker.record_success(*addr);
+                continue;
+            }
+
             // Already connected — make sure backoff is clear
             if connected.contains(addr) {
                 tracker.record_success(*addr);
@@ -340,6 +358,13 @@ impl GossipManager {
         }
 
         for peer_info in peer_infos {
+            if is_self_endpoint(peer_info.address, self.local_addr) {
+                if let Some(store) = &self.peer_store {
+                    store.remove_peer(&peer_info.address);
+                }
+                continue;
+            }
+
             if let Some(store) = &self.peer_store {
                 store.record_peer(peer_info.address);
             }
@@ -347,15 +372,6 @@ impl GossipManager {
             // Skip if already connected (match by IP, not full addr — ephemeral ports change)
             if local_peers.iter().any(|p| p.ip() == peer_info.address.ip()) {
                 continue;
-            }
-
-            // Skip if trying to connect to ourselves
-            let is_self = peer_info.address == self.local_addr
-                || (peer_info.address.ip().is_loopback()
-                    && peer_info.address.port() == self.local_addr.port());
-
-            if is_self {
-                continue; // Don't connect to ourselves
             }
 
             info!("🦞 P2P: Discovered new peer {}", peer_info.address);
@@ -373,6 +389,16 @@ mod tests {
 
     fn addr(port: u16) -> SocketAddr {
         format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[test]
+    fn self_endpoint_matches_same_loopback_port() {
+        assert!(is_self_endpoint(addr(7001), addr(7001)));
+        assert!(is_self_endpoint(
+            "127.0.0.2:7001".parse().unwrap(),
+            addr(7001)
+        ));
+        assert!(!is_self_endpoint(addr(7002), addr(7001)));
     }
 
     // ── ReconnectTracker basics ──

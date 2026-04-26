@@ -303,6 +303,7 @@ impl Mempool {
     pub fn clear(&mut self) {
         self.queue.clear();
         self.transactions.clear();
+        self.sender_counts.clear();
     }
 }
 
@@ -424,6 +425,37 @@ mod tests {
         assert_eq!(top.len(), 1);
         // Highest fee wins, reputation irrelevant
         assert_eq!(top[0].hash(), tx_high_fee.hash());
+    }
+
+    #[test]
+    fn test_clear_resets_sender_counts() {
+        let mut mempool = Mempool::new(200, 300);
+        let sender = Pubkey([42; 32]);
+        for nonce in 0..MAX_PENDING_PER_SENDER {
+            let tx = Transaction::new(Message::new(
+                vec![Instruction {
+                    program_id: Pubkey([55; 32]),
+                    accounts: vec![sender],
+                    data: vec![nonce as u8],
+                }],
+                Hash::default(),
+            ));
+            mempool.add_transaction(tx, 1000, 0).unwrap();
+        }
+        assert_eq!(mempool.size(), MAX_PENDING_PER_SENDER);
+
+        mempool.clear();
+        assert_eq!(mempool.size(), 0);
+
+        let tx = Transaction::new(Message::new(
+            vec![Instruction {
+                program_id: Pubkey([200; 32]),
+                accounts: vec![sender],
+                data: vec![200],
+            }],
+            Hash::default(),
+        ));
+        assert!(mempool.add_transaction(tx, 1000, 0).is_ok());
     }
 
     #[test]

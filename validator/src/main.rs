@@ -5620,6 +5620,20 @@ async fn run_validator() {
         );
     }
 
+    let configured_external_addr = match env::var("LICHEN_EXTERNAL_ADDR") {
+        Ok(value) if !value.trim().is_empty() => match value.parse::<SocketAddr>() {
+            Ok(addr) => Some(addr),
+            Err(err) => {
+                warn!(
+                    "Invalid LICHEN_EXTERNAL_ADDR '{}': {}; self-seed filtering will rely on local interfaces",
+                    value, err
+                );
+                None
+            }
+        },
+        _ => None,
+    };
+
     let mut seed_peers = resolve_peer_list(&seed_file_peer_strings);
     let cached_peers = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
     seed_peers.extend(cached_peers.iter().copied());
@@ -5633,6 +5647,9 @@ async fn run_validator() {
     let local_ips: HashSet<std::net::IpAddr> = {
         let mut ips = HashSet::new();
         ips.insert(listen_addr.ip());
+        if let Some(addr) = configured_external_addr {
+            ips.insert(addr.ip());
+        }
         ips.insert(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         ips.insert(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
         // Discover interface IPs
@@ -5696,10 +5713,8 @@ async fn run_validator() {
                     .collect()
             })
             .unwrap_or_default(),
-        // P3-6: External address for NAT traversal (from LICHEN_EXTERNAL_ADDR env var)
-        external_addr: std::env::var("LICHEN_EXTERNAL_ADDR")
-            .ok()
-            .and_then(|s| s.parse::<std::net::SocketAddr>().ok()),
+        // P3-6: External address for NAT traversal and self-seed filtering.
+        external_addr: configured_external_addr,
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
@@ -9468,10 +9483,24 @@ async fn run_validator() {
 
         // Start incoming transaction handler
         let mempool_for_txs = mempool.clone();
+        let state_for_txs = state.clone();
         tokio::spawn(async move {
             info!("🔄 Transaction receiver started");
             while let Some(tx) = transaction_rx.recv().await {
                 info!("📥 Received transaction from P2P");
+                let tx_hash = tx.hash();
+                if state_for_txs
+                    .get_transaction(&tx_hash)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    debug!(
+                        "Dropping already-committed transaction from P2P: {}",
+                        tx_hash.to_hex()
+                    );
+                    continue;
+                }
                 // AUDIT-FIX 1.6: Validate transaction before adding to mempool
                 // 1. Verify all required signatures (first account of each instruction)
                 if !validate_p2p_transaction_signatures(&tx) {
@@ -11538,11 +11567,25 @@ async fn run_validator() {
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();
+    let state_for_rpc_txs = state.clone();
     let p2p_peer_manager_for_txs = p2p_peer_manager.clone();
     let p2p_config_for_txs = p2p_config.clone();
     tokio::spawn(async move {
         while let Some(tx) = rpc_tx_receiver.recv().await {
             info!("📨 RPC transaction received, adding to mempool");
+            let tx_hash = tx.hash();
+            if state_for_rpc_txs
+                .get_transaction(&tx_hash)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                debug!(
+                    "Dropping already-committed transaction from RPC: {}",
+                    tx_hash.to_hex()
+                );
+                continue;
+            }
 
             // P9-RPC-01: Defense-in-depth — reject sentinel blockhash for non-EVM TXs
             // before they even enter the mempool.  Only eth_sendRawTransaction may

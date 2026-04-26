@@ -102,6 +102,45 @@ impl PeerStore {
         }
     }
 
+    pub fn remove_peer(&self, addr: &SocketAddr) -> bool {
+        let data_to_write = {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut set = self.peer_set.lock().unwrap_or_else(|e| e.into_inner());
+            if !set.remove(addr) {
+                return false;
+            }
+
+            peers.retain(|peer| peer != addr);
+            PeerStoreData {
+                peers: peers.iter().map(|peer| peer.to_string()).collect(),
+            }
+        };
+
+        if let Some(parent) = self.path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!("peer_store: failed to create directory: {}", e);
+            }
+        }
+
+        if let Ok(json) = serde_json::to_string_pretty(&data_to_write) {
+            match fs::File::create(&self.path) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(json.as_bytes()) {
+                        warn!("peer_store: write failed: {}", e);
+                    } else if let Err(e) = file.sync_all() {
+                        warn!("peer_store: fsync failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("peer_store: create failed: {}", e);
+                }
+            }
+        }
+
+        true
+    }
+
     pub fn peers(&self) -> Vec<SocketAddr> {
         self.peers.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -145,6 +184,24 @@ mod tests {
         store.record_peer(addr);
         assert_eq!(store.peers().len(), 1);
         assert_eq!(store.peers()[0], addr);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_remove_peer_persists() {
+        let path = unique_path("remove");
+        let store = PeerStore::new(path.clone(), 100);
+        let first: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:9002".parse().unwrap();
+        store.record_peer(first);
+        store.record_peer(second);
+
+        assert!(store.remove_peer(&first));
+        assert!(!store.remove_peer(&first));
+        assert_eq!(store.peers(), vec![second]);
+
+        let reloaded = PeerStore::new(path.clone(), 100);
+        assert_eq!(reloaded.peers(), vec![second]);
         let _ = fs::remove_file(&path);
     }
 
