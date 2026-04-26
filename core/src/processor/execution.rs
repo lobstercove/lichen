@@ -347,6 +347,9 @@ impl TxProcessor {
                                 21 | 22 | 32 | 33 => {
                                     accounts.insert(CONFLICT_KEY_GOVERNED_PROPOSALS);
                                 }
+                                30 => {
+                                    accounts.insert(CONFLICT_KEY_ORACLE);
+                                }
                                 34..=37 => {
                                     accounts.insert(CONFLICT_KEY_GOVERNANCE_PROPOSALS);
                                 }

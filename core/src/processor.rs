@@ -208,6 +208,8 @@ pub const CONFLICT_KEY_MOSSSTAKE_POOL: Pubkey = Pubkey([0xFD; 32]);
 pub const CONFLICT_KEY_GOVERNED_PROPOSALS: Pubkey = Pubkey([0xFC; 32]);
 /// Virtual key: any TX that allocates/reads protocol-governance proposal IDs (opcodes 34-37).
 pub const CONFLICT_KEY_GOVERNANCE_PROPOSALS: Pubkey = Pubkey([0xFB; 32]);
+/// Virtual key: any TX that reads/writes native oracle attestation/consensus state (opcode 30).
+pub const CONFLICT_KEY_ORACLE: Pubkey = Pubkey([0xFA; 32]);
 
 pub const GOVERNANCE_ACTION_TREASURY_TRANSFER: u8 = 0;
 pub const GOVERNANCE_ACTION_PARAM_CHANGE: u8 = 1;
@@ -5964,6 +5966,56 @@ mod tests {
             cp.price, 155,
             "Stake-weighted median of [150,155,160] with unequal stakes"
         );
+    }
+
+    #[test]
+    fn test_parallel_oracle_attestations_are_scheduled_sequentially() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let carol_kp = Keypair::generate();
+        let carol = carol_kp.pubkey();
+        let block_producer = Pubkey([42u8; 32]);
+
+        state
+            .put_account(&bob, &Account::new(1_000_000_000_000, bob))
+            .unwrap();
+        state
+            .put_account(&carol, &Account::new(1_000_000_000_000, carol))
+            .unwrap();
+
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+        setup_active_validator(&state, &bob, MIN_VALIDATOR_STAKE);
+        setup_active_validator(&state, &carol, MIN_VALIDATOR_STAKE);
+
+        let mut txs = Vec::new();
+        for (kp, signer, price) in [
+            (&alice_kp, alice, 100u64),
+            (&bob_kp, bob, 200u64),
+            (&carol_kp, carol, 300u64),
+        ] {
+            let ix = make_oracle_attestation_ix(signer, "LICN", price, 8);
+            let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+            let mut tx = Transaction::new(msg);
+            tx.signatures.push(kp.sign(&tx.message.serialize()));
+            txs.push(tx);
+        }
+
+        let results = processor.process_transactions_parallel(&txs, &block_producer);
+        for (idx, result) in results.iter().enumerate() {
+            assert!(
+                result.success,
+                "oracle attestation tx {} failed: {:?}",
+                idx, result.error
+            );
+        }
+
+        let consensus = state
+            .get_oracle_consensus_price("LICN")
+            .unwrap()
+            .expect("oracle quorum should be reached after three attestations");
+        assert_eq!(consensus.price, 200);
+        assert_eq!(consensus.attestation_count, 3);
     }
 
     #[test]
