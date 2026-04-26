@@ -537,9 +537,10 @@ if [ -f ~/lichen/signed-metadata-manifest-$NETWORK.json ]; then
     /etc/lichen/signed-metadata-manifest-$NETWORK.json
 fi
 
-# 5. Restart validator to pick up manifest
-sudo systemctl restart $SERVICE
-sleep 5
+# 5. Do not restart the validator just to pick up the manifest.
+# RPC reads LICHEN_SIGNED_METADATA_MANIFEST_FILE on demand, so restarting here
+# can interrupt an in-flight proposal and leave non-committed state in RocksDB.
+sleep 1
 
 # 6. Provision custody seeds
 echo "  Provisioning custody seeds..."
