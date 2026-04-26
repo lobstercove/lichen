@@ -52,7 +52,7 @@ SERVICE="lichen-validator-${NETWORK}"
 RELEASE_TAG="${LICHEN_RELEASE_TAG:-}"
 RELEASE_REPO="${LICHEN_RELEASE_REPO:-lobstercove/lichen}"
 RELEASE_ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-release-${NETWORK}-${RELEASE_TAG:-local}}"
-RELEASE_ARCHIVE_NAMES=()
+RELEASE_ARCHIVE_NAMES=""
 VPS_RELEASE_ARCHIVES=()
 
 case $NETWORK in
@@ -142,13 +142,11 @@ release_archive_root() {
 }
 
 append_unique_release_archive() {
-  local archive=$1 existing
-  for existing in "${RELEASE_ARCHIVE_NAMES[@]}"; do
-    if [ "$existing" = "$archive" ]; then
-      return 0
-    fi
-  done
-  RELEASE_ARCHIVE_NAMES+=("$archive")
+  local archive=$1
+  case " $RELEASE_ARCHIVE_NAMES " in
+    *" $archive "*) return 0 ;;
+  esac
+  RELEASE_ARCHIVE_NAMES="${RELEASE_ARCHIVE_NAMES}${RELEASE_ARCHIVE_NAMES:+ }$archive"
 }
 
 sha256_file() {
@@ -179,7 +177,7 @@ prepare_release_artifacts() {
     -D "$RELEASE_ARTIFACT_DIR" >/dev/null
 
   local archive expected actual root
-  for archive in "${RELEASE_ARCHIVE_NAMES[@]}"; do
+  for archive in $RELEASE_ARCHIVE_NAMES; do
     gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
       -p "$archive" \
       -D "$RELEASE_ARTIFACT_DIR" >/dev/null
