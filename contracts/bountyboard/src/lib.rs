@@ -105,6 +105,46 @@ fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
     })
 }
 
+fn read_address(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, addr.as_mut_ptr(), 32);
+    }
+    Some(addr)
+}
+
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let current = stored_u64(key);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
+
+fn reward_token_or_native() -> Option<Address> {
+    match storage_get(TOKEN_ADDRESS_KEY) {
+        None => Some(Address([0u8; 32])),
+        Some(bytes) if bytes.len() == 32 => {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&bytes);
+            Some(Address(addr))
+        }
+        _ => None,
+    }
+}
+
+fn require_admin(caller: &[u8; 32]) -> bool {
+    storage_get(IDENTITY_ADMIN_KEY)
+        .map(|admin| admin.len() == 32 && admin.as_slice() == caller)
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // BOUNTY LAYOUT
 // ============================================================================
@@ -190,14 +230,20 @@ pub extern "C" fn create_bounty(
         return 100;
     }
 
-    let mut creator_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(creator_ptr, creator_arr.as_mut_ptr(), 32);
-    }
-    let mut title_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(title_hash_ptr, title_arr.as_mut_ptr(), 32);
-    }
+    let creator_arr = match read_address(creator_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let title_arr = match read_address(title_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -233,10 +279,16 @@ pub extern "C" fn create_bounty(
         return 2;
     }
 
-    let bounty_id = storage_get(b"bounty_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"bounty_count", &u64_to_bytes(bounty_id + 1));
+    let bounty_id = stored_u64(b"bounty_count");
+    let next_bounty_id = match bounty_id.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Bounty count overflow");
+            reentrancy_exit();
+            return 12;
+        }
+    };
+    storage_set(b"bounty_count", &u64_to_bytes(next_bounty_id));
 
     let data = encode_bounty(
         &creator_arr,
@@ -286,14 +338,20 @@ pub extern "C" fn submit_work(
         return 100;
     }
 
-    let mut worker_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(worker_ptr, worker_arr.as_mut_ptr(), 32);
-    }
-    let mut proof_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(proof_hash_ptr, proof_arr.as_mut_ptr(), 32);
-    }
+    let worker_arr = match read_address(worker_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let proof_arr = match read_address(proof_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -385,10 +443,13 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
         return 100;
     }
 
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -442,63 +503,57 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
             return 6;
         }
     };
-
-    // Mark bounty as completed
-    bounty_data[80] = BOUNTY_COMPLETED;
-    bounty_data[90] = submission_idx;
-    storage_set(&bk, &bounty_data);
+    if sub_data.len() < SUBMISSION_SIZE {
+        log_info("Invalid submission data");
+        reentrancy_exit();
+        return 6;
+    }
 
     // Transfer reward tokens from contract to worker via self-custody
     // AUDIT-FIX G22-01: Use contract's own address as source (self-custody pattern)
     let reward_amount = bytes_to_u64(&bounty_data[64..72]);
-    if let Some(token_bytes) = storage_get(TOKEN_ADDRESS_KEY) {
-        if token_bytes.len() == 32 {
-            let mut token_addr = [0u8; 32];
-            token_addr.copy_from_slice(&token_bytes);
-            let self_addr = get_contract_address();
-            let mut worker_addr = [0u8; 32];
-            worker_addr.copy_from_slice(&sub_data[0..32]);
+    let reward_token = match reward_token_or_native() {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let self_addr = get_contract_address();
+    let mut worker_addr = [0u8; 32];
+    worker_addr.copy_from_slice(&sub_data[0..32]);
 
-            match transfer_token_or_native(
-                Address(token_addr),
-                self_addr,
-                Address(worker_addr),
-                reward_amount,
-            ) {
-                Ok(true) => {
-                    log_info("Reward tokens transferred successfully");
-                }
-                Ok(false) => {
-                    // SECURITY-FIX: Revert bounty status when transfer fails
-                    // Leaving bounty as COMPLETED without payment is a critical bug
-                    bounty_data[80] = BOUNTY_OPEN;
-                    bounty_data[90] = 0xFF;
-                    storage_set(&bk, &bounty_data);
-                    log_info("Token transfer returned false, bounty reverted to open");
-                    reentrancy_exit();
-                    return 8;
-                }
-                Err(_) => {
-                    // Revert completion on hard transfer failure
-                    bounty_data[80] = BOUNTY_OPEN;
-                    bounty_data[90] = 0xFF;
-                    storage_set(&bk, &bounty_data);
-                    log_info("Token transfer failed, bounty reverted to open");
-                    reentrancy_exit();
-                    return 7;
-                }
-            }
+    // Mark bounty as completed, then revert this effect if payout fails.
+    bounty_data[80] = BOUNTY_COMPLETED;
+    bounty_data[90] = submission_idx;
+    storage_set(&bk, &bounty_data);
+
+    match transfer_token_or_native(reward_token, self_addr, Address(worker_addr), reward_amount) {
+        Ok(true) => {
+            log_info("Reward transferred successfully");
+        }
+        Ok(false) => {
+            bounty_data[80] = BOUNTY_OPEN;
+            bounty_data[90] = 0xFF;
+            storage_set(&bk, &bounty_data);
+            log_info("Reward transfer returned false, bounty reverted to open");
+            reentrancy_exit();
+            return 8;
+        }
+        Err(_) => {
+            bounty_data[80] = BOUNTY_OPEN;
+            bounty_data[90] = 0xFF;
+            storage_set(&bk, &bounty_data);
+            log_info("Reward transfer failed, bounty reverted to open");
+            reentrancy_exit();
+            return 7;
         }
     }
 
     // Track completion stats
-    let cc = storage_get(BB_COMPLETED_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(BB_COMPLETED_COUNT_KEY, &u64_to_bytes(cc + 1));
-    let rv = storage_get(BB_REWARD_VOLUME_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    increment_counter_saturating(BB_COMPLETED_COUNT_KEY);
+    let rv = stored_u64(BB_REWARD_VOLUME_KEY);
     storage_set(
         BB_REWARD_VOLUME_KEY,
         &u64_to_bytes(rv.saturating_add(reward_amount)),
@@ -527,10 +582,13 @@ pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
         return 100;
     }
 
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -566,49 +624,43 @@ pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
         return 4;
     }
 
-    bounty_data[80] = BOUNTY_CANCELLED;
-    storage_set(&bk, &bounty_data);
-
     let reward = bytes_to_u64(&bounty_data[64..72]);
 
     // AUDIT-FIX G22-01: Transfer refund from contract to creator (self-custody)
     let mut creator_addr = [0u8; 32];
     creator_addr.copy_from_slice(&bounty_data[0..32]);
+    let reward_token = match reward_token_or_native() {
+        Some(token) => token,
+        None => {
+            log_info("Invalid reward token configuration");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+
+    bounty_data[80] = BOUNTY_CANCELLED;
+    storage_set(&bk, &bounty_data);
+
     if reward > 0 {
-        // Transfer from contract back to creator via the configured token
-        if let Some(token_bytes) = storage_get(TOKEN_ADDRESS_KEY) {
-            if token_bytes.len() == 32 {
-                let mut token_addr = [0u8; 32];
-                token_addr.copy_from_slice(&token_bytes);
-                let self_addr = get_contract_address();
-                match transfer_token_or_native(
-                    Address(token_addr),
-                    self_addr,
-                    Address(creator_addr),
-                    reward,
-                ) {
-                    Ok(true) => {
-                        log_info("Refund transferred successfully");
-                    }
-                    Ok(false) | Err(_) => {
-                        // Revert cancellation on transfer failure
-                        bounty_data[80] = BOUNTY_OPEN;
-                        storage_set(&bk, &bounty_data);
-                        log_info("Refund transfer failed, cancellation reverted");
-                        reentrancy_exit();
-                        return 8;
-                    }
-                }
+        let self_addr = get_contract_address();
+        match transfer_token_or_native(reward_token, self_addr, Address(creator_addr), reward) {
+            Ok(true) => {
+                log_info("Refund transferred successfully");
+            }
+            Ok(false) | Err(_) => {
+                // Revert cancellation on transfer failure
+                bounty_data[80] = BOUNTY_OPEN;
+                storage_set(&bk, &bounty_data);
+                log_info("Refund transfer failed, cancellation reverted");
+                reentrancy_exit();
+                return 8;
             }
         }
     }
 
     lichen_sdk::set_return_data(&u64_to_bytes(reward));
 
-    let canc = storage_get(BB_CANCEL_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(BB_CANCEL_COUNT_KEY, &u64_to_bytes(canc + 1));
+    increment_counter_saturating(BB_CANCEL_COUNT_KEY);
 
     log_info("Bounty cancelled, refund issued");
     reentrancy_exit();
@@ -660,10 +712,13 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
-    let mut admin = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
-    }
+    let admin = match read_address(admin_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -691,14 +746,20 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
-    let mut lichenid_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(lichenid_addr_ptr, lichenid_addr.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let lichenid_addr = match read_address(lichenid_addr_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -742,10 +803,13 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -779,14 +843,20 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
-    let mut token_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
+    let token_addr = match read_address(token_addr_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 3;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -877,9 +947,7 @@ pub extern "C" fn approve_submission(
 /// Tests expect `get_bounty_count`
 #[no_mangle]
 pub extern "C" fn get_bounty_count() -> u64 {
-    storage_get(b"bounty_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0)
+    stored_u64(b"bounty_count")
 }
 
 /// Tests expect `set_platform_fee`
@@ -888,10 +956,13 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -900,10 +971,13 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
         return 200;
     }
 
-    let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] {
+    if !require_admin(&caller) {
         reentrancy_exit();
         return 1;
+    }
+    if fee_bps > 1000 {
+        reentrancy_exit();
+        return 2;
     }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
@@ -917,10 +991,13 @@ pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -929,8 +1006,7 @@ pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] {
+    if !require_admin(&caller) {
         reentrancy_exit();
         return 1;
     }
@@ -946,10 +1022,13 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 200;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -958,8 +1037,7 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] {
+    if !require_admin(&caller) {
         reentrancy_exit();
         return 1;
     }
@@ -973,26 +1051,10 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn get_platform_stats() -> u32 {
     let mut buf = Vec::with_capacity(32);
-    buf.extend_from_slice(&u64_to_bytes(
-        storage_get(b"bounty_count")
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    ));
-    buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_COMPLETED_COUNT_KEY)
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    ));
-    buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_REWARD_VOLUME_KEY)
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    ));
-    buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_CANCEL_COUNT_KEY)
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    ));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(b"bounty_count")));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(BB_COMPLETED_COUNT_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(BB_REWARD_VOLUME_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(BB_CANCEL_COUNT_KEY)));
     lichen_sdk::set_return_data(&buf);
     0
 }
@@ -1009,6 +1071,23 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+    }
+
+    fn create_basic_bounty(creator: &[u8; 32], reward: u64) {
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(*creator);
+        test_mock::set_value(reward);
+        assert_eq!(
+            create_bounty(creator.as_ptr(), title_hash.as_ptr(), reward, 1000),
+            0
+        );
+    }
+
+    fn submit_basic_work(worker: &[u8; 32]) {
+        let proof_hash = [0xBB; 32];
+        test_mock::set_caller(*worker);
+        assert_eq!(submit_work(0, worker.as_ptr(), proof_hash.as_ptr()), 0);
     }
 
     #[test]
@@ -1619,5 +1698,114 @@ mod tests {
         let bk = bounty_key(0);
         let bounty = test_mock::get_storage(&bk).unwrap();
         assert_eq!(bounty[80], BOUNTY_CANCELLED);
+    }
+
+    #[test]
+    fn test_create_bounty_count_overflow_rejected() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        storage_set(b"bounty_count", &u64_to_bytes(u64::MAX));
+
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
+
+        assert_eq!(
+            create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000),
+            12
+        );
+        assert_eq!(stored_u64(b"bounty_count"), u64::MAX);
+    }
+
+    #[test]
+    fn test_approve_without_token_uses_native_transfer() {
+        setup();
+        let contract_addr = [0xCC; 32];
+        test_mock::set_contract_address(contract_addr);
+        let creator = [1u8; 32];
+        let worker = [2u8; 32];
+
+        create_basic_bounty(&creator, 500_000);
+        submit_basic_work(&worker);
+
+        test_mock::set_caller(creator);
+        assert_eq!(approve_work(creator.as_ptr(), 0, 0), 0);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("native payout should transfer");
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &worker);
+        assert_eq!(bytes_to_u64(&args[32..40]), 500_000);
+    }
+
+    #[test]
+    fn test_cancel_without_token_uses_native_refund() {
+        setup();
+        let creator = [1u8; 32];
+        create_basic_bounty(&creator, 300_000);
+
+        test_mock::set_caller(creator);
+        assert_eq!(cancel_bounty(creator.as_ptr(), 0), 0);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("native refund should transfer");
+        assert_eq!(target, [0u8; 32]);
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &creator);
+        assert_eq!(bytes_to_u64(&args[32..40]), 300_000);
+    }
+
+    #[test]
+    fn test_malformed_token_config_fails_closed() {
+        setup();
+        let creator = [1u8; 32];
+        let worker = [2u8; 32];
+        create_basic_bounty(&creator, 500_000);
+        submit_basic_work(&worker);
+        storage_set(TOKEN_ADDRESS_KEY, &[1u8, 2u8]);
+
+        test_mock::set_caller(creator);
+        assert_eq!(approve_work(creator.as_ptr(), 0, 0), 9);
+        let bounty = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(bounty[80], BOUNTY_OPEN);
+
+        assert_eq!(cancel_bounty(creator.as_ptr(), 0), 9);
+        let bounty = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(bounty[80], BOUNTY_OPEN);
+    }
+
+    #[test]
+    fn test_platform_fee_cap_and_admin_required() {
+        setup();
+        let zero = [0u8; 32];
+        test_mock::set_caller(zero);
+        assert_eq!(set_platform_fee(zero.as_ptr(), 1), 1);
+
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        assert_eq!(set_platform_fee(admin.as_ptr(), 1001), 2);
+        assert_eq!(set_platform_fee(admin.as_ptr(), 1000), 0);
+    }
+
+    #[test]
+    fn test_stats_counters_saturate() {
+        setup();
+        let creator = [1u8; 32];
+        let worker = [2u8; 32];
+        create_basic_bounty(&creator, 500_000);
+        submit_basic_work(&worker);
+        storage_set(BB_COMPLETED_COUNT_KEY, &u64_to_bytes(u64::MAX));
+        storage_set(BB_REWARD_VOLUME_KEY, &u64_to_bytes(u64::MAX - 1));
+
+        test_mock::set_caller(creator);
+        assert_eq!(approve_work(creator.as_ptr(), 0, 0), 0);
+
+        assert_eq!(stored_u64(BB_COMPLETED_COUNT_KEY), u64::MAX);
+        assert_eq!(stored_u64(BB_REWARD_VOLUME_KEY), u64::MAX);
     }
 }

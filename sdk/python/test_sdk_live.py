@@ -1,11 +1,21 @@
 """Test Lichen Python SDK against live validator"""
 
 import asyncio
+import os
 import sys
 from lichen import Connection, PublicKey
 
+try:
+    import pytest
+except ImportError:  # Keep direct script execution dependency-light.
+    pytest = None
 
-async def test_sdk():
+
+def _live_sdk_tests_enabled() -> bool:
+    return os.environ.get("LICHEN_RUN_LIVE_SDK_TESTS") == "1"
+
+
+async def run_sdk():
     print('🦞 Lichen Python SDK Test\n')
     print('=' * 60)
     
@@ -124,6 +134,16 @@ async def test_sdk():
         return False
 
 
+if pytest is not None:
+    @pytest.mark.skipif(
+        not _live_sdk_tests_enabled(),
+        reason="requires local validator; set LICHEN_RUN_LIVE_SDK_TESTS=1",
+    )
+    @pytest.mark.asyncio
+    async def test_sdk():
+        assert await run_sdk()
+
+
 if __name__ == '__main__':
-    success = asyncio.run(test_sdk())
+    success = asyncio.run(run_sdk())
     sys.exit(0 if success else 1)

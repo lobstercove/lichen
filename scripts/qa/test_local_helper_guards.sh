@@ -250,7 +250,7 @@ assert_rejected() {
     shift 2
 
     local output_file="$TMP_DIR/${label//[^a-zA-Z0-9]/_}.log"
-    if env -u LICHEN_LOCAL_DEV "$@" >"$output_file" 2>&1; then
+    if env -u LICHEN_LOCAL_DEV -u LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM "$@" >"$output_file" 2>&1; then
         echo "❌ ${label}: command unexpectedly succeeded"
         cat "$output_file"
         exit 1
@@ -286,9 +286,14 @@ assert_rejected \
     "Error: --custody is restricted to explicit local development." \
     "$ROOT_DIR/lichen-start.sh" testnet --custody
 
+assert_rejected \
+    "clean-slate redeploy guard" \
+    "Refusing clean-slate redeploy without explicit confirmation." \
+    "$ROOT_DIR/scripts/clean-slate-redeploy.sh" testnet
+
 assert_local_insecure_custody_defaults_zero_threshold
 assert_start_local_stack_clears_peer_trust_state
 assert_start_local_3validators_clears_peer_trust_state
 
 echo "============================================================"
-echo "Local helper guards: 6 passed, 0 failed"
+echo "Local helper guards: 7 passed, 0 failed"

@@ -155,6 +155,50 @@ fn load_configured_address(key: &[u8]) -> Option<[u8; 32]> {
     })
 }
 
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let current = stored_u64(key);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
+
+fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let mut key = b"unpaid_payout:".to_vec();
+    key.extend_from_slice(&token.0);
+    key.push(b':');
+    key.extend_from_slice(&recipient.0);
+    let current = stored_u64(&key);
+    storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
+}
+
+fn transfer_from_escrow(token: Address, self_addr: Address, to: Address, amount: u64) -> bool {
+    amount == 0
+        || matches!(
+            transfer_token_or_native(token, self_addr, to, amount),
+            Ok(true)
+        )
+}
+
+fn receive_into_escrow(token: Address, from: Address, self_addr: Address, amount: u64) -> bool {
+    amount > 0
+        && matches!(
+            receive_token_or_native(token, from, self_addr, amount),
+            Ok(true)
+        )
+}
+
+fn next_stream_id() -> Option<(u64, u64)> {
+    let stream_id = stored_u64(b"stream_count");
+    stream_id.checked_add(1).map(|next| (stream_id, next))
+}
+
 // ============================================================================
 // STREAM LAYOUT
 // ============================================================================
@@ -327,6 +371,15 @@ pub extern "C" fn create_stream(
         return 11;
     }
 
+    let (stream_id, next_stream_id) = match next_stream_id() {
+        Some(ids) => ids,
+        None => {
+            log_info("Stream count overflow");
+            reentrancy_exit();
+            return 34;
+        }
+    };
+
     // ── ESCROW: Lock tokens from sender into contract custody ───────────
     let token_addr = match get_token_address() {
         Some(addr) => addr,
@@ -345,7 +398,7 @@ pub extern "C" fn create_stream(
         }
     };
 
-    if receive_token_or_native(token_addr, Address(sender), self_addr, total_amount).is_err() {
+    if !receive_into_escrow(token_addr, Address(sender), self_addr, total_amount) {
         log_info("Escrow transfer failed — sender lacks balance or approval");
         reentrancy_exit();
         return 32;
@@ -357,10 +410,7 @@ pub extern "C" fn create_stream(
     let mut recipient_arr = [0u8; 32];
     recipient_arr.copy_from_slice(&recipient);
 
-    let stream_id = storage_get(b"stream_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"stream_count", &u64_to_bytes(stream_id + 1));
+    storage_set(b"stream_count", &u64_to_bytes(next_stream_id));
 
     let current_slot = get_slot();
     let data = encode_stream(
@@ -378,9 +428,7 @@ pub extern "C" fn create_stream(
     storage_set(&sk, &data);
 
     // Track total streamed volume
-    let total = storage_get(CP_TOTAL_STREAMED_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    let total = stored_u64(CP_TOTAL_STREAMED_KEY);
     storage_set(
         CP_TOTAL_STREAMED_KEY,
         &u64_to_bytes(total.saturating_add(total_amount)),
@@ -497,7 +545,14 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     }
 
     // Update withdrawn counter in storage first (checks-effects-interactions)
-    let new_withdrawn = withdrawn.saturating_add(amount);
+    let new_withdrawn = match withdrawn.checked_add(amount) {
+        Some(next) if next <= total_amount => next,
+        _ => {
+            log_info("Withdrawn amount overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
     stream_data[72..80].copy_from_slice(&u64_to_bytes(new_withdrawn));
     storage_set(&sk, &stream_data);
 
@@ -527,7 +582,7 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     let mut recipient_addr = [0u8; 32];
     recipient_addr.copy_from_slice(&stream_data[32..64]);
 
-    if transfer_token_or_native(token_addr, self_addr, Address(recipient_addr), amount).is_err() {
+    if !transfer_from_escrow(token_addr, self_addr, Address(recipient_addr), amount) {
         // Revert withdrawn counter on transfer failure
         stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
         storage_set(&sk, &stream_data);
@@ -541,9 +596,7 @@ pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, am
     log_info("Withdrawal successful");
 
     // Track total withdrawn
-    let total_w = storage_get(CP_TOTAL_WITHDRAWN_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    let total_w = stored_u64(CP_TOTAL_WITHDRAWN_KEY);
     storage_set(
         CP_TOTAL_WITHDRAWN_KEY,
         &u64_to_bytes(total_w.saturating_add(amount)),
@@ -659,10 +712,7 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
             stream_data[96] = 1;
             storage_set(&sk, &stream_data);
             lichen_sdk::set_return_data(&u64_to_bytes(refund));
-            let cc = storage_get(CP_CANCEL_COUNT_KEY)
-                .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-                .unwrap_or(0);
-            storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+            increment_counter_saturating(CP_CANCEL_COUNT_KEY);
             reentrancy_exit();
             return 0;
         }
@@ -674,24 +724,23 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
             stream_data[96] = 1;
             storage_set(&sk, &stream_data);
             lichen_sdk::set_return_data(&u64_to_bytes(refund));
-            let cc = storage_get(CP_CANCEL_COUNT_KEY)
-                .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-                .unwrap_or(0);
-            storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+            increment_counter_saturating(CP_CANCEL_COUNT_KEY);
             reentrancy_exit();
             return 0;
         }
     };
 
     // Refund unstreamed amount to sender
+    let mut refund_paid = false;
     if refund > 0 {
         let mut sender_addr = [0u8; 32];
         sender_addr.copy_from_slice(&stream_data[0..32]);
-        if transfer_token_or_native(token_addr, self_addr, Address(sender_addr), refund).is_err() {
+        if !transfer_from_escrow(token_addr, self_addr, Address(sender_addr), refund) {
             log_info("Refund to sender failed");
             reentrancy_exit();
             return 32;
         }
+        refund_paid = true;
     }
 
     // Transfer already-streamed (minus withdrawn) to recipient
@@ -699,17 +748,20 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     if recipient_due > 0 {
         let mut recipient_addr = [0u8; 32];
         recipient_addr.copy_from_slice(&stream_data[32..64]);
-        if transfer_token_or_native(
+        if !transfer_from_escrow(
             token_addr,
             self_addr,
             Address(recipient_addr),
             recipient_due,
-        )
-        .is_err()
-        {
+        ) {
+            if refund_paid {
+                record_unpaid_payout(token_addr, Address(recipient_addr), recipient_due);
+            } else {
+                log_info("Transfer to recipient failed");
+                reentrancy_exit();
+                return 33;
+            }
             log_info("Transfer to recipient failed");
-            reentrancy_exit();
-            return 33;
         }
     }
     // ── END ESCROW SETTLEMENT ───────────────────────────────────────────
@@ -722,10 +774,7 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     log_info("Stream cancelled");
 
     // Track cancel count
-    let cc = storage_get(CP_CANCEL_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+    increment_counter_saturating(CP_CANCEL_COUNT_KEY);
 
     reentrancy_exit();
     0
@@ -875,6 +924,15 @@ pub extern "C" fn create_stream_with_cliff(
         return 11;
     }
 
+    let (stream_id, next_stream_id) = match next_stream_id() {
+        Some(ids) => ids,
+        None => {
+            log_info("Stream count overflow");
+            reentrancy_exit();
+            return 34;
+        }
+    };
+
     // ── ESCROW: Lock tokens from sender into contract custody ───────────
     let token_addr = match get_token_address() {
         Some(addr) => addr,
@@ -893,18 +951,14 @@ pub extern "C" fn create_stream_with_cliff(
         }
     };
 
-    if receive_token_or_native(token_addr, Address(sender), self_addr, total_amount).is_err() {
+    if !receive_into_escrow(token_addr, Address(sender), self_addr, total_amount) {
         log_info("Escrow transfer failed — sender lacks balance or approval");
         reentrancy_exit();
         return 32;
     }
     // ── END ESCROW ──────────────────────────────────────────────────────
 
-    // Allocate stream ID
-    let stream_id = storage_get(b"stream_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"stream_count", &u64_to_bytes(stream_id + 1));
+    storage_set(b"stream_count", &u64_to_bytes(next_stream_id));
 
     // Build stream data
     let current_slot = get_slot();
@@ -926,9 +980,7 @@ pub extern "C" fn create_stream_with_cliff(
     storage_set(&ck, &u64_to_bytes(cliff_slot));
 
     // Track total streamed volume
-    let total = storage_get(CP_TOTAL_STREAMED_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    let total = stored_u64(CP_TOTAL_STREAMED_KEY);
     storage_set(
         CP_TOTAL_STREAMED_KEY,
         &u64_to_bytes(total.saturating_add(total_amount)),
@@ -1379,6 +1431,14 @@ mod tests {
         let self_addr = [0xBBu8; 32];
         storage_set(CP_TOKEN_ADDR_KEY, &token);
         storage_set(CP_SELF_ADDR_KEY, &self_addr);
+    }
+
+    fn unpaid_key(token: &[u8; 32], recipient: &[u8; 32]) -> Vec<u8> {
+        let mut key = b"unpaid_payout:".to_vec();
+        key.extend_from_slice(token);
+        key.push(b':');
+        key.extend_from_slice(recipient);
+        key
     }
 
     // ====================================================================
@@ -2281,5 +2341,159 @@ mod tests {
         test_mock::set_caller(recipient);
         let result = cancel_stream(recipient.as_ptr(), 0);
         assert_eq!(result, 3); // only sender can cancel
+    }
+
+    #[test]
+    fn test_create_stream_false_escrow_status_rejected() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            32
+        );
+        assert!(test_mock::get_storage(b"stream_count").is_none());
+        assert!(test_mock::get_storage(&stream_key(0)).is_none());
+    }
+
+    #[test]
+    fn test_create_stream_count_overflow_rejected_before_escrow() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        storage_set(b"stream_count", &u64_to_bytes(u64::MAX));
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            34
+        );
+        assert!(test_mock::get_storage(&stream_key(u64::MAX)).is_none());
+        assert!(test_mock::get_last_cross_call().is_none());
+    }
+
+    #[test]
+    fn test_create_stream_with_cliff_false_escrow_status_rejected() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream_with_cliff(
+                sender.as_ptr(),
+                recipient.as_ptr(),
+                1_000_000,
+                100,
+                1100,
+                500,
+            ),
+            32
+        );
+        assert!(test_mock::get_storage(b"stream_count").is_none());
+        assert!(test_mock::get_storage(&stream_key(0)).is_none());
+    }
+
+    #[test]
+    fn test_withdraw_false_transfer_preserves_withdrawn_amount() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(recipient);
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 300_000), 32);
+
+        let stream = test_mock::get_storage(&stream_key(0)).unwrap();
+        assert_eq!(bytes_to_u64(&stream[72..80]), 0);
+    }
+
+    #[test]
+    fn test_cancel_partial_recipient_failure_records_unpaid_after_refund() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
+        test_mock::set_cross_call_responses(alloc::vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+
+        let stream = test_mock::get_storage(&stream_key(0)).unwrap();
+        assert_eq!(stream[96], 1);
+        let token = [0xAAu8; 32];
+        let unpaid = test_mock::get_storage(&unpaid_key(&token, &recipient)).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 250_000);
+    }
+
+    #[test]
+    fn test_cancel_recipient_failure_without_prior_refund_preserves_stream() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 1200);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 33);
+
+        let stream = test_mock::get_storage(&stream_key(0)).unwrap();
+        assert_eq!(stream[96], 0);
+    }
+
+    #[test]
+    fn test_cancel_count_saturates() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(u64::MAX));
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+        let count = test_mock::get_storage(CP_CANCEL_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&count), u64::MAX);
     }
 }

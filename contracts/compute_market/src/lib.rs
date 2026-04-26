@@ -215,6 +215,29 @@ fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
     Some(out)
 }
 
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let current = stored_u64(key);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
+
+fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let mut key = b"unpaid_payout:".to_vec();
+    key.extend_from_slice(&token.0);
+    key.push(b':');
+    key.extend_from_slice(&recipient.0);
+    let current = stored_u64(&key);
+    storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
+}
+
 fn signer_matches(addr: &[u8; 32]) -> bool {
     get_caller().0 == *addr
 }
@@ -428,6 +451,15 @@ pub extern "C" fn submit_job(
         return 10;
     }
 
+    let job_id = stored_u64(b"job_count");
+    let next_job_id = match job_id.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Job count overflow");
+            return 14;
+        }
+    };
+
     // AUDIT-FIX H-1: Actually collect tokens from requester for escrow
     let token_addr = match load_token_address() {
         Some(a) => a,
@@ -437,22 +469,24 @@ pub extern "C" fn submit_job(
         }
     };
     let contract_addr = get_contract_address();
-    if receive_token_or_native(
+    match receive_token_or_native(
         Address(token_addr),
         Address(req_arr),
         contract_addr,
         max_price,
-    )
-    .is_err()
-    {
-        log_info("Token transfer failed — requester has insufficient balance");
-        return 13;
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            log_info("Token transfer returned false — requester escrow not collected");
+            return 13;
+        }
+        Err(_) => {
+            log_info("Token transfer failed — requester has insufficient balance");
+            return 13;
+        }
     }
 
-    let job_id = storage_get(b"job_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"job_count", &u64_to_bytes(job_id + 1));
+    storage_set(b"job_count", &u64_to_bytes(next_job_id));
 
     let current_slot = get_slot();
     let data = encode_job(
@@ -498,8 +532,13 @@ pub extern "C" fn claim_job(provider_ptr: *const u8, job_id: u64) -> u32 {
         return 99;
     }
 
-    let mut prov_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
+    let prov_arr = match read_address32(provider_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("claim_job rejected: null provider_ptr");
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -509,9 +548,20 @@ pub extern "C" fn claim_job(provider_ptr: *const u8, job_id: u64) -> u32 {
 
     // Check provider is registered
     let pk = provider_key(&prov_arr);
-    if storage_get(&pk).is_none() {
-        log_info("Provider not registered");
-        return 1;
+    let prov_data = match storage_get(&pk) {
+        Some(data) => data,
+        None => {
+            log_info("Provider not registered");
+            return 1;
+        }
+    };
+    if prov_data.len() < PROVIDER_SIZE {
+        log_info("Corrupt provider data");
+        return 5;
+    }
+    if prov_data[56] == 0 {
+        log_info("Provider inactive");
+        return 6;
     }
 
     // Load job
@@ -567,10 +617,20 @@ pub extern "C" fn complete_job(
         return 99;
     }
 
-    let mut prov_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
-    let mut result_hash = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(result_hash_ptr, result_hash.as_mut_ptr(), 32) };
+    let prov_arr = match read_address32(provider_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("complete_job rejected: null provider_ptr");
+            return 98;
+        }
+    };
+    let result_hash = match read_address32(result_hash_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("complete_job rejected: null result_hash_ptr");
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -614,7 +674,7 @@ pub extern "C" fn complete_job(
     if let Some(mut prov_data) = storage_get(&pk) {
         if prov_data.len() >= PROVIDER_SIZE {
             let completed = bytes_to_u64(&prov_data[48..56]);
-            prov_data[48..56].copy_from_slice(&u64_to_bytes(completed + 1));
+            prov_data[48..56].copy_from_slice(&u64_to_bytes(completed.saturating_add(1)));
             storage_set(&pk, &prov_data);
         }
     }
@@ -636,8 +696,13 @@ pub extern "C" fn complete_job(
 pub extern "C" fn dispute_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Disputing compute job...");
 
-    let mut requester = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
+    let requester = match read_address32(requester_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("dispute_job rejected: null requester_ptr");
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -672,11 +737,7 @@ pub extern "C" fn dispute_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     job_data[80] = JOB_DISPUTED;
     storage_set(&jk, &job_data);
 
-    // Track dispute stats
-    let cmd = storage_get(CM_DISPUTE_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(CM_DISPUTE_COUNT_KEY, &u64_to_bytes(cmd + 1));
+    increment_counter_saturating(CM_DISPUTE_COUNT_KEY);
 
     log_info("Job disputed");
     0
@@ -992,7 +1053,9 @@ pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
         }
     }
 
-    // Cancel and clear escrow
+    // Cancel and clear escrow. If the external refund fails, restore accounting
+    // so the requester can retry without losing their escrow claim.
+    let previous_status = job_data[80];
     job_data[80] = JOB_CANCELLED;
     storage_set(&jk, &job_data);
     let ek = escrow_key(job_id);
@@ -1001,16 +1064,28 @@ pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
 
     // AUDIT-FIX H-2: Return escrowed tokens to requester
     if escrowed > 0 {
-        if let Some(token_addr) = load_token_address() {
-            let contract_addr = get_contract_address();
-            if transfer_token_or_native(
-                Address(token_addr),
-                contract_addr,
-                Address(requester),
-                escrowed,
-            )
-            .is_err()
-            {
+        let token_addr = match load_token_address() {
+            Some(addr) => addr,
+            None => {
+                job_data[80] = previous_status;
+                storage_set(&jk, &job_data);
+                storage_set(&ek, &u64_to_bytes(escrowed));
+                log_info("cancel_job: payment token configuration invalid");
+                return 8;
+            }
+        };
+        let contract_addr = get_contract_address();
+        match transfer_token_or_native(
+            Address(token_addr),
+            contract_addr,
+            Address(requester),
+            escrowed,
+        ) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                job_data[80] = previous_status;
+                storage_set(&jk, &job_data);
+                storage_set(&ek, &u64_to_bytes(escrowed));
                 log_info("cancel_job: token refund transfer failed");
                 return 7;
             }
@@ -1072,7 +1147,8 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
         return 5;
     }
 
-    // Mark as released and clear escrow (payment goes to provider)
+    // Mark as released and clear escrow (payment goes to provider). On failed
+    // payout, restore the completed job and escrow so release can be retried.
     job_data[80] = JOB_RELEASED;
     storage_set(&jk, &job_data);
 
@@ -1084,17 +1160,26 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
     if escrowed > 0 {
         let mut provider_arr = [0u8; 32];
         provider_arr.copy_from_slice(&job_data[81..113]);
-        if let Some(token_addr) = load_token_address() {
-            let contract_addr = get_contract_address();
-            if transfer_token_or_native(
-                Address(token_addr),
-                contract_addr,
-                Address(provider_arr),
-                escrowed,
-            )
-            .is_err()
-            {
-                // Revert: put escrow back and undo status
+        let token_addr = match load_token_address() {
+            Some(addr) => addr,
+            None => {
+                storage_set(&ek, &u64_to_bytes(escrowed));
+                job_data[80] = JOB_COMPLETED;
+                storage_set(&jk, &job_data);
+                log_info("release_payment: payment token configuration invalid");
+                reentrancy_exit();
+                return 6;
+            }
+        };
+        let contract_addr = get_contract_address();
+        match transfer_token_or_native(
+            Address(token_addr),
+            contract_addr,
+            Address(provider_arr),
+            escrowed,
+        ) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
                 storage_set(&ek, &u64_to_bytes(escrowed));
                 job_data[80] = JOB_COMPLETED;
                 storage_set(&jk, &job_data);
@@ -1105,14 +1190,8 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
         }
     }
 
-    // Track completion stats
-    let cmc = storage_get(CM_COMPLETED_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(CM_COMPLETED_COUNT_KEY, &u64_to_bytes(cmc + 1));
-    let cmv = storage_get(CM_PAYMENT_VOLUME_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    increment_counter_saturating(CM_COMPLETED_COUNT_KEY);
+    let cmv = stored_u64(CM_PAYMENT_VOLUME_KEY);
     storage_set(
         CM_PAYMENT_VOLUME_KEY,
         &u64_to_bytes(cmv.saturating_add(escrowed)),
@@ -1152,8 +1231,14 @@ pub extern "C" fn resolve_dispute(
         return 20;
     }
 
-    let mut arb_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(arbitrator_ptr, arb_arr.as_mut_ptr(), 32) };
+    let arb_arr = match read_address32(arbitrator_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("resolve_dispute rejected: null arbitrator_ptr");
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1199,42 +1284,61 @@ pub extern "C" fn resolve_dispute(
     let ek = escrow_key(job_id);
     let escrowed = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
 
-    let _to_requester = (escrowed as u128 * requester_pct as u128 / 100) as u64;
-    let _to_provider = escrowed.saturating_sub(_to_requester);
+    let to_requester = (escrowed as u128 * requester_pct as u128 / 100) as u64;
+    let to_provider = escrowed.saturating_sub(to_requester);
 
     // AUDIT-FIX: Actually transfer tokens to both parties (using shared helper)
     let mut requester_arr = [0u8; 32];
     requester_arr.copy_from_slice(&job_data[0..32]);
     let mut provider_arr = [0u8; 32];
     provider_arr.copy_from_slice(&job_data[81..113]);
-    if let Some(token_addr) = load_token_address() {
-        let contract_addr = get_contract_address();
-        if _to_requester > 0 {
-            if transfer_token_or_native(
-                Address(token_addr),
-                contract_addr,
-                Address(requester_arr),
-                _to_requester,
-            )
-            .is_err()
-            {
-                log_info("resolve_dispute: transfer to requester failed");
+    let token_addr = if escrowed > 0 {
+        match load_token_address() {
+            Some(addr) => Some(addr),
+            None => {
+                log_info("resolve_dispute: payment token configuration invalid");
                 reentrancy_exit();
-                return 6;
+                return 8;
             }
         }
-        if _to_provider > 0 {
-            if transfer_token_or_native(
-                Address(token_addr),
+    } else {
+        None
+    };
+
+    if let Some(token_addr) = token_addr {
+        let token = Address(token_addr);
+        let contract_addr = get_contract_address();
+        let mut paid_any = false;
+        if to_requester > 0 {
+            match transfer_token_or_native(
+                token,
                 contract_addr,
-                Address(provider_arr),
-                _to_provider,
-            )
-            .is_err()
+                Address(requester_arr),
+                to_requester,
+            ) {
+                Ok(true) => {
+                    paid_any = true;
+                }
+                Ok(false) | Err(_) => {
+                    log_info("resolve_dispute: transfer to requester failed");
+                    reentrancy_exit();
+                    return 6;
+                }
+            }
+        }
+        if to_provider > 0 {
+            match transfer_token_or_native(token, contract_addr, Address(provider_arr), to_provider)
             {
-                log_info("resolve_dispute: transfer to provider failed");
-                reentrancy_exit();
-                return 7;
+                Ok(true) => {}
+                Ok(false) | Err(_) => {
+                    if paid_any {
+                        record_unpaid_payout(token, Address(provider_arr), to_provider);
+                    } else {
+                        log_info("resolve_dispute: transfer to provider failed");
+                        reentrancy_exit();
+                        return 7;
+                    }
+                }
             }
         }
     }
@@ -1649,6 +1753,9 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     if !is_admin(&caller) {
         return 1;
     }
+    if fee_bps > 1000 {
+        return 2;
+    }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
     0
@@ -1730,6 +1837,7 @@ pub extern "C" fn get_platform_stats() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
     use lichen_sdk::test_mock;
 
     /// Common token address used in tests
@@ -1787,6 +1895,14 @@ mod tests {
     fn resolve_as(arb: &[u8; 32], job_id: u64, pct: u64) -> u32 {
         test_mock::set_caller(*arb);
         resolve_dispute(arb.as_ptr(), job_id, pct)
+    }
+
+    fn unpaid_payout_key(token: &[u8; 32], recipient: &[u8; 32]) -> Vec<u8> {
+        let mut key = b"unpaid_payout:".to_vec();
+        key.extend_from_slice(token);
+        key.push(b':');
+        key.extend_from_slice(recipient);
+        key
     }
 
     #[test]
@@ -2644,5 +2760,194 @@ mod tests {
         assert_eq!(bytes_to_u64(&cmc), 1);
         let cmv = test_mock::get_storage(CM_PAYMENT_VOLUME_KEY).unwrap();
         assert_eq!(bytes_to_u64(&cmv), 5000);
+    }
+
+    #[test]
+    fn test_submit_job_rejects_job_count_overflow_before_escrow() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        storage_set(b"job_count", &u64_to_bytes(u64::MAX));
+
+        let requester = [2u8; 32];
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 14);
+        assert!(test_mock::get_storage(&job_key(u64::MAX)).is_none());
+        assert!(test_mock::get_last_cross_call().is_none());
+    }
+
+    #[test]
+    fn test_submit_job_false_escrow_status_rejected() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        let requester = [2u8; 32];
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 13);
+        assert!(test_mock::get_storage(b"job_count").is_none());
+        assert!(test_mock::get_storage(&job_key(0)).is_none());
+    }
+
+    #[test]
+    fn test_inactive_provider_cannot_claim_job() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        test_mock::set_caller(provider_addr);
+        assert_eq!(deactivate_provider(provider_addr.as_ptr()), 0);
+
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+
+        assert_eq!(claim_as(&provider_addr, 0), 6);
+        let job = test_mock::get_storage(&job_key(0)).unwrap();
+        assert_eq!(job[80], JOB_PENDING);
+    }
+
+    #[test]
+    fn test_cancel_refund_false_status_preserves_job_and_escrow() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_responses(vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+
+        let requester = [2u8; 32];
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 0);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(cancel_as(&requester, 0), 7);
+
+        let job = test_mock::get_storage(&job_key(0)).unwrap();
+        assert_eq!(job[80], JOB_PENDING);
+        let escrowed = test_mock::get_storage(&escrow_key(0)).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 5000);
+    }
+
+    #[test]
+    fn test_release_false_transfer_preserves_completed_state() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_responses(vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(release_payment(0), 6);
+
+        let job = test_mock::get_storage(&job_key(0)).unwrap();
+        assert_eq!(job[80], JOB_COMPLETED);
+        let escrowed = test_mock::get_storage(&escrow_key(0)).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 5000);
+    }
+
+    #[test]
+    fn test_resolve_dispute_partial_payout_failure_records_unpaid_provider() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_responses(vec![
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+        let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(add_arbitrator(admin.as_ptr(), arb.as_ptr()), 0);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 10000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
+
+        assert_eq!(resolve_as(&arb, 0, 60), 0);
+
+        let job = test_mock::get_storage(&job_key(0)).unwrap();
+        assert_eq!(job[80], JOB_RESOLVED);
+        let escrowed = test_mock::get_storage(&escrow_key(0)).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 0);
+        let unpaid =
+            test_mock::get_storage(&unpaid_payout_key(&TEST_TOKEN_ADDR, &provider_addr)).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 4000);
+    }
+
+    #[test]
+    fn test_complete_and_dispute_counters_saturate() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let pk = provider_key(&provider_addr);
+        let mut provider_data = test_mock::get_storage(&pk).unwrap();
+        provider_data[48..56].copy_from_slice(&u64_to_bytes(u64::MAX));
+        storage_set(&pk, &provider_data);
+
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+
+        let provider_data = test_mock::get_storage(&pk).unwrap();
+        assert_eq!(bytes_to_u64(&provider_data[48..56]), u64::MAX);
+
+        storage_set(CM_DISPUTE_COUNT_KEY, &u64_to_bytes(u64::MAX));
+        dispute_as(&requester, 0);
+        let dispute_count = test_mock::get_storage(CM_DISPUTE_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&dispute_count), u64::MAX);
+    }
+
+    #[test]
+    fn test_release_completed_counter_saturates() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_cross_call_responses(vec![
+            0u32.to_le_bytes().to_vec(),
+            0u32.to_le_bytes().to_vec(),
+        ]);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        storage_set(CM_COMPLETED_COUNT_KEY, &u64_to_bytes(u64::MAX));
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(release_payment(0), 0);
+
+        let completed_count = test_mock::get_storage(CM_COMPLETED_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&completed_count), u64::MAX);
+    }
+
+    #[test]
+    fn test_platform_fee_is_capped() {
+        setup();
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+        test_mock::set_caller(admin);
+
+        assert_eq!(set_platform_fee(admin.as_ptr(), 1001), 2);
+        assert!(test_mock::get_storage(b"platform_fee_bps").is_none());
+
+        assert_eq!(set_platform_fee(admin.as_ptr(), 1000), 0);
+        let fee = test_mock::get_storage(b"platform_fee_bps").unwrap();
+        assert_eq!(bytes_to_u64(&fee), 1000);
     }
 }

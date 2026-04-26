@@ -2382,6 +2382,9 @@ curl -X POST https://testnet-rpc.lichen.network \
                 <code>#[no_mangle] pub extern "C" fn ...</code>) and is the authoritative surface.
                 Some per-card function chips above are legacy summaries; use this section for strict agent/runtime
                 compatibility.
+                <code>mt20_token</code> remains in-tree as a standalone MT20 template and compatibility contract, but it
+                is intentionally not deployed by <code>GENESIS_CONTRACT_CATALOG</code>; the matrix below reflects the
+                genesis contract set.
             </p>
             <table class="const-table">
                 <tr>

@@ -128,8 +128,8 @@
                     <p>The published package name is <code>@lobstercove/lichen-sdk</code>. Monorepo contributors can
                         still install from the local <code>sdk/js/</code> directory when iterating in-tree. The
                         examples below use public testnet endpoints; swap
-                        to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> for
-                        mainnet.</p>
+                        to <code>https://rpc.lichen.network</code> and <code>wss://rpc.lichen.network/ws</code> only
+                        when targeting mainnet.</p>
                 </div>
             </section>
 
@@ -144,7 +144,7 @@
 // Connect to public testnet
 const conn = new Connection('https://testnet-rpc.lichen.network', 'wss://testnet-rpc.lichen.network/ws');
 
-// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
+// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
 
 // Generate a keypair
 const keypair = Keypair.generate();

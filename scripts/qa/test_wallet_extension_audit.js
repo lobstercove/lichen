@@ -503,6 +503,13 @@ test('CC-9 popup shield panel uses canonical getShieldedPoolState with fallback'
   assert.ok(popupSrc.includes("rpc.call('getShieldedPoolStats'"), 'popup shield panel should keep getShieldedPoolStats fallback');
 });
 
+test('CC-9b extension shield panel avoids unsupported shielded RPC calls', () => {
+  assert.ok(!popupSrc.includes("rpc.call('getShieldedNotes'"), 'popup must not call unsupported getShieldedNotes RPC');
+  assert.ok(!fullSrc.includes("rpcClient.call('getShieldedNotes'"), 'full page must not call unsupported getShieldedNotes RPC');
+  assert.ok(!fullSrc.includes("rpc().call('sendShieldedTransaction'"), 'full page must not call unsupported sendShieldedTransaction RPC');
+  assert.ok(fullSrc.includes('Signed shielded transaction submission is not enabled yet'), 'full page should show an honest unavailable state');
+});
+
 test('CC-10 popup shield panel uses password-gated shield initialization', () => {
   assert.ok(popupSrc.includes('initializeShieldedPopupForActiveWallet'), 'popup missing shield initialization flow');
   assert.ok(popupSrc.includes("securePasswordPrompt('Enter your wallet password to initialize shielded privacy.')"), 'popup shield init should prompt for the wallet password');

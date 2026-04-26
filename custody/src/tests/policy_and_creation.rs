@@ -547,12 +547,7 @@ async fn test_create_withdrawal_reuses_existing_job_for_identical_withdrawal_aut
         .expect("first withdrawal creation should succeed")
         .to_string();
 
-    {
-        let mut rl = state.withdrawal_rate.lock().await;
-        rl.per_address.clear();
-    }
-
-    let second = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
+    let second = create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
     let second_job_id = second
         .0
         .get("job_id")
@@ -561,6 +556,10 @@ async fn test_create_withdrawal_reuses_existing_job_for_identical_withdrawal_aut
         .to_string();
 
     assert_eq!(first_job_id, second_job_id);
+
+    let rl = state.withdrawal_rate.lock().await;
+    assert_eq!(rl.count_this_minute, 1);
+    assert_eq!(rl.value_this_hour, 1_000_000_000);
 }
 
 #[tokio::test]

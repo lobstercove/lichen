@@ -425,19 +425,11 @@ fn send_tokens(token: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (token, to, amount);
-        true
+    if is_native_token(&Address(*token)) {
+        return transfer_native(Address(*to), amount).unwrap_or(false);
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if is_native_token(&Address(*token)) {
-            return transfer_native(Address(*to), amount).unwrap_or(false);
-        }
-        let contract = get_contract_address();
-        call_token_transfer(Address(*token), contract, Address(*to), amount).unwrap_or(false)
-    }
+    let contract = get_contract_address();
+    call_token_transfer(Address(*token), contract, Address(*to), amount).unwrap_or(false)
 }
 
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
@@ -1380,6 +1372,9 @@ pub fn add_liquidity_with_deadline(
         return 6; // token transfer failed
     }
     if actual_b > 0 && !pull_tokens(&token_b, &p, actual_b) {
+        if actual_a > 0 {
+            let _ = send_tokens(&token_a, &p, actual_a);
+        }
         reentrancy_exit();
         return 6;
     }
@@ -1438,14 +1433,14 @@ pub fn add_liquidity_with_deadline(
 }
 
 /// Remove liquidity from a position
-/// Returns: 0=success, 1=not found, 2=not owner, 3=insufficient, 4=reentrancy
+/// Returns: 0=success, 1=not found, 2=not owner, 3=insufficient, 4=reentrancy, 6=payout failed
 pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount: u64) -> u32 {
     remove_liquidity_with_deadline(provider, position_id, liquidity_amount, 0)
 }
 
 /// Remove liquidity from a position with an execution deadline.
 /// Returns: 0=success, 1=not found, 2=not owner, 3=insufficient, 4=reentrancy,
-/// 5=deadline expired
+/// 5=deadline expired, 6=payout failed
 pub fn remove_liquidity_with_deadline(
     provider: *const u8,
     position_id: u64,
@@ -1497,25 +1492,54 @@ pub fn remove_liquidity_with_deadline(
     let lower = decode_pos_lower_tick(&pos_data);
     let upper = decode_pos_upper_tick(&pos_data);
 
-    if let Some(pool_data) = storage_get(&pool_pk) {
-        if pool_data.len() >= POOL_SIZE {
-            let current_tick = decode_pool_tick(&pool_data);
-            let fg_g0 = load_u128(&fee_growth_global_key(pool_id, true));
-            let fg_g1 = load_u128(&fee_growth_global_key(pool_id, false));
-            let (fg_in0, fg_in1) =
-                compute_fee_growth_inside(pool_id, lower, upper, current_tick, fg_g0, fg_g1);
-            let last0 = decode_pos_fg_inside_last0(&pos_data);
-            let last1 = decode_pos_fg_inside_last1(&pos_data);
-            if current_liq > 0 {
-                let owed_a = (current_liq as u128 * fg_in0.wrapping_sub(last0) / Q128) as u64;
-                let owed_b = (current_liq as u128 * fg_in1.wrapping_sub(last1) / Q128) as u64;
-                let existing_a = decode_pos_fee_a(&pos_data);
-                let existing_b = decode_pos_fee_b(&pos_data);
-                update_pos_fee_a(&mut pos_data, existing_a.saturating_add(owed_a));
-                update_pos_fee_b(&mut pos_data, existing_b.saturating_add(owed_b));
-            }
-            update_pos_fg_inside_last(&mut pos_data, fg_in0, fg_in1);
+    let mut pool_data = match storage_get(&pool_pk) {
+        Some(d) if d.len() >= POOL_SIZE => d,
+        _ => {
+            reentrancy_exit();
+            return 1;
         }
+    };
+
+    let current_tick = decode_pool_tick(&pool_data);
+    let fg_g0 = load_u128(&fee_growth_global_key(pool_id, true));
+    let fg_g1 = load_u128(&fee_growth_global_key(pool_id, false));
+    let (fg_in0, fg_in1) =
+        compute_fee_growth_inside(pool_id, lower, upper, current_tick, fg_g0, fg_g1);
+    let last0 = decode_pos_fg_inside_last0(&pos_data);
+    let last1 = decode_pos_fg_inside_last1(&pos_data);
+    if current_liq > 0 {
+        let owed_a = (current_liq as u128 * fg_in0.wrapping_sub(last0) / Q128) as u64;
+        let owed_b = (current_liq as u128 * fg_in1.wrapping_sub(last1) / Q128) as u64;
+        let existing_a = decode_pos_fee_a(&pos_data);
+        let existing_b = decode_pos_fee_b(&pos_data);
+        update_pos_fee_a(&mut pos_data, existing_a.saturating_add(owed_a));
+        update_pos_fee_b(&mut pos_data, existing_b.saturating_add(owed_b));
+    }
+    update_pos_fg_inside_last(&mut pos_data, fg_in0, fg_in1);
+
+    // AUDIT-FIX AMM-2: Compute and return withdrawn token amounts.
+    let sqrt_current = decode_pool_sqrt_price(&pool_data);
+    let sqrt_lower = tick_to_sqrt_price(lower);
+    let sqrt_upper = tick_to_sqrt_price(upper);
+    let (return_a, return_b) =
+        compute_amounts_from_liquidity(liquidity_amount, sqrt_lower, sqrt_upper, sqrt_current);
+    let token_a = decode_pool_token_a(&pool_data);
+    let token_b = decode_pool_token_b(&pool_data);
+
+    if return_a > 0 && !send_tokens(&token_a, &p, return_a) {
+        reentrancy_exit();
+        return 6;
+    }
+
+    let mut partial_payout_failed = false;
+    if return_b > 0 && !send_tokens(&token_b, &p, return_b) {
+        if return_a == 0 {
+            reentrancy_exit();
+            return 6;
+        }
+        let existing_b = decode_pos_fee_b(&pos_data);
+        update_pos_fee_b(&mut pos_data, existing_b.saturating_add(return_b));
+        partial_payout_failed = true;
     }
 
     let new_liq = current_liq - liquidity_amount;
@@ -1523,35 +1547,10 @@ pub fn remove_liquidity_with_deadline(
     storage_set(&pk, &pos_data);
 
     // Update pool liquidity
-    if let Some(mut pool_data) = storage_get(&pool_pk) {
-        if pool_data.len() >= POOL_SIZE {
-            let current_tick = decode_pool_tick(&pool_data);
-            if current_tick >= lower && current_tick < upper {
-                let pool_liq = decode_pool_liquidity(&pool_data);
-                update_pool_liquidity(&mut pool_data, pool_liq.saturating_sub(liquidity_amount));
-                storage_set(&pool_pk, &pool_data);
-            }
-
-            // AUDIT-FIX AMM-2: Compute and return withdrawn token amounts
-            let sqrt_current = decode_pool_sqrt_price(&pool_data);
-            let sqrt_lower = tick_to_sqrt_price(lower);
-            let sqrt_upper = tick_to_sqrt_price(upper);
-            let (return_a, return_b) = compute_amounts_from_liquidity(
-                liquidity_amount,
-                sqrt_lower,
-                sqrt_upper,
-                sqrt_current,
-            );
-
-            let token_a = decode_pool_token_a(&pool_data);
-            let token_b = decode_pool_token_b(&pool_data);
-            if return_a > 0 {
-                send_tokens(&token_a, &p, return_a);
-            }
-            if return_b > 0 {
-                send_tokens(&token_b, &p, return_b);
-            }
-        }
+    if current_tick >= lower && current_tick < upper {
+        let pool_liq = decode_pool_liquidity(&pool_data);
+        update_pool_liquidity(&mut pool_data, pool_liq.saturating_sub(liquidity_amount));
+        storage_set(&pool_pk, &pool_data);
     }
 
     // AUDIT-FIX AMM-5: Update signed tick liquidityNet
@@ -1568,7 +1567,11 @@ pub fn remove_liquidity_with_deadline(
 
     log_info("Liquidity removed");
     reentrancy_exit();
-    0
+    if partial_payout_failed {
+        6
+    } else {
+        0
+    }
 }
 
 /// Collect accumulated fees for a position
@@ -1632,33 +1635,25 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
 
     let token_a_addr = decode_pool_token_a(&pool_data);
     let token_b_addr = decode_pool_token_b(&pool_data);
-    let contract_addr = get_contract_address();
 
-    if fee_a > 0 {
-        if is_native_token(&Address(token_a_addr)) {
-            if transfer_native(Address(p), fee_a).is_err() {
-                log_info("Fee A native transfer failed");
-                return 4;
-            }
-        } else if call_token_transfer(Address(token_a_addr), contract_addr, Address(p), fee_a)
-            .is_err()
-        {
+    let fee_a_paid = if fee_a > 0 {
+        if !send_tokens(&token_a_addr, &p, fee_a) {
             log_info("Fee A transfer failed");
             return 4;
         }
-    }
-    if fee_b > 0 {
-        if is_native_token(&Address(token_b_addr)) {
-            if transfer_native(Address(p), fee_b).is_err() {
-                log_info("Fee B native transfer failed");
-                return 4;
-            }
-        } else if call_token_transfer(Address(token_b_addr), contract_addr, Address(p), fee_b)
-            .is_err()
-        {
-            log_info("Fee B transfer failed");
-            return 4;
+        true
+    } else {
+        false
+    };
+    if fee_b > 0 && !send_tokens(&token_b_addr, &p, fee_b) {
+        if fee_a_paid {
+            update_pos_fee_a(&mut pos_data, 0);
+            update_pos_fee_b(&mut pos_data, fee_b);
+            update_pos_fg_inside_last(&mut pos_data, fg_inside0, fg_inside1);
+            storage_set(&pk, &pos_data);
         }
+        log_info("Fee B transfer failed");
+        return 4;
     }
 
     // Reset legacy fees and update V3 snapshot after successful transfer
@@ -1761,6 +1756,7 @@ pub fn swap_exact_in(
     // AUDIT-FIX AMM-3: Send output tokens to trader
     let output_token = if is_token_a_in { &token_b } else { &token_a };
     if !send_tokens(output_token, &tr, amount_out) {
+        let _ = send_tokens(input_token, &tr, amount_in);
         reentrancy_exit();
         return 8; // output token transfer failed
     }
@@ -1955,7 +1951,7 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
 
 /// Collect accrued protocol fees for a pool (admin only).
 /// Transfers accumulated protocol fees to the treasury address.
-/// Returns: 0=success, 1=not admin, 2=no treasury set, 3=nothing to collect
+/// Returns: 0=success, 1=not admin, 2=no treasury set, 3=nothing to collect, 5=transfer failed
 pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
@@ -1979,8 +1975,6 @@ pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
     };
     let token_a = decode_pool_token_a(&pool_data);
     let token_b = decode_pool_token_b(&pool_data);
-    let contract_addr = get_contract_address();
-
     let mut key_a = Vec::from(PROTOCOL_FEE_ACCRUED_A_KEY);
     key_a.extend_from_slice(&u64_to_bytes(pool_id));
     let mut key_b = Vec::from(PROTOCOL_FEE_ACCRUED_B_KEY);
@@ -1992,18 +1986,14 @@ pub fn collect_protocol_fees(caller: *const u8, pool_id: u64) -> u32 {
         return 3;
     }
     if fee_a > 0 {
-        if is_native_token(&Address(token_a)) {
-            let _ = transfer_native(Address(treasury), fee_a);
-        } else {
-            let _ = call_token_transfer(Address(token_a), contract_addr, Address(treasury), fee_a);
+        if !send_tokens(&token_a, &treasury, fee_a) {
+            return 5;
         }
         save_u64(&key_a, 0);
     }
     if fee_b > 0 {
-        if is_native_token(&Address(token_b)) {
-            let _ = transfer_native(Address(treasury), fee_b);
-        } else {
-            let _ = call_token_transfer(Address(token_b), contract_addr, Address(treasury), fee_b);
+        if !send_tokens(&token_b, &treasury, fee_b) {
+            return 5;
         }
         save_u64(&key_b, 0);
     }
@@ -2383,6 +2373,14 @@ mod tests {
         (admin, 1)
     }
 
+    fn transfer_success_response() -> std::vec::Vec<u8> {
+        0u32.to_le_bytes().to_vec()
+    }
+
+    fn transfer_failure_response() -> std::vec::Vec<u8> {
+        2u32.to_le_bytes().to_vec()
+    }
+
     fn dispatch(args: &[u8]) -> u32 {
         test_mock::set_args(args);
         call()
@@ -2677,6 +2675,60 @@ mod tests {
         assert_eq!(remove_liquidity(provider.as_ptr(), 1, liq + 1), 3);
     }
 
+    #[test]
+    fn test_remove_liquidity_first_payout_failure_keeps_accounting() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+
+        let pos_before = storage_get(&position_key(1)).unwrap();
+        let liq_before = decode_pos_liquidity(&pos_before);
+        let pool_before = storage_get(&pool_key(pool_id)).unwrap();
+        let pool_liq_before = decode_pool_liquidity(&pool_before);
+
+        test_mock::set_cross_call_response(Some(transfer_failure_response()));
+        assert_eq!(remove_liquidity(provider.as_ptr(), 1, liq_before / 2), 6);
+
+        let pos_after = storage_get(&position_key(1)).unwrap();
+        let pool_after = storage_get(&pool_key(pool_id)).unwrap();
+        assert_eq!(decode_pos_liquidity(&pos_after), liq_before);
+        assert_eq!(decode_pool_liquidity(&pool_after), pool_liq_before);
+    }
+
+    #[test]
+    fn test_remove_liquidity_partial_payout_records_unpaid_second_token() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+
+        let pos_before = storage_get(&position_key(1)).unwrap();
+        let liq_before = decode_pos_liquidity(&pos_before);
+        let remove_amount = liq_before / 2;
+        let pool_before = storage_get(&pool_key(pool_id)).unwrap();
+        let sqrt_current = decode_pool_sqrt_price(&pool_before);
+        let expected = compute_amounts_from_liquidity(
+            remove_amount,
+            tick_to_sqrt_price(-60),
+            tick_to_sqrt_price(60),
+            sqrt_current,
+        );
+        assert!(expected.0 > 0 && expected.1 > 0);
+
+        test_mock::set_cross_call_responses(std::vec![
+            transfer_success_response(),
+            transfer_failure_response(),
+        ]);
+        assert_eq!(remove_liquidity(provider.as_ptr(), 1, remove_amount), 6);
+
+        let pos_after = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_liquidity(&pos_after), liq_before - remove_amount);
+        assert_eq!(decode_pos_fee_b(&pos_after), expected.1);
+    }
+
     // --- Swaps ---
 
     #[test]
@@ -2820,6 +2872,51 @@ mod tests {
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
         test_mock::set_caller(other);
         assert_eq!(collect_fees(other.as_ptr(), 1), 2);
+    }
+
+    #[test]
+    fn test_collect_fees_first_transfer_failure_keeps_fees() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+
+        let mut pos_data = storage_get(&position_key(1)).unwrap();
+        update_pos_fee_a(&mut pos_data, 11);
+        update_pos_fee_b(&mut pos_data, 22);
+        storage_set(&position_key(1), &pos_data);
+
+        test_mock::set_cross_call_response(Some(transfer_failure_response()));
+        assert_eq!(collect_fees(provider.as_ptr(), 1), 4);
+
+        let pos_after = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_fee_a(&pos_after), 11);
+        assert_eq!(decode_pos_fee_b(&pos_after), 22);
+    }
+
+    #[test]
+    fn test_collect_fees_partial_failure_does_not_double_pay_first_token() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+
+        let mut pos_data = storage_get(&position_key(1)).unwrap();
+        update_pos_fee_a(&mut pos_data, 11);
+        update_pos_fee_b(&mut pos_data, 22);
+        storage_set(&position_key(1), &pos_data);
+
+        test_mock::set_cross_call_responses(std::vec![
+            transfer_success_response(),
+            transfer_failure_response(),
+        ]);
+        assert_eq!(collect_fees(provider.as_ptr(), 1), 4);
+
+        let pos_after = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_fee_a(&pos_after), 0);
+        assert_eq!(decode_pos_fee_b(&pos_after), 22);
     }
 
     // --- Protocol Fee ---

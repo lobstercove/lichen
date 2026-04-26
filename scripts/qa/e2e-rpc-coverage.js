@@ -26,6 +26,12 @@ function section(s) { console.log(`\n── ${s} ──`); }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function isTransportOrProtocolError(error) {
+    const code = error && error.code ? String(error.code) : '';
+    const message = error && error.message ? String(error.message) : '';
+    return Boolean(code) || /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|Timeout|socket hang up|Invalid JSON response|connect /.test(message);
+}
+
 // JSON-RPC helper
 async function rpc(method, params) {
     const body = JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method, params: params || [] });
@@ -40,7 +46,9 @@ async function rpc(method, params) {
                     const j = JSON.parse(data);
                     if (j.error) reject(new Error(`RPC ${j.error.code}: ${j.error.message}`));
                     else resolve(j.result);
-                } catch (e) { reject(e); }
+                } catch {
+                    reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`));
+                }
             });
         });
         req.on('error', reject);
@@ -52,18 +60,18 @@ async function rpc(method, params) {
 
 // REST GET helper
 async function rest(path) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         const url = new URL(path, REST_BASE);
         const mod = url.protocol === 'https:' ? https : http;
         const req = mod.get(url, res => {
             let data = '';
             res.on('data', c => data += c);
             res.on('end', () => {
-                try { resolve(JSON.parse(data)); } catch { resolve(null); }
+                try { resolve(JSON.parse(data)); } catch { reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`)); }
             });
         });
-        req.on('error', () => resolve(null));
-        req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+        req.on('error', reject);
+        req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
     });
 }
 
@@ -77,9 +85,23 @@ async function tryRpc(method, params, label) {
         // Method exists but returned an error (e.g. no data) — still confirms wiring
         if (e.message.includes('RPC -32601')) {
             assert(false, `${label || method}: METHOD NOT FOUND`);
+        } else if (isTransportOrProtocolError(e)) {
+            assert(false, `${label || method}: transport/protocol failure: ${e.message.slice(0, 80)}`);
         } else {
             assert(true, `${label || method}: ${e.message.slice(0, 80)}`);
         }
+        return null;
+    }
+}
+
+async function tryRest(path) {
+    try {
+        const result = await rest(path);
+        assert(true, `REST ${path}: ${result !== null ? 'data' : 'empty'}`);
+        return result;
+    } catch (e) {
+        const prefix = isTransportOrProtocolError(e) ? 'transport/protocol failure' : 'error';
+        assert(false, `REST ${path}: ${prefix}: ${e.message.slice(0, 80)}`);
         return null;
     }
 }
@@ -289,20 +311,41 @@ async function runTests() {
     section('C16: DEX REST API');
 
     const restEndpoints = [
-        '/pairs', '/pairs/1', '/pairs/1/orderbook', '/pairs/1/trades', '/pairs/1/candles?interval=1m&limit=5',
-        '/orders', '/pools', '/pools/positions',
-        '/margin/info', '/margin/positions/' + testAddr, '/margin/history/' + testAddr,
-        '/margin/funding-rates',
-        '/governance/proposals', '/governance/config',
-        '/rewards/config', '/rewards/distributions',
-        '/prediction-market/markets', '/prediction-market/stats',
-        '/launchpad/tokens',
-        '/router/routes',
+        '/api/v1/pairs',
+        '/api/v1/pairs/1',
+        '/api/v1/pairs/1/orderbook',
+        '/api/v1/pairs/1/trades',
+        '/api/v1/pairs/1/candles?interval=60&limit=5',
+        '/api/v1/pairs/1/stats',
+        '/api/v1/pairs/1/ticker',
+        '/api/v1/tickers',
+        '/api/v1/orders',
+        '/api/v1/pools',
+        `/api/v1/pools/positions?owner=${encodeURIComponent(testAddr)}`,
+        '/api/v1/margin/info',
+        `/api/v1/margin/positions?trader=${encodeURIComponent(testAddr)}`,
+        '/api/v1/margin/enabled-pairs',
+        '/api/v1/margin/funding-rate',
+        '/api/v1/governance/proposals',
+        '/api/v1/stats/core',
+        '/api/v1/stats/amm',
+        '/api/v1/stats/margin',
+        '/api/v1/stats/router',
+        '/api/v1/stats/rewards',
+        '/api/v1/stats/analytics',
+        '/api/v1/stats/governance',
+        '/api/v1/oracle/prices',
+        '/api/v1/prediction-market/config',
+        '/api/v1/prediction-market/markets',
+        '/api/v1/prediction-market/stats',
+        '/api/v1/launchpad/config',
+        '/api/v1/launchpad/stats',
+        '/api/v1/launchpad/tokens',
+        '/api/v1/routes',
     ];
 
     for (const ep of restEndpoints) {
-        const result = await rest(ep);
-        assert(true, `REST ${ep}: ${result !== null ? 'data' : 'empty'}`);
+        await tryRest(ep);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -311,13 +354,15 @@ async function runTests() {
     section('C17: Shielded Pool REST');
 
     const shieldedEndpoints = [
-        '/shielded/pool', '/shielded/merkle-root', '/shielded/commitments?from=0&limit=5',
-        '/shielded/stats',
+        '/api/v1/shielded/pool',
+        '/api/v1/shielded/merkle-root',
+        '/api/v1/shielded/merkle-path/0',
+        '/api/v1/shielded/nullifier/0000000000000000000000000000000000000000000000000000000000000000',
+        '/api/v1/shielded/commitments?from=0&limit=5',
     ];
 
     for (const ep of shieldedEndpoints) {
-        const result = await rest(ep);
-        assert(true, `REST ${ep}: ${result !== null ? 'data' : 'empty'}`);
+        await tryRest(ep);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -338,7 +383,9 @@ async function runTests() {
                             const j = JSON.parse(data);
                             if (j.error) reject(new Error(`RPC ${j.error.code}: ${j.error.message}`));
                             else resolve(j.result);
-                        } catch (e) { reject(e); }
+                        } catch {
+                            reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`));
+                        }
                     });
                 });
                 req.on('error', reject);
@@ -355,6 +402,8 @@ async function runTests() {
             } catch (e) {
                 if (e.message.includes('RPC -32601')) {
                     assert(false, `[solana-compat] ${label || method}: METHOD NOT FOUND`);
+                } else if (isTransportOrProtocolError(e)) {
+                    assert(false, `[solana-compat] ${label || method}: transport/protocol failure: ${e.message.slice(0, 80)}`);
                 } else {
                     assert(true, `[solana-compat] ${label || method}: ${e.message.slice(0, 80)}`);
                 }
@@ -390,7 +439,9 @@ async function runTests() {
                             const j = JSON.parse(data);
                             if (j.error) reject(new Error(`RPC ${j.error.code}: ${j.error.message}`));
                             else resolve(j.result);
-                        } catch (e) { reject(e); }
+                        } catch {
+                            reject(new Error(`Invalid JSON response: ${data.slice(0, 120)}`));
+                        }
                     });
                 });
                 req.on('error', reject);
@@ -407,6 +458,8 @@ async function runTests() {
             } catch (e) {
                 if (e.message.includes('RPC -32601')) {
                     assert(false, `[evm] ${label || method}: METHOD NOT FOUND`);
+                } else if (isTransportOrProtocolError(e)) {
+                    assert(false, `[evm] ${label || method}: transport/protocol failure: ${e.message.slice(0, 80)}`);
                 } else {
                     assert(true, `[evm] ${label || method}: ${e.message.slice(0, 80)}`);
                 }

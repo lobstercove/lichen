@@ -7,6 +7,7 @@ pub(super) async fn broadcast_outbound_withdrawal(
     state: &CustodyState,
     job: &WithdrawalJob,
 ) -> Result<String, String> {
+    let required_signer_threshold = effective_required_signer_threshold(job, &state.config);
     match job.dest_chain.as_str() {
         "solana" | "sol" => {
             let url = state
@@ -26,10 +27,10 @@ pub(super) async fn broadcast_outbound_withdrawal(
             ) {
                 let approval_count =
                     valid_pq_withdrawal_approvers(state, job, &outbound_asset)?.len();
-                if approval_count < state.config.signer_threshold {
+                if approval_count < required_signer_threshold {
                     return Err(format!(
                         "insufficient PQ withdrawal approvals: have {}, need {}",
-                        approval_count, state.config.signer_threshold
+                        approval_count, required_signer_threshold
                     ));
                 }
             }
@@ -61,10 +62,10 @@ pub(super) async fn broadcast_outbound_withdrawal(
                 Some(WithdrawalSigningMode::PqApprovalQuorum) => {
                     let approval_count =
                         valid_pq_withdrawal_approvers(state, job, &outbound_asset)?.len();
-                    if approval_count < state.config.signer_threshold {
+                    if approval_count < required_signer_threshold {
                         return Err(format!(
                             "insufficient PQ withdrawal approvals: have {}, need {}",
-                            approval_count, state.config.signer_threshold
+                            approval_count, required_signer_threshold
                         ));
                     }
                     evm::broadcast_self_custody_evm_withdrawal(state, &url, job, &outbound_asset)

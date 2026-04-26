@@ -113,6 +113,7 @@ impl Mempool {
         fee: u64,
         _reputation: u64,
     ) -> Result<(), String> {
+        transaction.validate_structure()?;
         let tx_hash = transaction.hash();
 
         // Check if already in mempool
@@ -337,6 +338,20 @@ mod tests {
 
         // Duplicate should fail
         assert!(mempool.add_transaction(tx, 1000, 0).is_err());
+    }
+
+    #[test]
+    fn test_mempool_rejects_invalid_transaction_before_sender_lookup() {
+        let mut mempool = Mempool::new(100, 300);
+        let tx = Transaction::new(crate::transaction::Message::new(
+            Vec::new(),
+            Hash::default(),
+        ));
+
+        let result = mempool.add_transaction(tx, 1000, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No instructions"));
+        assert_eq!(mempool.size(), 0);
     }
 
     #[test]

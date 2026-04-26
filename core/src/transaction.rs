@@ -138,9 +138,21 @@ pub struct Transaction {
 
 /// Maximum instructions per transaction (T1.7)
 pub const MAX_INSTRUCTIONS_PER_TX: usize = 64;
+/// Maximum self-contained PQ signatures per transaction.
+///
+/// Each instruction contributes at most one required signer (its first account),
+/// so accepting more signatures than instructions only increases bandwidth,
+/// memory, and verification work without adding valid authorization surface.
+pub const MAX_SIGNATURES_PER_TX: usize = MAX_INSTRUCTIONS_PER_TX;
 /// Maximum data bytes per instruction (T1.7)
 pub const MAX_INSTRUCTION_DATA: usize = 204_800; // 200KB — contract calls may carry significant payloads
 pub const MAX_DEPLOY_INSTRUCTION_DATA: usize = 4_194_304; // 4MB — WASM deploys via instruction type 17
+/// Maximum bincode-serialized transaction size.
+///
+/// This leaves room for one max-size deploy instruction plus PQ signatures and
+/// metadata, while preventing many individually-valid instructions or excess
+/// signatures from producing transactions too large for admission.
+pub const MAX_TRANSACTION_SERIALIZED_SIZE: u64 = 5 * 1024 * 1024;
 /// Maximum accounts per instruction
 pub const MAX_ACCOUNTS_PER_IX: usize = 64;
 
@@ -263,6 +275,13 @@ impl Transaction {
 
     /// Validate transaction structure (size limits, T1.7)
     pub fn validate_structure(&self) -> Result<(), String> {
+        if self.signatures.len() > MAX_SIGNATURES_PER_TX {
+            return Err(format!(
+                "Too many signatures: {} (max {})",
+                self.signatures.len(),
+                MAX_SIGNATURES_PER_TX
+            ));
+        }
         if self.message.instructions.is_empty() {
             return Err("No instructions".to_string());
         }
@@ -304,6 +323,14 @@ impl Transaction {
                 ));
             }
         }
+        let serialized_size = bincode::serialized_size(self)
+            .map_err(|e| format!("Transaction size serialization failed: {}", e))?;
+        if serialized_size > MAX_TRANSACTION_SERIALIZED_SIZE {
+            return Err(format!(
+                "Transaction serialized size too large: {} bytes (max {})",
+                serialized_size, MAX_TRANSACTION_SERIALIZED_SIZE
+            ));
+        }
         Ok(())
     }
 
@@ -329,9 +356,17 @@ impl Transaction {
     /// 2. **Raw bincode** — `bincode::serialize(&Transaction)` output
     /// 3. **JSON** — `{ "signatures": [...], "message": {...} }` from browser wallets
     ///
-    /// The `max_bincode_bytes` parameter caps the bincode deserialization buffer
-    /// to prevent OOM from adversarial payloads.
-    pub fn from_wire(data: &[u8], max_bincode_bytes: u64) -> Result<Self, String> {
+    /// The `max_wire_bytes` parameter caps both JSON and bincode payloads before
+    /// deserialization to prevent OOM from adversarial transaction submissions.
+    pub fn from_wire(data: &[u8], max_wire_bytes: u64) -> Result<Self, String> {
+        if data.len() as u64 > max_wire_bytes {
+            return Err(format!(
+                "Transaction wire payload too large: {} bytes (max {})",
+                data.len(),
+                max_wire_bytes
+            ));
+        }
+
         // --- V1 envelope ---
         if data.len() >= 4 && data[0..2] == TX_WIRE_MAGIC {
             let version = data[2];
@@ -345,7 +380,7 @@ impl Transaction {
                 _ => return Err(format!("Unknown transaction type byte: {}", type_byte)),
             };
             let payload = &data[4..];
-            let mut tx: Self = bounded_bincode_deser(payload, max_bincode_bytes)?;
+            let mut tx: Self = bounded_bincode_deser(payload, max_wire_bytes)?;
             // Envelope type is authoritative
             tx.tx_type = tx_type;
             return Ok(tx);
@@ -354,10 +389,10 @@ impl Transaction {
         // --- JSON vs bincode ---
         if data.first() == Some(&b'{') {
             // Looks like JSON — try JSON first, fall back to bincode
-            json_deser(data).or_else(|_| bounded_bincode_deser(data, max_bincode_bytes))
+            json_deser(data).or_else(|_| bounded_bincode_deser(data, max_wire_bytes))
         } else {
             // Try bincode first, fall back to JSON
-            bounded_bincode_deser(data, max_bincode_bytes).or_else(|_| json_deser(data))
+            bounded_bincode_deser(data, max_wire_bytes).or_else(|_| json_deser(data))
         }
     }
 }
@@ -468,6 +503,55 @@ mod tests {
             tx2.validate_structure().is_err(),
             "Deploy instruction over 4MB should be rejected"
         );
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_too_many_signatures() {
+        let ix = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0],
+        };
+        let msg = Message::new(vec![ix], Hash::default());
+        let mut tx = Transaction::new(msg);
+        tx.signatures = (0..=MAX_SIGNATURES_PER_TX)
+            .map(|idx| crate::account::PqSignature::test_fixture(idx as u8))
+            .collect();
+
+        let result = tx.validate_structure();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Too many signatures"));
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_serialized_tx_size_over_limit() {
+        let instructions = (0..26)
+            .map(|idx| Instruction {
+                program_id: Pubkey([idx as u8; 32]),
+                accounts: vec![Pubkey([2u8; 32])],
+                data: vec![idx as u8; MAX_INSTRUCTION_DATA],
+            })
+            .collect();
+        let tx = Transaction::new(Message::new(instructions, Hash::default()));
+
+        let serialized_size = bincode::serialized_size(&tx).unwrap();
+        assert!(
+            serialized_size > MAX_TRANSACTION_SERIALIZED_SIZE,
+            "fixture must exceed tx serialized-size cap"
+        );
+
+        let result = tx.validate_structure();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("serialized size too large"));
+    }
+
+    #[test]
+    fn test_from_wire_rejects_oversized_payload_before_deserialization() {
+        let bytes = vec![b'{'; MAX_TRANSACTION_SERIALIZED_SIZE as usize + 1];
+
+        let result = Transaction::from_wire(&bytes, MAX_TRANSACTION_SERIALIZED_SIZE);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("wire payload too large"));
     }
 
     // ── AUDIT-FIX A3-01: Verify data field IS included in signature hash ──

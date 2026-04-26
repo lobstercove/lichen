@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 import asyncio
 import json
+import os
 import websockets
 
-async def test_ws():
+try:
+    import pytest
+except ImportError:  # Keep direct script execution dependency-light.
+    pytest = None
+
+
+def _live_sdk_tests_enabled() -> bool:
+    return os.environ.get("LICHEN_RUN_LIVE_SDK_TESTS") == "1"
+
+
+async def run_ws():
     print("🔌 Testing WebSocket connection...")
     
     uri = "ws://localhost:8900"
@@ -50,5 +61,15 @@ async def test_ws():
         
         print("\n✅ WebSocket test passed!")
 
+
+if pytest is not None:
+    @pytest.mark.skipif(
+        not _live_sdk_tests_enabled(),
+        reason="requires local validator; set LICHEN_RUN_LIVE_SDK_TESTS=1",
+    )
+    @pytest.mark.asyncio
+    async def test_ws():
+        await run_ws()
+
 if __name__ == "__main__":
-    asyncio.run(test_ws())
+    asyncio.run(run_ws())

@@ -618,6 +618,96 @@ async fn test_process_withdrawal_jobs_expires_stale_pending_burn_and_releases_bu
     assert_eq!(event.entity_id, job.job_id);
 }
 
+#[tokio::test]
+async fn test_process_signing_withdrawals_requires_tx_intent_before_broadcast() {
+    let db_path = test_db_path();
+    let _ = DB::destroy(&Options::default(), &db_path);
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    opts.create_missing_column_families(true);
+    let db = DB::open_cf_descriptors(
+        &opts,
+        &db_path,
+        vec![
+            ColumnFamilyDescriptor::new(CF_WITHDRAWAL_JOBS, Options::default()),
+            ColumnFamilyDescriptor::new(CF_STATUS_INDEX, Options::default()),
+        ],
+    )
+    .expect("open test DB without tx_intents cf");
+
+    let mut state = test_state();
+    state.db = Arc::new(db);
+    state.config.solana_rpc_url = None;
+
+    let mut job = test_withdrawal_job();
+    job.status = "signing".to_string();
+    job.attempts = 0;
+    job.last_error = None;
+    job.next_attempt_at = None;
+    store_withdrawal_job(&state.db, &job).expect("store signing withdrawal");
+
+    withdrawal_settlement_support::process_signing_withdrawals(&state)
+        .await
+        .expect("process signing withdrawals");
+
+    let stored = fetch_withdrawal_job(&state.db, &job.job_id)
+        .expect("fetch withdrawal job")
+        .expect("withdrawal job exists");
+    assert_eq!(stored.status, "signing");
+    assert_eq!(stored.attempts, 1);
+    assert!(stored
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failed to record withdrawal tx intent"));
+
+    drop(state);
+    let _ = DB::destroy(&Options::default(), &db_path);
+}
+
+#[tokio::test]
+async fn test_process_broadcasting_withdrawals_marks_reverted_evm_tx_failed() {
+    let mut state = test_state();
+    let rpc_app: Router =
+        Router::new()
+            .route("/", post(mock_rpc_handler))
+            .with_state(MockRpcState {
+                safe_nonce_hex: "0x0".to_string(),
+                safe_tx_hash_hex: "0x0".to_string(),
+                send_raw_tx_hash_hex: None,
+                transaction_receipt: Some(json!({
+                    "status": "0x0",
+                    "blockNumber": "0x10",
+                })),
+                requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            });
+    let rpc_url = spawn_mock_server(rpc_app).await;
+    state.config.evm_rpc_url = Some(rpc_url.clone());
+    state.config.eth_rpc_url = Some(rpc_url);
+
+    let mut job = test_withdrawal_job();
+    job.job_id = "withdrawal-reverted-outbound".to_string();
+    job.dest_chain = "ethereum".to_string();
+    job.asset = "wETH".to_string();
+    job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+    job.status = "broadcasting".to_string();
+    job.outbound_tx_hash = Some("0xdeadbeef".to_string());
+    store_withdrawal_job(&state.db, &job).expect("store broadcasting withdrawal");
+
+    withdrawal_settlement_support::process_broadcasting_withdrawals(&state)
+        .await
+        .expect("process broadcasting withdrawals");
+
+    let stored = fetch_withdrawal_job(&state.db, &job.job_id)
+        .expect("fetch withdrawal job")
+        .expect("withdrawal job exists");
+    assert_eq!(stored.status, "permanently_failed");
+    assert_eq!(
+        stored.last_error.as_deref(),
+        Some("evm transaction failed with status 0x0")
+    );
+}
+
 #[test]
 fn test_count_withdrawal_jobs_with_index_includes_expired() {
     let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_withdrawal");

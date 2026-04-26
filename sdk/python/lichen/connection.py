@@ -27,7 +27,7 @@ class Connection:
     """
     RPC and WebSocket connection to Lichen
     
-    Provides async methods for all 24 RPC endpoints and 10 WebSocket subscriptions.
+    Provides async RPC helpers and WebSocket subscriptions for Lichen endpoint families.
     """
     
     def __init__(self, rpc_url: str, ws_url: Optional[str] = None):

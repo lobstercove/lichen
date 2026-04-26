@@ -198,6 +198,25 @@ fn rewards_pool_matches_self(self_addr: &[u8; 32]) -> bool {
     is_zero(&configured) || configured == *self_addr
 }
 
+fn checked_mul_div_u64(amount: u64, multiplier: u64, divisor: u64) -> Option<u64> {
+    if divisor == 0 {
+        return None;
+    }
+    let value = (amount as u128)
+        .checked_mul(multiplier as u128)?
+        .checked_div(divisor as u128)?;
+    if value > u64::MAX as u128 {
+        None
+    } else {
+        Some(value as u64)
+    }
+}
+
+fn capped_reward(amount: u64, multiplier_bps: u64, cap: u64) -> u64 {
+    let reward = (amount as u128) * (multiplier_bps as u128) / 10_000u128;
+    reward.min(cap as u128) as u64
+}
+
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
@@ -271,7 +290,8 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Record a trade for reward calculation (called by dex_core)
-/// Returns: 0=success, 5=unauthorized caller, 6=paused
+/// Returns: 0=success, 2=invalid input, 5=unauthorized caller, 6=paused,
+///          7=accounting overflow
 pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     if !require_not_paused() {
         log_info("record_trade: paused");
@@ -285,34 +305,40 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
     }
-
-    // Update cumulative volume
-    let current_vol = load_u64(&trader_volume_key(&t));
-    if current_vol == 0 {
-        // First trade for this trader — increment unique trader count
-        save_u64(
-            TRADER_COUNT_KEY,
-            load_u64(TRADER_COUNT_KEY).saturating_add(1),
-        );
+    if is_zero(&t) || fee_paid == 0 || volume == 0 {
+        return 2;
     }
-    save_u64(&trader_volume_key(&t), current_vol.saturating_add(volume));
 
-    // Track global volume and trade count
-    save_u64(
-        TOTAL_VOLUME_KEY,
-        load_u64(TOTAL_VOLUME_KEY).saturating_add(volume),
-    );
-    save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY).saturating_add(1));
+    let current_vol = load_u64(&trader_volume_key(&t));
+    let new_vol = match current_vol.checked_add(volume) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let new_trader_count = if current_vol == 0 {
+        match load_u64(TRADER_COUNT_KEY).checked_add(1) {
+            Some(value) => Some(value),
+            None => return 7,
+        }
+    } else {
+        None
+    };
+    let new_total_volume = match load_u64(TOTAL_VOLUME_KEY).checked_add(volume) {
+        Some(value) => value,
+        None => return 7,
+    };
+    let new_trade_count = match load_u64(TRADE_COUNT_KEY).checked_add(1) {
+        Some(value) => value,
+        None => return 7,
+    };
 
     // TOKENOMICS H7: Monthly epoch cap enforcement
     // Reset epoch counter when SLOTS_PER_MONTH elapsed since start
     let current_slot = get_slot();
     let epoch_start = load_u64(EPOCH_START_SLOT_KEY);
-    let epoch_dist = if epoch_start == 0 || current_slot >= epoch_start + SLOTS_PER_MONTH {
-        // New epoch: reset counter and record start
-        save_u64(EPOCH_START_SLOT_KEY, current_slot);
-        save_u64(EPOCH_DISTRIBUTED_KEY, 0);
-        0u64
+    let reset_epoch =
+        epoch_start == 0 || current_slot.saturating_sub(epoch_start) >= SLOTS_PER_MONTH;
+    let epoch_dist = if reset_epoch {
+        0
     } else {
         load_u64(EPOCH_DISTRIBUTED_KEY)
     };
@@ -321,24 +347,18 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     let tier = get_tier(current_vol.saturating_add(volume));
     let multiplier = get_multiplier(tier);
     let base_reward = fee_paid; // 1:1 fee mining
-    let mut reward = base_reward.saturating_mul(multiplier) / 10_000;
 
     // Cap reward to remaining monthly budget (TOKENOMICS H7)
     let remaining_budget = REWARD_POOL_PER_MONTH.saturating_sub(epoch_dist);
-    if reward > remaining_budget {
-        reward = remaining_budget;
-    }
-
-    // Update epoch distributed counter
-    if reward > 0 {
-        save_u64(EPOCH_DISTRIBUTED_KEY, epoch_dist.saturating_add(reward));
-    }
-
-    // Add to pending
+    let reward = capped_reward(base_reward, multiplier, remaining_budget);
     let pending = load_u64(&trader_pending_key(&t));
-    save_u64(&trader_pending_key(&t), pending.saturating_add(reward));
+    let new_pending = match pending.checked_add(reward) {
+        Some(value) => value,
+        None => return 7,
+    };
 
     // Handle referral bonus
+    let mut referral_update: Option<([u8; 32], u64)> = None;
     let referrer_data = storage_get(&referral_key(&t));
     if let Some(ref_data) = referrer_data {
         if ref_data.len() >= 32 {
@@ -351,14 +371,36 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
                 } else {
                     REFERRAL_RATE_BPS
                 };
-                let ref_bonus = fee_paid * effective_rate / 10_000;
+                let ref_bonus = match checked_mul_div_u64(fee_paid, effective_rate, 10_000) {
+                    Some(value) => value,
+                    None => return 7,
+                };
                 let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
-                save_u64(
-                    &referrer_earnings_key(&referrer),
-                    ref_earnings.saturating_add(ref_bonus),
-                );
+                let new_ref_earnings = match ref_earnings.checked_add(ref_bonus) {
+                    Some(value) => value,
+                    None => return 7,
+                };
+                referral_update = Some((referrer, new_ref_earnings));
             }
         }
+    }
+
+    // Apply mutations only after all checked accounting has succeeded.
+    if let Some(value) = new_trader_count {
+        save_u64(TRADER_COUNT_KEY, value);
+    }
+    save_u64(&trader_volume_key(&t), new_vol);
+    save_u64(TOTAL_VOLUME_KEY, new_total_volume);
+    save_u64(TRADE_COUNT_KEY, new_trade_count);
+    if reset_epoch {
+        save_u64(EPOCH_START_SLOT_KEY, current_slot);
+        save_u64(EPOCH_DISTRIBUTED_KEY, reward);
+    } else if reward > 0 {
+        save_u64(EPOCH_DISTRIBUTED_KEY, epoch_dist + reward);
+    }
+    save_u64(&trader_pending_key(&t), new_pending);
+    if let Some((referrer, new_ref_earnings)) = referral_update {
+        save_u64(&referrer_earnings_key(&referrer), new_ref_earnings);
     }
 
     0
@@ -410,9 +452,12 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
         reentrancy_exit();
         return 7;
     }
-    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(t), pending) {
-        reentrancy_exit();
-        return 4;
+    match transfer_token_or_native(Address(licn_addr), self_addr, Address(t), pending) {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            reentrancy_exit();
+            return 4;
+        }
     }
 
     save_u64(&trader_pending_key(&t), 0);
@@ -472,9 +517,12 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
         reentrancy_exit();
         return 7;
     }
-    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(p), pending) {
-        reentrancy_exit();
-        return 4;
+    match transfer_token_or_native(Address(licn_addr), self_addr, Address(p), pending) {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            reentrancy_exit();
+            return 4;
+        }
     }
 
     save_u64(&lp_k, 0);
@@ -488,7 +536,8 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
 }
 
 /// Register a referral relationship
-/// Returns: 0=success, 1=already has referrer, 2=self-referral, 3=reentrancy
+/// Returns: 0=success, 1=already has referrer, 2=self-referral, 3=reentrancy,
+///          4=accounting overflow
 pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -517,12 +566,17 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
         return 1;
     }
 
+    let count = match load_u64(&referrer_count_key(&r)).checked_add(1) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 4;
+        }
+    };
+
     storage_set(&rk, &r);
     save_u64(&referral_start_key(&t), get_slot());
-
-    // Increment referrer's count
-    let count = load_u64(&referrer_count_key(&r));
-    save_u64(&referrer_count_key(&r), count + 1);
+    save_u64(&referrer_count_key(&r), count);
 
     log_info("Referral registered");
     reentrancy_exit();
@@ -573,9 +627,12 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
         reentrancy_exit();
         return 7;
     }
-    if let Err(_) = transfer_token_or_native(Address(licn_addr), self_addr, Address(r), earnings) {
-        reentrancy_exit();
-        return 4;
+    match transfer_token_or_native(Address(licn_addr), self_addr, Address(r), earnings) {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            reentrancy_exit();
+            return 4;
+        }
     }
 
     save_u64(&referrer_earnings_key(&r), 0);
@@ -607,7 +664,8 @@ pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u
 }
 
 /// Accrue LP rewards for a position (called by dex_amm)
-/// Returns: 0=success, 1=zero rate, 5=unauthorized caller, 6=paused
+/// Returns: 0=success, 1=zero rate, 2=invalid input, 5=unauthorized caller,
+///          6=paused, 7=accounting overflow
 pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 {
     if !require_not_paused() {
         log_info("accrue_lp_rewards: paused");
@@ -617,14 +675,24 @@ pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 
         log_info("accrue_lp_rewards: unauthorized caller");
         return 5;
     }
+    if liquidity == 0 {
+        return 2;
+    }
     let rate = load_u64(&pair_reward_rate_key(pair_id));
     if rate == 0 {
         return 1;
     }
-    let reward = liquidity * rate / 1_000_000_000;
+    let reward = match checked_mul_div_u64(liquidity, rate, 1_000_000_000) {
+        Some(value) => value,
+        None => return 7,
+    };
     let lp_k = lp_pending_key(position_id);
     let current = load_u64(&lp_k);
-    save_u64(&lp_k, current.saturating_add(reward));
+    let new_pending = match current.checked_add(reward) {
+        Some(value) => value,
+        None => return 7,
+    };
+    save_u64(&lp_k, new_pending);
     0
 }
 
@@ -636,7 +704,7 @@ pub fn get_pending_rewards(addr: *const u8) -> u64 {
     }
     let trading = load_u64(&trader_pending_key(&a));
     let referral = load_u64(&referrer_earnings_key(&a));
-    trading + referral
+    trading.saturating_add(referral)
 }
 
 pub fn get_trading_tier(addr: *const u8) -> u8 {
@@ -1129,6 +1197,20 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_trading_rewards_preserves_pending_on_false_transfer_status() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        assert_eq!(record_trade(trader.as_ptr(), 5000, 5_000_000), 0);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(trader);
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 4);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 5000);
+        assert_eq!(load_u64(&trader_claimed_key(&trader)), 0);
+        assert_eq!(get_total_distributed(), 0);
+    }
+
+    #[test]
     fn test_claim_nothing() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -1202,6 +1284,24 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_referral_rewards_preserves_earnings_on_false_transfer_status() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(register_referral(trader.as_ptr(), referrer.as_ptr()), 0);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader.as_ptr(), 10_000, 10_000_000), 0);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(referrer);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 4);
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 1000);
+        assert_eq!(get_total_distributed(), 0);
+    }
+
+    #[test]
     fn test_claim_referral_rewards_nothing() {
         let _admin = setup();
         let referrer = [3u8; 32];
@@ -1246,6 +1346,24 @@ mod tests {
         test_mock::set_caller(provider);
         assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
         assert_eq!(load_u64(&lp_pending_key(1)), 0);
+    }
+
+    #[test]
+    fn test_claim_lp_rewards_preserves_pending_on_false_transfer_status() {
+        let admin = setup();
+        let provider = [2u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 1, 1_000_000), 0);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, 100_000, 1), 0);
+        let pending = load_u64(&lp_pending_key(1));
+        assert!(pending > 0);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(provider);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 4);
+        assert_eq!(load_u64(&lp_pending_key(1)), pending);
+        assert_eq!(get_total_distributed(), 0);
     }
 
     #[test]
@@ -1387,6 +1505,79 @@ mod tests {
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
         let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
         assert_eq!(ref_earnings, 2000); // 20% of 10000
+    }
+
+    #[test]
+    fn test_record_trade_rejects_zero_values_without_stats_mutation() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+
+        assert_eq!(record_trade(trader.as_ptr(), 0, 1_000_000), 2);
+        assert_eq!(record_trade(trader.as_ptr(), 1000, 0), 2);
+
+        assert_eq!(load_u64(&trader_volume_key(&trader)), 0);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 0);
+        assert_eq!(load_u64(TRADER_COUNT_KEY), 0);
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 0);
+        assert_eq!(load_u64(TOTAL_VOLUME_KEY), 0);
+    }
+
+    #[test]
+    fn test_record_trade_huge_fee_uses_u128_reward_and_referral_math() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(register_referral(trader.as_ptr(), referrer.as_ptr()), 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_referral_rate(admin.as_ptr(), 3000), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(record_trade(trader.as_ptr(), u64::MAX, 1), 0);
+        assert_eq!(
+            load_u64(&trader_pending_key(&trader)),
+            REWARD_POOL_PER_MONTH
+        );
+        let expected_referral = ((u64::MAX as u128) * 3000u128 / 10_000u128) as u64;
+        assert_eq!(
+            load_u64(&referrer_earnings_key(&referrer)),
+            expected_referral
+        );
+    }
+
+    #[test]
+    fn test_accrue_lp_rewards_uses_u128_math() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 1, u64::MAX), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, 1_000_000_000, 1), 0);
+        assert_eq!(load_u64(&lp_pending_key(1)), u64::MAX);
+    }
+
+    #[test]
+    fn test_accrue_lp_rewards_rejects_unrepresentable_reward() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 1, u64::MAX), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, u64::MAX, 1), 7);
+        assert_eq!(load_u64(&lp_pending_key(1)), 0);
+    }
+
+    #[test]
+    fn test_accrue_lp_rewards_rejects_zero_liquidity() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 1, 1_000_000), 0);
+
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards(1, 0, 1), 2);
+        assert_eq!(load_u64(&lp_pending_key(1)), 0);
     }
 
     // --- LICN Token Transfer Tests ---

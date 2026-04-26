@@ -36,10 +36,12 @@ const MIN_REPUTATION: u64 = 500;
 const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000_000; // 10,000 LICN ($1K at $0.10) per TOKENOMICS.md
 const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
+const MAX_FEE_BPS: i16 = 100;
 
 const PREFERRED_QUOTE_KEY: &[u8] = b"gov_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"gov_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
+const NEW_PAIR_QUOTE_PREFIX: &[u8] = b"gov_prop_quote_";
 
 // Proposal types
 const PROPOSAL_NEW_PAIR: u8 = 0;
@@ -153,6 +155,39 @@ fn vote_key(proposal_id: u64, voter: &[u8; 32]) -> Vec<u8> {
     k.push(b'_');
     k.extend_from_slice(&hex_encode(voter));
     k
+}
+
+fn proposal_quote_key(proposal_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(NEW_PAIR_QUOTE_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(proposal_id));
+    k
+}
+
+fn load_proposal_quote(proposal_id: u64) -> Option<[u8; 32]> {
+    storage_get(&proposal_quote_key(proposal_id)).and_then(|data| {
+        if data.len() >= 32 {
+            let mut quote = [0u8; 32];
+            quote.copy_from_slice(&data[..32]);
+            Some(quote)
+        } else {
+            None
+        }
+    })
+}
+
+fn downstream_call_succeeded(result: &[u8]) -> bool {
+    if result.is_empty() {
+        return true;
+    }
+    if result.len() >= 8 {
+        return bytes_to_u64(&result[..8]) == 0;
+    }
+    if result.len() >= 4 {
+        let mut code = [0u8; 4];
+        code.copy_from_slice(&result[..4]);
+        return u32::from_le_bytes(code) == 0;
+    }
+    result[0] == 0
 }
 
 // ============================================================================
@@ -464,8 +499,37 @@ pub fn get_preferred_quote() -> u64 {
     }
 }
 
+/// Set the DEX core contract address used by proposal execution.
+/// Admin only and one-time configured.
+/// Returns: 0=success, 1=not admin, 2=zero address, 3=already configured
+pub fn set_core_address(caller: *const u8, core_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(core_addr, a.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
+    if has_configured_address(CORE_ADDRESS_KEY) {
+        return 3;
+    }
+    storage_set(CORE_ADDRESS_KEY, &a);
+    log_info("DEX core address configured for governance execution");
+    0
+}
+
 /// Propose a new trading pair
-/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy, 4=invalid quote, 5=insufficient reputation
+/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy,
+///          4=invalid quote, 5=insufficient reputation, 6=slot overflow
 pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -510,7 +574,13 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
     }
 
     let current_slot = get_slot();
-    let end_slot = current_slot + VOTING_PERIOD_SLOTS;
+    let end_slot = match current_slot.checked_add(VOTING_PERIOD_SLOTS) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 6;
+        }
+    };
     let prop_id = count + 1;
     let data = encode_proposal(
         &p,
@@ -527,13 +597,16 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
         0,
     );
     storage_set(&proposal_key(prop_id), &data);
+    storage_set(&proposal_quote_key(prop_id), &qt);
     save_u64(PROPOSAL_COUNT_KEY, prop_id);
     log_info("New pair proposal created");
     reentrancy_exit();
     0
 }
 
-/// Propose a fee change for an existing pair
+/// Propose a fee change for an existing pair.
+/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy,
+///          4=invalid pair/fee, 5=insufficient reputation, 6=slot overflow
 pub fn propose_fee_change(
     proposer: *const u8,
     pair_id: u64,
@@ -558,6 +631,20 @@ pub fn propose_fee_change(
         return 200;
     }
 
+    if !verify_reputation(&p, MIN_REPUTATION) {
+        reentrancy_exit();
+        log_info("Fee proposal rejected: insufficient LichenID reputation");
+        return 5;
+    }
+    if pair_id == 0
+        || new_taker_fee > MAX_FEE_BPS as u16
+        || new_maker_fee > MAX_FEE_BPS
+        || new_maker_fee < -MAX_FEE_BPS
+    {
+        reentrancy_exit();
+        return 4;
+    }
+
     let count = load_u64(PROPOSAL_COUNT_KEY);
     if count >= MAX_PROPOSALS {
         reentrancy_exit();
@@ -565,7 +652,13 @@ pub fn propose_fee_change(
     }
 
     let current_slot = get_slot();
-    let end_slot = current_slot + VOTING_PERIOD_SLOTS;
+    let end_slot = match current_slot.checked_add(VOTING_PERIOD_SLOTS) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 6;
+        }
+    };
     let prop_id = count + 1;
     let data = encode_proposal(
         &p,
@@ -589,7 +682,8 @@ pub fn propose_fee_change(
 }
 
 /// Vote on a proposal
-/// Returns: 0=success, 1=not found, 2=voting ended, 3=already voted, 4=reentrancy, 5=insufficient reputation
+/// Returns: 0=success, 1=not found, 2=voting ended, 3=already voted,
+///          4=reentrancy, 5=insufficient reputation, 6=accounting overflow
 pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -640,26 +734,63 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
         return 3;
     }
 
-    // Record vote
-    storage_set(&vk, &[if approve { 1u8 } else { 0u8 }]);
-
-    if approve {
-        let yes = decode_prop_yes(&data);
-        update_prop_yes(&mut data, yes.saturating_add(1));
+    let new_yes = if approve {
+        match decode_prop_yes(&data).checked_add(1) {
+            Some(value) => Some(value),
+            None => {
+                reentrancy_exit();
+                return 6;
+            }
+        }
     } else {
-        let no = decode_prop_no(&data);
-        update_prop_no(&mut data, no.saturating_add(1));
+        None
+    };
+    let new_no = if approve {
+        None
+    } else {
+        match decode_prop_no(&data).checked_add(1) {
+            Some(value) => Some(value),
+            None => {
+                reentrancy_exit();
+                return 6;
+            }
+        }
+    };
+    let new_total_votes = match load_u64(TOTAL_VOTES_KEY).checked_add(1) {
+        Some(value) => value,
+        None => {
+            reentrancy_exit();
+            return 6;
+        }
+    };
+    let mut voter_global_key = Vec::from(&b"gov_vg_"[..]);
+    voter_global_key.extend_from_slice(&hex_encode(&v));
+    let new_voter_count = if storage_get(&voter_global_key).is_none() {
+        match load_u64(VOTER_COUNT_KEY).checked_add(1) {
+            Some(value) => Some(value),
+            None => {
+                reentrancy_exit();
+                return 6;
+            }
+        }
+    } else {
+        None
+    };
+
+    storage_set(&vk, &[if approve { 1u8 } else { 0u8 }]);
+    if approve {
+        update_prop_yes(&mut data, new_yes.unwrap_or(0));
+    } else {
+        update_prop_no(&mut data, new_no.unwrap_or(0));
     }
     storage_set(&pk, &data);
 
     // Track global vote stats
-    save_u64(TOTAL_VOTES_KEY, load_u64(TOTAL_VOTES_KEY).saturating_add(1));
+    save_u64(TOTAL_VOTES_KEY, new_total_votes);
     // Track unique voters: check if voter has voted before (use voter global key)
-    let mut voter_global_key = Vec::from(&b"gov_vg_"[..]);
-    voter_global_key.extend_from_slice(&hex_encode(&v));
-    if storage_get(&voter_global_key).is_none() {
+    if let Some(count) = new_voter_count {
         storage_set(&voter_global_key, &[1]);
-        save_u64(VOTER_COUNT_KEY, load_u64(VOTER_COUNT_KEY).saturating_add(1));
+        save_u64(VOTER_COUNT_KEY, count);
     }
 
     log_info("Vote recorded");
@@ -688,7 +819,15 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
 
     let yes = decode_prop_yes(&data);
     let no = decode_prop_no(&data);
-    let total = yes + no;
+    let total = match yes.checked_add(no) {
+        Some(value) => value,
+        None => {
+            update_prop_status(&mut data, STATUS_REJECTED);
+            storage_set(&pk, &data);
+            log_info("Proposal rejected: vote total overflow");
+            return 1;
+        }
+    };
 
     // AUDIT-FIX P2: Minimum quorum — prevent single-voter governance capture
     const MIN_QUORUM: u64 = 3;
@@ -703,7 +842,7 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
     let passed = if total == 0 {
         false
     } else {
-        yes * 10_000 / total >= APPROVAL_THRESHOLD_BPS
+        (yes as u128) * 10_000u128 / (total as u128) >= APPROVAL_THRESHOLD_BPS as u128
     };
 
     if passed {
@@ -721,7 +860,8 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
 }
 
 /// Execute a passed proposal (after timelock)
-/// Returns: 0=success, 1=not found, 2=not passed, 3=timelock not expired, 4=downstream call failed
+/// Returns: 0=success, 1=not found, 2=not passed, 3=timelock not expired,
+///          4=downstream call failed, 5=core address not configured
 pub fn execute_proposal(proposal_id: u64) -> u32 {
     let pk = proposal_key(proposal_id);
     let mut data = match storage_get(&pk) {
@@ -735,21 +875,39 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
 
     let current_slot = get_slot();
     let end_slot = decode_prop_end_slot(&data);
-    if current_slot < end_slot + EXECUTION_DELAY_SLOTS {
+    let executable_slot = match end_slot.checked_add(EXECUTION_DELAY_SLOTS) {
+        Some(value) => value,
+        None => return 3,
+    };
+    if current_slot < executable_slot {
         return 3;
     }
 
-    // Dispatch cross-contract call based on proposal type
-    let core_addr = load_addr(CORE_ADDRESS_KEY);
     let prop_type = decode_prop_type(&data);
+    let core_addr = if prop_type == PROPOSAL_NEW_PAIR
+        || prop_type == PROPOSAL_FEE_CHANGE
+        || prop_type == PROPOSAL_DELIST
+    {
+        let addr = load_addr(CORE_ADDRESS_KEY);
+        if is_zero(&addr) {
+            log_info("Proposal execution failed: DEX core address not configured");
+            return 5;
+        }
+        addr
+    } else {
+        [0u8; 32]
+    };
 
     match prop_type {
         PROPOSAL_NEW_PAIR => {
             // Cross-call dex_core::create_pair(admin, base_token, quote_token, tick, lot, min_order)
             // evidence field stores the base_token address (32 bytes)
             let base_token = decode_prop_evidence(&data);
-            // Use preferred quote as the quote token
-            let quote_token = load_addr(PREFERRED_QUOTE_KEY);
+            let quote_token = load_proposal_quote(proposal_id).unwrap_or_else(|| {
+                // Legacy proposals created before quote storage existed fall back
+                // to the historical preferred-quote behavior.
+                load_addr(PREFERRED_QUOTE_KEY)
+            });
             // Use sensible defaults: tick_size=1_000_000, lot_size=100, min_order=1000
             let mut args = Vec::new();
             args.extend_from_slice(&core_addr); // admin/caller (governance contract itself)
@@ -761,14 +919,14 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let target = Address(core_addr);
             let call = CrossCall::new(target, "create_pair", args);
             match call_contract(call) {
-                Ok(result) => {
+                Ok(result) if downstream_call_succeeded(&result) => {
                     log_info("Proposal executed: new pair created");
                     // Store creation result for queryability
                     let mut rk = Vec::from(&b"gov_exec_result_"[..]);
                     rk.extend_from_slice(&u64_to_bytes(proposal_id));
                     storage_set(&rk, &result);
                 }
-                Err(_) => {
+                Ok(_) | Err(_) => {
                     log_info("Proposal execution failed: pair creation cross-contract call failed");
                     return 4;
                 }
@@ -787,7 +945,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let target = Address(core_addr);
             let call = CrossCall::new(target, "update_pair_fees", args);
             match call_contract(call) {
-                Ok(_) => {
+                Ok(result) if downstream_call_succeeded(&result) => {
                     log_info("Proposal executed: fees updated");
                     // Store executed fee params for auditability
                     let mut fk = Vec::from(&b"gov_exec_fees_"[..]);
@@ -798,7 +956,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
                     fee_record.extend_from_slice(&taker_fee.to_le_bytes());
                     storage_set(&fk, &fee_record);
                 }
-                Err(_) => {
+                Ok(_) | Err(_) => {
                     log_info("Proposal execution failed: fee update cross-contract call failed");
                     return 4;
                 }
@@ -813,10 +971,10 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let target = Address(core_addr);
             let call = CrossCall::new(target, "pause_pair", args);
             match call_contract(call) {
-                Ok(_) => {
+                Ok(result) if downstream_call_succeeded(&result) => {
                     log_info("Proposal executed: pair delisted");
                 }
-                Err(_) => {
+                Ok(_) | Err(_) => {
                     log_info("Proposal execution failed: pair delist cross-contract call failed");
                     return 4;
                 }
@@ -1191,6 +1349,14 @@ pub extern "C" fn call() -> u32 {
             // get_voter_count — unique voters
             lichen_sdk::set_return_data(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
         }
+        20 => {
+            // set_core_address(caller[32] + core_addr[32])
+            if args.len() >= 1 + 32 + 32 {
+                let r = set_core_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -1221,6 +1387,8 @@ mod tests {
         let admin = setup();
         let lichenid = [77u8; 32];
         assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
+        let core = [88u8; 32];
+        assert_eq!(set_core_address(admin.as_ptr(), core.as_ptr()), 0);
 
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
         let seed_rep = |addr: [u8; 32]| {
@@ -1278,12 +1446,38 @@ mod tests {
 
     #[test]
     fn test_propose_fee_change() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         test_mock::set_slot(100);
         test_mock::set_caller(proposer);
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 10), 0);
         assert_eq!(get_proposal_count(), 1);
+    }
+
+    #[test]
+    fn test_propose_fee_change_requires_reputation() {
+        let admin = setup();
+        let lichenid = [77u8; 32];
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
+        let proposer = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 10), 5);
+        assert_eq!(get_proposal_count(), 0);
+    }
+
+    #[test]
+    fn test_propose_fee_change_rejects_invalid_fee_bounds() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 0, -2, 10), 4);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -101, 10), 4);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, 101, 10), 4);
+        assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 101), 4);
+        assert_eq!(get_proposal_count(), 0);
     }
 
     #[test]
@@ -1622,6 +1816,30 @@ mod tests {
     }
 
     #[test]
+    fn test_set_core_address_success_and_immutable() {
+        let admin = setup();
+        let core = [88u8; 32];
+        let second = [89u8; 32];
+
+        assert_eq!(set_core_address(admin.as_ptr(), core.as_ptr()), 0);
+        assert_eq!(set_core_address(admin.as_ptr(), second.as_ptr()), 3);
+        assert_eq!(load_addr(CORE_ADDRESS_KEY), core);
+    }
+
+    #[test]
+    fn test_set_core_address_rejects_zero_and_non_admin() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_core_address(admin.as_ptr(), zero.as_ptr()), 2);
+
+        let rando = [99u8; 32];
+        let core = [88u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_core_address(rando.as_ptr(), core.as_ptr()), 1);
+        assert!(is_zero(&load_addr(CORE_ADDRESS_KEY)));
+    }
+
+    #[test]
     fn test_verify_reputation_no_address_denies() {
         // P10-SC-10: Without LichenID address configured, verify_reputation fails closed
         let _admin = setup();
@@ -1748,10 +1966,20 @@ mod tests {
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
+        let later_preferred = [42u8; 32];
         test_mock::set_slot(100);
         test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+        let stored_quote = storage_get(&proposal_quote_key(1)).expect("proposal quote stored");
+        assert_eq!(stored_quote.as_slice(), &quote);
+
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_preferred_quote(admin.as_ptr(), later_preferred.as_ptr()),
             0
         );
 
@@ -1759,6 +1987,15 @@ mod tests {
 
         // Execute — should dispatch create_pair cross-call
         assert_eq!(execute_proposal(1), 0);
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("execution should cross-call dex_core");
+        assert_eq!(target, [88u8; 32]);
+        assert_eq!(function, "create_pair");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &[88u8; 32]);
+        assert_eq!(&args[32..64], &base);
+        assert_eq!(&args[64..96], &quote);
+        assert_ne!(&args[64..96], &later_preferred);
 
         // Verify proposal marked as EXECUTED
         let pd = storage_get(&proposal_key(1)).unwrap();
@@ -1817,6 +2054,31 @@ mod tests {
             }),
             "failure log must describe the downstream execution error"
         );
+    }
+
+    #[test]
+    fn test_execute_new_pair_downstream_error_status_keeps_proposal_retryable() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+
+        pass_and_timelock(1, 100);
+        test_mock::set_cross_call_response(Some(3u64.to_le_bytes().to_vec()));
+
+        assert_eq!(execute_proposal(1), 4);
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_status(&pd), STATUS_PASSED);
+
+        let mut ek = Vec::from(&b"gov_exec_slot_"[..]);
+        ek.extend_from_slice(&u64_to_bytes(1));
+        assert_eq!(load_u64(&ek), 0, "failed execution must not record a slot");
     }
 
     #[test]

@@ -285,6 +285,27 @@ fn vouch_given_key(voucher: &[u8], index: u16) -> Vec<u8> {
     key
 }
 
+fn vouch_given_count_key(voucher: &[u8]) -> Vec<u8> {
+    let hex = hex_encode_addr(voucher);
+    let mut key = Vec::with_capacity(18 + 64);
+    key.extend_from_slice(b"vouch_given_count:");
+    key.extend_from_slice(&hex);
+    key
+}
+
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0)
+}
+
+fn checked_counter_add(key: &[u8], delta: u64) -> Option<u64> {
+    stored_u64(key).checked_add(delta)
+}
+
+fn saturating_counter_add(key: &[u8], delta: u64) {
+    let next = stored_u64(key).saturating_add(delta);
+    storage_set(key, &u64_to_bytes(next));
+}
+
 fn reputation_key(pubkey: &[u8]) -> Vec<u8> {
     let hex = hex_encode_addr(pubkey);
     let mut key = Vec::with_capacity(4 + 64);
@@ -642,6 +663,16 @@ fn name_registration_cost(name_len: usize) -> u64 {
     }
 }
 
+fn name_registration_cost_for_years(name_len: usize, years: u8) -> Option<u64> {
+    name_registration_cost(name_len).checked_mul(years as u64)
+}
+
+fn name_expiry_from(base_slot: u64, years: u8) -> Option<u64> {
+    SLOTS_PER_YEAR
+        .checked_mul(years as u64)
+        .and_then(|slots| base_slot.checked_add(slots))
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -762,13 +793,21 @@ pub extern "C" fn register_identity(
     let rck = register_cooldown_key(&owner);
     if let Some(last) = storage_get(&rck) {
         let last_ts = bytes_to_u64(&last);
-        if now < last_ts + REGISTER_COOLDOWN_MS {
+        if now < last_ts.saturating_add(REGISTER_COOLDOWN_MS) {
             log_info("Registration cooldown active");
             reentrancy_exit();
             return 21;
         }
     }
-    storage_set(&rck, &u64_to_bytes(now));
+
+    let next_identity_count = match checked_counter_add(b"mid_identity_count", 1) {
+        Some(next) => next,
+        None => {
+            log_info("Identity counter overflow");
+            reentrancy_exit();
+            return 22;
+        }
+    };
 
     // Build identity record
     let mut record = [0u8; IDENTITY_SIZE];
@@ -805,12 +844,8 @@ pub extern "C" fn register_identity(
     let rep_key = reputation_key(&owner);
     storage_set(&rep_key, &rep_bytes);
 
-    // Increment global identity count
-    let count = match storage_get(b"mid_identity_count") {
-        Some(data) if data.len() >= 8 => bytes_to_u64(&data),
-        _ => 0,
-    };
-    storage_set(b"mid_identity_count", &u64_to_bytes(count + 1));
+    storage_set(&rck, &u64_to_bytes(now));
+    storage_set(b"mid_identity_count", &u64_to_bytes(next_identity_count));
 
     log_info("Identity registered successfully");
     reentrancy_exit();
@@ -979,10 +1014,7 @@ pub extern "C" fn update_reputation_typed(
         k.push(b'0' + contribution_type);
         k
     };
-    let prev = storage_get(&counter_key)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(&counter_key, &u64_to_bytes(prev + count));
+    saturating_counter_add(&counter_key, count);
 
     // Check for graduation and achievements
     check_achievements(&target, new_rep);
@@ -1465,13 +1497,24 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     let vck = vouch_cooldown_key(&voucher);
     if let Some(last) = storage_get(&vck) {
         let last_ts = bytes_to_u64(&last);
-        if now < last_ts + VOUCH_COOLDOWN_MS {
+        if now < last_ts.saturating_add(VOUCH_COOLDOWN_MS) {
             log_info("Vouch cooldown active");
             reentrancy_exit();
             return 21;
         }
     }
-    storage_set(&vck, &u64_to_bytes(now));
+
+    let given_count_key = vouch_given_count_key(&voucher);
+    let given_next = storage_get(&given_count_key)
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(voucher_vouch_count as u64);
+    if given_next > u16::MAX as u64 {
+        log_info("Vouch-given index overflow");
+        reentrancy_exit();
+        return 22;
+    }
+    let given_index = given_next as u16;
+    let next_given = given_next + 1;
 
     let ts_bytes = u64_to_bytes(now);
 
@@ -1485,20 +1528,19 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
 
     // Reverse index for O(1) "given vouches" lookup in RPC:
     // key: vouch_given:{voucher_hex}:{index} -> [vouchee(32), timestamp(8)]
-    let gvk = vouch_given_key(&voucher, voucher_vouch_count);
+    let gvk = vouch_given_key(&voucher, given_index);
     let mut gv_data = Vec::with_capacity(40);
     gv_data.extend_from_slice(&vouchee);
     gv_data.extend_from_slice(&ts_bytes);
     storage_set(&gvk, &gv_data);
+    storage_set(&given_count_key, &u64_to_bytes(next_given));
+    storage_set(&vck, &u64_to_bytes(now));
 
     // Deduct reputation from voucher
     let new_voucher_rep = voucher_rep - VOUCH_COST;
     let voucher_rep_bytes = u64_to_bytes(new_voucher_rep);
     if voucher_record.len() >= 126 {
         voucher_record[99..107].copy_from_slice(&voucher_rep_bytes);
-        let new_voucher_count = voucher_vouch_count + 1;
-        voucher_record[124] = (new_voucher_count & 0xFF) as u8;
-        voucher_record[125] = ((new_voucher_count >> 8) & 0xFF) as u8;
         voucher_record[115..123].copy_from_slice(&ts_bytes);
     }
     storage_set(&voucher_id_key, &voucher_record);
@@ -2325,10 +2367,7 @@ fn award_achievement(target: &[u8], hex: &[u8; 64], achievement_id: u8, name: &s
     let mut count_key = Vec::with_capacity(9 + 64);
     count_key.extend_from_slice(b"ach_count:");
     count_key.extend_from_slice(hex);
-    let prev = storage_get(&count_key)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(&count_key, &u64_to_bytes(prev + 1));
+    saturating_counter_add(&count_key, 1);
 
     log_info(&alloc::format!("Achievement unlocked: {}", name));
     let _ = target; // suppress unused warning
@@ -2622,12 +2661,6 @@ pub extern "C" fn attest_skill(
         return 6;
     }
 
-    // Store attestation: level (1 byte) + timestamp (8 bytes)
-    let mut att_data = Vec::with_capacity(9);
-    att_data.push(attestation_level);
-    att_data.extend_from_slice(&u64_to_bytes(get_timestamp()));
-    storage_set(&ak, &att_data);
-
     // Increment attestation count (new hash key).
     // Also migrate any legacy count forward on first write under new hash.
     let ck = attestation_count_key(&identity, &s_hash);
@@ -2643,7 +2676,21 @@ pub extern "C" fn attest_skill(
             }
         }
     }
-    storage_set(&ck, &u64_to_bytes(count + 1));
+    let next_count = match count.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Attestation count overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
+
+    // Store attestation: level (1 byte) + timestamp (8 bytes)
+    let mut att_data = Vec::with_capacity(9);
+    att_data.push(attestation_level);
+    att_data.extend_from_slice(&u64_to_bytes(get_timestamp()));
+    storage_set(&ak, &att_data);
+    storage_set(&ck, &u64_to_bytes(next_count));
 
     log_info("Skill attestation recorded");
     reentrancy_exit();
@@ -2907,7 +2954,14 @@ pub extern "C" fn register_name(
     }
 
     // Check payment (via get_value() — the LICN tokens sent with this transaction)
-    let required_cost = name_registration_cost(name_len) * (duration_years as u64);
+    let required_cost = match name_registration_cost_for_years(name_len, duration_years) {
+        Some(cost) => cost,
+        None => {
+            log_info("Name registration cost overflow");
+            reentrancy_exit();
+            return 9;
+        }
+    };
     let paid = lichen_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for name registration");
@@ -2917,7 +2971,22 @@ pub extern "C" fn register_name(
 
     // Register the name
     let current_slot = lichen_sdk::get_slot();
-    let expiry_slot = current_slot + (SLOTS_PER_YEAR * duration_years as u64);
+    let expiry_slot = match name_expiry_from(current_slot, duration_years) {
+        Some(slot) => slot,
+        None => {
+            log_info("Name expiry overflow");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let next_name_count = match checked_counter_add(b"licn_name_count", 1) {
+        Some(next) => next,
+        None => {
+            log_info("Name counter overflow");
+            reentrancy_exit();
+            return 9;
+        }
+    };
 
     let mut record = [0u8; 48];
     record[0..32].copy_from_slice(&caller);
@@ -2929,11 +2998,7 @@ pub extern "C" fn register_name(
     // Set reverse mapping: address → name
     storage_set(&rev_key, &name);
 
-    // Increment name count
-    let count = storage_get(b"licn_name_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"licn_name_count", &u64_to_bytes(count + 1));
+    storage_set(b"licn_name_count", &u64_to_bytes(next_name_count));
 
     // Award reputation for name registration (+25 rep) and check achievements
     let id_key = identity_key(&caller);
@@ -3233,18 +3298,12 @@ pub extern "C" fn bid_name_auction(
         return 6;
     }
 
-    // AUDIT-FIX G18-02: Checks-Effects-Interactions pattern
-    // Update state BEFORE external call to prevent reentrancy exploitation.
+    // Refund must explicitly succeed before the higher bid replaces state.
+    // The contract-wide reentrancy guard protects this external call.
     let prev_bid_amount = bytes_to_u64(&record[25..33]);
     let mut prev_bidder = [0u8; 32];
     prev_bidder.copy_from_slice(&record[33..65]);
 
-    // EFFECTS: Update auction record with new bid before any external call
-    record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
-    record[33..65].copy_from_slice(&bidder);
-    storage_set(&ak, &record);
-
-    // INTERACTIONS: Refund previous highest bidder after state is updated
     if prev_bid_amount > 0 && !prev_bidder.iter().all(|&b| b == 0) {
         let token_addr = match get_mid_token_address() {
             Some(a) => a,
@@ -3264,16 +3323,20 @@ pub extern "C" fn bid_name_auction(
         };
         match transfer_token_or_native(token_addr, self_addr, Address(prev_bidder), prev_bid_amount)
         {
-            Err(_) => {
+            Ok(true) => {
+                log_info("Previous highest bidder refunded");
+            }
+            Ok(false) | Err(_) => {
                 log_info("bid_name_auction: refund transfer failed");
                 reentrancy_exit();
                 return 32;
             }
-            Ok(_) => {
-                log_info("Previous highest bidder refunded");
-            }
         }
     }
+
+    record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
+    record[33..65].copy_from_slice(&bidder);
+    storage_set(&ak, &record);
 
     log_info("Auction bid accepted");
     reentrancy_exit();
@@ -3295,6 +3358,14 @@ pub extern "C" fn finalize_name_auction(
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, _caller.as_mut_ptr(), 32);
     }
+
+    let real_caller = get_caller();
+    if real_caller.0 != _caller {
+        log_info("finalize_name_auction: caller does not match transaction signer");
+        reentrancy_exit();
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe {
@@ -3374,7 +3445,22 @@ pub extern "C" fn finalize_name_auction(
         }
     }
 
-    let expiry_slot = now_slot + (SLOTS_PER_YEAR * duration_years as u64);
+    let expiry_slot = match name_expiry_from(now_slot, duration_years) {
+        Some(slot) => slot,
+        None => {
+            log_info("Name expiry overflow");
+            reentrancy_exit();
+            return 9;
+        }
+    };
+    let next_name_count = match checked_counter_add(b"licn_name_count", 1) {
+        Some(next) => next,
+        None => {
+            log_info("Name counter overflow");
+            reentrancy_exit();
+            return 9;
+        }
+    };
     let mut name_record = [0u8; 48];
     name_record[0..32].copy_from_slice(winner);
     name_record[32..40].copy_from_slice(&u64_to_bytes(now_slot));
@@ -3382,11 +3468,7 @@ pub extern "C" fn finalize_name_auction(
     storage_set(&nk, &name_record);
     storage_set(&winner_rev, &name);
 
-    // Increment name count
-    let count = storage_get(b"licn_name_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"licn_name_count", &u64_to_bytes(count + 1));
+    storage_set(b"licn_name_count", &u64_to_bytes(next_name_count));
 
     auction[0] = 0; // inactive
     storage_set(&ak, &auction);
@@ -3590,7 +3672,14 @@ pub extern "C" fn renew_name(
     }
 
     // Check payment
-    let required_cost = name_registration_cost(name_len) * (additional_years as u64);
+    let required_cost = match name_registration_cost_for_years(name_len, additional_years) {
+        Some(cost) => cost,
+        None => {
+            log_info("Name renewal cost overflow");
+            reentrancy_exit();
+            return 6;
+        }
+    };
     let paid = lichen_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for renewal");
@@ -3606,7 +3695,14 @@ pub extern "C" fn renew_name(
     } else {
         current_expiry
     };
-    let new_expiry = base + (SLOTS_PER_YEAR * additional_years as u64);
+    let new_expiry = match name_expiry_from(base, additional_years) {
+        Some(slot) => slot,
+        None => {
+            log_info("Name expiry overflow");
+            reentrancy_exit();
+            return 6;
+        }
+    };
 
     record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
     storage_set(&nk, &record);
@@ -3854,7 +3950,14 @@ pub extern "C" fn renew_name_as(
         return 4;
     }
 
-    let required_cost = name_registration_cost(name_len) * (additional_years as u64);
+    let required_cost = match name_registration_cost_for_years(name_len, additional_years) {
+        Some(cost) => cost,
+        None => {
+            log_info("Name renewal cost overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
     let paid = lichen_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for renewal");
@@ -3869,7 +3972,14 @@ pub extern "C" fn renew_name_as(
     } else {
         current_expiry
     };
-    let new_expiry = base + (SLOTS_PER_YEAR * additional_years as u64);
+    let new_expiry = match name_expiry_from(base, additional_years) {
+        Some(slot) => slot,
+        None => {
+            log_info("Name expiry overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
 
     record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
     storage_set(&nk, &record);
@@ -5124,9 +5234,20 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
         reentrancy_exit();
         return 1;
     }
+    let real_caller = get_caller();
+    if &real_caller.0[..] != admin {
+        log_info("admin_register_reserved_name: caller does not match admin");
+        reentrancy_exit();
+        return 200;
+    }
 
     let owner = &args[32..64];
     let agent_type = args[args.len() - 1];
+    if !is_valid_agent_type(agent_type) {
+        log_info("admin_register_reserved_name: invalid agent type");
+        reentrancy_exit();
+        return 6;
+    }
     let name_len_offset = args.len() - 5;
     let name_len = u32::from_le_bytes([
         args[name_len_offset],
@@ -5167,7 +5288,38 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
 
     // Auto-create identity if owner doesn't have one yet
     let id_key = identity_key(owner);
-    if storage_get(&id_key).is_none() {
+    let should_create_identity = storage_get(&id_key).is_none();
+    let next_identity_count = if should_create_identity {
+        match checked_counter_add(b"mid_identity_count", 1) {
+            Some(next) => Some(next),
+            None => {
+                log_info("admin_register_reserved_name: identity counter overflow");
+                reentrancy_exit();
+                return 7;
+            }
+        }
+    } else {
+        None
+    };
+    let current_slot = lichen_sdk::get_slot();
+    let expiry_slot = match name_expiry_from(current_slot, 10) {
+        Some(slot) => slot,
+        None => {
+            log_info("admin_register_reserved_name: name expiry overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
+    let next_name_count = match checked_counter_add(b"licn_name_count", 1) {
+        Some(next) => next,
+        None => {
+            log_info("admin_register_reserved_name: name counter overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
+
+    if should_create_identity {
         let now = get_timestamp();
         let mut record = [0u8; IDENTITY_SIZE];
         record[0..32].copy_from_slice(owner);
@@ -5209,17 +5361,12 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
         storage_set(&id_key, &record);
         storage_set(&reputation_key(owner), &rep_bytes);
 
-        // Increment identity count
-        let count = storage_get(b"mid_identity_count")
-            .map(|d| bytes_to_u64(&d))
-            .unwrap_or(0);
-        storage_set(b"mid_identity_count", &u64_to_bytes(count + 1));
+        if let Some(next) = next_identity_count {
+            storage_set(b"mid_identity_count", &u64_to_bytes(next));
+        }
     }
 
     // Register the name with 10-year expiry (max duration)
-    let current_slot = lichen_sdk::get_slot();
-    let expiry_slot = current_slot + (SLOTS_PER_YEAR * 10);
-
     let mut record = [0u8; 48];
     record[0..32].copy_from_slice(owner);
     record[32..40].copy_from_slice(&u64_to_bytes(current_slot));
@@ -5231,11 +5378,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
     let rev_key = name_reverse_key(owner);
     storage_set(&rev_key, name);
 
-    // Increment name count
-    let count = storage_get(b"licn_name_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"licn_name_count", &u64_to_bytes(count + 1));
+    storage_set(b"licn_name_count", &u64_to_bytes(next_name_count));
 
     log_info("Reserved .lichen name registered by admin");
     reentrancy_exit();
@@ -5449,6 +5592,83 @@ mod tests {
         let vouchee_record = test_mock::get_storage(&vouchee_id_key).unwrap();
         let vouchee_rep = bytes_to_u64(&vouchee_record[99..107]);
         assert_eq!(vouchee_rep, INITIAL_REPUTATION + VOUCH_REWARD);
+    }
+
+    #[test]
+    fn test_vouch_uses_separate_given_count() {
+        setup();
+        test_mock::set_timestamp(5000);
+
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let voucher = [2u8; 32];
+        let vouchee = [3u8; 32];
+        test_mock::set_caller(voucher);
+        assert_eq!(
+            register_identity(voucher.as_ptr(), AGENT_TYPE_GENERAL, b"Voucher".as_ptr(), 7),
+            0
+        );
+        test_mock::set_caller(vouchee);
+        assert_eq!(
+            register_identity(vouchee.as_ptr(), AGENT_TYPE_GENERAL, b"Vouchee".as_ptr(), 7),
+            0
+        );
+
+        test_mock::set_caller(voucher);
+        assert_eq!(vouch(voucher.as_ptr(), vouchee.as_ptr()), 0);
+
+        let voucher_record = storage_get(&identity_key(&voucher)).unwrap();
+        let vouchee_record = storage_get(&identity_key(&vouchee)).unwrap();
+        assert_eq!(vouch_count_from_record(&voucher_record), 0);
+        assert_eq!(vouch_count_from_record(&vouchee_record), 1);
+
+        let given_count = storage_get(&vouch_given_count_key(&voucher)).unwrap();
+        assert_eq!(bytes_to_u64(&given_count), 1);
+        assert!(storage_get(&vouch_given_key(&voucher, 0)).is_some());
+    }
+
+    #[test]
+    fn test_register_identity_counter_overflow_rejected_before_state() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        storage_set(b"mid_identity_count", &u64_to_bytes(u64::MAX));
+
+        let owner = [2u8; 32];
+        let name = b"Overflow";
+        test_mock::set_caller(owner);
+        assert_eq!(
+            register_identity(
+                owner.as_ptr(),
+                AGENT_TYPE_GENERAL,
+                name.as_ptr(),
+                name.len() as u32
+            ),
+            22
+        );
+        assert!(storage_get(&identity_key(&owner)).is_none());
+        assert!(storage_get(&register_cooldown_key(&owner)).is_none());
+    }
+
+    #[test]
+    fn test_register_cooldown_overflow_does_not_bypass() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let owner = [2u8; 32];
+        storage_set(&register_cooldown_key(&owner), &u64_to_bytes(u64::MAX - 10));
+        test_mock::set_timestamp(1000);
+        test_mock::set_caller(owner);
+        assert_eq!(
+            register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Cool".as_ptr(), 4),
+            21
+        );
+        assert!(storage_get(&identity_key(&owner)).is_none());
     }
 
     #[test]
@@ -5972,6 +6192,54 @@ mod tests {
     }
 
     #[test]
+    fn test_finalize_name_auction_rejects_caller_mismatch() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let bidder = [2u8; 32];
+        test_mock::set_caller(bidder);
+        assert_eq!(
+            register_identity(bidder.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
+
+        test_mock::set_slot(10_000);
+        let premium = b"mno";
+        test_mock::set_caller(admin);
+        assert_eq!(
+            create_name_auction(
+                admin.as_ptr(),
+                premium.as_ptr(),
+                premium.len() as u32,
+                500_000_000_000,
+                300_500
+            ),
+            0
+        );
+        test_mock::set_caller(bidder);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(
+            bid_name_auction(
+                bidder.as_ptr(),
+                premium.as_ptr(),
+                premium.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
+
+        test_mock::set_slot(300_501);
+        test_mock::set_caller([9u8; 32]);
+        assert_eq!(
+            finalize_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 1),
+            200
+        );
+        assert!(storage_get(&name_key(premium)).is_none());
+    }
+
+    #[test]
     fn test_update_reputation() {
         setup();
         test_mock::set_timestamp(5000);
@@ -6303,6 +6571,20 @@ mod tests {
         // Verify count
         let count_data = test_mock::get_storage(b"licn_name_count").unwrap();
         assert_eq!(bytes_to_u64(&count_data), 1);
+    }
+
+    #[test]
+    fn test_register_name_expiry_overflow_rejected() {
+        setup();
+        let owner = [2u8; 32];
+        setup_identity_with_slot(&owner, u64::MAX - 10, 100_000_000_000);
+
+        let name = b"overflow-name";
+        assert_eq!(
+            register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1),
+            9
+        );
+        assert!(storage_get(&name_key(name)).is_none());
     }
 
     #[test]
@@ -6924,7 +7206,13 @@ mod tests {
         test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&other, &owner, name, 0));
         assert_eq!(admin_register_reserved_name(), 1);
 
+        test_mock::set_caller(other);
+        test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&admin, &owner, name, 0));
+        assert_eq!(admin_register_reserved_name(), 200);
+        assert!(storage_get(&name_key(name)).is_none());
+
         // Admin can register a reserved name
+        test_mock::set_caller(admin);
         test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&admin, &owner, name, 0));
         assert_eq!(admin_register_reserved_name(), 0);
 
@@ -7567,6 +7855,9 @@ mod tests {
             ),
             30
         );
+        let record = storage_get(&name_auction_key(name)).unwrap();
+        assert_eq!(bytes_to_u64(&record[25..33]), 600_000_000_000);
+        assert_eq!(&record[33..65], &bidder1);
     }
 
     #[test]
@@ -7704,6 +7995,73 @@ mod tests {
             ),
             31
         );
+        let record = storage_get(&name_auction_key(name)).unwrap();
+        assert_eq!(bytes_to_u64(&record[25..33]), 600_000_000_000);
+        assert_eq!(&record[33..65], &bidder1);
+    }
+
+    #[test]
+    fn test_bid_auction_rejects_false_refund_status_without_state_change() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+        test_mock::set_caller(bidder1);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
+        test_mock::set_caller(bidder2);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
+
+        test_mock::set_slot(10_000);
+        let name = b"ghi";
+        configure_mid_escrow(&admin);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            create_name_auction(
+                admin.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                500_000_000_000,
+                300_500
+            ),
+            0
+        );
+
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(bidder2);
+        test_mock::set_value(700_000_000_000);
+        assert_eq!(
+            bid_name_auction(
+                bidder2.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                700_000_000_000
+            ),
+            32
+        );
+        let record = storage_get(&name_auction_key(name)).unwrap();
+        assert_eq!(bytes_to_u64(&record[25..33]), 600_000_000_000);
+        assert_eq!(&record[33..65], &bidder1);
     }
 
     #[test]
@@ -7728,10 +8086,8 @@ mod tests {
     }
 
     #[test]
-    fn test_bid_auction_cei_pattern() {
-        // G18-02: Verify state is updated before external call (CEI)
-        // When a higher bid comes in, auction record should be updated
-        // even if refund transfer fails
+    fn test_bid_auction_first_bid_records_state() {
+        // First bid has no previous bidder to refund and should record state.
         test_mock::reset();
 
         let creator = [1u8; 32];

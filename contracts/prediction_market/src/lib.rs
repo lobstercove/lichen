@@ -196,6 +196,14 @@ fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
 }
 
+fn u128_to_u64_saturating(value: u128) -> u64 {
+    if value > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        value as u64
+    }
+}
+
 fn addrs_equal(a: &[u8], b: &[u8]) -> bool {
     a.len() == 32 && b.len() == 32 && a == b
 }
@@ -383,11 +391,15 @@ fn transfer_lusd_out(recipient: &[u8], amount: u64) -> bool {
         Address(recip),
         amount,
     ) {
+        Ok(true) => true,
+        Ok(false) => {
+            log_info("lUSD transfer returned failure status");
+            false
+        }
         Err(_) => {
             log_info("lUSD transfer failed");
             false
         }
-        Ok(_) => true,
     }
 }
 
@@ -600,8 +612,8 @@ fn update_trader_stats(trader: &[u8], volume: u64) {
     };
     let slot = get_slot();
     let mut buf = [0u8; 24];
-    buf[0..8].copy_from_slice(&u64_to_bytes(old_vol + volume));
-    buf[8..16].copy_from_slice(&u64_to_bytes(old_count + 1));
+    buf[0..8].copy_from_slice(&u64_to_bytes(old_vol.saturating_add(volume)));
+    buf[8..16].copy_from_slice(&u64_to_bytes(old_count.saturating_add(1)));
     buf[16..24].copy_from_slice(&u64_to_bytes(slot));
 
     // If first trade ever: increment global trader count, add to trader list
@@ -609,7 +621,7 @@ fn update_trader_stats(trader: &[u8], volume: u64) {
         let total = load_u64(TOTAL_TRADERS_KEY);
         let list_key = trader_list_key(total);
         storage_set(&list_key, trader);
-        save_u64(TOTAL_TRADERS_KEY, total + 1);
+        save_u64(TOTAL_TRADERS_KEY, total.saturating_add(1));
     }
 
     storage_set(&key, &buf);
@@ -623,7 +635,7 @@ fn update_market_trader_stats(market_id: u64, trader: &[u8], volume: u64) {
         storage_set(&marker, &[1]);
         let count_key = market_trader_count_key(market_id);
         let count = load_u64(&count_key);
-        save_u64(&count_key, count + 1);
+        save_u64(&count_key, count.saturating_add(1));
     }
     // 24h rolling volume (216,000 slots at 400ms/slot = 24 hours)
     let vol_key = market_24h_volume_key(market_id);
@@ -637,7 +649,7 @@ fn update_market_trader_stats(market_id: u64, trader: &[u8], volume: u64) {
         save_u64(&reset_key, current_slot);
     } else {
         let existing = load_u64(&vol_key);
-        save_u64(&vol_key, existing + volume);
+        save_u64(&vol_key, existing.saturating_add(volume));
     }
 }
 
@@ -677,7 +689,7 @@ fn record_price_snapshot(market_id: u64, yes_price: u64, trade_volume: u64) {
     entry[8..16].copy_from_slice(&u64_to_bytes(yes_price));
     entry[16..24].copy_from_slice(&u64_to_bytes(trade_volume));
     storage_set(&entry_key, &entry);
-    save_u64(&count_key, count + 1);
+    save_u64(&count_key, count.saturating_add(1));
 }
 
 /// Key for storing the slot of the last trade (circuit breaker price move check).
@@ -1102,7 +1114,7 @@ fn track_user_market(addr: &[u8], market_id: u64) {
         }
     }
     save_u64(&user_market_key(addr, count), market_id);
-    save_u64(&count_key, count + 1);
+    save_u64(&count_key, count.saturating_add(1));
 }
 
 /// Add market to category index.
@@ -1110,14 +1122,14 @@ fn index_category(category: u8, market_id: u64) {
     let cc_key = category_count_key(category);
     let count = load_u64(&cc_key);
     save_u64(&category_index_key(category, count), market_id);
-    save_u64(&cc_key, count + 1);
+    save_u64(&cc_key, count.saturating_add(1));
 }
 
 /// Add market to the active markets list.
 fn add_active_market(market_id: u64) {
     let idx = load_u64(OPEN_MARKETS_KEY);
     save_u64(&active_market_key(idx), market_id);
-    save_u64(OPEN_MARKETS_KEY, idx + 1);
+    save_u64(OPEN_MARKETS_KEY, idx.saturating_add(1));
 }
 
 /// Remove market from the active markets list (swap-remove).
@@ -1998,6 +2010,15 @@ pub fn add_initial_liquidity(
         }
     }
 
+    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
+    let new_total_coll = match total_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_PLATFORM => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+
     if !escrow_lusd_in(provider, amount_lusd) {
         reentrancy_exit();
         return 0;
@@ -2027,8 +2048,7 @@ pub fn add_initial_liquidity(
     save_market(market_id, &record);
 
     // Update global state
-    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
+    save_u64(TOTAL_COLLATERAL_KEY, new_total_coll);
     add_active_market(market_id);
 
     // Track user
@@ -2086,17 +2106,23 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_lusd: u64) 
     let existing_lp_total = market_lp_total_shares(&record);
 
     // Circuit breaker: per-market collateral cap
-    if existing_collateral + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
-        reentrancy_exit();
-        return 0;
-    }
+    let new_market_collateral = match existing_collateral.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_COLLATERAL => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Platform-wide circuit breaker
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    if platform_coll + amount_lusd > CIRCUIT_BREAKER_PLATFORM {
-        reentrancy_exit();
-        return 0;
-    }
+    let new_platform_coll = match platform_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_PLATFORM => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // LP shares proportional to existing pool
     // new_lp = existing_lp_total * amount_lusd / existing_collateral
@@ -2127,25 +2153,28 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_lusd: u64) 
         } else {
             amount_lusd / (outcome_count as u64)
         };
-        set_pool_reserve(&mut pool, old_reserve + add);
+        set_pool_reserve(&mut pool, old_reserve.saturating_add(add));
         let ts = pool_total_shares(&pool);
-        set_pool_total_shares(&mut pool, ts + amount_lusd);
+        set_pool_total_shares(&mut pool, ts.saturating_add(amount_lusd));
         let oi = pool_open_interest(&pool);
-        set_pool_open_interest(&mut pool, oi + amount_lusd);
+        set_pool_open_interest(&mut pool, oi.saturating_add(amount_lusd));
         save_outcome_pool(market_id, i, &pool);
     }
 
     // Update LP token balance
     let existing_lp = load_u64(&lp_key(market_id, provider));
-    save_u64(&lp_key(market_id, provider), existing_lp + new_lp);
+    save_u64(
+        &lp_key(market_id, provider),
+        existing_lp.saturating_add(new_lp),
+    );
 
     // Update market totals
-    set_market_total_collateral(&mut record, existing_collateral + amount_lusd);
-    set_market_lp_total_shares(&mut record, existing_lp_total + new_lp);
+    set_market_total_collateral(&mut record, new_market_collateral);
+    set_market_lp_total_shares(&mut record, existing_lp_total.saturating_add(new_lp));
     save_market(market_id, &record);
 
     // Update global
-    save_u64(TOTAL_COLLATERAL_KEY, platform_coll + amount_lusd);
+    save_u64(TOTAL_COLLATERAL_KEY, new_platform_coll);
     track_user_market(provider, market_id);
 
     log_info("Liquidity added!");
@@ -2214,10 +2243,21 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
 
     // Check per-market circuit breaker on collateral
     let existing_coll = market_total_collateral(&record);
-    if existing_coll + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
-        reentrancy_exit();
-        return 0;
-    }
+    let new_market_coll = match existing_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_COLLATERAL => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
+    let new_total_coll = match total_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_PLATFORM => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Load all reserves
     let mut reserves = Vec::with_capacity(outcome_count as usize);
@@ -2265,10 +2305,10 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
     if prev_price > 0 && new_price > 0 {
         let price_diff = new_price.abs_diff(prev_price);
         // Price move > 50% of previous price → arm circuit breaker for NEXT trade
-        if (price_diff * 10_000) / prev_price > PRICE_MOVE_PAUSE_BPS {
+        if ((price_diff as u128) * 10_000 / (prev_price as u128)) > PRICE_MOVE_PAUSE_BPS as u128 {
             save_u64(
                 &market_pause_key(market_id),
-                current_slot + PRICE_MOVE_PAUSE_SLOTS,
+                current_slot.saturating_add(PRICE_MOVE_PAUSE_SLOTS),
             );
         }
     }
@@ -2280,13 +2320,13 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
 
         if i == outcome {
             let vol = pool_volume(&pool);
-            set_pool_volume(&mut pool, vol + amount_lusd);
+            set_pool_volume(&mut pool, vol.saturating_add(amount_lusd));
             set_pool_price_last(&mut pool, new_price);
             // total_shares increases (new shares minted)
             let ts = pool_total_shares(&pool);
-            set_pool_total_shares(&mut pool, ts + shares_received);
+            set_pool_total_shares(&mut pool, ts.saturating_add(shares_received));
             let oi = pool_open_interest(&pool);
-            set_pool_open_interest(&mut pool, oi + shares_received);
+            set_pool_open_interest(&mut pool, oi.saturating_add(shares_received));
         } else {
             // Update price for this outcome too
             let p = calculate_price(&new_reserves, i);
@@ -2309,28 +2349,27 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_lus
         market_id,
         trader,
         outcome,
-        existing_shares + shares_received,
-        existing_cost + amount_lusd,
+        existing_shares.saturating_add(shares_received),
+        existing_cost.saturating_add(amount_lusd),
     );
 
     // Update market totals
-    set_market_total_collateral(&mut record, existing_coll + amount_lusd);
+    set_market_total_collateral(&mut record, new_market_coll);
     let vol = market_total_volume(&record);
-    set_market_total_volume(&mut record, vol + amount_lusd);
+    set_market_total_volume(&mut record, vol.saturating_add(amount_lusd));
     // Distribute fee: LP portion stays in pool (already via fee_shares), protocol portion:
-    let fee_lusd = (amount_lusd as u128 * TRADING_FEE_BPS as u128 / 10_000) as u64;
-    let protocol_fee = (fee_lusd * FEE_PROTOCOL_SHARE) / 100;
+    let fee_lusd = u128_to_u64_saturating(amount_lusd as u128 * TRADING_FEE_BPS as u128 / 10_000);
+    let protocol_fee = u128_to_u64_saturating(fee_lusd as u128 * FEE_PROTOCOL_SHARE as u128 / 100);
     let fees = market_fees_collected(&record);
-    set_market_fees_collected(&mut record, fees + protocol_fee);
+    set_market_fees_collected(&mut record, fees.saturating_add(protocol_fee));
     save_market(market_id, &record);
 
     // Update global counters
     let total_vol = load_u64(TOTAL_VOLUME_KEY);
-    save_u64(TOTAL_VOLUME_KEY, total_vol + amount_lusd);
-    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
+    save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(amount_lusd));
+    save_u64(TOTAL_COLLATERAL_KEY, new_total_coll);
     let total_fees = load_u64(FEES_COLLECTED_KEY);
-    save_u64(FEES_COLLECTED_KEY, total_fees + protocol_fee);
+    save_u64(FEES_COLLECTED_KEY, total_fees.saturating_add(protocol_fee));
 
     track_user_market(trader, market_id);
 
@@ -2420,6 +2459,13 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
         reentrancy_exit();
         return 0;
     }
+    let total_out = match lusd_returned.checked_add(fee_lusd) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Apply new reserves
     let new_reserves = apply_sell_reserves(&reserves, outcome, shares_amount);
@@ -2444,7 +2490,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
         if i == outcome {
             let vol = pool_volume(&pool);
-            set_pool_volume(&mut pool, vol + lusd_returned + fee_lusd);
+            set_pool_volume(&mut pool, vol.saturating_add(total_out));
             let ts = pool_total_shares(&pool);
             // Decrease total shares (shares burned as part of complete set redemption)
             if ts >= shares_amount {
@@ -2462,12 +2508,12 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     // Record price history snapshot
     {
         let sell_price = calculate_price(&new_reserves, outcome);
-        record_price_snapshot(market_id, sell_price, lusd_returned + fee_lusd);
+        record_price_snapshot(market_id, sell_price, total_out);
     }
 
     // Update per-trader and per-market analytics
-    update_trader_stats(trader, lusd_returned + fee_lusd);
-    update_market_trader_stats(market_id, trader, lusd_returned + fee_lusd);
+    update_trader_stats(trader, total_out);
+    update_market_trader_stats(market_id, trader, total_out);
 
     // Update user position
     let cost_basis_reduction = if user_shares > 0 {
@@ -2485,22 +2531,21 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
     // Update market totals
     let existing_coll = market_total_collateral(&record);
-    let total_out = lusd_returned + fee_lusd;
     set_market_total_collateral(&mut record, existing_coll.saturating_sub(total_out));
     let vol = market_total_volume(&record);
-    set_market_total_volume(&mut record, vol + total_out);
-    let protocol_fee = (fee_lusd * FEE_PROTOCOL_SHARE) / 100;
+    set_market_total_volume(&mut record, vol.saturating_add(total_out));
+    let protocol_fee = u128_to_u64_saturating(fee_lusd as u128 * FEE_PROTOCOL_SHARE as u128 / 100);
     let fees = market_fees_collected(&record);
-    set_market_fees_collected(&mut record, fees + protocol_fee);
+    set_market_fees_collected(&mut record, fees.saturating_add(protocol_fee));
     save_market(market_id, &record);
 
     // Update global counters
     let total_vol = load_u64(TOTAL_VOLUME_KEY);
-    save_u64(TOTAL_VOLUME_KEY, total_vol + total_out);
+    save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(total_out));
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(total_out));
     let total_fees = load_u64(FEES_COLLECTED_KEY);
-    save_u64(FEES_COLLECTED_KEY, total_fees + protocol_fee);
+    save_u64(FEES_COLLECTED_KEY, total_fees.saturating_add(protocol_fee));
 
     log_info("Shares sold!");
 
@@ -2564,10 +2609,21 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
 
     // Collateral checks
     let existing_coll = market_total_collateral(&record);
-    if existing_coll + amount_lusd > CIRCUIT_BREAKER_COLLATERAL {
-        reentrancy_exit();
-        return 0;
-    }
+    let new_market_coll = match existing_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_COLLATERAL => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
+    let new_total_coll = match total_coll.checked_add(amount_lusd) {
+        Some(v) if v <= CIRCUIT_BREAKER_PLATFORM => v,
+        _ => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     if !escrow_lusd_in(user, amount_lusd) {
         reentrancy_exit();
@@ -2581,8 +2637,8 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
             market_id,
             user,
             i,
-            existing_shares + amount_lusd,
-            existing_cost + amount_lusd,
+            existing_shares.saturating_add(amount_lusd),
+            existing_cost.saturating_add(amount_lusd),
         );
 
         // Update pool: increase total shares and open interest
@@ -2594,18 +2650,17 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_lusd: u64) 
             }
         };
         let ts = pool_total_shares(&pool);
-        set_pool_total_shares(&mut pool, ts + amount_lusd);
+        set_pool_total_shares(&mut pool, ts.saturating_add(amount_lusd));
         let oi = pool_open_interest(&pool);
-        set_pool_open_interest(&mut pool, oi + amount_lusd);
+        set_pool_open_interest(&mut pool, oi.saturating_add(amount_lusd));
         save_outcome_pool(market_id, i, &pool);
     }
 
     // Lock collateral
-    set_market_total_collateral(&mut record, existing_coll + amount_lusd);
+    set_market_total_collateral(&mut record, new_market_coll);
     save_market(market_id, &record);
 
-    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll + amount_lusd);
+    save_u64(TOTAL_COLLATERAL_KEY, new_total_coll);
 
     track_user_market(user, market_id);
 
@@ -2659,6 +2714,19 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
             reentrancy_exit();
             return 0;
         }
+        if load_outcome_pool(market_id, i).is_none() {
+            reentrancy_exit();
+            return 0;
+        }
+    }
+
+    // Return collateral (no fee on redemption per plan). Transfer before
+    // mutating positions/pools so failed payouts leave the user retryable.
+    let lusd_returned = amount;
+    if !transfer_lusd_out(user, lusd_returned) {
+        log_info("redeem_complete_set: lUSD transfer to user failed");
+        reentrancy_exit();
+        return 0;
     }
 
     // Burn shares from each outcome
@@ -2692,8 +2760,6 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
         save_outcome_pool(market_id, i, &pool);
     }
 
-    // Return collateral (no fee on redemption per plan)
-    let lusd_returned = amount;
     let existing_coll = market_total_collateral(&record);
     set_market_total_collateral(&mut record, existing_coll.saturating_sub(lusd_returned));
     save_market(market_id, &record);
@@ -2703,13 +2769,6 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
         TOTAL_COLLATERAL_KEY,
         total_coll.saturating_sub(lusd_returned),
     );
-
-    // G21-01: Transfer lUSD to user
-    if !transfer_lusd_out(user, lusd_returned) {
-        log_info("redeem_complete_set: lUSD transfer to user failed");
-        reentrancy_exit();
-        return 0;
-    }
 
     reentrancy_exit();
     lusd_returned as u32
@@ -2910,7 +2969,14 @@ pub fn submit_resolution(
     set_market_resolve_slot(&mut record, current_slot);
     set_market_resolution_bond(&mut record, bond);
     set_market_resolver(&mut record, resolver);
-    set_market_dispute_end_slot(&mut record, current_slot + DISPUTE_PERIOD);
+    let dispute_end_slot = match current_slot.checked_add(DISPUTE_PERIOD) {
+        Some(slot) => slot,
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    set_market_dispute_end_slot(&mut record, dispute_end_slot);
     // Store attestation hash preview in-record and persist the full hash separately.
     record[180..188].copy_from_slice(&attestation_hash[..8]);
     save_market(market_id, &record);
@@ -3008,7 +3074,7 @@ pub fn challenge_resolution(
     // Increment dispute count
     let dc_key = dispute_count_key(market_id);
     let dc = load_u64(&dc_key);
-    save_u64(&dc_key, dc + 1);
+    save_u64(&dc_key, dc.saturating_add(1));
 
     // Note: auto-escalation to DAO happens when dispute_count >= 3
     // The DAO can call dao_resolve() to settle at any time
@@ -3273,7 +3339,7 @@ pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
     // Update pool redeemed count
     if let Some(mut pool) = load_outcome_pool(market_id, outcome) {
         let redeemed = pool_total_redeemed(&pool);
-        set_pool_total_redeemed(&mut pool, redeemed + user_shares);
+        set_pool_total_redeemed(&mut pool, redeemed.saturating_add(user_shares));
         let oi = pool_open_interest(&pool);
         set_pool_open_interest(&mut pool, oi.saturating_sub(user_shares));
         save_outcome_pool(market_id, outcome, &pool);
@@ -3333,7 +3399,7 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
     let mut user_total_cost: u64 = 0;
     for i in 0..outcome_count {
         let (_, cost) = load_position(market_id, user, i);
-        user_total_cost += cost;
+        user_total_cost = user_total_cost.saturating_add(cost);
     }
 
     // Also check LP position
@@ -3358,7 +3424,7 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
         // Dual-role users (trader + LP) get both refunds summed;
         // cost_basis covers share purchases, lp_share covers LP deposits —
         // these are independent contributions to the pool.
-        refund += lp_share;
+        refund = refund.saturating_add(lp_share);
     }
 
     if refund == 0 {
@@ -5725,6 +5791,41 @@ mod tests {
     }
 
     #[test]
+    fn test_lusd_out_rejects_false_transfer_status() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let user = [3u8; 32];
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert!(
+            !transfer_lusd_out(&user, 1_000_000),
+            "Ok(false) token transfer status must fail closed"
+        );
+    }
+
+    #[test]
+    fn test_buy_shares_rejects_collateral_overflow_before_escrow() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let mut record = load_market(mid).unwrap();
+        set_market_total_collateral(&mut record, u64::MAX);
+        save_market(mid, &record);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(1_000_000);
+        assert_eq!(buy_shares(trader.as_ptr(), mid, 0, 1_000_000), 0);
+        let record_after = load_market(mid).unwrap();
+        assert_eq!(market_total_collateral(&record_after), u64::MAX);
+    }
+
+    #[test]
     fn test_mint_complete_set_rejects_failed_lusd_escrow() {
         setup();
         init_contract();
@@ -5740,6 +5841,63 @@ mod tests {
             r, 0,
             "Should reject failed lUSD escrow for mint_complete_set"
         );
+    }
+
+    #[test]
+    fn test_redeem_complete_set_failed_transfer_preserves_state() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(2_000_000);
+        assert_eq!(mint_complete_set(user.as_ptr(), mid, 2_000_000), 1);
+
+        let before_record = load_market(mid).unwrap();
+        let before_pool = load_outcome_pool(mid, 0).unwrap();
+        let before_position = load_position(mid, &user, 0);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        assert_eq!(redeem_complete_set(user.as_ptr(), mid, 1_000_000), 0);
+        let after_record = load_market(mid).unwrap();
+        let after_pool = load_outcome_pool(mid, 0).unwrap();
+        assert_eq!(
+            market_total_collateral(&after_record),
+            market_total_collateral(&before_record)
+        );
+        assert_eq!(
+            pool_total_shares(&after_pool),
+            pool_total_shares(&before_pool)
+        );
+        assert_eq!(
+            pool_open_interest(&after_pool),
+            pool_open_interest(&before_pool)
+        );
+        assert_eq!(load_position(mid, &user, 0), before_position);
+    }
+
+    #[test]
+    fn test_analytics_counters_saturate() {
+        setup();
+        let trader = [3u8; 32];
+        let key = trader_stats_key(&trader);
+        let mut existing = [0u8; 24];
+        existing[0..8].copy_from_slice(&u64_to_bytes(u64::MAX));
+        existing[8..16].copy_from_slice(&u64_to_bytes(u64::MAX));
+        storage_set(&key, &existing);
+
+        update_trader_stats(&trader, 1);
+        let stats = storage_get(&key).unwrap();
+        assert_eq!(bytes_to_u64(&stats[0..8]), u64::MAX);
+        assert_eq!(bytes_to_u64(&stats[8..16]), u64::MAX);
+
+        let count_key = price_history_count_key(7);
+        save_u64(&count_key, u64::MAX);
+        record_price_snapshot(7, 500_000, 1);
+        assert_eq!(load_u64(&count_key), u64::MAX);
     }
 
     #[test]

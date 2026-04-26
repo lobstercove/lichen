@@ -239,16 +239,35 @@ fn require_owner(caller: &[u8]) -> Result<(), u32> {
     }
 }
 
-fn allocate_nonce() -> u64 {
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
+    }
+    Some(out)
+}
+
+fn allocate_nonce() -> Option<u64> {
     let nonce = storage_get(b"bridge_nonce")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
-    storage_set(b"bridge_nonce", &u64_to_bytes(nonce + 1));
-    nonce
+    let next = nonce.checked_add(1)?;
+    storage_set(b"bridge_nonce", &u64_to_bytes(next));
+    Some(nonce)
 }
 
 fn is_zero(data: &[u8; 32]) -> bool {
     data.iter().all(|&b| b == 0)
+}
+
+fn request_is_expired(created_slot: u64, timeout: u64, current_slot: u64) -> bool {
+    match created_slot.checked_add(timeout) {
+        Some(deadline) => current_slot > deadline,
+        None => true,
+    }
 }
 
 fn has_configured_address(key: &[u8]) -> bool {
@@ -276,13 +295,17 @@ fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
         return 30;
     }
     let self_addr = get_contract_address();
-    if let Err(_) =
-        transfer_token_or_native(Address(licn_addr), self_addr, Address(*recipient), amount)
-    {
-        log_info("Token transfer failed");
-        return 31;
+    match transfer_token_or_native(Address(licn_addr), self_addr, Address(*recipient), amount) {
+        Ok(true) => 0,
+        Ok(false) => {
+            log_info("Token transfer returned failure status");
+            31
+        }
+        Err(_) => {
+            log_info("Token transfer failed");
+            31
+        }
     }
-    0
 }
 
 // ============================================================================
@@ -294,10 +317,10 @@ fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
 pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     log_info("Initializing LichenBridge v2 (multi-call confirmation)...");
 
-    let mut owner = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
-    }
+    let owner = match read_address32(owner_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -338,14 +361,14 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
 ///   - validator_ptr: 32-byte validator pubkey to add
 #[no_mangle]
 pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
-    let mut val_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let val_arr = match read_address32(validator_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -368,12 +391,16 @@ pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *co
         return 3;
     }
 
-    storage_set(&vk, &[1]);
-
     let count = storage_get(b"bridge_validator_count")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
-    storage_set(b"bridge_validator_count", &u64_to_bytes(count + 1));
+    let new_count = match count.checked_add(1) {
+        Some(total) => total,
+        None => return 5,
+    };
+
+    storage_set(&vk, &[1]);
+    storage_set(b"bridge_validator_count", &u64_to_bytes(new_count));
 
     log_info("Bridge validator added");
     0
@@ -386,14 +413,14 @@ pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *co
 ///   - validator_ptr: 32-byte validator pubkey to remove
 #[no_mangle]
 pub extern "C" fn remove_bridge_validator(caller_ptr: *const u8, validator_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
-    let mut val_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let val_arr = match read_address32(validator_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -444,10 +471,10 @@ pub extern "C" fn remove_bridge_validator(caller_ptr: *const u8, validator_ptr: 
 ///   - required: new threshold (1..100)
 #[no_mangle]
 pub extern "C" fn set_required_confirmations(caller_ptr: *const u8, required: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -477,10 +504,10 @@ pub extern "C" fn set_required_confirmations(caller_ptr: *const u8, required: u6
 ///   - timeout_slots: slots until request expires (min 100)
 #[no_mangle]
 pub extern "C" fn set_request_timeout(caller_ptr: *const u8, timeout_slots: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -531,18 +558,27 @@ pub extern "C" fn lock_tokens(
     }
     log_info("Locking tokens for bridge...");
 
-    let mut sender_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(sender_ptr, sender_arr.as_mut_ptr(), 32);
-    }
-    let mut chain_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(dest_chain_ptr, chain_arr.as_mut_ptr(), 32);
-    }
-    let mut addr_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(dest_address_ptr, addr_arr.as_mut_ptr(), 32);
-    }
+    let sender_arr = match read_address32(sender_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let chain_arr = match read_address32(dest_chain_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let addr_arr = match read_address32(dest_address_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -573,22 +609,38 @@ pub extern "C" fn lock_tokens(
     }
 
     // Validate destination address is not zero
+    if is_zero(&chain_arr) {
+        log_info("Destination chain cannot be zero");
+        reentrancy_exit();
+        return 6;
+    }
     if is_zero(&addr_arr) {
         log_info("Destination address cannot be zero");
         reentrancy_exit();
         return 5;
     }
 
-    let nonce = allocate_nonce();
-
     // Update locked amount
     let locked = storage_get(b"bridge_locked_amount")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
-    storage_set(
-        b"bridge_locked_amount",
-        &u64_to_bytes(locked.saturating_add(amount)),
-    );
+    let new_locked = match locked.checked_add(amount) {
+        Some(total) => total,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
+
+    let nonce = match allocate_nonce() {
+        Some(nonce) => nonce,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
+
+    storage_set(b"bridge_locked_amount", &u64_to_bytes(new_locked));
 
     // Store bridge transaction — lock is immediately complete (user-initiated)
     let current_slot = get_slot();
@@ -645,22 +697,34 @@ pub extern "C" fn submit_mint(
     }
     log_info("Submitting mint request...");
 
-    let mut caller_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
-    }
-    let mut recipient_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32);
-    }
-    let mut chain_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(source_chain_ptr, chain_arr.as_mut_ptr(), 32);
-    }
-    let mut tx_hash_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(source_tx_ptr, tx_hash_arr.as_mut_ptr(), 32);
-    }
+    let caller_arr = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let recipient_arr = match read_address32(recipient_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let chain_arr = match read_address32(source_chain_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let tx_hash_arr = match read_address32(source_tx_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -683,6 +747,11 @@ pub extern "C" fn submit_mint(
     }
 
     // Source TX deduplication — prevent double-minting
+    if is_zero(&chain_arr) {
+        log_info("Source chain cannot be zero");
+        reentrancy_exit();
+        return 7;
+    }
     if is_zero(&tx_hash_arr) {
         log_info("Source transaction hash cannot be zero");
         reentrancy_exit();
@@ -703,54 +772,57 @@ pub extern "C" fn submit_mint(
     }
 
     // Allocate nonce
-    let nonce = allocate_nonce();
+    let nonce = match allocate_nonce() {
+        Some(nonce) => nonce,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
 
-    // Mark source TX as used (maps to nonce for traceability)
-    storage_set(&stk, &u64_to_bytes(nonce));
-
-    // Create bridge TX record as PENDING
-    let current_slot = get_slot();
-    let tx_data = encode_bridge_tx(
-        &recipient_arr,
-        amount,
-        1, // direction: mint/in
-        STATUS_PENDING,
-        current_slot,
-        1, // submitter counts as first confirmation
-        &chain_arr,
-        &tx_hash_arr,
-    );
-    storage_set(&bridge_tx_key(nonce), &tx_data);
-
-    // Record submitter's confirmation on-chain
-    storage_set(&mint_confirm_key(nonce, &caller_arr), &[1]);
-
-    // Check if threshold already met (e.g., required_confirmations == 1)
     let required = get_required_confirmations();
+    let current_slot = get_slot();
+
     if 1 >= required {
         // AUDIT-FIX G11-01: Transfer minted tokens to recipient
         let rc = transfer_out(&recipient_arr, amount);
         if rc != 0 {
-            // Revert state on transfer failure
-            storage_set(
-                &bridge_tx_key(nonce),
-                &encode_bridge_tx(
-                    &recipient_arr,
-                    amount,
-                    1,
-                    STATUS_CANCELLED,
-                    current_slot,
-                    0,
-                    &chain_arr,
-                    &tx_hash_arr,
-                ),
-            );
             reentrancy_exit();
             return rc;
         }
-        update_bridge_tx_status(nonce, STATUS_COMPLETED, 1);
+        storage_set(&stk, &u64_to_bytes(nonce));
+        let tx_data = encode_bridge_tx(
+            &recipient_arr,
+            amount,
+            1,
+            STATUS_COMPLETED,
+            current_slot,
+            1,
+            &chain_arr,
+            &tx_hash_arr,
+        );
+        storage_set(&bridge_tx_key(nonce), &tx_data);
+        storage_set(&mint_confirm_key(nonce, &caller_arr), &[1]);
         log_info("Mint auto-completed (threshold met with 1 confirmation)");
     } else {
+        // Mark source TX as used (maps to nonce for traceability)
+        storage_set(&stk, &u64_to_bytes(nonce));
+
+        // Create bridge TX record as PENDING
+        let tx_data = encode_bridge_tx(
+            &recipient_arr,
+            amount,
+            1, // direction: mint/in
+            STATUS_PENDING,
+            current_slot,
+            1, // submitter counts as first confirmation
+            &chain_arr,
+            &tx_hash_arr,
+        );
+        storage_set(&bridge_tx_key(nonce), &tx_data);
+
+        // Record submitter's confirmation on-chain
+        storage_set(&mint_confirm_key(nonce, &caller_arr), &[1]);
         log_info("Mint request submitted, awaiting confirmations");
     }
 
@@ -784,10 +856,13 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
     }
     log_info("Confirming mint request...");
 
-    let mut caller_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
-    }
+    let caller_arr = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -830,7 +905,7 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
     let created_slot = bytes_to_u64(&tx_data[42..50]);
     let current_slot = get_slot();
     let timeout = get_request_timeout();
-    if current_slot > created_slot.saturating_add(timeout) {
+    if request_is_expired(created_slot, timeout, current_slot) {
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Mint request has expired");
         reentrancy_exit();
@@ -845,9 +920,13 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
         return 8;
     }
 
-    // Record confirmation on-chain
-    storage_set(&ck, &[1]);
-    let new_count = tx_data[50].saturating_add(1);
+    let new_count = match tx_data[50].checked_add(1) {
+        Some(count) => count,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
 
     // Check threshold
     let required = get_required_confirmations();
@@ -858,15 +937,15 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
         let amount = bytes_to_u64(&tx_data[32..40]);
         let rc = transfer_out(&recipient, amount);
         if rc != 0 {
-            // Don't update status — let validators retry
-            log_info("Mint transfer failed, confirmations recorded but not completed");
-            update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
+            log_info("Mint transfer failed, confirmation not consumed");
             reentrancy_exit();
             return rc;
         }
+        storage_set(&ck, &[1]);
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
         log_info("Mint confirmed and completed — threshold reached");
     } else {
+        storage_set(&ck, &[1]);
         update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
         log_info("Mint confirmation recorded, awaiting more");
     }
@@ -908,18 +987,27 @@ pub extern "C" fn submit_unlock(
     }
     log_info("Submitting unlock request...");
 
-    let mut caller_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
-    }
-    let mut recipient_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32);
-    }
-    let mut proof_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(burn_proof_ptr, proof_arr.as_mut_ptr(), 32);
-    }
+    let caller_arr = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let recipient_arr = match read_address32(recipient_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let proof_arr = match read_address32(burn_proof_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -976,7 +1064,14 @@ pub extern "C" fn submit_unlock(
     }
 
     // Allocate nonce
-    let nonce = allocate_nonce();
+    let nonce = match allocate_nonce() {
+        Some(nonce) => nonce,
+        None => {
+            storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
+            reentrancy_exit();
+            return 9;
+        }
+    };
 
     // Mark burn proof as used (maps to nonce)
     storage_set(&bpk, &u64_to_bytes(nonce));
@@ -1006,7 +1101,6 @@ pub extern "C" fn submit_unlock(
         if rc != 0 {
             // Revert reserved amount on transfer failure
             storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
-            update_bridge_tx_status(nonce, STATUS_CANCELLED, 1);
             reentrancy_exit();
             return rc;
         }
@@ -1047,10 +1141,13 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     }
     log_info("Confirming unlock request...");
 
-    let mut caller_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
-    }
+    let caller_arr = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1093,16 +1190,20 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     let created_slot = bytes_to_u64(&tx_data[42..50]);
     let current_slot = get_slot();
     let timeout = get_request_timeout();
-    if current_slot > created_slot.saturating_add(timeout) {
+    if request_is_expired(created_slot, timeout, current_slot) {
         // Return reserved funds on expiry
         let amount = bytes_to_u64(&tx_data[32..40]);
         let locked = storage_get(b"bridge_locked_amount")
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(0);
-        storage_set(
-            b"bridge_locked_amount",
-            &u64_to_bytes(locked.saturating_add(amount)),
-        );
+        let restored = match locked.checked_add(amount) {
+            Some(total) => total,
+            None => {
+                reentrancy_exit();
+                return 9;
+            }
+        };
+        storage_set(b"bridge_locked_amount", &u64_to_bytes(restored));
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Unlock request has expired, funds returned to reserve");
         reentrancy_exit();
@@ -1117,9 +1218,13 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         return 8;
     }
 
-    // Record confirmation on-chain
-    storage_set(&ck, &[1]);
-    let new_count = tx_data[50].saturating_add(1);
+    let new_count = match tx_data[50].checked_add(1) {
+        Some(count) => count,
+        None => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
 
     // Check threshold
     let required = get_required_confirmations();
@@ -1130,15 +1235,15 @@ pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
         let amount = bytes_to_u64(&tx_data[32..40]);
         let rc = transfer_out(&recipient, amount);
         if rc != 0 {
-            // Don't update status — let validators retry
-            log_info("Unlock transfer failed, confirmations recorded but not completed");
-            update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
+            log_info("Unlock transfer failed, confirmation not consumed");
             reentrancy_exit();
             return rc;
         }
+        storage_set(&ck, &[1]);
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
         log_info("Unlock confirmed and completed — threshold reached");
     } else {
+        storage_set(&ck, &[1]);
         update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
         log_info("Unlock confirmation recorded, awaiting more");
     }
@@ -1178,7 +1283,7 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
     let current_slot = get_slot();
     let timeout = get_request_timeout();
 
-    if current_slot <= created_slot.saturating_add(timeout) {
+    if !request_is_expired(created_slot, timeout, current_slot) {
         log_info("Request has not expired yet");
         return 3;
     }
@@ -1189,10 +1294,11 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
         let locked = storage_get(b"bridge_locked_amount")
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(0);
-        storage_set(
-            b"bridge_locked_amount",
-            &u64_to_bytes(locked.saturating_add(amount)),
-        );
+        let restored = match locked.checked_add(amount) {
+            Some(total) => total,
+            None => return 9,
+        };
+        storage_set(b"bridge_locked_amount", &u64_to_bytes(restored));
     }
 
     update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
@@ -1234,10 +1340,10 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
 /// Returns 0 always. Return data: [1] if confirmed, [0] if not.
 #[no_mangle]
 pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u32 {
-    let mut val_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
-    }
+    let val_arr = match read_address32(validator_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     if storage_get(&mint_confirm_key(nonce, &val_arr)).is_some() {
         lichen_sdk::set_return_data(&[1]);
@@ -1256,10 +1362,10 @@ pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u3
 /// Returns 0 always. Return data: [1] if confirmed, [0] if not.
 #[no_mangle]
 pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> u32 {
-    let mut val_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
-    }
+    let val_arr = match read_address32(validator_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     if storage_get(&unlock_confirm_key(nonce, &val_arr)).is_some() {
         lichen_sdk::set_return_data(&[1]);
@@ -1277,10 +1383,10 @@ pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> 
 /// Returns 0 always. Return data: [1] if used, [0] if not.
 #[no_mangle]
 pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
-    let mut hash_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(tx_hash_ptr, hash_arr.as_mut_ptr(), 32);
-    }
+    let hash_arr = match read_address32(tx_hash_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     if storage_get(&source_tx_used_key(&hash_arr)).is_some() {
         lichen_sdk::set_return_data(&[1]);
@@ -1298,10 +1404,10 @@ pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
 /// Returns 0 always. Return data: [1] if used, [0] if not.
 #[no_mangle]
 pub extern "C" fn is_burn_proof_used(proof_ptr: *const u8) -> u32 {
-    let mut proof_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(proof_ptr, proof_arr.as_mut_ptr(), 32);
-    }
+    let proof_arr = match read_address32(proof_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     if storage_get(&burn_proof_used_key(&proof_arr)).is_some() {
         lichen_sdk::set_return_data(&[1]);
@@ -1324,14 +1430,14 @@ const LICHENID_ADDR_KEY: &[u8] = b"lichenid_address";
 /// Only callable by the bridge owner.
 #[no_mangle]
 pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
-    let mut lichenid_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(lichenid_addr_ptr, lichenid_addr.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let lichenid_addr = match read_address32(lichenid_addr_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1360,10 +1466,10 @@ pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr:
 /// Only callable by the bridge owner.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1420,10 +1526,10 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 /// Zero address = native LICN.
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1435,10 +1541,10 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
         return e;
     }
 
-    let mut addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
-    }
+    let addr = match read_address32(addr_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     if has_configured_address(LICHENCOIN_ADDRESS_KEY) {
         return 6;
@@ -1454,10 +1560,10 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
 
 #[no_mangle]
 pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1476,10 +1582,10 @@ pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn mb_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3227,5 +3333,195 @@ mod tests {
         assert_eq!(confirm_mint(val2.as_ptr(), 0), 0);
         let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
         assert_eq!(tx_data[41], STATUS_COMPLETED);
+    }
+
+    #[test]
+    fn test_false_mint_transfer_status_does_not_consume_confirmation() {
+        setup();
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2]);
+
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr()
+            ),
+            0
+        );
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 31);
+
+        let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
+        assert_eq!(tx_data[41], STATUS_PENDING);
+        assert_eq!(tx_data[50], 1);
+        assert!(test_mock::get_storage(&mint_confirm_key(0, &val2)).is_none());
+
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 0);
+        let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
+        assert_eq!(tx_data[41], STATUS_COMPLETED);
+        assert_eq!(tx_data[50], 2);
+    }
+
+    #[test]
+    fn test_false_unlock_transfer_status_does_not_consume_confirmation() {
+        setup();
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2]);
+
+        let sender = [5u8; 32];
+        test_mock::set_caller(sender);
+        test_mock::set_value(1_000);
+        assert_eq!(
+            lock_tokens(
+                sender.as_ptr(),
+                1_000,
+                [0xAA; 32].as_ptr(),
+                [0xBB; 32].as_ptr()
+            ),
+            0
+        );
+
+        test_mock::set_caller(val1);
+        assert_eq!(
+            submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500, [0xEE; 32].as_ptr()),
+            0
+        );
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_unlock(val2.as_ptr(), 1), 31);
+
+        let tx_data = test_mock::get_storage(&bridge_tx_key(1)).unwrap();
+        assert_eq!(tx_data[41], STATUS_PENDING);
+        assert_eq!(tx_data[50], 1);
+        assert!(test_mock::get_storage(&unlock_confirm_key(1, &val2)).is_none());
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap()),
+            500
+        );
+
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        assert_eq!(confirm_unlock(val2.as_ptr(), 1), 0);
+        let tx_data = test_mock::get_storage(&bridge_tx_key(1)).unwrap();
+        assert_eq!(tx_data[41], STATUS_COMPLETED);
+        assert_eq!(tx_data[50], 2);
+    }
+
+    #[test]
+    fn test_lock_locked_amount_overflow_rejected_before_nonce() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+        storage_set(b"bridge_locked_amount", &u64_to_bytes(u64::MAX));
+
+        let sender = [5u8; 32];
+        test_mock::set_caller(sender);
+        test_mock::set_value(1);
+        assert_eq!(
+            lock_tokens(sender.as_ptr(), 1, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr()),
+            9
+        );
+
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_nonce").unwrap()),
+            0
+        );
+        assert!(test_mock::get_storage(&bridge_tx_key(0)).is_none());
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap()),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_lock_nonce_overflow_rejected_before_state_write() {
+        setup();
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+        storage_set(b"bridge_nonce", &u64_to_bytes(u64::MAX));
+
+        let sender = [5u8; 32];
+        test_mock::set_caller(sender);
+        test_mock::set_value(1);
+        assert_eq!(
+            lock_tokens(sender.as_ptr(), 1, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr()),
+            9
+        );
+
+        assert!(test_mock::get_storage(&bridge_tx_key(u64::MAX)).is_none());
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap()),
+            0
+        );
+    }
+
+    #[test]
+    fn test_add_validator_count_overflow_rejected_atomically() {
+        setup();
+        let owner = [1u8; 32];
+        let validator = [2u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr());
+        storage_set(b"bridge_validator_count", &u64_to_bytes(u64::MAX));
+
+        assert_eq!(add_bridge_validator(owner.as_ptr(), validator.as_ptr()), 5);
+        assert!(!is_validator(&validator));
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"bridge_validator_count").unwrap()),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_expiry_deadline_overflow_expires_request() {
+        setup();
+        let owner = [1u8; 32];
+        let validator = [2u8; 32];
+        setup_bridge_with_validators(owner, &[validator]);
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 0);
+
+        let tx_data = encode_bridge_tx(
+            &[4u8; 32],
+            500,
+            1,
+            STATUS_PENDING,
+            u64::MAX - 10,
+            0,
+            &[0xCC; 32],
+            &[0xDD; 32],
+        );
+        storage_set(&bridge_tx_key(0), &tx_data);
+
+        test_mock::set_caller(validator);
+        assert_eq!(confirm_mint(validator.as_ptr(), 0), 7);
+        let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
+        assert_eq!(tx_data[41], STATUS_EXPIRED);
+    }
+
+    #[test]
+    fn test_null_pointer_entrypoints_rejected() {
+        setup();
+        assert_eq!(initialize(core::ptr::null()), 98);
+
+        let owner = [1u8; 32];
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(add_bridge_validator(owner.as_ptr(), core::ptr::null()), 98);
+        assert_eq!(has_confirmed_mint(core::ptr::null(), 0), 98);
+        assert_eq!(is_source_tx_used(core::ptr::null()), 98);
+        assert_eq!(mb_pause(core::ptr::null()), 98);
     }
 }

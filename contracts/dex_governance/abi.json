@@ -21,6 +21,7 @@
     {"name": "remove_allowed_quote", "opcode": 16, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
     {"name": "get_allowed_quote_count", "opcode": 17, "params": []},
     {"name": "get_governance_stats", "opcode": 18, "params": []},
-    {"name": "get_voter_count", "opcode": 19, "params": []}
+    {"name": "get_voter_count", "opcode": 19, "params": []},
+    {"name": "set_core_address", "opcode": 20, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "core_address", "type": "Pubkey"}]}
   ]
 }

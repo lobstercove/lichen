@@ -47,6 +47,8 @@ def test(name, cond, detail=""):
     else:
         fail(name, detail)
 
+test.__test__ = False
+
 def rpc_sync(method, params=None):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params is not None:

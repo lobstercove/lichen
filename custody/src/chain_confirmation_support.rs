@@ -27,6 +27,10 @@ pub(super) async fn check_solana_tx_confirmed(
         return Ok(false);
     }
 
+    if let Some(err) = status.get("err").filter(|value| !value.is_null()) {
+        return Err(format!("solana transaction failed: {}", err));
+    }
+
     let confirmation_status = status
         .get("confirmation_status")
         .and_then(|value| value.as_str())
@@ -54,6 +58,14 @@ pub(super) async fn check_evm_tx_confirmed(
     let receipt = evm_rpc_call(client, url, "eth_getTransactionReceipt", json!([tx_hash])).await?;
     if receipt.is_null() {
         return Ok(false);
+    }
+
+    match receipt.get("status").and_then(|value| value.as_str()) {
+        Some("0x1") | Some("1") => {}
+        Some(status) => {
+            return Err(format!("evm transaction failed with status {}", status));
+        }
+        None => return Ok(false),
     }
 
     let block_number = receipt

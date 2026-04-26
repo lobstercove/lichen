@@ -979,7 +979,7 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
     if fee_bps >= 0 {
         return 0;
     }
-    let abs_bps = (-fee_bps) as u64;
+    let abs_bps = fee_bps.unsigned_abs() as u64;
     (notional as u128 * abs_bps as u128 / 10_000) as u64
 }
 
@@ -1460,6 +1460,9 @@ pub fn update_pair_fees(
     if maker_fee_bps > MAX_FEE_BPS as i16 {
         return 3;
     }
+    if maker_fee_bps < -(MAX_FEE_BPS as i16) {
+        return 3;
+    }
     // Update fee fields
     data[97..99].copy_from_slice(&maker_fee_bps.to_le_bytes());
     data[99..101].copy_from_slice(&taker_fee_bps.to_le_bytes());
@@ -1610,23 +1613,6 @@ pub fn place_order(
     // G2-04: mutable quantity for reduce-only capping
     let mut quantity = quantity;
 
-    // Notional value check
-    // AUDIT-FIX M10: For market orders with a worst-price bound, use
-    // worst-price for notional estimation (more accurate than raw quantity).
-    let notional = if base_order_type == ORDER_MARKET {
-        if price > 0 {
-            (price as u128 * quantity as u128 / 1_000_000_000) as u64
-        } else {
-            quantity
-        }
-    } else {
-        (price as u128 * quantity as u128 / 1_000_000_000) as u64
-    };
-    if notional < min_ord {
-        reentrancy_exit();
-        return 4;
-    }
-
     // Expiry validation
     let current_slot = get_slot();
     if expiry_slot != 0 {
@@ -1645,6 +1631,24 @@ pub fn place_order(
     if user_count >= MAX_OPEN_ORDERS_PER_USER {
         reentrancy_exit();
         return 5;
+    }
+
+    // Post-only check must run before escrow so a would-cross rejection cannot
+    // leave transferred funds inside the DEX without an order.
+    if base_order_type == ORDER_POST_ONLY {
+        if side == SIDE_BUY {
+            let best_ask = get_best_ask(pair_id);
+            if best_ask != 0 && price >= best_ask {
+                reentrancy_exit();
+                return 7;
+            }
+        } else {
+            let best_bid = get_best_bid(pair_id);
+            if best_bid != 0 && price <= best_bid {
+                reentrancy_exit();
+                return 7;
+            }
+        }
     }
 
     // ── Oracle Price Band Protection ──
@@ -1716,53 +1720,8 @@ pub fn place_order(
         }
     }
 
-    // ── Token escrow: lock trader's tokens into DEX contract ──
-    // For SELL orders: escrow quantity of base tokens
-    // For BUY orders: escrow notional + max taker fee of quote tokens
-    // Requires trader to have approved DEX contract via token.approve() first.
-    // Return code 11 = escrow transfer failed (insufficient balance or allowance)
-    let escrow_amount;
-    {
-        let pair_data_ref = storage_get(&pk).unwrap();
-        let base_token = decode_pair_base_token(&pair_data_ref);
-        let quote_token = decode_pair_quote_token(&pair_data_ref);
-        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
-
-        if side == SIDE_SELL {
-            escrow_amount = quantity;
-            if !escrow_tokens(&base_token, &t, escrow_amount) {
-                log_info("Sell escrow failed — insufficient balance or allowance");
-                reentrancy_exit();
-                return 11;
-            }
-        } else {
-            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
-            if !escrow_tokens(&quote_token, &t, escrow_amount) {
-                log_info("Buy escrow failed — insufficient balance or allowance");
-                reentrancy_exit();
-                return 11;
-            }
-        }
-    }
-
-    // Post-only check: reject if would immediately match
-    if base_order_type == ORDER_POST_ONLY {
-        if side == SIDE_BUY {
-            let best_ask = get_best_ask(pair_id);
-            if best_ask != 0 && price >= best_ask {
-                reentrancy_exit();
-                return 7;
-            }
-        } else {
-            let best_bid = get_best_bid(pair_id);
-            if best_bid != 0 && price <= best_bid {
-                reentrancy_exit();
-                return 7;
-            }
-        }
-    }
-
-    // G2-04: Reduce-only validation — cross-call dex_margin to verify open position
+    // G2-04: Reduce-only validation runs before escrow. If the order is capped
+    // to position size, notional and escrow are calculated from the capped size.
     if is_reduce_only {
         let margin_addr = load_addr(MARGIN_ADDRESS_KEY.as_bytes());
         if is_zero(&margin_addr) {
@@ -1798,11 +1757,61 @@ pub fn place_order(
                 if quantity > pos_size {
                     quantity = pos_size;
                 }
+                if quantity == 0 || quantity % lot != 0 {
+                    reentrancy_exit();
+                    return 12;
+                }
             }
             _ => {
                 // Cross-call failed or returned insufficient data — no position found
                 reentrancy_exit();
                 return 12;
+            }
+        }
+    }
+
+    // Notional value check
+    // AUDIT-FIX M10: For market orders with a worst-price bound, use
+    // worst-price for notional estimation (more accurate than raw quantity).
+    let notional = if base_order_type == ORDER_MARKET {
+        if price > 0 {
+            (price as u128 * quantity as u128 / 1_000_000_000) as u64
+        } else {
+            quantity
+        }
+    } else {
+        (price as u128 * quantity as u128 / 1_000_000_000) as u64
+    };
+    if notional < min_ord {
+        reentrancy_exit();
+        return 4;
+    }
+
+    // ── Token escrow: lock trader's tokens into DEX contract ──
+    // For SELL orders: escrow quantity of base tokens
+    // For BUY orders: escrow notional + max taker fee of quote tokens
+    // Requires trader to have approved DEX contract via token.approve() first.
+    // Return code 11 = escrow transfer failed (insufficient balance or allowance)
+    let escrow_amount;
+    {
+        let pair_data_ref = storage_get(&pk).unwrap();
+        let base_token = decode_pair_base_token(&pair_data_ref);
+        let quote_token = decode_pair_quote_token(&pair_data_ref);
+        let taker_fee_bps = decode_pair_taker_fee(&pair_data_ref);
+
+        if side == SIDE_SELL {
+            escrow_amount = quantity;
+            if !escrow_tokens(&base_token, &t, escrow_amount) {
+                log_info("Sell escrow failed — insufficient balance or allowance");
+                reentrancy_exit();
+                return 11;
+            }
+        } else {
+            escrow_amount = calculate_buy_escrow(price, quantity, taker_fee_bps);
+            if !escrow_tokens(&quote_token, &t, escrow_amount) {
+                log_info("Buy escrow failed — insufficient balance or allowance");
+                reentrancy_exit();
+                return 11;
             }
         }
     }
@@ -3666,6 +3675,8 @@ mod tests {
     fn test_update_fees_too_high() {
         let (admin, pair_id) = setup_with_pair();
         assert_eq!(update_pair_fees(admin.as_ptr(), pair_id, 0, 200), 3); // > 100 bps
+        assert_eq!(update_pair_fees(admin.as_ptr(), pair_id, 101, 10), 3);
+        assert_eq!(update_pair_fees(admin.as_ptr(), pair_id, -101, 10), 3);
     }
 
     // --- Order Placement ---
@@ -4179,6 +4190,41 @@ mod tests {
             ),
             12 // reduce-only rejected: no open position
         );
+    }
+
+    #[test]
+    fn test_reduce_only_cap_applies_before_escrow() {
+        let (admin, pair_id) = setup_with_pair();
+        let margin_addr = [50u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_margin_address(admin.as_ptr(), margin_addr.as_ptr()), 0);
+
+        let mut position_response = Vec::from(&[0u8; 58][..]);
+        position_response[48] = 0; // long position, so SELL reduces
+        position_response[49] = 0; // open
+        position_response[50..58].copy_from_slice(&1_000u64.to_le_bytes());
+        test_mock::set_cross_call_response(Some(position_response));
+
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT | REDUCE_ONLY_FLAG,
+                1_000_000_000,
+                1_200,
+                0,
+                0
+            ),
+            0
+        );
+
+        let order_data = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_quantity(&order_data), 1_000);
+        assert_eq!(decode_order_escrow_locked(&order_data), 1_000);
     }
 
     #[test]

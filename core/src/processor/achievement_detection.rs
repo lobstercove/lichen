@@ -508,7 +508,11 @@ impl TxProcessor {
                 }
             })
             .unwrap_or(0);
-        self.b_put_contract_storage(lichenid_addr, count_bytes, &(prev + 1).to_le_bytes())?;
+        self.b_put_contract_storage(
+            lichenid_addr,
+            count_bytes,
+            &prev.saturating_add(1).to_le_bytes(),
+        )?;
 
         Ok(())
     }
@@ -534,7 +538,11 @@ impl TxProcessor {
                 }
             })
             .unwrap_or(0);
-        self.b_put_contract_storage(lichenid_addr, key_bytes, &(prev + 1).to_le_bytes())?;
+        self.b_put_contract_storage(
+            lichenid_addr,
+            key_bytes,
+            &prev.saturating_add(1).to_le_bytes(),
+        )?;
         Ok(())
     }
 }

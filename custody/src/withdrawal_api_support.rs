@@ -30,7 +30,10 @@ pub(super) async fn create_withdrawal(
             Err(error) => return Json(json!({ "error": error })),
         };
 
-    if let Err(response) = enforce_withdrawal_rate_limits(&state, &req).await {
+    if let Some(response) =
+        handle_withdrawal_auth_replay(&state, now_secs, &replay_digest, &req, &velocity_snapshot)
+            .await
+    {
         return response;
     }
 
@@ -38,10 +41,7 @@ pub(super) async fn create_withdrawal(
         return response;
     }
 
-    if let Some(response) =
-        handle_withdrawal_auth_replay(&state, now_secs, &replay_digest, &req, &velocity_snapshot)
-            .await
-    {
+    if let Err(response) = enforce_withdrawal_rate_limits(&state, &req).await {
         return response;
     }
 

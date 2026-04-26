@@ -3,6 +3,7 @@
     "build-wallet-pq": "node scripts/build-wallet-pq-bundle.mjs",
     "test-frontend-assets": "node scripts/qa/test_frontend_asset_integrity.js && node scripts/qa/test_frontend_shared_helper_drift.js",
     "test-frontend-shared-helpers": "node scripts/qa/test_frontend_shared_helper_drift.js",
+    "audit-frontend-rpc-parity": "node scripts/qa/audit_frontend_rpc_parity.js",
     "test-wallet": "node scripts/qa/test_wallet_audit.js",
     "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js",
     "validate-wallet-extension-release": "npm run test-wallet-extension && npm run test-wallet",

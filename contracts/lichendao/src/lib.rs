@@ -8,9 +8,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    balance_of_token_or_native, bytes_to_u64, call_contract, get_caller,
-    get_contract_address, get_timestamp, log_info, receive_token_or_native, storage_get,
-    storage_set, transfer_token_or_native, u64_to_bytes, Address, CrossCall,
+    balance_of_token_or_native, bytes_to_u64, call_contract, get_caller, get_contract_address,
+    get_timestamp, log_info, receive_token_or_native, storage_get, storage_set,
+    transfer_token_or_native, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
@@ -126,6 +126,44 @@ fn read_bounded_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<Vec<u8
         core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), len_usize);
     }
     Some(out)
+}
+
+fn write_bytes(ptr: *mut u8, bytes: &[u8]) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+    }
+    true
+}
+
+fn treasury_action_payload(token: &[u8; 32], recipient: &[u8; 32], amount: u64) -> Vec<u8> {
+    let mut action = Vec::with_capacity(b"treasury_transfer".len() + 1 + 32 + 32 + 8);
+    action.extend_from_slice(b"treasury_transfer");
+    action.push(0);
+    action.extend_from_slice(token);
+    action.extend_from_slice(recipient);
+    action.extend_from_slice(&u64_to_bytes(amount));
+    action
+}
+
+fn treasury_action_hash(token: &[u8; 32], recipient: &[u8; 32], amount: u64) -> [u8; 32] {
+    sha256(&treasury_action_payload(token, recipient, amount))
+}
+
+fn proposal_stake_amount(proposal: &[u8]) -> u64 {
+    if proposal.len() > 211 {
+        bytes_to_u64(&proposal[204..212])
+    } else {
+        PROPOSAL_STAKE
+    }
+}
+
+fn stake_refund_due_key(proposal_id: u64) -> Vec<u8> {
+    let mut key = Vec::from(&b"stake_refund_due_"[..]);
+    key.extend_from_slice(&u64_to_bytes(proposal_id));
+    key
 }
 
 /// Veto threshold: 20% of total voting power active "NO" cancels during time-lock
@@ -451,7 +489,7 @@ pub extern "C" fn create_proposal_typed(
         }
     };
 
-    // Check proposer has enough tokens for proposal stake (1000 LICN)
+    // Check proposer has enough tokens for proposal stake.
     let min_threshold = storage_get(b"min_proposal_threshold")
         .and_then(|d| Some(bytes_to_u64(&d)))
         .unwrap_or(PROPOSAL_STAKE);
@@ -461,8 +499,40 @@ pub extern "C" fn create_proposal_typed(
         min_threshold
     ));
 
-    // AUDIT-FIX P10-SC-01: Actually escrow proposal stake via token transfer
-    // The proposer must have attached enough value, OR we transfer from their token balance
+    // Generate proposal ID
+    let proposal_count = storage_get(b"proposal_count")
+        .and_then(|d| Some(bytes_to_u64(&d)))
+        .unwrap_or(0);
+    let proposal_count = match proposal_count.checked_add(1) {
+        Some(v) if v <= u32::MAX as u64 => v,
+        _ => {
+            log_info("Proposal counter exhausted");
+            return 0;
+        }
+    };
+
+    // AUDIT-FIX 2.21: SHA-256 hashing — collision-resistant proposal IDs
+    let title_hash = sha256(&title);
+    let description_hash = sha256(&description);
+    let action_hash = sha256(&action);
+
+    let now = get_timestamp();
+    let voting_period = match proposal_type {
+        PROPOSAL_TYPE_FAST_TRACK => FAST_TRACK_VOTING_PERIOD,
+        PROPOSAL_TYPE_CONSTITUTIONAL => CONSTITUTIONAL_VOTING_PERIOD,
+        _ => STANDARD_VOTING_PERIOD,
+    };
+    let end_time = match now.checked_add(voting_period) {
+        Some(v) => v,
+        None => {
+            log_info("Proposal end time overflow");
+            return 0;
+        }
+    };
+
+    // AUDIT-FIX P10-SC-01: Actually escrow proposal stake via token transfer.
+    // Do this after all local checks that can fail so rejected proposals do not
+    // collect escrow.
     let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
     if governance_token_data.len() >= 32 {
         let mut token_addr = [0u8; 32];
@@ -490,26 +560,6 @@ pub extern "C" fn create_proposal_typed(
         return 0;
     }
 
-    // Generate proposal ID
-    let mut proposal_count = storage_get(b"proposal_count")
-        .and_then(|d| Some(bytes_to_u64(&d)))
-        .unwrap_or(0);
-
-    proposal_count += 1;
-
-    // AUDIT-FIX 2.21: SHA-256 hashing — collision-resistant proposal IDs
-    let title_hash = sha256(&title);
-    let description_hash = sha256(&description);
-    let action_hash = sha256(&action);
-
-    let now = get_timestamp();
-    let voting_period = match proposal_type {
-        PROPOSAL_TYPE_FAST_TRACK => FAST_TRACK_VOTING_PERIOD,
-        PROPOSAL_TYPE_CONSTITUTIONAL => CONSTITUTIONAL_VOTING_PERIOD,
-        _ => STANDARD_VOTING_PERIOD,
-    };
-    let end_time = now + voting_period;
-
     // Build proposal (210 bytes)
     let mut proposal = Vec::with_capacity(PROPOSAL_SIZE);
     proposal.extend_from_slice(&proposer); // 0-31: proposer
@@ -526,7 +576,7 @@ pub extern "C" fn create_proposal_typed(
     proposal.push(0); // 194: quorum_met
     proposal.push(proposal_type); // 195: proposal_type
     proposal.extend_from_slice(&[0u8; 8]); // 196-203: veto_votes
-    proposal.extend_from_slice(&u64_to_bytes(PROPOSAL_STAKE)); // 204-211: stake_amount
+    proposal.extend_from_slice(&u64_to_bytes(min_threshold)); // 204-211: stake_amount
 
     // Pad to full size
     while proposal.len() < PROPOSAL_SIZE {
@@ -552,10 +602,7 @@ pub extern "C" fn create_proposal_typed(
         core::str::from_utf8(&title).unwrap_or("?")
     ));
     log_info(&alloc::format!("   Voting ends: {} seconds", voting_period));
-    log_info(&alloc::format!(
-        "   Stake locked: {} spores",
-        PROPOSAL_STAKE
-    ));
+    log_info(&alloc::format!("   Stake locked: {} spores", min_threshold));
 
     proposal_count as u32
 }
@@ -593,9 +640,16 @@ pub extern "C" fn vote_with_reputation(
         return 0;
     }
 
-    let mut voter = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(voter_ptr, voter.as_mut_ptr(), 32);
+    let voter = match read_address32(voter_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Vote rejected: null voter_ptr");
+            return 0;
+        }
+    };
+    if support > 1 {
+        log_info("Vote rejected: invalid support value");
+        return 0;
     }
 
     // AUDIT-FIX P2: Verify caller matches voter
@@ -640,6 +694,10 @@ pub extern "C" fn vote_with_reputation(
             return 0;
         }
     };
+    if proposal[192] == 1 || proposal[192] == 2 || proposal[193] == 1 {
+        log_info("Proposal is not votable");
+        return 0;
+    }
 
     // Check voting period
     let end_time = bytes_to_u64(&proposal[168..176]);
@@ -663,12 +721,32 @@ pub extern "C" fn vote_with_reputation(
     // Cap voting power (max 10% of total supply equivalent)
     let max_power = storage_get(b"total_supply")
         .map(|d| bytes_to_u64(&d))
-        .map(|s| isqrt(s / 10) * 3) // sqrt(10%) * max multiplier
+        .map(|s| isqrt(s / 10).saturating_mul(3)) // sqrt(10%) * max multiplier
         .unwrap_or(u64::MAX);
     let capped_power = if quadratic_power > max_power {
         max_power
     } else {
         quadratic_power
+    };
+
+    let (vote_offset, new_vote_total) = if support == 1 {
+        let votes_for = bytes_to_u64(&proposal[176..184]);
+        match votes_for.checked_add(capped_power) {
+            Some(v) => (176usize, v),
+            None => {
+                log_info("Vote rejected: votes_for overflow");
+                return 0;
+            }
+        }
+    } else {
+        let votes_against = bytes_to_u64(&proposal[184..192]);
+        match votes_against.checked_add(capped_power) {
+            Some(v) => (184usize, v),
+            None => {
+                log_info("Vote rejected: votes_against overflow");
+                return 0;
+            }
+        }
     };
 
     // Record vote
@@ -681,8 +759,7 @@ pub extern "C" fn vote_with_reputation(
 
     // Update proposal vote counts
     if support == 1 {
-        let votes_for = bytes_to_u64(&proposal[176..184]) + capped_power;
-        proposal[176..184].copy_from_slice(&u64_to_bytes(votes_for));
+        proposal[vote_offset..vote_offset + 8].copy_from_slice(&u64_to_bytes(new_vote_total));
         log_info(&alloc::format!(
             "   Voted FOR (quadratic power: {}, tokens: {}, rep: {})",
             capped_power,
@@ -690,8 +767,7 @@ pub extern "C" fn vote_with_reputation(
             reputation
         ));
     } else {
-        let votes_against = bytes_to_u64(&proposal[184..192]) + capped_power;
-        proposal[184..192].copy_from_slice(&u64_to_bytes(votes_against));
+        proposal[vote_offset..vote_offset + 8].copy_from_slice(&u64_to_bytes(new_vote_total));
         log_info(&alloc::format!(
             "   Voted AGAINST (quadratic power: {}, tokens: {}, rep: {})",
             capped_power,
@@ -785,7 +861,14 @@ pub extern "C" fn execute_proposal(
     };
 
     // Check execution delay (time-lock)
-    if now < end_time + execution_delay {
+    let execution_time = match end_time.checked_add(execution_delay) {
+        Some(v) => v,
+        None => {
+            log_info("Execution delay overflow");
+            return 0;
+        }
+    };
+    if now < execution_time {
         log_info("Execution delay (time-lock) not passed");
         return 0;
     }
@@ -797,8 +880,8 @@ pub extern "C" fn execute_proposal(
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(500_000_000_000_000_000);
         // Veto threshold: 20% of sqrt(total_supply) * 3.0 (max governance power)
-        let max_governance_power = isqrt(total_supply) * 3;
-        let veto_threshold = max_governance_power * VETO_THRESHOLD_PERCENT / 100;
+        let max_governance_power = isqrt(total_supply).saturating_mul(3);
+        let veto_threshold = max_governance_power.saturating_mul(VETO_THRESHOLD_PERCENT) / 100;
         if veto_votes >= veto_threshold {
             log_info("Proposal VETOED! 20%+ of voting power vetoed during time-lock");
             proposal[193] = 1; // Cancel
@@ -810,7 +893,13 @@ pub extern "C" fn execute_proposal(
     // Check quorum and approval
     let votes_for = bytes_to_u64(&proposal[176..184]);
     let votes_against = bytes_to_u64(&proposal[184..192]);
-    let total_votes = votes_for + votes_against;
+    let total_votes = match votes_for.checked_add(votes_against) {
+        Some(v) => v,
+        None => {
+            log_info("Vote totals overflow");
+            return 0;
+        }
+    };
 
     // Quorum check (if required)
     if quorum_pct > 0 {
@@ -818,7 +907,7 @@ pub extern "C" fn execute_proposal(
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(500_000_000_000_000_000);
         // Quorum based on sqrt(total_supply) to match quadratic voting
-        let quorum = isqrt(total_supply) * quorum_pct / 100;
+        let quorum = isqrt(total_supply).saturating_mul(quorum_pct) / 100;
 
         if total_votes < quorum {
             log_info("Quorum not met");
@@ -921,11 +1010,7 @@ pub extern "C" fn execute_proposal(
     storage_set(key.as_bytes(), &proposal);
 
     // AUDIT-FIX P10-SC-01: Refund escrowed stake to proposer on successful execution
-    let stake_amount = if proposal.len() > 211 {
-        bytes_to_u64(&proposal[204..212])
-    } else {
-        PROPOSAL_STAKE
-    };
+    let stake_amount = proposal_stake_amount(&proposal);
     let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
     if governance_token_data.len() >= 32 && stake_amount > 0 {
         let mut token_addr = [0u8; 32];
@@ -940,7 +1025,13 @@ pub extern "C" fn execute_proposal(
             stake_amount,
         ) {
             Ok(true) => log_info("   Stake refunded to proposer"),
-            _ => log_info("   Warning: stake refund failed"),
+            _ => {
+                storage_set(
+                    &stake_refund_due_key(proposal_id),
+                    &u64_to_bytes(stake_amount),
+                );
+                log_info("   Warning: stake refund failed; refund recorded for retry");
+            }
         }
     }
 
@@ -967,10 +1058,13 @@ pub extern "C" fn veto_proposal(
         return 0;
     }
 
-    let mut voter = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(voter_ptr, voter.as_mut_ptr(), 32);
-    }
+    let voter = match read_address32(voter_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Veto rejected: null voter_ptr");
+            return 0;
+        }
+    };
 
     // AUDIT-FIX P2: Verify caller matches voter
     let real_caller = get_caller();
@@ -1008,6 +1102,10 @@ pub extern "C" fn veto_proposal(
             return 0;
         }
     };
+    if proposal[192] == 1 || proposal[192] == 2 || proposal[193] == 1 {
+        log_info("Proposal is not vetoable");
+        return 0;
+    }
 
     // Must be in time-lock period (after voting ends, before execution)
     let end_time = bytes_to_u64(&proposal[168..176]);
@@ -1023,7 +1121,14 @@ pub extern "C" fn veto_proposal(
         _ => STANDARD_EXECUTION_DELAY,
     };
 
-    if now <= end_time || now > end_time + execution_delay {
+    let veto_deadline = match end_time.checked_add(execution_delay) {
+        Some(v) => v,
+        None => {
+            log_info("Veto deadline overflow");
+            return 0;
+        }
+    };
+    if now <= end_time || now > veto_deadline {
         log_info("Can only veto during time-lock period");
         return 0;
     }
@@ -1042,7 +1147,13 @@ pub extern "C" fn veto_proposal(
 
     // Accumulate veto votes
     let current_veto = bytes_to_u64(&proposal[196..204]);
-    let new_veto = current_veto + veto_power;
+    let new_veto = match current_veto.checked_add(veto_power) {
+        Some(v) => v,
+        None => {
+            log_info("Veto rejected: veto vote overflow");
+            return 0;
+        }
+    };
     proposal[196..204].copy_from_slice(&u64_to_bytes(new_veto));
     storage_set(key.as_bytes(), &proposal);
 
@@ -1058,10 +1169,13 @@ pub extern "C" fn veto_proposal(
 pub extern "C" fn cancel_proposal(canceller_ptr: *const u8, proposal_id: u64) -> u32 {
     log_info("Cancelling proposal...");
 
-    let mut canceller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(canceller_ptr, canceller.as_mut_ptr(), 32);
-    }
+    let canceller = match read_address32(canceller_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Cancel rejected: null canceller_ptr");
+            return 0;
+        }
+    };
 
     // AUDIT-FIX: verify transaction signer matches claimed canceller
     let real_caller = get_caller();
@@ -1089,21 +1203,13 @@ pub extern "C" fn cancel_proposal(canceller_ptr: *const u8, proposal_id: u64) ->
     }
 
     // Can't cancel if already executed
-    if proposal[192] == 1 {
+    if proposal[192] == 1 || proposal[192] == 2 {
         log_info("Already executed");
         return 0;
     }
 
-    // Mark as cancelled
-    proposal[193] = 1;
-    storage_set(key.as_bytes(), &proposal);
-
     // AUDIT-FIX P10-SC-01: Refund escrowed stake to proposer on cancellation
-    let stake_amount = if proposal.len() > 211 {
-        bytes_to_u64(&proposal[204..212])
-    } else {
-        PROPOSAL_STAKE
-    };
+    let stake_amount = proposal_stake_amount(&proposal);
     let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
     if governance_token_data.len() >= 32 && stake_amount > 0 {
         let mut token_addr = [0u8; 32];
@@ -1118,12 +1224,79 @@ pub extern "C" fn cancel_proposal(canceller_ptr: *const u8, proposal_id: u64) ->
             stake_amount,
         ) {
             Ok(true) => log_info("   Stake refunded to proposer"),
-            _ => log_info("   Warning: stake refund failed"),
+            _ => {
+                log_info("   Stake refund failed; proposal remains cancellable");
+                return 0;
+            }
         }
+    } else if stake_amount > 0 {
+        log_info("   Governance token missing; proposal remains cancellable");
+        return 0;
     }
+
+    // Mark as cancelled after the escrow refund succeeds.
+    proposal[193] = 1;
+    storage_set(key.as_bytes(), &proposal);
 
     log_info("Proposal cancelled!");
     1
+}
+
+#[no_mangle]
+pub extern "C" fn claim_proposal_stake_refund(proposer_ptr: *const u8, proposal_id: u64) -> u32 {
+    let proposer = match read_address32(proposer_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Stake refund rejected: null proposer_ptr");
+            return 0;
+        }
+    };
+    let real_caller = get_caller();
+    if real_caller.0 != proposer {
+        log_info("Stake refund rejected: caller mismatch");
+        return 0;
+    }
+
+    let proposal_key = alloc::format!("proposal_{}", proposal_id);
+    let proposal = match storage_get(proposal_key.as_bytes()) {
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
+        _ => {
+            log_info("Stake refund rejected: proposal not found");
+            return 0;
+        }
+    };
+    if proposal[0..32] != proposer || (proposal[192] != 1 && proposal[192] != 2) {
+        log_info("Stake refund rejected: proposal not refundable");
+        return 0;
+    }
+
+    let due_key = stake_refund_due_key(proposal_id);
+    let amount = storage_get(&due_key).map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    if amount == 0 {
+        log_info("Stake refund rejected: no refund due");
+        return 0;
+    }
+
+    let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
+    if governance_token_data.len() < 32 {
+        log_info("Stake refund rejected: governance token missing");
+        return 0;
+    }
+    let mut token_addr = [0u8; 32];
+    token_addr.copy_from_slice(&governance_token_data[..32]);
+    let dao_self = get_contract_address();
+
+    match transfer_token_or_native(Address(token_addr), dao_self, Address(proposer), amount) {
+        Ok(true) => {
+            storage_set(&due_key, &u64_to_bytes(0));
+            log_info("Stake refund claimed");
+            1
+        }
+        _ => {
+            log_info("Stake refund transfer failed");
+            0
+        }
+    }
 }
 
 // ============================================================================
@@ -1138,17 +1311,23 @@ pub extern "C" fn treasury_transfer(
     amount: u64,
 ) -> u32 {
     log_info("Treasury transfer...");
+    let token = match read_address32(token_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Treasury transfer rejected: null token_ptr");
+            return 0;
+        }
+    };
+    let recipient = match read_address32(recipient_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Treasury transfer rejected: null recipient_ptr");
+            return 0;
+        }
+    };
+
     if !reentrancy_enter() {
         return 0;
-    }
-
-    let mut token = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
-    }
-    let mut recipient = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32);
     }
 
     // Verify proposal is executed
@@ -1164,6 +1343,25 @@ pub extern "C" fn treasury_transfer(
 
     if proposal[192] != 1 {
         log_info("Proposal not executed");
+        reentrancy_exit();
+        return 0;
+    }
+    if proposal[193] == 1 {
+        log_info("Proposal cancelled");
+        reentrancy_exit();
+        return 0;
+    }
+
+    let dao_self = get_contract_address();
+    if proposal[96..128] != dao_self.0 {
+        log_info("Treasury transfer rejected: proposal target is not this DAO");
+        reentrancy_exit();
+        return 0;
+    }
+
+    let expected_action_hash = treasury_action_hash(&token, &recipient, amount);
+    if proposal[128..160] != expected_action_hash {
+        log_info("Treasury transfer rejected: transfer does not match approved action");
         reentrancy_exit();
         return 0;
     }
@@ -1205,9 +1403,12 @@ pub extern "C" fn treasury_transfer(
 
 #[no_mangle]
 pub extern "C" fn get_treasury_balance(token_ptr: *const u8, result_ptr: *mut u8) -> u32 {
-    let mut _token = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(token_ptr, _token.as_mut_ptr(), 32);
+    let _token = match read_address32(token_ptr) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
 
     // Query treasury balance from stored state
@@ -1224,9 +1425,7 @@ pub extern "C" fn get_treasury_balance(token_ptr: *const u8, result_ptr: *mut u8
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(u64_to_bytes(balance).as_ptr(), result_ptr, 8);
-    }
+    write_bytes(result_ptr, &u64_to_bytes(balance));
 
     log_info("Treasury balance:");
     log_info(&alloc::format!("   Balance: {}", balance));
@@ -1240,13 +1439,17 @@ pub extern "C" fn get_treasury_balance(token_ptr: *const u8, result_ptr: *mut u8
 
 #[no_mangle]
 pub extern "C" fn get_proposal(proposal_id: u64, result_ptr: *mut u8) -> u32 {
+    if result_ptr.is_null() {
+        return 0;
+    }
     let key = alloc::format!("proposal_{}", proposal_id);
 
     match storage_get(key.as_bytes()) {
         Some(proposal) if proposal.len() >= PROPOSAL_SIZE_LEGACY => {
-            unsafe {
-                core::ptr::copy_nonoverlapping(proposal.as_ptr(), result_ptr, PROPOSAL_SIZE);
-            }
+            let mut out = [0u8; PROPOSAL_SIZE];
+            let copy_len = proposal.len().min(PROPOSAL_SIZE);
+            out[..copy_len].copy_from_slice(&proposal[..copy_len]);
+            write_bytes(result_ptr, &out);
             1
         }
         _ => 0,
@@ -1255,6 +1458,9 @@ pub extern "C" fn get_proposal(proposal_id: u64, result_ptr: *mut u8) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn get_dao_stats(result_ptr: *mut u8) -> u32 {
+    if result_ptr.is_null() {
+        return 0;
+    }
     let proposal_count = storage_get(b"proposal_count")
         .and_then(|d| Some(bytes_to_u64(&d)))
         .unwrap_or(0);
@@ -1264,20 +1470,12 @@ pub extern "C" fn get_dao_stats(result_ptr: *mut u8) -> u32 {
         .unwrap_or(0);
 
     // Stats: proposal_count (8) + min_threshold (8) + quorum_pct (8) + approval_pct (8)
-    unsafe {
-        core::ptr::copy_nonoverlapping(u64_to_bytes(proposal_count).as_ptr(), result_ptr, 8);
-        core::ptr::copy_nonoverlapping(u64_to_bytes(min_threshold).as_ptr(), result_ptr.add(8), 8);
-        core::ptr::copy_nonoverlapping(
-            u64_to_bytes(STANDARD_QUORUM).as_ptr(),
-            result_ptr.add(16),
-            8,
-        );
-        core::ptr::copy_nonoverlapping(
-            u64_to_bytes(STANDARD_APPROVAL).as_ptr(),
-            result_ptr.add(24),
-            8,
-        );
-    }
+    let mut out = [0u8; 32];
+    out[0..8].copy_from_slice(&u64_to_bytes(proposal_count));
+    out[8..16].copy_from_slice(&u64_to_bytes(min_threshold));
+    out[16..24].copy_from_slice(&u64_to_bytes(STANDARD_QUORUM));
+    out[24..32].copy_from_slice(&u64_to_bytes(STANDARD_APPROVAL));
+    write_bytes(result_ptr, &out);
 
     log_info("DAO Statistics:");
     log_info(&alloc::format!("   Total proposals: {}", proposal_count));
@@ -1296,6 +1494,9 @@ pub extern "C" fn get_dao_stats(result_ptr: *mut u8) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn get_active_proposals(result_ptr: *mut u8, max_results: u32) -> u32 {
+    if result_ptr.is_null() && max_results > 0 {
+        return 0;
+    }
     let proposal_count = storage_get(b"proposal_count")
         .and_then(|d| Some(bytes_to_u64(&d)))
         .unwrap_or(0);
@@ -1381,10 +1582,10 @@ pub extern "C" fn get_proposal_count() -> u64 {
 /// Tests expect `get_vote` — returns 1 if voter voted on proposal, 0 otherwise
 #[no_mangle]
 pub extern "C" fn get_vote(proposal_id: u64, voter_ptr: *const u8) -> u32 {
-    let mut voter = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(voter_ptr, voter.as_mut_ptr(), 32);
-    }
+    let voter = match read_address32(voter_ptr) {
+        Some(v) => v,
+        None => return 0,
+    };
     // SECURITY FIX: Use hex encoding consistent with vote recording
     let voter_hex: alloc::string::String =
         voter.iter().map(|b| alloc::format!("{:02x}", b)).collect();
@@ -1421,10 +1622,10 @@ pub extern "C" fn get_total_supply() -> u64 {
 /// Tests expect `set_quorum`
 #[no_mangle]
 pub extern "C" fn set_quorum(caller_ptr: *const u8, quorum: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 1,
+    };
     // AUDIT-FIX P2: Verify caller is the actual transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1442,10 +1643,10 @@ pub extern "C" fn set_quorum(caller_ptr: *const u8, quorum: u64) -> u32 {
 /// Tests expect `set_voting_period`
 #[no_mangle]
 pub extern "C" fn set_voting_period(caller_ptr: *const u8, period: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 1,
+    };
     // AUDIT-FIX P2: Verify caller is the actual transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1463,10 +1664,10 @@ pub extern "C" fn set_voting_period(caller_ptr: *const u8, period: u64) -> u32 {
 /// Tests expect `set_timelock_delay`
 #[no_mangle]
 pub extern "C" fn set_timelock_delay(caller_ptr: *const u8, delay: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 1,
+    };
     // AUDIT-FIX P2: Verify caller is the actual transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1484,10 +1685,10 @@ pub extern "C" fn set_timelock_delay(caller_ptr: *const u8, delay: u64) -> u32 {
 /// Tests expect `dao_pause`
 #[no_mangle]
 pub extern "C" fn dao_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 1,
+    };
     // AUDIT-FIX P2: Verify caller is the actual transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1505,10 +1706,10 @@ pub extern "C" fn dao_pause(caller_ptr: *const u8) -> u32 {
 /// Tests expect `dao_unpause`
 #[no_mangle]
 pub extern "C" fn dao_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 1,
+    };
     // AUDIT-FIX P2: Verify caller is the actual transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1535,10 +1736,13 @@ pub extern "C" fn set_lichenid_address(
         log_info("set_lichenid_address: only dao_owner can configure");
         return 0;
     }
-    let mut addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(lichenid_addr_ptr, addr.as_mut_ptr(), 32);
-    }
+    let addr = match read_address32(lichenid_addr_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("set_lichenid_address: null address rejected");
+            return 0;
+        }
+    };
     if addr.iter().all(|&b| b == 0) {
         log_info("set_lichenid_address: zero address rejected");
         return 0;
@@ -1604,11 +1808,17 @@ mod tests {
 
         let first = [9u8; 32];
         assert_eq!(set_lichenid_address(owner.as_ptr(), first.as_ptr()), 1);
-        assert_eq!(test_mock::get_storage(b"lichenid_address"), Some(first.to_vec()));
+        assert_eq!(
+            test_mock::get_storage(b"lichenid_address"),
+            Some(first.to_vec())
+        );
 
         let second = [8u8; 32];
         assert_eq!(set_lichenid_address(owner.as_ptr(), second.as_ptr()), 0);
-        assert_eq!(test_mock::get_storage(b"lichenid_address"), Some(first.to_vec()));
+        assert_eq!(
+            test_mock::get_storage(b"lichenid_address"),
+            Some(first.to_vec())
+        );
     }
 
     #[test]
@@ -1656,6 +1866,62 @@ mod tests {
 
         // Verify proposer is stored at bytes 0..32
         assert_eq!(&proposal[0..32], &proposer);
+    }
+
+    #[test]
+    fn test_create_proposal_stores_actual_stake_threshold() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        let min_threshold = 1_234u64;
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), min_threshold);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        let proposal_id = create_proposal(
+            proposer.as_ptr(),
+            b"Stake".as_ptr(),
+            5,
+            b"Uses configured stake".as_ptr(),
+            21,
+            [4u8; 32].as_ptr(),
+            b"action".as_ptr(),
+            6,
+        );
+
+        assert_eq!(proposal_id, 1);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(bytes_to_u64(&proposal[204..212]), min_threshold);
+    }
+
+    #[test]
+    fn test_create_proposal_counter_overflow_rejects_before_escrow() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        storage_set(b"proposal_count", &u64_to_bytes(u64::MAX));
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        let result = create_proposal(
+            proposer.as_ptr(),
+            b"Overflow".as_ptr(),
+            8,
+            b"Rejected before escrow".as_ptr(),
+            22,
+            [4u8; 32].as_ptr(),
+            b"action".as_ptr(),
+            6,
+        );
+
+        assert_eq!(result, 0);
+        assert_eq!(
+            test_mock::get_last_cross_call(),
+            None,
+            "overflow rejection must not escrow proposal stake"
+        );
     }
 
     #[test]
@@ -1777,6 +2043,42 @@ mod tests {
     }
 
     #[test]
+    fn test_vote_total_overflow_rejected_without_recording_vote() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Overflow vote".as_ptr(),
+            13,
+            b"Vote total overflow".as_ptr(),
+            19,
+            [4u8; 32].as_ptr(),
+            b"action".as_ptr(),
+            6,
+        );
+
+        let mut proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        proposal[176..184].copy_from_slice(&u64_to_bytes(u64::MAX));
+        storage_set(b"proposal_1", &proposal);
+
+        let voter = [5u8; 32];
+        test_mock::set_caller(voter);
+        test_mock::set_cross_call_response(Some(100_000u64.to_le_bytes().to_vec()));
+        let result = vote(voter.as_ptr(), 1, 1, 0);
+
+        assert_eq!(result, 0);
+        assert_eq!(get_vote(1, voter.as_ptr()), 0);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(bytes_to_u64(&proposal[176..184]), u64::MAX);
+    }
+
+    #[test]
     fn test_cancel_proposal() {
         setup();
         let gov_token = [1u8; 32];
@@ -1825,6 +2127,117 @@ mod tests {
         test_mock::set_caller(other);
         let result2 = cancel_proposal(other.as_ptr(), 2);
         assert_eq!(result2, 0); // unauthorized
+    }
+
+    #[test]
+    fn test_cancel_proposal_refund_failure_preserves_state() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Cancel refund".as_ptr(),
+            13,
+            b"Refund must succeed".as_ptr(),
+            19,
+            [4u8; 32].as_ptr(),
+            b"action".as_ptr(),
+            6,
+        );
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(cancel_proposal(proposer.as_ptr(), 1), 0);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[193], 0, "proposal must remain cancellable");
+
+        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        assert_eq!(cancel_proposal(proposer.as_ptr(), 1), 1);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[193], 1);
+    }
+
+    #[test]
+    fn test_treasury_transfer_requires_approved_action_hash() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Treasury".as_ptr(),
+            8,
+            b"Wrong action".as_ptr(),
+            12,
+            dao.as_ptr(),
+            b"not_treasury".as_ptr(),
+            12,
+        );
+
+        let mut proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        proposal[192] = 1;
+        storage_set(b"proposal_1", &proposal);
+
+        let token = [9u8; 32];
+        let recipient = [8u8; 32];
+        let result = treasury_transfer(1, token.as_ptr(), recipient.as_ptr(), 55);
+
+        assert_eq!(result, 0);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[192], 1, "failed transfer must remain unused");
+    }
+
+    #[test]
+    fn test_treasury_transfer_accepts_matching_approved_action() {
+        setup();
+        let dao = [7u8; 32];
+        test_mock::set_contract_address(dao);
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        let token = [9u8; 32];
+        let recipient = [8u8; 32];
+        let amount = 55u64;
+        let action = treasury_action_payload(&token, &recipient, amount);
+
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Treasury".as_ptr(),
+            8,
+            b"Matching action".as_ptr(),
+            15,
+            dao.as_ptr(),
+            action.as_ptr(),
+            action.len() as u32,
+        );
+
+        let mut proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        proposal[192] = 1;
+        storage_set(b"proposal_1", &proposal);
+
+        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        let result = treasury_transfer(1, token.as_ptr(), recipient.as_ptr(), amount);
+
+        assert_eq!(result, 1);
+        let proposal = test_mock::get_storage(b"proposal_1").unwrap();
+        assert_eq!(proposal[192], 2, "matching treasury action is single-use");
+        let last_call = test_mock::get_last_cross_call().unwrap();
+        assert_eq!(last_call.0, token);
+        assert_eq!(last_call.1, "transfer");
     }
 
     // AUDIT-FIX P2: Security regression test

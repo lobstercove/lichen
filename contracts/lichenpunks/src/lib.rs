@@ -12,6 +12,56 @@ use lichen_sdk::{
 
 const MP_TRANSFER_COUNT_KEY: &[u8] = b"mp_transfer_count";
 const MP_BURN_COUNT_KEY: &[u8] = b"mp_burn_count";
+const MAX_METADATA_LEN: usize = 512;
+const MAX_BASE_URI_LEN: usize = 256;
+
+fn read_address(ptr: *const u8) -> Option<Address> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, addr.as_mut_ptr(), 32);
+    }
+    Some(Address(addr))
+}
+
+fn read_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<alloc::vec::Vec<u8>> {
+    let len = len as usize;
+    if len > max_len || (len > 0 && ptr.is_null()) {
+        return None;
+    }
+    let mut bytes = alloc::vec![0u8; len];
+    if len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, bytes.as_mut_ptr(), len);
+        }
+    }
+    Some(bytes)
+}
+
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let current = stored_u64(key);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
+
+fn metadata_key(token_id: u64) -> alloc::vec::Vec<u8> {
+    let mut key = b"metadata:".to_vec();
+    key.extend_from_slice(&u64_to_bytes(token_id));
+    key
+}
+
+fn is_initialized() -> bool {
+    storage_get(b"minter")
+        .map(|d| d.len() == 32)
+        .unwrap_or(false)
+}
 
 /// Read the minter address from persistent storage (written by NFT::initialize).
 fn get_minter() -> Address {
@@ -65,26 +115,28 @@ pub extern "C" fn initialize(minter_ptr: *const u8) {
         return;
     }
 
-    unsafe {
-        // Parse minter address
-        let mut minter_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(minter_ptr, minter_addr.as_mut_ptr(), 32);
-        if !init_minter_matches_signer(&minter_addr) {
-            log_info("LichenPunks initialize rejected: caller mismatch");
-            return;
-        }
-        let minter = Address(minter_addr);
-
-        // Store collection metadata in storage for discoverability
-        storage_set(b"collection_name", b"LichenPunks");
-        storage_set(b"collection_symbol", b"MPNK");
-
-        // NFT::initialize stores the minter in storage under key "minter"
-        let mut nft = make_nft();
-        nft.initialize(minter).expect("Init failed");
-
-        log_info("LichenPunks NFT collection initialized");
+    let minter = match read_address(minter_ptr) {
+        Some(addr) => addr,
+        None => return,
+    };
+    if minter.0 == [0u8; 32] {
+        log_info("LichenPunks initialize rejected: zero minter");
+        return;
     }
+    if !init_minter_matches_signer(&minter.0) {
+        log_info("LichenPunks initialize rejected: caller mismatch");
+        return;
+    }
+
+    // Store collection metadata in storage for discoverability
+    storage_set(b"collection_name", b"LichenPunks");
+    storage_set(b"collection_symbol", b"MPNK");
+
+    // NFT::initialize stores the minter in storage under key "minter"
+    let mut nft = make_nft();
+    nft.initialize(minter).expect("Init failed");
+
+    log_info("LichenPunks NFT collection initialized");
 }
 
 /// Mint new NFT
@@ -101,57 +153,80 @@ pub extern "C" fn mint(
         log_info("LichenPunks is paused");
         return 0;
     }
-    unsafe {
-        // Parse caller
-        let mut caller_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-        let caller = Address(caller_addr);
+    if !is_initialized() {
+        log_info("LichenPunks is not initialized");
+        return 0;
+    }
 
-        // Parse recipient
-        let mut to_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(to_ptr, to_addr.as_mut_ptr(), 32);
-        let to = Address(to_addr);
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    let to = match read_address(to_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if to.0 == [0u8; 32] {
+        log_info("Mint recipient cannot be zero address");
+        return 0;
+    }
 
-        // P9-SC-06: Verify caller matches transaction signer
-        let real_caller = get_caller();
-        if real_caller.0 != caller.0 {
-            log_info("Unauthorized: caller mismatch");
+    // P9-SC-06: Verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller.0 {
+        log_info("Unauthorized: caller mismatch");
+        return 0;
+    }
+
+    // Allow mint authority OR self-minting to avoid privileged-minter lockout.
+    let minter = get_minter();
+    let is_authorized = caller.0 == minter.0 || caller.0 == to.0;
+    if !is_authorized {
+        log_info("Unauthorized: only minter or self-mint is allowed");
+        return 0;
+    }
+
+    // AUDIT-FIX P2: Enforce max supply cap
+    let current_supply = total_minted();
+    if current_supply == u64::MAX {
+        log_info("Total supply overflow");
+        return 0;
+    }
+    if let Some(max_data) = storage_get(b"max_supply") {
+        let max = if max_data.len() >= 8 {
+            bytes_to_u64(&max_data)
+        } else {
+            0
+        };
+        if max > 0 && current_supply >= max {
+            log_info("Max supply reached");
             return 0;
         }
+    }
 
-        // Allow mint authority OR self-minting to avoid privileged-minter lockout.
-        let minter = get_minter();
-        let is_authorized = caller.0 == minter.0 || caller.0 == to.0;
-        if !is_authorized {
-            log_info("Unauthorized: only minter or self-mint is allowed");
+    if make_nft().balance_of(to) == u64::MAX {
+        log_info("Recipient balance overflow");
+        return 0;
+    }
+
+    let metadata = match read_bytes(metadata_ptr, metadata_len, MAX_METADATA_LEN) {
+        Some(metadata) => metadata,
+        None => {
+            log_info("Metadata too large or invalid");
             return 0;
         }
+    };
 
-        // AUDIT-FIX P2: Enforce max supply cap
-        let current_supply = total_minted();
-        if let Some(max_data) = storage_get(b"max_supply") {
-            let max = bytes_to_u64(&max_data);
-            if max > 0 && current_supply >= max {
-                log_info("Max supply reached");
-                return 0;
-            }
+    // Mint
+    let mut nft = make_nft();
+    match nft.mint(to, token_id, &metadata) {
+        Ok(_) => {
+            log_info("NFT minted successfully");
+            1
         }
-
-        // Parse metadata URI
-        let mut metadata = alloc::vec![0u8; metadata_len as usize];
-        core::ptr::copy_nonoverlapping(metadata_ptr, metadata.as_mut_ptr(), metadata_len as usize);
-
-        // Mint
-        let mut nft = make_nft();
-        match nft.mint(to, token_id, &metadata) {
-            Ok(_) => {
-                log_info("NFT minted successfully");
-                1
-            }
-            Err(_) => {
-                log_info("Mint failed");
-                0
-            }
+        Err(_) => {
+            log_info("Mint failed");
+            0
         }
     }
 }
@@ -164,38 +239,41 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, token_id: u64
         log_info("LichenPunks is paused");
         return 0;
     }
-    unsafe {
-        // Parse from address
-        let mut from_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(from_ptr, from_addr.as_mut_ptr(), 32);
-        let from = Address(from_addr);
+    let from = match read_address(from_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
-        // SECURITY FIX: Verify caller owns the NFT being transferred
-        let caller = get_caller();
-        if caller.0 != from.0 {
-            log_info("Unauthorized: caller does not match from address");
-            return 0;
+    // SECURITY FIX: Verify caller owns the NFT being transferred
+    let caller = get_caller();
+    if caller.0 != from.0 {
+        log_info("Unauthorized: caller does not match from address");
+        return 0;
+    }
+
+    let to = match read_address(to_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if to.0 == [0u8; 32] {
+        log_info("Transfer recipient cannot be zero address");
+        return 0;
+    }
+    if from.0 != to.0 && make_nft().balance_of(to) == u64::MAX {
+        log_info("Recipient balance overflow");
+        return 0;
+    }
+
+    // Transfer
+    match make_nft().transfer(from, to, token_id) {
+        Ok(_) => {
+            increment_counter_saturating(MP_TRANSFER_COUNT_KEY);
+            log_info("NFT transferred successfully");
+            1
         }
-
-        // Parse to address
-        let mut to_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(to_ptr, to_addr.as_mut_ptr(), 32);
-        let to = Address(to_addr);
-
-        // Transfer
-        match make_nft().transfer(from, to, token_id) {
-            Ok(_) => {
-                let tc = storage_get(MP_TRANSFER_COUNT_KEY)
-                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-                    .unwrap_or(0);
-                storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(tc + 1));
-                log_info("NFT transferred successfully");
-                1
-            }
-            Err(_) => {
-                log_info("Transfer failed");
-                0
-            }
+        Err(_) => {
+            log_info("Transfer failed");
+            0
         }
     }
 }
@@ -203,6 +281,9 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, token_id: u64
 /// Get owner of token
 #[no_mangle]
 pub extern "C" fn owner_of(token_id: u64, out_ptr: *mut u8) -> u32 {
+    if out_ptr.is_null() {
+        return 0;
+    }
     unsafe {
         match make_nft().owner_of(token_id) {
             Ok(owner) => {
@@ -219,38 +300,40 @@ pub extern "C" fn owner_of(token_id: u64, out_ptr: *mut u8) -> u32 {
 /// Get balance (number of NFTs owned)
 #[no_mangle]
 pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
-    unsafe {
-        let mut account_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(account_ptr, account_addr.as_mut_ptr(), 32);
-        let account = Address(account_addr);
-
-        make_nft().balance_of(account)
-    }
+    let account = match read_address(account_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    make_nft().balance_of(account)
 }
 
 /// Approve spender for token
 #[no_mangle]
 pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, token_id: u64) -> u32 {
-    unsafe {
-        let mut owner_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(owner_ptr, owner_addr.as_mut_ptr(), 32);
-        let owner = Address(owner_addr);
+    if is_mp_paused() {
+        log_info("LichenPunks is paused");
+        return 0;
+    }
+    let owner = match read_address(owner_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
-        // AUDIT-FIX P2: Verify caller is the owner
-        let real_caller = get_caller();
-        if real_caller.0 != owner_addr {
-            log_info("Approve rejected: caller mismatch");
-            return 0;
-        }
+    // AUDIT-FIX P2: Verify caller is the owner
+    let real_caller = get_caller();
+    if real_caller.0 != owner.0 {
+        log_info("Approve rejected: caller mismatch");
+        return 0;
+    }
 
-        let mut spender_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(spender_ptr, spender_addr.as_mut_ptr(), 32);
-        let spender = Address(spender_addr);
+    let spender = match read_address(spender_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
-        match make_nft().approve(owner, spender, token_id) {
-            Ok(_) => 1,
-            Err(_) => 0,
-        }
+    match make_nft().approve(owner, spender, token_id) {
+        Ok(_) => 1,
+        Err(_) => 0,
     }
 }
 
@@ -262,28 +345,46 @@ pub extern "C" fn transfer_from(
     to_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    unsafe {
-        let mut caller_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-        let caller = Address(caller_addr);
+    if is_mp_paused() {
+        log_info("LichenPunks is paused");
+        return 0;
+    }
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    let from = match read_address(from_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    let to = match read_address(to_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
-        let mut from_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(from_ptr, from_addr.as_mut_ptr(), 32);
-        let from = Address(from_addr);
+    let real_caller = get_caller();
+    if real_caller.0 != caller.0 {
+        log_info("TransferFrom rejected: caller mismatch");
+        return 0;
+    }
+    if to.0 == [0u8; 32] {
+        log_info("TransferFrom recipient cannot be zero address");
+        return 0;
+    }
+    if from.0 != to.0 && make_nft().balance_of(to) == u64::MAX {
+        log_info("Recipient balance overflow");
+        return 0;
+    }
 
-        let mut to_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(to_ptr, to_addr.as_mut_ptr(), 32);
-        let to = Address(to_addr);
-
-        match make_nft().transfer_from(caller, from, to, token_id) {
-            Ok(_) => {
-                log_info("TransferFrom successful");
-                1
-            }
-            Err(_) => {
-                log_info("TransferFrom failed");
-                0
-            }
+    match make_nft().transfer_from(caller, from, to, token_id) {
+        Ok(_) => {
+            increment_counter_saturating(MP_TRANSFER_COUNT_KEY);
+            log_info("TransferFrom successful");
+            1
+        }
+        Err(_) => {
+            log_info("TransferFrom failed");
+            0
         }
     }
 }
@@ -291,32 +392,32 @@ pub extern "C" fn transfer_from(
 /// Burn NFT
 #[no_mangle]
 pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
-    unsafe {
-        let mut owner_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(owner_ptr, owner_addr.as_mut_ptr(), 32);
-        let owner = Address(owner_addr);
+    if is_mp_paused() {
+        log_info("LichenPunks is paused");
+        return 0;
+    }
+    let owner = match read_address(owner_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
-        // AUDIT-FIX P2: Verify caller is the owner
-        let real_caller = get_caller();
-        if real_caller.0 != owner_addr {
-            log_info("Burn rejected: caller mismatch");
-            return 0;
+    // AUDIT-FIX P2: Verify caller is the owner
+    let real_caller = get_caller();
+    if real_caller.0 != owner.0 {
+        log_info("Burn rejected: caller mismatch");
+        return 0;
+    }
+
+    let mut nft = make_nft();
+    match nft.burn(owner, token_id) {
+        Ok(_) => {
+            increment_counter_saturating(MP_BURN_COUNT_KEY);
+            log_info("NFT burned");
+            1
         }
-
-        let mut nft = make_nft();
-        match nft.burn(owner, token_id) {
-            Ok(_) => {
-                let bc = storage_get(MP_BURN_COUNT_KEY)
-                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-                    .unwrap_or(0);
-                storage_set(MP_BURN_COUNT_KEY, &u64_to_bytes(bc + 1));
-                log_info("NFT burned");
-                1
-            }
-            Err(_) => {
-                log_info("Burn failed");
-                0
-            }
+        Err(_) => {
+            log_info("Burn failed");
+            0
         }
     }
 }
@@ -324,10 +425,7 @@ pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
 /// Get total minted (read from persistent storage)
 #[no_mangle]
 pub extern "C" fn total_minted() -> u64 {
-    match storage_get(b"total_minted") {
-        Some(bytes) => bytes_to_u64(&bytes),
-        None => 0,
-    }
+    stored_u64(b"total_minted")
 }
 
 // ============================================================================
@@ -367,8 +465,8 @@ pub extern "C" fn get_total_supply() -> u64 {
 /// Tests expect `get_punk_metadata`
 #[no_mangle]
 pub extern "C" fn get_punk_metadata(token_id: u64) -> u32 {
-    let key = alloc::format!("nft_meta_{}", token_id);
-    match storage_get(key.as_bytes()) {
+    let key = metadata_key(token_id);
+    match storage_get(&key) {
         Some(data) => {
             lichen_sdk::set_return_data(&data);
             1
@@ -386,22 +484,25 @@ pub extern "C" fn get_punks_by_owner(owner_ptr: *const u8) -> u64 {
 /// Tests expect `set_base_uri`
 #[no_mangle]
 pub extern "C" fn set_base_uri(caller_ptr: *const u8, uri_ptr: *const u8, uri_len: u32) -> u32 {
-    let mut caller_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-    }
-    if caller_addr != get_minter().0 {
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if caller.0 != get_minter().0 {
         return 0;
     }
     // AUDIT-FIX P10-SC-06: Verify actual transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller_addr {
+    if real_caller.0 != caller.0 {
         return 0;
     }
-    let mut uri = alloc::vec![0u8; uri_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(uri_ptr, uri.as_mut_ptr(), uri_len as usize);
-    }
+    let uri = match read_bytes(uri_ptr, uri_len, MAX_BASE_URI_LEN) {
+        Some(uri) => uri,
+        None => {
+            log_info("Base URI too large or invalid");
+            return 0;
+        }
+    };
     storage_set(b"base_uri", &uri);
     log_info("Base URI set");
     1
@@ -410,16 +511,20 @@ pub extern "C" fn set_base_uri(caller_ptr: *const u8, uri_ptr: *const u8, uri_le
 /// Tests expect `set_max_supply`
 #[no_mangle]
 pub extern "C" fn set_max_supply(caller_ptr: *const u8, max_supply: u64) -> u32 {
-    let mut caller_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-    }
-    if caller_addr != get_minter().0 {
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if caller.0 != get_minter().0 {
         return 0;
     }
     // AUDIT-FIX P10-SC-06: Verify actual transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller_addr {
+    if real_caller.0 != caller.0 {
+        return 0;
+    }
+    if max_supply > 0 && max_supply < total_minted() {
+        log_info("Max supply below current supply");
         return 0;
     }
     storage_set(b"max_supply", &u64_to_bytes(max_supply));
@@ -430,16 +535,20 @@ pub extern "C" fn set_max_supply(caller_ptr: *const u8, max_supply: u64) -> u32 
 /// Tests expect `set_royalty`
 #[no_mangle]
 pub extern "C" fn set_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
-    let mut caller_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-    }
-    if caller_addr != get_minter().0 {
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if caller.0 != get_minter().0 {
         return 0;
     }
     // AUDIT-FIX P10-SC-06: Verify actual transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller_addr {
+    if real_caller.0 != caller.0 {
+        return 0;
+    }
+    if bps > 1000 {
+        log_info("Royalty too high");
         return 0;
     }
     storage_set(b"royalty_bps", &u64_to_bytes(bps));
@@ -450,16 +559,16 @@ pub extern "C" fn set_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
 /// Tests expect `mp_pause`
 #[no_mangle]
 pub extern "C" fn mp_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-    }
-    if caller_addr != get_minter().0 {
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if caller.0 != get_minter().0 {
         return 0;
     }
     // AUDIT-FIX P10-SC-06: Verify actual transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller_addr {
+    if real_caller.0 != caller.0 {
         return 0;
     }
     storage_set(b"mp_paused", &[1u8]);
@@ -470,16 +579,16 @@ pub extern "C" fn mp_pause(caller_ptr: *const u8) -> u32 {
 /// Tests expect `mp_unpause`
 #[no_mangle]
 pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller_addr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
-    }
-    if caller_addr != get_minter().0 {
+    let caller = match read_address(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+    if caller.0 != get_minter().0 {
         return 0;
     }
     // AUDIT-FIX P10-SC-06: Verify actual transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller_addr {
+    if real_caller.0 != caller.0 {
         return 0;
     }
     storage_set(b"mp_paused", &[0u8]);
@@ -492,16 +601,8 @@ pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn get_collection_stats() -> u32 {
     let mut buf = [0u8; 24];
     let minted = u64_to_bytes(total_minted());
-    let transfers = u64_to_bytes(
-        storage_get(MP_TRANSFER_COUNT_KEY)
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    );
-    let burns = u64_to_bytes(
-        storage_get(MP_BURN_COUNT_KEY)
-            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-            .unwrap_or(0),
-    );
+    let transfers = u64_to_bytes(stored_u64(MP_TRANSFER_COUNT_KEY));
+    let burns = u64_to_bytes(stored_u64(MP_BURN_COUNT_KEY));
     buf[0..8].copy_from_slice(&minted);
     buf[8..16].copy_from_slice(&transfers);
     buf[16..24].copy_from_slice(&burns);
@@ -517,6 +618,21 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+    }
+
+    fn mint_test_token(minter: &[u8; 32], owner: &[u8; 32], token_id: u64) {
+        let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(*minter);
+        assert_eq!(
+            mint(
+                minter.as_ptr(),
+                owner.as_ptr(),
+                token_id,
+                metadata.as_ptr(),
+                metadata.len() as u32
+            ),
+            1
+        );
     }
 
     #[test]
@@ -774,6 +890,7 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check on approve
         test_mock::set_caller(owner);
         approve(owner.as_ptr(), spender.as_ptr(), 1);
+        test_mock::set_caller(spender);
         assert_eq!(
             transfer_from(spender.as_ptr(), owner.as_ptr(), to.as_ptr(), 1),
             1
@@ -958,5 +1075,168 @@ mod tests {
         // set_caller differs from owner arg → should fail
         test_mock::set_caller(attacker);
         assert_eq!(burn(owner.as_ptr(), 1), 0);
+    }
+
+    #[test]
+    fn test_mint_requires_initialization() {
+        setup();
+        let self_minter = [2u8; 32];
+        let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(self_minter);
+        assert_eq!(
+            mint(
+                self_minter.as_ptr(),
+                self_minter.as_ptr(),
+                1,
+                metadata.as_ptr(),
+                metadata.len() as u32
+            ),
+            0
+        );
+        assert_eq!(total_minted(), 0);
+    }
+
+    #[test]
+    fn test_mint_rejects_oversized_metadata() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let metadata = alloc::vec![b'a'; MAX_METADATA_LEN + 1];
+
+        test_mock::set_caller(minter);
+        assert_eq!(
+            mint(
+                minter.as_ptr(),
+                owner.as_ptr(),
+                1,
+                metadata.as_ptr(),
+                metadata.len() as u32
+            ),
+            0
+        );
+        assert_eq!(total_minted(), 0);
+    }
+
+    #[test]
+    fn test_get_punk_metadata_uses_actual_metadata_key() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let metadata = b"ipfs://QmMetadata";
+
+        test_mock::set_caller(minter);
+        assert_eq!(
+            mint(
+                minter.as_ptr(),
+                owner.as_ptr(),
+                1,
+                metadata.as_ptr(),
+                metadata.len() as u32
+            ),
+            1
+        );
+
+        assert_eq!(get_punk_metadata(1), 1);
+        assert_eq!(test_mock::get_return_data(), metadata.to_vec());
+    }
+
+    #[test]
+    fn test_transfer_from_rejects_spoofed_caller_pointer() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let spender = [3u8; 32];
+        let attacker = [4u8; 32];
+        let to = [5u8; 32];
+        mint_test_token(&minter, &owner, 1);
+
+        test_mock::set_caller(owner);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1), 1);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(
+            transfer_from(spender.as_ptr(), owner.as_ptr(), to.as_ptr(), 1),
+            0
+        );
+
+        let mut out = [0u8; 32];
+        assert_eq!(owner_of(1, out.as_mut_ptr()), 1);
+        assert_eq!(out, owner);
+    }
+
+    #[test]
+    fn test_transfer_from_and_burn_blocked_when_paused() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let spender = [3u8; 32];
+        let to = [4u8; 32];
+        mint_test_token(&minter, &owner, 1);
+
+        test_mock::set_caller(owner);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1), 1);
+
+        test_mock::set_caller(minter);
+        assert_eq!(mp_pause(minter.as_ptr()), 1);
+
+        test_mock::set_caller(spender);
+        assert_eq!(
+            transfer_from(spender.as_ptr(), owner.as_ptr(), to.as_ptr(), 1),
+            0
+        );
+        test_mock::set_caller(owner);
+        assert_eq!(burn(owner.as_ptr(), 1), 0);
+    }
+
+    #[test]
+    fn test_transfer_counter_saturates() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let to = [3u8; 32];
+        mint_test_token(&minter, &owner, 1);
+        storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(u64::MAX));
+
+        test_mock::set_caller(owner);
+        assert_eq!(transfer(owner.as_ptr(), to.as_ptr(), 1), 1);
+        assert_eq!(stored_u64(MP_TRANSFER_COUNT_KEY), u64::MAX);
+    }
+
+    #[test]
+    fn test_admin_bounds_for_uri_supply_and_royalty() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        mint_test_token(&minter, &owner, 1);
+        mint_test_token(&minter, &owner, 2);
+
+        test_mock::set_caller(minter);
+        assert_eq!(set_max_supply(minter.as_ptr(), 1), 0);
+        assert_eq!(set_max_supply(minter.as_ptr(), total_minted()), 1);
+        assert_eq!(set_max_supply(minter.as_ptr(), 0), 1);
+
+        assert_eq!(set_royalty(minter.as_ptr(), 1001), 0);
+        assert_eq!(set_royalty(minter.as_ptr(), 1000), 1);
+
+        let too_long_uri = alloc::vec![b'u'; MAX_BASE_URI_LEN + 1];
+        assert_eq!(
+            set_base_uri(
+                minter.as_ptr(),
+                too_long_uri.as_ptr(),
+                too_long_uri.len() as u32
+            ),
+            0
+        );
+        let uri = b"ipfs://base/";
+        assert_eq!(
+            set_base_uri(minter.as_ptr(), uri.as_ptr(), uri.len() as u32),
+            1
+        );
     }
 }

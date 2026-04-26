@@ -12,7 +12,10 @@ fn setup() -> [u8; 32] {
     let lichencoin = [9u8; 32];
     lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
-    assert_eq!(set_lichencoin_address(admin.as_ptr(), lichencoin.as_ptr()), 0);
+    assert_eq!(
+        set_lichencoin_address(admin.as_ptr(), lichencoin.as_ptr()),
+        0
+    );
     // Set mark price for pair 1: 1.0 (1_000_000_000)
     set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
     // Enable margin for pair 1
@@ -46,10 +49,7 @@ fn test_insurance_fund_overflow() {
     let admin = setup();
     lichen_sdk::test_mock::set_slot(100);
 
-    lichen_sdk::storage_set(
-        b"mrg_insurance",
-        &lichen_sdk::u64_to_bytes(u64::MAX - 10),
-    );
+    lichen_sdk::storage_set(b"mrg_insurance", &lichen_sdk::u64_to_bytes(u64::MAX - 10));
 
     let trader = [2u8; 32];
     // 5x short: notional=10000, required=10000*2000/10000=2000
@@ -109,23 +109,15 @@ fn test_open_position_overleveraged() {
 
 #[test]
 fn test_open_position_zero_margin_via_rounding() {
-    // BUG DOCUMENTATION: required_margin = notional * initial_margin_bps / 10_000 / leverage
-    // For small notional with high leverage, this can round to 0
+    // Required margin is floored at 1, so tiny notional cannot become
+    // a zero-margin position through integer rounding.
     let _admin = setup();
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
     lichen_sdk::test_mock::set_slot(100);
 
     // size=1, mark_price=1e9 → notional = 1*1e9/1e9 = 1
-    // 5x tier: required = 1 * 2000 / 10000 / 5 = 0 (integer division)
-    let result = open_position(trader.as_ptr(), 1, 0, 1, 5, 0);
-    // Document: if 0, zero-margin positions are possible (BUG)
-    // If not 0, there's a minimum margin check in place
-    assert!(
-        result == 0 || result == 3,
-        "zero required margin rounding: result={}",
-        result
-    );
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1, 5, 0), 3);
 }
 
 #[test]
@@ -134,14 +126,7 @@ fn test_open_position_size_zero() {
     let trader = [2u8; 32];
     lichen_sdk::test_mock::set_caller(trader);
     lichen_sdk::test_mock::set_slot(100);
-    // Size 0 → notional 0 → should this be allowed?
-    let result = open_position(trader.as_ptr(), 1, 0, 0, 2, 200);
-    // Document behavior
-    assert!(
-        result == 0 || result == 3 || result == 2,
-        "size=0 behavior: result={}",
-        result
-    );
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 0, 2, 200), 2);
 }
 
 #[test]

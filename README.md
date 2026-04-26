@@ -74,7 +74,7 @@ Four binaries ship from this repo:
 
 - Browser token, registry, and contract-resolution metadata is verified from release-signed manifests served by `getSignedMetadataManifest`; custom RPC overrides remain transport-only for generic reads.
 - Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production setup stays on `deploy/setup.sh` plus systemd units.
-- Supply-chain policy in CI includes `cargo audit`, `cargo deny`, and Rust CycloneDX SBOM artifact generation for the workspace.
+- Supply-chain policy in CI includes all-lockfile `cargo audit`, `cargo deny`, reproducible npm lockfile installs plus production `npm audit`, Python SDK dependency consistency checks, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations for release bundles.
 
 ---
 
@@ -145,6 +145,7 @@ VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/la
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-linux-x86_64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
@@ -164,6 +165,7 @@ VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/la
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-darwin-aarch64.tar.gz"
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x lichen-validator zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"

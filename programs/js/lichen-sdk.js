@@ -1411,20 +1411,14 @@ class ProgramDeployer {
             timestamp: Date.now()
         };
 
-        try {
-            const result = await this.rpc.call('submitProgramVerification', [payload]);
-            console.log(`✅ Verification submitted for ${programId}`);
-            return result;
-        } catch (err) {
-            // Fall back to storing verification request for later processing
-            console.warn(`⚠️  Verification service unavailable: ${err.message}`);
-            console.log('Verification will be retried when the service comes online');
-            return {
-                status: 'queued',
-                programId,
-                message: 'Verification queued for processing'
-            };
-        }
+        console.warn('⚠️  Program verification submission service is not exposed by RPC yet');
+        console.log('Verification request retained locally for future processing');
+        return {
+            status: 'queued',
+            programId,
+            payload,
+            message: 'Verification queued locally; no RPC submission endpoint is currently available'
+        };
     }
 }
 

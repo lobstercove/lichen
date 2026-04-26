@@ -29,7 +29,11 @@ pub(super) async fn process_signing_withdrawals(state: &CustodyState) -> Result<
     for mut job in signing {
         if let Err(error) = record_tx_intent(&state.db, "withdrawal", &job.job_id, &job.dest_chain)
         {
-            tracing::error!("Failed record_tx_intent: {error}");
+            let error = format!("failed to record withdrawal tx intent: {error}");
+            tracing::error!("{error}");
+            mark_withdrawal_failed(&mut job, error);
+            store_withdrawal_job(&state.db, &job)?;
+            continue;
         }
         match broadcast_outbound_withdrawal(state, &job).await {
             Ok(tx_hash) => {
@@ -103,14 +107,28 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
                 if let (Some(url), Some(ref tx_hash)) =
                     (state.config.solana_rpc_url.as_ref(), &job.outbound_tx_hash)
                 {
-                    check_solana_tx_confirmed(
+                    match check_solana_tx_confirmed(
                         &state.http,
                         url,
                         tx_hash,
                         state.config.solana_confirmations,
                     )
                     .await
-                    .unwrap_or(false)
+                    {
+                        Ok(confirmed) => confirmed,
+                        Err(error) if terminal_confirmation_error(&error) => {
+                            mark_withdrawal_confirmed_tx_failed(state, &mut job, error)?;
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                "withdrawal confirmation check failed for {}: {}",
+                                job.job_id,
+                                error
+                            );
+                            false
+                        }
+                    }
                 } else {
                     false
                 }
@@ -120,14 +138,28 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
                     rpc_url_for_chain(&state.config, chain),
                     &job.outbound_tx_hash,
                 ) {
-                    check_evm_tx_confirmed(
+                    match check_evm_tx_confirmed(
                         &state.http,
                         &url,
                         tx_hash,
                         state.config.evm_confirmations,
                     )
                     .await
-                    .unwrap_or(false)
+                    {
+                        Ok(confirmed) => confirmed,
+                        Err(error) if terminal_confirmation_error(&error) => {
+                            mark_withdrawal_confirmed_tx_failed(state, &mut job, error)?;
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                "withdrawal confirmation check failed for {}: {}",
+                                job.job_id,
+                                error
+                            );
+                            false
+                        }
+                    }
                 } else {
                     false
                 }
@@ -136,6 +168,26 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
         };
 
         if confirmed {
+            let asset_lower = job.asset.to_lowercase();
+            if asset_lower == "musd" {
+                let stablecoin = &job.preferred_stablecoin;
+                let chain_debit = spores_to_chain_amount(job.amount, &job.dest_chain, stablecoin);
+                let chain_debit_u64 = u64::try_from(chain_debit).unwrap_or(u64::MAX);
+                if let Err(error) = adjust_reserve_balance_once(
+                    &state.db,
+                    &job.dest_chain,
+                    stablecoin,
+                    chain_debit_u64,
+                    false,
+                    &format!("withdrawal:{}", job.job_id),
+                )
+                .await
+                {
+                    tracing::warn!("reserve ledger decrement failed: {}", error);
+                    continue;
+                }
+            }
+
             job.status = "confirmed".to_string();
             job.last_error = None;
             store_withdrawal_job(&state.db, &job)?;
@@ -154,24 +206,6 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
                 })),
             );
 
-            let asset_lower = job.asset.to_lowercase();
-            if asset_lower == "musd" {
-                let stablecoin = &job.preferred_stablecoin;
-                let chain_debit = spores_to_chain_amount(job.amount, &job.dest_chain, stablecoin);
-                let chain_debit_u64 = u64::try_from(chain_debit).unwrap_or(u64::MAX);
-                if let Err(error) = adjust_reserve_balance(
-                    &state.db,
-                    &job.dest_chain,
-                    stablecoin,
-                    chain_debit_u64,
-                    false,
-                )
-                .await
-                {
-                    tracing::warn!("reserve ledger decrement failed: {}", error);
-                }
-            }
-
             info!(
                 "withdrawal confirmed: {} (dest tx={})",
                 job.job_id,
@@ -180,5 +214,36 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
         }
     }
 
+    Ok(())
+}
+
+fn terminal_confirmation_error(error: &str) -> bool {
+    error.starts_with("solana transaction failed:")
+        || error.starts_with("evm transaction failed with status")
+}
+
+fn mark_withdrawal_confirmed_tx_failed(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    error: String,
+) -> Result<(), String> {
+    job.status = "permanently_failed".to_string();
+    job.last_error = Some(error.clone());
+    job.next_attempt_at = None;
+    store_withdrawal_job(&state.db, job)?;
+    emit_custody_event(
+        state,
+        "withdrawal.permanently_failed",
+        &job.job_id,
+        None,
+        job.outbound_tx_hash.as_deref(),
+        Some(&serde_json::json!({
+            "dest_chain": job.dest_chain,
+            "dest_address": job.dest_address,
+            "asset": job.asset,
+            "amount": job.amount,
+            "last_error": error,
+        })),
+    );
     Ok(())
 }

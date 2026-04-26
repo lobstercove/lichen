@@ -35,7 +35,11 @@ pub(super) async fn process_credit_jobs(state: &CustodyState) -> Result<(), Stri
         }
         // AUDIT-FIX M4: Record intent before credit broadcast
         if let Err(e) = record_tx_intent(&state.db, "credit", &job.job_id, "lichen") {
-            tracing::error!("Failed record_tx_intent: {e}");
+            let error = format!("failed to record credit tx intent: {e}");
+            tracing::error!("{error}");
+            mark_credit_failed(&mut job, error);
+            store_credit_job(&state.db, &job)?;
+            continue;
         }
         match submit_wrapped_credit(state, &job).await {
             Ok(tx_signature) => {

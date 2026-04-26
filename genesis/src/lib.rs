@@ -986,8 +986,9 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Governance: wire up LichenID address for reputation verification ──
+    // ── DEX Governance: wire up execution/reputation dependencies ──
     // Opcode 14 = set_lichenid_address. Format: [14][admin 32B][lichenid_addr 32B]
+    // Opcode 20 = set_core_address. Format: [20][admin 32B][dex_core_addr 32B]
     if let Some(dex_gov_pk) = address_map.get("dex_governance") {
         let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(65);
@@ -998,6 +999,18 @@ pub fn genesis_initialize_contracts(
             info!("  SET dex_governance(lichenid)");
         } else {
             warn!("  WARN: Failed to set dex_governance(lichenid)");
+        }
+
+        if let Some(dex_core_pk) = address_map.get("dex_core") {
+            let mut args = Vec::with_capacity(65);
+            args.push(20u8);
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(&dex_core_pk.0);
+            if exec_as_governance(dex_gov_pk, "call", &args, "dex_governance(core)") {
+                info!("  SET dex_governance(core)");
+            } else {
+                warn!("  WARN: Failed to set dex_governance(core)");
+            }
         }
     }
 

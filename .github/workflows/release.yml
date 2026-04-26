@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -107,6 +110,11 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
 
+      - name: Attest archive provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.artifact }}.tar.gz
+
   checksums:
     name: Generate SHA256SUMS
     needs: build
@@ -127,6 +135,11 @@ jobs:
         with:
           name: SHA256SUMS
           path: SHA256SUMS
+
+      - name: Attest checksum provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: SHA256SUMS
 
   release:
     name: Create Draft GitHub Release
@@ -167,6 +180,9 @@ jobs:
             # Verify checksum
             curl -LO https://github.com/lobstercove/lichen/releases/download/${{ github.ref_name }}/SHA256SUMS
             sha256sum -c SHA256SUMS --ignore-missing
+
+            # Verify GitHub artifact provenance (requires GitHub CLI)
+            gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1

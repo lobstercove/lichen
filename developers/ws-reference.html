@@ -126,8 +126,8 @@
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
-                    <p><strong>Mainnet WebSocket:</strong> <code>wss://rpc.lichen.network/ws</code></p>
-                    <p><strong>Testnet WebSocket:</strong> <code>wss://testnet-rpc.lichen.network/ws</code></p>
+                    <p><strong>Public testnet WebSocket:</strong> <code>wss://testnet-rpc.lichen.network/ws</code></p>
+                    <p><strong>Mainnet WebSocket target:</strong> <code>wss://rpc.lichen.network/ws</code></p>
                     <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
                         format.</p>
                 </div>
@@ -149,7 +149,7 @@ const conn = new Connection(
     'wss://testnet-rpc.lichen.network/ws'
 );
 
-// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
+// Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
 
 // Subscribe to new slots
 const subId = await conn.onSlot((slot) => {
@@ -174,7 +174,7 @@ async def main():
         ws_url='wss://testnet-rpc.lichen.network/ws'
     )
 
-    # Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws for mainnet.
+    # Switch to https://rpc.lichen.network and wss://rpc.lichen.network/ws only when targeting mainnet.
 
     sub_id = await conn.on_slot(lambda slot: print(f'New slot: {slot}'))
 

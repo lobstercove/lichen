@@ -309,12 +309,12 @@ test('shielded.js confirm handlers call shield/unshield operations', () => {
         'confirmUnshield must validate recipient input');
 });
 
-test('shielded.js submits on-chain shield/unshield transactions and updates UI', () => {
-    assert(shieldedSrc.includes("submitShieldTransaction"), 'Shield flow must submit shield transaction');
-    assert(shieldedSrc.includes("submitUnshieldTransaction"), 'Unshield flow must submit unshield transaction');
-    assert(shieldedSrc.includes('updateShieldedUI();'), 'Shielded flows must refresh wallet shielded UI');
-    assert(shieldedSrc.includes("closeModal('shieldModal')"), 'Shield flow must close shield modal on success');
-    assert(shieldedSrc.includes("closeModal('unshieldModal')"), 'Unshield flow must close unshield modal on success');
+test('shielded.js does not call unsupported unsigned submission RPC methods', () => {
+    assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false'), 'Shielded submit flow must be explicitly disabled until signed tx builder is wired');
+    assert(shieldedSrc.includes('shieldedSubmissionUnavailable'), 'Shielded submit flow must show an honest unavailable state');
+    assert(!shieldedSrc.includes("rpc.call('submitShieldTransaction'"), 'Shield flow must not call unsupported submitShieldTransaction RPC');
+    assert(!shieldedSrc.includes("rpc.call('submitUnshieldTransaction'"), 'Unshield flow must not call unsupported submitUnshieldTransaction RPC');
+    assert(!shieldedSrc.includes("rpc.call('submitShieldedTransfer'"), 'Transfer flow must not call unsupported submitShieldedTransfer RPC');
 });
 
 // ---- W-11: .lichen full lifecycle assertions ----

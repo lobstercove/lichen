@@ -166,6 +166,28 @@ fn store_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
 }
 
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
+    }
+    Some(out)
+}
+
+fn load_licn_token() -> Option<Address> {
+    storage_get(LICN_TOKEN_KEY).and_then(|data| {
+        if data.len() < 32 {
+            return None;
+        }
+        let mut token = [0u8; 32];
+        token.copy_from_slice(&data[..32]);
+        Some(Address(token))
+    })
+}
+
 // ============================================================================
 // VAULT STATE
 // ============================================================================
@@ -173,10 +195,10 @@ fn store_u64(key: &[u8], val: u64) {
 /// Initialize the vault
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    let mut admin = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
-    }
+    let admin = match read_address32(admin_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -213,10 +235,10 @@ pub extern "C" fn add_strategy(
     strategy_type: u8,
     allocation_percent: u64,
 ) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -248,7 +270,10 @@ pub extern "C" fn add_strategy(
     let mut total_alloc = allocation_percent;
     for i in 0..count {
         let alloc_key = alloc::format!("cv_strat_alloc:{}", i);
-        total_alloc += load_u64(alloc_key.as_bytes());
+        total_alloc = match total_alloc.checked_add(load_u64(alloc_key.as_bytes())) {
+            Some(total) => total,
+            None => return 5,
+        };
     }
     if total_alloc > 100 {
         log_info("Total allocation exceeds 100%");
@@ -293,6 +318,17 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         None => return 0,
     };
 
+    let depositor = match read_address32(depositor_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != depositor {
+        return 200;
+    }
+
     // V2: Deposit cap check
     let cap = get_deposit_cap();
     if cap > 0 {
@@ -306,46 +342,36 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
 
     // V2: Deposit fee
     let fee_bps = get_deposit_fee_bps();
+    if fee_bps > MAX_DEPOSIT_FEE_BPS {
+        return 0;
+    }
     let fee = ((amount as u128) * (fee_bps as u128) / 10_000) as u64;
-    let net_amount = amount - fee;
+    let net_amount = match amount.checked_sub(fee) {
+        Some(net) => net,
+        None => return 0,
+    };
     if net_amount == 0 {
         return 0;
     }
-
-    // Track fees
-    if fee > 0 {
-        let prev_fees = load_u64(b"cv_protocol_fees");
-        store_u64(b"cv_protocol_fees", prev_fees.saturating_add(fee));
-    }
-
-    let mut depositor = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32);
-    }
-
-    // AUDIT-FIX: verify caller matches transaction signer
-    let real_caller = get_caller();
-    if real_caller.0 != depositor {
-        return 200;
-    }
+    let prev_protocol_fees = load_u64(b"cv_protocol_fees");
+    let new_protocol_fees = match prev_protocol_fees.checked_add(fee) {
+        Some(total) => total,
+        None => return 0,
+    };
 
     let hex = hex_encode_addr(&depositor);
 
     let total_shares = load_u64(b"cv_total_shares");
     let total_assets = load_u64(b"cv_total_assets");
+    let is_first_deposit = total_shares == 0 || total_assets == 0;
 
     // Calculate shares to mint (first depositor gets 1:1)
-    let shares = if total_shares == 0 || total_assets == 0 {
+    let shares = if is_first_deposit {
         // T5.9: On first deposit, lock MIN_LOCKED_SHARES to a dead address
         if net_amount <= MIN_LOCKED_SHARES {
             log_info("First deposit must exceed minimum locked shares");
             return 0;
         }
-        let dead_hex = [b'0'; 64];
-        let dead_key = make_key(b"cv_shares:", &dead_hex);
-        store_u64(&dead_key, MIN_LOCKED_SHARES);
-        store_u64(b"cv_total_shares", MIN_LOCKED_SHARES);
-        store_u64(b"cv_total_assets", MIN_LOCKED_SHARES);
         net_amount - MIN_LOCKED_SHARES
     } else {
         // Use u128 to prevent overflow on large values
@@ -360,23 +386,46 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     // Update user shares
     let share_key = make_key(b"cv_shares:", &hex);
     let prev_shares = load_u64(&share_key);
-    store_u64(&share_key, prev_shares.saturating_add(shares));
+    let new_user_shares = match prev_shares.checked_add(shares) {
+        Some(total) => total,
+        None => return 0,
+    };
 
-    // Update totals (re-read in case first-deposit wrote them)
-    let total_shares = load_u64(b"cv_total_shares");
-    let total_assets = load_u64(b"cv_total_assets");
-    store_u64(b"cv_total_shares", total_shares.saturating_add(shares));
-    // For first deposit, MIN_LOCKED_SHARES of the amount is already counted;
-    // for subsequent deposits, just add the net amount.
-    let additional_assets = if total_shares == MIN_LOCKED_SHARES {
+    let base_total_shares = if is_first_deposit {
+        MIN_LOCKED_SHARES
+    } else {
+        total_shares
+    };
+    let base_total_assets = if is_first_deposit {
+        MIN_LOCKED_SHARES
+    } else {
+        total_assets
+    };
+    let new_total_shares = match base_total_shares.checked_add(shares) {
+        Some(total) => total,
+        None => return 0,
+    };
+    let additional_assets = if is_first_deposit {
         net_amount - MIN_LOCKED_SHARES
     } else {
         net_amount
     };
-    store_u64(
-        b"cv_total_assets",
-        total_assets.saturating_add(additional_assets),
-    );
+    let new_total_assets = match base_total_assets.checked_add(additional_assets) {
+        Some(total) => total,
+        None => return 0,
+    };
+
+    if is_first_deposit {
+        let dead_hex = [b'0'; 64];
+        let dead_key = make_key(b"cv_shares:", &dead_hex);
+        store_u64(&dead_key, MIN_LOCKED_SHARES);
+    }
+    store_u64(&share_key, new_user_shares);
+    store_u64(b"cv_total_shares", new_total_shares);
+    store_u64(b"cv_total_assets", new_total_assets);
+    if fee > 0 {
+        store_u64(b"cv_protocol_fees", new_protocol_fees);
+    }
 
     log_info("Vault deposit successful");
     shares
@@ -394,10 +443,10 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
         None => return 0,
     };
 
-    let mut depositor = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32);
-    }
+    let depositor = match read_address32(depositor_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -416,6 +465,10 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 
     let total_shares = load_u64(b"cv_total_shares");
     let total_assets = load_u64(b"cv_total_assets");
+    if total_shares == 0 || shares_to_burn > total_shares {
+        log_info("Invalid total share accounting");
+        return 0;
+    }
 
     // Calculate LICN to return
     // Use u128 to prevent overflow on large values
@@ -427,12 +480,18 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 
     // V2: Withdrawal fee
     let fee_bps = get_withdrawal_fee_bps();
+    if fee_bps > MAX_WITHDRAWAL_FEE_BPS {
+        return 0;
+    }
     let fee = ((gross_amount as u128) * (fee_bps as u128) / 10_000) as u64;
-    let amount = gross_amount - fee;
+    let amount = match gross_amount.checked_sub(fee) {
+        Some(amount) => amount,
+        None => return 0,
+    };
 
+    let prev_protocol_fees = load_u64(b"cv_protocol_fees");
     if fee > 0 {
-        let prev_fees = load_u64(b"cv_protocol_fees");
-        store_u64(b"cv_protocol_fees", prev_fees.saturating_add(fee));
+        store_u64(b"cv_protocol_fees", prev_protocol_fees.saturating_add(fee));
     }
 
     // Update user shares
@@ -452,8 +511,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
         store_u64(b"cv_total_shares", total_shares);
         store_u64(b"cv_total_assets", total_assets);
         if fee > 0 {
-            let prev_fees = load_u64(b"cv_protocol_fees");
-            store_u64(b"cv_protocol_fees", prev_fees.saturating_sub(fee));
+            store_u64(b"cv_protocol_fees", prev_protocol_fees);
         }
         log_info("Withdrawal transfer failed");
         return 0;
@@ -510,21 +568,25 @@ fn transfer_licn_out(to: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
     }
-    let token_data = storage_get(LICN_TOKEN_KEY);
-    if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
-        log_info("LICN token not configured — transfer rejected");
-        return false;
-    }
-    let mut token = [0u8; 32];
-    token.copy_from_slice(&token_data.unwrap()[..32]);
+    let token = match load_licn_token() {
+        Some(token) => token,
+        None => {
+            log_info("LICN token not configured - transfer rejected");
+            return false;
+        }
+    };
     let contract_addr = get_contract_address();
-    transfer_token_or_native(
-        Address(token),
-        Address(contract_addr.0),
-        Address(*to),
-        amount,
-    )
-    .is_ok()
+    match transfer_token_or_native(token, Address(contract_addr.0), Address(*to), amount) {
+        Ok(true) => true,
+        Ok(false) => {
+            log_info("LICN transfer returned failure status");
+            false
+        }
+        Err(_) => {
+            log_info("LICN transfer failed");
+            false
+        }
+    }
 }
 
 /// Set protocol addresses for real yield sources. Admin only.
@@ -537,10 +599,10 @@ pub extern "C" fn set_protocol_addresses(
     thalllend_ptr: *const u8,
     lichenswap_ptr: *const u8,
 ) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -552,14 +614,14 @@ pub extern "C" fn set_protocol_addresses(
         return 1;
     }
 
-    let mut thalllend = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(thalllend_ptr, thalllend.as_mut_ptr(), 32);
-    }
-    let mut lichenswap = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(lichenswap_ptr, lichenswap.as_mut_ptr(), 32);
-    }
+    let thalllend = match read_address32(thalllend_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let lichenswap = match read_address32(lichenswap_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     let set_thalllend = thalllend.iter().any(|&b| b != 0);
     let set_lichenswap = lichenswap.iter().any(|&b| b != 0);
@@ -588,10 +650,10 @@ pub extern "C" fn set_protocol_addresses(
 /// Returns: 0 success, 1 not admin, 2 already configured
 #[no_mangle]
 pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
     let real_caller = get_caller();
     if real_caller.0 != caller {
         return 200;
@@ -599,10 +661,10 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
     if !is_cv_admin(&caller) {
         return 1;
     }
-    let mut token = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
-    }
+    let token = match read_address32(token_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
     if has_cv_configured_address(LICN_TOKEN_KEY) {
         log_info("LICN token already configured");
         return 2;
@@ -654,7 +716,8 @@ pub extern "C" fn harvest() -> u32 {
         let strategy_type = load_u64(type_key.as_bytes()) as u8;
         let allocation = load_u64(alloc_key.as_bytes());
 
-        let deployed = total_assets * allocation / 100;
+        let deployed =
+            ((total_assets as u128) * (allocation as u128) / 100).min(u64::MAX as u128) as u64;
 
         // G25-02: Only real yield from connected protocols — no phantom inflation.
         // CON-10: Track unavailable quote surfaces so we can report instead of pretending.
@@ -691,7 +754,7 @@ pub extern "C" fn harvest() -> u32 {
             _ => 0,
         };
 
-        total_yield += strategy_yield;
+        total_yield = total_yield.saturating_add(strategy_yield);
 
         // Update deployed amount
         let deployed_key = alloc::format!("cv_strat_deployed:{}", i);
@@ -703,8 +766,9 @@ pub extern "C" fn harvest() -> u32 {
 
     if total_yield > 0 {
         // Performance fee
-        let perf_fee = total_yield * PERFORMANCE_FEE_PERCENT / 100;
-        let net_yield = total_yield - perf_fee;
+        let perf_fee = ((total_yield as u128) * (PERFORMANCE_FEE_PERCENT as u128) / 100)
+            .min(u64::MAX as u128) as u64;
+        let net_yield = total_yield.saturating_sub(perf_fee);
 
         // Auto-compound: add net yield back to total assets
         store_u64(b"cv_total_assets", total_assets.saturating_add(net_yield));
@@ -764,10 +828,10 @@ pub extern "C" fn get_vault_stats() -> u32 {
 /// Get user position: [shares(8), estimated_value(8)]
 #[no_mangle]
 pub extern "C" fn get_user_position(user_ptr: *const u8) -> u32 {
-    let mut user = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
-    }
+    let user = match read_address32(user_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
     let hex = hex_encode_addr(&user);
 
     let share_key = make_key(b"cv_shares:", &hex);
@@ -823,10 +887,10 @@ pub extern "C" fn get_strategy_info(index: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -849,10 +913,10 @@ pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -875,10 +939,10 @@ pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 too high
 #[no_mangle]
 pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -900,10 +964,10 @@ pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 too high
 #[no_mangle]
 pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -925,10 +989,10 @@ pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32
 /// Returns: 0 success, 1 not admin
 #[no_mangle]
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -951,10 +1015,10 @@ pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 invalid tier
 #[no_mangle]
 pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -976,10 +1040,10 @@ pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 out of bounds
 #[no_mangle]
 pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1007,10 +1071,10 @@ pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
 /// Returns fee amount withdrawn (0 if none or not admin).
 #[no_mangle]
 pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1046,10 +1110,10 @@ pub extern "C" fn update_strategy_allocation(
     index: u64,
     new_alloc: u64,
 ) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1072,7 +1136,10 @@ pub extern "C" fn update_strategy_allocation(
             continue;
         }
         let alloc_key = alloc::format!("cv_strat_alloc:{}", i);
-        total += load_u64(alloc_key.as_bytes());
+        total = match total.checked_add(load_u64(alloc_key.as_bytes())) {
+            Some(total) => total,
+            None => return 3,
+        };
     }
     if total > 100 {
         return 3;
@@ -1917,7 +1984,6 @@ mod tests {
         let shares = deposit(user.as_ptr(), 100_000);
         assert!(shares > 0);
         let amount = withdraw(user.as_ptr(), shares);
-        // Graceful degradation: transfer_licn_out returns true when LICN token not configured
         assert!(amount > 0);
     }
 
@@ -2021,5 +2087,142 @@ mod tests {
         test_mock::set_value(100_000); // exact match
         let shares = deposit(user.as_ptr(), 100_000);
         assert!(shares > 0);
+    }
+
+    #[test]
+    fn test_deposit_spoofed_caller_does_not_accrue_fee() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        let attacker = [9u8; 32];
+        test_mock::set_caller(attacker);
+        test_mock::set_value(100_000);
+
+        assert_eq!(deposit(user.as_ptr(), 100_000), 200);
+        assert_eq!(load_u64(b"cv_protocol_fees"), 0);
+        assert_eq!(load_u64(b"cv_total_assets"), 0);
+        assert_eq!(load_u64(b"cv_total_shares"), 0);
+    }
+
+    #[test]
+    fn test_failed_first_deposit_does_not_accrue_fee() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(MIN_LOCKED_SHARES);
+
+        assert_eq!(deposit(user.as_ptr(), MIN_LOCKED_SHARES), 0);
+        assert_eq!(load_u64(b"cv_protocol_fees"), 0);
+        assert_eq!(load_u64(b"cv_total_assets"), 0);
+        assert_eq!(load_u64(b"cv_total_shares"), 0);
+    }
+
+    #[test]
+    fn test_withdraw_false_transfer_restores_exact_fee_state() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        enable_token_transfers();
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+        let shares = deposit(user.as_ptr(), 100_000);
+        let share_key = make_key(b"cv_shares:", &hex_encode_addr(&user));
+        let prev_assets = load_u64(b"cv_total_assets");
+        let prev_shares = load_u64(b"cv_total_shares");
+        store_u64(b"cv_protocol_fees", u64::MAX - 1);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        assert_eq!(withdraw(user.as_ptr(), shares), 0);
+        assert_eq!(load_u64(&share_key), shares);
+        assert_eq!(load_u64(b"cv_total_assets"), prev_assets);
+        assert_eq!(load_u64(b"cv_total_shares"), prev_shares);
+        assert_eq!(load_u64(b"cv_protocol_fees"), u64::MAX - 1);
+    }
+
+    #[test]
+    fn test_withdraw_protocol_fees_false_transfer_preserves_fees() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        enable_token_transfers();
+        store_u64(b"cv_protocol_fees", 777);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        assert_eq!(withdraw_protocol_fees(admin.as_ptr()), 0);
+        assert_eq!(load_u64(b"cv_protocol_fees"), 777);
+    }
+
+    #[test]
+    fn test_add_strategy_allocation_overflow_rejected() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(b"cv_strategy_count", 1);
+        store_u64(b"cv_strat_alloc:0", u64::MAX);
+
+        assert_eq!(add_strategy(admin.as_ptr(), STRATEGY_LENDING, 1), 5);
+        assert_eq!(load_u64(b"cv_strategy_count"), 1);
+    }
+
+    #[test]
+    fn test_update_strategy_allocation_overflow_rejected() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(b"cv_strategy_count", 2);
+        store_u64(b"cv_strat_alloc:0", u64::MAX);
+        store_u64(b"cv_strat_alloc:1", 0);
+
+        assert_eq!(update_strategy_allocation(admin.as_ptr(), 1, 1), 3);
+        assert_eq!(load_u64(b"cv_strat_alloc:1"), 0);
+    }
+
+    #[test]
+    fn test_get_user_position_null_pointer_rejected() {
+        setup();
+        assert_eq!(get_user_position(core::ptr::null()), 98);
+    }
+
+    #[test]
+    fn test_harvest_wide_arithmetic_does_not_wrap() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let thalllend = [0xAA; 32];
+        let zero = [0u8; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), thalllend.as_ptr(), zero.as_ptr()),
+            0
+        );
+        store_u64(b"cv_total_assets", u64::MAX);
+        store_u64(b"cv_total_shares", u64::MAX);
+        store_u64(b"cv_strategy_count", 1);
+        store_u64(b"cv_strat_type:0", STRATEGY_LENDING as u64);
+        store_u64(b"cv_strat_alloc:0", 100);
+        test_mock::set_cross_call_response(Some(u64_to_bytes(u64::MAX).to_vec()));
+        test_mock::set_timestamp(401_000);
+
+        assert_eq!(harvest(), 0);
+
+        let expected_fee = ((u64::MAX as u128) * (PERFORMANCE_FEE_PERCENT as u128) / 100) as u64;
+        let expected_net = u64::MAX - expected_fee;
+        assert_eq!(load_u64(b"cv_total_assets"), u64::MAX);
+        assert_eq!(load_u64(b"cv_fees_earned"), expected_fee);
+        assert_eq!(load_u64(b"cv_total_earned"), expected_net);
     }
 }

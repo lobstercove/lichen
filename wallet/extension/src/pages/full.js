@@ -1316,14 +1316,8 @@ async function loadShieldTab() {
   let shieldedBalance = 0;
   let ownedNotes = [];
   let shieldedAddress = _shieldedState.address || 'Initialize shielded wallet to derive';
-  try {
-    const addr = _shieldedState.address;
-    const notesRes = addr ? await rpcClient.call('getShieldedNotes', [addr]) : [];
-    if (Array.isArray(notesRes)) {
-      ownedNotes = notesRes;
-      shieldedBalance = notesRes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
-    }
-  } catch (_) { }
+  ownedNotes = Array.isArray(_shieldedState.notes) ? _shieldedState.notes : [];
+  shieldedBalance = ownedNotes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
 
   _shieldedState = { ..._shieldedState, balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
 
@@ -1364,11 +1358,11 @@ async function loadShieldTab() {
           <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} spores</div>
         </div>
         <div style="display:flex;gap:0.5rem;">
-          <button class="btn btn-small btn-primary" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
-          <button class="btn btn-small btn-secondary" id="extUnshieldBtn"><i class="fas fa-arrow-up"></i> Unshield</button>
+          <button class="btn btn-small btn-primary" id="extShieldBtn" disabled title="Signed shielded transaction submission is not enabled yet"><i class="fas fa-arrow-down"></i> Shield</button>
+          <button class="btn btn-small btn-secondary" id="extUnshieldBtn" disabled title="Signed shielded transaction submission is not enabled yet"><i class="fas fa-arrow-up"></i> Unshield</button>
         </div>
       </div>
-      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;">
+      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" disabled title="Signed shielded transaction submission is not enabled yet">
         <i class="fas fa-paper-plane"></i> Private Transfer
       </button>
     </div>
@@ -1494,19 +1488,7 @@ function showShieldModal(type) {
 
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {
-      const wallet = getActiveWallet();
-      const net = state.network?.selected || 'local-testnet';
-      const txType = type === 'shield' ? 16 : type === 'unshield' ? 17 : 18;
-      // Build shielded transaction via RPC
-      const result = await rpc().call('sendShieldedTransaction', [{
-        type: txType,
-        from: wallet.address,
-        amount: Math.round(amount * 1e9),
-        recipient: recipient || undefined,
-        password
-      }]);
-      statusEl.innerHTML = '<i class="fas fa-check-circle" style="color:#10b981;"></i> ' + (result?.message || 'Transaction submitted');
-      setTimeout(() => { overlay.remove(); loadShieldTab(); }, 1500);
+      statusEl.textContent = 'Signed shielded transaction submission is not enabled yet';
     } catch (err) {
       statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color:#ef4444;"></i> ' + escapeHtmlExt(err.message);
     }

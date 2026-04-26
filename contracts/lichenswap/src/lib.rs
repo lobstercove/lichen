@@ -105,8 +105,8 @@ fn reentrancy_exit() {
 fn transfer_out(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> u32 {
     let self_addr = get_contract_address();
     match transfer_token_or_native(Address(*token_addr), self_addr, Address(*to), amount) {
-        Ok(_) => 0,
-        Err(_) => 31,
+        Ok(true) => 0,
+        Ok(false) | Err(_) => 31,
     }
 }
 
@@ -189,7 +189,10 @@ fn twap_update() {
     let count = storage_get(TWAP_SNAPSHOT_COUNT_KEY)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
-    storage_set(TWAP_SNAPSHOT_COUNT_KEY, &u64_to_bytes(count + 1));
+    storage_set(
+        TWAP_SNAPSHOT_COUNT_KEY,
+        &u64_to_bytes(count.saturating_add(1)),
+    );
 }
 
 /// Check price impact of a swap. Returns true if within limits.
@@ -224,9 +227,9 @@ fn accrue_protocol_fee(amount_out: u64, is_token_a: bool) -> u64 {
         PROTOCOL_FEES_B_KEY
     };
     let accrued = storage_get(fee_key).map(|d| bytes_to_u64(&d)).unwrap_or(0);
-    storage_set(fee_key, &u64_to_bytes(accrued + protocol_cut));
+    storage_set(fee_key, &u64_to_bytes(accrued.saturating_add(protocol_cut)));
     // AUDIT-FIX 1.11: Return amount MINUS protocol cut — was returning full amount_out
-    amount_out - protocol_cut
+    amount_out.saturating_sub(protocol_cut)
 }
 
 /// Initialize the liquidity pool
@@ -424,7 +427,7 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
                 if accrued >= bonus {
                     storage_set(PROTOCOL_FEES_B_KEY, &u64_to_bytes(accrued - bonus));
                     log_info("Reputation fee discount applied from protocol fees");
-                    amount_b_out + bonus
+                    amount_b_out.checked_add(bonus).unwrap_or(amount_b_out)
                 } else {
                     amount_b_out
                 }
@@ -455,7 +458,7 @@ fn track_swap(amount_a: u64, amount_b: u64, is_a_to_b: bool) {
     let count = storage_get(MS_SWAP_COUNT_KEY)
         .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
         .unwrap_or(0);
-    storage_set(MS_SWAP_COUNT_KEY, &u64_to_bytes(count + 1));
+    storage_set(MS_SWAP_COUNT_KEY, &u64_to_bytes(count.saturating_add(1)));
     if is_a_to_b {
         let vol = storage_get(MS_VOLUME_A_KEY)
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
@@ -518,7 +521,7 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
                 if accrued >= bonus {
                     storage_set(PROTOCOL_FEES_A_KEY, &u64_to_bytes(accrued - bonus));
                     log_info("Reputation fee discount applied from protocol fees");
-                    amount_a_out + bonus
+                    amount_a_out.checked_add(bonus).unwrap_or(amount_a_out)
                 } else {
                     amount_a_out
                 }
@@ -708,7 +711,7 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
     }
 
     // v2: Cap flash loans at MAX_FLASH_LOAN_PERCENT of reserves
-    let max_loan = reserve * MAX_FLASH_LOAN_PERCENT / 100;
+    let max_loan = ((reserve as u128) * (MAX_FLASH_LOAN_PERCENT as u128) / 100) as u64;
     if amount > max_loan {
         log_info("Flash loan exceeds maximum (90% of reserves)");
         reentrancy_exit();
@@ -719,6 +722,11 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
     // round-up ensures protocol always collects at least 1 spore fee.
     let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + 9999) / 10000) as u64;
     let fee = if fee == 0 { 1 } else { fee };
+    if reserve.checked_add(fee).is_none() {
+        log_info("Flash loan fee would overflow reserves");
+        reentrancy_exit();
+        return 0;
+    }
 
     // Store loan metadata WITHOUT modifying reserves
     // Reserves only change when repay succeeds (atomic guarantee)
@@ -771,7 +779,15 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
     let loan_fee = fl_get_fee();
     let token_is_a = fl_get_token_is_a();
 
-    let required = loan_amount + loan_fee;
+    let required = match loan_amount.checked_add(loan_fee) {
+        Some(value) => value,
+        None => {
+            log_info("Flash loan repayment requirement overflow");
+            fl_clear();
+            reentrancy_exit();
+            return 2;
+        }
+    };
     if repay_amount < required {
         log_info("Flash loan repayment insufficient — loan reverted");
         // No reserve changes needed — reserves were never decremented
@@ -784,9 +800,25 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
     let mut pool = load_pool();
     let fee_collected = repay_amount.saturating_sub(loan_amount);
     if token_is_a {
-        pool.reserve_a += fee_collected;
+        pool.reserve_a = match pool.reserve_a.checked_add(fee_collected) {
+            Some(value) => value,
+            None => {
+                log_info("Flash loan repayment would overflow reserve A");
+                fl_clear();
+                reentrancy_exit();
+                return 4;
+            }
+        };
     } else {
-        pool.reserve_b += fee_collected;
+        pool.reserve_b = match pool.reserve_b.checked_add(fee_collected) {
+            Some(value) => value,
+            None => {
+                log_info("Flash loan repayment would overflow reserve B");
+                fl_clear();
+                reentrancy_exit();
+                return 4;
+            }
+        };
     }
     let _ = pool.save();
 
@@ -1054,6 +1086,9 @@ pub extern "C" fn set_reputation_discount(
     if caller[..] != admin[..] {
         return 2;
     }
+    if discount_bps > 10_000 {
+        return 3;
+    }
 
     storage_set(LICHENID_DISCOUNT_THRESHOLD_KEY, &u64_to_bytes(threshold));
     storage_set(LICHENID_DISCOUNT_BPS_KEY, &u64_to_bytes(discount_bps));
@@ -1097,7 +1132,7 @@ fn get_reputation_bonus(amount_out: u64) -> u64 {
         Ok(result) if result.len() >= 8 => {
             let reputation = bytes_to_u64(&result);
             if reputation >= threshold {
-                amount_out * discount_bps / 10000
+                ((amount_out as u128) * (discount_bps as u128) / 10_000) as u64
             } else {
                 0
             }
@@ -1463,6 +1498,7 @@ mod tests {
         assert_eq!(set_reputation_discount(other.as_ptr(), 100, 15), 2);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
+        assert_eq!(set_reputation_discount(admin.as_ptr(), 100, 10_001), 3);
         assert_eq!(set_reputation_discount(admin.as_ptr(), 100, 15), 0);
 
         // Verify stored values
@@ -1675,6 +1711,40 @@ mod tests {
         // Try to flash loan 95% of reserves
         let out = flash_loan_borrow(950_000, 1);
         assert_eq!(out, 0, "Flash loan >90% should be rejected");
+    }
+
+    #[test]
+    fn test_flash_loan_rejects_false_transfer_status() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        let out = flash_loan_borrow(100_000, 1);
+        assert_eq!(out, 0, "false token transfer status must fail borrow");
+        assert!(!fl_is_active(), "failed borrow must clear loan state");
+    }
+
+    #[test]
+    fn test_flash_loan_rejects_reserve_plus_fee_overflow() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+        storage_set(b"reserve_a", &u64_to_bytes(u64::MAX));
+        storage_set(b"reserve_b", &u64_to_bytes(1_000_000));
+
+        let borrower = [4u8; 32];
+        test_mock::set_caller(borrower);
+        let out = flash_loan_borrow(1, 1);
+        assert_eq!(out, 0, "borrow must fail if fee would overflow reserve");
+        assert!(!fl_is_active());
     }
 
     // =============================================
