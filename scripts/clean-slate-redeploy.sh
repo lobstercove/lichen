@@ -522,33 +522,51 @@ sudo -u lichen env HOME=$VPS_DATA LICHEN_HOME=$VPS_DATA \
 
 # 3. Fetch live prices
 echo "  Fetching prices..."
-SOL=145.0; ETH=2600.0; BNB=620.0
+PRICE_FILE="\$STATE/genesis-prices.json"
+PRICE_FILE_FLAG=""
 PRICE_JSON=\$(curl -sf 'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null || echo '[]')
 if [ "\$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
-  eval "\$(python3 -c "
-import json
+  if python3 -c "
+import json, sys, time
 try:
-    data = json.loads('\$PRICE_JSON')
+    data = json.loads(sys.argv[1])
     m = {d['symbol']: float(d['price']) for d in data}
-    print(f'SOL={m.get(\"SOLUSDT\", 145.0):.2f}')
-    print(f'ETH={m.get(\"ETHUSDT\", 2600.0):.2f}')
-    print(f'BNB={m.get(\"BNBUSDT\", 620.0):.2f}')
-except: pass
-" 2>/dev/null)" || true
+    sol = m['SOLUSDT']; eth = m['ETHUSDT']; bnb = m['BNBUSDT']
+    payload = {
+        'licn_usd_8dec': 10_000_000,
+        'wsol_usd_8dec': round(sol * 100_000_000),
+        'weth_usd_8dec': round(eth * 100_000_000),
+        'wbnb_usd_8dec': round(bnb * 100_000_000),
+        'source': 'binance-rest',
+        'captured_at_unix': int(time.time()),
+    }
+    with open(sys.argv[2], 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write('\\n')
+    print(f'SOL={sol:.2f} ETH={eth:.2f} BNB={bnb:.2f}')
+except Exception as exc:
+    print(f'price snapshot parse failed: {exc}', file=sys.stderr)
+    sys.exit(1)
+" "\$PRICE_JSON" "\$PRICE_FILE"; then
+    PRICE_FILE_FLAG="--genesis-prices-file \$PRICE_FILE"
+  else
+    echo "  Warning: could not build genesis price snapshot; lichen-genesis will try live fallback"
+  fi
+else
+  echo "  Warning: Binance price snapshot unavailable; lichen-genesis will try live fallback"
 fi
-echo "  Prices: SOL=\$SOL ETH=\$ETH BNB=\$BNB"
 
 # 4. Create genesis
 echo "  Creating genesis block..."
 sudo -u lichen env HOME=$VPS_DATA LICHEN_HOME=$VPS_DATA \
   LICHEN_CONTRACTS_DIR=\$HOME/lichen/contracts \
   LICHEN_KEYPAIR_PASSWORD="\$KP_PASS" \
-  GENESIS_SOL_USD="\$SOL" GENESIS_ETH_USD="\$ETH" GENESIS_BNB_USD="\$BNB" \
   /usr/local/bin/lichen-genesis \
     --network "\$NET" \
     --db-path "\$STATE" \
     --wallet-file "\$STATE/genesis-wallet.json" \
     --initial-validator "\$PUBKEY" \
+    \$PRICE_FILE_FLAG \
     $GENESIS_OPERATOR_FLAGS
 echo "  Genesis created!"
 
