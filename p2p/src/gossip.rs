@@ -286,8 +286,6 @@ impl GossipManager {
     ) {
         let connected = peer_manager.get_peers();
         let connected_count = connected.len();
-        let local_addr = peer_manager.local_addr();
-
         // Build the set of candidate addresses to reconnect.
         // Always include seed peers; if below MIN_PEER_COUNT also include
         // all historically-known peers from the durable store.
@@ -310,7 +308,7 @@ impl GossipManager {
         }
 
         for addr in &candidates {
-            if is_self_endpoint(*addr, local_addr) {
+            if peer_manager.is_self_endpoint(addr) {
                 if let Some(store) = peer_store {
                     store.remove_peer(addr);
                 }
@@ -358,7 +356,9 @@ impl GossipManager {
         }
 
         for peer_info in peer_infos {
-            if is_self_endpoint(peer_info.address, self.local_addr) {
+            if self.peer_manager.is_self_endpoint(&peer_info.address)
+                || is_self_endpoint(peer_info.address, self.local_addr)
+            {
                 if let Some(store) = &self.peer_store {
                     store.remove_peer(&peer_info.address);
                 }
