@@ -33,6 +33,8 @@
   On 2026-04-22 the VPS legal banner contaminated a binary transfer and silently changed the file hash; use `scp -O` or another binary-safe transport instead.
 - Local macOS release binaries are not deployable to the Linux VPS fleet.
   A direct install of the locally built `target/release/lichen-validator` on SEA failed with `Exec format error`; build the canonical deployment artifact on Linux.
+- Clean-slate VPS redeploys must refresh `/usr/local/bin`, not just `~/lichen/target/release`.
+  The systemd validator and service units execute `/usr/local/bin/*`; a redeploy script that only builds under `~/lichen/target/release` can leave old live binaries running against fresh state. `scripts/clean-slate-redeploy.sh` now installs runtime binaries into `/usr/local/bin`, and `LICHEN_RELEASE_TAG=<tag>` installs the exact signed GitHub release validator/CLI/genesis/zk-prove artifact before reset verification.
 - Historical audit and strategy docs can intentionally retain pre-publish package names.
   On 2026-04-23 the live README, developer portal, guides, and skill docs were updated to `@lobstercove/lichen-sdk`, `lobstercove-lichen-core`, `lichen-client-sdk = "0.1.0"`, and `cargo install --path cli/`, but dated audit/strategy snapshots were left unchanged unless they were still serving as active runbooks.
 - RPC log-capture tests can race under parallel `cargo test --workspace` if they install independent tracing subscribers concurrently.
