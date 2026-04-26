@@ -4,11 +4,14 @@ Last reviewed: 2026-04-26
 
 ## Durable Facts
 
-- Repo root README and release docs now treat `v0.5.10` as the active release line.
+- Repo root README and release docs now treat `v0.5.11` as the active release line.
+- `v0.5.10` was published and clean-slate deployed on 2026-04-26, but the testnet reproduced the validator-offline failure at slot 285: SEA hit a state-root mismatch after a stale stake-pool write. Treat `v0.5.10` as superseded by `v0.5.11`.
+- Validator stake-pool persistence is consensus-owned only. The former background "persist in-memory stake pool every 30s" task was removed because it could clone a stale pool, then overwrite RocksDB after a block committed, causing the next block's state root to diverge on that node.
+- Validators now persist post-effects state roots for startup integrity checks, and block-production stake-pool effects are idempotent if the slot update was persisted before the reward completion marker.
 - Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
 - Validator sync pending storage now keeps multiple block candidates per slot and chooses the candidate that chains from the current tip, preventing a wrong-parent candidate from permanently poisoning catch-up.
 - Validator identity admission is stake-backed only: block headers and validator announcements no longer create `ValidatorSet` entries, P2P validator-route status is granted only to existing or locally stake-backed validators, and startup drops persisted unbacked validator metadata.
-- The live 3-VPS testnet fleet was last recorded on the exact published `v0.5.9` Linux validator release artifact (`SHA-256 015f267ee617723416737cc62bacd1110343e02384bf30082bc090e375fd2c80`); `v0.5.10` is the active clean-slate redeploy target.
+- The live 3-VPS testnet fleet must be reset again from the replacement release after `v0.5.11` is published; the failed `v0.5.10` clean-slate run should not be promoted to production.
 - Public testnet RPC now serves `getSporePumpStats`, so Mission Control no longer has a missing backend feed for the SporePump ecosystem card.
 - Mission Control monitoring is live on Cloudflare Pages with chain-age uptime, corrected DEX/ecosystem labels, and a health badge driven by validator availability plus consensus/P2P signals instead of the old block-cadence average.
 - Cadence telemetry is now observer-side and wall-clock based:
@@ -36,7 +39,7 @@ Last reviewed: 2026-04-26
 - The 2026-04-22 user handover says:
   - testnet is live on 3 VPSes with BFT consensus
   - current status is already `v0.5.6`
-- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents; release docs now target `v0.5.10`, while the live fleet remains date-aware until the clean-slate redeploy is verified.
+- The 2026-04-23 production-pass handover records the `v0.5.7` hardening release contents; release docs now target `v0.5.11`, while the live fleet remains date-aware until the replacement clean-slate redeploy is verified.
 - Treat deployment state as requiring date-aware reconciliation before making operational decisions.
 
 ## Likely Next Workstreams
