@@ -190,6 +190,7 @@ const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
+const POST_EFFECTS_STATE_ROOT_PREFIX: &str = "post_effects_state_root:";
 
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
@@ -202,6 +203,10 @@ const DEFAULT_MAX_RESTARTS: u32 = 50;
 /// v0.4.21: slot-drift guard + version gate changes — incompatible with
 ///          pre-0.4.21 nodes that accepted ghost validators.
 const MIN_SUPPORTED_VALIDATOR_VERSION: &str = "0.4.21";
+
+fn post_effects_state_root_key(slot: u64) -> String {
+    format!("{}{}", POST_EFFECTS_STATE_ROOT_PREFIX, slot)
+}
 
 /// Collect a machine fingerprint for anti-Sybil protection.
 ///
@@ -2719,6 +2724,16 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
     }
 }
 
+fn record_post_effects_state_root(state: &StateStore, slot: u64) {
+    let root = state.compute_state_root();
+    if let Err(e) = state.put_metadata(&post_effects_state_root_key(slot), &root.0) {
+        warn!(
+            "⚠️  Failed to persist post-effects state root for slot {}: {}",
+            slot, e
+        );
+    }
+}
+
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
 /// Fee distribution reversal is approximate — voter shares remain (small
@@ -3094,16 +3109,6 @@ async fn apply_block_effects(
         return;
     }
 
-    // F-03 audit fix: Master idempotency guard. If effects were already applied
-    // for this slot, skip everything. This makes apply_block_effects safe to
-    // call twice (e.g. crash recovery: block on disk but effects not yet applied
-    // will re-apply cleanly; already-applied slots are skipped entirely).
-    if !skip_rewards {
-        if let Ok(Some(_)) = state.get_reward_distribution_hash(block.header.slot) {
-            return;
-        }
-    }
-
     // Reload in-memory stake pool from on-chain state to pick up effects
     // from consensus-processed transactions (e.g., RegisterValidator opcode 26,
     // Stake, Unstake). Without this, the in-memory pool would miss changes
@@ -3193,19 +3198,7 @@ async fn apply_block_effects(
     // proportionally by stake weight. Block producers still earn tx fees per-block.
     // Every validator deterministically applies the same rewards.
     let block_hash = block.hash();
-    if !skip_rewards && !reward_already {
-        // Write the reward distribution guard hash FIRST, before any account
-        // modifications.  If we crash after this write but before crediting
-        // accounts the worst case is a single slot's rewards are lost (minor,
-        // self-correcting).  The old order (hash AFTER credits) risked
-        // double-crediting on restart — an inflation bug.
-        if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
-            warn!(
-                "⚠️  Failed to record reward distribution for slot {}: {}",
-                slot, e
-            );
-        }
-
+    if !skip_rewards {
         // Compute total supply for inflation curve: genesis + minted - burned
         let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(state.get_total_minted().unwrap_or(0))
@@ -3216,9 +3209,20 @@ async fn apply_block_effects(
         // Block producers still earn transaction fees per-block (below).
         {
             let mut pool = stake_pool.write().await;
-            // distribute_block_reward now only updates last_reward_slot (returns 0)
-            pool.distribute_block_reward(&producer, slot, is_heartbeat, total_supply);
-            pool.record_block_produced(&producer);
+            let already_counted = pool
+                .get_stake(&producer)
+                .map(|stake_info| stake_info.last_reward_slot >= slot)
+                .unwrap_or(false);
+            if !already_counted {
+                // distribute_block_reward now only updates last_reward_slot (returns 0)
+                pool.distribute_block_reward(&producer, slot, is_heartbeat, total_supply);
+                pool.record_block_produced(&producer);
+            } else {
+                debug!(
+                    "Stake pool block-production effects for slot {} already counted; preserving idempotency",
+                    slot
+                );
+            }
             let pool_snapshot = pool.clone();
             drop(pool);
             if let Err(e) = state.put_stake_pool(&pool_snapshot) {
@@ -3229,142 +3233,156 @@ async fn apply_block_effects(
             }
         }
 
-        // ── Epoch boundary: distribute inflation to ALL stakers proportionally ──
-        // At the start of each new epoch, mint the previous epoch's inflation
-        // and distribute to every active staker by stake weight, routed through
-        // the vesting pipeline (bootstrap debt repayment).
-        if lichen_core::is_epoch_boundary(slot) && slot > 0 {
-            let completed_epoch_start = lichen_core::epoch_start_slot(
-                lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
-            );
-            let epoch_mint = lichen_core::compute_epoch_mint(completed_epoch_start, total_supply);
-            let moss_reward_pool = match state.get_mossstake_pool() {
-                Ok(moss_pool) if moss_pool.st_licn_token.total_supply > 0 => {
-                    let (_, moss_reward_pool) = lichen_core::consensus::split_epoch_mint(
-                        completed_epoch_start,
-                        total_supply,
-                    );
-                    moss_reward_pool
-                }
-                Ok(_) => 0,
-                Err(e) => {
-                    warn!(
-                        "⚠️  Failed to load MossStake pool before epoch distribution: {}",
-                        e
-                    );
-                    0
-                }
-            };
-            let staker_reward_pool = if moss_reward_pool > 0 {
-                epoch_mint.saturating_sub(moss_reward_pool)
-            } else {
-                epoch_mint
-            };
-
-            let (total_minted, distributions) = {
-                let mut pool = stake_pool.write().await;
-                let result = pool.distribute_epoch_staker_rewards_from_pool(
-                    staker_reward_pool,
-                    completed_epoch_start,
+        if !reward_already {
+            // Write the reward distribution guard before epoch/account reward
+            // writes. Per-block stake-pool counters above are independently
+            // idempotent via last_reward_slot, so a stale or missing guard cannot
+            // cause double-counting there.
+            if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
+                warn!(
+                    "⚠️  Failed to record reward distribution for slot {}: {}",
+                    slot, e
                 );
-                let pool_snapshot = pool.clone();
-                drop(pool);
-                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                    warn!(
-                        "⚠️  Failed to persist stake pool epoch reward update: {}",
-                        e
-                    );
-                }
-                result
-            };
+            }
 
-            if total_minted > 0 {
-                // Credit each validator's liquid reward to their on-chain account
-                let mut mint_pairs: Vec<(Pubkey, Account)> = Vec::new();
-                for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
-                    if *liquid > 0 {
-                        let mut account = state
-                            .get_account(validator_pk)
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-                        account.add_spendable(*liquid).unwrap_or_else(|e| {
-                            warn!(
-                                "⚠️  Overflow crediting epoch reward to {}: {}",
-                                validator_pk, e
-                            );
-                        });
-                        mint_pairs.push((*validator_pk, account));
+            // ── Epoch boundary: distribute inflation to ALL stakers proportionally ──
+            // At the start of each new epoch, mint the previous epoch's inflation
+            // and distribute to every active staker by stake weight, routed through
+            // the vesting pipeline (bootstrap debt repayment).
+            if lichen_core::is_epoch_boundary(slot) && slot > 0 {
+                let completed_epoch_start = lichen_core::epoch_start_slot(
+                    lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+                );
+                let epoch_mint =
+                    lichen_core::compute_epoch_mint(completed_epoch_start, total_supply);
+                let moss_reward_pool = match state.get_mossstake_pool() {
+                    Ok(moss_pool) if moss_pool.st_licn_token.total_supply > 0 => {
+                        let (_, moss_reward_pool) = lichen_core::consensus::split_epoch_mint(
+                            completed_epoch_start,
+                            total_supply,
+                        );
+                        moss_reward_pool
                     }
-                }
+                    Ok(_) => 0,
+                    Err(e) => {
+                        warn!(
+                            "⚠️  Failed to load MossStake pool before epoch distribution: {}",
+                            e
+                        );
+                        0
+                    }
+                };
+                let staker_reward_pool = if moss_reward_pool > 0 {
+                    epoch_mint.saturating_sub(moss_reward_pool)
+                } else {
+                    epoch_mint
+                };
 
-                // Build reference slice for atomic_mint_accounts
-                let refs: Vec<(&Pubkey, &Account)> =
-                    mint_pairs.iter().map(|(pk, acc)| (pk, acc)).collect();
-                if let Err(e) = state.atomic_mint_accounts(&refs, total_minted) {
-                    warn!("⚠️  Failed to persist epoch staker rewards: {}", e);
-                }
-
-                let epoch = lichen_core::consensus::slot_to_epoch(slot);
-                info!(
-                    "🏛️  Epoch {} rewards: minted {:.3} LICN to {} stakers",
-                    epoch.saturating_sub(1),
-                    total_minted as f64 / 1_000_000_000.0,
-                    distributions.len(),
-                );
-                for (pk, reward, liquid, debt) in &distributions {
-                    debug!(
-                        "  └─ {} : reward {:.6}, liquid {:.6}, debt {:.6}",
-                        pk,
-                        *reward as f64 / 1_000_000_000.0,
-                        *liquid as f64 / 1_000_000_000.0,
-                        *debt as f64 / 1_000_000_000.0,
+                let (total_minted, distributions) = {
+                    let mut pool = stake_pool.write().await;
+                    let result = pool.distribute_epoch_staker_rewards_from_pool(
+                        staker_reward_pool,
+                        completed_epoch_start,
                     );
-                }
+                    let pool_snapshot = pool.clone();
+                    drop(pool);
+                    if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                        warn!(
+                            "⚠️  Failed to persist stake pool epoch reward update: {}",
+                            e
+                        );
+                    }
+                    result
+                };
 
-                // ── MossStake liquid staking reward distribution ──
-                // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
-                // to the MossStake pool, funding stLICN yield.
-                if moss_reward_pool > 0 {
-                    match state.get_mossstake_pool() {
-                        Ok(mut moss_pool) => {
-                            if moss_pool.st_licn_token.total_supply > 0 {
-                                moss_pool.distribute_rewards(moss_reward_pool);
-                                if let Err(e) =
-                                    state.atomic_mint_mossstake(&moss_pool, moss_reward_pool)
-                                {
-                                    warn!(
+                if total_minted > 0 {
+                    // Credit each validator's liquid reward to their on-chain account
+                    let mut mint_pairs: Vec<(Pubkey, Account)> = Vec::new();
+                    for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
+                        if *liquid > 0 {
+                            let mut account = state
+                                .get_account(validator_pk)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                            account.add_spendable(*liquid).unwrap_or_else(|e| {
+                                warn!(
+                                    "⚠️  Overflow crediting epoch reward to {}: {}",
+                                    validator_pk, e
+                                );
+                            });
+                            mint_pairs.push((*validator_pk, account));
+                        }
+                    }
+
+                    // Build reference slice for atomic_mint_accounts
+                    let refs: Vec<(&Pubkey, &Account)> =
+                        mint_pairs.iter().map(|(pk, acc)| (pk, acc)).collect();
+                    if let Err(e) = state.atomic_mint_accounts(&refs, total_minted) {
+                        warn!("⚠️  Failed to persist epoch staker rewards: {}", e);
+                    }
+
+                    let epoch = lichen_core::consensus::slot_to_epoch(slot);
+                    info!(
+                        "🏛️  Epoch {} rewards: minted {:.3} LICN to {} stakers",
+                        epoch.saturating_sub(1),
+                        total_minted as f64 / 1_000_000_000.0,
+                        distributions.len(),
+                    );
+                    for (pk, reward, liquid, debt) in &distributions {
+                        debug!(
+                            "  └─ {} : reward {:.6}, liquid {:.6}, debt {:.6}",
+                            pk,
+                            *reward as f64 / 1_000_000_000.0,
+                            *liquid as f64 / 1_000_000_000.0,
+                            *debt as f64 / 1_000_000_000.0,
+                        );
+                    }
+
+                    // ── MossStake liquid staking reward distribution ──
+                    // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
+                    // to the MossStake pool, funding stLICN yield.
+                    if moss_reward_pool > 0 {
+                        match state.get_mossstake_pool() {
+                            Ok(mut moss_pool) => {
+                                if moss_pool.st_licn_token.total_supply > 0 {
+                                    moss_pool.distribute_rewards(moss_reward_pool);
+                                    if let Err(e) =
+                                        state.atomic_mint_mossstake(&moss_pool, moss_reward_pool)
+                                    {
+                                        warn!(
                                         "⚠️  Failed to persist MossStake epoch distribution: {}",
                                         e
                                     );
-                                } else {
-                                    debug!(
-                                        "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
-                                        moss_reward_pool as f64 / 1_000_000_000.0,
-                                        moss_pool.positions.len(),
-                                    );
+                                    } else {
+                                        debug!(
+                                            "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
+                                            moss_reward_pool as f64 / 1_000_000_000.0,
+                                            moss_pool.positions.len(),
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            warn!("⚠️  Failed to load MossStake pool: {}", e);
+                            Err(e) => {
+                                warn!("⚠️  Failed to load MossStake pool: {}", e);
+                            }
                         }
                     }
                 }
-            }
 
-            // ── Apply pending governance parameter changes at epoch boundary ──
-            match state.apply_pending_governance_changes() {
-                Ok(0) => {} // No pending changes
-                Ok(n) => {
-                    let epoch = lichen_core::consensus::slot_to_epoch(slot);
-                    info!(
-                        "🏛️  Epoch {} governance: applied {} parameter change(s)",
-                        epoch, n,
-                    );
-                }
-                Err(e) => {
-                    warn!("⚠️  Failed to apply governance parameter changes: {}", e);
+                // ── Apply pending governance parameter changes at epoch boundary ──
+                match state.apply_pending_governance_changes() {
+                    Ok(0) => {} // No pending changes
+                    Ok(n) => {
+                        let epoch = lichen_core::consensus::slot_to_epoch(slot);
+                        info!(
+                            "🏛️  Epoch {} governance: applied {} parameter change(s)",
+                            epoch, n,
+                        );
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to apply governance parameter changes: {}", e);
+                    }
                 }
             }
         }
@@ -3376,17 +3394,20 @@ async fn apply_block_effects(
     let total_fee = block_total_fees_paid(state, block, &fee_config);
 
     if total_fee == 0 {
+        record_post_effects_state_root(state, slot);
         return;
     }
 
     if let Ok(Some(existing)) = state.get_fee_distribution_hash(slot) {
         if existing == block_hash {
+            record_post_effects_state_root(state, slot);
             return;
         }
         warn!(
             "⚠️  Fee distribution already recorded for slot {} with different hash",
             slot
         );
+        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3394,6 +3415,7 @@ async fn apply_block_effects(
         Ok(Some(pubkey)) => pubkey,
         _ => {
             warn!("⚠️  Treasury pubkey missing; skipping fee distribution");
+            record_post_effects_state_root(state, slot);
             return;
         }
     };
@@ -3408,6 +3430,7 @@ async fn apply_block_effects(
             "⚠️  Treasury balance {} < total fees {}, skipping distribution",
             treasury_account.spores, total_fee
         );
+        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3601,6 +3624,7 @@ async fn apply_block_effects(
         .saturating_sub(fee_liquid + voters_paid + community_share);
     if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
         warn!("⚠️  Failed to update treasury account: {}", e);
+        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3609,6 +3633,7 @@ async fn apply_block_effects(
             "⚠️  Failed to record fee distribution hash in batch for slot {}: {}",
             slot, e
         );
+        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3618,6 +3643,7 @@ async fn apply_block_effects(
             "⚠️  CRITICAL: Failed to commit fee distribution batch for slot {}: {}",
             slot, e
         );
+        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3665,6 +3691,7 @@ async fn apply_block_effects(
     }
 
     // record_block_activity is called in emit_program_and_nft_events, not here
+    record_post_effects_state_root(state, slot);
 }
 
 async fn activate_pending_validators_for_height(
@@ -5460,24 +5487,51 @@ async fn run_validator() {
         if tip > 0 {
             if let Ok(Some(last_block)) = state.get_block_by_slot(tip) {
                 let current_root = state.compute_state_root();
-                if last_block.header.state_root != current_root {
-                    warn!(
-                        "⚠️  STATE INTEGRITY: State root mismatch on startup at slot {} \
-                         (expected {}, got {}). Preserving local RocksDB so resumed nodes \
-                         and copied snapshots are not wiped automatically; orphaned proposal \
-                         writes will be overwritten on the next committed block. If a clean \
-                         resync is required, stop the validator and wipe the state directory \
-                         manually before restarting.",
-                        tip,
-                        last_block.header.state_root.to_hex(),
-                        current_root.to_hex(),
-                    );
-                } else {
-                    info!(
-                        "✅ State integrity OK at slot {} (root={})",
-                        tip,
-                        current_root.to_hex(),
-                    );
+                match state.get_metadata(&post_effects_state_root_key(tip)) {
+                    Ok(Some(bytes)) if bytes.len() == 32 => {
+                        let mut expected = [0u8; 32];
+                        expected.copy_from_slice(&bytes);
+                        let expected = Hash(expected);
+                        if expected != current_root {
+                            warn!(
+                                "⚠️  STATE INTEGRITY: Post-effects state root mismatch on startup at slot {} \
+                                 (expected {}, got {}). Preserving local RocksDB; a clean resync requires \
+                                 stopping the validator and wiping the state directory manually.",
+                                tip,
+                                expected.to_hex(),
+                                current_root.to_hex(),
+                            );
+                        } else {
+                            info!(
+                                "✅ State integrity OK at slot {} (post-effects root={})",
+                                tip,
+                                current_root.to_hex(),
+                            );
+                        }
+                    }
+                    Ok(Some(bytes)) => {
+                        warn!(
+                            "⚠️  Malformed post-effects state root marker for slot {} ({} bytes); current root={}, header pre-effects root={}",
+                            tip,
+                            bytes.len(),
+                            current_root.to_hex(),
+                            last_block.header.state_root.to_hex(),
+                        );
+                    }
+                    Ok(None) => {
+                        debug!(
+                            "No post-effects state root marker for slot {}; current root={}, header pre-effects root={}",
+                            tip,
+                            current_root.to_hex(),
+                            last_block.header.state_root.to_hex(),
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️  Failed to read post-effects state root marker for slot {}: {}",
+                            tip, e
+                        );
+                    }
                 }
             }
         }
@@ -6491,24 +6545,11 @@ async fn run_validator() {
     ));
     info!("💰 Stake pool initialized");
 
-    // Periodically persist stake pool to disk
-    let stake_pool_for_save = stake_pool.clone();
-    let state_for_stake_save = state.clone();
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            // Clone under the read lock, then drop the guard before RocksDB I/O
-            // so block application can still acquire the write lock promptly.
-            let pool_snapshot = {
-                let pool = stake_pool_for_save.read().await;
-                pool.clone()
-            };
-            if let Err(e) = state_for_stake_save.put_stake_pool(&pool_snapshot) {
-                warn!("⚠️  Failed to persist stake pool: {}", e);
-            }
-        }
-    });
+    // StakePool is consensus state and participates in the state root. It must
+    // only be persisted by deterministic block application, sync, genesis, or
+    // explicit snapshot import. A background "save latest in-memory copy" task
+    // can race a committed block and overwrite RocksDB with a stale pool, which
+    // makes the next block fail state-root verification on that node.
 
     // Stake tokens for this validator (100,000 LICN minimum)
     // Uses get_stake() to avoid accumulating on every restart
@@ -15669,6 +15710,72 @@ mod tests {
             .get_validator(&producer)
             .expect("read validator state")
             .is_none());
+    }
+
+    #[test]
+    fn apply_block_effects_does_not_double_count_stake_pool_when_marker_missing() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: producer,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: MIN_VALIDATOR_STAKE,
+            joined_slot: 0,
+            last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut pool = StakePool::new();
+        pool.stake(producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer");
+        pool.distribute_block_reward(&producer, 7, true, GENESIS_SUPPLY_SPORES);
+        pool.record_block_produced(&producer);
+        state.put_stake_pool(&pool).expect("put stake pool");
+        assert!(
+            state
+                .get_reward_distribution_hash(7)
+                .expect("read reward marker")
+                .is_none(),
+            "test setup must mimic a crash before the completion marker was written"
+        );
+
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        runtime.block_on(apply_block_effects(
+            &state,
+            &validator_set,
+            &stake_pool,
+            &block,
+            false,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let persisted = state.get_stake_pool().expect("read stake pool");
+        let entry = persisted.get_stake(&producer).expect("producer stake");
+        assert_eq!(entry.last_reward_slot, 7);
+        assert_eq!(entry.blocks_produced, 1);
+        assert!(state
+            .get_reward_distribution_hash(7)
+            .expect("read reward marker")
+            .is_some());
+        assert!(state
+            .get_metadata(&post_effects_state_root_key(7))
+            .expect("read post-effects root")
+            .is_some());
     }
 
     #[test]
