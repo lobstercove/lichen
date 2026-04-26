@@ -190,8 +190,6 @@ const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
-const POST_EFFECTS_STATE_ROOT_PREFIX: &str = "post_effects_state_root:";
-
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
@@ -203,10 +201,6 @@ const DEFAULT_MAX_RESTARTS: u32 = 50;
 /// v0.4.21: slot-drift guard + version gate changes — incompatible with
 ///          pre-0.4.21 nodes that accepted ghost validators.
 const MIN_SUPPORTED_VALIDATOR_VERSION: &str = "0.4.21";
-
-fn post_effects_state_root_key(slot: u64) -> String {
-    format!("{}{}", POST_EFFECTS_STATE_ROOT_PREFIX, slot)
-}
 
 /// Collect a machine fingerprint for anti-Sybil protection.
 ///
@@ -2724,16 +2718,6 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
     }
 }
 
-fn record_post_effects_state_root(state: &StateStore, slot: u64) {
-    let root = state.compute_state_root();
-    if let Err(e) = state.put_metadata(&post_effects_state_root_key(slot), &root.0) {
-        warn!(
-            "⚠️  Failed to persist post-effects state root for slot {}: {}",
-            slot, e
-        );
-    }
-}
-
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
 /// Fee distribution reversal is approximate — voter shares remain (small
@@ -3394,20 +3378,17 @@ async fn apply_block_effects(
     let total_fee = block_total_fees_paid(state, block, &fee_config);
 
     if total_fee == 0 {
-        record_post_effects_state_root(state, slot);
         return;
     }
 
     if let Ok(Some(existing)) = state.get_fee_distribution_hash(slot) {
         if existing == block_hash {
-            record_post_effects_state_root(state, slot);
             return;
         }
         warn!(
             "⚠️  Fee distribution already recorded for slot {} with different hash",
             slot
         );
-        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3415,7 +3396,6 @@ async fn apply_block_effects(
         Ok(Some(pubkey)) => pubkey,
         _ => {
             warn!("⚠️  Treasury pubkey missing; skipping fee distribution");
-            record_post_effects_state_root(state, slot);
             return;
         }
     };
@@ -3430,7 +3410,6 @@ async fn apply_block_effects(
             "⚠️  Treasury balance {} < total fees {}, skipping distribution",
             treasury_account.spores, total_fee
         );
-        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3624,7 +3603,6 @@ async fn apply_block_effects(
         .saturating_sub(fee_liquid + voters_paid + community_share);
     if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
         warn!("⚠️  Failed to update treasury account: {}", e);
-        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3633,7 +3611,6 @@ async fn apply_block_effects(
             "⚠️  Failed to record fee distribution hash in batch for slot {}: {}",
             slot, e
         );
-        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3643,7 +3620,6 @@ async fn apply_block_effects(
             "⚠️  CRITICAL: Failed to commit fee distribution batch for slot {}: {}",
             slot, e
         );
-        record_post_effects_state_root(state, slot);
         return;
     }
 
@@ -3691,7 +3667,6 @@ async fn apply_block_effects(
     }
 
     // record_block_activity is called in emit_program_and_nft_events, not here
-    record_post_effects_state_root(state, slot);
 }
 
 async fn activate_pending_validators_for_height(
@@ -5471,68 +5446,23 @@ async fn run_validator() {
     // scan of CF_ACCOUNTS / CF_CONTRACT_STORAGE and repopulates the cache.
     state.invalidate_merkle_cache();
 
-    // ── STARTUP STATE INTEGRITY CHECK ──────────────────────────────────
-    // Detect state corruption caused by crashes during BFT proposal execution.
-    // When a proposer calls build_block → process_transactions_parallel, the
-    // resulting state changes are written directly to RocksDB. If the node is
-    // killed before CommitBlock stores the block, the state has orphaned writes
-    // from the uncommitted proposal. On restart the computed state_root no
-    // longer matches the last committed block's state_root.
-    // Preserve the local DB even when bootstrap peers are configured. Secondary
-    // validators may legitimately restart from a copied snapshot that still has
-    // these orphaned writes; auto-wiping on that path destroys resumable state
-    // before the node can reconnect and overwrite the stale proposal writes.
+    // ── STARTUP STATE ROOT OBSERVATION ─────────────────────────────────
+    // Block headers commit the state-root boundary before deterministic
+    // post-block hooks (rewards, oracle mirrors, analytics, validator
+    // activation) finish. Do not compare the live RocksDB root to the header
+    // root here; block import/commit paths perform the authoritative
+    // pre-effects root check at the correct boundary.
     {
         let tip = state.get_last_slot().unwrap_or(0);
         if tip > 0 {
             if let Ok(Some(last_block)) = state.get_block_by_slot(tip) {
                 let current_root = state.compute_state_root();
-                match state.get_metadata(&post_effects_state_root_key(tip)) {
-                    Ok(Some(bytes)) if bytes.len() == 32 => {
-                        let mut expected = [0u8; 32];
-                        expected.copy_from_slice(&bytes);
-                        let expected = Hash(expected);
-                        if expected != current_root {
-                            warn!(
-                                "⚠️  STATE INTEGRITY: Post-effects state root mismatch on startup at slot {} \
-                                 (expected {}, got {}). Preserving local RocksDB; a clean resync requires \
-                                 stopping the validator and wiping the state directory manually.",
-                                tip,
-                                expected.to_hex(),
-                                current_root.to_hex(),
-                            );
-                        } else {
-                            info!(
-                                "✅ State integrity OK at slot {} (post-effects root={})",
-                                tip,
-                                current_root.to_hex(),
-                            );
-                        }
-                    }
-                    Ok(Some(bytes)) => {
-                        warn!(
-                            "⚠️  Malformed post-effects state root marker for slot {} ({} bytes); current root={}, header pre-effects root={}",
-                            tip,
-                            bytes.len(),
-                            current_root.to_hex(),
-                            last_block.header.state_root.to_hex(),
-                        );
-                    }
-                    Ok(None) => {
-                        debug!(
-                            "No post-effects state root marker for slot {}; current root={}, header pre-effects root={}",
-                            tip,
-                            current_root.to_hex(),
-                            last_block.header.state_root.to_hex(),
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "⚠️  Failed to read post-effects state root marker for slot {}: {}",
-                            tip, e
-                        );
-                    }
-                }
+                debug!(
+                    "Startup state root observation at slot {}: current post-hooks root={}, header pre-effects root={}",
+                    tip,
+                    current_root.to_hex(),
+                    last_block.header.state_root.to_hex(),
+                );
             }
         }
     }
@@ -15771,10 +15701,6 @@ mod tests {
         assert!(state
             .get_reward_distribution_hash(7)
             .expect("read reward marker")
-            .is_some());
-        assert!(state
-            .get_metadata(&post_effects_state_root_key(7))
-            .expect("read post-effects root")
             .is_some());
     }
 
