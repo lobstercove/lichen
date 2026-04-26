@@ -160,25 +160,46 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build validator
-        run: cargo build --release --bin lichen-validator
+      - name: Build validator tooling
+        run: cargo build --release --bin lichen-validator --bin lichen-genesis --bin lichen
       - name: Install Node.js dependencies
         run: npm ci --ignore-scripts
       - name: Start validator in background
         run: |
-          ./target/release/lichen-validator &
+          set -euo pipefail
+          export LICHEN_LOCAL_DEV=1
+          export LICHEN_KEYPAIR_PASSWORD="${LICHEN_KEYPAIR_PASSWORD:-ci-local-secret}"
+          ./run-validator.sh testnet 1 > /tmp/lichen-ci-validator.log 2>&1 &
+          echo "$!" > /tmp/lichen-ci-validator.pid
+
           echo "Waiting for RPC to become ready (ZK setup may take ~30s)..."
-          for i in $(seq 1 60); do
+          for i in $(seq 1 180); do
             if curl -sf http://localhost:8899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' -H 'Content-Type: application/json' >/dev/null 2>&1; then
               echo "RPC ready after ${i}s"
-              break
+              tail -n 80 /tmp/lichen-ci-validator.log || true
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/lichen-ci-validator.pid)" 2>/dev/null; then
+              echo "Validator exited before RPC became ready"
+              cat /tmp/lichen-ci-validator.log || true
+              exit 1
             fi
             sleep 1
           done
+          echo "RPC did not become ready in time"
+          cat /tmp/lichen-ci-validator.log || true
+          exit 1
       - name: Run RPC integration tests
         run: bash scripts/qa/test-rpc-comprehensive.sh
       - name: Run CLI integration tests
         run: bash scripts/qa/test-cli-comprehensive.sh
+      - name: Stop validator
+        if: always()
+        run: |
+          if [ -f /tmp/lichen-ci-validator.pid ]; then
+            kill "$(cat /tmp/lichen-ci-validator.pid)" 2>/dev/null || true
+          fi
+          pkill -f "validator-supervisor.*testnet-v1-p7001|run-validator.sh testnet 1|lichen-validator" 2>/dev/null || true
 
   wasm-contracts:
     name: WASM Contract Builds
