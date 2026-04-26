@@ -28,7 +28,8 @@ use lichen_genesis::{
     genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
     genesis_set_fee_exempt_contracts,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
@@ -279,13 +280,99 @@ fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> 
     Ok(())
 }
 
+fn price_from_usd_8dec(asset: &str, usd: f64) -> Result<u64, String> {
+    if !usd.is_finite() || usd <= 0.0 {
+        return Err(format!("{asset} price must be a positive finite USD value"));
+    }
+    let raw = (usd * 100_000_000.0).round();
+    if raw > u64::MAX as f64 {
+        return Err(format!("{asset} price is too large"));
+    }
+    Ok(raw as u64)
+}
+
+fn validate_genesis_prices(prices: &GenesisPrices, source: &str) -> Result<(), String> {
+    let required = [
+        ("LICN", prices.licn_usd_8dec),
+        ("wSOL", prices.wsol_usd_8dec),
+        ("wETH", prices.weth_usd_8dec),
+        ("wBNB", prices.wbnb_usd_8dec),
+    ];
+    let missing: Vec<&str> = required
+        .iter()
+        .filter_map(|(asset, price)| if *price == 0 { Some(*asset) } else { None })
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "genesis price source {source} has zero prices for: {}",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn load_genesis_prices_file(path: &Path) -> Result<GenesisPrices, String> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        format!(
+            "Failed to read genesis prices file {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    let prices: GenesisPrices = serde_json::from_str(&contents).map_err(|err| {
+        format!(
+            "Failed to parse genesis prices file {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    validate_genesis_prices(&prices, &path.display().to_string())?;
+    Ok(prices)
+}
+
+fn genesis_prices_from_env() -> Result<Option<GenesisPrices>, String> {
+    let sol = std::env::var("GENESIS_SOL_USD").ok();
+    let eth = std::env::var("GENESIS_ETH_USD").ok();
+    let bnb = std::env::var("GENESIS_BNB_USD").ok();
+    if sol.is_none() && eth.is_none() && bnb.is_none() {
+        return Ok(None);
+    }
+
+    let parse_env_price = |name: &str, value: Option<String>| -> Result<u64, String> {
+        let value = value.ok_or_else(|| {
+            format!(
+                "partial genesis price environment override: {name} is missing; set GENESIS_SOL_USD, GENESIS_ETH_USD, and GENESIS_BNB_USD together"
+            )
+        })?;
+        let usd = value
+            .parse::<f64>()
+            .map_err(|err| format!("Invalid {name} value '{value}': {err}"))?;
+        price_from_usd_8dec(name, usd)
+    };
+
+    let prices = GenesisPrices {
+        licn_usd_8dec: GenesisPrices::default().licn_usd_8dec,
+        wsol_usd_8dec: parse_env_price("GENESIS_SOL_USD", sol)?,
+        weth_usd_8dec: parse_env_price("GENESIS_ETH_USD", eth)?,
+        wbnb_usd_8dec: parse_env_price("GENESIS_BNB_USD", bnb)?,
+    };
+    validate_genesis_prices(&prices, "environment")?;
+    Ok(Some(prices))
+}
+
+fn fetch_url(url: &str) -> Result<String, String> {
+    let response = ureq::get(url)
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(|err| err.to_string())?;
+    response.into_string().map_err(|err| err.to_string())
+}
+
 /// Fetch live market prices from Binance REST API for genesis seeding.
-/// Falls back to compiled defaults if the fetch fails (e.g. no internet).
 /// This runs ONCE during genesis creation — the returned prices are embedded
 /// in the genesis block and reused by all joining validators.
-fn fetch_genesis_prices() -> GenesisPrices {
-    let defaults = GenesisPrices::default();
-
+fn fetch_binance_genesis_prices() -> Result<GenesisPrices, String> {
     #[derive(serde::Deserialize)]
     struct Ticker {
         symbol: String,
@@ -293,62 +380,115 @@ fn fetch_genesis_prices() -> GenesisPrices {
     }
 
     let url = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
-    let resp = match ureq::get(url).call() {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(
-                "Binance price fetch failed ({}), using compiled defaults",
-                e
-            );
-            return defaults;
-        }
-    };
+    let body = fetch_url(url).map_err(|err| format!("Binance price fetch failed: {err}"))?;
+    let tickers: Vec<Ticker> = serde_json::from_str(&body)
+        .map_err(|err| format!("Failed to parse Binance price JSON: {err}"))?;
 
-    let body = match resp.into_string() {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                "Failed to read Binance response ({}), using compiled defaults",
-                e
-            );
-            return defaults;
-        }
-    };
-
-    let tickers: Vec<Ticker> = match serde_json::from_str(&body) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(
-                "Failed to parse Binance JSON ({}), using compiled defaults",
-                e
-            );
-            return defaults;
-        }
-    };
-
-    let mut prices = defaults.clone();
+    let mut wsol = None;
+    let mut weth = None;
+    let mut wbnb = None;
     for t in &tickers {
-        let usd: f64 = t.price.parse().unwrap_or(0.0);
-        if usd <= 0.0 {
-            continue;
-        }
-        let price_8dec = (usd * 100_000_000.0) as u64;
+        let usd: f64 = t
+            .price
+            .parse()
+            .map_err(|err| format!("Invalid Binance {} price '{}': {}", t.symbol, t.price, err))?;
+        let price_8dec = price_from_usd_8dec(&t.symbol, usd)?;
         match t.symbol.as_str() {
-            "SOLUSDT" => prices.wsol_usd_8dec = price_8dec,
-            "ETHUSDT" => prices.weth_usd_8dec = price_8dec,
-            "BNBUSDT" => prices.wbnb_usd_8dec = price_8dec,
+            "SOLUSDT" => wsol = Some(price_8dec),
+            "ETHUSDT" => weth = Some(price_8dec),
+            "BNBUSDT" => wbnb = Some(price_8dec),
             _ => {}
         }
     }
+    let prices = GenesisPrices {
+        licn_usd_8dec: GenesisPrices::default().licn_usd_8dec,
+        wsol_usd_8dec: wsol.ok_or_else(|| "Binance response missing SOLUSDT".to_string())?,
+        weth_usd_8dec: weth.ok_or_else(|| "Binance response missing ETHUSDT".to_string())?,
+        wbnb_usd_8dec: wbnb.ok_or_else(|| "Binance response missing BNBUSDT".to_string())?,
+    };
+    validate_genesis_prices(&prices, "Binance")?;
+    Ok(prices)
+}
 
+fn fetch_coingecko_genesis_prices() -> Result<GenesisPrices, String> {
+    let url = "https://api.coingecko.com/api/v3/simple/price?ids=solana,ethereum,binancecoin&vs_currencies=usd";
+    let body = fetch_url(url).map_err(|err| format!("CoinGecko price fetch failed: {err}"))?;
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|err| format!("Failed to parse CoinGecko price JSON: {err}"))?;
+
+    let read_price = |id: &str, asset: &str| -> Result<u64, String> {
+        let usd = value
+            .get(id)
+            .and_then(|entry| entry.get("usd"))
+            .and_then(|price| price.as_f64())
+            .ok_or_else(|| format!("CoinGecko response missing {id}.usd"))?;
+        price_from_usd_8dec(asset, usd)
+    };
+
+    let prices = GenesisPrices {
+        licn_usd_8dec: GenesisPrices::default().licn_usd_8dec,
+        wsol_usd_8dec: read_price("solana", "wSOL")?,
+        weth_usd_8dec: read_price("ethereum", "wETH")?,
+        wbnb_usd_8dec: read_price("binancecoin", "wBNB")?,
+    };
+    validate_genesis_prices(&prices, "CoinGecko")?;
+    Ok(prices)
+}
+
+fn fetch_live_genesis_prices() -> Result<(GenesisPrices, &'static str), String> {
+    let mut errors = Vec::new();
+    match fetch_binance_genesis_prices() {
+        Ok(prices) => return Ok((prices, "Binance")),
+        Err(err) => errors.push(err),
+    }
+    match fetch_coingecko_genesis_prices() {
+        Ok(prices) => return Ok((prices, "CoinGecko")),
+        Err(err) => errors.push(err),
+    }
+    Err(errors.join("; "))
+}
+
+fn resolve_genesis_prices(
+    network: &str,
+    genesis_prices_file: Option<&Path>,
+) -> Result<GenesisPrices, String> {
+    if let Some(path) = genesis_prices_file {
+        let prices = load_genesis_prices_file(path)?;
+        info!("  ✓ Genesis prices loaded from {}", path.display());
+        return Ok(prices);
+    }
+
+    if let Some(prices) = genesis_prices_from_env()? {
+        info!("  ✓ Genesis prices loaded from GENESIS_*_USD environment");
+        return Ok(prices);
+    }
+
+    match fetch_live_genesis_prices() {
+        Ok((prices, source)) => {
+            info!("  ✓ Genesis prices fetched live from {}", source);
+            Ok(prices)
+        }
+        Err(err) if network == "mainnet" => Err(format!(
+            "Mainnet genesis requires explicit or live market prices. Provide --genesis-prices-file or GENESIS_SOL_USD/GENESIS_ETH_USD/GENESIS_BNB_USD, or fix live price access. Live fetch errors: {err}"
+        )),
+        Err(err) => {
+            warn!(
+                "Live genesis price fetch failed ({}), using compiled defaults for {} only",
+                err, network
+            );
+            Ok(GenesisPrices::default())
+        }
+    }
+}
+
+fn log_genesis_prices(prices: &GenesisPrices) {
     info!(
-        "  💰 Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        "  ✓ Genesis prices frozen: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        prices.licn_usd_8dec as f64 / 100_000_000.0,
         prices.wsol_usd_8dec as f64 / 100_000_000.0,
         prices.weth_usd_8dec as f64 / 100_000_000.0,
         prices.wbnb_usd_8dec as f64 / 100_000_000.0,
     );
-
-    prices
 }
 
 fn main() {
@@ -368,6 +508,7 @@ fn main() {
     let genesis_keypair_file = flag_value(&args, "--genesis-keypair").map(PathBuf::from);
     let prepare_wallet = args.iter().any(|arg| arg == "--prepare-wallet");
     let config_path = flag_value(&args, "--config").map(PathBuf::from);
+    let genesis_prices_file = flag_value(&args, "--genesis-prices-file").map(PathBuf::from);
 
     let network_str = match network {
         Some(n @ ("mainnet" | "testnet")) => n,
@@ -379,7 +520,7 @@ fn main() {
             std::process::exit(1);
         }
         None => {
-            error!("Usage: lichen-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--bridge-validator <base58>] [--oracle-operator <base58>] [--db-path <path>] [--config <path>]");
+            error!("Usage: lichen-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--bridge-validator <base58>] [--oracle-operator <base58>] [--db-path <path>] [--config <path>] [--genesis-prices-file <path>]");
             std::process::exit(1);
         }
     };
@@ -661,16 +802,17 @@ fn main() {
     genesis_config.oracle_operators = oracle_operators.iter().map(|pk| pk.to_base58()).collect();
 
     // ════════════════════════════════════════════════════════════════════
-    // FETCH LIVE MARKET PRICES — frozen into genesis config forever
+    // RESOLVE MARKET PRICES — frozen into genesis config forever
     // ════════════════════════════════════════════════════════════════════
-    genesis_config.genesis_prices = fetch_genesis_prices();
-    info!(
-        "  ✓ Genesis prices frozen: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-        genesis_config.genesis_prices.licn_usd_8dec as f64 / 100_000_000.0,
-        genesis_config.genesis_prices.wsol_usd_8dec as f64 / 100_000_000.0,
-        genesis_config.genesis_prices.weth_usd_8dec as f64 / 100_000_000.0,
-        genesis_config.genesis_prices.wbnb_usd_8dec as f64 / 100_000_000.0,
-    );
+    genesis_config.genesis_prices =
+        match resolve_genesis_prices(network_str, genesis_prices_file.as_deref()) {
+            Ok(prices) => prices,
+            Err(err) => {
+                error!("{}", err);
+                std::process::exit(1);
+            }
+        };
+    log_genesis_prices(&genesis_config.genesis_prices);
 
     let effective_genesis_config_path = db_dir_path.join("genesis.json");
     // Always serialize the effective config (includes live prices + CLI validators)
@@ -1337,6 +1479,57 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn price_from_usd_8dec_rounds_to_integer_units() {
+        assert_eq!(
+            price_from_usd_8dec("wSOL", 86.789_123_456).unwrap(),
+            8_678_912_346
+        );
+        assert!(price_from_usd_8dec("wSOL", 0.0).is_err());
+        assert!(price_from_usd_8dec("wSOL", f64::NAN).is_err());
+    }
+
+    #[test]
+    fn load_genesis_prices_file_accepts_raw_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("genesis-prices.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "licn_usd_8dec": 10_000_000u64,
+                "wsol_usd_8dec": 8_678_000_000u64,
+                "weth_usd_8dec": 199_934_000_000u64,
+                "wbnb_usd_8dec": 60_978_000_000u64,
+                "source": "operator-snapshot"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let prices = load_genesis_prices_file(&path).unwrap();
+        assert_eq!(prices.wsol_usd_8dec, 8_678_000_000);
+    }
+
+    #[test]
+    fn load_genesis_prices_file_rejects_zero_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("genesis-prices.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "licn_usd_8dec": 10_000_000u64,
+                "wsol_usd_8dec": 0u64,
+                "weth_usd_8dec": 199_934_000_000u64,
+                "wbnb_usd_8dec": 60_978_000_000u64
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = load_genesis_prices_file(&path).unwrap_err();
+        assert!(err.contains("wSOL"));
+    }
 
     #[test]
     fn test_load_genesis_keypair_from_canonical_file() {

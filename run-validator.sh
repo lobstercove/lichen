@@ -176,15 +176,15 @@ import json, sys
 try:
     data = json.loads('''$PRICE_JSON''')
     m = {d['symbol']: float(d['price']) for d in data}
-    print(f'export GENESIS_SOL_USD={m.get(\"SOLUSDT\", 145.0):.2f}')
-    print(f'export GENESIS_ETH_USD={m.get(\"ETHUSDT\", 2600.0):.2f}')
-    print(f'export GENESIS_BNB_USD={m.get(\"BNBUSDT\", 620.0):.2f}')
+    print(f'export GENESIS_SOL_USD={m[\"SOLUSDT\"]:.2f}')
+    print(f'export GENESIS_ETH_USD={m[\"ETHUSDT\"]:.2f}')
+    print(f'export GENESIS_BNB_USD={m[\"BNBUSDT\"]:.2f}')
 except: pass
 " 2>/dev/null)"
 		export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
 		echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} LICN=\$${GENESIS_LICN_USD}"
 	else
-		echo "  Could not fetch live prices, using defaults"
+		echo "  Could not prefetch prices; lichen-genesis will try live sources"
 	fi
 
 	if [[ ! -x "$CLI_BIN" || ! -x "$GENESIS_BIN" || ! -x "$VALIDATOR_BIN" ]]; then

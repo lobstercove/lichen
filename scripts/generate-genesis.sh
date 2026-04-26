@@ -29,6 +29,7 @@ Options:
   --initial-validator <base58>     Repeatable explicit validator address
   --validator-keypair <path>       Derive the validator address from a canonical keypair file
   --config <path>                  Optional genesis config override passed through to lichen-genesis
+  --genesis-prices-file <path>     Optional audited price snapshot for genesis market seeds
   --help                           Show this message
 
 Removed legacy options:
@@ -77,6 +78,7 @@ DB_PATH=""
 WALLET_FILE=""
 VALIDATOR_KEYPAIR=""
 CONFIG_PATH=""
+GENESIS_PRICES_FILE=""
 INITIAL_VALIDATORS=()
 
 while [[ $# -gt 0 ]]; do
@@ -120,6 +122,11 @@ while [[ $# -gt 0 ]]; do
             CONFIG_PATH="$2"
             shift 2
             ;;
+        --genesis-prices-file)
+            require_value "$1" "${2:-}"
+            GENESIS_PRICES_FILE="$2"
+            shift 2
+            ;;
         --output|--validators|--treasury|--chain-id)
             print_error "$1 is a removed legacy option. Use --prepare-wallet/--output-dir or --db-path/--wallet-file instead."
             exit 2
@@ -150,6 +157,9 @@ COMMAND=("$GENESIS_BIN" --network "$NETWORK")
 
 if [[ -n "$CONFIG_PATH" ]]; then
     COMMAND+=(--config "$CONFIG_PATH")
+fi
+if [[ -n "$GENESIS_PRICES_FILE" ]]; then
+    COMMAND+=(--genesis-prices-file "$GENESIS_PRICES_FILE")
 fi
 
 if (( PREPARE_WALLET )); then
