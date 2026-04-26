@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Sync phase: initial catch-up vs live block processing.
 /// During InitialSync, blocks are applied sequentially without fork choice.
@@ -67,8 +67,12 @@ const SYNC_COOLDOWN_MAX_SECS: u64 = 30;
 
 /// Tracks chain synchronization state
 pub struct SyncManager {
-    /// Blocks we're waiting for (slot -> received but can't apply yet)
-    pending_blocks: Arc<Mutex<HashMap<u64, Block>>>,
+    /// Blocks we're waiting for (slot -> received candidates that can't apply yet).
+    ///
+    /// A slot can legitimately have multiple candidates during fork recovery. Keeping
+    /// only one block per slot lets the first wrong-parent candidate poison catch-up
+    /// forever, because later blocks may chain from the candidate we discarded.
+    pending_blocks: Arc<Mutex<HashMap<u64, Vec<Block>>>>,
 
     /// Slots we've requested (to avoid duplicate requests)
     requested_slots: Arc<Mutex<HashSet<u64>>>,
@@ -139,27 +143,62 @@ impl SyncManager {
     /// Add a block that can't be applied yet (missing parent)
     pub async fn add_pending_block(&self, block: Block) {
         let slot = block.header.slot;
+        let block_hash = block.hash();
         let mut pending = self.pending_blocks.lock().await;
+
+        if pending
+            .get(&slot)
+            .is_some_and(|candidates| candidates.iter().any(|b| b.hash() == block_hash))
+        {
+            debug!(
+                "Duplicate pending block {} hash {} ignored",
+                slot,
+                &block_hash.to_hex()[..8]
+            );
+            self.note_seen(slot).await;
+            return;
+        }
 
         // Memory protection: if too many pending blocks, drop NEWEST (highest slot).
         // Gap-filling blocks (lowest slots) are the ones we need most to reconnect
         // the chain. Dropping them creates an unrecoverable hole. Newer blocks can
         // be re-fetched once we catch up.
-        if pending.len() >= MAX_PENDING_BLOCKS {
+        while pending_total_count(&pending) >= MAX_PENDING_BLOCKS {
             if let Some(newest_slot) = pending.keys().max().copied() {
-                // Don't evict the block we're about to insert
-                if newest_slot != slot {
-                    pending.remove(&newest_slot);
-                    warn!(
-                        "⚠️  Dropped newest pending block {} (memory limit, keeping gap-fillers)",
-                        newest_slot
-                    );
+                if let Some(candidates) = pending.get_mut(&newest_slot) {
+                    candidates.pop();
+                    if candidates.is_empty() {
+                        pending.remove(&newest_slot);
+                    }
                 }
+                warn!(
+                    "⚠️  Dropped newest pending block {} (memory limit, keeping gap-fillers)",
+                    newest_slot
+                );
+            } else {
+                break;
             }
         }
 
-        pending.insert(slot, block);
-        info!("📦 Stored pending block {} (waiting for parent)", slot);
+        let candidate_count = {
+            let candidates = pending.entry(slot).or_default();
+            candidates.push(block);
+            candidates.len()
+        };
+        if candidate_count > 1 {
+            info!(
+                "📦 Stored competing pending block {} hash {} ({} candidates waiting for parent)",
+                slot,
+                &block_hash.to_hex()[..8],
+                candidate_count
+            );
+        } else {
+            info!(
+                "📦 Stored pending block {} hash {} (waiting for parent)",
+                slot,
+                &block_hash.to_hex()[..8]
+            );
+        }
 
         self.note_seen(slot).await;
     }
@@ -464,7 +503,8 @@ impl SyncManager {
 
     /// Get the number of pending blocks waiting to be applied
     pub async fn pending_count(&self) -> usize {
-        self.pending_blocks.lock().await.len()
+        let pending = self.pending_blocks.lock().await;
+        pending_total_count(&pending)
     }
 
     /// Check if any pending block has `parent_hash` matching the given hash.
@@ -472,7 +512,9 @@ impl SyncManager {
     /// the incoming block leads to a provably longer chain (Nakamoto rule).
     pub async fn has_pending_child(&self, parent: &Hash) -> bool {
         let pending = self.pending_blocks.lock().await;
-        pending.values().any(|b| b.header.parent_hash == *parent)
+        pending
+            .values()
+            .any(|candidates| candidates.iter().any(|b| b.header.parent_hash == *parent))
     }
 
     /// Check if a slot has been requested
@@ -510,9 +552,9 @@ impl SyncManager {
             return applicable;
         }
 
-        // Walk the pending blocks in slot order.  For each candidate,
-        // verify that its parent_hash matches the running tip hash.
-        // Stop at the first break — don't return blocks past a gap.
+        // Walk pending slots in order. For each slot, choose the candidate whose
+        // parent_hash matches the running tip hash. Stop at the first slot where
+        // no candidate chains from the tip; later blocks stay pending behind the gap.
         let mut tip_slot = current_slot;
         let mut tip_hash = current_tip_hash;
         loop {
@@ -520,20 +562,33 @@ impl SyncManager {
 
             match next_slot {
                 Some(slot) => {
-                    // Peek at the block's parent_hash before removing
-                    let chains = pending
-                        .get(&slot)
-                        .map(|b| b.header.parent_hash == tip_hash)
-                        .unwrap_or(false);
-                    if !chains {
-                        // Parent doesn't match — stop here.  Remaining blocks
-                        // stay in pending for a future sync cycle.
-                        break;
-                    }
-                    if let Some(block) = pending.remove(&slot) {
+                    let matching_block = {
+                        let Some(candidates) = pending.get_mut(&slot) else {
+                            continue;
+                        };
+                        candidates
+                            .iter()
+                            .position(|b| b.header.parent_hash == tip_hash)
+                            .map(|idx| candidates.swap_remove(idx))
+                    };
+
+                    if let Some(block) = matching_block {
+                        if pending.remove(&slot).is_some_and(|stale| !stale.is_empty()) {
+                            debug!(
+                                "Pruned stale competing pending candidates for applied slot {}",
+                                slot
+                            );
+                        }
                         tip_hash = block.hash();
                         tip_slot = slot;
                         applicable.push(block);
+                    } else {
+                        debug!(
+                            "Pending slot {} has no candidate chaining from tip {}",
+                            slot,
+                            &tip_hash.to_hex()[..8]
+                        );
+                        break;
                     }
                 }
                 None => break,
@@ -554,8 +609,9 @@ impl SyncManager {
 
     /// Get sync statistics
     pub async fn stats(&self) -> SyncStats {
+        let pending = self.pending_blocks.lock().await;
         SyncStats {
-            pending_blocks: self.pending_blocks.lock().await.len(),
+            pending_blocks: pending_total_count(&pending),
             is_syncing: *self.is_syncing.lock().await,
             highest_seen: *self.highest_seen_slot.lock().await,
         }
@@ -571,6 +627,10 @@ impl SyncManager {
     pub fn checkpoint_interval() -> u64 {
         CHECKPOINT_INTERVAL
     }
+}
+
+fn pending_total_count(pending: &HashMap<u64, Vec<Block>>) -> usize {
+    pending.values().map(Vec::len).sum()
 }
 
 #[derive(Debug)]
@@ -849,6 +909,16 @@ mod tests {
         Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![])
     }
 
+    fn test_block_with_parent(slot: u64, parent_hash: Hash, validator_byte: u8) -> Block {
+        Block::new(
+            slot,
+            parent_hash,
+            Hash::default(),
+            [validator_byte; 32],
+            vec![],
+        )
+    }
+
     /// STABILITY-FIX: Verify pending block eviction drops NEWEST, not oldest.
     /// Gap-filling blocks (lowest slots) must be preserved because they are
     /// needed to reconnect the chain.
@@ -861,9 +931,54 @@ mod tests {
         }
         let pending = sm.pending_blocks.lock().await;
         // Should have MAX_PENDING_BLOCKS entries (one was evicted)
-        assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
+        assert_eq!(pending_total_count(&pending), MAX_PENDING_BLOCKS);
         // The lowest slot (0) should still be present (gap-filler preserved)
         assert!(pending.contains_key(&0), "Lowest slot should be preserved");
+    }
+
+    /// SYNC-FIX: competing candidates for the same next slot must not poison catch-up.
+    #[tokio::test]
+    async fn test_pending_keeps_competing_same_slot_candidates() {
+        let sm = SyncManager::new();
+        let tip = test_block_with_parent(10, Hash::default(), 1);
+        let tip_hash = tip.hash();
+        let wrong_parent = Hash([9u8; 32]);
+        let wrong = test_block_with_parent(11, wrong_parent, 2);
+        let correct = test_block_with_parent(11, tip_hash, 3);
+
+        sm.add_pending_block(wrong).await;
+        sm.add_pending_block(correct.clone()).await;
+
+        assert_eq!(sm.pending_count().await, 2);
+        let applied = sm.try_apply_pending(10, tip_hash).await;
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].hash(), correct.hash());
+        assert_eq!(
+            sm.pending_count().await,
+            0,
+            "stale same-slot alternatives are pruned once a canonical candidate applies"
+        );
+    }
+
+    /// SYNC-FIX: a stale candidate at slot N must not block a valid N -> N+1 chain.
+    #[tokio::test]
+    async fn test_pending_applies_valid_chain_around_stale_candidate() {
+        let sm = SyncManager::new();
+        let tip = test_block_with_parent(20, Hash::default(), 1);
+        let tip_hash = tip.hash();
+        let wrong = test_block_with_parent(21, Hash([8u8; 32]), 2);
+        let correct = test_block_with_parent(21, tip_hash, 3);
+        let child = test_block_with_parent(22, correct.hash(), 4);
+
+        sm.add_pending_block(wrong).await;
+        sm.add_pending_block(child.clone()).await;
+        sm.add_pending_block(correct.clone()).await;
+
+        let applied = sm.try_apply_pending(20, tip_hash).await;
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[0].hash(), correct.hash());
+        assert_eq!(applied[1].hash(), child.hash());
+        assert_eq!(sm.pending_count().await, 0);
     }
 
     /// STABILITY-FIX: force_decay should reset highest_seen regardless of timestamp

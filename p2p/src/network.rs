@@ -265,6 +265,7 @@ impl P2PConfig {
 /// T2.3 fix: Signed validator announcement (self-reported reputation removed)
 #[derive(Debug, Clone)]
 pub struct ValidatorAnnouncement {
+    pub peer_addr: SocketAddr,
     pub pubkey: Pubkey,
     pub stake: u64,
     pub current_slot: u64,
@@ -1168,12 +1169,11 @@ impl P2PNetwork {
                     current_slot,
                     if version.is_empty() { "unknown" } else { &version }
                 );
-                // P3-5: Tag the peer as a validator in the peer manager
-                self.peer_manager.mark_validator(&peer_addr, pubkey);
-
-                // Validator pubkeys remain metadata only. Canonical routing
-                // identity comes from the authenticated transport handshake.
+                // Validator pubkeys remain metadata only until the validator binary
+                // verifies local stake/validator-set membership. A self-signed P2P
+                // announcement alone must not grant validator-route status.
                 let announcement = ValidatorAnnouncement {
+                    peer_addr,
                     pubkey,
                     stake,
                     current_slot,
