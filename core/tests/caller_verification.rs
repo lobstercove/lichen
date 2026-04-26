@@ -398,12 +398,17 @@ fn b1_05_genesis_oracle_seeding_uses_governance_authority() {
         "REGRESSION B1-05: genesis_seed_oracle must resolve governance authority before oracle mutations"
     );
     assert!(
-        seed_body.contains("let admin = governance_authority.0"),
-        "REGRESSION B1-05: genesis_seed_oracle must seed feeder identity from governance authority"
+        seed_body.contains("oracle_operators: &[Pubkey]")
+            && seed_body.contains("let primary_feeder = operators[0];"),
+        "REGRESSION B1-05: genesis_seed_oracle must seed feeder identity from the planned oracle operator set"
     );
     assert!(
-        seed_body.contains("&governance_authority"),
-        "REGRESSION B1-05: genesis_seed_oracle must execute feeder and price setup as governance authority"
+        seed_body.contains("\"add_price_feeder\"")
+            && seed_body.contains("&governance_authority")
+            && seed_body.contains("\"submit_price\"")
+            && seed_body.contains("&primary_feeder")
+            && seed_body.contains("\"set_authorized_attester\""),
+        "REGRESSION B1-05: genesis_seed_oracle must authorize feeders/attesters through governance and submit initial prices as the authorized feeder"
     );
 }
 
@@ -427,11 +432,22 @@ fn b1_06_genesis_bridge_validator_seeding_uses_governance_executor() {
             ),
         "REGRESSION B1-06: lichenbridge token wiring must execute through governance executor"
     );
+
+    let bridge_fn_start = genesis_src
+        .find("pub fn genesis_bootstrap_bridge_committee(")
+        .expect("genesis_bootstrap_bridge_committee function not found");
+    let bridge_fn_end = genesis_src[bridge_fn_start..]
+        .find("\npub fn genesis_seed_oracle(")
+        .map(|offset| bridge_fn_start + offset)
+        .expect("end of genesis_bootstrap_bridge_committee function not found");
+    let bridge_body = &genesis_src[bridge_fn_start..bridge_fn_end];
+
     assert!(
-        init_body.contains("\"add_bridge_validator\"")
-            && init_body.contains("lichenbridge(bridge_validator)")
-            && init_body.contains("exec_as_governance("),
-        "REGRESSION B1-06: genesis bridge validator seeding must remain on the governance executor path"
+        bridge_body.contains("require_genesis_governance_authority(state, \"bridge committee bootstrap\")")
+            && bridge_body.contains("\"add_bridge_validator\"")
+            && bridge_body.contains("\"set_required_confirmations\"")
+            && bridge_body.contains("&governance_authority"),
+        "REGRESSION B1-06: genesis bridge committee bootstrap must remain on the governance executor path"
     );
 }
 

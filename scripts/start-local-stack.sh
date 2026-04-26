@@ -178,6 +178,10 @@ LOCAL_HEALTH_TIMEOUT_SECS="${LICHEN_LOCAL_HEALTH_TIMEOUT_SECS:-900}"
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 CUSTODY_PID=""
+LOCAL_AIRDROPS_FILE="${LOG_DIR}/airdrops.json"
+if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
+  rm -f "$LOCAL_AIRDROPS_FILE" "$REPO_ROOT/airdrops.json" 2>/dev/null || true
+fi
 
 SERVICE_FLEET_CONFIG_FILE="${LOG_DIR}/service-fleet-config.json"
 SERVICE_FLEET_STATUS_FILE="${LOG_DIR}/service-fleet-status.json"
@@ -429,6 +433,7 @@ if [ "$NETWORK" = "testnet" ]; then
   nohup env PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
     TRUSTED_PROXY="127.0.0.1,::1" \
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
+    AIRDROPS_FILE="$LOCAL_AIRDROPS_FILE" \
     ./target/release/lichen-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
   FAUCET_PID=$!
 fi

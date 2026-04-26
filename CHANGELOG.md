@@ -5,6 +5,13 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14] - 2026-04-26
+
+### Fixed
+- Bridge genesis now embeds the planned validator committee and enforces a BFT-style threshold (`2-of-3` on the standard three-validator fleet) before deployment passes.
+- Oracle genesis now authorizes planned operators, seeds all launch feeds through the contract, and exposes operational stats that distinguish contract feeds from native consensus feeds.
+- Clean-slate local and VPS reset flows now pre-generate validator identities before genesis and verify bridge/oracle readiness during post-genesis bootstrap.
+
 ## [0.5.13] - 2026-04-26
 
 ### Fixed

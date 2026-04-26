@@ -423,7 +423,52 @@ echo "  WASM contracts synchronized"
 phase_done
 
 # ============================================================================
-# Phase 4: Genesis on seed-01
+# Phase 4: Prepare validator identities
+# ============================================================================
+phase "Prepare validator identities"
+
+VALIDATOR_PUBKEYS=()
+for VPS in "${ALL_VPSES[@]}"; do
+  echo "  Preparing validator keypair on $VPS..."
+  PUBKEY=$(ssh_run "$VPS" "
+    set -euo pipefail
+    STATE=$VPS_DATA/$STATE_DIR
+    KP_PASS=\$(sudo grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-$NETWORK | cut -d= -f2-)
+    sudo mkdir -p \"\$STATE\"
+    sudo chown lichen:lichen \"\$STATE\"
+    if [ ! -f \"\$STATE/validator-keypair.json\" ]; then
+      sudo -u lichen env LICHEN_KEYPAIR_PASSWORD=\"\$KP_PASS\" \
+        /usr/local/bin/lichen init --output \"\$STATE/validator-keypair.json\" >/dev/null
+    fi
+    sudo python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['publicKeyBase58'])\" \"\$STATE/validator-keypair.json\"
+  " | tail -1)
+  if [ -z "$PUBKEY" ]; then
+    echo -e "${RED}Failed to prepare validator pubkey on $VPS${NC}"
+    exit 1
+  fi
+  VALIDATOR_PUBKEYS+=("$PUBKEY")
+  echo -e "  ${GREEN}✓${NC} $VPS validator: $PUBKEY"
+done
+
+UNIQUE_VALIDATOR_COUNT=$(printf '%s\n' "${VALIDATOR_PUBKEYS[@]}" | sort -u | wc -l | tr -d ' ')
+if [ "$UNIQUE_VALIDATOR_COUNT" -ne "${#VALIDATOR_PUBKEYS[@]}" ]; then
+  echo -e "${RED}Validator pubkeys are not unique; refusing to create bridge/oracle genesis committee${NC}"
+  printf '  %s\n' "${VALIDATOR_PUBKEYS[@]}"
+  exit 1
+fi
+
+GENESIS_VALIDATOR_PUBKEY="${VALIDATOR_PUBKEYS[0]}"
+GENESIS_OPERATOR_FLAGS=""
+for PUBKEY in "${VALIDATOR_PUBKEYS[@]}"; do
+  GENESIS_OPERATOR_FLAGS="$GENESIS_OPERATOR_FLAGS --bridge-validator $PUBKEY --oracle-operator $PUBKEY"
+done
+
+echo -e "  ${GREEN}✓${NC} Genesis consensus validator: $GENESIS_VALIDATOR_PUBKEY"
+echo -e "  ${GREEN}✓${NC} Bridge/oracle committee size: ${#VALIDATOR_PUBKEYS[@]}"
+phase_done
+
+# ============================================================================
+# Phase 5: Genesis on seed-01
 # ============================================================================
 phase "Create genesis on $GENESIS_VPS"
 
@@ -436,13 +481,14 @@ STATE=$VPS_DATA/$STATE_DIR
 
 KP_PASS=\$(sudo grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-$NETWORK | cut -d= -f2-)
 
-# 1. Generate validator keypair
-echo "  Generating validator keypair..."
-sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="\$KP_PASS" \
-  /usr/local/bin/lichen init --output "\$STATE/validator-keypair.json"
-
 PUBKEY=\$(sudo python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['publicKeyBase58'])" "\$STATE/validator-keypair.json")
 echo "  Validator pubkey: \$PUBKEY"
+if [ "\$PUBKEY" != "$GENESIS_VALIDATOR_PUBKEY" ]; then
+  echo "FATAL: seed validator keypair does not match planned genesis validator"
+  echo "  expected: $GENESIS_VALIDATOR_PUBKEY"
+  echo "  actual:   \$PUBKEY"
+  exit 1
+fi
 
 # 2. Prepare wallet
 echo "  Preparing wallet..."
@@ -479,7 +525,8 @@ sudo -u lichen env HOME=$VPS_DATA LICHEN_HOME=$VPS_DATA \
     --network "\$NET" \
     --db-path "\$STATE" \
     --wallet-file "\$STATE/genesis-wallet.json" \
-    --initial-validator "\$PUBKEY"
+    --initial-validator "\$PUBKEY" \
+    $GENESIS_OPERATOR_FLAGS
 echo "  Genesis created!"
 
 # 5. Install seeds.json
@@ -506,7 +553,7 @@ ssh_run "$GENESIS_VPS" "$GENESIS_SCRIPT"
 phase_done
 
 # ============================================================================
-# Phase 5: Post-genesis + first-boot-deploy on seed-01
+# Phase 6: Post-genesis + first-boot-deploy on seed-01
 # ============================================================================
 phase "Post-genesis on $GENESIS_VPS"
 
@@ -586,7 +633,7 @@ ssh_run "$GENESIS_VPS" "$POSTGENESIS_SCRIPT"
 phase_done
 
 # ============================================================================
-# Phase 6: Snapshot state + distribute secrets to joining VPSes
+# Phase 7: Snapshot state + distribute secrets to joining VPSes
 # ============================================================================
 phase "Snapshot genesis state + distribute to joiners"
 
@@ -673,7 +720,7 @@ ssh_run "$GENESIS_VPS" "sudo rm -f /tmp/lichen-state-bundle.tar.gz"
 phase_done
 
 # ============================================================================
-# Phase 7: Start joining VPSes
+# Phase 8: Start joining VPSes
 # ============================================================================
 phase "Start joining VPSes"
 
@@ -724,8 +771,66 @@ for VPS in "${JOINING_VPSES[@]}"; do
 done
 phase_done
 
+verify_protocol_url() {
+  local url=$1
+  python3 - "$url" <<'PY'
+import json
+import sys
+import urllib.request
+
+url = sys.argv[1]
+
+def rpc(method):
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
+    request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = json.loads(response.read().decode())
+    result = body.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{method} returned no result object")
+    return result
+
+bridge = rpc("getLichenBridgeStats")
+oracle = rpc("getLichenOracleStats")
+errors = []
+validator_count = int(bridge.get("validator_count") or 0)
+required_confirms = int(bridge.get("required_confirms") or 0)
+if validator_count < 2:
+    errors.append(f"bridge validator_count={validator_count} < 2")
+if required_confirms < 2:
+    errors.append(f"bridge required_confirms={required_confirms} < 2")
+if validator_count < required_confirms:
+    errors.append(f"bridge validator_count={validator_count} < required_confirms={required_confirms}")
+if bridge.get("paused") is True or bridge.get("operational") is False:
+    errors.append("bridge not operational")
+
+contract_feeds = int(oracle.get("contract_feeds", oracle.get("feeds") or 0) or 0)
+consensus_feeds = int(oracle.get("consensus_feeds") or 0)
+if contract_feeds < 4:
+    errors.append(f"oracle contract_feeds={contract_feeds} < 4")
+if consensus_feeds < 4:
+    errors.append(f"oracle consensus_feeds={consensus_feeds} < 4")
+if oracle.get("paused") is True or oracle.get("operational") is False:
+    errors.append("oracle not operational")
+
+print(
+    f"bridge validators={validator_count} required={required_confirms}; "
+    f"oracle contract_feeds={contract_feeds} consensus_feeds={consensus_feeds}"
+)
+if errors:
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+verify_remote_protocol() {
+  local host=$1
+  ssh_run "$host" "$(declare -f verify_protocol_url); verify_protocol_url http://127.0.0.1:$RPC_PORT"
+}
+
 # ============================================================================
-# Phase 8: Verify everything
+# Phase 9: Verify everything
 # ============================================================================
 phase "Verify all nodes"
 
@@ -754,6 +859,13 @@ for VPS in "${ALL_VPSES[@]}"; do
     ALL_GOOD=false
   else
     echo -e "  ${GREEN}✓${NC} Treasury: loaded"
+  fi
+
+  if PROTOCOL_STATUS=$(verify_remote_protocol "$VPS" 2>&1); then
+    echo -e "  ${GREEN}✓${NC} Protocol: $PROTOCOL_STATUS"
+  else
+    echo -e "  ${RED}✗${NC} Protocol bootstrap: ${PROTOCOL_STATUS:-FAILED}"
+    ALL_GOOD=false
   fi
 
   # Custody on genesis VPS remains required after the snapshot restart.
@@ -819,6 +931,13 @@ if echo "$CF_AIRDROP" | grep -q "Treasury keypair not configured"; then
   ALL_GOOD=false
 else
   echo -e "  ${GREEN}✓${NC} Cloudflare treasury: OK"
+fi
+
+if CF_PROTOCOL_STATUS=$(verify_protocol_url "$CF_RPC_URL" 2>&1); then
+  echo -e "  ${GREEN}✓${NC} Cloudflare protocol: $CF_PROTOCOL_STATUS"
+else
+  echo -e "  ${RED}✗${NC} Cloudflare protocol bootstrap: ${CF_PROTOCOL_STATUS:-FAILED}"
+  ALL_GOOD=false
 fi
 
 phase_done

@@ -193,6 +193,7 @@ else
 		find "$dir" -name "genesis-keys" -type d -exec rm -rf {} + 2>/dev/null || true
 		find "$dir" -name "signer-keypair.json" -delete 2>/dev/null || true
 	done
+	rm -f "$REPO_ROOT/airdrops.json" 2>/dev/null || true
 fi
 echo -e "${GREEN}  All transient state cleaned${NC}"
 

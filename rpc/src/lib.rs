@@ -15844,13 +15844,20 @@ async fn handle_get_sporevault_stats(state: &RpcState) -> Result<serde_json::Val
 /// getLichenBridgeStats — Cross-chain bridge stats
 async fn handle_get_lichenbridge_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "BRIDGE")?;
+    let validator_count = cf_stats_u64(state, "BRIDGE", b"bridge_validator_count");
+    let required_confirms = cf_stats_u64(state, "BRIDGE", b"bridge_required_confirms");
+    let paused = cf_stats_bool(state, "BRIDGE", b"mb_paused");
+    let quorum_ready =
+        validator_count >= required_confirms && required_confirms >= 2 && validator_count >= 2;
     Ok(serde_json::json!({
         "nonce": cf_stats_u64(state, "BRIDGE", b"bridge_nonce"),
-        "validator_count": cf_stats_u64(state, "BRIDGE", b"bridge_validator_count"),
-        "required_confirms": cf_stats_u64(state, "BRIDGE", b"bridge_required_confirms"),
+        "validator_count": validator_count,
+        "required_confirms": required_confirms,
         "locked_amount": cf_stats_u64(state, "BRIDGE", b"bridge_locked_amount"),
         "request_timeout": cf_stats_u64(state, "BRIDGE", b"bridge_request_timeout"),
-        "paused": cf_stats_bool(state, "BRIDGE", b"mb_paused"),
+        "paused": paused,
+        "quorum_ready": quorum_ready,
+        "operational": quorum_ready && !paused,
     }))
 }
 
@@ -16175,11 +16182,32 @@ async fn handle_get_lichendao_stats(state: &RpcState) -> Result<serde_json::Valu
 /// getLichenOracleStats — Oracle price feed stats
 async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "ORACLE")?;
+    let tracked_assets = ["LICN", "wSOL", "wETH", "wBNB"];
+    let mut consensus_feeds = 0u64;
+    let mut native_attestations = 0u64;
+    for asset in tracked_assets {
+        if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
+            if price.price > 0 {
+                consensus_feeds = consensus_feeds.saturating_add(1);
+            }
+            native_attestations =
+                native_attestations.saturating_add(price.attestation_count as u64);
+        }
+    }
+    let contract_feeds = cf_stats_u64(state, "ORACLE", b"stats_feeds");
+    let contract_attestations = cf_stats_u64(state, "ORACLE", b"stats_attestations");
+    let paused = cf_stats_bool(state, "ORACLE", b"oracle_paused");
+    let operational = contract_feeds >= 4 && consensus_feeds >= 4 && !paused;
     Ok(serde_json::json!({
         "queries": cf_stats_u64(state, "ORACLE", b"stats_queries"),
-        "feeds": cf_stats_u64(state, "ORACLE", b"stats_feeds"),
-        "attestations": cf_stats_u64(state, "ORACLE", b"stats_attestations"),
-        "paused": cf_stats_bool(state, "ORACLE", b"oracle_paused"),
+        "feeds": contract_feeds,
+        "contract_feeds": contract_feeds,
+        "consensus_feeds": consensus_feeds,
+        "attestations": contract_attestations.saturating_add(native_attestations),
+        "contract_attestations": contract_attestations,
+        "native_attestations": native_attestations,
+        "paused": paused,
+        "operational": operational,
     }))
 }
 

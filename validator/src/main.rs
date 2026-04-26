@@ -46,7 +46,7 @@ use lichen_core::{
     NFT_MINT_FEE, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
-    derive_contract_address, genesis_assign_achievements, genesis_auto_deploy,
+    genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
     genesis_create_trading_pairs, genesis_harden_contract_controls, genesis_initialize_contracts,
     genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
     genesis_set_fee_exempt_contracts,
@@ -773,6 +773,18 @@ fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
         }
     }
     None
+}
+
+fn parse_genesis_pubkeys(values: &[String], label: &str) -> Vec<Pubkey> {
+    let mut pubkeys = Vec::new();
+    for value in values {
+        match Pubkey::from_base58(value) {
+            Ok(pubkey) if !pubkeys.contains(&pubkey) => pubkeys.push(pubkey),
+            Ok(_) => {}
+            Err(err) => warn!("⚠️  Ignoring invalid {} pubkey {}: {}", label, value, err),
+        }
+    }
+    pubkeys
 }
 
 fn persist_effective_genesis_config(data_dir: &str, config: &GenesisConfig) {
@@ -5905,9 +5917,6 @@ async fn run_validator() {
                 &reconcile_prices,
             );
 
-            // Check if oracle price feeds are present (price_LICN)
-            let licn_price_exists = state.get_program_storage("ORACLE", b"price_LICN").is_some();
-
             // Check if margin prices are present (mrg_mark_1 = LICN/lUSD)
             let mrg_mark_1_exists = state.get_program_storage("MARGIN", b"mrg_mark_1").is_some();
 
@@ -5920,56 +5929,6 @@ async fn run_validator() {
                     &reconcile_prices,
                 );
                 info!("  ✓ Margin prices seeded for pairs 1-5");
-            }
-
-            if !licn_price_exists {
-                info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
-                if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "lichenoracle") {
-                    const ORACLE_DECIMALS: u8 = 8;
-                    let oracle_feeds: &[(&str, u64)] = &[
-                        ("LICN", reconcile_prices.licn_usd_8dec),
-                        ("wSOL", reconcile_prices.wsol_usd_8dec),
-                        ("wETH", reconcile_prices.weth_usd_8dec),
-                        ("wBNB", reconcile_prices.wbnb_usd_8dec),
-                    ];
-
-                    for (asset, price) in oracle_feeds {
-                        // price_{asset}: 8 bytes LE (u64)
-                        let price_key = format!("price_{}", asset);
-                        if let Err(e) = state.put_contract_storage(
-                            &oracle_pk,
-                            price_key.as_bytes(),
-                            &price.to_le_bytes(),
-                        ) {
-                            tracing::error!("Failed to write contract storage: {e}");
-                        }
-
-                        // price_{asset}_ts: 8 bytes LE (u64 timestamp)
-                        let ts_key = format!("price_{}_ts", asset);
-                        if let Err(e) = state.put_contract_storage(
-                            &oracle_pk,
-                            ts_key.as_bytes(),
-                            &genesis_timestamp.to_le_bytes(),
-                        ) {
-                            tracing::error!("Failed to write contract storage: {e}");
-                        }
-
-                        // price_{asset}_dec: 1 byte (decimals)
-                        let dec_key = format!("price_{}_dec", asset);
-                        if let Err(e) = state.put_contract_storage(
-                            &oracle_pk,
-                            dec_key.as_bytes(),
-                            &[ORACLE_DECIMALS],
-                        ) {
-                            tracing::error!("Failed to write contract storage: {e}");
-                        }
-
-                        info!(
-                            "  ✓ Oracle price seeded: {} = {} ({}dec)",
-                            asset, price, ORACLE_DECIMALS
-                        );
-                    }
-                }
             }
         }
     }
@@ -8102,6 +8061,21 @@ async fn run_validator() {
                                     err
                                 );
                             };
+                            let bridge_validators = parse_genesis_pubkeys(
+                                &effective_genesis_config.bridge_validators,
+                                "bridge validator",
+                            );
+                            if let Err(err) = genesis_bootstrap_bridge_committee(
+                                &state_for_blocks,
+                                &gpk,
+                                "📡 [sync]",
+                                &bridge_validators,
+                            ) {
+                                tracing::error!(
+                                    "genesis bridge committee bootstrap during sync failed: {}",
+                                    err
+                                );
+                            };
                             genesis_create_trading_pairs(
                                 &state_for_blocks,
                                 &gpk,
@@ -8109,13 +8083,24 @@ async fn run_validator() {
                                 &genesis_prices,
                             );
                             genesis_set_fee_exempt_contracts(&state_for_blocks, &gpk, "📡 [sync]");
+                            let oracle_operators = parse_genesis_pubkeys(
+                                &effective_genesis_config.oracle_operators,
+                                "oracle operator",
+                            );
                             genesis_seed_oracle(
                                 &state_for_blocks,
                                 &gpk,
                                 "📡 [sync]",
                                 block.header.timestamp,
                                 &genesis_prices,
-                            );
+                                &oracle_operators,
+                            )
+                            .unwrap_or_else(|err| {
+                                tracing::error!(
+                                    "genesis oracle seeding during sync failed: {}",
+                                    err
+                                )
+                            });
                             genesis_seed_margin_prices(
                                 &state_for_blocks,
                                 &gpk,
@@ -8182,64 +8167,11 @@ async fn run_validator() {
                                 &genesis_prices,
                             );
 
-                            // ── Replicate RECONCILE post-genesis writes ──
-                            // The genesis node's RECONCILE startup code patches
-                            // state AFTER genesis when WASM oracle seeding left
-                            // price_LICN empty (submit_price may fail if the oracle
-                            // contract lacks the admin check at init time). These
-                            // writes are NOT in the genesis state_root but ARE in the
-                            // state that the proposer uses for block 1+. Joining
-                            // nodes must replicate them exactly.
+                            // ── Replicate deterministic post-genesis stats seeds ──
+                            // CF_STATS is outside the genesis state root, but these
+                            // seeds drive deterministic contract storage writes for
+                            // later blocks and must match across joining nodes.
                             {
-                                let oracle_pk_opt = derive_contract_address(&gpk, "lichenoracle");
-                                let licn_price_exists = state_for_blocks
-                                    .get_program_storage("ORACLE", b"price_LICN")
-                                    .is_some();
-                                if !licn_price_exists {
-                                    if let Some(oracle_pk) = oracle_pk_opt {
-                                        const ORACLE_DECIMALS: u8 = 8;
-                                        let oracle_feeds: &[(&str, u64)] = &[
-                                            ("LICN", genesis_prices.licn_usd_8dec),
-                                            ("wSOL", genesis_prices.wsol_usd_8dec),
-                                            ("wETH", genesis_prices.weth_usd_8dec),
-                                            ("wBNB", genesis_prices.wbnb_usd_8dec),
-                                        ];
-                                        for (asset, price) in oracle_feeds {
-                                            let price_key = format!("price_{}", asset);
-                                            if let Err(e) = state_for_blocks.put_contract_storage(
-                                                &oracle_pk,
-                                                price_key.as_bytes(),
-                                                &price.to_le_bytes(),
-                                            ) {
-                                                tracing::error!(
-                                                    "Failed to replicate oracle price for {}: {e}",
-                                                    asset
-                                                );
-                                            }
-                                            let ts_key = format!("price_{}_ts", asset);
-                                            if let Err(e) = state_for_blocks.put_contract_storage(
-                                                &oracle_pk,
-                                                ts_key.as_bytes(),
-                                                &block.header.timestamp.to_le_bytes(),
-                                            ) {
-                                                tracing::error!("Failed to replicate oracle timestamp for {}: {e}", asset);
-                                            }
-                                            let dec_key = format!("price_{}_dec", asset);
-                                            if let Err(e) = state_for_blocks.put_contract_storage(
-                                                &oracle_pk,
-                                                dec_key.as_bytes(),
-                                                &[ORACLE_DECIMALS],
-                                            ) {
-                                                tracing::error!("Failed to replicate oracle decimals for {}: {e}", asset);
-                                            }
-                                        }
-                                        info!(
-                                            "  📡 [sync] Replicated RECONCILE oracle price feeds"
-                                        );
-                                    }
-                                }
-
-                                // Replicate margin price seeding if missing
                                 let mrg_mark_1_exists = state_for_blocks
                                     .get_program_storage("MARGIN", b"mrg_mark_1")
                                     .is_some();

@@ -61,6 +61,14 @@ pub struct GenesisConfig {
     /// Initial validator set
     pub initial_validators: Vec<GenesisValidator>,
 
+    /// Bridge operator keys authorized in LichenBridge at genesis.
+    #[serde(default)]
+    pub bridge_validators: Vec<String>,
+
+    /// Oracle operator keys authorized for contract feeder/attester lanes at genesis.
+    #[serde(default)]
+    pub oracle_operators: Vec<String>,
+
     /// Network configuration
     pub network: NetworkConfig,
 
@@ -347,6 +355,24 @@ impl GenesisConfig {
             }
         }
 
+        for bridge_validator in &self.bridge_validators {
+            if Pubkey::from_base58(bridge_validator).is_err() {
+                return Err(format!(
+                    "Invalid bridge validator pubkey: {}",
+                    bridge_validator
+                ));
+            }
+        }
+
+        for oracle_operator in &self.oracle_operators {
+            if Pubkey::from_base58(oracle_operator).is_err() {
+                return Err(format!(
+                    "Invalid oracle operator pubkey: {}",
+                    oracle_operator
+                ));
+            }
+        }
+
         // Validate features
         if self.features.fee_burn_percentage > 100 {
             return Err("Fee burn percentage cannot exceed 100%".to_string());
@@ -516,6 +542,8 @@ impl GenesisConfig {
             initial_validators: vec![
                 // No genesis validators - validators register dynamically when they start
             ],
+            bridge_validators: vec![],
+            oracle_operators: vec![],
             network: NetworkConfig {
                 p2p_port: 7001,
                 rpc_port: 8899,
@@ -568,6 +596,8 @@ impl GenesisConfig {
                 // Multi-sig required for mainnet (3/5 signers minimum)
             ],
             initial_validators: vec![],
+            bridge_validators: vec![],
+            oracle_operators: vec![],
             network: NetworkConfig {
                 p2p_port: 7001,
                 rpc_port: 8899,
