@@ -80,6 +80,7 @@ CUSTODY_DB_PATH="$VPS_DATA/$CUSTODY_DB_NAME"
 VPS_CONFIRMATION_LIST="${ALL_VPSES[*]}"
 VPS_CONFIRMATION_LIST="${VPS_CONFIRMATION_LIST// /,}"
 REDEPLOY_CONFIRMATION="clean-slate:${NETWORK}:${VPS_CONFIRMATION_LIST}"
+FAUCET_AIRDROPS_FILE="$VPS_DATA/airdrops.json"
 
 # ── Colors ──
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -270,7 +271,11 @@ require_redeploy_confirmation() {
   fi
 
   echo -e "${RED}Refusing clean-slate redeploy without explicit confirmation.${NC}"
-  echo "This stops services and deletes $VPS_DATA/$STATE_DIR, $VPS_DATA/.lichen, and $CUSTODY_DB_PATH on:"
+  echo "This stops services and deletes $VPS_DATA/$STATE_DIR, $VPS_DATA/.lichen, and $CUSTODY_DB_PATH"
+  if [ "$FAUCET_ENABLED" = "1" ]; then
+    echo "plus testnet faucet history at $FAUCET_AIRDROPS_FILE"
+  fi
+  echo "on:"
   printf '  - %s\n' "${ALL_VPSES[@]}"
   echo ""
   echo "To continue, set:"
@@ -335,6 +340,9 @@ for VPS in "${ALL_VPSES[@]}"; do
     sudo rm -rf $VPS_DATA/$STATE_DIR
     sudo rm -rf $VPS_DATA/.lichen
     sudo rm -rf $CUSTODY_DB_PATH
+    if [ "$FAUCET_ENABLED" = "1" ]; then
+      sudo rm -f $FAUCET_AIRDROPS_FILE
+    fi
     sudo rm -f $VPS_CONFIG/signed-metadata-manifest-${NETWORK}.json
     sudo rm -f $VPS_CONFIG/custody-treasury-${NETWORK}.json
     sudo rm -f $VPS_DATA/faucet-keypair-${NETWORK}.json
@@ -748,7 +756,7 @@ for VPS in "${ALL_VPSES[@]}"; do
     echo -e "  ${GREEN}✓${NC} Treasury: loaded"
   fi
 
-  # Custody/Faucet on genesis VPS remain required after the snapshot restart.
+  # Custody on genesis VPS remains required after the snapshot restart.
   if [ "$VPS" = "$GENESIS_VPS" ]; then
     if ssh_run "$VPS" "curl -sf http://127.0.0.1:$CUSTODY_PORT/health" >/dev/null 2>&1; then
       echo -e "  ${GREEN}✓${NC} Custody: healthy"
@@ -756,14 +764,22 @@ for VPS in "${ALL_VPSES[@]}"; do
       echo -e "  ${RED}✗${NC} Custody: unavailable"
       ALL_GOOD=false
     fi
+  fi
 
-    if [ "$FAUCET_ENABLED" = "1" ]; then
-      if ssh_run "$VPS" "curl -sf http://127.0.0.1:9100/health" >/dev/null 2>&1; then
-        echo -e "  ${GREEN}✓${NC} Faucet: healthy"
-      else
-        echo -e "  ${RED}✗${NC} Faucet: unavailable"
-        ALL_GOOD=false
-      fi
+  if [ "$FAUCET_ENABLED" = "1" ]; then
+    if ssh_run "$VPS" "curl -sf http://127.0.0.1:9100/health" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} Faucet: healthy"
+    else
+      echo -e "  ${RED}✗${NC} Faucet: unavailable"
+      ALL_GOOD=false
+    fi
+
+    FAUCET_HISTORY_COUNT=$(ssh_run "$VPS" "curl -sf http://127.0.0.1:9100/faucet/airdrops?limit=1 | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))'" 2>/dev/null || echo "?")
+    if [ "$FAUCET_HISTORY_COUNT" = "0" ]; then
+      echo -e "  ${GREEN}✓${NC} Faucet history: empty"
+    else
+      echo -e "  ${RED}✗${NC} Faucet history: $FAUCET_HISTORY_COUNT stale record(s)"
+      ALL_GOOD=false
     fi
   fi
 
