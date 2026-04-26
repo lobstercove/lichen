@@ -137,14 +137,14 @@ pub extern "C" fn add_price_feeder(
         Some(v) => v,
         None => {
             log_info("add_price_feeder rejected: null feeder_ptr");
-            return 0;
+            return 98;
         }
     };
     let asset = match read_asset(asset_ptr, asset_len) {
         Some(v) => v,
         None => {
             log_info("add_price_feeder rejected: invalid asset");
-            return 0;
+            return 4;
         }
     };
 
@@ -153,7 +153,7 @@ pub extern "C" fn add_price_feeder(
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if owner.len() != 32 || caller.0[..] != owner[..] {
         log_info("Only oracle owner can add feeders");
-        return 0;
+        return 2;
     }
 
     // Store feeder for this asset
@@ -165,7 +165,7 @@ pub extern "C" fn add_price_feeder(
     }
 
     log_info("Price feeder authorized!");
-    1
+    0
 }
 
 /// AUDIT-FIX 1.14: Admin function to add/remove authorized attesters
@@ -175,7 +175,7 @@ pub extern "C" fn set_authorized_attester(attester_ptr: *const u8, authorized: u
         Some(v) => v,
         None => {
             log_info("set_authorized_attester rejected: null attester_ptr");
-            return 0;
+            return 98;
         }
     };
 
@@ -184,7 +184,7 @@ pub extern "C" fn set_authorized_attester(attester_ptr: *const u8, authorized: u
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if owner.len() != 32 || caller.0[..] != owner[..] {
         log_info("Only oracle owner can manage attesters");
-        return 0;
+        return 2;
     }
 
     let auth_key = auth_key("authorized_attester", &attester);
@@ -195,7 +195,7 @@ pub extern "C" fn set_authorized_attester(attester_ptr: *const u8, authorized: u
         storage_set(auth_key.as_bytes(), &[0u8]);
         log_info("Attester deauthorized");
     }
-    1
+    0
 }
 
 #[no_mangle]
@@ -209,23 +209,23 @@ pub extern "C" fn submit_price(
     // AUDIT-FIX P2: Enforce pause on submit_price
     if is_mo_paused() {
         log_info("Oracle is paused");
-        return 0;
+        return 20;
     }
     if !reentrancy_enter() {
-        return 0;
+        return 21;
     }
     let feeder = match read_address32(feeder_ptr) {
         Some(v) => v,
         None => {
             log_info("submit_price rejected: null feeder_ptr");
             reentrancy_exit();
-            return 0;
+            return 98;
         }
     };
     if price == 0 || decimals > MAX_PRICE_DECIMALS {
         log_info("submit_price rejected: invalid price or decimals");
         reentrancy_exit();
-        return 0;
+        return 3;
     }
 
     // AUDIT-FIX: verify transaction signer matches claimed feeder
@@ -233,7 +233,7 @@ pub extern "C" fn submit_price(
     if real_caller.0 != feeder {
         log_info("submit_price rejected: caller is not the feeder");
         reentrancy_exit();
-        return 0;
+        return 200;
     }
 
     let asset = match read_asset(asset_ptr, asset_len) {
@@ -241,7 +241,7 @@ pub extern "C" fn submit_price(
         None => {
             log_info("submit_price rejected: invalid asset");
             reentrancy_exit();
-            return 0;
+            return 4;
         }
     };
 
@@ -252,7 +252,7 @@ pub extern "C" fn submit_price(
         _ => {
             log_info("No authorized feeder for this asset");
             reentrancy_exit();
-            return 0;
+            return 5;
         }
     };
 
@@ -260,7 +260,7 @@ pub extern "C" fn submit_price(
     if feeder[..] != authorized_feeder[..] {
         log_info("Feeder not authorized for this asset");
         reentrancy_exit();
-        return 0;
+        return 6;
     }
 
     let timestamp = get_timestamp();
@@ -293,7 +293,7 @@ pub extern "C" fn submit_price(
     ));
 
     reentrancy_exit();
-    1
+    0
 }
 
 #[no_mangle]
@@ -1259,7 +1259,7 @@ mod tests {
         let asset = b"LICN/USD";
         assert_eq!(
             add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32),
-            1
+            0
         );
         let key = alloc::format!("feeder_{}", core::str::from_utf8(asset).unwrap());
         let stored = test_mock::get_storage(key.as_bytes()).unwrap();
@@ -1278,7 +1278,7 @@ mod tests {
         let asset = [b'A'; MAX_ASSET_BYTES + 1];
         assert_eq!(
             add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32),
-            0
+            4
         );
         assert_eq!(get_feed_count(), 0);
     }
@@ -1294,7 +1294,7 @@ mod tests {
         let asset = b"LICN/USD";
         assert_eq!(
             add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32),
-            0
+            2
         );
     }
 
@@ -1316,7 +1316,7 @@ mod tests {
                 42_000_000,
                 6
             ),
-            1
+            0
         );
     }
 
@@ -1333,7 +1333,7 @@ mod tests {
 
         assert_eq!(
             submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 0, 6),
-            0
+            3
         );
         assert_eq!(
             submit_price(
@@ -1343,7 +1343,7 @@ mod tests {
                 42_000_000,
                 MAX_PRICE_DECIMALS + 1,
             ),
-            0
+            3
         );
         assert_eq!(test_mock::get_storage(b"price_LICN/USD"), None);
     }
@@ -1367,7 +1367,7 @@ mod tests {
                 42_000_000,
                 6
             ),
-            0
+            6
         );
     }
 
@@ -1376,9 +1376,10 @@ mod tests {
         setup();
         let feeder = [2u8; 32];
         let asset = b"UNKNOWN";
+        test_mock::set_caller(feeder);
         assert_eq!(
             submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 100, 2),
-            0
+            5
         );
     }
 
@@ -1611,7 +1612,7 @@ mod tests {
         let attester = [2u8; 32];
         initialize_oracle(owner.as_ptr());
         test_mock::set_caller(owner);
-        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 1);
+        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 0);
 
         let data = b"external-price-snapshot";
         let data_hash = sha256(data);
@@ -1649,7 +1650,7 @@ mod tests {
         let attester = [2u8; 32];
         initialize_oracle(owner.as_ptr());
         test_mock::set_caller(owner);
-        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 1);
+        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 0);
 
         let data = b"overflow-attestation";
         let data_hash = sha256(data);
@@ -1822,7 +1823,7 @@ mod tests {
             42_000_000,
             6,
         );
-        assert_eq!(result, 0, "submit_price must fail when oracle is paused");
+        assert_eq!(result, 20, "submit_price must fail when oracle is paused");
     }
 
     // AUDIT-FIX P2: Security regression test

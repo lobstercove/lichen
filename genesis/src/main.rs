@@ -23,9 +23,10 @@ use lichen_core::{
     CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
-    genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
-    genesis_harden_contract_controls, genesis_initialize_contracts, genesis_seed_analytics_prices,
-    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
+    genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
+    genesis_create_trading_pairs, genesis_harden_contract_controls, genesis_initialize_contracts,
+    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
+    genesis_set_fee_exempt_contracts,
 };
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -190,6 +191,33 @@ fn explicit_initial_validators(
     Ok(validators)
 }
 
+fn explicit_pubkey_list(
+    args: &[String],
+    config_values: &[String],
+    flag: &str,
+    label: &str,
+) -> Result<Vec<Pubkey>, String> {
+    let mut pubkeys = Vec::new();
+
+    for raw in config_values {
+        let pubkey = Pubkey::from_base58(raw)
+            .map_err(|err| format!("Invalid {} pubkey '{}': {}", label, raw, err))?;
+        if !pubkeys.contains(&pubkey) {
+            pubkeys.push(pubkey);
+        }
+    }
+
+    for raw in repeated_flag_values(args, flag) {
+        let pubkey = Pubkey::from_base58(&raw)
+            .map_err(|err| format!("Invalid {} '{}': {}", flag, raw, err))?;
+        if !pubkeys.contains(&pubkey) {
+            pubkeys.push(pubkey);
+        }
+    }
+
+    Ok(pubkeys)
+}
+
 fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> Result<(), String> {
     let output_dir = flag_value(args, "--output-dir")
         .map(PathBuf::from)
@@ -351,7 +379,7 @@ fn main() {
             std::process::exit(1);
         }
         None => {
-            error!("Usage: lichen-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--db-path <path>] [--config <path>]");
+            error!("Usage: lichen-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--bridge-validator <base58>] [--oracle-operator <base58>] [--db-path <path>] [--config <path>]");
             std::process::exit(1);
         }
     };
@@ -424,6 +452,46 @@ fn main() {
         Ok(validators) if !validators.is_empty() => validators,
         Ok(_) => {
             error!("Genesis creation requires at least one explicit validator. Pass --initial-validator <base58> or provide initial_validators in --config.");
+            std::process::exit(1);
+        }
+        Err(err) => {
+            error!("{}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let bridge_validators = match explicit_pubkey_list(
+        &args,
+        &genesis_config.bridge_validators,
+        "--bridge-validator",
+        "bridge validator",
+    ) {
+        Ok(validators) if validators.len() >= 2 => validators,
+        Ok(validators) => {
+            error!(
+                "Genesis creation requires at least 2 bridge validators, got {}. Pass --bridge-validator <base58> for each bridge operator.",
+                validators.len()
+            );
+            std::process::exit(1);
+        }
+        Err(err) => {
+            error!("{}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let oracle_operators = match explicit_pubkey_list(
+        &args,
+        &genesis_config.oracle_operators,
+        "--oracle-operator",
+        "oracle operator",
+    ) {
+        Ok(operators) if operators.len() >= 2 => operators,
+        Ok(operators) => {
+            error!(
+                "Genesis creation requires at least 2 oracle operators, got {}. Pass --oracle-operator <base58> for each oracle operator.",
+                operators.len()
+            );
             std::process::exit(1);
         }
         Err(err) => {
@@ -589,6 +657,8 @@ fn main() {
             });
         }
     }
+    genesis_config.bridge_validators = bridge_validators.iter().map(|pk| pk.to_base58()).collect();
+    genesis_config.oracle_operators = oracle_operators.iter().map(|pk| pk.to_base58()).collect();
 
     // ════════════════════════════════════════════════════════════════════
     // FETCH LIVE MARKET PRICES — frozen into genesis config forever
@@ -1165,9 +1235,25 @@ fn main() {
         error!("Failed to initialize genesis contracts: {}", err);
         std::process::exit(1);
     };
+    if let Err(err) =
+        genesis_bootstrap_bridge_committee(&state, &genesis_pubkey, "GENESIS:", &bridge_validators)
+    {
+        error!("Failed to bootstrap bridge committee: {}", err);
+        std::process::exit(1);
+    };
     genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:", gp);
     genesis_set_fee_exempt_contracts(&state, &genesis_pubkey, "GENESIS:");
-    genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp, gp);
+    if let Err(err) = genesis_seed_oracle(
+        &state,
+        &genesis_pubkey,
+        "GENESIS:",
+        genesis_timestamp,
+        gp,
+        &oracle_operators,
+    ) {
+        error!("Failed to seed oracle: {}", err);
+        std::process::exit(1);
+    };
     genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
     genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
 

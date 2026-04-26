@@ -345,6 +345,40 @@ fn two_address_args(first: &[u8; 32], second: &[u8; 32]) -> Vec<u8> {
     args
 }
 
+fn layout_args(layout: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut args = Vec::with_capacity(1 + layout.len() + data.len());
+    args.push(0xAB);
+    args.extend_from_slice(layout);
+    args.extend_from_slice(data);
+    args
+}
+
+fn extend_padded_pointer_arg(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(bytes);
+    let padded_len = bytes.len().div_ceil(32) * 32;
+    let padding = padded_len.max(32).saturating_sub(bytes.len());
+    out.resize(out.len() + padding, 0);
+}
+
+fn sorted_unique_pubkeys(pubkeys: &[Pubkey]) -> Vec<Pubkey> {
+    let mut out = pubkeys.to_vec();
+    out.sort_by_key(|pk| pk.0);
+    out.dedup();
+    out
+}
+
+fn bridge_required_confirmations(validator_count: usize) -> Result<u64, String> {
+    if validator_count < 2 {
+        return Err(format!(
+            "bridge committee requires at least 2 validators, got {}",
+            validator_count
+        ));
+    }
+    // Count-based BFT quorum: ceil(2N/3), with the bridge contract's
+    // security floor of 2 confirmations.
+    Ok((((validator_count as u64) * 2).div_ceil(3)).max(2))
+}
+
 fn apply_genesis_contract_hardening(
     state: &StateStore,
     governance_authority: &Pubkey,
@@ -1497,7 +1531,7 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── LichenBridge: wire LICN token + add first bridge validator ──
+    // ── LichenBridge: wire LICN token ──
     // Named export: set_token_address. Args: [admin 32B][lichencoin_addr 32B]
     if let Some(bridge_pk) = address_map.get("lichenbridge") {
         let mut args = Vec::with_capacity(64);
@@ -1507,22 +1541,6 @@ pub fn genesis_initialize_contracts(
             info!("  SET lichenbridge(token)");
         } else {
             warn!("  WARN: Failed to set lichenbridge token address");
-        }
-
-        // Add deployer as first bridge validator
-        // Named export: add_bridge_validator. Args: [admin 32B][validator_pubkey 32B]
-        let mut val_args = Vec::with_capacity(64);
-        val_args.extend_from_slice(&admin);
-        val_args.extend_from_slice(&admin); // deployer is first bridge validator
-        if exec_as_governance(
-            bridge_pk,
-            "add_bridge_validator",
-            &val_args,
-            "lichenbridge(bridge_validator)",
-        ) {
-            info!("  SET lichenbridge(bridge_validator)");
-        } else {
-            warn!("  WARN: Failed to add bridge validator to lichenbridge");
         }
     }
 
@@ -2242,10 +2260,77 @@ pub fn genesis_set_fee_exempt_contracts(state: &StateStore, deployer_pubkey: &Pu
 }
 
 // ========================================================================
+//  GENESIS PHASE 3B — Bootstrap Bridge Committee
+// ========================================================================
+
+pub fn genesis_bootstrap_bridge_committee(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+    bridge_validators: &[Pubkey],
+) -> Result<(), String> {
+    info!("──────────────────────────────────────────────────────");
+    info!("  {} Bootstrapping bridge committee", label);
+    info!("──────────────────────────────────────────────────────");
+
+    let governance_authority =
+        require_genesis_governance_authority(state, "bridge committee bootstrap")?;
+    let admin = governance_authority.0;
+    let bridge_pk = derive_contract_address(deployer_pubkey, "lichenbridge")
+        .ok_or_else(|| "lichenbridge address not derived".to_string())?;
+    let validators = sorted_unique_pubkeys(bridge_validators);
+    let required = bridge_required_confirmations(validators.len())?;
+
+    for validator in &validators {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&validator.0);
+        if genesis_exec_contract(
+            state,
+            &bridge_pk,
+            &governance_authority,
+            "add_bridge_validator",
+            &args,
+            &format!(
+                "lichenbridge.add_bridge_validator({})",
+                validator.to_base58()
+            ),
+        ) {
+            info!("  BRIDGE validator authorized: {}", validator.to_base58());
+        } else {
+            return Err(format!(
+                "failed to authorize bridge validator {}",
+                validator.to_base58()
+            ));
+        }
+    }
+
+    let mut threshold_args = Vec::with_capacity(40);
+    threshold_args.extend_from_slice(&admin);
+    threshold_args.extend_from_slice(&required.to_le_bytes());
+    if !genesis_exec_contract(
+        state,
+        &bridge_pk,
+        &governance_authority,
+        "set_required_confirmations",
+        &threshold_args,
+        "lichenbridge.set_required_confirmations",
+    ) {
+        return Err("failed to set bridge required confirmations".to_string());
+    }
+
+    info!(
+        "  ✓ Bridge committee ready: {} validators, {} required confirmations",
+        validators.len(),
+        required
+    );
+    Ok(())
+}
+
+// ========================================================================
 //  GENESIS PHASE 4 — Seed Oracle Price Feeds
-//  Authorizes the governance authority as a LICN price feeder on the
-//  lichenoracle contract, then submits the initial launch price ($0.10).
-//  This ensures oracle-adjusted rewards work from the very first block.
+//  Authorizes the primary oracle operator as the contract price feeder,
+//  authorizes the full operator set as attesters, then submits launch prices.
 // ========================================================================
 
 pub fn genesis_seed_oracle(
@@ -2254,36 +2339,34 @@ pub fn genesis_seed_oracle(
     label: &str,
     genesis_timestamp: u64,
     prices: &GenesisPrices,
-) {
+    oracle_operators: &[Pubkey],
+) -> Result<(), String> {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Seeding oracle price feeds", label);
     info!("──────────────────────────────────────────────────────");
 
-    let governance_authority = match resolve_genesis_governance_authority(state) {
-        Ok(authority) => authority,
-        Err(e) => {
-            warn!("  SKIP oracle seeding: {}", e);
-            return;
-        }
-    };
-    let admin = governance_authority.0;
+    let governance_authority = resolve_genesis_governance_authority(state)?;
+    let operators = sorted_unique_pubkeys(oracle_operators);
+    if operators.len() < 2 {
+        return Err(format!(
+            "oracle operator set requires at least 2 operators, got {}",
+            operators.len()
+        ));
+    }
+    let primary_feeder = operators[0];
 
     // Resolve lichenoracle contract address
-    let oracle_pk = match derive_contract_address(deployer_pubkey, "lichenoracle") {
-        Some(pk) => pk,
-        None => {
-            warn!("  SKIP oracle seeding: lichenoracle address not derived");
-            return;
-        }
-    };
+    let oracle_pk = derive_contract_address(deployer_pubkey, "lichenoracle")
+        .ok_or_else(|| "lichenoracle address not derived".to_string())?;
 
-    // Step 1: Authorize the governance authority as LICN price feeder
+    // Step 1: Authorize the primary oracle operator as LICN price feeder
     // add_price_feeder(feeder_ptr: 32, asset_ptr: N, asset_len: u32) -> u32
     let asset = b"LICN";
-    let mut feeder_args = Vec::with_capacity(32 + asset.len() + 4);
-    feeder_args.extend_from_slice(&admin); // feeder pubkey (32 bytes)
-    feeder_args.extend_from_slice(asset); // asset name
-    feeder_args.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
+    let mut feeder_data = Vec::with_capacity(32 + 32 + 4);
+    feeder_data.extend_from_slice(&primary_feeder.0); // feeder pubkey (32 bytes)
+    extend_padded_pointer_arg(&mut feeder_data, asset); // asset name
+    feeder_data.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
+    let feeder_args = layout_args(&[0x20, 0x20, 0x04], &feeder_data);
 
     if genesis_exec_contract(
         state,
@@ -2293,34 +2376,34 @@ pub fn genesis_seed_oracle(
         &feeder_args,
         "lichenoracle.add_price_feeder(LICN)",
     ) {
-        info!("  FEEDER authorized: governance authority → LICN");
+        info!("  FEEDER authorized: {} → LICN", primary_feeder.to_base58());
     } else {
-        warn!("  SKIP feeder authorization failed");
-        return;
+        return Err("oracle feeder authorization failed for LICN".to_string());
     }
 
     // Step 2: Submit initial LICN price ($0.10 with 8 decimals = 10_000_000)
     // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
     let launch_price: u64 = prices.licn_usd_8dec;
     let decimals: u8 = 8;
-    let mut price_args = Vec::with_capacity(32 + asset.len() + 4 + 8 + 1);
-    price_args.extend_from_slice(&admin); // feeder pubkey
-    price_args.extend_from_slice(asset); // asset name
-    price_args.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
-    price_args.extend_from_slice(&launch_price.to_le_bytes()); // price
-    price_args.push(decimals); // decimals
+    let mut price_data = Vec::with_capacity(32 + 32 + 4 + 8 + 1);
+    price_data.extend_from_slice(&primary_feeder.0); // feeder pubkey
+    extend_padded_pointer_arg(&mut price_data, asset); // asset name
+    price_data.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
+    price_data.extend_from_slice(&launch_price.to_le_bytes()); // price
+    price_data.push(decimals); // decimals
+    let price_args = layout_args(&[0x20, 0x20, 0x04, 0x08, 0x01], &price_data);
 
     if genesis_exec_contract(
         state,
         &oracle_pk,
-        &governance_authority,
+        &primary_feeder,
         "submit_price",
         &price_args,
         "lichenoracle.submit_price(LICN=$0.10)",
     ) {
         info!("  PRICE submitted: LICN = $0.10 (launch price)");
     } else {
-        warn!("  SKIP initial price submission failed");
+        return Err("initial LICN oracle price submission failed".to_string());
     }
 
     let external_feeds: [(&[u8], u64, String); 3] = [
@@ -2342,11 +2425,12 @@ pub fn genesis_seed_oracle(
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
-        // Authorize the governance authority as feeder for this asset
-        let mut ext_feeder_args = Vec::with_capacity(32 + ext_asset.len() + 4);
-        ext_feeder_args.extend_from_slice(&admin);
-        ext_feeder_args.extend_from_slice(ext_asset);
-        ext_feeder_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
+        // Authorize the primary oracle operator as feeder for this asset
+        let mut ext_feeder_data = Vec::with_capacity(32 + 32 + 4);
+        ext_feeder_data.extend_from_slice(&primary_feeder.0);
+        extend_padded_pointer_arg(&mut ext_feeder_data, ext_asset);
+        ext_feeder_data.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
+        let ext_feeder_args = layout_args(&[0x20, 0x20, 0x04], &ext_feeder_data);
 
         let asset_name = core::str::from_utf8(ext_asset).unwrap_or("?");
         if genesis_exec_contract(
@@ -2357,24 +2441,31 @@ pub fn genesis_seed_oracle(
             &ext_feeder_args,
             &format!("lichenoracle.add_price_feeder({})", asset_name),
         ) {
-            info!("  FEEDER authorized: governance authority → {}", asset_name);
+            info!(
+                "  FEEDER authorized: {} → {}",
+                primary_feeder.to_base58(),
+                asset_name
+            );
         } else {
-            warn!("  SKIP feeder auth for {} failed", asset_name);
-            continue;
+            return Err(format!(
+                "oracle feeder authorization failed for {}",
+                asset_name
+            ));
         }
 
         // Submit initial price
-        let mut ext_price_args = Vec::with_capacity(32 + ext_asset.len() + 4 + 8 + 1);
-        ext_price_args.extend_from_slice(&admin);
-        ext_price_args.extend_from_slice(ext_asset);
-        ext_price_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
-        ext_price_args.extend_from_slice(&ext_price.to_le_bytes());
-        ext_price_args.push(decimals); // 8 decimals
+        let mut ext_price_data = Vec::with_capacity(32 + 32 + 4 + 8 + 1);
+        ext_price_data.extend_from_slice(&primary_feeder.0);
+        extend_padded_pointer_arg(&mut ext_price_data, ext_asset);
+        ext_price_data.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
+        ext_price_data.extend_from_slice(&ext_price.to_le_bytes());
+        ext_price_data.push(decimals); // 8 decimals
+        let ext_price_args = layout_args(&[0x20, 0x20, 0x04, 0x08, 0x01], &ext_price_data);
 
         if genesis_exec_contract(
             state,
             &oracle_pk,
-            &governance_authority,
+            &primary_feeder,
             "submit_price",
             &ext_price_args,
             &format!(
@@ -2387,7 +2478,35 @@ pub fn genesis_seed_oracle(
                 asset_name, display_price
             );
         } else {
-            warn!("  SKIP initial {} price submission failed", asset_name);
+            return Err(format!(
+                "initial {} oracle price submission failed",
+                asset_name
+            ));
+        }
+    }
+
+    for operator in &operators {
+        let mut attester_data = Vec::with_capacity(36);
+        attester_data.extend_from_slice(&operator.0);
+        attester_data.extend_from_slice(&1u32.to_le_bytes());
+        let attester_args = layout_args(&[0x20, 0x04], &attester_data);
+        if genesis_exec_contract(
+            state,
+            &oracle_pk,
+            &governance_authority,
+            "set_authorized_attester",
+            &attester_args,
+            &format!(
+                "lichenoracle.set_authorized_attester({})",
+                operator.to_base58()
+            ),
+        ) {
+            info!("  ORACLE attester authorized: {}", operator.to_base58());
+        } else {
+            return Err(format!(
+                "failed to authorize oracle attester {}",
+                operator.to_base58()
+            ));
         }
     }
 
@@ -2399,6 +2518,7 @@ pub fn genesis_seed_oracle(
     info!("──────────────────────────────────────────────────────");
     info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB)");
     info!("──────────────────────────────────────────────────────");
+    Ok(())
 }
 
 // ========================================================================

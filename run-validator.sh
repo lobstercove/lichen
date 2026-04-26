@@ -148,6 +148,11 @@ write_local_seeds_file() {
 EOF
 }
 
+read_keypair_pubkey() {
+	local keypair_file="$1"
+	sed -n 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$keypair_file" | head -n 1
+}
+
 ensure_local_genesis() {
 	if [[ "$VALIDATOR_NUM" != "1" ]]; then
 		return
@@ -187,25 +192,42 @@ except: pass
 		cargo build --release --bin lichen --bin lichen-genesis --bin lichen-validator || exit 1
 	fi
 
-	if [[ ! -f "$VALIDATOR_KEYPAIR_FILE" ]]; then
-		"$CLI_BIN" init --output "$VALIDATOR_KEYPAIR_FILE" >/dev/null || exit 1
-	fi
+	LOCAL_VALIDATOR_PUBKEYS=()
+	for local_p2p_port in "$BASE_P2P" "$((BASE_P2P + 1))" "$((BASE_P2P + 2))"; do
+		local_state_dir="${REPO_ROOT}/data/state-${local_p2p_port}"
+		local_home_dir="${local_state_dir}/home"
+		local_keypair_file="${local_state_dir}/validator-keypair.json"
+		mkdir -p "$local_home_dir"
+		if [[ ! -f "$local_keypair_file" ]]; then
+			"$CLI_BIN" init --output "$local_keypair_file" >/dev/null || exit 1
+		fi
+		local_pubkey="$(read_keypair_pubkey "$local_keypair_file")"
+		if [[ -z "$local_pubkey" ]]; then
+			echo "Failed to derive validator pubkey from $local_keypair_file"
+			exit 1
+		fi
+		LOCAL_VALIDATOR_PUBKEYS+=("$local_pubkey")
+	done
 
 	if [[ ! -f "$GENESIS_WALLET_FILE" ]]; then
 		"$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$DB_PATH" || exit 1
 	fi
 
-	VALIDATOR_PUBKEY="$(sed -n 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$VALIDATOR_KEYPAIR_FILE" | head -n 1)"
-	if [[ -z "$VALIDATOR_PUBKEY" ]]; then
-		echo "Failed to derive validator pubkey from $VALIDATOR_KEYPAIR_FILE"
-		exit 1
-	fi
+	VALIDATOR_PUBKEY="${LOCAL_VALIDATOR_PUBKEYS[0]}"
+	GENESIS_ARGS=(
+		--network "$NETWORK"
+		--db-path "$DB_PATH"
+		--wallet-file "$GENESIS_WALLET_FILE"
+		--initial-validator "$VALIDATOR_PUBKEY"
+	)
+	for local_pubkey in "${LOCAL_VALIDATOR_PUBKEYS[@]}"; do
+		GENESIS_ARGS+=(
+			--bridge-validator "$local_pubkey"
+			--oracle-operator "$local_pubkey"
+		)
+	done
 
-	"$GENESIS_BIN" \
-		--network "$NETWORK" \
-		--db-path "$DB_PATH" \
-		--wallet-file "$GENESIS_WALLET_FILE" \
-		--initial-validator "$VALIDATOR_PUBKEY" || exit 1
+	"$GENESIS_BIN" "${GENESIS_ARGS[@]}" || exit 1
 }
 
 case $VALIDATOR_NUM in

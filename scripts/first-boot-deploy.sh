@@ -328,6 +328,68 @@ for contract_name, symbol in expected.items():
 PY
 }
 
+verify_protocol_bootstrap() {
+    local bridge_response oracle_response
+
+    bridge_response=$(curl -s -X POST "${RPC_URL}" \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getLichenBridgeStats","params":[]}' 2>/dev/null || echo "")
+    oracle_response=$(curl -s -X POST "${RPC_URL}" \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getLichenOracleStats","params":[]}' 2>/dev/null || echo "")
+
+    if [[ -z "$bridge_response" || -z "$oracle_response" ]]; then
+        return 1
+    fi
+
+    BRIDGE_RESPONSE="$bridge_response" ORACLE_RESPONSE="$oracle_response" "$PYTHON_BIN" <<'PY'
+import json
+import os
+import sys
+
+bridge_rpc = json.loads(os.environ["BRIDGE_RESPONSE"])
+oracle_rpc = json.loads(os.environ["ORACLE_RESPONSE"])
+bridge = bridge_rpc.get("result")
+oracle = oracle_rpc.get("result")
+if not isinstance(bridge, dict) or not isinstance(oracle, dict):
+    raise SystemExit(1)
+
+errors = []
+validator_count = int(bridge.get("validator_count") or 0)
+required_confirms = int(bridge.get("required_confirms") or 0)
+if validator_count < 2:
+    errors.append(f"bridge validator_count={validator_count} < 2")
+if required_confirms < 2:
+    errors.append(f"bridge required_confirms={required_confirms} < 2")
+if validator_count < required_confirms:
+    errors.append(f"bridge validator_count={validator_count} < required_confirms={required_confirms}")
+if bridge.get("paused") is True:
+    errors.append("bridge is paused")
+if bridge.get("operational") is False:
+    errors.append("bridge operational=false")
+
+contract_feeds = int(oracle.get("contract_feeds", oracle.get("feeds") or 0) or 0)
+consensus_feeds = int(oracle.get("consensus_feeds") or 0)
+if contract_feeds < 4:
+    errors.append(f"oracle contract_feeds={contract_feeds} < 4")
+if consensus_feeds < 4:
+    errors.append(f"oracle consensus_feeds={consensus_feeds} < 4")
+if oracle.get("paused") is True:
+    errors.append("oracle is paused")
+if oracle.get("operational") is False:
+    errors.append("oracle operational=false")
+
+print(
+    f"bridge validators={validator_count} required={required_confirms}; "
+    f"oracle contract_feeds={contract_feeds} consensus_feeds={consensus_feeds}"
+)
+if errors:
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 write_manifest_from_chain() {
     local response
 
@@ -658,6 +720,14 @@ if [ -f "$SIGNED_METADATA_MANIFEST" ]; then
     fi
 elif $SIGNED_METADATA_REQUIRED; then
     echo -e "  ${RED}❌ Deployment aborted: no signed metadata artifact was available and no transient SIGNED_METADATA_KEYPAIR was provided${NC}"
+    exit 1
+fi
+
+echo -e "  Verifying bridge/oracle operational bootstrap..."
+if verify_protocol_bootstrap | sed 's/^/    /'; then
+    echo -e "  ${GREEN}✅ Bridge and oracle bootstrap are operational${NC}"
+else
+    echo -e "  ${RED}❌ Deployment aborted: bridge/oracle bootstrap is not production-ready${NC}"
     exit 1
 fi
 
