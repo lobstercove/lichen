@@ -137,15 +137,15 @@ fn make_skill_record(name: &str, proficiency: u8, timestamp: u64) -> Vec<u8> {
     data
 }
 
-fn skill_hash(name: &str) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    for (i, b) in name.as_bytes().iter().enumerate() {
-        if i >= 8 {
-            break;
-        }
-        out[i] = *b;
+fn skill_hash(name: &str) -> [u8; 16] {
+    const FNV_OFFSET_BASIS: u128 = 0x6c62272e07bb0142_62b821756295c58d;
+    const FNV_PRIME: u128 = 0x0000000001000000_000000000000013B;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in name.as_bytes() {
+        hash ^= *byte as u128;
+        hash = hash.wrapping_mul(FNV_PRIME);
     }
-    out
+    hash.to_le_bytes()
 }
 
 fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
@@ -218,6 +218,18 @@ fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
     contract
         .storage
         .insert(format!("vouch:{}:0", bob_hex).into_bytes(), vouch);
+
+    let mut given_vouch = Vec::with_capacity(40);
+    given_vouch.extend_from_slice(&bob.0);
+    given_vouch.extend_from_slice(&1_700_200_000u64.to_le_bytes());
+    contract.storage.insert(
+        format!("vouch_given:{}:0", alice_hex).into_bytes(),
+        given_vouch,
+    );
+    contract.storage.insert(
+        format!("vouch_given_count:{}", alice_hex).into_bytes(),
+        1u64.to_le_bytes().to_vec(),
+    );
 
     contract.storage.insert(
         format!("name_rev:{}", alice_hex).into_bytes(),

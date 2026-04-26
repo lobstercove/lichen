@@ -53,6 +53,7 @@ pub mod test_mock {
         pub static VALUE: RefCell<u64> = RefCell::new(0);
         pub static SLOT: RefCell<u64> = RefCell::new(1);
         pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = RefCell::new(None);
+        pub static CROSS_CALL_RESPONSE_QUEUE: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
         pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
         pub static LAST_CROSS_CALL: RefCell<Option<([u8; 32], String, Vec<u8>, u64)>> = RefCell::new(None);
     }
@@ -69,6 +70,7 @@ pub mod test_mock {
         VALUE.with(|v| *v.borrow_mut() = 0);
         SLOT.with(|s| *s.borrow_mut() = 1);
         CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = None);
+        CROSS_CALL_RESPONSE_QUEUE.with(|c| c.borrow_mut().clear());
         CROSS_CALL_SHOULD_FAIL.with(|c| *c.borrow_mut() = false);
         LAST_CROSS_CALL.with(|c| *c.borrow_mut() = None);
     }
@@ -99,6 +101,12 @@ pub mod test_mock {
 
     pub fn set_cross_call_response(data: Option<Vec<u8>>) {
         CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = data);
+        CROSS_CALL_RESPONSE_QUEUE.with(|c| c.borrow_mut().clear());
+    }
+
+    pub fn set_cross_call_responses(data: Vec<Vec<u8>>) {
+        CROSS_CALL_RESPONSE_QUEUE.with(|c| *c.borrow_mut() = data);
+        CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = None);
     }
 
     pub fn set_cross_call_should_fail(should_fail: bool) {

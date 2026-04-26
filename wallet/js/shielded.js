@@ -45,6 +45,14 @@ let shieldedState = {
     provingKeysLoaded: false,
 };
 
+const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false;
+
+function shieldedSubmissionUnavailable(action) {
+    const message = `${action} requires a signed shielded transaction builder and is not available in this wallet yet`;
+    showShieldedStatus(message, 'error');
+    showToast(message);
+}
+
 // ===== Initialization =====
 
 /**
@@ -241,6 +249,11 @@ async function shieldLicn(amountLicn) {
         return;
     }
 
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Shielding LICN');
+        return;
+    }
+
     showShieldedStatus('Generating ZK proof...', 'pending');
 
     try {
@@ -274,14 +287,7 @@ async function shieldLicn(amountLicn) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        // Submit shield transaction
-        const result = await rpc.call('submitShieldTransaction', [{
-            amount: amountSpores,
-            commitment: commitment,
-            proof: bytesToHex(proof),
-            encrypted_note: encryptedNote,
-            ephemeral_pk: bytesToHex(ephemeralKey),
-        }]);
+        const result = null;
 
         if (result && result.success) {
             // Add to our owned notes
@@ -341,6 +347,11 @@ async function unshieldLicn(amountLicn, recipientAddress) {
         return;
     }
 
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Unshielding LICN');
+        return;
+    }
+
     showShieldedStatus('Generating ZK proof (may take ~3s)...', 'pending');
 
     try {
@@ -360,13 +371,7 @@ async function unshieldLicn(amountLicn, recipientAddress) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = await rpc.call('submitUnshieldTransaction', [{
-            nullifier: nullifier,
-            amount: amountSpores,
-            recipient: recipientAddress,
-            merkle_root: shieldedState.merkleRoot,
-            proof: bytesToHex(proof),
-        }]);
+        const result = null;
 
         if (result && result.success) {
             noteToSpend.spent = true;
@@ -413,6 +418,11 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
     const inputNotes = selectTwoInputNotes(unspentNotes, amountSpores);
     if (!inputNotes) {
         showToast('Transfer currently requires two notes with combined value >= amount');
+        return;
+    }
+
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        shieldedSubmissionUnavailable('Private transfer');
         return;
     }
 
@@ -487,12 +497,7 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = await rpc.call('submitShieldedTransfer', [{
-            nullifiers: nullifiers,
-            output_commitments: outputCommitments,
-            merkle_root: shieldedState.merkleRoot,
-            proof: typeof proofHex === 'string' ? proofHex : bytesToHex(proofHex),
-        }]);
+        const result = null;
 
         if (result && result.success) {
             // Mark input notes as spent
@@ -917,6 +922,11 @@ function openShieldedTransferModal() {
 function _updateShieldModalBtn() {
     const btn = document.querySelector('#shieldModal .modal-footer .btn-shield');
     if (!btn) return;
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        btn.disabled = true;
+        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        return;
+    }
     const spendable = window.walletBalance || 0;
     const fee = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     if (spendable <= fee) {
@@ -931,6 +941,11 @@ function _updateShieldModalBtn() {
 function _updateUnshieldModalBtn() {
     const btn = document.querySelector('#unshieldModal .modal-footer .btn-unshield');
     if (!btn) return;
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        btn.disabled = true;
+        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        return;
+    }
     const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
     if (available <= 0) {
         btn.disabled = true;
@@ -944,6 +959,11 @@ function _updateUnshieldModalBtn() {
 function _updateTransferModalBtn() {
     const btn = document.querySelector('#shieldedTransferModal .modal-footer .btn-shield');
     if (!btn) return;
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+        btn.disabled = true;
+        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        return;
+    }
     const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
     if (available <= 0) {
         btn.disabled = true;
@@ -1089,5 +1109,3 @@ async function toggleViewingKey(btnEl) {
         if (icon) { icon.className = 'fas fa-eye-slash'; }
     }
 }
-
-

@@ -675,6 +675,9 @@ impl ConsensusEngine {
             // Exact duplicate — ignore
             return ConsensusAction::None;
         }
+        if self.step == RoundStep::Commit {
+            return ConsensusAction::None;
+        }
         self.seen_precommits.insert(dedup_key, precommit.block_hash);
 
         // Record the precommit
@@ -1577,6 +1580,97 @@ impl ConsensusEngine {
         }
     }
 
+    /// Restore a signed local prevote from WAL slashing-protection state.
+    pub fn restore_signed_prevote(
+        &mut self,
+        height: u64,
+        round: u32,
+        block_hash: Option<Hash>,
+        signature: PqSignature,
+    ) -> Result<(), String> {
+        if height != self.height {
+            return Ok(());
+        }
+        if let Some(existing) = self.signed_prevote_rounds.get(&round) {
+            if *existing != block_hash {
+                return Err(format!(
+                    "conflicting recovered prevote for height={} round={}",
+                    height, round
+                ));
+            }
+            return Ok(());
+        }
+        let signable = Prevote::signable_bytes(height, round, &block_hash);
+        if !Keypair::verify(&self.validator_pubkey, &signable, &signature) {
+            return Err(format!(
+                "invalid recovered prevote signature for height={} round={}",
+                height, round
+            ));
+        }
+
+        info!(
+            "🔐 WAL: Restoring signed prevote: h={} r={} hash={:?}",
+            height,
+            round,
+            block_hash.map(|h| hex::encode(&h.0[..4]))
+        );
+        self.signed_prevote_rounds.insert(round, block_hash);
+        self.seen_prevotes
+            .insert((round, self.validator_pubkey), block_hash);
+        let voters = self.prevotes.entry((round, block_hash)).or_default();
+        if !voters.contains(&self.validator_pubkey) {
+            voters.push(self.validator_pubkey);
+        }
+        Ok(())
+    }
+
+    /// Restore a signed local precommit from WAL slashing-protection state.
+    pub fn restore_signed_precommit(
+        &mut self,
+        height: u64,
+        round: u32,
+        block_hash: Option<Hash>,
+        signature: PqSignature,
+        timestamp: u64,
+    ) -> Result<(), String> {
+        if height != self.height {
+            return Ok(());
+        }
+        if let Some(existing) = self.signed_precommit_rounds.get(&round) {
+            if *existing != block_hash {
+                return Err(format!(
+                    "conflicting recovered precommit for height={} round={}",
+                    height, round
+                ));
+            }
+            return Ok(());
+        }
+        let signable = Precommit::signable_bytes(height, round, &block_hash, timestamp);
+        if !Keypair::verify(&self.validator_pubkey, &signable, &signature) {
+            return Err(format!(
+                "invalid recovered precommit signature for height={} round={}",
+                height, round
+            ));
+        }
+
+        info!(
+            "🔐 WAL: Restoring signed precommit: h={} r={} hash={:?}",
+            height,
+            round,
+            block_hash.map(|h| hex::encode(&h.0[..4]))
+        );
+        self.signed_precommit_rounds.insert(round, block_hash);
+        self.seen_precommits
+            .insert((round, self.validator_pubkey), block_hash);
+        let voters = self.precommits.entry((round, block_hash)).or_default();
+        if !voters.contains(&self.validator_pubkey) {
+            voters.push(self.validator_pubkey);
+        }
+        self.precommit_sigs
+            .insert((round, self.validator_pubkey), (signature, timestamp));
+        Ok(())
+    }
+
     /// Get the current locked state (for WAL persistence).
     pub fn locked_state(&self) -> Option<(u32, Hash)> {
         match (self.locked_round, self.locked_value) {
@@ -1659,6 +1753,54 @@ mod tests {
             timestamp: ts,
         };
         assert!(precommit.verify_signature());
+    }
+
+    #[test]
+    fn test_restore_signed_prevote_blocks_conflicting_self_vote() {
+        let (validators, vs, sp) = make_test_env(1);
+        let (kp, pk) = validators.into_iter().next().unwrap();
+        let restored_hash = Hash::hash(b"restored");
+        let restored_sig = kp.sign(&Prevote::signable_bytes(5, 0, &Some(restored_hash)));
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(5);
+
+        engine
+            .restore_signed_prevote(5, 0, Some(restored_hash), restored_sig)
+            .unwrap();
+
+        let action = engine.do_prevote(Some(Hash::hash(b"conflict")), &vs, &sp);
+        assert!(matches!(action, ConsensusAction::None));
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&0),
+            Some(&Some(restored_hash))
+        );
+    }
+
+    #[test]
+    fn test_restore_signed_precommit_blocks_conflicting_self_vote() {
+        let (validators, vs, sp) = make_test_env(1);
+        let (kp, pk) = validators.into_iter().next().unwrap();
+        let restored_hash = Hash::hash(b"restored-precommit");
+        let timestamp = 1_700_000_000;
+        let restored_sig = kp.sign(&Precommit::signable_bytes(
+            6,
+            0,
+            &Some(restored_hash),
+            timestamp,
+        ));
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(6);
+
+        engine
+            .restore_signed_precommit(6, 0, Some(restored_hash), restored_sig, timestamp)
+            .unwrap();
+
+        let action = engine.do_precommit(Some(Hash::hash(b"conflict")), &vs, &sp);
+        assert!(matches!(action, ConsensusAction::None));
+        assert_eq!(
+            engine.signed_precommit_rounds.get(&0),
+            Some(&Some(restored_hash))
+        );
     }
 
     #[test]
@@ -2129,6 +2271,74 @@ mod tests {
             }
             other => panic!("Expected CommitBlock, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_precommit_after_commit_does_not_emit_duplicate_commit() {
+        let (validators, vs, sp) = make_test_env(4);
+        let (local_kp, local_pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(local_kp, local_pk);
+        engine.start_height(1);
+        engine.step = RoundStep::Precommit;
+
+        let block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"state"),
+            local_pk.0,
+            Vec::new(),
+            1000,
+        );
+        let block_hash = block.hash();
+        engine.proposal_blocks.insert(block_hash, block);
+
+        for (idx, (kp, pk)) in validators.iter().enumerate().take(3) {
+            let timestamp = 1000 + idx as u64;
+            let signature = kp.sign(&Precommit::signable_bytes(
+                1,
+                0,
+                &Some(block_hash),
+                timestamp,
+            ));
+            let precommit = Precommit {
+                height: 1,
+                round: 0,
+                block_hash: Some(block_hash),
+                validator: *pk,
+                signature,
+                timestamp,
+            };
+            let action = engine.on_precommit(precommit, &vs, &sp);
+            if idx < 2 {
+                assert!(matches!(action, ConsensusAction::None));
+            } else {
+                assert!(matches!(action, ConsensusAction::CommitBlock { .. }));
+            }
+        }
+
+        let (late_kp, late_pk) = &validators[3];
+        let late_timestamp = 2000;
+        let late_signature = late_kp.sign(&Precommit::signable_bytes(
+            1,
+            0,
+            &Some(block_hash),
+            late_timestamp,
+        ));
+        let late_precommit = Precommit {
+            height: 1,
+            round: 0,
+            block_hash: Some(block_hash),
+            validator: *late_pk,
+            signature: late_signature,
+            timestamp: late_timestamp,
+        };
+
+        let action = engine.on_precommit(late_precommit, &vs, &sp);
+        assert!(
+            matches!(action, ConsensusAction::None),
+            "late precommit after commit emitted duplicate action: {:?}",
+            action
+        );
     }
 
     #[test]

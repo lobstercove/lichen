@@ -8341,6 +8341,11 @@ async fn run_validator() {
                                         hex::encode(&local_root.0[..8]),
                                         hex::encode(&block_root.0[..8]),
                                     );
+                                    error!(
+	                                        "FATAL: refusing to store pending block {} after state-root mismatch",
+	                                        pending_slot
+	                                    );
+                                    std::process::exit(1);
                                 }
                             }
                             run_analytics_bridge_from_state(
@@ -8573,10 +8578,12 @@ async fn run_validator() {
                         let bft_height = bft_committing_for_blocks.load(Ordering::Acquire);
                         if !is_sync_block && bft_height > 0 {
                             debug!(
-                                "🛡️  Block {} deferred to BFT CommitBlock (bft_height={}) — block receiver yields",
-                                block_slot, bft_height
-                            );
-                            sync_mgr.record_progress(block_slot).await;
+	                                "🛡️  Block {} deferred to BFT CommitBlock (bft_height={}) — block receiver yields",
+	                                block_slot, bft_height
+	                            );
+                            // Do not mark sync progress here. This block was only
+                            // seen and intentionally deferred; BFT CommitBlock owns
+                            // replay/storage for this height.
                             // RC9: Remove from seen_blocks so the sync-channel
                             // copy can be applied later.  Without this, a compact
                             // block skipped here poisons seen_blocks and the sync
@@ -8702,13 +8709,18 @@ async fn run_validator() {
                                 let stake = state_for_blocks.compute_stake_pool_hash();
                                 let moss = state_for_blocks.compute_mossstake_pool_hash();
                                 warn!(
-                                    "⚠️  SYNC MISMATCH COMPONENTS slot={}: accts={} contracts={} stake={} moss={}",
-                                    block_slot,
-                                    hex::encode(&accts.0[..8]),
-                                    hex::encode(&contracts.0[..8]),
-                                    hex::encode(&stake.0[..8]),
-                                    hex::encode(&moss.0[..8]),
-                                );
+	                                    "⚠️  SYNC MISMATCH COMPONENTS slot={}: accts={} contracts={} stake={} moss={}",
+	                                    block_slot,
+	                                    hex::encode(&accts.0[..8]),
+	                                    hex::encode(&contracts.0[..8]),
+	                                    hex::encode(&stake.0[..8]),
+	                                    hex::encode(&moss.0[..8]),
+	                                );
+                                error!(
+	                                    "FATAL: refusing to store synced block {} after state-root mismatch",
+	                                    block_slot
+	                                );
+                                std::process::exit(1);
                             }
                         }
                         // SYNC-FIX: Apply block effects (rewards, staking) during sync
@@ -13319,6 +13331,12 @@ async fn run_validator() {
     if let Some(cp) = wal_recovery.last_checkpoint {
         info!("📋 WAL: Last checkpoint at height {}", cp);
     }
+    if !wal_recovery.signed_votes.is_empty() {
+        info!(
+            "📋 WAL: Recovered {} signed BFT vote record(s)",
+            wal_recovery.signed_votes.len()
+        );
+    }
     // Track the last lock we persisted so we can detect new locks.
     let mut last_wal_lock: Option<(u32, Hash)> = None;
 
@@ -13378,6 +13396,41 @@ async fn run_validator() {
         bft.restore_lock(lock_h, lock_r, lock_hash);
         last_wal_lock = Some((lock_r, lock_hash));
     }
+    for record in &wal_recovery.signed_votes {
+        if record.validator != validator_pubkey {
+            continue;
+        }
+        match record.vote_type {
+            wal::SignedVoteType::Prevote => {
+                if let Err(e) = bft.restore_signed_prevote(
+                    record.height,
+                    record.round,
+                    record.block_hash,
+                    record.signature.clone(),
+                ) {
+                    error!("📋 WAL: Failed to restore signed prevote: {}", e);
+                }
+            }
+            wal::SignedVoteType::Precommit => {
+                let Some(timestamp) = record.timestamp else {
+                    error!(
+                        "📋 WAL: Signed precommit record missing timestamp: h={} r={}",
+                        record.height, record.round
+                    );
+                    continue;
+                };
+                if let Err(e) = bft.restore_signed_precommit(
+                    record.height,
+                    record.round,
+                    record.block_hash,
+                    record.signature.clone(),
+                    timestamp,
+                ) {
+                    error!("📋 WAL: Failed to restore signed precommit: {}", e);
+                }
+            }
+        }
+    }
     parent_hash = get_parent_hash(&state);
 
     let (mut height_vs, mut height_pool) = freeze_consensus_snapshot_for_height(
@@ -13416,6 +13469,7 @@ async fn run_validator() {
             execute_consensus_actions(
                 action,
                 &bft,
+                &mut consensus_wal,
                 &state,
                 &validator_set,
                 &stake_pool,
@@ -13517,6 +13571,7 @@ async fn run_validator() {
             execute_consensus_actions(
                 replay_action,
                 &bft,
+                &mut consensus_wal,
                 &state,
                 &validator_set,
                 &stake_pool,
@@ -13569,6 +13624,7 @@ async fn run_validator() {
                 execute_consensus_actions(
                     action,
                     &bft,
+                    &mut consensus_wal,
                     &state,
                     &validator_set,
                     &stake_pool,
@@ -13658,6 +13714,7 @@ async fn run_validator() {
                 execute_consensus_actions(
                     action,
                     &bft,
+                    &mut consensus_wal,
                     &state,
                     &validator_set,
                     &stake_pool,
@@ -13688,6 +13745,7 @@ async fn run_validator() {
                 execute_consensus_actions(
                     action,
                     &bft,
+                    &mut consensus_wal,
                     &state,
                     &validator_set,
                     &stake_pool,
@@ -13718,6 +13776,7 @@ async fn run_validator() {
                 execute_consensus_actions(
                     action,
                     &bft,
+                    &mut consensus_wal,
                     &state,
                     &validator_set,
                     &stake_pool,
@@ -13785,6 +13844,7 @@ async fn run_validator() {
                         execute_consensus_actions(
                             proposal_action,
                             &bft,
+                            &mut consensus_wal,
                             &state,
                             &validator_set,
                             &stake_pool,
@@ -13839,6 +13899,7 @@ async fn run_validator() {
                     execute_consensus_actions(
                         action,
                         &bft,
+                        &mut consensus_wal,
                         &state,
                         &validator_set,
                         &stake_pool,
@@ -13892,6 +13953,7 @@ async fn run_validator() {
                             execute_consensus_actions(
                                 proposal_action,
                                 &bft,
+                                &mut consensus_wal,
                                 &state,
                                 &validator_set,
                                 &stake_pool,
@@ -13975,6 +14037,7 @@ async fn run_validator() {
                         execute_consensus_actions(
                             proposal_action,
                             &bft,
+                            &mut consensus_wal,
                             &state,
                             &validator_set,
                             &stake_pool,
@@ -14080,6 +14143,7 @@ async fn run_validator() {
                     execute_consensus_actions(
                         replay_action,
                         &bft,
+                        &mut consensus_wal,
                         &state,
                         &validator_set,
                         &stake_pool,
@@ -14201,6 +14265,7 @@ async fn run_validator() {
 async fn execute_consensus_actions(
     action: ConsensusAction,
     bft: &ConsensusEngine,
+    consensus_wal: &mut wal::ConsensusWal,
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
     stake_pool: &Arc<RwLock<StakePool>>,
@@ -14265,6 +14330,15 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastPrevote(prevote) => {
+            if prevote.validator == bft.validator_pubkey {
+                if let Err(e) = consensus_wal.log_signed_prevote(&prevote) {
+                    error!(
+                        "📋 WAL: Refusing to broadcast prevote without durable signed-vote record: {}",
+                        e
+                    );
+                    return;
+                }
+            }
             {
                 let mut live_vs = validator_set.write().await;
                 let _ = note_validator_activity(
@@ -14297,6 +14371,15 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
+            if precommit.validator == bft.validator_pubkey {
+                if let Err(e) = consensus_wal.log_signed_precommit(&precommit) {
+                    error!(
+                        "📋 WAL: Refusing to broadcast precommit without durable signed-vote record: {}",
+                        e
+                    );
+                    return;
+                }
+            }
             {
                 let mut live_vs = validator_set.write().await;
                 let _ = note_validator_activity(
@@ -14410,6 +14493,11 @@ async fn execute_consensus_actions(
                             hex::encode(&stake.0[..8]),
                             hex::encode(&moss.0[..8]),
                         );
+                        error!(
+                            "FATAL: refusing to store committed block {} after state-root mismatch",
+                            height
+                        );
+                        std::process::exit(1);
                     }
                 }
             }
@@ -14561,6 +14649,7 @@ async fn execute_consensus_actions(
 
             // Checkpoint
             maybe_create_checkpoint(state, height, data_dir, sync_manager).await;
+            sync_manager.record_progress(height).await;
 
             // Periodic stats pruning
             if height.is_multiple_of(1000) {
@@ -14649,6 +14738,7 @@ async fn execute_consensus_actions(
                 Box::pin(execute_consensus_actions(
                     sub_action,
                     bft,
+                    consensus_wal,
                     state,
                     validator_set,
                     stake_pool,

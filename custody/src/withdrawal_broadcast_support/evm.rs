@@ -87,6 +87,7 @@ pub(super) async fn assemble_signed_evm_tx(
     job: &WithdrawalJob,
     asset: &str,
 ) -> Result<Vec<u8>, String> {
+    let required_signer_threshold = effective_required_signer_threshold(job, &state.config);
     if job.signatures.is_empty() {
         return Err("no signatures available".to_string());
     }
@@ -124,17 +125,17 @@ pub(super) async fn assemble_signed_evm_tx(
 
     signer_signatures.sort_by(|left, right| left.0.cmp(&right.0));
 
-    if signer_signatures.len() < state.config.signer_threshold {
+    if signer_signatures.len() < required_signer_threshold {
         return Err(format!(
             "insufficient EVM signatures: have {}, need {}",
             signer_signatures.len(),
-            state.config.signer_threshold
+            required_signer_threshold
         ));
     }
 
     let packed_sigs: Vec<u8> = signer_signatures
         .iter()
-        .take(state.config.signer_threshold)
+        .take(required_signer_threshold)
         .flat_map(|(_, signature)| signature.clone())
         .collect();
 

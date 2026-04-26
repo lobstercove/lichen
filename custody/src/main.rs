@@ -179,7 +179,8 @@ use request_models::{
     WITHDRAWAL_ACCESS_CLOCK_SKEW_SECS, WITHDRAWAL_ACCESS_DOMAIN, WITHDRAWAL_ACCESS_MAX_TTL_SECS,
 };
 use reserve_ledger_support::{
-    adjust_reserve_balance, build_reserve_ledger_response, get_reserve_balance,
+    adjust_reserve_balance, adjust_reserve_balance_once, build_reserve_ledger_response,
+    get_reserve_balance,
 };
 use retry_support::{
     is_ready_for_retry, mark_sweep_failed, next_retry_timestamp, MAX_JOB_ATTEMPTS,

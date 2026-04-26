@@ -39,6 +39,31 @@ jobs:
       - name: Run cargo-deny
         run: cargo deny check --config deny.toml advisories licenses sources
 
+  js-python-deps:
+    name: JS and Python Dependency Health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install root npm dependencies from lockfile
+        run: npm ci --ignore-scripts
+      - name: Audit root npm production dependencies
+        run: npm audit --omit=dev
+      - name: Install JS SDK dependencies from lockfile
+        run: cd sdk/js && npm ci --ignore-scripts
+      - name: Audit JS SDK production dependencies
+        run: cd sdk/js && npm audit --omit=dev
+      - name: Check Python SDK dependency consistency
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./sdk/python
+          python -m pip check
+
   expected-contracts:
     name: Expected Contract Lockfile
     runs-on: ubuntu-latest
@@ -138,7 +163,7 @@ jobs:
       - name: Build validator
         run: cargo build --release --bin lichen-validator
       - name: Install Node.js dependencies
-        run: npm install
+        run: npm ci --ignore-scripts
       - name: Start validator in background
         run: |
           ./target/release/lichen-validator &
@@ -190,7 +215,7 @@ jobs:
         with:
           node-version: "22"
       - name: Build JS SDK
-        run: cd sdk/js && npm install && npm run build
+        run: cd sdk/js && npm ci --ignore-scripts && npm run build
       - name: Run wallet audits
         run: |
           node scripts/qa/test_wallet_extension_audit.js

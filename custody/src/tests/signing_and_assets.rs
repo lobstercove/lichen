@@ -316,6 +316,50 @@ async fn test_assemble_signed_evm_tx_rejects_mismatched_safe_hash() {
 }
 
 #[tokio::test]
+async fn test_assemble_signed_evm_tx_enforces_job_required_threshold() {
+    let mut state = test_state();
+    state.config.signer_threshold = 2;
+    state.config.signer_endpoints = vec![
+        "http://signer-1".to_string(),
+        "http://signer-2".to_string(),
+        "http://signer-3".to_string(),
+    ];
+    state.config.evm_multisig_address =
+        Some("0x9999999999999999999999999999999999999999".to_string());
+
+    let mut job = test_withdrawal_job();
+    job.dest_chain = "ethereum".to_string();
+    job.asset = "wETH".to_string();
+    job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+    job.amount = 2_000_000_000;
+    job.required_signer_threshold = 3;
+    job.signatures = vec![
+        SignerSignature {
+            kind: SignerSignatureKind::EvmEcdsa,
+            signer_pubkey: "1111111111111111111111111111111111111111".to_string(),
+            signature: format!("{}1b", "11".repeat(64)),
+            message_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            received_at: 0,
+        },
+        SignerSignature {
+            kind: SignerSignatureKind::EvmEcdsa,
+            signer_pubkey: "2222222222222222222222222222222222222222".to_string(),
+            signature: format!("{}1c", "22".repeat(64)),
+            message_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            received_at: 0,
+        },
+    ];
+
+    let err = assemble_signed_evm_tx(&state, &job, "eth")
+        .await
+        .expect_err("job-required threshold must be enforced");
+
+    assert_eq!(err, "insufficient EVM signatures: have 2, need 3");
+}
+
+#[tokio::test]
 async fn test_assemble_signed_evm_tx_rejects_duplicate_signers() {
     let mut state = test_state();
     let safe_tx_hash_hex =

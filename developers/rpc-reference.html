@@ -174,10 +174,10 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.7:</strong> the live server exposes <strong>155
-                            JSON-RPC method names</strong> across native, Solana-compatible, and EVM-compatible
-                        dispatch, plus <strong>72 REST endpoints</strong> across the DEX, prediction market, launchpad,
-                        and shielded route families.</p>
+                    <p><strong>Implementation-verified surface for v0.5.9:</strong> the live server exposes <strong>182
+                            JSON-RPC dispatch names</strong> across native, Solana-compatible, and EVM-compatible
+                        dispatch, plus REST route families across the DEX, prediction market, launchpad, and shielded
+                        APIs.</p>
                 </div>
             </section>
 
@@ -185,10 +185,10 @@
             <section id="endpoint">
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
-                    <p><strong>Mainnet endpoint:</strong> <code>https://rpc.lichen.network</code></p>
-                    <p><strong>Testnet endpoint:</strong> <code>https://testnet-rpc.lichen.network</code></p>
-                    <p>The request examples below use public testnet. Swap to mainnet when you are ready to target the
-                        live network.</p>
+                    <p><strong>Public testnet endpoint:</strong> <code>https://testnet-rpc.lichen.network</code></p>
+                    <p><strong>Mainnet endpoint target:</strong> <code>https://rpc.lichen.network</code></p>
+                    <p>The request examples below use public testnet. Swap to the mainnet endpoint only when you are
+                        ready to target mainnet.</p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
                 <div class="callout callout-warning">
@@ -423,8 +423,8 @@
     "total_burned":2200000000,
     "total_minted":12500000000,
     "peer_count":8,
-    "chain_id":"lichen-mainnet",
-    "network":"mainnet",
+    "chain_id":"lichen-testnet-1",
+    "network":"testnet",
     "is_healthy":true,
     "inflation_rate_bps":395
 }}</code></pre>

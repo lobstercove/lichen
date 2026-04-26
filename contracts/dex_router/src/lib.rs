@@ -433,7 +433,8 @@ pub fn set_route_enabled(caller: *const u8, route_id: u64, enabled: bool) -> u32
 }
 
 /// Execute a smart-routed swap
-/// Returns: 0=success, 1=paused, 2=no route, 3=deadline, 4=slippage, 5=reentrancy, 6=zero amount
+/// Returns: 0=success, 1=paused, 2=no route, 3=deadline, 4=slippage,
+/// 5=reentrancy, 6=zero amount, 7=route execution failed
 pub fn swap(
     trader: *const u8,
     token_in: *const u8,
@@ -505,21 +506,71 @@ pub fn swap(
     // Execute based on route type
     let amount_out = match rtype {
         ROUTE_DIRECT_CLOB => {
-            execute_clob_swap(&t, &ti, amount_in, min_amount_out, deadline, pool_id)
+            match execute_clob_swap(&t, &ti, amount_in, min_amount_out, deadline, pool_id) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            }
         }
-        ROUTE_DIRECT_AMM => execute_amm_swap(&t, amount_in, pool_id, min_amount_out, deadline),
+        ROUTE_DIRECT_AMM => {
+            match execute_amm_swap(&t, amount_in, pool_id, min_amount_out, deadline) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            }
+        }
         ROUTE_SPLIT => {
             let leg1_amount = amount_in * split_pct as u64 / 100;
             let leg2_amount = amount_in - leg1_amount;
-            let out1 = execute_clob_swap(&t, &ti, leg1_amount, 0, deadline, pool_id);
-            let out2 = execute_amm_swap(&t, leg2_amount, secondary, 0, deadline);
-            out1 + out2
+            if leg1_amount == 0 || leg2_amount == 0 {
+                reentrancy_exit();
+                return 7;
+            }
+            let leg1_min = min_amount_out * split_pct as u64 / 100;
+            let leg2_min = min_amount_out.saturating_sub(leg1_min);
+            let out1 = match execute_clob_swap(&t, &ti, leg1_amount, leg1_min, deadline, pool_id) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
+            let out2 = match execute_amm_swap(&t, leg2_amount, secondary, leg2_min, deadline) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
+            match out1.checked_add(out2) {
+                Some(total) if total > 0 => total,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            }
         }
         ROUTE_MULTI_HOP => {
             // First hop (no min_out for intermediate hops)
-            let mid_amount = execute_amm_swap(&t, amount_in, pool_id, 0, deadline);
+            let mid_amount = match execute_amm_swap(&t, amount_in, pool_id, 0, deadline) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            };
             // Second hop (final leg — apply min_amount_out)
-            execute_amm_swap(&t, mid_amount, secondary, min_amount_out, deadline)
+            match execute_amm_swap(&t, mid_amount, secondary, min_amount_out, deadline) {
+                Some(out) if out > 0 => out,
+                _ => {
+                    reentrancy_exit();
+                    return 7;
+                }
+            }
         }
         _ => 0,
     };
@@ -604,11 +655,13 @@ pub fn multi_hop_swap(
             core::ptr::copy_nonoverlapping(path_ptr.add(offset), pool_bytes.as_mut_ptr(), 8);
         }
         let pool_id = u64::from_le_bytes(pool_bytes);
-        current_amount = execute_amm_swap(&t, current_amount, pool_id, 0, deadline);
-        if current_amount == 0 {
-            reentrancy_exit();
-            return 4;
-        }
+        current_amount = match execute_amm_swap(&t, current_amount, pool_id, 0, deadline) {
+            Some(out) if out > 0 => out,
+            _ => {
+                reentrancy_exit();
+                return 7;
+            }
+        };
     }
 
     if current_amount < min_out {
@@ -673,7 +726,7 @@ fn execute_clob_swap(
     min_out: u64,
     deadline: u64,
     pair_id: u64,
-) -> u64 {
+) -> Option<u64> {
     let core_addr = load_addr(CORE_ADDRESS_KEY);
     if !is_zero(&core_addr) {
         let mut args = Vec::with_capacity(96);
@@ -686,7 +739,7 @@ fn execute_clob_swap(
         let call = CrossCall::new(Address(core_addr), "swap_exact_in", args).with_value(0);
         if let Ok(result) = call_contract(call) {
             if result.len() >= 8 {
-                return bytes_to_u64(&result);
+                return Some(bytes_to_u64(&result));
             }
         }
     }
@@ -694,7 +747,7 @@ fn execute_clob_swap(
     log_info(
         "AUDIT-FIX P2: Cross-contract call failed — CLOB swap rejected (no simulation fallback)",
     );
-    0
+    None
 }
 
 /// Execute swap via AMM (dex_amm) — cross-contract call
@@ -729,7 +782,10 @@ fn execute_amm_swap(
     pool_id: u64,
     min_out: u64,
     deadline: u64,
-) -> u64 {
+) -> Option<u64> {
+    if amount_in == 0 {
+        return None;
+    }
     let amm_addr = load_addr(AMM_ADDRESS_KEY);
     if !is_zero(&amm_addr) {
         if let Some(args) =
@@ -738,19 +794,19 @@ fn execute_amm_swap(
             let call = CrossCall::new(Address(amm_addr), "swap_exact_in", args).with_value(0);
             if let Ok(result) = call_contract(call) {
                 if result.len() >= 8 {
-                    return bytes_to_u64(&result);
+                    return Some(bytes_to_u64(&result));
                 }
             }
         } else {
             log_info("AUDIT-FIX C-3: failed to encode AMM swap args");
-            return 0;
+            return None;
         }
     }
     // AUDIT-FIX P2: Removed dangerous simulation fallback
     log_info(
         "AUDIT-FIX P2: Cross-contract call failed — AMM swap rejected (no simulation fallback)",
     );
-    0
+    None
 }
 
 /// Emergency pause
@@ -1020,6 +1076,28 @@ mod tests {
         [30u8; 32]
     }
 
+    fn configure_addresses(admin: [u8; 32]) {
+        let core = [50u8; 32];
+        let amm = [51u8; 32];
+        assert_eq!(
+            set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr()),
+            0
+        );
+    }
+
+    fn set_swap_output(amount: u64) {
+        test_mock::set_cross_call_response(Some(u64_to_bytes(amount).to_vec()));
+    }
+
+    fn set_swap_outputs(amounts: &[u64]) {
+        test_mock::set_cross_call_responses(
+            amounts
+                .iter()
+                .map(|amount| u64_to_bytes(*amount).to_vec())
+                .collect(),
+        );
+    }
+
     // --- Initialization ---
 
     #[test]
@@ -1252,6 +1330,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(900_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1269,8 +1349,7 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
-        assert_eq!(out, 0);
+        assert_eq!(out, 900_000);
     }
 
     #[test]
@@ -1280,6 +1359,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(900_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1297,8 +1378,7 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
-        assert_eq!(out, 0);
+        assert_eq!(out, 900_000);
     }
 
     #[test]
@@ -1308,6 +1388,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_outputs(&[550_000, 350_000]);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1325,8 +1407,7 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract calls return 0 in test
-        assert_eq!(out, 0);
+        assert_eq!(out, 900_000);
     }
 
     #[test]
@@ -1336,6 +1417,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_outputs(&[900_000, 800_000]);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1353,8 +1436,7 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract calls return 0 in test
-        assert_eq!(out, 0);
+        assert_eq!(out, 800_000);
     }
 
     #[test]
@@ -1400,6 +1482,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(500_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1422,6 +1506,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(900_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1471,6 +1557,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(900_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1497,6 +1585,8 @@ mod tests {
         let tb = token_b();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_output(900_000);
         register_route(
             admin.as_ptr(),
             ta.as_ptr(),
@@ -1580,15 +1670,12 @@ mod tests {
 
     #[test]
     fn test_swap_with_addresses_configured() {
-        // When addresses are configured, cross-contract calls are attempted.
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
         let admin = setup();
         let ta = token_a();
         let tb = token_b();
         let trader = [2u8; 32];
-        let core = [50u8; 32];
-        let amm = [51u8; 32];
-        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr());
+        configure_addresses(admin);
+        set_swap_output(750_000);
         test_mock::set_slot(100);
 
         register_route(
@@ -1605,16 +1692,17 @@ mod tests {
             swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0),
             0
         );
-        // AUDIT-FIX P2: No simulation fallback — output is 0
         let ret = test_mock::get_return_data();
-        assert_eq!(bytes_to_u64(&ret), 0);
+        assert_eq!(bytes_to_u64(&ret), 750_000);
     }
 
     #[test]
     fn test_multi_hop_swap_path() {
-        setup();
+        let admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        configure_addresses(admin);
+        set_swap_outputs(&[900_000, 800_000]);
 
         // multi_hop_swap uses AMM for each hop
         // 3 tokens = 2 hops: pool_id 1 and pool_id 2
@@ -1626,9 +1714,9 @@ mod tests {
         };
         test_mock::set_caller(trader);
         let result = multi_hop_swap(trader.as_ptr(), path.as_ptr(), 3, 1_000_000, 0, 0);
-        // AUDIT-FIX P2: Simulation fallback removed — AMM cross-contract call returns 0,
-        // causing multi_hop_swap to return error 4 (swap amount is zero)
-        assert_eq!(result, 4);
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret), 800_000);
     }
 
     #[test]
@@ -1677,14 +1765,12 @@ mod tests {
         // Execute swap — cross-contract call will fail in test
         test_mock::set_caller(trader);
         let result = swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0);
-        assert_eq!(result, 0, "swap should succeed (min_out=0)");
-
-        // Verify amount_out is 0 (no simulation fallback)
-        let ret = test_mock::get_return_data();
-        let amount_out = bytes_to_u64(&ret);
         assert_eq!(
-            amount_out, 0,
-            "amount_out must be 0 when cross-contract call fails — no simulation fallback"
+            result, 7,
+            "failed leg must not become a zero-output success"
         );
+
+        assert_eq!(get_swap_count(), 0);
+        assert_eq!(load_u64(TOTAL_VOLUME_KEY), 0);
     }
 }

@@ -1820,15 +1820,10 @@ async function loadShieldPanel() {
   } catch { /* RPC unavailable */ }
 
   if (shieldedPopupState.initialized && shieldedPopupState.shieldedAddress) {
-    try {
-      const notes = await rpc.call('getShieldedNotes', [shieldedPopupState.shieldedAddress]);
-      if (Array.isArray(notes)) {
-        shieldedPopupState.ownedNotes = notes;
-        shieldedPopupState.shieldedBalance = notes
-          .filter((note) => !note.spent)
-          .reduce((sum, note) => sum + Number(note.value || 0), 0);
-      }
-    } catch { /* keep showing cached notes */ }
+    const notes = Array.isArray(shieldedPopupState.ownedNotes) ? shieldedPopupState.ownedNotes : [];
+    shieldedPopupState.shieldedBalance = notes
+      .filter((note) => !note.spent)
+      .reduce((sum, note) => sum + Number(note.value || 0), 0);
   }
 
   // Update shielded balance display

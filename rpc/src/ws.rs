@@ -172,6 +172,13 @@ const WS_EVENT_CHANNEL_CAPACITY: usize = 4096;
 /// Bounded per-connection outbound queue. Slow consumers are disconnected once this fills.
 const WS_CONNECTION_QUEUE_CAPACITY: usize = 100;
 
+fn ws_limit_response(status: u16, message: &'static str) -> Response {
+    Response::builder()
+        .status(status)
+        .body(axum::body::Body::from(message))
+        .unwrap_or_else(|_| Response::new(axum::body::Body::from(message)))
+}
+
 /// WebSocket subscription request
 #[derive(Debug, Clone, Deserialize)]
 struct SubscriptionRequest {
@@ -464,40 +471,71 @@ async fn ws_handler(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     State(state): State<WsState>,
 ) -> Response {
-    let current = state.active_connections.load(Ordering::SeqCst);
-    if current >= MAX_WS_CONNECTIONS {
-        warn!(
-            "WebSocket connection limit reached ({}/{}), rejecting",
-            current, MAX_WS_CONNECTIONS
-        );
-        return Response::builder()
-            .status(503)
-            .body(axum::body::Body::from("Too many WebSocket connections"))
-            .unwrap_or_else(|_| {
-                Response::new(axum::body::Body::from("Too many WebSocket connections"))
-            });
+    let ip = addr.ip();
+    if let Err(response) = try_reserve_ws_connection(&state, ip) {
+        return response;
     }
 
-    // Per-IP connection limit
-    let ip = addr.ip();
-    {
-        let conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
-        let count = conns.get(&ip).copied().unwrap_or(0);
-        if count >= MAX_CONNECTIONS_PER_IP {
-            warn!("Per-IP connection limit reached for {}: {}", ip, count);
-            return Response::builder()
-                .status(429)
-                .body(axum::body::Body::from("Too many connections from this IP"))
-                .unwrap_or_else(|_| {
-                    Response::new(axum::body::Body::from("Too many connections from this IP"))
-                });
-        }
-    }
+    let failed_upgrade_state = state.clone();
 
     // P10-RPC-04: Limit inbound WebSocket message size to 1 MB to prevent
     // memory exhaustion from oversized messages.
     ws.max_message_size(1_048_576)
+        .on_failed_upgrade(move |error| {
+            warn!("WebSocket upgrade failed for {}: {}", ip, error);
+            release_ws_connection(&failed_upgrade_state, ip);
+        })
         .on_upgrade(move |socket| handle_socket(socket, state, ip))
+}
+
+fn try_reserve_ws_connection(state: &WsState, ip: IpAddr) -> Result<(), Response> {
+    loop {
+        let current = state.active_connections.load(Ordering::SeqCst);
+        if current >= MAX_WS_CONNECTIONS {
+            warn!(
+                "WebSocket connection limit reached ({}/{}), rejecting",
+                current, MAX_WS_CONNECTIONS
+            );
+            return Err(ws_limit_response(503, "Too many WebSocket connections"));
+        }
+
+        if state
+            .active_connections
+            .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            break;
+        }
+    }
+
+    {
+        let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        let count = conns.get(&ip).copied().unwrap_or(0);
+        if count >= MAX_CONNECTIONS_PER_IP {
+            state.active_connections.fetch_sub(1, Ordering::SeqCst);
+            warn!("Per-IP connection limit reached for {}: {}", ip, count);
+            return Err(ws_limit_response(429, "Too many connections from this IP"));
+        }
+        *conns.entry(ip).or_insert(0) += 1;
+    }
+
+    Ok(())
+}
+
+fn release_ws_connection(state: &WsState, ip: IpAddr) {
+    let _ = state
+        .active_connections
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+            Some(count.saturating_sub(1))
+        });
+
+    let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(count) = conns.get_mut(&ip) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            conns.remove(&ip);
+        }
+    }
 }
 
 fn signature_commitment_status(
@@ -586,15 +624,6 @@ fn signature_status_event_from_state(state: &WsState, signature_hash: &Hash) -> 
 
 /// Handle WebSocket connection
 async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
-    state.active_connections.fetch_add(1, Ordering::SeqCst);
-    let conn_guard = state.active_connections.clone();
-
-    // Track per-IP connections
-    {
-        let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
-        *conns.entry(ip).or_insert(0) += 1;
-    }
-
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(WS_CONNECTION_QUEUE_CAPACITY);
     let (close_tx, _) = watch::channel(false);
@@ -1033,19 +1062,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     dex_event_task.abort();
     prediction_event_task.abort();
     governance_event_task.abort();
-    // DDoS protection: decrement active connection counter
-    conn_guard.fetch_sub(1, Ordering::SeqCst);
-
-    // Decrement per-IP connection count
-    {
-        let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(count) = conns.get_mut(&ip) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                conns.remove(&ip);
-            }
-        }
-    }
+    release_ws_connection(&state, ip);
 }
 
 fn enqueue_ws_message(
@@ -2506,6 +2523,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = lichen_core::StateStore::open(tmp.path()).unwrap();
         let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state, None);
+        assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn ws_connection_reservation_enforces_per_ip_limit_and_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = lichen_core::StateStore::open(tmp.path()).unwrap();
+        let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state, None);
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 44));
+
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
+            try_reserve_ws_connection(&ws_state, ip).expect("reservation should fit limit");
+        }
+        assert_eq!(
+            ws_state.active_connections.load(Ordering::SeqCst),
+            MAX_CONNECTIONS_PER_IP as usize
+        );
+
+        assert!(
+            try_reserve_ws_connection(&ws_state, ip).is_err(),
+            "same-IP reservation above limit should be rejected"
+        );
+
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
+            release_ws_connection(&ws_state, ip);
+        }
         assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
     }
 

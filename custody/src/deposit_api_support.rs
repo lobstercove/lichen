@@ -56,6 +56,19 @@ pub(super) async fn create_deposit(
 
     ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
 
+    let _replay_guard = state.bridge_auth_replay_lock.lock().await;
+    prune_expired_bridge_auth_replays(&state.db, now, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    if let Some(existing) = find_existing_bridge_auth_replay(
+        &state.db,
+        BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
+        &replay_digest,
+        &chain,
+        &asset,
+    )? {
+        return Ok(Json(existing));
+    }
+
     // AUDIT-FIX W-H4: Rate limit deposit creation (60/min global, 10s per-user cooldown)
     {
         let mut dr = state.deposit_rate.lock().await;
@@ -87,19 +100,6 @@ pub(super) async fn create_deposit(
 
     if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
         ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
-    }
-
-    let _replay_guard = state.bridge_auth_replay_lock.lock().await;
-    prune_expired_bridge_auth_replays(&state.db, now, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)
-        .map_err(|e| Json(ErrorResponse::db(&e)))?;
-    if let Some(existing) = find_existing_bridge_auth_replay(
-        &state.db,
-        BRIDGE_AUTH_REPLAY_ACTION_CREATE_DEPOSIT,
-        &replay_digest,
-        &chain,
-        &asset,
-    )? {
-        return Ok(Json(existing));
     }
 
     let deposit_id = Uuid::new_v4().to_string();

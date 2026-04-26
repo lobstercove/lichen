@@ -56,6 +56,7 @@ const CHALLENGE_RECORD_SIZE: usize = 25;
 const CHALLENGE_STATUS_OPEN: u8 = 0;
 const CHALLENGE_STATUS_RESPONDED: u8 = 1;
 const CHALLENGE_STATUS_SLASHED: u8 = 2;
+const MAX_CHALLENGE_RESPONSE_BYTES: usize = 1_048_576;
 
 // ============================================================================
 // REENTRANCY GUARD
@@ -77,30 +78,75 @@ fn reentrancy_exit() {
     storage_set(RS_REENTRANCY_KEY, &[0u8]);
 }
 
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
+    }
+    Some(out)
+}
+
+fn stored_u64(key: &[u8]) -> u64 {
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let current = stored_u64(key);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
+
+fn load_licn_token() -> Option<Address> {
+    let token_data = storage_get(LICN_TOKEN_KEY);
+    if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
+        return None;
+    }
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data.unwrap()[..32]);
+    Some(Address(token))
+}
+
+fn unpaid_payout_key(token: Address, recipient: &[u8; 32]) -> Vec<u8> {
+    let mut key = b"unpaid_payout:".to_vec();
+    key.extend_from_slice(&token.0);
+    key.push(b':');
+    key.extend_from_slice(recipient);
+    key
+}
+
+fn record_unpaid_licn_payout(recipient: &[u8; 32], amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let token = load_licn_token().unwrap_or(Address([0u8; 32]));
+    let key = unpaid_payout_key(token, recipient);
+    let current = stored_u64(&key);
+    storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
+}
+
 /// G27-02: Transfer LICN tokens out of the contract to a recipient.
 /// Uses self-custody pattern: contract holds tokens at its own address.
-/// Returns true on success, false if token not configured or transfer fails.
+/// Returns true on explicit success, false if token not configured or transfer fails.
 fn transfer_licn_out(to: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
     }
-    let token_data = storage_get(LICN_TOKEN_KEY);
-    if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
-        log_info("LICN token not configured — transfer rejected");
-        return false;
-    }
-    let mut token = [0u8; 32];
-    token.copy_from_slice(&token_data.unwrap()[..32]);
+    let token = match load_licn_token() {
+        Some(token) => token,
+        None => {
+            log_info("LICN token not configured — transfer rejected");
+            return false;
+        }
+    };
     let contract_addr = get_contract_address();
-    match transfer_token_or_native(
-        Address(token),
-        Address(contract_addr.0),
-        Address(*to),
-        amount,
-    ) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    matches!(
+        transfer_token_or_native(token, Address(contract_addr.0), Address(*to), amount),
+        Ok(true)
+    )
 }
 
 // ============================================================================
@@ -292,6 +338,15 @@ fn decode_data_entry_provider_count(data: &[u8]) -> u8 {
     data[58]
 }
 
+fn data_entry_provider_bytes_valid(data: &[u8]) -> bool {
+    if data.len() < DATA_HEADER_SIZE {
+        return false;
+    }
+    let provider_count = decode_data_entry_provider_count(data) as usize;
+    provider_count <= MAX_PROVIDERS_PER_ENTRY
+        && data.len() >= DATA_HEADER_SIZE + provider_count.saturating_mul(32)
+}
+
 fn decode_data_entry_provider(data: &[u8], index: u8) -> [u8; 32] {
     let offset = DATA_HEADER_SIZE + (index as usize) * 32;
     let mut addr = [0u8; 32];
@@ -300,6 +355,9 @@ fn decode_data_entry_provider(data: &[u8], index: u8) -> [u8; 32] {
 }
 
 fn data_entry_has_provider(data: &[u8], provider: &[u8; 32]) -> bool {
+    if !data_entry_provider_bytes_valid(data) {
+        return false;
+    }
     let prov_count = decode_data_entry_provider_count(data);
     for i in 0..prov_count {
         if decode_data_entry_provider(data, i) == *provider {
@@ -377,14 +435,20 @@ pub extern "C" fn store_data(
     }
     log_info("Storing data request...");
 
-    let mut owner_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(owner_ptr, owner_arr.as_mut_ptr(), 32);
-    }
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
-    }
+    let owner_arr = match read_address32(owner_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -411,22 +475,6 @@ pub extern "C" fn store_data(
         return 3;
     }
 
-    // G27-02: Verify payment for storage cost
-    let cost = (size as u128)
-        .saturating_mul(replication_factor as u128)
-        .saturating_mul(duration_slots as u128)
-        .saturating_mul(REWARD_PER_SLOT_PER_BYTE as u128);
-    let cost = if cost > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        cost as u64
-    };
-    if get_value() < cost {
-        log_info("Insufficient payment for storage");
-        reentrancy_exit();
-        return 5;
-    }
-
     let dk = data_key(&data_hash);
     if storage_get(&dk).is_some() {
         log_info("Data hash already registered");
@@ -434,8 +482,46 @@ pub extern "C" fn store_data(
         return 4;
     }
 
+    let count = stored_u64(b"data_count");
+    let next_count = match count.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Data count overflow");
+            reentrancy_exit();
+            return 7;
+        }
+    };
+
+    // G27-02: Verify payment for storage cost
+    let cost = match (size as u128)
+        .saturating_mul(replication_factor as u128)
+        .saturating_mul(duration_slots as u128)
+        .checked_mul(REWARD_PER_SLOT_PER_BYTE as u128)
+    {
+        Some(cost) if cost <= u64::MAX as u128 => cost as u64,
+        _ => {
+            log_info("Storage cost overflow");
+            reentrancy_exit();
+            return 6;
+        }
+    };
+    if get_value() < cost {
+        log_info("Insufficient payment for storage");
+        reentrancy_exit();
+        return 5;
+    }
+
     let current_slot = get_slot();
-    let expiry_slot = current_slot.saturating_add(duration_slots);
+    let expiry_slot = match current_slot.checked_add(duration_slots) {
+        Some(slot) => slot,
+        None => {
+            log_info("Expiry slot overflow");
+            reentrancy_exit();
+            return 6;
+        }
+    };
+
+    storage_set(b"data_count", &u64_to_bytes(next_count));
 
     let entry = encode_data_entry(
         &owner_arr,
@@ -448,16 +534,8 @@ pub extern "C" fn store_data(
     );
     storage_set(&dk, &entry);
 
-    // Increment data count
-    let count = storage_get(b"data_count")
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
-    storage_set(b"data_count", &u64_to_bytes(count + 1));
-
     // Track total bytes stored
-    let tb = storage_get(MOSS_TOTAL_BYTES_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
+    let tb = stored_u64(MOSS_TOTAL_BYTES_KEY);
     storage_set(MOSS_TOTAL_BYTES_KEY, &u64_to_bytes(tb.saturating_add(size)));
 
     log_info("Data storage request registered");
@@ -483,14 +561,20 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
     }
     log_info("Confirming storage...");
 
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
-    }
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -510,7 +594,7 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
         }
     };
 
-    if entry.len() < DATA_HEADER_SIZE {
+    if !data_entry_provider_bytes_valid(&entry) {
         log_info("Corrupt data entry");
         reentrancy_exit();
         return 2;
@@ -552,7 +636,7 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
 
     // Check replication limit
     let replication = decode_data_entry_replication(&entry);
-    if prov_count >= replication {
+    if prov_count >= replication || prov_count as usize >= MAX_PROVIDERS_PER_ENTRY {
         log_info("Replication factor already satisfied");
         reentrancy_exit();
         return 7;
@@ -562,21 +646,28 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
     let used = bytes_to_u64(&prov_data[8..16]);
     let stored_count = bytes_to_u64(&prov_data[16..24]);
     let data_size = decode_data_entry_size(&entry);
-    let new_used = used.saturating_add(data_size);
+    let new_used = match used.checked_add(data_size) {
+        Some(next) if next <= capacity => next,
+        _ => {
+            log_info("Provider capacity exceeded");
+            reentrancy_exit();
+            return 8;
+        }
+    };
     let reg_slot = bytes_to_u64(&prov_data[25..33]);
-
-    if new_used > capacity {
-        log_info("Provider capacity exceeded");
-        reentrancy_exit();
-        return 8;
-    }
 
     let mut updated_entry = entry;
     updated_entry[41] = updated_entry[41].saturating_add(1);
-    updated_entry[58] = prov_count + 1;
+    updated_entry[58] = prov_count.saturating_add(1);
     updated_entry.extend_from_slice(&provider_arr);
 
-    let updated_prov = encode_provider(capacity, new_used, stored_count + 1, true, reg_slot);
+    let updated_prov = encode_provider(
+        capacity,
+        new_used,
+        stored_count.saturating_add(1),
+        true,
+        reg_slot,
+    );
     let reward_pos_key = reward_position_key(&provider_arr, &data_hash);
     let reward_idx_key = reward_index_key(&provider_arr);
     let mut reward_index = storage_get(&reward_idx_key).unwrap_or_default();
@@ -606,10 +697,10 @@ pub extern "C" fn confirm_storage(provider_ptr: *const u8, data_hash_ptr: *const
 /// Returns 0 on success (data set as return data), 1 if not found.
 #[no_mangle]
 pub extern "C" fn get_storage_info(data_hash_ptr: *const u8) -> u32 {
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
-    }
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => return 98,
+    };
 
     let dk = data_key(&data_hash);
     match storage_get(&dk) {
@@ -642,10 +733,13 @@ pub extern "C" fn register_provider(provider_ptr: *const u8, capacity_bytes: u64
     }
     log_info("Registering storage provider...");
 
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -693,10 +787,13 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
     }
     log_info("Claiming storage rewards...");
 
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -784,10 +881,13 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
-    let mut admin = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
-    }
+    let admin = match read_address32(admin_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -812,10 +912,10 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already configured
 #[no_mangle]
 pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
     let real_caller = get_caller();
     if real_caller.0 != caller {
         return 200;
@@ -826,10 +926,10 @@ pub extern "C" fn set_licn_token(caller_ptr: *const u8, token_ptr: *const u8) ->
             return 1;
         }
     }
-    let mut token = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
-    }
+    let token = match read_address32(token_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
     if storage_get(LICN_TOKEN_KEY)
         .map(|data| data.len() == 32)
         .unwrap_or(false)
@@ -848,10 +948,13 @@ pub extern "C" fn set_challenge_window(caller_ptr: *const u8, window_slots: u64)
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -882,10 +985,13 @@ pub extern "C" fn set_slash_percent(caller_ptr: *const u8, percent: u64) -> u32 
     if !reentrancy_enter() {
         return 100;
     }
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -921,10 +1027,13 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
     if !reentrancy_enter() {
         return 100;
     }
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -945,7 +1054,7 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
     };
 
     let capacity = bytes_to_u64(&prov_data[0..8]);
-    let gb = (capacity + 1_073_741_823) / 1_073_741_824; // round up to GB
+    let gb = capacity.saturating_add(1_073_741_823) / 1_073_741_824; // round up to GB
     let min_stake = gb.saturating_mul(MIN_STAKE_PER_GB);
     if amount < min_stake {
         log_info("Insufficient stake for capacity");
@@ -975,10 +1084,13 @@ pub extern "C" fn set_storage_price(provider_ptr: *const u8, price_per_byte_per_
     if !reentrancy_enter() {
         return 100;
     }
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1004,10 +1116,10 @@ pub extern "C" fn set_storage_price(provider_ptr: *const u8, price_per_byte_per_
 /// Get provider's custom price. Returns REWARD_PER_SLOT_PER_BYTE if no custom price set.
 #[no_mangle]
 pub extern "C" fn get_storage_price(provider_ptr: *const u8) -> u64 {
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => return REWARD_PER_SLOT_PER_BYTE,
+    };
 
     storage_get(&price_key(&provider_arr))
         .map(|d| bytes_to_u64(&d))
@@ -1017,10 +1129,10 @@ pub extern "C" fn get_storage_price(provider_ptr: *const u8) -> u64 {
 /// Get provider's staked collateral.
 #[no_mangle]
 pub extern "C" fn get_provider_stake(provider_ptr: *const u8) -> u64 {
-    let mut provider_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32);
-    }
+    let provider_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => return 0,
+    };
 
     storage_get(&stake_key(&provider_arr))
         .map(|d| bytes_to_u64(&d))
@@ -1049,19 +1161,19 @@ pub extern "C" fn issue_challenge(
     provider_ptr: *const u8,
     nonce: u64,
 ) -> u32 {
-    let mut hash_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, hash_arr.as_mut_ptr(), 32);
-    }
-    let mut prov_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32);
-    }
+    let hash_arr = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => return 98,
+    };
+    let prov_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // Verify data entry exists and provider is listed
     let dk = data_key(&hash_arr);
     let entry = match storage_get(&dk) {
-        Some(data) if data.len() >= DATA_HEADER_SIZE => data,
+        Some(data) if data_entry_provider_bytes_valid(&data) => data,
         _ => {
             return 1;
         }
@@ -1118,11 +1230,7 @@ pub extern "C" fn issue_challenge(
         &get_caller().0,
     );
 
-    // Track challenge count
-    let chc = storage_get(MOSS_CHALLENGE_COUNT_KEY)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
-    storage_set(MOSS_CHALLENGE_COUNT_KEY, &u64_to_bytes(chc + 1));
+    increment_counter_saturating(MOSS_CHALLENGE_COUNT_KEY);
 
     log_info("Storage challenge issued");
     0
@@ -1144,14 +1252,14 @@ pub extern "C" fn respond_challenge(
     data_hash_ptr: *const u8,
     response_ptr: *const u8,
 ) -> u32 {
-    let mut prov_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32);
-    }
-    let mut hash_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, hash_arr.as_mut_ptr(), 32);
-    }
+    let prov_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let hash_arr = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => return 98,
+    };
     // Verify caller matches provider
     let real_caller = get_caller();
     if real_caller.0 != prov_arr {
@@ -1189,11 +1297,16 @@ pub extern "C" fn respond_challenge(
         }
     };
 
-    let data_size = decode_data_entry_size(&entry) as usize;
-    if data_size == 0 {
+    let data_size_u64 = decode_data_entry_size(&entry);
+    if data_size_u64 == 0 || data_size_u64 > MAX_CHALLENGE_RESPONSE_BYTES as u64 {
         log_info("Invalid committed data size");
         return 4;
     }
+    if response_ptr.is_null() {
+        log_info("Null challenge response");
+        return 6;
+    }
+    let data_size = data_size_u64 as usize;
 
     let response = unsafe { core::slice::from_raw_parts(response_ptr, data_size) };
     if simple_hash(response) != hash_arr {
@@ -1218,14 +1331,14 @@ pub extern "C" fn respond_challenge(
 /// Returns 0 on success (slashed amount set as return data).
 #[no_mangle]
 pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const u8) -> u32 {
-    let mut hash_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, hash_arr.as_mut_ptr(), 32);
-    }
-    let mut prov_arr = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32);
-    }
+    let hash_arr = match read_address32(data_hash_ptr) {
+        Some(hash) => hash,
+        None => return 98,
+    };
+    let prov_arr = match read_address32(provider_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
 
     // Load challenge
     let ck = challenge_key(&hash_arr, &prov_arr);
@@ -1253,12 +1366,14 @@ pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const 
     // Calculate slash amount
     let slash_pct = storage_get(b"slash_percent")
         .map(|d| bytes_to_u64(&d))
-        .unwrap_or(DEFAULT_SLASH_PERCENT);
+        .unwrap_or(DEFAULT_SLASH_PERCENT)
+        .min(100);
 
     let sk = stake_key(&prov_arr);
     let stake = storage_get(&sk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
 
-    let slash_amount = stake * slash_pct / 100;
+    let slash_amount =
+        ((stake as u128).saturating_mul(slash_pct as u128) / 100).min(u64::MAX as u128) as u64;
     if slash_amount > 0 {
         storage_set(&sk, &u64_to_bytes(stake.saturating_sub(slash_amount)));
 
@@ -1270,7 +1385,9 @@ pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const 
             if challenger_data.len() >= 32 && half > 0 {
                 let mut challenger = [0u8; 32];
                 challenger.copy_from_slice(&challenger_data[..32]);
-                transfer_licn_out(&challenger, half);
+                if !transfer_licn_out(&challenger, half) {
+                    record_unpaid_licn_payout(&challenger, half);
+                }
                 treasury_amount = slash_amount - half;
             }
         }
@@ -1280,7 +1397,9 @@ pub extern "C" fn slash_provider(data_hash_ptr: *const u8, provider_ptr: *const 
                 if admin_data.len() >= 32 {
                     let mut treasury = [0u8; 32];
                     treasury.copy_from_slice(&admin_data[..32]);
-                    transfer_licn_out(&treasury, treasury_amount);
+                    if !transfer_licn_out(&treasury, treasury_amount) {
+                        record_unpaid_licn_payout(&treasury, treasury_amount);
+                    }
                 }
             }
         }
@@ -1331,6 +1450,14 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+    }
+
+    fn unpaid_key(token: &[u8; 32], recipient: &[u8; 32]) -> Vec<u8> {
+        let mut key = b"unpaid_payout:".to_vec();
+        key.extend_from_slice(token);
+        key.push(b':');
+        key.extend_from_slice(recipient);
+        key
     }
 
     fn configure_licn_transfers(admin: [u8; 32]) {
@@ -1613,6 +1740,33 @@ mod tests {
         let reward_pos =
             test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
         assert_eq!(bytes_to_u64(&reward_pos), 150);
+    }
+
+    #[test]
+    fn test_claim_storage_rewards_preserves_vesting_on_false_transfer_status() {
+        setup();
+        enable_reward_transfers();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xE1; 32];
+        let provider_addr = [2u8; 32];
+
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        test_mock::set_caller(owner);
+        test_mock::set_value(5_000_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 150);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(claim_storage_rewards(provider_addr.as_ptr()), 2);
+
+        let reward_pos =
+            test_mock::get_storage(&reward_position_key(&provider_addr, &data_hash)).unwrap();
+        assert_eq!(bytes_to_u64(&reward_pos), 100);
     }
 
     // =============================================
@@ -2038,5 +2192,239 @@ mod tests {
         test_mock::set_value(10_240_000);
         let result = store_data(owner.as_ptr(), data_hash.as_ptr(), 512, 2, 1000);
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_store_data_rejects_data_count_overflow_before_state_write() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        storage_set(b"data_count", &u64_to_bytes(u64::MAX));
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA1; 32];
+        test_mock::set_caller(owner);
+        test_mock::set_value(10_000);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), 1, 1, 1000),
+            7
+        );
+        assert!(test_mock::get_storage(&data_key(&data_hash)).is_none());
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(b"data_count").unwrap()),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_store_data_rejects_cost_overflow() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA2; 32];
+        test_mock::set_caller(owner);
+        test_mock::set_value(u64::MAX);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), u64::MAX, 10, u64::MAX),
+            6
+        );
+        assert!(test_mock::get_storage(&data_key(&data_hash)).is_none());
+    }
+
+    #[test]
+    fn test_confirm_storage_rejects_capacity_overflow_atomically() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA3; 32];
+        let provider_addr = [2u8; 32];
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(register_provider(provider_addr.as_ptr(), u64::MAX), 0);
+        let pk = provider_key(&provider_addr);
+        let provider_data = encode_provider(u64::MAX, u64::MAX - 5, 0, true, 100);
+        storage_set(&pk, &provider_data);
+
+        test_mock::set_caller(owner);
+        test_mock::set_value(100_000);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000),
+            0
+        );
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(
+            confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr()),
+            8
+        );
+
+        let entry = test_mock::get_storage(&data_key(&data_hash)).unwrap();
+        assert_eq!(decode_data_entry_provider_count(&entry), 0);
+        let provider_data = test_mock::get_storage(&pk).unwrap();
+        assert_eq!(bytes_to_u64(&provider_data[8..16]), u64::MAX - 5);
+    }
+
+    #[test]
+    fn test_confirm_storage_stored_count_saturates() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA4; 32];
+        let provider_addr = [2u8; 32];
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(register_provider(provider_addr.as_ptr(), 1_000_000), 0);
+        let pk = provider_key(&provider_addr);
+        let provider_data = encode_provider(1_000_000, 0, u64::MAX, true, 100);
+        storage_set(&pk, &provider_data);
+
+        test_mock::set_caller(owner);
+        test_mock::set_value(100_000);
+        assert_eq!(
+            store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000),
+            0
+        );
+
+        test_mock::set_caller(provider_addr);
+        assert_eq!(
+            confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr()),
+            0
+        );
+
+        let provider_data = test_mock::get_storage(&pk).unwrap();
+        assert_eq!(bytes_to_u64(&provider_data[16..24]), u64::MAX);
+    }
+
+    #[test]
+    fn test_issue_challenge_counter_saturates() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_caller([9u8; 32]);
+        initialize([9u8; 32].as_ptr());
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA5; 32];
+        let provider_addr = [2u8; 32];
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        test_mock::set_caller(owner);
+        test_mock::set_value(100_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000);
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+
+        storage_set(MOSS_CHALLENGE_COUNT_KEY, &u64_to_bytes(u64::MAX));
+        test_mock::set_caller([7u8; 32]);
+        assert_eq!(
+            issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42),
+            0
+        );
+        let count = test_mock::get_storage(MOSS_CHALLENGE_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&count), u64::MAX);
+    }
+
+    #[test]
+    fn test_slash_amount_uses_wide_arithmetic() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let challenger = [9u8; 32];
+        configure_licn_transfers(challenger);
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA6; 32];
+        let provider_addr = [2u8; 32];
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        storage_set(&stake_key(&provider_addr), &u64_to_bytes(u64::MAX));
+        storage_set(b"slash_percent", &u64_to_bytes(100));
+        test_mock::set_caller(owner);
+        test_mock::set_value(100_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000);
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+        test_mock::set_caller(challenger);
+        issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
+        assert_eq!(
+            slash_provider(data_hash.as_ptr(), provider_addr.as_ptr()),
+            0
+        );
+        assert_eq!(get_provider_stake(provider_addr.as_ptr()), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), u64::MAX);
+    }
+
+    #[test]
+    fn test_slash_failed_payouts_record_unpaid_amounts() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let admin = [9u8; 32];
+        configure_licn_transfers(admin);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        let owner = [1u8; 32];
+        let data_hash = [0xA7; 32];
+        let provider_addr = [2u8; 32];
+        let challenger = [7u8; 32];
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        storage_set(&stake_key(&provider_addr), &u64_to_bytes(1000));
+        test_mock::set_caller(owner);
+        test_mock::set_value(100_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 10, 1, 1000);
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+        test_mock::set_caller(challenger);
+        issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
+        assert_eq!(
+            slash_provider(data_hash.as_ptr(), provider_addr.as_ptr()),
+            0
+        );
+
+        let token = [0xDD; 32];
+        let challenger_unpaid = test_mock::get_storage(&unpaid_key(&token, &challenger)).unwrap();
+        assert_eq!(bytes_to_u64(&challenger_unpaid), 50);
+        let admin_unpaid = test_mock::get_storage(&unpaid_key(&token, &admin)).unwrap();
+        assert_eq!(bytes_to_u64(&admin_unpaid), 50);
+    }
+
+    #[test]
+    fn test_respond_challenge_rejects_null_response_pointer() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        test_mock::set_caller([9u8; 32]);
+        initialize([9u8; 32].as_ptr());
+
+        let owner = [1u8; 32];
+        let payload = [0xAB; 16];
+        let data_hash = simple_hash(&payload);
+        let provider_addr = [2u8; 32];
+        test_mock::set_caller(provider_addr);
+        register_provider(provider_addr.as_ptr(), 1_000_000);
+        test_mock::set_caller(owner);
+        test_mock::set_value(160_000);
+        store_data(
+            owner.as_ptr(),
+            data_hash.as_ptr(),
+            payload.len() as u64,
+            1,
+            1000,
+        );
+        test_mock::set_caller(provider_addr);
+        confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
+        issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
+
+        assert_eq!(
+            respond_challenge(
+                provider_addr.as_ptr(),
+                data_hash.as_ptr(),
+                core::ptr::null()
+            ),
+            6
+        );
     }
 }

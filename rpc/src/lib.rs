@@ -81,10 +81,13 @@ const SOLANA_SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss62
 const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
 const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
 
-/// P9-RPC-02: Maximum size for bincode transaction deserialization.
-/// Prevents OOM/DoS from maliciously large payloads.  4 MiB matches
-/// the contract-deploy datasize limit enforced by `validate_structure()`.
-const MAX_TX_BINCODE_SIZE: u64 = 4 * 1024 * 1024;
+/// P9-RPC-02: Maximum size for transaction wire deserialization.
+/// Prevents OOM/DoS from maliciously large payloads and matches the core
+/// serialized transaction cap enforced by `validate_structure()`.
+const MAX_TX_BINCODE_SIZE: u64 = lichen_core::transaction::MAX_TRANSACTION_SERIALIZED_SIZE;
+/// HTTP request body cap. A max-size raw transaction becomes roughly 4/3 larger
+/// when base64-encoded inside JSON, so keep this above the wire cap.
+const MAX_RPC_BODY_SIZE: usize = 8 * 1024 * 1024;
 
 /// Decode raw bytes into a Transaction using the wire-format envelope (M-6).
 /// Supports V1 envelope, raw bincode, JSON (serde), and wallet JSON format.
@@ -92,6 +95,13 @@ pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcE
     Transaction::from_wire(bytes, MAX_TX_BINCODE_SIZE)
         .or_else(|_| {
             // Fall back to wallet-specific JSON (array-of-numbers signatures, multi-key formats)
+            if bytes.len() as u64 > MAX_TX_BINCODE_SIZE {
+                return Err(format!(
+                    "Transaction wire payload too large: {} bytes (max {})",
+                    bytes.len(),
+                    MAX_TX_BINCODE_SIZE
+                ));
+            }
             parse_json_transaction(bytes).map_err(|e| e.message)
         })
         .map_err(|e| RpcError {
@@ -2532,15 +2542,23 @@ fn classify_method(method: &str) -> MethodTier {
         | "setFeeConfig"
         | "setRentParams"
         | "setContractAbi"
-        | "callContract" => MethodTier::Expensive,
+        | "callContract"
+        | "createBridgeDeposit"
+        | "generateShieldProof"
+        | "generateUnshieldProof"
+        | "generateTransferProof" => MethodTier::Expensive,
 
         // Moderate reads (iterate indexes, join data)
         "getTransactionsByAddress"
         | "getTransactionHistory"
+        | "getTransaction"
+        | "getTransactionProof"
         | "getRecentTransactions"
         | "getBlock"
         | "getBlockCommit"
+        | "getLatestBlock"
         | "getAccountProof"
+        | "getTokenAccounts"
         | "getTokenHolders"
         | "getTokenTransfers"
         | "getContractEvents"
@@ -2551,14 +2569,26 @@ fn classify_method(method: &str) -> MethodTier {
         | "getNFTActivity"
         | "getMarketListings"
         | "getMarketSales"
+        | "getMarketOffers"
+        | "getMarketAuctions"
         | "getProgramCalls"
         | "getProgramStorage"
         | "getPrograms"
         | "getAllContracts"
         | "getAllSymbolRegistry"
         | "getAllSymbols"
+        | "getGenesisAccounts"
+        | "getDexAnalyticsStats"
+        | "getDexPairs"
+        | "getBridgeDeposit"
+        | "getShieldedMerklePath"
+        | "getShieldedCommitments"
         | "getPredictionMarkets"
         | "getPredictionLeaderboard"
+        | "getPredictionPositions"
+        | "getPredictionTrending"
+        | "getPredictionMarketAnalytics"
+        | "getLichenIdAgentDirectory"
         | "batchReverseLichenNames"
         | "searchLichenNames"
         | "getServiceFleetStatus"
@@ -2572,7 +2602,23 @@ fn classify_method(method: &str) -> MethodTier {
 fn classify_solana_method_tier(method: &str) -> MethodTier {
     match method {
         "sendTransaction" => MethodTier::Expensive,
-        "getSignaturesForAddress" | "getSignatureStatuses" | "getBlock" => MethodTier::Moderate,
+        "getSignaturesForAddress"
+        | "getSignatureStatuses"
+        | "getBlock"
+        | "getTransaction"
+        | "getTokenAccountsByOwner" => MethodTier::Moderate,
+        _ => MethodTier::Cheap,
+    }
+}
+
+fn classify_evm_method_tier(method: &str) -> MethodTier {
+    match method {
+        "eth_sendRawTransaction" | "eth_call" | "eth_estimateGas" => MethodTier::Expensive,
+        "eth_getLogs"
+        | "eth_getBlockByNumber"
+        | "eth_getBlockByHash"
+        | "eth_getCode"
+        | "eth_getTransactionCount" => MethodTier::Moderate,
         _ => MethodTier::Cheap,
     }
 }
@@ -2725,12 +2771,20 @@ impl RateLimiter {
         ];
         let moderate_paths = [
             "/pairs",
+            "/pools",
+            "/routes",
+            "/tickers",
             "/orderbook",
             "/trades",
             "/candles",
             "/history",
             "/analytics",
             "/market",
+            "/tokens",
+            "/commitments",
+            "/merkle-path",
+            "/leaderboard",
+            "/trending",
         ];
 
         if is_write || expensive_paths.iter().any(|needle| path.contains(needle)) {
@@ -4262,8 +4316,8 @@ fn build_rpc_router_internal(
         // Compresses JSON responses 5-10× for bandwidth savings.
         // Negligible CPU overhead; HTTP/2 negotiated automatically by Axum.
         .layer(CompressionLayer::new())
-        // DDoS protection: limit request bodies to 5MB (must accommodate 4MB contract deploys + base64 overhead)
-        .layer(axum::extract::DefaultBodyLimit::max(5 * 1024 * 1024))
+        // DDoS protection: bounded request bodies that still fit base64-encoded max transactions.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_RPC_BODY_SIZE))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -4399,6 +4453,7 @@ async fn handle_rpc(
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
+        "getMarketplaceConfig" => handle_get_marketplace_config(&state).await,
         "setFeeConfig" => {
             handle_set_fee_config(&state, req.params, auth_header_owned.as_deref()).await
         }
@@ -4771,11 +4826,7 @@ async fn handle_evm_rpc(
 
     // P9-RPC-03: Tiered rate limiting for EVM-compat methods
     // RPC-M05: tier checks happen before full RpcRequest deserialization.
-    let tier = match probe.method.as_str() {
-        "eth_sendRawTransaction" | "eth_call" | "eth_estimateGas" => MethodTier::Expensive,
-        "eth_getLogs" => MethodTier::Moderate,
-        _ => MethodTier::Cheap,
-    };
+    let tier = classify_evm_method_tier(&probe.method);
     if tier != MethodTier::Cheap {
         let ip = connect_info
             .map(|ci| ci.0.ip())
@@ -5656,6 +5707,42 @@ async fn handle_get_fee_config(state: &RpcState) -> Result<serde_json::Value, Rp
         "fee_voters_percent": config.fee_voters_percent,
         "fee_treasury_percent": config.fee_treasury_percent,
         "fee_community_percent": config.fee_community_percent,
+    }))
+}
+
+async fn handle_get_marketplace_config(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let config = state.state.get_fee_config().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
+    let marketplace_configured = state
+        .state
+        .get_symbol_registry("MARKET")
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("DB error: {}", e),
+        })?
+        .is_some();
+
+    let marketplace_fee_bps = if marketplace_configured {
+        state
+            .state
+            .get_program_storage("MARKET", b"marketplace_fee")
+            .and_then(|raw| read_u64_le(&raw, 0))
+            .unwrap_or(250)
+    } else {
+        250
+    };
+
+    Ok(serde_json::json!({
+        "minting_fee": config.nft_mint_fee as f64 / 1_000_000_000.0,
+        "minting_fee_spores": config.nft_mint_fee,
+        "nft_mint_fee_spores": config.nft_mint_fee,
+        "nft_collection_fee_spores": config.nft_collection_fee,
+        "marketplace_fee_bps": marketplace_fee_bps,
+        "marketplace_fee_percent": marketplace_fee_bps as f64 / 100.0,
+        "marketplace_configured": marketplace_configured,
     }))
 }
 
@@ -6573,6 +6660,7 @@ async fn handle_get_account_tx_count(
 }
 
 fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcError> {
+    validate_incoming_transaction_limits(&tx)?;
     let signature_hash = tx.signature();
 
     if let Some(ref sender) = state.tx_sender {
@@ -7481,6 +7569,8 @@ async fn handle_solana_get_block_height(state: &RpcState) -> Result<serde_json::
     Ok(serde_json::json!(slot))
 }
 
+const MAX_SOLANA_SIGNATURE_STATUS_QUERY: usize = 256;
+
 async fn handle_solana_get_signature_statuses(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -7502,6 +7592,16 @@ async fn handle_solana_get_signature_statuses(
             code: -32602,
             message: "Invalid params: expected [signatures, options?]".to_string(),
         })?;
+
+    if signatures.len() > MAX_SOLANA_SIGNATURE_STATUS_QUERY {
+        return Err(RpcError {
+            code: -32602,
+            message: format!(
+                "Too many signatures: max {} per getSignatureStatuses request",
+                MAX_SOLANA_SIGNATURE_STATUS_QUERY
+            ),
+        });
+    }
 
     let last_slot = state.state.get_last_slot().unwrap_or(0);
 
@@ -11223,29 +11323,65 @@ fn lichenid_vouch_given_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
     format!("vouch_given:{}:{}", lichenid_hex(pubkey), index).into_bytes()
 }
 
+fn lichenid_vouch_given_count_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("vouch_given_count:{}", lichenid_hex(pubkey)).into_bytes()
+}
+
 fn lichenid_achievement_key(pubkey: &Pubkey, achievement_id: u8) -> Vec<u8> {
     format!("ach:{}:{:02}", lichenid_hex(pubkey), achievement_id).into_bytes()
 }
 
-fn lichenid_skill_hash(skill_name: &str) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    for (index, byte) in skill_name.as_bytes().iter().enumerate() {
-        if index >= 8 {
-            break;
-        }
+fn lichenid_skill_hash(skill_name: &str) -> [u8; 16] {
+    const FNV_OFFSET_BASIS: u128 = 0x6c62272e07bb0142_62b821756295c58d;
+    const FNV_PRIME: u128 = 0x0000000001000000_000000000000013B;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in skill_name.as_bytes() {
+        hash ^= *byte as u128;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash.to_le_bytes()
+}
+
+fn lichenid_skill_hash_legacy(skill_name: &str) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for (index, byte) in skill_name.as_bytes().iter().enumerate().take(16) {
         out[index] = *byte;
     }
     out
 }
 
-fn lichenid_attestation_count_key(pubkey: &Pubkey, skill_name: &str) -> Vec<u8> {
-    let skill_hash = lichenid_skill_hash(skill_name);
+fn lichenid_attestation_count_key_for_hash(pubkey: &Pubkey, skill_hash: &[u8; 16]) -> Vec<u8> {
     format!(
         "attest_count_{}_{}",
         lichenid_hex(pubkey),
         hex::encode(skill_hash)
     )
     .into_bytes()
+}
+
+fn lichenid_attestation_count(state: &RpcState, pubkey: &Pubkey, skill_name: &str) -> u64 {
+    let skill_hash = lichenid_skill_hash(skill_name);
+    lichenid_cf_get(
+        state,
+        &lichenid_attestation_count_key_for_hash(pubkey, &skill_hash),
+    )
+    .and_then(|value| read_u64_le(&value, 0))
+    .or_else(|| {
+        let legacy_hash = lichenid_skill_hash_legacy(skill_name);
+        lichenid_cf_get(
+            state,
+            &lichenid_attestation_count_key_for_hash(pubkey, &legacy_hash),
+        )
+        .and_then(|value| read_u64_le(&value, 0))
+    })
+    .unwrap_or(0)
+}
+
+fn lichenid_given_vouch_scan_limit(state: &RpcState, pubkey: &Pubkey, legacy_count: u16) -> u16 {
+    lichenid_cf_get(state, &lichenid_vouch_given_count_key(pubkey))
+        .and_then(|value| read_u64_le(&value, 0))
+        .map(|count| count.min(u16::MAX as u64) as u16)
+        .unwrap_or(legacy_count)
 }
 
 fn parse_lichenid_identity_record(input: &[u8]) -> Option<LichenIdIdentityRecord> {
@@ -11429,10 +11565,7 @@ async fn handle_get_lichenid_skills(
     for index in 0..identity.skill_count {
         if let Some(raw) = lichenid_cf_get(state, &lichenid_skill_key(&pubkey, index)) {
             if let Some(skill) = parse_lichenid_skill_record(&raw) {
-                let attestations =
-                    lichenid_cf_get(state, &lichenid_attestation_count_key(&pubkey, &skill.name))
-                        .and_then(|value| read_u64_le(&value, 0))
-                        .unwrap_or(0);
+                let attestations = lichenid_attestation_count(state, &pubkey, &skill.name);
 
                 skills.push(serde_json::json!({
                     "index": index,
@@ -11474,7 +11607,8 @@ async fn handle_get_lichenid_vouches(
     }
 
     let mut given = Vec::new();
-    for index in 0..identity.vouch_count {
+    let given_scan_limit = lichenid_given_vouch_scan_limit(state, &pubkey, identity.vouch_count);
+    for index in 0..given_scan_limit {
         if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_given_key(&pubkey, index)) {
             if let Some((vouchee, timestamp)) = parse_lichenid_vouch_given_record(&raw) {
                 given.push(serde_json::json!({
@@ -11572,10 +11706,7 @@ async fn handle_get_lichenid_profile(
     for index in 0..identity.skill_count {
         if let Some(raw) = lichenid_cf_get(state, &lichenid_skill_key(&pubkey, index)) {
             if let Some(skill) = parse_lichenid_skill_record(&raw) {
-                let attestations =
-                    lichenid_cf_get(state, &lichenid_attestation_count_key(&pubkey, &skill.name))
-                        .and_then(|value| read_u64_le(&value, 0))
-                        .unwrap_or(0);
+                let attestations = lichenid_attestation_count(state, &pubkey, &skill.name);
 
                 skills.push(serde_json::json!({
                     "index": index,
@@ -11602,7 +11733,8 @@ async fn handle_get_lichenid_profile(
     }
 
     let mut given_vouches = Vec::new();
-    for index in 0..identity.vouch_count {
+    let given_scan_limit = lichenid_given_vouch_scan_limit(state, &pubkey, identity.vouch_count);
+    for index in 0..given_scan_limit {
         if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_given_key(&pubkey, index)) {
             if let Some((vouchee, timestamp)) = parse_lichenid_vouch_given_record(&raw) {
                 given_vouches.push(serde_json::json!({
@@ -16162,12 +16294,13 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        bridge_access_message, classify_method, classify_solana_method_tier, constant_time_eq,
-        decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
-        filter_signatures_for_address, get_cached_program_list_response,
-        handle_create_bridge_deposit, handle_get_all_symbol_registry, handle_get_bridge_deposit,
-        handle_get_contract_info, handle_get_governance_events, handle_get_incident_status,
-        handle_get_program, handle_get_program_stats, handle_get_service_fleet_status,
+        bridge_access_message, classify_evm_method_tier, classify_method,
+        classify_solana_method_tier, constant_time_eq, decode_contract_result_u64,
+        encode_readonly_return_data_b64, encode_rpc_response, filter_signatures_for_address,
+        get_cached_program_list_response, handle_create_bridge_deposit,
+        handle_get_all_symbol_registry, handle_get_bridge_deposit, handle_get_contract_info,
+        handle_get_governance_events, handle_get_incident_status, handle_get_program,
+        handle_get_program_stats, handle_get_service_fleet_status,
         handle_get_signed_metadata_manifest, handle_set_fee_config, handle_solana_get_account_info,
         handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
         live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
@@ -16178,7 +16311,12 @@ mod tests {
         RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
         PROGRAM_LIST_CACHE_TTL_MS, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
     };
-    use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+    use axum::{
+        extract::State,
+        http::{HeaderMap, Method},
+        routing::post,
+        Json, Router,
+    };
     use lichen_core::account::Keypair as LichenKeypair;
     use lichen_core::contract::{ContractAccount, ContractEvent, ContractResult};
     use lichen_core::keypair_file::KeypairFile;
@@ -16823,6 +16961,47 @@ mod tests {
     }
 
     #[test]
+    fn test_m02_native_expensive_proof_and_bridge_methods_are_expensive() {
+        for method in [
+            "createBridgeDeposit",
+            "generateShieldProof",
+            "generateUnshieldProof",
+            "generateTransferProof",
+        ] {
+            assert_eq!(
+                classify_method(method),
+                MethodTier::Expensive,
+                "{method} should be expensive-tier"
+            );
+        }
+    }
+
+    #[test]
+    fn test_m02_native_scan_and_external_lookup_methods_are_moderate() {
+        for method in [
+            "getTransaction",
+            "getTransactionProof",
+            "getLatestBlock",
+            "getMarketOffers",
+            "getMarketAuctions",
+            "getBridgeDeposit",
+            "getShieldedCommitments",
+            "getShieldedMerklePath",
+            "getPredictionPositions",
+            "getPredictionTrending",
+            "getPredictionMarketAnalytics",
+            "getDexAnalyticsStats",
+            "getDexPairs",
+        ] {
+            assert_eq!(
+                classify_method(method),
+                MethodTier::Moderate,
+                "{method} should be moderate-tier"
+            );
+        }
+    }
+
+    #[test]
     fn test_m02_get_governance_events_is_moderate() {
         assert_eq!(classify_method("getGovernanceEvents"), MethodTier::Moderate);
     }
@@ -16837,6 +17016,51 @@ mod tests {
             classify_solana_method_tier("getSignatureStatuses"),
             MethodTier::Moderate
         );
+        assert_eq!(
+            classify_solana_method_tier("getTransaction"),
+            MethodTier::Moderate
+        );
+        assert_eq!(
+            classify_solana_method_tier("getTokenAccountsByOwner"),
+            MethodTier::Moderate
+        );
+    }
+
+    #[test]
+    fn test_m02_evm_block_and_contract_reads_are_moderate() {
+        for method in [
+            "eth_getLogs",
+            "eth_getBlockByNumber",
+            "eth_getBlockByHash",
+            "eth_getCode",
+            "eth_getTransactionCount",
+        ] {
+            assert_eq!(
+                classify_evm_method_tier(method),
+                MethodTier::Moderate,
+                "{method} should be moderate-tier"
+            );
+        }
+        assert_eq!(classify_evm_method_tier("eth_call"), MethodTier::Expensive);
+    }
+
+    #[test]
+    fn test_m02_rest_scan_routes_are_not_cheap() {
+        for path in [
+            "/api/v1/launchpad/tokens",
+            "/api/v1/launchpad/tokens/1/holders",
+            "/api/v1/shielded/commitments",
+            "/api/v1/shielded/merkle-path/5",
+            "/api/v1/routes",
+            "/api/v1/pools",
+            "/api/v1/tickers",
+        ] {
+            assert_eq!(
+                RateLimiter::classify_rest_tier(path, &Method::GET),
+                Some(MethodTier::Moderate),
+                "{path} should be moderate-tier"
+            );
+        }
     }
 
     #[test]
@@ -17003,6 +17227,16 @@ mod tests {
             .expect_err("must reject oversized instruction data");
         assert_eq!(err.code, -32003);
         assert!(err.message.contains("data too large"));
+    }
+
+    #[test]
+    fn test_l01_rejects_oversized_transaction_wire_payload() {
+        let bytes = vec![b'{'; crate::MAX_TX_BINCODE_SIZE as usize + 1];
+
+        let err = crate::decode_transaction_bytes(&bytes)
+            .expect_err("oversized payload must be rejected");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("wire payload too large"));
     }
 
     #[test]

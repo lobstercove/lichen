@@ -18,6 +18,10 @@ fn hex_encode_32(bytes: &[u8; 32], out: &mut [u8; 64]) {
     }
 }
 
+fn is_zero_address(address: Address) -> bool {
+    address.0.iter().all(|&byte| byte == 0)
+}
+
 /// MT-20 fungible token with unified storage key format.
 pub struct Token {
     pub name: &'static str,
@@ -47,6 +51,9 @@ impl Token {
 
     /// Initialize token with initial supply
     pub fn initialize(&mut self, initial_supply: u64, owner: Address) -> ContractResult<()> {
+        if is_zero_address(owner) {
+            return Err(ContractError::InvalidInput);
+        }
         self.total_supply = initial_supply;
         storage_set(&self.supply_key(), &u64_to_bytes(initial_supply));
         self.set_balance(owner, initial_supply)?;
@@ -64,6 +71,9 @@ impl Token {
 
     /// Transfer tokens
     pub fn transfer(&self, from: Address, to: Address, amount: u64) -> ContractResult<()> {
+        if amount == 0 || is_zero_address(from) || is_zero_address(to) || from == to {
+            return Err(ContractError::InvalidInput);
+        }
         let from_balance = self.balance_of(from);
         let new_from = from_balance
             .checked_sub(amount)
@@ -85,6 +95,9 @@ impl Token {
         caller: Address,
         owner: Address,
     ) -> ContractResult<()> {
+        if amount == 0 || is_zero_address(to) || is_zero_address(owner) {
+            return Err(ContractError::InvalidInput);
+        }
         if caller != owner {
             return Err(ContractError::Unauthorized);
         }
@@ -105,6 +118,9 @@ impl Token {
 
     /// Burn tokens
     pub fn burn(&mut self, from: Address, amount: u64) -> ContractResult<()> {
+        if amount == 0 || is_zero_address(from) {
+            return Err(ContractError::InvalidInput);
+        }
         let balance = self.balance_of(from);
         let new_balance = balance
             .checked_sub(amount)
@@ -133,6 +149,9 @@ impl Token {
 
     /// Approve spender
     pub fn approve(&self, owner: Address, spender: Address, amount: u64) -> ContractResult<()> {
+        if is_zero_address(owner) || is_zero_address(spender) || owner == spender {
+            return Err(ContractError::InvalidInput);
+        }
         let key = self.allowance_key(owner, spender);
         storage_set(&key, &u64_to_bytes(amount));
         Ok(())
@@ -146,13 +165,16 @@ impl Token {
         to: Address,
         amount: u64,
     ) -> ContractResult<()> {
+        if amount == 0 || is_zero_address(caller) || from == to {
+            return Err(ContractError::InvalidInput);
+        }
         let allowance = self.allowance(from, caller);
         let new_allowance = allowance
             .checked_sub(amount)
             .ok_or(ContractError::Unauthorized)?;
         let key = self.allowance_key(from, caller);
-        storage_set(&key, &u64_to_bytes(new_allowance));
         self.transfer(from, to, amount)?;
+        storage_set(&key, &u64_to_bytes(new_allowance));
         Ok(())
     }
 
@@ -210,6 +232,13 @@ impl Token {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_mock;
+
+    fn addr(id: u8) -> Address {
+        let mut bytes = [0u8; 32];
+        bytes[0] = id;
+        Address::new(bytes)
+    }
 
     #[test]
     fn test_token_creation() {
@@ -250,5 +279,39 @@ mod tests {
         let token = Token::new("LichenCoin", "LICN", 9, "licn");
         let key = token.supply_key();
         assert_eq!(&key, b"licn_supply");
+    }
+
+    #[test]
+    fn test_self_transfer_is_rejected_without_inflation() {
+        test_mock::reset();
+        let alice = addr(1);
+        let mut token = Token::new("LichenCoin", "LICN", 9, "licn");
+        token.initialize(100, alice).unwrap();
+
+        assert!(matches!(
+            token.transfer(alice, alice, 10),
+            Err(ContractError::InvalidInput)
+        ));
+        assert_eq!(token.balance_of(alice), 100);
+        assert_eq!(token.get_total_supply(), 100);
+    }
+
+    #[test]
+    fn test_transfer_from_preserves_allowance_when_transfer_fails() {
+        test_mock::reset();
+        let owner = addr(1);
+        let spender = addr(2);
+        let recipient = addr(3);
+        let mut token = Token::new("LichenCoin", "LICN", 9, "licn");
+        token.initialize(50, owner).unwrap();
+        token.approve(owner, spender, 100).unwrap();
+
+        assert!(matches!(
+            token.transfer_from(spender, owner, recipient, 60),
+            Err(ContractError::InsufficientFunds)
+        ));
+        assert_eq!(token.allowance(owner, spender), 100);
+        assert_eq!(token.balance_of(owner), 50);
+        assert_eq!(token.balance_of(recipient), 0);
     }
 }

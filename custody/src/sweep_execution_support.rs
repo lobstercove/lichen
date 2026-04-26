@@ -86,7 +86,11 @@ pub(super) async fn process_sweep_jobs(state: &CustodyState) -> Result<(), Strin
         }
         // AUDIT-FIX M4: Record intent before broadcast for crash idempotency
         if let Err(e) = record_tx_intent(&state.db, "sweep", &job.job_id, &job.chain) {
-            tracing::error!("Failed record_tx_intent: {e}");
+            let error = format!("failed to record sweep tx intent: {e}");
+            tracing::error!("{error}");
+            mark_sweep_failed(job, error);
+            store_sweep_job(&state.db, job)?;
+            continue;
         }
         match broadcast_sweep(state, job).await {
             Ok(Some(tx_hash)) => {
@@ -150,24 +154,27 @@ pub(super) async fn process_sweep_jobs(state: &CustodyState) -> Result<(), Strin
     for job in submitted_jobs.iter_mut() {
         if let Some(confirmed) = check_sweep_confirmation(state, job).await? {
             if confirmed {
-                job.status = "sweep_confirmed".to_string();
-                job.last_error = None;
-                job.next_attempt_at = None;
-                store_sweep_job(&state.db, job)?;
-
-                // P0-FIX: Update the deposit record to "swept" so polling clients
-                // see the status progression (issued -> confirmed -> swept -> credited)
-                if let Err(e) = update_deposit_status(&state.db, &job.deposit_id, "swept") {
-                    tracing::error!("Failed update_deposit_status: {e}");
-                }
-                if let Err(e) = update_status_index(
-                    &state.db,
-                    "deposits",
-                    "sweep_queued",
-                    "swept",
-                    &job.deposit_id,
-                ) {
-                    tracing::error!("Failed update_status_index: {e}");
+                // Track stablecoin reserves: when a sweep is confirmed, the treasury
+                // now holds the deposited asset. Update the reserve ledger.
+                let asset_lower = job.asset.to_lowercase();
+                if asset_lower == "usdt" || asset_lower == "usdc" {
+                    if let Some(ref amount_str) = job.amount {
+                        if let Ok(amount) = amount_str.parse::<u64>() {
+                            if let Err(e) = adjust_reserve_balance_once(
+                                &state.db,
+                                &job.chain,
+                                &asset_lower,
+                                amount,
+                                true,
+                                &format!("sweep:{}", job.job_id),
+                            )
+                            .await
+                            {
+                                tracing::warn!("reserve ledger update failed: {}", e);
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 emit_custody_event(
@@ -178,27 +185,6 @@ pub(super) async fn process_sweep_jobs(state: &CustodyState) -> Result<(), Strin
                     job.sweep_tx_hash.as_deref(),
                     Some(&json!({ "chain": job.chain, "asset": job.asset, "amount": job.amount })),
                 );
-
-                // Track stablecoin reserves: when a sweep is confirmed, the treasury
-                // now holds the deposited asset. Update the reserve ledger.
-                let asset_lower = job.asset.to_lowercase();
-                if asset_lower == "usdt" || asset_lower == "usdc" {
-                    if let Some(ref amount_str) = job.amount {
-                        if let Ok(amount) = amount_str.parse::<u64>() {
-                            if let Err(e) = adjust_reserve_balance(
-                                &state.db,
-                                &job.chain,
-                                &asset_lower,
-                                amount,
-                                true,
-                            )
-                            .await
-                            {
-                                tracing::warn!("reserve ledger update failed: {}", e);
-                            }
-                        }
-                    }
-                }
 
                 // AUDIT-FIX C2: Create credit job (mint wrapped tokens) only AFTER
                 // the sweep is confirmed on-chain. This ensures the treasury actually
@@ -237,6 +223,26 @@ pub(super) async fn process_sweep_jobs(state: &CustodyState) -> Result<(), Strin
                             None,
                         );
                     }
+                }
+
+                job.status = "sweep_confirmed".to_string();
+                job.last_error = None;
+                job.next_attempt_at = None;
+                store_sweep_job(&state.db, job)?;
+
+                // P0-FIX: Update the deposit record to "swept" so polling clients
+                // see the status progression (issued -> confirmed -> swept -> credited)
+                if let Err(e) = update_deposit_status(&state.db, &job.deposit_id, "swept") {
+                    tracing::error!("Failed update_deposit_status: {e}");
+                }
+                if let Err(e) = update_status_index(
+                    &state.db,
+                    "deposits",
+                    "sweep_queued",
+                    "swept",
+                    &job.deposit_id,
+                ) {
+                    tracing::error!("Failed update_status_index: {e}");
                 }
             } else {
                 job.status = "failed".to_string();

@@ -3,8 +3,8 @@
 // The authoritative hex values come from core/src/transaction.rs
 // test_cross_sdk_message_golden_vector and test_cross_sdk_transaction_golden_vector.
 
-const assert = require('assert');
-const crypto = require('crypto');
+import assert from 'node:assert';
+import crypto from 'node:crypto';
 
 // --- Inline minimal encoder (mirrors bincode.ts without TS/ESM deps) ---
 
@@ -76,10 +76,6 @@ function encodeU32LE(value) {
 
 function encodeU8(value) {
   return Uint8Array.of(value & 0xff);
-}
-
-function encodeBytes(data) {
-  return concat([encodeU64LE(data.length), data]);
 }
 
 function encodePqPublicKey(publicKey) {

@@ -11,7 +11,7 @@ COPY sdk/js /app/lichen-sdk
 
 # Copy market maker
 COPY dex/market-maker/package.json dex/market-maker/tsconfig.json ./
-RUN npm install
+RUN npm install --ignore-scripts
 
 COPY dex/market-maker/src ./src
 

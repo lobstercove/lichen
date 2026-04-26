@@ -19,6 +19,65 @@ use lichen_sdk::{
 // Price feed: 49 bytes
 // price (8) + timestamp (8) + decimals (1) + feeder (32)
 const PRICE_FEED_SIZE: usize = 49;
+const MAX_ASSET_BYTES: usize = 64;
+const MAX_ATTESTATION_DATA_BYTES: usize = 1024;
+const MAX_QUERY_TYPE_BYTES: usize = 32;
+const MAX_PRICE_DECIMALS: u8 = 18;
+
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
+    }
+    Some(out)
+}
+
+fn read_bounded_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<Vec<u8>> {
+    let len_usize = len as usize;
+    if len_usize > max_len {
+        return None;
+    }
+    if len_usize == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = alloc::vec![0u8; len_usize];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), len_usize);
+    }
+    Some(out)
+}
+
+fn read_asset(ptr: *const u8, len: u32) -> Option<Vec<u8>> {
+    match read_bounded_bytes(ptr, len, MAX_ASSET_BYTES) {
+        Some(v) if !v.is_empty() && core::str::from_utf8(&v).is_ok() => Some(v),
+        _ => None,
+    }
+}
+
+fn write_bytes(ptr: *mut u8, bytes: &[u8]) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+    }
+    true
+}
+
+fn auth_key(prefix: &str, addr: &[u8; 32]) -> alloc::string::String {
+    alloc::format!("{}_{}", prefix, hex_encode(addr))
+}
+
+fn bump_stat(key: &[u8]) {
+    let current = storage_get(key).map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    storage_set(key, &u64_to_bytes(current.saturating_add(1)));
+}
 
 fn init_owner_matches_signer(owner: &[u8; 32]) -> bool {
     let caller = lichen_sdk::get_caller();
@@ -47,10 +106,13 @@ pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
 
     log_info("Initializing LichenOracle...");
 
-    let mut owner = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
-    }
+    let owner = match read_address32(owner_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("Oracle initialize rejected: null owner_ptr");
+            return 2;
+        }
+    };
     if !init_owner_matches_signer(&owner) {
         log_info("Oracle initialize rejected: caller mismatch");
         return 2;
@@ -71,14 +133,20 @@ pub extern "C" fn add_price_feeder(
 ) -> u32 {
     log_info("Adding price feeder...");
 
-    let mut feeder = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(feeder_ptr, feeder.as_mut_ptr(), 32);
-    }
-    let mut asset = alloc::vec![0u8; asset_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
-    }
+    let feeder = match read_address32(feeder_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("add_price_feeder rejected: null feeder_ptr");
+            return 0;
+        }
+    };
+    let asset = match read_asset(asset_ptr, asset_len) {
+        Some(v) => v,
+        None => {
+            log_info("add_price_feeder rejected: invalid asset");
+            return 0;
+        }
+    };
 
     // T5.10 fix: Check caller (not feeder) against oracle owner
     let caller = get_caller();
@@ -90,7 +158,11 @@ pub extern "C" fn add_price_feeder(
 
     // Store feeder for this asset
     let key = alloc::format!("feeder_{}", core::str::from_utf8(&asset).unwrap_or("?"));
+    let is_new_feed = storage_get(key.as_bytes()).is_none();
     storage_set(key.as_bytes(), &feeder);
+    if is_new_feed {
+        bump_stat(b"stats_feeds");
+    }
 
     log_info("Price feeder authorized!");
     1
@@ -99,10 +171,13 @@ pub extern "C" fn add_price_feeder(
 /// AUDIT-FIX 1.14: Admin function to add/remove authorized attesters
 #[no_mangle]
 pub extern "C" fn set_authorized_attester(attester_ptr: *const u8, authorized: u32) -> u32 {
-    let mut attester = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32);
-    }
+    let attester = match read_address32(attester_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("set_authorized_attester rejected: null attester_ptr");
+            return 0;
+        }
+    };
 
     // Only oracle owner can manage attester whitelist
     let caller = get_caller();
@@ -112,13 +187,7 @@ pub extern "C" fn set_authorized_attester(attester_ptr: *const u8, authorized: u
         return 0;
     }
 
-    let auth_key = alloc::format!(
-        "authorized_attester_{}",
-        attester
-            .iter()
-            .map(|b| alloc::format!("{:02x}", b))
-            .collect::<alloc::string::String>()
-    );
+    let auth_key = auth_key("authorized_attester", &attester);
     if authorized != 0 {
         storage_set(auth_key.as_bytes(), &[1u8]);
         log_info("Attester authorized");
@@ -145,9 +214,18 @@ pub extern "C" fn submit_price(
     if !reentrancy_enter() {
         return 0;
     }
-    let mut feeder = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(feeder_ptr, feeder.as_mut_ptr(), 32);
+    let feeder = match read_address32(feeder_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("submit_price rejected: null feeder_ptr");
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    if price == 0 || decimals > MAX_PRICE_DECIMALS {
+        log_info("submit_price rejected: invalid price or decimals");
+        reentrancy_exit();
+        return 0;
     }
 
     // AUDIT-FIX: verify transaction signer matches claimed feeder
@@ -158,10 +236,14 @@ pub extern "C" fn submit_price(
         return 0;
     }
 
-    let mut asset = alloc::vec![0u8; asset_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
-    }
+    let asset = match read_asset(asset_ptr, asset_len) {
+        Some(v) => v,
+        None => {
+            log_info("submit_price rejected: invalid asset");
+            reentrancy_exit();
+            return 0;
+        }
+    };
 
     // Verify feeder is authorized for this specific asset
     let key = alloc::format!("feeder_{}", core::str::from_utf8(&asset).unwrap_or("?"));
@@ -203,10 +285,11 @@ pub extern "C" fn submit_price(
         "   Asset: {}",
         core::str::from_utf8(&asset).unwrap_or("?")
     ));
+    let scale = 10u64.pow(decimals as u32);
     log_info(&alloc::format!(
         "   Price: {}.{}",
-        price / 10u64.pow(decimals as u32),
-        price % 10u64.pow(decimals as u32)
+        price / scale,
+        price % scale
     ));
 
     reentrancy_exit();
@@ -215,9 +298,12 @@ pub extern "C" fn submit_price(
 
 #[no_mangle]
 pub extern "C" fn get_price(asset_ptr: *const u8, asset_len: u32, result_ptr: *mut u8) -> u32 {
-    let mut asset = alloc::vec![0u8; asset_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
+    let asset = match read_asset(asset_ptr, asset_len) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
 
     let key = alloc::format!("price_{}", core::str::from_utf8(&asset).unwrap_or("?"));
@@ -236,9 +322,8 @@ pub extern "C" fn get_price(asset_ptr: *const u8, asset_len: u32, result_ptr: *m
             }
 
             // Return: price (8) + timestamp (8) + decimals (1)
-            unsafe {
-                core::ptr::copy_nonoverlapping(feed.as_ptr(), result_ptr, 17);
-            }
+            write_bytes(result_ptr, &feed[..17]);
+            bump_stat(b"stats_queries");
             1
         }
         _ => {
@@ -252,10 +337,10 @@ pub extern "C" fn get_price(asset_ptr: *const u8, asset_len: u32, result_ptr: *m
 /// Returns the current price bytes via return_data on success.
 #[no_mangle]
 pub extern "C" fn get_price_value(asset_ptr: *const u8, asset_len: u32) -> u32 {
-    let mut asset = alloc::vec![0u8; asset_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
-    }
+    let asset = match read_asset(asset_ptr, asset_len) {
+        Some(v) => v,
+        None => return 1,
+    };
 
     let key = alloc::format!("price_{}", core::str::from_utf8(&asset).unwrap_or("?"));
 
@@ -269,6 +354,7 @@ pub extern "C" fn get_price_value(asset_ptr: *const u8, asset_len: u32) -> u32 {
             }
 
             lichen_sdk::set_return_data(&feed[0..8]);
+            bump_stat(b"stats_queries");
             0
         }
         _ => {
@@ -303,10 +389,13 @@ pub extern "C" fn commit_randomness(
         return 0;
     }
 
-    let mut requester = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32);
-    }
+    let requester = match read_address32(requester_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("commit_randomness rejected: null requester_ptr");
+            return 0;
+        }
+    };
 
     // AUDIT-FIX P2: Verify caller matches requester
     let real_caller = get_caller();
@@ -315,13 +404,21 @@ pub extern "C" fn commit_randomness(
         return 0;
     }
 
-    let mut commit_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(commit_hash_ptr, commit_hash.as_mut_ptr(), 32);
-    }
+    let commit_hash = match read_address32(commit_hash_ptr) {
+        Some(v) if v.iter().any(|&b| b != 0) => v,
+        _ => {
+            log_info("commit_randomness rejected: invalid commit hash");
+            return 0;
+        }
+    };
     let timestamp = get_timestamp();
 
     let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+    if matches!(storage_get(key.as_bytes()), Some(existing) if existing.len() >= 49 && existing[48] == 0)
+    {
+        log_info("Pending randomness commit already exists");
+        return 0;
+    }
 
     // Store: commit_hash (32) + seed (8) + timestamp (8) + status (1: 0=pending, 1=revealed)
     let mut data = Vec::with_capacity(49);
@@ -346,10 +443,13 @@ pub extern "C" fn reveal_randomness(
 ) -> u32 {
     log_info("Revealing randomness...");
 
-    let mut requester = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32);
-    }
+    let requester = match read_address32(requester_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("reveal_randomness rejected: null requester_ptr");
+            return 0;
+        }
+    };
 
     // AUDIT-FIX P2: Verify caller matches requester
     let real_caller = get_caller();
@@ -358,9 +458,16 @@ pub extern "C" fn reveal_randomness(
         return 0;
     }
 
-    let mut secret = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(secret_ptr, secret.as_mut_ptr(), 32);
+    let secret = match read_address32(secret_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("reveal_randomness rejected: null secret_ptr");
+            return 0;
+        }
+    };
+    if result_ptr.is_null() {
+        log_info("reveal_randomness rejected: null result_ptr");
+        return 0;
     }
     let reveal_timestamp = get_timestamp();
 
@@ -421,9 +528,7 @@ pub extern "C" fn reveal_randomness(
 
     // Write random_value to result pointer
     let value_bytes = u64_to_bytes(random_value);
-    unsafe {
-        core::ptr::copy_nonoverlapping(value_bytes.as_ptr(), result_ptr, 8);
-    }
+    write_bytes(result_ptr, &value_bytes);
 
     log_info("Randomness revealed!");
     log_info(&alloc::format!("   Value: {}", random_value));
@@ -586,9 +691,12 @@ pub extern "C" fn request_randomness(_requester_ptr: *const u8, _seed: u64) -> u
 
 #[no_mangle]
 pub extern "C" fn get_randomness(requester_ptr: *const u8, _seed: u64, result_ptr: *mut u8) -> u32 {
-    let mut requester = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32);
+    let requester = match read_address32(requester_ptr) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
 
     // New key format from commit-reveal and legacy request_randomness
@@ -597,9 +705,7 @@ pub extern "C" fn get_randomness(requester_ptr: *const u8, _seed: u64, result_pt
     match storage_get(key.as_bytes()) {
         Some(data) if data.len() >= 16 => {
             // Return: random_value (8) + timestamp (8)
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), result_ptr, 16);
-            }
+            write_bytes(result_ptr, &data[..16]);
             1
         }
         _ => {
@@ -626,18 +732,27 @@ pub extern "C" fn submit_attestation(
 ) -> u32 {
     log_info("Submitting attestation...");
 
-    let mut attester = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32);
-    }
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
-    }
-    let mut data = alloc::vec![0u8; data_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_ptr, data.as_mut_ptr(), data_len as usize);
-    }
+    let attester = match read_address32(attester_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("submit_attestation rejected: null attester_ptr");
+            return 0;
+        }
+    };
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("submit_attestation rejected: null data_hash_ptr");
+            return 0;
+        }
+    };
+    let data = match read_bounded_bytes(data_ptr, data_len, MAX_ATTESTATION_DATA_BYTES) {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            log_info("submit_attestation rejected: invalid data");
+            return 0;
+        }
+    };
 
     // AUDIT-FIX 1.14: Verify caller == attester (prevent impersonation)
     let caller = get_caller();
@@ -647,13 +762,7 @@ pub extern "C" fn submit_attestation(
     }
 
     // AUDIT-FIX 1.14: Check attester is in authorized-attesters whitelist
-    let auth_key = alloc::format!(
-        "authorized_attester_{}",
-        attester
-            .iter()
-            .map(|b| alloc::format!("{:02x}", b))
-            .collect::<alloc::string::String>()
-    );
+    let auth_key = auth_key("authorized_attester", &attester);
     match storage_get(auth_key.as_bytes()) {
         Some(data) if !data.is_empty() && data[0] == 1 => {
             // Authorized — proceed
@@ -669,6 +778,10 @@ pub extern "C" fn submit_attestation(
         core::str::from_utf8(&attester[..8]).unwrap_or("?")
     ));
     // 3. Data hash matches
+    if sha256(&data) != data_hash {
+        log_info("Data hash mismatch");
+        return 0;
+    }
 
     let timestamp = get_timestamp();
 
@@ -706,13 +819,20 @@ pub extern "C" fn submit_attestation(
         log_info("Attester already submitted attestation for this hash");
         return 0;
     }
-    storage_set(dedup_key.as_bytes(), &[1u8]);
 
     // Increment signature count
-    let sig_count = attestation[32] + 1;
+    let sig_count = match attestation[32].checked_add(1) {
+        Some(v) => v,
+        None => {
+            log_info("Attestation signature count exhausted");
+            return 0;
+        }
+    };
     attestation[32] = sig_count;
 
+    storage_set(dedup_key.as_bytes(), &[1u8]);
     storage_set(key.as_bytes(), &attestation);
+    bump_stat(b"stats_attestations");
 
     log_info("Attestation recorded!");
     log_info(&alloc::format!("   Signatures: {}", sig_count));
@@ -722,9 +842,12 @@ pub extern "C" fn submit_attestation(
 
 #[no_mangle]
 pub extern "C" fn verify_attestation(data_hash_ptr: *const u8, min_signatures: u8) -> u32 {
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if min_signatures == 0 {
+        return 0;
     }
 
     // SECURITY-FIX: Use hex_encode to match submit_attestation key format
@@ -761,9 +884,12 @@ pub extern "C" fn verify_attestation(data_hash_ptr: *const u8, min_signatures: u
 
 #[no_mangle]
 pub extern "C" fn get_attestation_data(data_hash_ptr: *const u8, result_ptr: *mut u8) -> u32 {
-    let mut data_hash = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32);
+    let data_hash = match read_address32(data_hash_ptr) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
 
     // SECURITY-FIX: Use hex_encode to match submit_attestation key format
@@ -772,9 +898,7 @@ pub extern "C" fn get_attestation_data(data_hash_ptr: *const u8, result_ptr: *mu
     match storage_get(key.as_bytes()) {
         Some(attestation) if attestation.len() >= ATTESTATION_SIZE => {
             // Return: signatures_count (1) + timestamp (8) + data (32)
-            unsafe {
-                core::ptr::copy_nonoverlapping(attestation[32..].as_ptr(), result_ptr, 41);
-            }
+            write_bytes(result_ptr, &attestation[32..73]);
             1
         }
         _ => 0,
@@ -793,13 +917,13 @@ pub extern "C" fn query_oracle(
     param_len: u32,
     result_ptr: *mut u8,
 ) -> u32 {
-    let mut query_type = alloc::vec![0u8; query_type_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            query_type_ptr,
-            query_type.as_mut_ptr(),
-            query_type_len as usize,
-        );
+    let query_type = match read_bounded_bytes(query_type_ptr, query_type_len, MAX_QUERY_TYPE_BYTES)
+    {
+        Some(v) if !v.is_empty() => v,
+        _ => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
 
     match query_type.as_slice() {
@@ -810,7 +934,7 @@ pub extern "C" fn query_oracle(
         b"random" => {
             log_info("Querying randomness...");
             // param should be: requester (32) + seed (8)
-            if param_len >= 40 {
+            if param_len >= 40 && !param_ptr.is_null() {
                 let mut seed_bytes = [0u8; 8];
                 unsafe {
                     core::ptr::copy_nonoverlapping(param_ptr.add(32), seed_bytes.as_mut_ptr(), 8);
@@ -845,9 +969,12 @@ pub extern "C" fn get_aggregated_price(
 ) -> u32 {
     log_info("Computing aggregated price...");
 
-    let mut asset = alloc::vec![0u8; asset_len as usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
+    let asset = match read_asset(asset_ptr, asset_len) {
+        Some(v) => v,
+        None => return 0,
+    };
+    if result_ptr.is_null() {
+        return 0;
     }
     let asset_str = core::str::from_utf8(&asset).unwrap_or("?");
 
@@ -862,7 +989,7 @@ pub extern "C" fn get_aggregated_price(
 
         if let Some(feed) = storage_get(key.as_bytes()) {
             if feed.len() >= PRICE_FEED_SIZE {
-                total_feeds_found += 1;
+                total_feeds_found = total_feeds_found.saturating_add(1);
                 let timestamp = bytes_to_u64(&feed[8..16]);
                 let now = get_timestamp();
 
@@ -871,7 +998,7 @@ pub extern "C" fn get_aggregated_price(
                 if now.saturating_sub(timestamp) <= 9_000 {
                     let price = bytes_to_u64(&feed[0..8]);
                     total_price += price as u128;
-                    valid_feeds += 1;
+                    valid_feeds = valid_feeds.saturating_add(1);
                 }
             }
         }
@@ -891,10 +1018,11 @@ pub extern "C" fn get_aggregated_price(
     let avg_price = (total_price / valid_feeds as u128) as u64;
 
     // Return: price (8) + valid_feeds (1)
-    unsafe {
-        core::ptr::copy_nonoverlapping(u64_to_bytes(avg_price).as_ptr(), result_ptr, 8);
-        *result_ptr.add(8) = valid_feeds;
-    }
+    let mut out = [0u8; 9];
+    out[..8].copy_from_slice(&u64_to_bytes(avg_price));
+    out[8] = valid_feeds;
+    write_bytes(result_ptr, &out);
+    bump_stat(b"stats_queries");
 
     log_info("Aggregated price computed!");
     log_info(&alloc::format!("   Price: {}", avg_price));
@@ -909,6 +1037,9 @@ pub extern "C" fn get_aggregated_price(
 
 #[no_mangle]
 pub extern "C" fn get_oracle_stats(result_ptr: *mut u8) -> u32 {
+    if result_ptr.is_null() {
+        return 0;
+    }
     // Stats: total_queries (8) + total_feeds (8) + total_attestations (8)
     let queries = storage_get(b"stats_queries")
         .and_then(|d| Some(bytes_to_u64(&d)))
@@ -922,11 +1053,11 @@ pub extern "C" fn get_oracle_stats(result_ptr: *mut u8) -> u32 {
         .and_then(|d| Some(bytes_to_u64(&d)))
         .unwrap_or(0);
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(u64_to_bytes(queries).as_ptr(), result_ptr, 8);
-        core::ptr::copy_nonoverlapping(u64_to_bytes(feeds).as_ptr(), result_ptr.add(8), 8);
-        core::ptr::copy_nonoverlapping(u64_to_bytes(attestations).as_ptr(), result_ptr.add(16), 8);
-    }
+    let mut out = [0u8; 24];
+    out[0..8].copy_from_slice(&u64_to_bytes(queries));
+    out[8..16].copy_from_slice(&u64_to_bytes(feeds));
+    out[16..24].copy_from_slice(&u64_to_bytes(attestations));
+    write_bytes(result_ptr, &out);
 
     log_info("Oracle statistics:");
     log_info(&alloc::format!("   Queries: {}", queries));
@@ -976,10 +1107,10 @@ pub extern "C" fn get_feed_list() -> u32 {
 #[no_mangle]
 pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -> u32 {
     // Delegates to add_price_feeder with a synthetic asset name
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -989,11 +1120,11 @@ pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -
     if caller[..] != owner[..] {
         return 1;
     }
-    let mut reporter = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(reporter_ptr, reporter.as_mut_ptr(), 32);
-    }
-    let key = alloc::format!("reporter_{:02x}{:02x}", reporter[0], reporter[1]);
+    let reporter = match read_address32(reporter_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
+    let key = auth_key("reporter", &reporter);
     storage_set(key.as_bytes(), &[1u8]);
     log_info("Reporter added");
     0
@@ -1002,10 +1133,10 @@ pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -
 /// Tests expect `remove_reporter`
 #[no_mangle]
 pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1015,11 +1146,11 @@ pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8
     if caller[..] != owner[..] {
         return 1;
     }
-    let mut reporter = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(reporter_ptr, reporter.as_mut_ptr(), 32);
-    }
-    let key = alloc::format!("reporter_{:02x}{:02x}", reporter[0], reporter[1]);
+    let reporter = match read_address32(reporter_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
+    let key = auth_key("reporter", &reporter);
     storage_set(key.as_bytes(), &[0u8]);
     log_info("Reporter removed");
     0
@@ -1028,10 +1159,10 @@ pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8
 /// Tests expect `set_update_interval`
 #[no_mangle]
 pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1049,10 +1180,10 @@ pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u
 /// Tests expect `mo_pause`
 #[no_mangle]
 pub extern "C" fn mo_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1070,10 +1201,10 @@ pub extern "C" fn mo_pause(caller_ptr: *const u8) -> u32 {
 /// Tests expect `mo_unpause`
 #[no_mangle]
 pub extern "C" fn mo_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe {
-        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
-    }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 2,
+    };
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1133,6 +1264,23 @@ mod tests {
         let key = alloc::format!("feeder_{}", core::str::from_utf8(asset).unwrap());
         let stored = test_mock::get_storage(key.as_bytes()).unwrap();
         assert_eq!(stored, feeder.to_vec());
+        assert_eq!(get_feed_count(), 1);
+    }
+
+    #[test]
+    fn test_add_price_feeder_rejects_oversized_asset() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+
+        let feeder = [2u8; 32];
+        let asset = [b'A'; MAX_ASSET_BYTES + 1];
+        assert_eq!(
+            add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32),
+            0
+        );
+        assert_eq!(get_feed_count(), 0);
     }
 
     #[test]
@@ -1170,6 +1318,34 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn test_submit_price_rejects_zero_price_and_excessive_decimals() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"LICN/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        test_mock::set_caller(feeder);
+
+        assert_eq!(
+            submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 0, 6),
+            0
+        );
+        assert_eq!(
+            submit_price(
+                feeder.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+                42_000_000,
+                MAX_PRICE_DECIMALS + 1,
+            ),
+            0
+        );
+        assert_eq!(test_mock::get_storage(b"price_LICN/USD"), None);
     }
 
     #[test]
@@ -1309,6 +1485,28 @@ mod tests {
     }
 
     #[test]
+    fn test_commit_randomness_rejects_duplicate_pending_commit() {
+        setup();
+        let requester = [1u8; 32];
+        let first = [0xAAu8; 32];
+        let second = [0xBBu8; 32];
+        test_mock::set_caller(requester);
+
+        assert_eq!(
+            commit_randomness(requester.as_ptr(), first.as_ptr(), 12345),
+            1
+        );
+        assert_eq!(
+            commit_randomness(requester.as_ptr(), second.as_ptr(), 67890),
+            0
+        );
+
+        let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+        let data = lichen_sdk::storage_get(key.as_bytes()).unwrap();
+        assert_eq!(&data[0..32], &first[..]);
+    }
+
+    #[test]
     fn test_reveal_randomness() {
         setup();
         let requester = [1u8; 32];
@@ -1404,6 +1602,111 @@ mod tests {
         assert_eq!(bytes_to_u64(&result[0..8]), 0);
         assert_eq!(bytes_to_u64(&result[8..16]), 0);
         assert_eq!(bytes_to_u64(&result[16..24]), 0);
+    }
+
+    #[test]
+    fn test_submit_attestation_requires_matching_data_hash() {
+        setup();
+        let owner = [1u8; 32];
+        let attester = [2u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 1);
+
+        let data = b"external-price-snapshot";
+        let data_hash = sha256(data);
+        let wrong_hash = sha256(b"different-data");
+
+        test_mock::set_caller(attester);
+        assert_eq!(
+            submit_attestation(
+                attester.as_ptr(),
+                wrong_hash.as_ptr(),
+                data.as_ptr(),
+                data.len() as u32,
+            ),
+            0
+        );
+        assert_eq!(verify_attestation(wrong_hash.as_ptr(), 1), 0);
+
+        assert_eq!(
+            submit_attestation(
+                attester.as_ptr(),
+                data_hash.as_ptr(),
+                data.as_ptr(),
+                data.len() as u32,
+            ),
+            1
+        );
+        assert_eq!(verify_attestation(data_hash.as_ptr(), 1), 1);
+        assert_eq!(verify_attestation(data_hash.as_ptr(), 0), 0);
+    }
+
+    #[test]
+    fn test_submit_attestation_count_overflow_does_not_write_dedup() {
+        setup();
+        let owner = [1u8; 32];
+        let attester = [2u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        assert_eq!(set_authorized_attester(attester.as_ptr(), 1), 1);
+
+        let data = b"overflow-attestation";
+        let data_hash = sha256(data);
+        let key = alloc::format!("attestation_{}", hex_encode(&data_hash));
+        let mut attestation = Vec::new();
+        attestation.extend_from_slice(&data_hash);
+        attestation.push(u8::MAX);
+        attestation.extend_from_slice(&u64_to_bytes(1000));
+        attestation.extend_from_slice(&[0u8; 32]);
+        storage_set(key.as_bytes(), &attestation);
+
+        test_mock::set_caller(attester);
+        assert_eq!(
+            submit_attestation(
+                attester.as_ptr(),
+                data_hash.as_ptr(),
+                data.as_ptr(),
+                data.len() as u32,
+            ),
+            0
+        );
+        let stored = test_mock::get_storage(key.as_bytes()).unwrap();
+        assert_eq!(stored[32], u8::MAX);
+        let dedup_key = alloc::format!(
+            "attestation_{}_{}",
+            hex_encode(&data_hash),
+            hex_encode(&attester)
+        );
+        assert_eq!(test_mock::get_storage(dedup_key.as_bytes()), None);
+    }
+
+    #[test]
+    fn test_reporter_keys_use_full_address() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+
+        let mut reporter_a = [0u8; 32];
+        reporter_a[0] = 7;
+        reporter_a[1] = 8;
+        reporter_a[31] = 1;
+        let mut reporter_b = reporter_a;
+        reporter_b[31] = 2;
+
+        assert_eq!(add_reporter(owner.as_ptr(), reporter_a.as_ptr()), 0);
+        assert_eq!(add_reporter(owner.as_ptr(), reporter_b.as_ptr()), 0);
+
+        let key_a = auth_key("reporter", &reporter_a);
+        let key_b = auth_key("reporter", &reporter_b);
+        assert_ne!(key_a, key_b);
+        assert_eq!(test_mock::get_storage(key_a.as_bytes()), Some(vec![1u8]));
+        assert_eq!(test_mock::get_storage(key_b.as_bytes()), Some(vec![1u8]));
+
+        assert_eq!(remove_reporter(owner.as_ptr(), reporter_a.as_ptr()), 0);
+        assert_eq!(test_mock::get_storage(key_a.as_bytes()), Some(vec![0u8]));
+        assert_eq!(test_mock::get_storage(key_b.as_bytes()), Some(vec![1u8]));
     }
 
     // ========================================================================

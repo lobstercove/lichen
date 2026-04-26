@@ -76,7 +76,7 @@ pub(crate) fn build_credit_job(
     }
 
     Ok(Some(CreditJob {
-        job_id: Uuid::new_v4().to_string(),
+        job_id: format!("credit:{}", sweep.job_id),
         deposit_id: sweep.deposit_id.clone(),
         to_address: deposit.user_id,
         amount_spores,

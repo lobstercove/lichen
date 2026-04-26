@@ -59,6 +59,50 @@ fn is_mm_admin(caller: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+fn read_address(ptr: *const u8) -> Option<Address> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, addr.as_mut_ptr(), 32);
+    }
+    Some(Address(addr))
+}
+
+fn increment_counter_saturating(key: &[u8]) {
+    let count = storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(key, &u64_to_bytes(count.saturating_add(1)));
+}
+
+fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let mut key = b"unpaid_payout:".to_vec();
+    key.extend_from_slice(&token.0);
+    key.push(b':');
+    key.extend_from_slice(&recipient.0);
+    let current = storage_get(&key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
+}
+
+fn marketplace_escrow_address() -> Option<Address> {
+    storage_get(b"marketplace_fee_addr").and_then(|data| {
+        if data.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&data);
+            Some(Address(addr))
+        } else {
+            None
+        }
+    })
+}
+
 fn offerer_active_count_key(offerer: &[u8; 32]) -> Vec<u8> {
     let mut key = b"offerer_count:".to_vec();
     key.extend_from_slice(offerer);
@@ -155,6 +199,10 @@ pub extern "C" fn list_nft(
     price: u64,
     payment_token_ptr: *const u8,
 ) -> u32 {
+    if price == 0 {
+        log_info("Price must be > 0");
+        return 0;
+    }
     unsafe {
         // Parse addresses
         let seller = parse_address(seller_ptr);
@@ -186,11 +234,7 @@ pub extern "C" fn list_nft(
                 storage_set(&listing_key, &listing_data);
 
                 // v2: increment listing count
-                let count_key = b"mm_listing_count";
-                let count = storage_get(count_key)
-                    .map(|d| bytes_to_u64(&d))
-                    .unwrap_or(0);
-                storage_set(count_key, &u64_to_bytes(count + 1));
+                increment_counter_saturating(b"mm_listing_count");
 
                 log_info("NFT listed for sale");
                 1
@@ -287,17 +331,19 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
 
         // AUDIT-FIX 1.12: Escrow pattern — hold payment in marketplace until
         // NFT transfer confirms. Prevents buyer losing funds if NFT transfer fails.
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr");
-        if fee_addr_bytes.is_none() {
+        let marketplace_addr = match marketplace_escrow_address() {
+            Some(addr) => addr,
+            None => {
+                log_info("marketplace_fee_addr not configured — purchase rejected");
+                reentrancy_exit();
+                return 0;
+            }
+        };
+        if marketplace_addr.0 == [0u8; 32] && !is_native_token(&payment_token) {
             log_info("marketplace_fee_addr not configured — purchase rejected");
             reentrancy_exit();
             return 0;
         }
-        let fee_addr_bytes = fee_addr_bytes.unwrap();
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or_else(|_| {
-            log_info("invalid marketplace_fee_addr length");
-            [0u8; 32]
-        }));
 
         // STEP 1: Transfer full payment from buyer to marketplace (escrow)
         match receive_token_or_native(payment_token, buyer, marketplace_addr, price) {
@@ -329,7 +375,10 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
         // STEP 3: Release escrowed funds — seller gets their share
         match transfer_token_or_native(payment_token, marketplace_addr, seller, seller_amount) {
             Ok(true) => log_info("Seller payment released from escrow"),
-            _ => log_info(" Seller payment release failed"),
+            _ => {
+                record_unpaid_payout(payment_token, seller, seller_amount);
+                log_info(" Seller payment release failed; payout recorded");
+            }
         }
 
         // STEP 4: Marketplace fee stays in marketplace_addr (already there)
@@ -350,7 +399,10 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
                     "Royalty paid: {} to creator",
                     royalty_amount
                 )),
-                _ => log_info("Royalty transfer failed — retained in marketplace"),
+                _ => {
+                    record_unpaid_payout(payment_token, royalty_recipient, royalty_amount);
+                    log_info("Royalty transfer failed; payout recorded");
+                }
             }
         }
 
@@ -363,7 +415,7 @@ pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, tok
         let sc = storage_get(MM_SALE_COUNT_KEY)
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0);
-        storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+        storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc.saturating_add(1)));
         let sv = storage_get(MM_SALE_VOLUME_KEY)
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0);
@@ -487,6 +539,10 @@ pub extern "C" fn list_nft_with_royalty(
     royalty_recipient_ptr: *const u8,
     royalty_bps: u32,
 ) -> u32 {
+    if price == 0 {
+        log_info("Price must be > 0");
+        return 0;
+    }
     unsafe {
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
@@ -519,10 +575,7 @@ pub extern "C" fn list_nft_with_royalty(
                 data[145..147].copy_from_slice(&capped_bps.to_le_bytes());
                 storage_set(&listing_key, &data);
 
-                let count = storage_get(b"mm_listing_count")
-                    .map(|d| bytes_to_u64(&d))
-                    .unwrap_or(0);
-                storage_set(b"mm_listing_count", &u64_to_bytes(count + 1));
+                increment_counter_saturating(b"mm_listing_count");
                 log_info("NFT listed with royalty recipient");
                 1
             }
@@ -666,6 +719,15 @@ pub extern "C" fn accept_offer(
             return 200;
         }
 
+        match call_nft_owner(nft_contract, token_id) {
+            Ok(owner) if owner.0 == seller.0 => {}
+            _ => {
+                log_info("Seller does not own NFT");
+                reentrancy_exit();
+                return 0;
+            }
+        }
+
         // Load offer
         let mut key = b"offer:".to_vec();
         key.extend_from_slice(&nft_contract.0);
@@ -678,9 +740,20 @@ pub extern "C" fn accept_offer(
             Some(d) if d.len() >= 73 && d[72] == 1 => d,
             _ => {
                 log_info("Active offer not found");
+                reentrancy_exit();
                 return 0;
             }
         };
+        if data.len() >= OFFER_EXPIRY_SIZE {
+            let mut expiry_bytes = [0u8; 8];
+            expiry_bytes.copy_from_slice(&data[73..81]);
+            let expiry = u64::from_le_bytes(expiry_bytes);
+            if expiry > 0 && lichen_sdk::get_slot() > expiry {
+                log_info("Offer has expired");
+                reentrancy_exit();
+                return 0;
+            }
+        }
 
         let mut price_bytes = [0u8; 8];
         price_bytes.copy_from_slice(&data[32..40]);
@@ -698,34 +771,44 @@ pub extern "C" fn accept_offer(
         let fee_amount = ((price as u128) * (fee as u128) / 10000) as u64;
         let seller_amount = price - fee_amount;
 
-        // Transfer payment
-        match transfer_token_or_native(payment_token, buyer, seller, seller_amount) {
-            Ok(true) => {}
-            _ => {
+        let marketplace_addr = match marketplace_escrow_address() {
+            Some(addr) => addr,
+            None => {
+                log_info("marketplace_fee_addr not configured — offer rejected");
                 reentrancy_exit();
                 return 0;
             }
-        }
+        };
 
-        // AUDIT-FIX P2: Actually transfer fee to platform
-        if fee_amount > 0 {
-            if let Some(fee_addr_data) = storage_get(b"marketplace_fee_addr") {
-                if fee_addr_data.len() >= 32 {
-                    let mut fee_addr = [0u8; 32];
-                    fee_addr.copy_from_slice(&fee_addr_data[..32]);
-                    let _ = transfer_token_or_native(
-                        payment_token,
-                        buyer,
-                        Address(fee_addr),
-                        fee_amount,
-                    );
-                }
+        // Escrow full offer payment before moving the NFT.
+        match receive_token_or_native(payment_token, buyer, marketplace_addr, price) {
+            Ok(true) => log_info("Offer payment escrowed"),
+            _ => {
+                log_info("Offer payment escrow failed");
+                reentrancy_exit();
+                return 0;
             }
         }
 
         // Transfer NFT
         match call_nft_transfer(nft_contract, seller, buyer, token_id) {
             Ok(true) => {
+                match transfer_token_or_native(
+                    payment_token,
+                    marketplace_addr,
+                    seller,
+                    seller_amount,
+                ) {
+                    Ok(true) => log_info("Offer seller payment released"),
+                    _ => {
+                        record_unpaid_payout(payment_token, seller, seller_amount);
+                        log_info("Offer seller payment failed; payout recorded");
+                    }
+                }
+                if fee_amount > 0 {
+                    log_info("Offer fee retained in marketplace escrow");
+                }
+
                 // Deactivate offer
                 let mut updated = data;
                 updated[72] = 0;
@@ -735,7 +818,7 @@ pub extern "C" fn accept_offer(
                 let sc = storage_get(MM_SALE_COUNT_KEY)
                     .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
                     .unwrap_or(0);
-                storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+                storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc.saturating_add(1)));
                 let sv = storage_get(MM_SALE_VOLUME_KEY)
                     .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
                     .unwrap_or(0);
@@ -746,6 +829,8 @@ pub extern "C" fn accept_offer(
                 1
             }
             _ => {
+                log_info("Offer NFT transfer failed; refunding buyer");
+                let _ = transfer_token_or_native(payment_token, marketplace_addr, buyer, price);
                 reentrancy_exit();
                 0
             }
@@ -1061,7 +1146,13 @@ pub extern "C" fn create_auction(
         }
 
         let now = lichen_sdk::get_slot();
-        let end_time = now + duration;
+        let end_time = match now.checked_add(duration) {
+            Some(v) => v,
+            None => {
+                log_info("Auction end time overflow");
+                return 0;
+            }
+        };
 
         let mut data = alloc::vec![0u8; AUCTION_SIZE];
         data[0..32].copy_from_slice(&seller.0);
@@ -1139,7 +1230,14 @@ pub extern "C" fn place_bid(
         let start_price = u64::from_le_bytes(start_price_bytes);
 
         let min_bid = if current_highest > 0 {
-            current_highest + 1
+            match current_highest.checked_add(1) {
+                Some(v) => v,
+                None => {
+                    log_info("Current highest bid cannot be outbid");
+                    reentrancy_exit();
+                    return 0;
+                }
+            }
         } else {
             start_price
         };
@@ -1180,12 +1278,25 @@ pub extern "C" fn place_bid(
             prev_bidder_bytes.copy_from_slice(&data[96..128]);
             let prev_bidder = Address(prev_bidder_bytes);
             if prev_bidder_bytes != [0u8; 32] {
-                let _ = transfer_token_or_native(
+                match transfer_token_or_native(
                     payment_token,
                     marketplace_addr,
                     prev_bidder,
                     current_highest,
-                );
+                ) {
+                    Ok(true) => {}
+                    _ => {
+                        log_info("Previous bidder refund failed; refunding new bidder");
+                        let _ = transfer_token_or_native(
+                            payment_token,
+                            marketplace_addr,
+                            bidder,
+                            bid_amount,
+                        );
+                        reentrancy_exit();
+                        return 0;
+                    }
+                }
             }
         }
 
@@ -1197,7 +1308,20 @@ pub extern "C" fn place_bid(
         // Anti-sniping: extend by 10 min if bid in last 10 min
         let time_left = if end_time > now { end_time - now } else { 0 };
         if time_left < 600 {
-            let new_end = now + 600;
+            let new_end = match now.checked_add(600) {
+                Some(v) => v,
+                None => {
+                    log_info("Auction anti-sniping extension overflow");
+                    let _ = transfer_token_or_native(
+                        payment_token,
+                        marketplace_addr,
+                        bidder,
+                        bid_amount,
+                    );
+                    reentrancy_exit();
+                    return 0;
+                }
+            };
             updated[136..144].copy_from_slice(&new_end.to_le_bytes());
         }
 
@@ -1268,15 +1392,14 @@ pub extern "C" fn settle_auction(
         pay_bytes.copy_from_slice(&data[145..177]);
         let payment_token = Address(pay_bytes);
 
-        let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
-            Some(v) if v.len() >= 32 => v,
-            _ => {
+        let marketplace_addr = match marketplace_escrow_address() {
+            Some(addr) => addr,
+            None => {
                 log_info("marketplace_fee_addr not configured — auction finalize rejected");
                 reentrancy_exit();
                 return 0;
             }
         };
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
         // If no bids or reserve not met, cancel and return
         if highest_bid == 0 || (reserve_price > 0 && highest_bid < reserve_price) {
@@ -1338,7 +1461,13 @@ pub extern "C" fn settle_auction(
         }
 
         // Pay seller from escrow
-        let _ = transfer_token_or_native(payment_token, marketplace_addr, seller, seller_amount);
+        match transfer_token_or_native(payment_token, marketplace_addr, seller, seller_amount) {
+            Ok(true) => {}
+            _ => {
+                record_unpaid_payout(payment_token, seller, seller_amount);
+                log_info("Auction seller payment failed; payout recorded");
+            }
+        }
         // Pay royalty; if royalty transfer fails, credit seller fallback so seller is not underpaid.
         if royalty_amount > 0 {
             match transfer_token_or_native(
@@ -1362,7 +1491,9 @@ pub extern "C" fn settle_auction(
                             royalty_amount,
                         )
                     };
-                    let _ = fallback_result;
+                    if !matches!(fallback_result, Ok(true)) {
+                        record_unpaid_payout(payment_token, seller, royalty_amount);
+                    }
                 }
             }
         }
@@ -1376,7 +1507,7 @@ pub extern "C" fn settle_auction(
         let sc = storage_get(MM_SALE_COUNT_KEY)
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0);
-        storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+        storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc.saturating_add(1)));
         let sv = storage_get(MM_SALE_VOLUME_KEY)
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0);
@@ -1611,12 +1742,18 @@ pub extern "C" fn accept_collection_offer(
         match call_nft_transfer(nft_contract, seller, offerer, token_id) {
             Ok(true) => {
                 // Release seller proceeds from escrow.
-                let _ = transfer_token_or_native(
+                match transfer_token_or_native(
                     payment_token,
                     marketplace_addr,
                     seller,
                     seller_amount,
-                );
+                ) {
+                    Ok(true) => {}
+                    _ => {
+                        record_unpaid_payout(payment_token, seller, seller_amount);
+                        log_info("Collection-offer seller payment failed; payout recorded");
+                    }
+                }
                 if fee_amount > 0 {
                     log_info("Collection-offer fee retained in marketplace escrow");
                 }
@@ -1628,7 +1765,7 @@ pub extern "C" fn accept_collection_offer(
                 let sc = storage_get(MM_SALE_COUNT_KEY)
                     .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
                     .unwrap_or(0);
-                storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+                storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc.saturating_add(1)));
                 let sv = storage_get(MM_SALE_VOLUME_KEY)
                     .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
                     .unwrap_or(0);
@@ -1803,6 +1940,7 @@ pub extern "C" fn mm_unpause(caller_ptr: *const u8) -> u32 {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
     use lichen_sdk::bytes_to_u64;
     use lichen_sdk::test_mock;
 
@@ -1828,6 +1966,16 @@ mod tests {
         data[144] = 1; // active
                        // bytes 145..147 = royalty_bps (0 by default)
         lichen_sdk::storage_set(&key, &data);
+    }
+
+    fn offer_key(nft_contract: &Address, token_id: u64, offerer: &[u8; 32]) -> Vec<u8> {
+        let mut key = b"offer:".to_vec();
+        key.extend_from_slice(&nft_contract.0);
+        key.push(b':');
+        key.extend_from_slice(&token_id.to_le_bytes());
+        key.push(b':');
+        key.extend_from_slice(offerer);
+        key
     }
 
     #[test]
@@ -1860,6 +2008,20 @@ mod tests {
         // call_nft_owner returns Err in test mock → falls through to _ arm
         let result = list_nft(seller.as_ptr(), nft.as_ptr(), 1, 1000, pay.as_ptr());
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_list_nft_rejects_zero_price_before_owner_lookup() {
+        setup();
+        let seller = [3u8; 32];
+        let nft = [4u8; 32];
+        let pay = [5u8; 32];
+        test_mock::set_caller(seller);
+
+        let result = list_nft(seller.as_ptr(), nft.as_ptr(), 1, 0, pay.as_ptr());
+
+        assert_eq!(result, 0);
+        assert_eq!(test_mock::get_last_cross_call(), None);
     }
 
     #[test]
@@ -1945,7 +2107,7 @@ mod tests {
         let nft = Address([4u8; 32]);
         let pay = Address([5u8; 32]);
         create_test_listing(&seller, &nft, 1, 1000, &pay);
-        let mut out = [0u8; 145];
+        let mut out = [0u8; LISTING_SIZE];
         let result = get_listing(nft.0.as_ptr(), 1, out.as_mut_ptr());
         assert_eq!(result, 1);
         assert_eq!(&out[0..32], &seller[..]);
@@ -1955,7 +2117,7 @@ mod tests {
     fn test_get_listing_not_found() {
         setup();
         let nft = [4u8; 32];
-        let mut out = [0u8; 145];
+        let mut out = [0u8; LISTING_SIZE];
         assert_eq!(get_listing(nft.as_ptr(), 999, out.as_mut_ptr()), 0);
     }
 
@@ -2029,6 +2191,116 @@ mod tests {
         assert_eq!(cancel_offer(offerer.as_ptr(), nft.0.as_ptr(), 1), 1);
         let data = lichen_sdk::storage_get(&key).unwrap();
         assert_eq!(data[72], 0); // inactive
+    }
+
+    #[test]
+    fn test_accept_offer_refunds_when_nft_transfer_fails() {
+        setup();
+        let owner = [1u8; 32];
+        let fee_addr = [2u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr(), fee_addr.as_ptr());
+
+        let seller = [3u8; 32];
+        let nft = Address([4u8; 32]);
+        let pay = [5u8; 32];
+        let offerer = [6u8; 32];
+
+        test_mock::set_caller(offerer);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 1_000_000, pay.as_ptr()),
+            1
+        );
+
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_responses(vec![
+            seller.to_vec(),
+            1u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+        ]);
+        assert_eq!(
+            accept_offer(seller.as_ptr(), nft.0.as_ptr(), 1, offerer.as_ptr()),
+            0
+        );
+
+        let data = test_mock::get_storage(&offer_key(&nft, 1, &offerer)).unwrap();
+        assert_eq!(
+            data[72], 1,
+            "offer remains active after failed NFT transfer"
+        );
+        assert_eq!(test_mock::get_storage(MM_REENTRANCY_KEY), Some(vec![0u8]));
+    }
+
+    #[test]
+    fn test_accept_offer_escrows_before_nft_and_marks_inactive() {
+        setup();
+        let owner = [1u8; 32];
+        let fee_addr = [2u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr(), fee_addr.as_ptr());
+
+        let seller = [3u8; 32];
+        let nft = Address([4u8; 32]);
+        let pay = [5u8; 32];
+        let offerer = [6u8; 32];
+
+        test_mock::set_caller(offerer);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 1_000_000, pay.as_ptr()),
+            1
+        );
+
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_responses(vec![
+            seller.to_vec(),
+            1u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+        ]);
+        let result = accept_offer(seller.as_ptr(), nft.0.as_ptr(), 1, offerer.as_ptr());
+        assert_eq!(result, 1, "logs: {:?}", test_mock::get_logs());
+
+        let data = test_mock::get_storage(&offer_key(&nft, 1, &offerer)).unwrap();
+        assert_eq!(data[72], 0);
+        let sale_count = test_mock::get_storage(MM_SALE_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&sale_count), 1);
+    }
+
+    #[test]
+    fn test_accept_offer_rejects_expired_offer() {
+        setup();
+        let owner = [1u8; 32];
+        let fee_addr = [2u8; 32];
+        test_mock::set_caller(owner);
+        initialize(owner.as_ptr(), fee_addr.as_ptr());
+
+        let seller = [3u8; 32];
+        let nft = Address([4u8; 32]);
+        let pay = [5u8; 32];
+        let offerer = [6u8; 32];
+
+        test_mock::set_caller(offerer);
+        assert_eq!(
+            make_offer_with_expiry(
+                offerer.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                1_000_000,
+                pay.as_ptr(),
+                100,
+            ),
+            1
+        );
+
+        test_mock::set_slot(101);
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_response(Some(seller.to_vec()));
+        assert_eq!(
+            accept_offer(seller.as_ptr(), nft.0.as_ptr(), 1, offerer.as_ptr()),
+            0
+        );
+        assert_eq!(test_mock::get_storage(MM_REENTRANCY_KEY), Some(vec![0u8]));
     }
 
     #[test]
@@ -2336,6 +2608,72 @@ mod tests {
 
         let auction = test_mock::get_storage(&create_auction_key(nft, 1)).unwrap();
         assert_eq!(auction[144], 2);
+    }
+
+    #[test]
+    fn test_create_auction_rejects_end_time_overflow() {
+        setup();
+        let seller = [3u8; 32];
+        let nft = Address([4u8; 32]);
+        let payment_token = Address([5u8; 32]);
+
+        test_mock::set_slot(u64::MAX - 10);
+        test_mock::set_caller(seller);
+        test_mock::set_cross_call_response(Some(seller.to_vec()));
+
+        assert_eq!(
+            create_auction(
+                seller.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                1_000,
+                0,
+                60,
+                payment_token.0.as_ptr(),
+            ),
+            0
+        );
+        assert_eq!(test_mock::get_storage(&create_auction_key(nft, 1)), None);
+    }
+
+    #[test]
+    fn test_place_bid_previous_refund_failure_preserves_high_bid() {
+        setup();
+        let seller = [3u8; 32];
+        let prev_bidder = [6u8; 32];
+        let bidder = [7u8; 32];
+        let nft = Address([4u8; 32]);
+        let payment_token = Address([5u8; 32]);
+        let key = create_auction_key(nft, 1);
+
+        let mut data = alloc::vec![0u8; AUCTION_SIZE];
+        data[0..32].copy_from_slice(&seller);
+        data[32..64].copy_from_slice(&nft.0);
+        data[64..72].copy_from_slice(&1u64.to_le_bytes());
+        data[72..80].copy_from_slice(&100u64.to_le_bytes());
+        data[88..96].copy_from_slice(&100u64.to_le_bytes());
+        data[96..128].copy_from_slice(&prev_bidder);
+        data[128..136].copy_from_slice(&1_000u64.to_le_bytes());
+        data[136..144].copy_from_slice(&2_000u64.to_le_bytes());
+        data[144] = 1;
+        data[145..177].copy_from_slice(&payment_token.0);
+        lichen_sdk::storage_set(&key, &data);
+        lichen_sdk::storage_set(b"marketplace_fee_addr", &[2u8; 32]);
+
+        test_mock::set_slot(1_100);
+        test_mock::set_caller(bidder);
+        test_mock::set_cross_call_responses(vec![
+            1u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+        ]);
+
+        assert_eq!(place_bid(bidder.as_ptr(), nft.0.as_ptr(), 1, 101), 0);
+
+        let stored = test_mock::get_storage(&key).unwrap();
+        assert_eq!(bytes_to_u64(&stored[88..96]), 100);
+        assert_eq!(&stored[96..128], &prev_bidder);
+        assert_eq!(test_mock::get_storage(MM_REENTRANCY_KEY), Some(vec![0u8]));
     }
 
     #[test]

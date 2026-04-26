@@ -552,6 +552,24 @@ mod tests {
     }
 
     #[test]
+    fn test_plaintext_keypair_load_requires_explicit_compat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plaintext.json");
+        let keypair = Keypair::new();
+
+        KeypairFile::from_keypair(&keypair)
+            .save_with_password(&path, None, false)
+            .unwrap();
+
+        let err = KeypairFile::load_with_password_policy(&path, None, false).unwrap_err();
+        assert!(err.contains("Plaintext keypair file"));
+        assert!(err.contains(ALLOW_PLAINTEXT_KEYPAIR_ENV));
+
+        let loaded = KeypairFile::load_with_password_policy(&path, None, true).unwrap();
+        assert_eq!(loaded.to_keypair().unwrap().pubkey(), keypair.pubkey());
+    }
+
+    #[test]
     fn test_metadata_save_preserves_extra_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("with-metadata.json");

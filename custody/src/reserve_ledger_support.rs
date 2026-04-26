@@ -136,3 +136,91 @@ pub(super) async fn adjust_reserve_balance(
     );
     Ok(())
 }
+
+pub(super) async fn adjust_reserve_balance_once(
+    db: &DB,
+    chain: &str,
+    asset: &str,
+    amount: u64,
+    increment: bool,
+    movement_id: &str,
+) -> Result<bool, String> {
+    static RESERVE_LOCK: tokio::sync::OnceCell<tokio::sync::Mutex<()>> =
+        tokio::sync::OnceCell::const_new();
+    let mutex = RESERVE_LOCK
+        .get_or_init(|| async { tokio::sync::Mutex::new(()) })
+        .await;
+    let _guard = mutex.lock().await;
+
+    let cf = db
+        .cf_handle(CF_RESERVE_LEDGER)
+        .ok_or_else(|| "missing reserve_ledger cf".to_string())?;
+    let marker_key = format!("movement:{}", movement_id);
+    if db
+        .get_cf(cf, marker_key.as_bytes())
+        .map_err(|error| format!("db get movement: {}", error))?
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    let balance_key = format!("{}:{}", chain, asset);
+    let current = match db.get_cf(cf, balance_key.as_bytes()) {
+        Ok(Some(bytes)) => {
+            let entry: ReserveLedgerEntry =
+                serde_json::from_slice(&bytes).map_err(|error| format!("decode: {}", error))?;
+            entry.amount
+        }
+        Ok(None) => 0,
+        Err(error) => return Err(format!("db get: {}", error)),
+    };
+
+    let new_amount = if increment {
+        current.saturating_add(amount)
+    } else {
+        if amount > current {
+            tracing::warn!(
+                "reserve underflow: {}:{} has {} but trying to deduct {}",
+                chain,
+                asset,
+                current,
+                amount
+            );
+        }
+        current.saturating_sub(amount)
+    };
+
+    let entry = ReserveLedgerEntry {
+        chain: chain.to_string(),
+        asset: asset.to_string(),
+        amount: new_amount,
+        last_updated: chrono::Utc::now().timestamp(),
+    };
+    let balance_bytes = serde_json::to_vec(&entry).map_err(|error| format!("encode: {}", error))?;
+    let marker_bytes = serde_json::to_vec(&json!({
+        "movement_id": movement_id,
+        "chain": chain,
+        "asset": asset,
+        "amount": amount,
+        "increment": increment,
+        "created_at": chrono::Utc::now().timestamp(),
+    }))
+    .map_err(|error| format!("encode movement marker: {}", error))?;
+
+    let mut batch = WriteBatch::default();
+    batch.put_cf(cf, balance_key.as_bytes(), balance_bytes);
+    batch.put_cf(cf, marker_key.as_bytes(), marker_bytes);
+    db.write(batch)
+        .map_err(|error| format!("db write reserve movement: {}", error))?;
+
+    info!(
+        "reserve ledger: {}:{} {} {} → {} (movement={})",
+        chain,
+        asset,
+        if increment { "+" } else { "-" },
+        amount,
+        new_amount,
+        movement_id
+    );
+    Ok(true)
+}

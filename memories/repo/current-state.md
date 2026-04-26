@@ -1,6 +1,6 @@
 # Current State
 
-Last reviewed: 2026-04-23
+Last reviewed: 2026-04-26
 
 ## Durable Facts
 
@@ -16,6 +16,8 @@ Last reviewed: 2026-04-23
 - `deploy/setup.sh` now keeps `9100/tcp` open on testnet so the authoritative service-fleet probe can reach remote faucet `/health` endpoints on EU and SEA.
 - The Rust workspace is the 8-crate set declared in root `Cargo.toml`.
 - `contracts/` contains 29 contract directories, while genesis currently deploys 28 contracts from `GENESIS_CONTRACT_CATALOG`.
+- CI supply-chain coverage now includes all-lockfile Cargo audit, cargo-deny, reproducible npm lockfile installs plus production npm audits, Python SDK dependency consistency checks, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations on release archives/checksums.
+- Active public/developer surfaces have been cleaned of the audited stale claim strings for instant finality, old v0.5.x examples, premature mainnet-ready/production-ready wording, and "not wired" markers; older deployment, audit, changelog, and strategy documents should still be treated as historical unless rechecked.
 - The large CLI modularization effort is complete:
   - `cli/src/main.rs` remains the crate root and top-level dispatcher
   - `cli/src/main_modules.rs` is the module hub

@@ -598,6 +598,18 @@ async fn test_native_get_fee_config() {
 }
 
 #[tokio::test]
+async fn test_native_get_marketplace_config() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/", "getMarketplaceConfig").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp["result"]["minting_fee"].is_number());
+    assert!(resp["result"]["minting_fee_spores"].is_number());
+    assert!(resp["result"]["nft_mint_fee_spores"].is_number());
+    assert!(resp["result"]["marketplace_fee_bps"].is_number());
+    assert!(resp["result"]["marketplace_configured"].is_boolean());
+}
+
+#[tokio::test]
 async fn test_native_set_fee_config_no_token() {
     // Without admin token, should reject
     let app = fresh_app();
@@ -1742,6 +1754,30 @@ async fn test_solana_get_signature_statuses() {
     .await
     .unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_solana_get_signature_statuses_rejects_oversized_batch() {
+    let app = fresh_app();
+    let fake_sig = "a".repeat(64);
+    let signatures = vec![fake_sig; 257];
+    let resp = rpc_p(
+        &app,
+        "/solana-compat",
+        "getSignatureStatuses",
+        json!([signatures]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["error"]["code"], -32602);
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Too many signatures"),
+        "unexpected response: {resp:?}"
+    );
 }
 
 #[tokio::test]

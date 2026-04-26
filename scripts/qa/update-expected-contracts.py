@@ -8,7 +8,9 @@ from typing import List, Set
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 GENESIS_LIB = ROOT / "genesis" / "src" / "lib.rs"
+CONTRACTS_DIR = ROOT / "contracts"
 DEFAULT_OUTPUT = ROOT / "scripts" / "qa" / "expected-contracts.json"
+KNOWN_NON_GENESIS_CONTRACTS = {"mt20_token"}
 
 
 def discover_contracts() -> List[str]:
@@ -33,6 +35,16 @@ def discover_contracts() -> List[str]:
         if name not in discovered:
             discovered.append(name)
     return sorted(discovered)
+
+
+def discover_contract_dirs() -> List[str]:
+    if not CONTRACTS_DIR.exists():
+        return []
+    return sorted(
+        path.parent.name
+        for path in CONTRACTS_DIR.glob("*/Cargo.toml")
+        if path.parent.is_dir()
+    )
 
 
 def load_existing(path: Path) -> List[str]:
@@ -73,6 +85,12 @@ def main() -> int:
 
     out_path = Path(args.output).resolve()
     discovered = discover_contracts()
+    contract_dirs = discover_contract_dirs()
+    discovered_set = set(discovered)
+    contract_dir_set = set(contract_dirs)
+    missing_dirs = sorted(discovered_set - contract_dir_set)
+    non_genesis = sorted(contract_dir_set - discovered_set)
+    unexpected_non_genesis = sorted(set(non_genesis) - KNOWN_NON_GENESIS_CONTRACTS)
 
     if args.names_only:
         for name in discovered:
@@ -84,6 +102,7 @@ def main() -> int:
 
     print(f"Discovered contracts: {len(discovered)}")
     print(f"Lockfile contracts:   {len(existing)}")
+    print(f"Contract directories: {len(contract_dirs)}")
 
     if missing:
         print("\nMissing from lockfile (add):")
@@ -93,6 +112,15 @@ def main() -> int:
         print("\nStale in lockfile (remove):")
         for name in stale:
             print(f"  - {name}")
+    if missing_dirs:
+        print("\nCatalog entries missing contract directories:")
+        for name in missing_dirs:
+            print(f"  ! {name}")
+    if non_genesis:
+        print("\nIn-tree contracts outside genesis catalog:")
+        for name in non_genesis:
+            marker = "known" if name in KNOWN_NON_GENESIS_CONTRACTS else "unexpected"
+            print(f"  - {name} ({marker})")
     if not missing and not stale:
         print("\nLockfile is up to date.")
 
@@ -100,7 +128,7 @@ def main() -> int:
         write_output(out_path, discovered)
         print(f"\nWrote {out_path}")
 
-    if args.check and (missing or stale):
+    if args.check and (missing or stale or missing_dirs or unexpected_non_genesis):
         return 1
     return 0
 

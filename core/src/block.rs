@@ -632,26 +632,13 @@ impl Block {
             }
         }
 
-        // Check serialized size estimate (header + all txs)
-        let estimated_size = self
-            .transactions
-            .iter()
-            .map(|tx| {
-                tx.message
-                    .instructions
-                    .iter()
-                    .map(|ix| 32 + 8 + ix.data.len() + ix.accounts.len() * 32)
-                    .sum::<usize>()
-                    + tx.signatures.len() * 64
-                    + 32
-            })
-            .sum::<usize>()
-            + 256; // 256 bytes for header overhead
+        let serialized_size = bincode::serialized_size(self)
+            .map_err(|e| format!("Block serialization size check failed: {}", e))?;
 
-        if estimated_size > MAX_BLOCK_SIZE {
+        if serialized_size > MAX_BLOCK_SIZE as u64 {
             return Err(format!(
-                "Block too large: ~{} bytes (max {})",
-                estimated_size, MAX_BLOCK_SIZE
+                "Block too large: {} bytes (max {})",
+                serialized_size, MAX_BLOCK_SIZE
             ));
         }
 
@@ -880,6 +867,37 @@ mod tests {
         let result = block.validate_structure();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("data too large"));
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_actual_pq_serialized_size_over_limit() {
+        use crate::transaction::{Instruction, Message, Transaction};
+
+        let signature = test_signature(0x42);
+        let signer = crate::Pubkey([1u8; 32]);
+        let mut txs = Vec::new();
+
+        for _ in 0..2_100 {
+            let ix = Instruction {
+                program_id: crate::Pubkey([0u8; 32]),
+                accounts: vec![signer],
+                data: vec![0u8],
+            };
+            let mut tx = Transaction::new(Message::new(vec![ix], Hash::default()));
+            tx.signatures.push(signature.clone());
+            txs.push(tx);
+        }
+
+        let block = Block::new(1, Hash::default(), Hash::default(), [0u8; 32], txs);
+        let actual_size = bincode::serialized_size(&block).unwrap();
+
+        assert!(
+            actual_size > MAX_BLOCK_SIZE as u64,
+            "test fixture must exceed the protocol block-size cap"
+        );
+        let result = block.validate_structure();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Block too large"));
     }
 
     // ── AUDIT-FIX A2-01: Deterministic timestamp tests ──

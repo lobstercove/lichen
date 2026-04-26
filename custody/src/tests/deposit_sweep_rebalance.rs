@@ -78,11 +78,6 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth()
     .await
     .expect("first deposit creation should succeed");
 
-    {
-        let mut dr = state.deposit_rate.lock().await;
-        dr.per_user.clear();
-    }
-
     let second = create_deposit(
         State(state.clone()),
         test_auth_headers(),
@@ -98,6 +93,9 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth()
 
     assert_eq!(first.0.deposit_id, second.0.deposit_id);
     assert_eq!(first.0.address, second.0.address);
+
+    let dr = state.deposit_rate.lock().await;
+    assert_eq!(dr.count_this_minute, 1);
 }
 
 #[tokio::test]
@@ -224,11 +222,27 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
         .with_state(state);
     let base_url = spawn_mock_server(app).await;
     let (user_id, auth) = test_bridge_access_auth_payload(23);
+    let keypair = Keypair::from_seed(&[23; 32]);
+    let second_issued_at = current_unix_secs().unwrap().saturating_sub(1);
+    let second_expires_at = second_issued_at + 600;
+    let second_message = bridge_access_message(&user_id, second_issued_at, second_expires_at);
+    let second_auth = json!({
+        "issued_at": second_issued_at,
+        "expires_at": second_expires_at,
+        "signature": serde_json::to_value(keypair.sign(&second_message))
+            .expect("encode second bridge auth signature"),
+    });
     let payload = json!({
         "user_id": user_id,
         "chain": "solana",
         "asset": "sol",
         "auth": auth,
+    });
+    let second_payload = json!({
+        "user_id": payload["user_id"].clone(),
+        "chain": "solana",
+        "asset": "sol",
+        "auth": second_auth,
     });
     let client = reqwest::Client::new();
 
@@ -244,7 +258,7 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
     let second = client
         .post(format!("{}/deposits", base_url))
         .header("Authorization", "Bearer test_api_token")
-        .json(&payload)
+        .json(&second_payload)
         .send()
         .await
         .expect("send second deposit request");
@@ -555,6 +569,58 @@ async fn test_reserve_ledger_adjust_increment() {
     // Different asset on same chain
     assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 0);
     let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_1");
+}
+
+#[tokio::test]
+async fn test_reserve_ledger_adjust_once_deduplicates_movement() {
+    let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_once");
+    let db = open_db("/tmp/test_custody_reserve_once").unwrap();
+
+    let first =
+        adjust_reserve_balance_once(&db, "ethereum", "usdt", 500_000, true, "sweep:test-once")
+            .await
+            .expect("first reserve movement");
+    let duplicate =
+        adjust_reserve_balance_once(&db, "ethereum", "usdt", 500_000, true, "sweep:test-once")
+            .await
+            .expect("duplicate reserve movement");
+
+    assert!(first);
+    assert!(!duplicate);
+    assert_eq!(
+        get_reserve_balance(&db, "ethereum", "usdt").unwrap(),
+        500_000
+    );
+
+    let debit = adjust_reserve_balance_once(
+        &db,
+        "ethereum",
+        "usdt",
+        200_000,
+        false,
+        "withdrawal:test-once",
+    )
+    .await
+    .expect("first reserve debit");
+    let duplicate_debit = adjust_reserve_balance_once(
+        &db,
+        "ethereum",
+        "usdt",
+        200_000,
+        false,
+        "withdrawal:test-once",
+    )
+    .await
+    .expect("duplicate reserve debit");
+
+    assert!(debit);
+    assert!(!duplicate_debit);
+    assert_eq!(
+        get_reserve_balance(&db, "ethereum", "usdt").unwrap(),
+        300_000
+    );
+
+    let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_once");
 }
 
 #[tokio::test]

@@ -402,8 +402,8 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
-/// Record a trade (called by dex_core after settlement, or directly by trader)
-/// Returns: 0=success
+/// Record a trade (called by dex_core after settlement)
+/// Returns: 0=success, 1=invalid input, 2=paused, 3=reentrancy, 200=unauthorized
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
     // SECURITY-FIX: Check pause state before recording
     if is_paused() {
@@ -412,7 +412,7 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     if !reentrancy_enter() {
         return 3;
     }
-    if price == 0 || volume == 0 {
+    if pair_id == 0 || price == 0 || volume == 0 {
         reentrancy_exit();
         return 1;
     }
@@ -422,10 +422,16 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
     }
-    // F18.2: Accept calls from either the trader themselves OR an authorized contract (dex_core)
+    if is_zero(&t) {
+        reentrancy_exit();
+        return 1;
+    }
+
+    // F18.2: Only the authorized contract can ingest analytics records.
+    // Direct user writes would let any wallet spoof prices, volume, and PnL.
     let real_caller = get_caller();
     let authorized = load_addr(AUTHORIZED_CALLER_KEY);
-    if real_caller.0 != t && (is_zero(&authorized) || real_caller.0 != authorized) {
+    if is_zero(&authorized) || real_caller.0 != authorized {
         reentrancy_exit();
         return 200;
     }
@@ -446,7 +452,7 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
 
     // Increment record count
     let count = load_u64(TRADE_RECORD_COUNT_KEY);
-    save_u64(TRADE_RECORD_COUNT_KEY, count + 1);
+    save_u64(TRADE_RECORD_COUNT_KEY, count.saturating_add(1));
 
     reentrancy_exit();
     0
@@ -454,6 +460,8 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
 
 /// F18.10: Record realized PnL for a trader (called after margin position close/liquidation)
 /// pnl_biased: PNL_BIAS + signed_pnl. Value > PNL_BIAS means profit, < PNL_BIAS means loss.
+/// Returns: 0=success, 1=invalid input, 2=paused, 3=reentrancy,
+///          4=PnL overflow, 200=unauthorized
 pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
     if is_paused() {
         return 2;
@@ -466,10 +474,14 @@ pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
     }
-    // Accept calls from trader themselves or authorized caller (dex_margin)
+    if is_zero(&t) {
+        reentrancy_exit();
+        return 1;
+    }
+    // Accept calls only from the configured DEX analytics producer.
     let real_caller = get_caller();
     let authorized = load_addr(AUTHORIZED_CALLER_KEY);
-    if real_caller.0 != t && (is_zero(&authorized) || real_caller.0 != authorized) {
+    if is_zero(&authorized) || real_caller.0 != authorized {
         reentrancy_exit();
         return 200;
     }
@@ -492,7 +504,12 @@ pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
     // Apply PnL delta: both are biased values, so subtract one PNL_BIAS to stay in biased space
     // new_pnl = current_pnl + (pnl_biased - PNL_BIAS)
     let pnl_delta_signed = (pnl_biased as i128) - (PNL_BIAS as i128);
-    let new_pnl = ((current_pnl as i128) + pnl_delta_signed) as u64;
+    let new_pnl_signed = (current_pnl as i128) + pnl_delta_signed;
+    if new_pnl_signed < 0 || new_pnl_signed > u64::MAX as i128 {
+        reentrancy_exit();
+        return 4;
+    }
+    let new_pnl = new_pnl_signed as u64;
 
     let stats = encode_trader_stats(vol, trades, new_pnl, last_slot);
     storage_set(&tk, &stats);
@@ -515,14 +532,14 @@ fn update_24h_stats(pair_id: u64, price: u64, volume: u64) {
         _ => (0, 0, u64::MAX, price, price, 0), // first trade
     };
 
-    vol += volume;
+    vol = vol.saturating_add(volume);
     if price > high {
         high = price;
     }
     if price < low {
         low = price;
     }
-    trades += 1;
+    trades = trades.saturating_add(1);
 
     let stats = encode_stats(vol, high, low, open, price, trades);
     storage_set(&sk, &stats);
@@ -554,7 +571,7 @@ fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_s
                     data[16..24].copy_from_slice(&u64_to_bytes(price));
                 }
                 data[24..32].copy_from_slice(&u64_to_bytes(price)); // close
-                data[32..40].copy_from_slice(&u64_to_bytes(vol + volume));
+                data[32..40].copy_from_slice(&u64_to_bytes(vol.saturating_add(volume)));
                 storage_set(&ck, &data);
             }
         }
@@ -562,7 +579,7 @@ fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_s
         // New candle
         save_u64(&cur_key, candle_start_slot);
         let count = load_u64(&candle_count_key(pair_id, interval));
-        let new_count = count + 1;
+        let new_count = count.saturating_add(1);
         // F18.3: Enforce candle retention via modular indexing
         let max_candles = get_retention(interval);
         let write_idx = if max_candles > 0 && max_candles != u64::MAX {
@@ -586,17 +603,20 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
         ),
         _ => {
             // First trade for this trader — increment unique trader count
-            save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY) + 1);
+            save_u64(
+                TRADER_COUNT_KEY,
+                load_u64(TRADER_COUNT_KEY).saturating_add(1),
+            );
             (0, 0, PNL_BIAS)
         }
     };
-    let new_volume = vol + volume;
+    let new_volume = vol.saturating_add(volume);
     // Track global cumulative volume
     save_u64(
         TOTAL_VOLUME_KEY,
         load_u64(TOTAL_VOLUME_KEY).saturating_add(volume),
     );
-    let stats = encode_trader_stats(new_volume, trades + 1, pnl, slot);
+    let stats = encode_trader_stats(new_volume, trades.saturating_add(1), pnl, slot);
     storage_set(&tk, &stats);
 
     // F18.9: Leaderboard maintenance — insert/promote trader if volume qualifies
@@ -971,12 +991,34 @@ mod tests {
     use super::*;
     use lichen_sdk::test_mock;
 
-    fn setup() -> [u8; 32] {
+    const TEST_AUTHORIZED_CALLER: [u8; 32] = [0xFFu8; 32];
+
+    fn setup_no_auth() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
+    }
+
+    fn setup() -> [u8; 32] {
+        let admin = setup_no_auth();
+        test_mock::set_caller(admin);
+        assert_eq!(
+            set_authorized_caller(admin.as_ptr(), TEST_AUTHORIZED_CALLER.as_ptr()),
+            0
+        );
+        admin
+    }
+
+    fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
+        test_mock::set_caller(TEST_AUTHORIZED_CALLER);
+        super::record_trade(pair_id, price, volume, trader)
+    }
+
+    fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
+        test_mock::set_caller(TEST_AUTHORIZED_CALLER);
+        super::record_pnl(trader, pnl_biased)
     }
 
     #[test]
@@ -1011,8 +1053,59 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
+        assert_eq!(record_trade(0, 1_000, 5_000, trader.as_ptr()), 1);
         assert_eq!(record_trade(1, 0, 5_000, trader.as_ptr()), 1);
         assert_eq!(record_trade(1, 1_000, 0, trader.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_record_trade_rejects_direct_trader_and_unconfigured_auth() {
+        let trader = [2u8; 32];
+
+        let _admin = setup_no_auth();
+        test_mock::set_caller(trader);
+        assert_eq!(
+            super::record_trade(1, 1_000_000_000, 5_000, trader.as_ptr()),
+            200
+        );
+        assert_eq!(get_record_count(), 0);
+
+        let _admin = setup();
+        test_mock::set_caller(trader);
+        assert_eq!(
+            super::record_trade(1, 1_000_000_000, 5_000, trader.as_ptr()),
+            200
+        );
+        assert_eq!(get_record_count(), 0);
+    }
+
+    #[test]
+    fn test_record_trade_saturates_counters_without_wrapping() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        save_u64(TRADE_RECORD_COUNT_KEY, u64::MAX);
+        save_u64(TOTAL_VOLUME_KEY, u64::MAX - 1);
+        assert_eq!(record_trade(1, 1_000_000_000, 5_000, trader.as_ptr()), 0);
+        assert_eq!(get_record_count(), u64::MAX);
+        assert_eq!(load_u64(TOTAL_VOLUME_KEY), u64::MAX);
+    }
+
+    #[test]
+    fn test_record_pnl_requires_authorized_caller_and_checks_bounds() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(super::record_pnl(trader.as_ptr(), PNL_BIAS + 100), 200);
+
+        assert_eq!(record_pnl(trader.as_ptr(), PNL_BIAS + 100), 0);
+        let tk = trader_stats_key(&trader);
+        let data = storage_get(&tk).unwrap();
+        assert_eq!(decode_ts_pnl(&data), PNL_BIAS + 100);
+
+        storage_set(&tk, &encode_trader_stats(0, 0, u64::MAX, 0));
+        assert_eq!(record_pnl(trader.as_ptr(), PNL_BIAS + 1), 4);
+        let data = storage_get(&tk).unwrap();
+        assert_eq!(decode_ts_pnl(&data), u64::MAX);
     }
 
     #[test]
@@ -1184,7 +1277,7 @@ mod tests {
 
     #[test]
     fn test_set_authorized_caller_zero_rejected_and_cannot_reconfigure() {
-        let admin = setup();
+        let admin = setup_no_auth();
         let first = [7u8; 32];
         let second = [8u8; 32];
 

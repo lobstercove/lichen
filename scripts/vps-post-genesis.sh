@@ -60,6 +60,23 @@ fi
 GENESIS_KEYS_DIR="$VPS_STATE/state-$NETWORK/genesis-keys"
 CUSTODY_KEY_TARGET="$VPS_CONFIG/custody-treasury-$NETWORK.json"
 FAUCET_KEY_TARGET="$VPS_STATE/faucet-keypair-$NETWORK.json"
+case "$NETWORK" in
+	testnet)
+		CUSTODY_DB_NAME="custody-db"
+		CUSTODY_SERVICE="lichen-custody"
+		FAUCET_ENABLED=true
+		;;
+	mainnet)
+		CUSTODY_DB_NAME="custody-db-mainnet"
+		CUSTODY_SERVICE="lichen-custody-mainnet"
+		FAUCET_ENABLED=false
+		;;
+	*)
+		echo -e "${RED}Unsupported network: $NETWORK${NC}"
+		exit 1
+		;;
+esac
+CUSTODY_DB_PATH="$VPS_STATE/$CUSTODY_DB_NAME"
 if ! sudo test -d "$GENESIS_KEYS_DIR"; then
 	echo -e "${RED}Genesis keys not yet created: $GENESIS_KEYS_DIR${NC}"
 	echo "  The validator must complete genesis first. Wait 30s after starting it."
@@ -101,20 +118,24 @@ else
 fi
 
 # ── 2. Faucet keypair ──
-FAUCET_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "faucet-*.json" -type f 2>/dev/null | head -1)
-FAUCET_SOURCE_LABEL="faucet keypair"
-if [ -z "$FAUCET_KEY" ]; then
-	FAUCET_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "treasury-*.json" -type f 2>/dev/null | head -1)
-	FAUCET_SOURCE_LABEL="treasury fallback"
-fi
-if [ -n "$FAUCET_KEY" ]; then
-	sudo install -m 600 -o lichen -g lichen "$FAUCET_KEY" "$FAUCET_KEY_TARGET"
+if [ "$FAUCET_ENABLED" = true ]; then
+	FAUCET_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "faucet-*.json" -type f 2>/dev/null | head -1)
+	FAUCET_SOURCE_LABEL="faucet keypair"
+	if [ -z "$FAUCET_KEY" ]; then
+		FAUCET_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "treasury-*.json" -type f 2>/dev/null | head -1)
+		FAUCET_SOURCE_LABEL="treasury fallback"
+	fi
+	if [ -n "$FAUCET_KEY" ]; then
+		sudo install -m 600 -o lichen -g lichen "$FAUCET_KEY" "$FAUCET_KEY_TARGET"
 
-	FAUCET_PK=$(read_keypair_pubkey "$FAUCET_KEY")
-	echo -e "  ${GREEN}✓${NC} Faucet keypair ($FAUCET_SOURCE_LABEL): $FAUCET_PK"
-	echo -e "    $FAUCET_KEY → $FAUCET_KEY_TARGET"
+		FAUCET_PK=$(read_keypair_pubkey "$FAUCET_KEY")
+		echo -e "  ${GREEN}✓${NC} Faucet keypair ($FAUCET_SOURCE_LABEL): $FAUCET_PK"
+		echo -e "    $FAUCET_KEY → $FAUCET_KEY_TARGET"
+	else
+		echo -e "  ${YELLOW}⚠${NC} Faucet keypair not found (faucet may not work)"
+	fi
 else
-	echo -e "  ${YELLOW}⚠${NC} Faucet keypair not found (faucet may not work)"
+	echo -e "  ${YELLOW}⚠${NC} Faucet keypair skipped on mainnet"
 fi
 
 # ── 3. Copy to repo keypairs/ for convenience ──
@@ -127,18 +148,20 @@ if [ -d "$REPO_ROOT" ] && [ -n "$GENESIS_KEY" ]; then
 fi
 
 # ── 4. Ensure custody-db exists ──
-if [ ! -d "$VPS_STATE/custody-db" ]; then
-	sudo mkdir -p "$VPS_STATE/custody-db"
-	sudo chown lichen:lichen "$VPS_STATE/custody-db"
-	echo -e "  ${GREEN}✓${NC} Created $VPS_STATE/custody-db"
+if [ ! -d "$CUSTODY_DB_PATH" ]; then
+	sudo mkdir -p "$CUSTODY_DB_PATH"
+	sudo chown lichen:lichen "$CUSTODY_DB_PATH"
+	echo -e "  ${GREEN}✓${NC} Created $CUSTODY_DB_PATH"
 fi
 
 # ── 5. Restart services ──
 if [ "$DO_RESTART" = true ]; then
 	echo ""
 	echo -e "  Restarting services..."
-	sudo systemctl restart lichen-custody 2>/dev/null && echo -e "  ${GREEN}✓${NC} custody restarted" || echo -e "  ${YELLOW}⚠${NC} custody restart failed"
-	sudo systemctl restart lichen-faucet 2>/dev/null && echo -e "  ${GREEN}✓${NC} faucet restarted" || echo -e "  ${YELLOW}⚠${NC} faucet restart failed"
+	sudo systemctl restart "$CUSTODY_SERVICE" 2>/dev/null && echo -e "  ${GREEN}✓${NC} $CUSTODY_SERVICE restarted" || echo -e "  ${YELLOW}⚠${NC} $CUSTODY_SERVICE restart failed"
+	if [ "$FAUCET_ENABLED" = true ]; then
+		sudo systemctl restart lichen-faucet 2>/dev/null && echo -e "  ${GREEN}✓${NC} faucet restarted" || echo -e "  ${YELLOW}⚠${NC} faucet restart failed"
+	fi
 fi
 
 # ── 6. Distribute genesis-keys to joining VPSes ──

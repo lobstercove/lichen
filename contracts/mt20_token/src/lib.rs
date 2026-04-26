@@ -22,6 +22,10 @@ fn read_address(ptr: *const u8) -> [u8; 32] {
     out
 }
 
+fn is_zero_address(address: &[u8; 32]) -> bool {
+    address.iter().all(|&byte| byte == 0)
+}
+
 fn load_owner() -> Option<[u8; 32]> {
     storage_get(OWNER_KEY).and_then(|bytes| {
         if bytes.len() < 32 {
@@ -51,6 +55,9 @@ fn map_contract_error(err: ContractError) -> u32 {
 #[no_mangle]
 pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     let owner = read_address(owner_ptr);
+    if is_zero_address(&owner) {
+        return 2;
+    }
     if get_caller().0 != owner {
         return 200;
     }
@@ -229,6 +236,16 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize_zero_owner_fails() {
+        test_mock::reset();
+        let owner = [0u8; 32];
+        test_mock::set_caller(owner);
+
+        assert_eq!(initialize(owner.as_ptr()), 2);
+        assert_eq!(load_owner(), None);
+    }
+
+    #[test]
     fn test_owner_can_mint_and_transfer() {
         test_mock::reset();
         let owner = addr(1);
@@ -259,6 +276,40 @@ mod tests {
         assert_eq!(mint(attacker.as_ptr(), recipient.as_ptr(), 1_000), 1);
         assert_eq!(balance_of(recipient.as_ptr()), 0);
         assert_eq!(total_supply(), 0);
+    }
+
+    #[test]
+    fn test_self_transfer_does_not_inflate_balance() {
+        test_mock::reset();
+        let owner = addr(1);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(mint(owner.as_ptr(), owner.as_ptr(), 500), 0);
+
+        assert_eq!(transfer(owner.as_ptr(), owner.as_ptr(), 200), 5);
+        assert_eq!(balance_of(owner.as_ptr()), 500);
+        assert_eq!(total_supply(), 500);
+    }
+
+    #[test]
+    fn test_transfer_from_failure_preserves_allowance() {
+        test_mock::reset();
+        let owner = addr(1);
+        let spender = addr(2);
+        let recipient = addr(3);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(mint(owner.as_ptr(), owner.as_ptr(), 50), 0);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 100), 0);
+
+        test_mock::set_caller(spender);
+        assert_eq!(
+            transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 60),
+            2
+        );
+        assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 100);
+        assert_eq!(balance_of(owner.as_ptr()), 50);
+        assert_eq!(balance_of(recipient.as_ptr()), 0);
     }
 
     #[test]

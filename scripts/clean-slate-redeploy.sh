@@ -48,10 +48,30 @@ STATE_DIR="state-${NETWORK}"
 SERVICE="lichen-validator-${NETWORK}"
 
 case $NETWORK in
-  testnet) RPC_PORT=8899 ;;
-  mainnet) RPC_PORT=9899 ;;
+  testnet)
+    RPC_PORT=8899
+    CUSTODY_SERVICE="lichen-custody"
+    CUSTODY_DB_NAME="custody-db"
+    CUSTODY_PORT=9105
+    FAUCET_ENABLED=1
+    CF_RPC_URL="https://testnet-rpc.lichen.network"
+    CF_RPC_LABEL="testnet-rpc.lichen.network"
+    ;;
+  mainnet)
+    RPC_PORT=9899
+    CUSTODY_SERVICE="lichen-custody-mainnet"
+    CUSTODY_DB_NAME="custody-db-mainnet"
+    CUSTODY_PORT=9106
+    FAUCET_ENABLED=0
+    CF_RPC_URL="https://rpc.lichen.network"
+    CF_RPC_LABEL="rpc.lichen.network"
+    ;;
   *) echo "Usage: $0 [testnet|mainnet]"; exit 1 ;;
 esac
+CUSTODY_DB_PATH="$VPS_DATA/$CUSTODY_DB_NAME"
+VPS_CONFIRMATION_LIST="${ALL_VPSES[*]}"
+VPS_CONFIRMATION_LIST="${VPS_CONFIRMATION_LIST// /,}"
+REDEPLOY_CONFIRMATION="clean-slate:${NETWORK}:${VPS_CONFIRMATION_LIST}"
 
 # ── Colors ──
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -97,9 +117,25 @@ ssh_pipe() {
     | ssh $SSH_OPTS $SSH_USER@"$dst" "$dst_cmd"
 }
 
+require_redeploy_confirmation() {
+  if [ "${LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM:-}" = "$REDEPLOY_CONFIRMATION" ]; then
+    return 0
+  fi
+
+  echo -e "${RED}Refusing clean-slate redeploy without explicit confirmation.${NC}"
+  echo "This stops services and deletes $VPS_DATA/$STATE_DIR, $VPS_DATA/.lichen, and $CUSTODY_DB_PATH on:"
+  printf '  - %s\n' "${ALL_VPSES[@]}"
+  echo ""
+  echo "To continue, set:"
+  echo "  export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='$REDEPLOY_CONFIRMATION'"
+  exit 1
+}
+
 # ── Preflight checks ──
 echo -e "${BOLD}Lichen Clean-Slate Redeploy ($NETWORK)${NC}"
 echo ""
+
+require_redeploy_confirmation
 
 if [ ! -f keypairs/release-signing-key.json ]; then
   echo -e "${RED}Missing keypairs/release-signing-key.json${NC}"
@@ -144,14 +180,14 @@ for VPS in "${ALL_VPSES[@]}"; do
   ssh_run "$VPS" "
     sudo rm -rf $VPS_DATA/$STATE_DIR
     sudo rm -rf $VPS_DATA/.lichen
-    sudo rm -rf $VPS_DATA/custody-db
+    sudo rm -rf $CUSTODY_DB_PATH
     sudo rm -f $VPS_CONFIG/signed-metadata-manifest-${NETWORK}.json
     sudo rm -f $VPS_CONFIG/custody-treasury-${NETWORK}.json
     sudo rm -f $VPS_DATA/faucet-keypair-${NETWORK}.json
     sudo mkdir -p $VPS_DATA/$STATE_DIR
     sudo chown lichen:lichen $VPS_DATA/$STATE_DIR
-    sudo mkdir -p $VPS_DATA/custody-db
-    sudo chown lichen:lichen $VPS_DATA/custody-db
+    sudo mkdir -p $CUSTODY_DB_PATH
+    sudo chown lichen:lichen $CUSTODY_DB_PATH
   "
 done
 phase_done
@@ -344,10 +380,12 @@ sudo bash -c "openssl rand -hex 32 > /etc/lichen/secrets/custody-deposit-seed-$N
 sudo chown root:lichen /etc/lichen/secrets/custody-*-seed-$NETWORK.txt
 sudo chmod 640 /etc/lichen/secrets/custody-*-seed-$NETWORK.txt
 
-# 7. Start custody and faucet
-echo "  Starting custody and faucet..."
-sudo systemctl start lichen-custody
-sudo systemctl start lichen-faucet
+# 7. Start network-specific services
+echo "  Starting $CUSTODY_SERVICE..."
+sudo systemctl start $CUSTODY_SERVICE
+if [ "$FAUCET_ENABLED" = "1" ]; then
+  sudo systemctl start lichen-faucet
+fi
 sleep 3
 
 # 8. Quick verify
@@ -384,6 +422,10 @@ ssh_run "$GENESIS_VPS" "sudo systemctl stop $SERVICE"
 echo "  Creating state + secrets bundle on $GENESIS_VPS..."
 ssh_run "$GENESIS_VPS" "
   cd /
+  FAUCET_BUNDLE_ARGS=''
+  if [ '$FAUCET_ENABLED' = '1' ]; then
+    FAUCET_BUNDLE_ARGS='var/lib/lichen/faucet-keypair-${NETWORK}.json'
+  fi
   sudo tar czf /tmp/lichen-state-bundle.tar.gz \
     --exclude='validator-keypair.json' \
     --exclude='signer-keypair.json' \
@@ -394,7 +436,7 @@ ssh_run "$GENESIS_VPS" "
     --exclude='known-peers.json' \
     --exclude='logs' \
     var/lib/lichen/$STATE_DIR/ \
-    var/lib/lichen/faucet-keypair-${NETWORK}.json \
+    \$FAUCET_BUNDLE_ARGS \
     etc/lichen/secrets/custody-master-seed-${NETWORK}.txt \
     etc/lichen/secrets/custody-deposit-seed-${NETWORK}.txt \
     etc/lichen/signed-metadata-manifest-${NETWORK}.json \
@@ -408,7 +450,12 @@ ssh_run "$GENESIS_VPS" "
 # Restart genesis validator immediately
 echo "  Restarting genesis validator..."
 ssh_run "$GENESIS_VPS" "sudo systemctl start $SERVICE"
-ssh_run "$GENESIS_VPS" "sudo systemctl start lichen-custody lichen-faucet"
+ssh_run "$GENESIS_VPS" "
+  sudo systemctl start $CUSTODY_SERVICE
+  if [ '$FAUCET_ENABLED' = '1' ]; then
+    sudo systemctl start lichen-faucet
+  fi
+"
 
 for VPS in "${JOINING_VPSES[@]}"; do
   echo "  Distributing state + secrets to $VPS..."
@@ -422,8 +469,10 @@ for VPS in "${JOINING_VPSES[@]}"; do
      sudo chown -R lichen:lichen $VPS_DATA/$STATE_DIR/ && \
      sudo chmod 640 $VPS_DATA/$STATE_DIR/genesis-wallet.json && \
      sudo find $VPS_DATA/$STATE_DIR/genesis-keys -type f -exec chmod 640 {} + && \
-     sudo chown lichen:lichen $VPS_DATA/faucet-keypair-${NETWORK}.json && \
-     sudo chmod 600 $VPS_DATA/faucet-keypair-${NETWORK}.json && \
+     if [ '$FAUCET_ENABLED' = '1' ]; then \
+       sudo chown lichen:lichen $VPS_DATA/faucet-keypair-${NETWORK}.json && \
+       sudo chmod 600 $VPS_DATA/faucet-keypair-${NETWORK}.json; \
+     fi && \
      sudo chown root:lichen $VPS_CONFIG/secrets/custody-master-seed-${NETWORK}.txt && \
      sudo chmod 640 $VPS_CONFIG/secrets/custody-master-seed-${NETWORK}.txt && \
      sudo chown root:lichen $VPS_CONFIG/secrets/custody-deposit-seed-${NETWORK}.txt && \
@@ -489,8 +538,10 @@ for VPS in "${JOINING_VPSES[@]}"; do
     echo "  Health: $HEALTH"
 
     # Start custody + faucet
-    sudo systemctl start lichen-custody
-    sudo systemctl start lichen-faucet
+    sudo systemctl start '"$CUSTODY_SERVICE"'
+    if [ '"$FAUCET_ENABLED"' = "1" ]; then
+      sudo systemctl start lichen-faucet
+    fi
     echo "  Services started"
   '
 done
@@ -530,18 +581,20 @@ for VPS in "${ALL_VPSES[@]}"; do
 
   # Custody/Faucet on genesis VPS remain required after the snapshot restart.
   if [ "$VPS" = "$GENESIS_VPS" ]; then
-    if ssh_run "$VPS" "curl -sf http://127.0.0.1:9105/health" >/dev/null 2>&1; then
+    if ssh_run "$VPS" "curl -sf http://127.0.0.1:$CUSTODY_PORT/health" >/dev/null 2>&1; then
       echo -e "  ${GREEN}✓${NC} Custody: healthy"
     else
       echo -e "  ${RED}✗${NC} Custody: unavailable"
       ALL_GOOD=false
     fi
 
-    if ssh_run "$VPS" "curl -sf http://127.0.0.1:9100/health" >/dev/null 2>&1; then
-      echo -e "  ${GREEN}✓${NC} Faucet: healthy"
-    else
-      echo -e "  ${RED}✗${NC} Faucet: unavailable"
-      ALL_GOOD=false
+    if [ "$FAUCET_ENABLED" = "1" ]; then
+      if ssh_run "$VPS" "curl -sf http://127.0.0.1:9100/health" >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} Faucet: healthy"
+      else
+        echo -e "  ${RED}✗${NC} Faucet: unavailable"
+        ALL_GOOD=false
+      fi
     fi
   fi
 
@@ -564,8 +617,8 @@ done
 
 # Verify via Cloudflare (external)
 echo ""
-echo "  === Cloudflare (testnet-rpc.lichen.network) ==="
-CF_HEALTH=$(curl -sf https://testnet-rpc.lichen.network -X POST -H "Content-Type: application/json" \
+echo "  === Cloudflare (${CF_RPC_LABEL}) ==="
+CF_HEALTH=$(curl -sf "$CF_RPC_URL" -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' 2>/dev/null || echo "FAIL")
 if echo "$CF_HEALTH" | grep -qi 'ok'; then
   echo -e "  ${GREEN}✓${NC} Cloudflare health: OK"
@@ -574,7 +627,7 @@ else
   ALL_GOOD=false
 fi
 
-CF_AIRDROP=$(curl -sf https://testnet-rpc.lichen.network -X POST -H "Content-Type: application/json" \
+CF_AIRDROP=$(curl -sf "$CF_RPC_URL" -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"requestAirdrop","params":["11111111111111111111111111111111", 1000000000]}' 2>/dev/null || echo "FAIL")
 if echo "$CF_AIRDROP" | grep -q "Treasury keypair not configured"; then
   echo -e "  ${RED}✗${NC} Cloudflare treasury: NOT CONFIGURED"

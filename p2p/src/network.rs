@@ -8,13 +8,20 @@ use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
 use lichen_core::{
     Block, BlockHeader, CommitSignature, PqSignature, Precommit, Prevote, Proposal, Pubkey,
-    StakePool, Transaction, ValidatorSet, Vote,
+    StakePool, Transaction, ValidatorSet, Vote, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+const MAX_BLOCK_RANGE_REQUEST_SPAN: u64 = 500;
+const MAX_BLOCK_RANGE_RESPONSE_BLOCKS: usize = 500;
+const MAX_COMPACT_BLOCK_TX_IDS: usize = MAX_TX_PER_BLOCK;
+const MAX_GET_BLOCK_TXS_HASHES: usize = MAX_TX_PER_BLOCK;
+const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
+const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
 
 fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -46,6 +53,118 @@ fn supplemental_kademlia_peer_infos(
             validator_pubkey: None,
         })
         .collect()
+}
+
+fn validate_block_for_p2p_admission(block: &Block) -> Result<(), String> {
+    block
+        .validate_structure()
+        .map_err(|err| format!("invalid block structure: {}", err))
+}
+
+fn validate_transaction_for_p2p_admission(tx: &Transaction) -> Result<(), String> {
+    tx.validate_structure()
+        .map_err(|err| format!("invalid transaction structure: {}", err))
+}
+
+fn validate_compact_block_for_p2p_admission(
+    compact_block: &crate::message::CompactBlock,
+) -> Result<(), String> {
+    if compact_block.short_ids.len() > MAX_COMPACT_BLOCK_TX_IDS {
+        return Err(format!(
+            "compact block has {} short tx ids (max {})",
+            compact_block.short_ids.len(),
+            MAX_COMPACT_BLOCK_TX_IDS
+        ));
+    }
+    if compact_block.tx_fees_paid.len() > MAX_COMPACT_BLOCK_TX_IDS {
+        return Err(format!(
+            "compact block has {} fee entries (max {})",
+            compact_block.tx_fees_paid.len(),
+            MAX_COMPACT_BLOCK_TX_IDS
+        ));
+    }
+    let serialized_size = bincode::serialized_size(compact_block)
+        .map_err(|err| format!("compact block size check failed: {}", err))?;
+    if serialized_size > MAX_BLOCK_SIZE as u64 {
+        return Err(format!(
+            "compact block too large: {} bytes (max {})",
+            serialized_size, MAX_BLOCK_SIZE
+        ));
+    }
+    Ok(())
+}
+
+fn validate_get_block_txs_for_p2p_admission(
+    missing_hashes: &[lichen_core::Hash],
+) -> Result<(), String> {
+    if missing_hashes.len() > MAX_GET_BLOCK_TXS_HASHES {
+        return Err(format!(
+            "GetBlockTxs has {} hashes (max {})",
+            missing_hashes.len(),
+            MAX_GET_BLOCK_TXS_HASHES
+        ));
+    }
+    Ok(())
+}
+
+fn validate_block_txs_for_p2p_admission(transactions: &[Transaction]) -> Result<(), String> {
+    if transactions.len() > MAX_BLOCK_TXS_TRANSACTIONS {
+        return Err(format!(
+            "BlockTxs has {} transactions (max {})",
+            transactions.len(),
+            MAX_BLOCK_TXS_TRANSACTIONS
+        ));
+    }
+    for (idx, tx) in transactions.iter().enumerate() {
+        validate_transaction_for_p2p_admission(tx)
+            .map_err(|err| format!("BlockTxs transaction {} rejected: {}", idx, err))?;
+    }
+    Ok(())
+}
+
+fn validate_message_for_p2p_admission(msg_type: &MessageType) -> Result<(), String> {
+    match msg_type {
+        MessageType::Block(block) | MessageType::BlockResponse(block) => {
+            validate_block_for_p2p_admission(block)
+        }
+        MessageType::Proposal(proposal) => validate_block_for_p2p_admission(&proposal.block),
+        MessageType::BlockRangeResponse { blocks } => {
+            if blocks.len() > MAX_BLOCK_RANGE_RESPONSE_BLOCKS {
+                return Err(format!(
+                    "BlockRangeResponse has {} blocks (max {})",
+                    blocks.len(),
+                    MAX_BLOCK_RANGE_RESPONSE_BLOCKS
+                ));
+            }
+            for (idx, block) in blocks.iter().enumerate() {
+                validate_block_for_p2p_admission(block)
+                    .map_err(|err| format!("BlockRangeResponse block {} rejected: {}", idx, err))?;
+            }
+            Ok(())
+        }
+        MessageType::Transaction(tx) => validate_transaction_for_p2p_admission(tx),
+        MessageType::CompactBlockMsg(compact_block) => {
+            validate_compact_block_for_p2p_admission(compact_block)
+        }
+        MessageType::GetBlockTxs { missing_hashes, .. } => {
+            validate_get_block_txs_for_p2p_admission(missing_hashes)
+        }
+        MessageType::BlockTxs { transactions, .. } => {
+            validate_block_txs_for_p2p_admission(transactions)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn expensive_request_label(msg_type: &MessageType) -> Option<&'static str> {
+    match msg_type {
+        MessageType::StatusRequest => Some("status request"),
+        MessageType::SnapshotRequest { .. } => Some("snapshot request"),
+        MessageType::StateSnapshotRequest { .. } => Some("state snapshot request"),
+        MessageType::CheckpointMetaRequest => Some("checkpoint meta request"),
+        MessageType::FindNode { .. } => Some("FindNode request"),
+        _ => None,
+    }
 }
 
 /// Node role determines connection limits and relay behavior for a 500-validator network.
@@ -477,6 +596,25 @@ impl P2PNetwork {
         peer_addr: SocketAddr,
         message: P2PMessage,
     ) -> Result<(), String> {
+        if let Err(err) = validate_message_for_p2p_admission(&message.msg_type) {
+            warn!(
+                "P2P: Rejecting malformed message from {} before gossip/queue admission: {}",
+                peer_addr, err
+            );
+            self.peer_manager.record_violation(&peer_addr);
+            return Ok(());
+        }
+        if let Some(label) = expensive_request_label(&message.msg_type) {
+            if !self
+                .peer_manager
+                .check_expensive_rate_limit(&peer_addr, MAX_EXPENSIVE_REQUESTS_PER_WINDOW)
+            {
+                warn!("P2P: Rate-limiting {} from {}", label, peer_addr);
+                self.peer_manager.record_violation(&peer_addr);
+                return Ok(());
+            }
+        }
+
         // Relay/Seed nodes re-broadcast ALL gossip messages to all peers except sender.
         // Validator nodes additionally re-broadcast BFT consensus messages
         // (Proposal, Prevote, Precommit) — this matches CometBFT's consensus
@@ -703,12 +841,11 @@ impl P2PNetwork {
             } => {
                 // AUDIT-FIX H1: Cap max block range to prevent DoS via unbounded requests.
                 // A malicious peer could request start=0, end=u64::MAX causing OOM.
-                const MAX_BLOCK_RANGE: u64 = 500;
                 let range = end_slot.saturating_sub(start_slot);
-                if range > MAX_BLOCK_RANGE {
+                if range > MAX_BLOCK_RANGE_REQUEST_SPAN {
                     warn!(
                         "P2P: Rejecting block range request {}-{} from {} — range {} exceeds max {}",
-                        start_slot, end_slot, peer_addr, range, MAX_BLOCK_RANGE
+                        start_slot, end_slot, peer_addr, range, MAX_BLOCK_RANGE_REQUEST_SPAN
                     );
                     return Ok(());
                 }
@@ -752,7 +889,7 @@ impl P2PNetwork {
 
             MessageType::BlockRangeResponse { blocks } => {
                 // AUDIT-FIX M12: Cap response size to match request limit
-                if blocks.len() > 500 {
+                if blocks.len() > MAX_BLOCK_RANGE_RESPONSE_BLOCKS {
                     warn!(
                         "P2P: Rejecting oversized BlockRangeResponse from {} ({} blocks > 500)",
                         peer_addr,
@@ -781,12 +918,6 @@ impl P2PNetwork {
             }
 
             MessageType::StatusRequest => {
-                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
-                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
-                    warn!("P2P: Rate-limiting status request from {}", peer_addr);
-                    self.peer_manager.record_violation(&peer_addr);
-                    return Ok(());
-                }
                 debug!("P2P: Received status request from {}", peer_addr);
                 let request = StatusRequestMsg {
                     requester: peer_addr,
@@ -840,12 +971,6 @@ impl P2PNetwork {
             }
 
             MessageType::SnapshotRequest { kind } => {
-                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
-                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
-                    warn!("P2P: Rate-limiting snapshot request from {}", peer_addr);
-                    self.peer_manager.record_violation(&peer_addr);
-                    return Ok(());
-                }
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind,
@@ -886,15 +1011,6 @@ impl P2PNetwork {
                 chunk_index,
                 chunk_size,
             } => {
-                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
-                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
-                    warn!(
-                        "P2P: Rate-limiting state snapshot request from {}",
-                        peer_addr
-                    );
-                    self.peer_manager.record_violation(&peer_addr);
-                    return Ok(());
-                }
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind: SnapshotKind::StateCheckpoint,
@@ -1088,12 +1204,6 @@ impl P2PNetwork {
             }
 
             MessageType::FindNode { target_id } => {
-                // AUDIT-FIX H12: Rate-limit FindNode (max 30/min)
-                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
-                    warn!("P2P: Rate-limiting FindNode request from {}", peer_addr);
-                    self.peer_manager.record_violation(&peer_addr);
-                    return Ok(());
-                }
                 debug!(
                     "P2P: Received FindNode from {} for target {:?}",
                     peer_addr,
@@ -1366,6 +1476,23 @@ impl P2PNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::account::{
+        ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES, PQ_SCHEME_ML_DSA_65,
+    };
+    use lichen_core::transaction::MAX_SIGNATURES_PER_TX;
+    use lichen_core::{Hash, Message, PqPublicKey};
+
+    fn test_pq_signature(fill: u8) -> PqSignature {
+        let public_key =
+            PqPublicKey::new(PQ_SCHEME_ML_DSA_65, vec![fill; ML_DSA_65_PUBLIC_KEY_BYTES])
+                .expect("test public key");
+        PqSignature::new(
+            PQ_SCHEME_ML_DSA_65,
+            public_key,
+            vec![fill; ML_DSA_65_SIGNATURE_BYTES],
+        )
+        .expect("test signature")
+    }
 
     #[test]
     fn test_node_role_default_is_validator() {
@@ -1384,6 +1511,19 @@ mod tests {
         assert_eq!(format!("{}", NodeRole::Validator), "validator");
         assert_eq!(format!("{}", NodeRole::Relay), "relay");
         assert_eq!(format!("{}", NodeRole::Seed), "seed");
+    }
+
+    #[test]
+    fn test_expensive_request_classification_includes_checkpoint_meta() {
+        assert_eq!(
+            expensive_request_label(&MessageType::CheckpointMetaRequest),
+            Some("checkpoint meta request")
+        );
+        assert_eq!(
+            expensive_request_label(&MessageType::StatusRequest),
+            Some("status request")
+        );
+        assert_eq!(expensive_request_label(&MessageType::Ping), None);
     }
 
     #[test]
@@ -1505,5 +1645,55 @@ mod tests {
             infos[0].address,
             "10.0.0.4:7001".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn test_p2p_admission_rejects_invalid_transaction_structure() {
+        let mut tx = Transaction::new(Message::new(Vec::new(), Hash::default()));
+        tx.signatures = (0..=MAX_SIGNATURES_PER_TX)
+            .map(|idx| test_pq_signature(idx as u8))
+            .collect();
+
+        assert!(validate_transaction_for_p2p_admission(&tx).is_err());
+        assert!(validate_message_for_p2p_admission(&MessageType::Transaction(tx)).is_err());
+    }
+
+    #[test]
+    fn test_p2p_admission_rejects_oversized_compact_block_vectors() {
+        let block = Block::new(1, Hash::default(), Hash::default(), [0u8; 32], Vec::new());
+        let mut compact = crate::message::CompactBlock::from_block(&block);
+        compact.short_ids = vec![[0u8; 12]; MAX_COMPACT_BLOCK_TX_IDS + 1];
+
+        assert!(validate_compact_block_for_p2p_admission(&compact).is_err());
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::CompactBlockMsg(compact)).is_err()
+        );
+    }
+
+    #[test]
+    fn test_p2p_admission_rejects_oversized_get_block_txs() {
+        let hashes = vec![Hash::default(); MAX_GET_BLOCK_TXS_HASHES + 1];
+
+        assert!(validate_get_block_txs_for_p2p_admission(&hashes).is_err());
+        assert!(
+            validate_message_for_p2p_admission(&MessageType::GetBlockTxs {
+                slot: 1,
+                missing_hashes: hashes,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_p2p_admission_rejects_oversized_block_txs() {
+        let tx = Transaction::new(Message::new(Vec::new(), Hash::default()));
+        let transactions = vec![tx; MAX_BLOCK_TXS_TRANSACTIONS + 1];
+
+        assert!(validate_block_txs_for_p2p_admission(&transactions).is_err());
+        assert!(validate_message_for_p2p_admission(&MessageType::BlockTxs {
+            slot: 1,
+            transactions,
+        })
+        .is_err());
     }
 }

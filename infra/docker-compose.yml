@@ -24,7 +24,7 @@ services:
       - LICHEN_METRICS_PORT=9100
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8899/", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","id":1,"method":"health"}']
+      test: ["CMD", "curl", "-sf", "http://localhost:8899/", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","id":1,"method":"getHealth"}']
       interval: 10s
       timeout: 5s
       retries: 3
@@ -48,7 +48,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f custody-bridge || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f lichen-custody || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -59,8 +59,8 @@ services:
   # ─── Market Maker Bot ───
   market-maker:
     build:
-      context: ../dex/market-maker
-      dockerfile: ../../infra/Dockerfile.market-maker
+      context: ..
+      dockerfile: infra/Dockerfile.market-maker
     environment:
       - DEX_ENDPOINT=http://lichen:8899
       - DEX_WS_ENDPOINT=ws://lichen:8900/ws

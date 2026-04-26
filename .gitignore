@@ -68,7 +68,7 @@ sdk/rust/artifacts/
 # ── Node / JS ──────────────────────────────────────────────
 node_modules/
 **/node_modules/
-package-lock.json
+# Keep npm package-lock.json files tracked for reproducible CI installs.
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

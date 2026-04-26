@@ -109,6 +109,17 @@ pub fn call_contract(call: CrossCall) -> CallResult<Vec<u8>> {
         if should_fail {
             return Err(ContractError::Custom("Mocked cross-contract call failed"));
         }
+        let queued_response = test_mock::CROSS_CALL_RESPONSE_QUEUE.with(|c| {
+            let mut responses = c.borrow_mut();
+            if responses.is_empty() {
+                None
+            } else {
+                Some(responses.remove(0))
+            }
+        });
+        if let Some(response) = queued_response {
+            return Ok(response);
+        }
         let response = test_mock::CROSS_CALL_RESPONSE.with(|c| c.borrow().clone());
         if let Some(response) = response {
             Ok(response)

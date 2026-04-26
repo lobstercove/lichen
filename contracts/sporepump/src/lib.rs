@@ -138,6 +138,14 @@ fn store_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
 }
 
+fn u128_to_u64_saturating(value: u128) -> u64 {
+    if value > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        value as u64
+    }
+}
+
 fn is_paused() -> bool {
     storage_get(PAUSE_KEY)
         .map(|v| v.first().copied() == Some(1))
@@ -152,7 +160,9 @@ fn is_admin(caller: &[u8]) -> bool {
 }
 
 fn has_configured_address(key: &[u8]) -> bool {
-    storage_get(key).map(|data| data.len() == 32).unwrap_or(false)
+    storage_get(key)
+        .map(|data| data.len() == 32)
+        .unwrap_or(false)
 }
 
 fn is_token_frozen(token_id: u64) -> bool {
@@ -214,11 +224,15 @@ fn transfer_licn_out(recipient: &[u8; 32], amount: u64) -> bool {
     token.copy_from_slice(&token_data);
     let self_addr = get_contract_address();
     match transfer_token_or_native(Address(token), self_addr, Address(*recipient), amount) {
+        Ok(true) => true,
+        Ok(false) => {
+            log_info("LICN transfer returned failure status");
+            false
+        }
         Err(_) => {
             log_info("LICN transfer failed");
             false
         }
-        Ok(_) => true,
     }
 }
 
@@ -292,7 +306,13 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
         return 0;
     }
 
-    let token_id = load_u64(TOKEN_COUNT_KEY) + 1;
+    let token_id = match load_u64(TOKEN_COUNT_KEY).checked_add(1) {
+        Some(id) => id,
+        None => {
+            log_info("Token counter overflow");
+            return 0;
+        }
+    };
     let id_hex = u64_to_hex(token_id);
 
     // Store token data
@@ -310,7 +330,7 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 
     // Collect creation fee
     let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees.saturating_add(fee_paid));
+    store_u64(b"cp_fees_collected", fees.saturating_add(CREATION_FEE));
 
     log_info("🪙 New token created on bonding curve");
     token_id
@@ -335,9 +355,10 @@ fn calculate_buy_cost(supply_sold: u64, amount: u64) -> u64 {
 
     // Integral: base*amount + slope * ((s+a)^2 - s^2) / (2 * scale)
     //         = base*amount + slope * a * (2*s + a) / (2 * scale)
-    let linear_part = base * a;
-    let quadratic_part = slope * a * (2 * s + a) / (2 * scale);
-    ((linear_part + quadratic_part) / norm) as u64
+    let linear_part = base.saturating_mul(a);
+    let two_s_plus_a = s.saturating_mul(2).saturating_add(a);
+    let quadratic_part = slope.saturating_mul(a).saturating_mul(two_s_plus_a) / (2 * scale);
+    u128_to_u64_saturating(linear_part.saturating_add(quadratic_part) / norm)
 }
 
 /// Calculate refund for selling `amount` tokens given current supply
@@ -354,15 +375,18 @@ fn calculate_sell_refund(supply_sold: u64, amount: u64) -> u64 {
     let norm = 1_000_000_000u128;
 
     // Integral from (s-a) to s = base*a + slope * a * (2*s - a) / (2 * scale)
-    let linear_part = base * a;
-    let quadratic_part = slope * a * (2 * s - a) / (2 * scale);
-    ((linear_part + quadratic_part) / norm) as u64
+    let linear_part = base.saturating_mul(a);
+    let two_s_minus_a = s.saturating_mul(2).saturating_sub(a);
+    let quadratic_part = slope.saturating_mul(a).saturating_mul(two_s_minus_a) / (2 * scale);
+    u128_to_u64_saturating(linear_part.saturating_add(quadratic_part) / norm)
 }
 
 /// Get current token price (spores per token)
 fn current_price(supply_sold: u64) -> u64 {
     // SECURITY-FIX: Use u128 intermediate to prevent overflow
-    BASE_PRICE + ((supply_sold as u128 * SLOPE as u128 / SLOPE_SCALE as u128) as u64)
+    BASE_PRICE.saturating_add(u128_to_u64_saturating(
+        supply_sold as u128 * SLOPE as u128 / SLOPE_SCALE as u128,
+    ))
 }
 
 // ============================================================================
@@ -423,7 +447,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let lbk = last_buy_key(token_id, &buyer_hex);
     let last_buy_ts = load_u64(&lbk);
     let now = get_timestamp();
-    if last_buy_ts > 0 && now < last_buy_ts + cooldown {
+    if last_buy_ts > 0 && now < last_buy_ts.saturating_add(cooldown) {
         reentrancy_exit();
         log_info("Buy cooldown not expired");
         return 0;
@@ -453,7 +477,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     let max_supply = bytes_to_u64(&data[48..56]);
 
     // Platform fee
-    let fee = licn_amount * PLATFORM_FEE_PERCENT / 100;
+    let fee = u128_to_u64_saturating(licn_amount as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
     let net_amount = licn_amount - fee;
 
     // Binary search for how many tokens we can buy with net_amount
@@ -482,7 +506,14 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
 
     let actual_cost = calculate_buy_cost(supply_sold, tokens_bought);
     let new_supply = supply_sold + tokens_bought;
-    let new_raised = licn_raised + actual_cost;
+    let new_raised = match licn_raised.checked_add(actual_cost) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            log_info("Raised LICN overflow");
+            return 0;
+        }
+    };
 
     // Update token data
     data[32..40].copy_from_slice(&u64_to_bytes(new_supply));
@@ -497,7 +528,18 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     bal_key.push(b':');
     bal_key.extend_from_slice(&buyer_hex);
     let prev_bal = load_u64(&bal_key);
-    store_u64(&bal_key, prev_bal.saturating_add(tokens_bought));
+    let new_balance = match prev_bal.checked_add(tokens_bought) {
+        Some(v) => v,
+        None => {
+            data[32..40].copy_from_slice(&u64_to_bytes(supply_sold));
+            data[40..48].copy_from_slice(&u64_to_bytes(licn_raised));
+            storage_set(&token_key, &data);
+            reentrancy_exit();
+            log_info("Buyer balance overflow");
+            return 0;
+        }
+    };
+    store_u64(&bal_key, new_balance);
 
     // Collect platform fee
     let fees = load_u64(b"cp_fees_collected");
@@ -506,7 +548,8 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     // v2: Creator royalty
     let royalty_bps = get_creator_royalty();
     if royalty_bps > 0 {
-        let royalty = (actual_cost as u128 * royalty_bps as u128 / BPS_SCALE as u128) as u64;
+        let royalty =
+            u128_to_u64_saturating(actual_cost as u128 * royalty_bps as u128 / BPS_SCALE as u128);
         if royalty > 0 {
             let creator_hex = hex_encode_addr(&data[0..32].try_into().unwrap_or([0u8; 32]));
             let mut cr_key = Vec::with_capacity(4 + 16 + 1 + 64);
@@ -526,8 +569,9 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
     // AUDIT-FIX LOW-04: Graduation is NOT YET IMPLEMENTED.
     // The threshold check runs but produces no state change — tokens remain on
     // the bonding curve until a real DEX migration path is built in a future release.
-    let market_cap =
-        (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
+    let market_cap = u128_to_u64_saturating(
+        current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128,
+    );
     if market_cap >= GRADUATION_MARKET_CAP {
         let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
         let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
@@ -593,7 +637,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let lbk = last_buy_key(token_id, &seller_hex);
     let last_buy_ts = load_u64(&lbk);
     let now = get_timestamp();
-    if last_buy_ts > 0 && now < last_buy_ts + sell_cd {
+    if last_buy_ts > 0 && now < last_buy_ts.saturating_add(sell_cd) {
         reentrancy_exit();
         log_info("Sell cooldown not expired (anti-dump)");
         return 0;
@@ -635,7 +679,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let licn_raised = bytes_to_u64(&data[40..48]);
 
     let raw_refund = calculate_sell_refund(supply_sold, token_amount);
-    let fee = raw_refund * PLATFORM_FEE_PERCENT / 100;
+    let fee = u128_to_u64_saturating(raw_refund as u128 * PLATFORM_FEE_PERCENT as u128 / 100);
     let net_refund = raw_refund - fee;
 
     // Update token data
@@ -688,7 +732,8 @@ pub extern "C" fn get_token_info(token_id: u64) -> u32 {
     let supply_sold = bytes_to_u64(&data[32..40]);
     let licn_raised = bytes_to_u64(&data[40..48]);
     let price = current_price(supply_sold);
-    let market_cap = (price as u128 * supply_sold as u128 / 1_000_000_000u128) as u64;
+    let market_cap =
+        u128_to_u64_saturating(price as u128 * supply_sold as u128 / 1_000_000_000u128);
 
     let mut result = Vec::with_capacity(33);
     result.extend_from_slice(&u64_to_bytes(supply_sold));
@@ -713,7 +758,8 @@ pub extern "C" fn get_buy_quote(token_id: u64, licn_amount: u64) -> u64 {
 
     let supply_sold = bytes_to_u64(&data[32..40]);
     let max_supply = bytes_to_u64(&data[48..56]);
-    let net = licn_amount * (100 - PLATFORM_FEE_PERCENT) / 100;
+    let net =
+        u128_to_u64_saturating(licn_amount as u128 * (100 - PLATFORM_FEE_PERCENT) as u128 / 100);
 
     let mut lo: u64 = 0;
     let mut hi = max_supply
@@ -1147,6 +1193,35 @@ mod tests {
     }
 
     #[test]
+    fn test_create_token_records_actual_creation_fee_only() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+
+        assert_eq!(create_token(creator.as_ptr(), u64::MAX), 1);
+        assert_eq!(load_u64(b"cp_fees_collected"), CREATION_FEE);
+    }
+
+    #[test]
+    fn test_create_token_counter_overflow_rejected() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(TOKEN_COUNT_KEY, u64::MAX);
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 0);
+        assert_eq!(load_u64(TOKEN_COUNT_KEY), u64::MAX);
+    }
+
+    #[test]
     fn test_create_token_insufficient_fee() {
         setup();
         let admin = [1u8; 32];
@@ -1246,6 +1321,61 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_licn_out_rejects_false_status() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let licn = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
+        test_mock::set_cross_call_response(Some(vec![2u8]));
+
+        let recipient = [3u8; 32];
+        assert!(!transfer_licn_out(&recipient, 1_000));
+    }
+
+    #[test]
+    fn test_sell_reverts_on_false_transfer_status() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let licn = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
+
+        let id_hex = u64_to_hex(token_id);
+        let buyer_hex = hex_encode_addr(&buyer);
+        let mut bal_key = Vec::with_capacity(4 + 16 + 1 + 64);
+        bal_key.extend_from_slice(b"bal:");
+        bal_key.extend_from_slice(&id_hex);
+        bal_key.push(b':');
+        bal_key.extend_from_slice(&buyer_hex);
+        let before_balance = load_u64(&bal_key);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let before_token = storage_get(&token_key).unwrap();
+        let before_fees = load_u64(b"cp_fees_collected");
+
+        test_mock::set_timestamp(20_000);
+        test_mock::set_cross_call_response(Some(vec![2u8]));
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(load_u64(&bal_key), before_balance);
+        assert_eq!(storage_get(&token_key).unwrap(), before_token);
+        assert_eq!(load_u64(b"cp_fees_collected"), before_fees);
+    }
+
+    #[test]
     fn test_sell_insufficient_balance() {
         setup();
         let admin = [1u8; 32];
@@ -1301,6 +1431,17 @@ mod tests {
         let tid = create_token(creator.as_ptr(), CREATION_FEE);
         let quote = get_buy_quote(tid, 1_000_000_000);
         assert!(quote > 0);
+    }
+
+    #[test]
+    fn test_bonding_curve_math_saturates() {
+        setup();
+        assert_eq!(
+            current_price(u64::MAX),
+            BASE_PRICE + (u64::MAX as u128 / SLOPE_SCALE as u128) as u64
+        );
+        assert_eq!(calculate_buy_cost(u64::MAX, u64::MAX), u64::MAX);
+        assert_eq!(calculate_sell_refund(u64::MAX, u64::MAX), u64::MAX);
     }
 
     #[test]
@@ -1474,6 +1615,30 @@ mod tests {
         test_mock::set_timestamp(13_000);
         let tokens2 = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens2 > 0);
+    }
+
+    #[test]
+    fn test_buy_cooldown_overflow_does_not_bypass() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        assert_eq!(set_buy_cooldown(admin.as_ptr(), u64::MAX), 0);
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        assert!(buy(buyer.as_ptr(), 1, 1_000_000_000) > 0);
+
+        test_mock::set_timestamp(20_000);
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
     }
 
     #[test]
@@ -1720,8 +1885,14 @@ mod tests {
             set_dex_addresses(admin.as_ptr(), new_core.as_ptr(), new_amm.as_ptr()),
             4
         );
-        assert_eq!(test_mock::get_storage(DEX_CORE_ADDRESS_KEY), Some(core_addr.to_vec()));
-        assert_eq!(test_mock::get_storage(DEX_AMM_ADDRESS_KEY), Some(amm_addr.to_vec()));
+        assert_eq!(
+            test_mock::get_storage(DEX_CORE_ADDRESS_KEY),
+            Some(core_addr.to_vec())
+        );
+        assert_eq!(
+            test_mock::get_storage(DEX_AMM_ADDRESS_KEY),
+            Some(amm_addr.to_vec())
+        );
     }
 
     #[test]

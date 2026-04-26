@@ -486,6 +486,15 @@ fn calculate_margin_ratio(margin: u64, size: u64, mark_price: u64) -> u64 {
     (margin as u128 * 10_000 / notional as u128) as u64 // in bps
 }
 
+fn calculate_notional(size: u64, price: u64) -> Option<u64> {
+    let notional = size as u128 * price as u128 / 1_000_000_000;
+    if notional > u64::MAX as u128 {
+        None
+    } else {
+        Some(notional as u64)
+    }
+}
+
 /// F10.2-A FIX: Calculate margin ratio accounting for unrealized PnL
 /// effective_margin = margin ± unrealized PnL, then ratio = effective / notional
 fn calculate_margin_ratio_with_pnl(
@@ -969,13 +978,24 @@ pub fn open_position_with_mode(
         return 6;
     }
 
+    if size == 0 {
+        reentrancy_exit();
+        return 2;
+    }
+
     // Check initial margin (tiered by leverage)
-    let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    let notional = match calculate_notional(size, mark_price) {
+        Some(n) if n > 0 => n,
+        _ => {
+            reentrancy_exit();
+            return 9;
+        }
+    };
     let (initial_margin_bps, _maint_bps, _liq_penalty_bps, _funding_mult) =
         get_tier_params(leverage);
     // AUDIT-FIX NEW-H2: initial_margin_bps already factors in leverage via the tier table
     // (e.g. 10x → 1000 bps = 10%). Do NOT divide by leverage again — that was double-discounting.
-    let required_margin = (notional * initial_margin_bps / 10_000).max(1);
+    let required_margin = (notional as u128 * initial_margin_bps as u128 / 10_000).max(1) as u64;
     if margin_amount < required_margin {
         reentrancy_exit();
         return 3;
@@ -1039,8 +1059,6 @@ pub fn open_position_with_mode(
     save_u64(&user_position_count_key(&t), user_count + 1);
     save_u64(&user_position_key(&t, user_count + 1), pos_id);
 
-    // AUDIT-FIX G-7: Correct divisor to 1e9 (matches all other notional calcs)
-    let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
     save_u64(
         TOTAL_VOLUME_KEY,
         load_u64(TOTAL_VOLUME_KEY).saturating_add(notional),
@@ -1155,7 +1173,7 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     storage_set(&pk, &data);
 
     // AUDIT-FIX H-11: Decrement total open interest on close
-    let close_notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    let close_notional = calculate_notional(size, entry_price).unwrap_or(u64::MAX);
     save_u64(
         TOTAL_OPEN_INTEREST_KEY,
         load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(close_notional),
@@ -1543,7 +1561,8 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     // Calculate penalty (tiered by leverage)
     // AUDIT-FIX NEW-L1: Use u128 intermediates to prevent overflow; derive insurance_add
     // as remainder so no dust is lost with odd penalty values.
-    let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    let notional = calculate_notional(size, mark_price).unwrap_or(u64::MAX);
+    let open_notional = calculate_notional(size, entry_price).unwrap_or(u64::MAX);
     let penalty = (notional as u128 * liq_penalty_bps as u128 / 10_000) as u64;
     let liquidator_reward = (penalty as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
     let insurance_add = penalty.saturating_sub(liquidator_reward);
@@ -1618,7 +1637,7 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     // AUDIT-FIX H-11: Decrement total open interest on liquidation
     save_u64(
         TOTAL_OPEN_INTEREST_KEY,
-        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(notional),
+        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(open_notional),
     );
 
     // Track liquidation count
@@ -2023,7 +2042,7 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     storage_set(&pk, &data);
 
     // AUDIT-FIX H-11: Decrement OI for the closed portion
-    let closed_notional = (close_amount as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    let closed_notional = calculate_notional(close_amount, entry_price).unwrap_or(u64::MAX);
     save_u64(
         TOTAL_OPEN_INTEREST_KEY,
         load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(closed_notional),
@@ -2789,6 +2808,31 @@ mod tests {
     }
 
     #[test]
+    fn test_open_position_zero_size_rejected() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 0, 2, 500_000_000),
+            2
+        );
+    }
+
+    #[test]
+    fn test_open_position_required_margin_uses_u128_math() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        let size = 4_000_000_000_000_000u64;
+        let under_margin = 1_999_999_999_999_999u64;
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, size, 2, under_margin),
+            3
+        );
+    }
+
+    #[test]
     fn test_open_position_insufficient_margin_5x() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -2879,6 +2923,30 @@ mod tests {
     }
 
     #[test]
+    fn test_close_position_decrements_open_interest_by_entry_notional() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+        assert_eq!(load_u64(TOTAL_OPEN_INTEREST_KEY), 2_000_000_000);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_mark_price(admin.as_ptr(), 1, 600_000_000), 0);
+
+        test_mock::set_caller(trader);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+        assert_eq!(load_u64(TOTAL_OPEN_INTEREST_KEY), 1_000_000_000);
+    }
+
+    #[test]
     fn test_add_margin() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -2952,6 +3020,26 @@ mod tests {
         // Open with 500M (50%), remove 260M → 240M < 250M → fail
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(remove_margin(trader.as_ptr(), 1, 260_000_000), 6);
+    }
+
+    #[test]
+    fn test_partial_close_decrements_open_interest_by_entry_notional() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+        assert_eq!(load_u64(TOTAL_OPEN_INTEREST_KEY), 1_000_000_000);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_mark_price(admin.as_ptr(), 1, 500_000_000), 0);
+
+        test_mock::set_caller(trader);
+        assert_eq!(partial_close(trader.as_ptr(), 1, 400_000_000), 0);
+        assert_eq!(load_u64(TOTAL_OPEN_INTEREST_KEY), 600_000_000);
     }
 
     #[test]
