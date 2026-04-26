@@ -9,12 +9,15 @@
 # Usage:
 #   bash scripts/clean-slate-redeploy.sh              # testnet (default)
 #   bash scripts/clean-slate-redeploy.sh mainnet       # mainnet
+#   LICHEN_RELEASE_TAG=v0.5.10 bash scripts/clean-slate-redeploy.sh testnet
 #
 # Prerequisites:
 #   - SSH access to all VPSes (port 2222, user ubuntu, key-based auth)
 #   - deploy/setup.sh already run on all VPSes (systemd, users, dirs exist)
 #   - keypairs/release-signing-key.json present in repo
 #   - Code committed and pushed to main
+#   - Optional: LICHEN_RELEASE_TAG set to install exact signed GitHub release
+#     runtime artifacts into /usr/local/bin after remote builds
 #
 # Secrets distributed automatically via tarball (atomic, no partial copies):
 #   - genesis-wallet.json + genesis-keys/ (treasury for airdrop)
@@ -46,6 +49,11 @@ VPS_DATA="/var/lib/lichen"
 VPS_CONFIG="/etc/lichen"
 STATE_DIR="state-${NETWORK}"
 SERVICE="lichen-validator-${NETWORK}"
+RELEASE_TAG="${LICHEN_RELEASE_TAG:-}"
+RELEASE_REPO="${LICHEN_RELEASE_REPO:-lobstercove/lichen}"
+RELEASE_ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-release-${NETWORK}-${RELEASE_TAG:-local}}"
+RELEASE_ARCHIVE_NAMES=()
+VPS_RELEASE_ARCHIVES=()
 
 case $NETWORK in
   testnet)
@@ -117,6 +125,147 @@ ssh_pipe() {
     | ssh $SSH_OPTS $SSH_USER@"$dst" "$dst_cmd"
 }
 
+release_archive_for_uname() {
+  case "$1" in
+    x86_64|amd64) echo "lichen-validator-linux-x86_64.tar.gz" ;;
+    aarch64|arm64) echo "lichen-validator-linux-aarch64.tar.gz" ;;
+    *)
+      echo -e "${RED}Unsupported VPS architecture for release artifact: $1${NC}" >&2
+      return 1
+      ;;
+  esac
+}
+
+release_archive_root() {
+  local archive=$1
+  echo "${archive%.tar.gz}"
+}
+
+append_unique_release_archive() {
+  local archive=$1 existing
+  for existing in "${RELEASE_ARCHIVE_NAMES[@]}"; do
+    if [ "$existing" = "$archive" ]; then
+      return 0
+    fi
+  done
+  RELEASE_ARCHIVE_NAMES+=("$archive")
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+prepare_release_artifacts() {
+  if [ -z "$RELEASE_TAG" ]; then
+    echo "No LICHEN_RELEASE_TAG set; VPSes will install locally built runtime binaries."
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    echo -e "${RED}LICHEN_RELEASE_TAG requires GitHub CLI 'gh' to download release artifacts.${NC}"
+    exit 1
+  fi
+
+  echo "Preparing release artifacts from ${RELEASE_REPO}@${RELEASE_TAG}..."
+  rm -rf "$RELEASE_ARTIFACT_DIR"
+  mkdir -p "$RELEASE_ARTIFACT_DIR"
+
+  gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
+    -p SHA256SUMS \
+    -D "$RELEASE_ARTIFACT_DIR" >/dev/null
+
+  local archive expected actual root
+  for archive in "${RELEASE_ARCHIVE_NAMES[@]}"; do
+    gh release download "$RELEASE_TAG" --repo "$RELEASE_REPO" \
+      -p "$archive" \
+      -D "$RELEASE_ARTIFACT_DIR" >/dev/null
+
+    expected=$(awk -v file="$archive" '$2 == file { print $1 }' "$RELEASE_ARTIFACT_DIR/SHA256SUMS")
+    if [ -z "$expected" ]; then
+      echo -e "${RED}Release checksum missing for $archive in SHA256SUMS${NC}"
+      exit 1
+    fi
+
+    actual=$(sha256_file "$RELEASE_ARTIFACT_DIR/$archive")
+    if [ "$actual" != "$expected" ]; then
+      echo -e "${RED}Checksum mismatch for $archive${NC}"
+      echo "  expected: $expected"
+      echo "  actual:   $actual"
+      exit 1
+    fi
+
+    root=$(release_archive_root "$archive")
+    tar xzf "$RELEASE_ARTIFACT_DIR/$archive" -C "$RELEASE_ARTIFACT_DIR"
+    echo -e "  ${GREEN}✓${NC} $archive verified ($actual)"
+    echo "    validator binary sha: $(sha256_file "$RELEASE_ARTIFACT_DIR/$root/lichen-validator")"
+  done
+}
+
+install_release_runtime_binaries() {
+  local host=$1 archive=$2 root archive_path extract_dir expected_validator_sha remote_validator_sha
+  root=$(release_archive_root "$archive")
+  archive_path="$RELEASE_ARTIFACT_DIR/$archive"
+  extract_dir="$RELEASE_ARTIFACT_DIR/$root"
+  expected_validator_sha=$(sha256_file "$extract_dir/lichen-validator")
+
+  rsync -az \
+    -e "ssh -p $SSH_PORT -o StrictHostKeyChecking=no -o LogLevel=ERROR" \
+    "$archive_path" "$SSH_USER@$host:/tmp/$archive"
+
+  ssh_run "$host" "
+    set -euo pipefail
+    tmp=\$(mktemp -d)
+    tar xzf /tmp/$archive -C \"\$tmp\"
+    sudo install -m 755 \"\$tmp/$root/lichen-validator\" /usr/local/bin/lichen-validator
+    sudo install -m 755 \"\$tmp/$root/lichen-genesis\" /usr/local/bin/lichen-genesis
+    sudo install -m 755 \"\$tmp/$root/lichen\" /usr/local/bin/lichen
+    sudo install -m 755 \"\$tmp/$root/zk-prove\" /usr/local/bin/zk-prove
+    install -m 644 \"\$tmp/$root/seeds.json\" ~/lichen/seeds.json
+    rm -rf \"\$tmp\" /tmp/$archive
+  " >/dev/null
+
+  remote_validator_sha=$(ssh_run "$host" "sha256sum /usr/local/bin/lichen-validator | awk '{print \$1}'")
+  if [ "$remote_validator_sha" != "$expected_validator_sha" ]; then
+    echo -e "${RED}Release validator binary mismatch on $host${NC}"
+    echo "  expected: $expected_validator_sha"
+    echo "  actual:   $remote_validator_sha"
+    exit 1
+  fi
+
+  echo -e "  ${GREEN}✓${NC} $host release validator sha: $remote_validator_sha"
+}
+
+install_built_runtime_binaries() {
+  local host=$1
+  ssh_run "$host" "
+    set -euo pipefail
+    cd ~/lichen
+    for bin in lichen-validator lichen-genesis lichen zk-prove; do
+      if [ -f \"target/release/\$bin\" ]; then
+        sudo install -m 755 \"target/release/\$bin\" \"/usr/local/bin/\$bin\"
+      fi
+    done
+    sha256sum /usr/local/bin/lichen-validator | awk '{print \"  validator sha: \" \$1}'
+  "
+}
+
+install_service_binaries() {
+  local host=$1
+  ssh_run "$host" "
+    set -euo pipefail
+    cd ~/lichen
+    for bin in lichen-custody lichen-faucet; do
+      if [ -f \"target/release/\$bin\" ]; then
+        sudo install -m 755 \"target/release/\$bin\" \"/usr/local/bin/\$bin\"
+      fi
+    done
+  " >/dev/null
+}
+
 require_redeploy_confirmation() {
   if [ "${LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM:-}" = "$REDEPLOY_CONFIRMATION" ]; then
     return 0
@@ -143,10 +292,17 @@ if [ ! -f keypairs/release-signing-key.json ]; then
 fi
 
 echo "Verifying SSH access..."
+VPS_INDEX=0
 for VPS in "${ALL_VPSES[@]}"; do
-  ssh_run "$VPS" "echo OK" > /dev/null || { echo "Cannot SSH to $VPS"; exit 1; }
-  echo -e "  ${GREEN}✓${NC} $VPS"
+  ARCH=$(ssh_run "$VPS" "uname -m" | tail -1) || { echo "Cannot SSH to $VPS"; exit 1; }
+  ARCHIVE=$(release_archive_for_uname "$ARCH")
+  VPS_RELEASE_ARCHIVES[$VPS_INDEX]="$ARCHIVE"
+  append_unique_release_archive "$ARCHIVE"
+  echo -e "  ${GREEN}✓${NC} $VPS ($ARCH -> $ARCHIVE)"
+  VPS_INDEX=$((VPS_INDEX + 1))
 done
+
+prepare_release_artifacts
 
 # ============================================================================
 # Phase 1: Stop everything
@@ -234,6 +390,20 @@ for pid in "${JOINER_PIDS[@]}"; do
   wait "$pid" || { echo -e "${RED}Joining VPS build failed${NC}"; exit 1; }
 done
 
+echo "  Installing runtime binaries into /usr/local/bin..."
+VPS_INDEX=0
+for VPS in "${ALL_VPSES[@]}"; do
+  echo "    → $VPS..."
+  if [ -n "$RELEASE_TAG" ]; then
+    install_release_runtime_binaries "$VPS" "${VPS_RELEASE_ARCHIVES[$VPS_INDEX]}"
+  else
+    install_built_runtime_binaries "$VPS"
+  fi
+  install_service_binaries "$VPS"
+  VPS_INDEX=$((VPS_INDEX + 1))
+done
+echo "  Runtime binaries installed"
+
 # Distribute WASM from genesis VPS to joining VPSes
 # (rsync --exclude target/ means joiners have stale/no WASM; genesis built fresh)
 echo "  Distributing WASM contracts from genesis to joiners..."
@@ -263,7 +433,7 @@ KP_PASS=\$(sudo grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-$NETWORK | cut -d= 
 # 1. Generate validator keypair
 echo "  Generating validator keypair..."
 sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="\$KP_PASS" \
-  ./target/release/lichen init --output "\$STATE/validator-keypair.json"
+  /usr/local/bin/lichen init --output "\$STATE/validator-keypair.json"
 
 PUBKEY=\$(sudo python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['publicKeyBase58'])" "\$STATE/validator-keypair.json")
 echo "  Validator pubkey: \$PUBKEY"
@@ -273,7 +443,7 @@ echo "  Preparing wallet..."
 sudo -u lichen env HOME=$VPS_DATA LICHEN_HOME=$VPS_DATA \
   LICHEN_CONTRACTS_DIR=\$HOME/lichen/contracts \
   LICHEN_KEYPAIR_PASSWORD="\$KP_PASS" \
-  ./target/release/lichen-genesis --prepare-wallet --network "\$NET" --output-dir "\$STATE"
+  /usr/local/bin/lichen-genesis --prepare-wallet --network "\$NET" --output-dir "\$STATE"
 
 # 3. Fetch live prices
 echo "  Fetching prices..."
@@ -299,7 +469,7 @@ sudo -u lichen env HOME=$VPS_DATA LICHEN_HOME=$VPS_DATA \
   LICHEN_CONTRACTS_DIR=\$HOME/lichen/contracts \
   LICHEN_KEYPAIR_PASSWORD="\$KP_PASS" \
   GENESIS_SOL_USD="\$SOL" GENESIS_ETH_USD="\$ETH" GENESIS_BNB_USD="\$BNB" \
-  ./target/release/lichen-genesis \
+  /usr/local/bin/lichen-genesis \
     --network "\$NET" \
     --db-path "\$STATE" \
     --wallet-file "\$STATE/genesis-wallet.json" \
@@ -512,7 +682,7 @@ for VPS in "${JOINING_VPSES[@]}"; do
     if [ ! -f '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json ]; then
       echo "  Generating validator keypair..."
       sudo -u lichen env LICHEN_KEYPAIR_PASSWORD="$KP_PASS" \
-        ~/lichen/target/release/lichen init --output '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json
+        /usr/local/bin/lichen init --output '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json
     fi
 
     # Start validator
