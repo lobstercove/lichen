@@ -654,36 +654,6 @@ fn hash_validator_set(set: &ValidatorSet) -> Hash {
     Hash::hash(&data)
 }
 
-fn make_sync_observed_validator_info(
-    producer: Pubkey,
-    slot: u64,
-    stake_amount: u64,
-    transaction_count: usize,
-    reward_already: bool,
-) -> ValidatorInfo {
-    let observed_at_ms = now_unix_ms();
-    ValidatorInfo {
-        pubkey: producer,
-        stake: stake_amount,
-        reputation: 100,
-        blocks_proposed: if reward_already { 0 } else { 1 },
-        votes_cast: 0,
-        correct_votes: 0,
-        joined_slot: slot,
-        last_active_slot: slot,
-        last_observed_at_ms: observed_at_ms,
-        last_observed_block_at_ms: observed_at_ms,
-        last_observed_block_slot: slot,
-        commission_rate: 500,
-        transactions_processed: if reward_already {
-            0
-        } else {
-            transaction_count as u64
-        },
-        pending_activation: false,
-    }
-}
-
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3118,7 +3088,7 @@ async fn apply_block_effects(
     stake_pool: &Arc<RwLock<StakePool>>,
     block: &Block,
     skip_rewards: bool,
-    _min_validator_stake: u64,
+    min_validator_stake: u64,
 ) {
     if block.header.slot == 0 || block.header.validator == [0u8; 32] {
         return;
@@ -3179,6 +3149,7 @@ async fn apply_block_effects(
     {
         let mut vs = validator_set.write().await;
         let observed_at_ms = now_unix_ms();
+        let mut validator_set_changed = false;
         if let Some(val_info) = vs.get_validator_mut(&producer) {
             if !reward_already {
                 val_info.blocks_proposed += 1;
@@ -3188,27 +3159,31 @@ async fn apply_block_effects(
                 val_info.update_reputation(true);
             }
             val_info.note_block_observation(slot, observed_at_ms);
-        } else {
-            // Header-first sync can observe legitimate historical producers
-            // before their RegisterValidator transaction is replayed locally.
-            // Track the producer for activity/reputation, but never infer
-            // bootstrap stake or local voting power from that observation.
-            let new_validator = make_sync_observed_validator_info(
-                producer,
-                slot,
-                stake_amount,
-                block.transactions.len(),
-                reward_already,
+            validator_set_changed = true;
+        } else if stake_amount >= min_validator_stake {
+            warn!(
+                "⚠️  Stake-backed block producer {} at slot {} is not in local ValidatorSet; admission is deferred to deterministic height-boundary stake reconciliation",
+                producer.to_base58(),
+                slot
             );
-            vs.add_validator(new_validator);
+        } else {
+            warn!(
+                "⚠️  Ignoring unknown unstaked block producer {} at slot {}; block headers cannot create ValidatorSet entries",
+                producer.to_base58(),
+                slot
+            );
         }
 
-        // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
-        // This frees the RwLock while RocksDB I/O runs, unblocking all readers.
-        let vs_snapshot = vs.clone();
-        drop(vs);
-        if let Err(e) = state.save_validator_set(&vs_snapshot) {
-            warn!("⚠️  Failed to persist validator set update: {}", e);
+        if validator_set_changed {
+            // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
+            // This frees the RwLock while RocksDB I/O runs, unblocking all readers.
+            let vs_snapshot = vs.clone();
+            drop(vs);
+            if let Err(e) = state.save_validator_set(&vs_snapshot) {
+                warn!("⚠️  Failed to persist validator set update: {}", e);
+            }
+        } else {
+            drop(vs);
         }
     }
 
@@ -4173,17 +4148,6 @@ fn should_add_local_validator_as_pending(is_joining_network: bool, current_tip: 
     // height boundary before it can enter the frozen consensus snapshot.
     // This keeps restart and late-discovery behavior aligned across nodes.
     is_joining_network || current_tip > 0
-}
-
-fn should_add_announced_validator_as_pending(
-    local_tip: u64,
-    local_stake: u64,
-    min_validator_stake: u64,
-) -> bool {
-    // Announcements are asynchronous relative to block commits. Even if stake
-    // is already visible locally, a validator first discovered after genesis
-    // must wait for the next locally completed height before activation.
-    local_tip > 0 || local_stake < min_validator_stake
 }
 
 fn checkpoint_anchor_support(
@@ -6218,10 +6182,11 @@ async fn run_validator() {
             }
         }
 
-        // Add this validator if not already in genesis set
+        // Add this validator if not already in genesis set and already backed by
+        // on-chain stake. ValidatorSet is consensus metadata, not a peer-routing
+        // cache; zero-stake local keys must wait for RegisterValidator to land.
         // ⚠️ CRITICAL: Prevent genesis wallet from becoming a validator
         // Use on-chain stake (from RegisterValidator tx) — NOT BOOTSTRAP_GRANT_AMOUNT.
-        // Validators must register through consensus; ValidatorSet is for peer routing only.
         let on_chain_stake = state
             .get_account(&validator_pubkey)
             .unwrap_or(None)
@@ -6230,6 +6195,8 @@ async fn run_validator() {
         // Use current chain tip so snapshots shared with peers pass the
         // slot-drift check (MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR = 500).
         let current_tip = state.get_last_slot().unwrap_or(0);
+        let allow_founding_bootstrap_validator =
+            current_tip == 0 && !is_joining_network && genesis_wallet.is_some();
 
         if let Some(genesis_pubkey) = genesis_pubkey {
             if validator_pubkey != genesis_pubkey {
@@ -6238,26 +6205,34 @@ async fn run_validator() {
                     .iter()
                     .any(|v| v.pubkey == validator_pubkey.to_base58())
                 {
-                    let pending =
-                        should_add_local_validator_as_pending(is_joining_network, current_tip);
-                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} LICN, pending: {})",
-                        on_chain_stake / 1_000_000_000, pending);
-                    set.add_validator(ValidatorInfo {
-                        pubkey: validator_pubkey,
-                        stake: on_chain_stake,
-                        reputation: 100,
-                        blocks_proposed: 0,
-                        votes_cast: 0,
-                        correct_votes: 0,
-                        last_active_slot: current_tip,
-                        joined_slot: current_tip,
-                        last_observed_at_ms: 0,
-                        last_observed_block_at_ms: 0,
-                        last_observed_block_slot: 0,
-                        commission_rate: 500,
-                        transactions_processed: 0,
-                        pending_activation: pending,
-                    });
+                    if on_chain_stake >= min_validator_stake || allow_founding_bootstrap_validator {
+                        let pending =
+                            should_add_local_validator_as_pending(is_joining_network, current_tip);
+                        info!("📋 This validator not in genesis set, adding local identity (on-chain stake: {} LICN, pending: {}, founding bootstrap: {})",
+                            on_chain_stake / 1_000_000_000,
+                            pending,
+                            allow_founding_bootstrap_validator);
+                        set.add_validator(ValidatorInfo {
+                            pubkey: validator_pubkey,
+                            stake: on_chain_stake,
+                            reputation: 100,
+                            blocks_proposed: 0,
+                            votes_cast: 0,
+                            correct_votes: 0,
+                            last_active_slot: current_tip,
+                            joined_slot: current_tip,
+                            last_observed_at_ms: 0,
+                            last_observed_block_at_ms: 0,
+                            last_observed_block_slot: 0,
+                            commission_rate: 500,
+                            transactions_processed: 0,
+                            pending_activation: pending,
+                        });
+                    } else {
+                        info!(
+                            "📋 Local validator key is not in genesis and has no eligible on-chain stake; waiting for RegisterValidator before ValidatorSet admission"
+                        );
+                    }
                 }
             } else {
                 info!("🚫 Genesis wallet cannot be a validator");
@@ -6267,25 +6242,68 @@ async fn run_validator() {
             .iter()
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
-            let pending = should_add_local_validator_as_pending(is_joining_network, current_tip);
-            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} LICN, pending: {})",
-                on_chain_stake / 1_000_000_000, pending);
-            set.add_validator(ValidatorInfo {
-                pubkey: validator_pubkey,
-                stake: on_chain_stake,
-                reputation: 100,
-                blocks_proposed: 0,
-                votes_cast: 0,
-                correct_votes: 0,
-                last_active_slot: current_tip,
-                joined_slot: current_tip,
-                last_observed_at_ms: 0,
-                last_observed_block_at_ms: 0,
-                last_observed_block_slot: 0,
-                commission_rate: 500,
-                transactions_processed: 0,
-                pending_activation: pending,
-            });
+            if on_chain_stake >= min_validator_stake || allow_founding_bootstrap_validator {
+                let pending =
+                    should_add_local_validator_as_pending(is_joining_network, current_tip);
+                info!("📋 This validator not in genesis set, adding local identity (on-chain stake: {} LICN, pending: {}, founding bootstrap: {})",
+                    on_chain_stake / 1_000_000_000,
+                    pending,
+                    allow_founding_bootstrap_validator);
+                set.add_validator(ValidatorInfo {
+                    pubkey: validator_pubkey,
+                    stake: on_chain_stake,
+                    reputation: 100,
+                    blocks_proposed: 0,
+                    votes_cast: 0,
+                    correct_votes: 0,
+                    last_active_slot: current_tip,
+                    joined_slot: current_tip,
+                    last_observed_at_ms: 0,
+                    last_observed_block_at_ms: 0,
+                    last_observed_block_slot: 0,
+                    commission_rate: 500,
+                    transactions_processed: 0,
+                    pending_activation: pending,
+                });
+            } else {
+                info!(
+                    "📋 Local validator key is not in genesis and has no eligible on-chain stake; waiting for RegisterValidator before ValidatorSet admission"
+                );
+            }
+        }
+
+        let genesis_validator_keys: HashSet<Pubkey> = genesis_config
+            .initial_validators
+            .iter()
+            .filter_map(|v| Pubkey::from_base58(&v.pubkey).ok())
+            .collect();
+        let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+        let unbacked_validators: Vec<Pubkey> = set
+            .validators()
+            .iter()
+            .filter(|validator| {
+                !(genesis_validator_keys.contains(&validator.pubkey)
+                    || allow_founding_bootstrap_validator && validator.pubkey == validator_pubkey)
+                    && persisted_pool
+                        .get_stake(&validator.pubkey)
+                        .map(|stake| stake.total_stake() < min_validator_stake)
+                        .unwrap_or(true)
+            })
+            .map(|validator| validator.pubkey)
+            .collect();
+        for pubkey in &unbacked_validators {
+            set.remove_validator(pubkey);
+        }
+        if !unbacked_validators.is_empty() {
+            warn!(
+                "🧹 Dropped {} unbacked ValidatorSet entr{} during startup invariant check",
+                unbacked_validators.len(),
+                if unbacked_validators.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
         }
 
         set
@@ -6313,10 +6331,9 @@ async fn run_validator() {
     // the same state change deterministically. Inactive validators are already
     // naturally skipped by leader election due to low reputation.
 
-    // Save validator set to RocksDB on EVERY boot.
-    // clear_all_validators() inside save_validator_set removes ghost entries from old
-    // keypairs while preserving reputation/metrics for current validators via the
-    // in-memory set that was loaded from DB above.
+    // Save validator set to RocksDB on EVERY boot. The in-memory set is built only
+    // from persisted/genesis/stake-backed identities; peer discovery and zero-stake
+    // local keys are deliberately kept out of this consensus metadata.
     if let Err(e) = state.save_validator_set(&*validator_set.read().await) {
         tracing::error!("Failed to save validator set: {e}");
     }
@@ -9767,6 +9784,7 @@ async fn run_validator() {
         let state_for_validators = state.clone();
         let validator_set_for_announce = validator_set.clone();
         let stake_pool_for_announce = stake_pool.clone();
+        let peer_mgr_for_announce = p2p_pm.clone();
         let validator_pubkey_for_announce_handler = validator_pubkey;
         let sync_mgr_for_announce = sync_manager.clone();
         tokio::spawn(async move {
@@ -9802,6 +9820,7 @@ async fn run_validator() {
 
                 let mut vs = validator_set_for_announce.write().await;
                 let is_existing_validator = vs.get_validator(&announcement.pubkey).is_some();
+                let mut persist_validator_set = false;
 
                 if !is_existing_validator {
                     if let Err(error) = validate_new_validator_version(&announcement.version) {
@@ -9815,9 +9834,6 @@ async fn run_validator() {
                     }
                 }
 
-                // Cap validator set size
-                const MAX_VALIDATORS: usize = 1000;
-
                 // Update highest seen slot from announcement so sync
                 // manager knows the network tip even before any blocks are
                 // processed by the block receiver.  Without this, a joining
@@ -9829,6 +9845,8 @@ async fn run_validator() {
 
                 // Check if validator already exists
                 if is_existing_validator {
+                    peer_mgr_for_announce
+                        .mark_validator(&announcement.peer_addr, announcement.pubkey);
                     // Update existing validator's activity
                     let _ = note_validator_activity(
                         &mut vs,
@@ -9836,6 +9854,7 @@ async fn run_validator() {
                         announcement.current_slot,
                         false,
                     );
+                    persist_validator_set = true;
 
                     // Check for fingerprint migration (same pubkey, new machine)
                     if announcement.machine_fingerprint != [0u8; 32] {
@@ -9885,20 +9904,12 @@ async fn run_validator() {
                         drop(pool);
                     }
                 } else {
-                    // ── PHANTOM VALIDATOR GUARD ──
-                    // Reject validators whose announced slot diverges too far
-                    // from our chain tip AND who are clearly not fresh starts.
-                    //
-                    // A validator at slot 0 (or very low) is a legitimate
-                    // new node joining the network — it will sync up via
-                    // block-range requests.  Only reject nodes that claim a
-                    // significantly different (but non-zero) slot, which
-                    // indicates stale or altered state.
-                    //
-                    // Real protection against rogue validators is provided by:
-                    //  • pending_activation — excludes them from consensus
-                    //  • RegisterValidator tx — requires on-chain stake
-                    //  • ACTIVATION_WARMUP (100 slots) — delays activation
+                    // Unknown announcements are never allowed to create
+                    // ValidatorSet entries. The only admission path is the
+                    // deterministic on-chain stake pool reconciliation at a
+                    // height boundary. This keeps peer discovery from creating
+                    // ghost validators after key changes, disconnects, or NATed
+                    // home-node experiments.
                     let our_tip = state_for_validators.get_last_slot().unwrap_or(0);
                     let their_slot = announcement.current_slot;
                     let slot_drift = their_slot.abs_diff(our_tip);
@@ -9917,17 +9928,6 @@ async fn run_validator() {
                             our_tip,
                             their_slot,
                             slot_drift,
-                        );
-                        drop(vs);
-                        continue;
-                    }
-
-                    // Reject if at capacity
-                    if vs.validators().len() >= MAX_VALIDATORS {
-                        warn!(
-                            "⚠️  Validator set full ({} validators) — rejecting {}",
-                            MAX_VALIDATORS,
-                            announcement.pubkey.to_base58()
                         );
                         drop(vs);
                         continue;
@@ -9973,16 +9973,11 @@ async fn run_validator() {
                         continue;
                     }
 
-                    // ── DISCOVERY-ONLY: Add to ValidatorSet for peer routing ──
-                    // No bootstrap accounts, no treasury debits, no stake pool changes.
-                    // Validator must submit a RegisterValidator transaction (opcode 26)
-                    // through consensus to receive a bootstrap grant and enter the stake pool.
                     let on_chain_stake = state_for_validators
                         .get_account(&announcement.pubkey)
                         .unwrap_or(None)
                         .map(|a| a.staked)
                         .unwrap_or(0);
-                    let local_tip = state_for_validators.get_last_slot().unwrap_or(0);
                     let local_stake = state_for_validators
                         .get_stake_pool()
                         .ok()
@@ -9992,89 +9987,41 @@ async fn run_validator() {
                         })
                         .unwrap_or(on_chain_stake);
 
-                    // Height-based activation: new validators are added for
-                    // P2P routing immediately but flagged pending_activation=true
-                    // so they're excluded from consensus until the next height
-                    // boundary after their on-chain stake is visible locally.
-                    let current_slot = announcement.current_slot;
-                    let current_epoch = lichen_core::slot_to_epoch(current_slot);
-                    let pending = should_add_announced_validator_as_pending(
-                        local_tip,
-                        local_stake,
-                        min_validator_stake,
-                    );
-                    let new_validator = ValidatorInfo {
-                        pubkey: announcement.pubkey,
-                        reputation: 100,
-                        blocks_proposed: 0,
-                        votes_cast: 0,
-                        correct_votes: 0,
-                        stake: on_chain_stake,
-                        joined_slot: current_slot,
-                        last_active_slot: current_slot,
-                        last_observed_at_ms: 0,
-                        last_observed_block_at_ms: 0,
-                        last_observed_block_slot: 0,
-                        commission_rate: 500,
-                        transactions_processed: 0,
-                        pending_activation: pending,
-                    };
-                    vs.add_validator(new_validator);
-
-                    // Queue the pending change in state for observability and restart recovery
-                    if pending {
-                        let change = lichen_core::PendingValidatorChange {
-                            pubkey: announcement.pubkey,
-                            change_type: lichen_core::ValidatorChangeType::Add,
-                            queued_at_slot: current_slot,
-                            effective_epoch: current_epoch + 1,
-                        };
-                        if let Err(e) = state_for_validators.queue_pending_validator_change(&change)
-                        {
-                            warn!(
-                                "⚠️  Failed to queue pending validator change for {}: {}",
-                                announcement.pubkey.to_base58(),
-                                e
-                            );
-                        }
-                    }
-
-                    if on_chain_stake == 0 {
+                    if local_stake >= min_validator_stake {
+                        peer_mgr_for_announce
+                            .mark_validator(&announcement.peer_addr, announcement.pubkey);
                         info!(
-                            "📋 New validator {} added for peer routing (pending activation at epoch {}, no on-chain stake yet)",
+                            "📡 Stake-backed validator announcement from {} at {} accepted for P2P routing only ({} LICN local stake); ValidatorSet admission remains height-boundary consensus reconciliation",
                             announcement.pubkey.to_base58(),
-                            current_epoch + 1,
-                        );
-                    } else if pending {
-                        info!(
-                            "⏳ Validator {} queued for consensus activation at epoch {} ({} LICN staked)",
-                            announcement.pubkey.to_base58(),
-                            current_epoch + 1,
-                            on_chain_stake / 1_000_000_000,
+                            announcement.peer_addr,
+                            local_stake / 1_000_000_000,
                         );
                     } else {
                         info!(
-                            "✅ Validator {} added with on-chain stake {} LICN (genesis activation)",
+                            "📡 Ignoring ValidatorSet admission for unstaked announcement {} at {} (self-reported stake {}, local stake {}); waiting for RegisterValidator",
                             announcement.pubkey.to_base58(),
-                            on_chain_stake / 1_000_000_000
+                            announcement.peer_addr,
+                            announcement.stake,
+                            local_stake,
                         );
                     }
                 }
 
-                // Persist to state
-                if let Err(e) = state_for_validators.save_validator_set(&vs) {
-                    warn!("⚠️  Failed to save validator set: {}", e);
-                } else {
-                    let active = vs
-                        .validators()
-                        .iter()
-                        .filter(|v| !v.pending_activation)
-                        .count();
-                    let pending = vs.pending_count();
-                    info!(
-                        "✅ Updated validator set ({} active, {} pending)",
-                        active, pending
-                    );
+                if persist_validator_set {
+                    if let Err(e) = state_for_validators.save_validator_set(&vs) {
+                        warn!("⚠️  Failed to save validator set: {}", e);
+                    } else {
+                        let active = vs
+                            .validators()
+                            .iter()
+                            .filter(|v| !v.pending_activation)
+                            .count();
+                        let pending = vs.pending_count();
+                        info!(
+                            "✅ Updated validator set ({} active, {} pending)",
+                            active, pending
+                        );
+                    }
                 }
                 drop(vs);
             }
@@ -15516,25 +15463,6 @@ mod tests {
     }
 
     #[test]
-    fn unsynced_announcements_stay_pending_without_local_stake() {
-        assert!(should_add_announced_validator_as_pending(
-            0,
-            0,
-            MIN_VALIDATOR_STAKE
-        ));
-        assert!(!should_add_announced_validator_as_pending(
-            0,
-            MIN_VALIDATOR_STAKE,
-            MIN_VALIDATOR_STAKE,
-        ));
-        assert!(should_add_announced_validator_as_pending(
-            25,
-            MIN_VALIDATOR_STAKE,
-            MIN_VALIDATOR_STAKE,
-        ));
-    }
-
-    #[test]
     fn apply_oracle_from_block_uses_consensus_prices_not_block_payload() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
@@ -15717,20 +15645,30 @@ mod tests {
     }
 
     #[test]
-    fn sync_observed_validator_info_does_not_infer_bootstrap_stake() {
+    fn apply_block_effects_does_not_create_unstaked_header_observed_validator() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
         let producer = Keypair::generate().pubkey();
+        let block = Block::new(42, Hash::default(), Hash::default(), producer.0, vec![]);
+        let validator_set = Arc::new(RwLock::new(ValidatorSet::new()));
+        let stake_pool = Arc::new(RwLock::new(StakePool::new()));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
 
-        let info = make_sync_observed_validator_info(producer, 42, 0, 3, false);
+        runtime.block_on(apply_block_effects(
+            &state,
+            &validator_set,
+            &stake_pool,
+            &block,
+            true,
+            MIN_VALIDATOR_STAKE,
+        ));
 
-        assert_eq!(info.pubkey, producer);
-        assert_eq!(info.stake, 0);
-        assert_eq!(info.blocks_proposed, 1);
-        assert_eq!(info.transactions_processed, 3);
-        assert_eq!(info.last_active_slot, 42);
-        assert!(info.last_observed_at_ms > 0);
-        assert!(info.last_observed_block_at_ms > 0);
-        assert_eq!(info.last_observed_block_slot, 42);
-        assert!(!info.pending_activation);
+        let validators = runtime.block_on(async { validator_set.read().await.validators().len() });
+        assert_eq!(validators, 0);
+        assert!(state
+            .get_validator(&producer)
+            .expect("read validator state")
+            .is_none());
     }
 
     #[test]

@@ -6,6 +6,8 @@ Last reviewed: 2026-04-26
 
 - Repo root README and release docs now treat `v0.5.9` as the active release line.
 - Validator RPC activity reporting now prefers the live in-memory validator set, and remote BFT `last_active_slot` updates are fed from signature-verified consensus ingress instead of delayed BFT queue drain.
+- Validator sync pending storage now keeps multiple block candidates per slot and chooses the candidate that chains from the current tip, preventing a wrong-parent candidate from permanently poisoning catch-up.
+- Validator identity admission is stake-backed only: block headers and validator announcements no longer create `ValidatorSet` entries, P2P validator-route status is granted only to existing or locally stake-backed validators, and startup drops persisted unbacked validator metadata.
 - The live 3-VPS testnet fleet is now on the exact published `v0.5.9` Linux validator release artifact (`SHA-256 015f267ee617723416737cc62bacd1110343e02384bf30082bc090e375fd2c80`).
 - Public testnet RPC now serves `getSporePumpStats`, so Mission Control no longer has a missing backend feed for the SporePump ecosystem card.
 - Mission Control monitoring is live on Cloudflare Pages with chain-age uptime, corrected DEX/ecosystem labels, and a health badge driven by validator availability plus consensus/P2P signals instead of the old block-cadence average.
