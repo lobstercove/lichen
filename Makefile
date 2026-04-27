@@ -132,13 +132,12 @@ deploy-local: build-contracts-wasm
 	scripts/first-boot-deploy.sh --rpc=$(RPC_URL)
 
 deploy-testnet: build-contracts-wasm
-	@echo "🚀 Running post-genesis bootstrap against testnet RPC..."
-	DEPLOY_NETWORK=testnet scripts/first-boot-deploy.sh --rpc=$(RPC_URL) --skip-build
+	@echo "Remote testnet deployment is private operator tooling and is not shipped in the public repo."
+	@exit 1
 
 deploy-mainnet: build-contracts-wasm
-	@echo "🚀 Running post-genesis bootstrap against mainnet RPC..."
-	@echo "⚠️  Ensure deploy/setup.sh and genesis creation already completed on the target host."
-	DEPLOY_NETWORK=mainnet scripts/first-boot-deploy.sh --rpc=$(RPC_URL) --skip-build
+	@echo "Remote mainnet deployment is private operator tooling and is not shipped in the public repo."
+	@exit 1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run

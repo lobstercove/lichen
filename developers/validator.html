@@ -1351,28 +1351,27 @@ docker-compose down</code></pre>
             <!-- ========== 7. SYSTEMD DEPLOYMENT ========== -->
             <h2 id="systemd-deployment">Systemd Deployment</h2>
 
-            <p>For bare-metal Linux servers, use the provided setup script to install a systemd service per network.</p>
+            <p>For bare-metal Linux servers, install the release binary under a systemd service. Lichen-managed host
+                provisioning and VPS automation live in the private operator runbook, not in the public repo.</p>
 
-            <h3>Setup Script</h3>
+            <h3>Systemd Unit</h3>
 
-            <p>Run the setup script as root. It accepts one or both network names:</p>
+            <p>The public repo ships the validator binary and service templates. Operators can adapt the unit file to
+                their own host paths and secret-management system:</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code># Build first
-cargo build --release
-
-# Setup for testnet only
-sudo bash deploy/setup.sh testnet
-
-# Setup for both networks on the same machine
-sudo bash deploy/setup.sh testnet mainnet</code></pre>
+                <pre><code># Example: install the release binary, then install a systemd unit
+sudo install -m 755 lichen-validator /usr/local/bin/lichen-validator
+sudo install -m 644 deploy/lichen-validator.service /etc/systemd/system/lichen-validator.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lichen-validator</code></pre>
             </div>
 
-            <p>The script performs:</p>
+            <p>A production unit should perform the same high-level setup:</p>
             <ul>
                 <li>Creates a dedicated <code>lichen</code> system user/group (no login shell)</li>
                 <li>Creates directories: <code>/etc/lichen</code>, <code>/var/lib/lichen</code>,
@@ -1381,9 +1380,7 @@ sudo bash deploy/setup.sh testnet mainnet</code></pre>
                 <li>Copies binaries to <code>/usr/local/bin/</code></li>
                 <li>Generates <code>/etc/lichen/env-testnet</code> and/or <code>/etc/lichen/env-mainnet</code>
                     with correct port assignments</li>
-                <li>Installs per-network systemd services: <code>lichen-validator-testnet</code> and
-                    <code>lichen-validator-mainnet</code>
-                </li>
+                <li>Installs a network-specific systemd service and keeps secrets in an operator-managed store</li>
             </ul>
 
             <h3>Systemd Unit File</h3>

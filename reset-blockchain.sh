@@ -45,7 +45,7 @@ fi
 if [ "$VPS_MODE" = true ]; then
 	echo -e "${RED}CRITICAL: reset-blockchain.sh VPS mode is disabled for v0.4.6.${NC}"
 	echo "This script's systemd restart and genesis recovery path is not aligned with the validated production runbook."
-	echo "Use docs/deployment/PRODUCTION_DEPLOYMENT.md and deploy/setup.sh for production resets instead."
+	echo "Use the private operator runbook for production resets instead."
 	exit 1
 fi
 
@@ -276,7 +276,7 @@ if [ "$RESTART" = true ]; then
 		sleep 30
 
 		# ── Post-genesis: copy keypairs to service paths ──
-		VPS_GENESIS_SETUP="${SCRIPT_DIR}/scripts/vps-post-genesis.sh"
+		VPS_GENESIS_SETUP="${SCRIPT_DIR}/private-ops/vps-post-genesis.sh"
 		if [ -f "$VPS_GENESIS_SETUP" ]; then
 			echo "   Running post-genesis keypair setup..."
 			bash "$VPS_GENESIS_SETUP" 2>&1 | sed 's/^/   /'
@@ -433,8 +433,7 @@ else
 		echo "Next steps (VPS):"
 		echo "   sudo systemctl start lichen-validator-testnet"
 		echo "   sudo systemctl start lichen-validator-mainnet"
-		echo "   # Wait 30s for genesis, then run:"
-		echo "   bash $REPO_ROOT/scripts/vps-post-genesis.sh"
+		echo "   # Wait for genesis, then follow the private operator runbook."
 		echo "   sudo systemctl start lichen-faucet"
 		echo "   sudo systemctl start lichen-custody"
 		echo "   sudo systemctl start lichen-custody-mainnet"

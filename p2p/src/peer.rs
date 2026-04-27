@@ -2607,7 +2607,7 @@ mod tests {
 
     #[test]
     fn test_self_endpoint_requires_external_addr_for_unspecified_bind() {
-        let peer: SocketAddr = "15.204.229.189:7001".parse().unwrap();
+        let peer: SocketAddr = "203.0.113.10:7001".parse().unwrap();
         let bind: SocketAddr = "0.0.0.0:7001".parse().unwrap();
 
         assert!(!is_self_endpoint_addr(peer, bind, None));
@@ -2623,7 +2623,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let external: SocketAddr = "15.204.229.189:7001".parse().unwrap();
+        let external: SocketAddr = "203.0.113.10:7001".parse().unwrap();
         let (tx, _rx) = mpsc::channel(8);
         let mgr = PeerManager::new_with_external_addr(
             "127.0.0.1:0".parse().unwrap(),

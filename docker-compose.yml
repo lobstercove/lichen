@@ -1,6 +1,6 @@
 # DEV-ONLY convenience stack.
 # Do not use this compose file for production exposure. Production deployment
-# is the hardened systemd path under deploy/setup.sh.
+# is the hardened systemd path from the private operator runbook.
 version: "3.8"
 
 services:

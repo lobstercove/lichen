@@ -73,7 +73,7 @@ Four binaries ship from this repo:
 ## Security Highlights
 
 - Browser token, registry, and contract-resolution metadata is verified from release-signed manifests served by `getSignedMetadataManifest`; custom RPC overrides remain transport-only for generic reads.
-- Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production setup stays on `deploy/setup.sh` plus systemd units.
+- Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production operator automation is kept outside the public repo.
 - Supply-chain policy in CI includes all-lockfile `cargo audit`, `cargo deny`, reproducible npm lockfile installs plus production `npm audit`, Python SDK dependency consistency checks, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations for release bundles.
 
 ---
@@ -104,13 +104,6 @@ cargo build --release
 bash scripts/start-local-3validators.sh start-reset
 ```
 
-VPS or production service deployment:
-
-```bash
-cargo build --release
-sudo bash deploy/setup.sh mainnet
-```
-
 If you need custody, faucet, and post-genesis bootstrap on a local testnet too, extend the local path with:
 
 ```bash
@@ -121,7 +114,7 @@ If you need custody, faucet, and post-genesis bootstrap on a local testnet too, 
 
 If you already have a `lichen-validator` binary from a release bundle or prior build, you do not need the full repository checkout to join the network. A validator can run from the binary plus a writable state directory.
 
-Manual binary launch is for release bundles or one-off debugging. The supported repo operator paths remain `scripts/start-local-3validators.sh` for local validators and `deploy/setup.sh` for VPS deployment.
+Manual binary launch is for release bundles or one-off debugging. The supported public repo operator path is `scripts/start-local-3validators.sh` for local validators; hosted production deployment automation is private operator tooling.
 
 ### Fast Install From Release
 
@@ -395,7 +388,7 @@ cp ./seeds.json ./data/state-mainnet/seeds.json
     --db-path ./data/state-mainnet
 ```
 
-For a repo checkout on Linux, the supported unattended path is `sudo bash deploy/setup.sh mainnet`; the foreground command above is the manual fallback for ad hoc starts and debugging.
+For a repo checkout on Linux, the foreground command above is the public manual path for ad hoc starts and debugging. Hosted production deployment automation is kept in the private operator runbook.
 
 That's it. The validator will:
 - Generate a keypair (saved to `~/.lichen/validators/validator-mainnet.json`)
@@ -416,7 +409,7 @@ For unattended operation, install the validator as a persistent OS service:
 
 | Platform | Method | Guide |
 |----------|--------|-------|
-| **Linux** | systemd | `sudo bash deploy/setup.sh mainnet` — creates unit, user, env file |
+| **Linux** | systemd | Use the release archive plus your own systemd unit, or the private operator runbook for Lichen-managed hosts |
 | **macOS** | LaunchAgent | See [Validator Guide — macOS LaunchAgent](https://developers.lichen.network/validator.html#macos-service) |
 | **Windows** | NSSM | See [Validator Guide — Windows Service](https://developers.lichen.network/validator.html#windows-service) |
 
@@ -438,7 +431,6 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 - [Validator Setup](docs/guides/VALIDATOR_SETUP.md)
 - [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
 - [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
-- [SKILL.md](SKILL.md) — Full agent reference (contracts, RPC, identity, staking)
 
 ---
 
