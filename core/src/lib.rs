@@ -71,8 +71,9 @@ pub use evm::{
     PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_RIPEMD160, PRECOMPILE_SHA256,
 };
 pub use genesis::{
-    ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisPrices, GenesisValidator,
-    NetworkConfig,
+    ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisPrices,
+    GenesisStateBundle, GenesisStateCategory, GenesisStateChunk, GenesisValidator, NetworkConfig,
+    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
 };
 pub use governance::{GovernanceAction, GovernanceProposal};
 pub use hash::Hash;

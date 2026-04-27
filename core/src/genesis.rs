@@ -10,6 +10,46 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// System instruction opcode used in slot 0 to carry canonical genesis state.
+///
+/// Opcode 40 carries [`GenesisConfig`]. Opcode 41 carries compressed chunks of
+/// the fully materialized genesis state, so validators can bootstrap from the
+/// network without local contract artifacts or genesis replay code drift.
+pub const GENESIS_STATE_CHUNK_OPCODE: u8 = 41;
+
+/// Wire version for the canonical genesis state bundle.
+pub const GENESIS_STATE_BUNDLE_VERSION: u16 = 1;
+
+/// One exported key/value column in the canonical genesis state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisStateCategory {
+    pub name: String,
+    pub entries: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Canonical post-genesis state committed by block 0.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisStateBundle {
+    pub version: u16,
+    pub state_root: [u8; 32],
+    pub categories: Vec<GenesisStateCategory>,
+}
+
+/// A compressed chunk of [`GenesisStateBundle`] embedded in a slot-0
+/// transaction instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisStateChunk {
+    pub version: u16,
+    pub state_root: [u8; 32],
+    pub compression: String,
+    pub compressed_len: u64,
+    pub uncompressed_len: u64,
+    pub compressed_sha256: [u8; 32],
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+    pub data: Vec<u8>,
+}
+
 /// Oracle prices frozen at genesis time — embedded in the genesis block for
 /// deterministic replay on every joining validator.
 ///

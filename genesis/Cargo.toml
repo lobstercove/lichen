@@ -1,6 +1,6 @@
 [package]
 name = "lichen-genesis"
-version = "0.5.18"
+version = "0.5.19"
 edition = "2021"
 authors = ["Lichen Labs <trading.lobster@lichen.network>"]
 description = "Lichen genesis block creator — standalone tool for bootstrapping a new chain"
@@ -15,6 +15,8 @@ hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+flate2 = "1.0"
+bincode = "1"
 
 # ureq is used ONLY by the lichen-genesis binary for a one-time live price
 # fetch during genesis creation.  The library (lib.rs) never fetches prices.

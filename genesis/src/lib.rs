@@ -2701,6 +2701,26 @@ pub fn genesis_seed_margin_prices(
     }
 }
 
+// ========================================================================
+//  GENESIS PHASE 4d — Seed native consensus oracle prices
+//  These values live in CF_STATS, outside the state root, but they are part
+//  of the canonical genesis state bundle so fresh validators do not need any
+//  startup reconciliation before replaying later blocks.
+// ========================================================================
+
+pub fn genesis_seed_consensus_oracle_prices(state: &StateStore, slot: u64, prices: &GenesisPrices) {
+    for (asset, price_raw) in [
+        ("LICN", prices.licn_usd_8dec),
+        ("wSOL", prices.wsol_usd_8dec),
+        ("wETH", prices.weth_usd_8dec),
+        ("wBNB", prices.wbnb_usd_8dec),
+    ] {
+        if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
+            warn!("  Failed to seed consensus oracle price for {asset}: {e}");
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // GENESIS ACHIEVEMENTS — Register identities & award achievements at genesis
 // ════════════════════════════════════════════════════════════════════════════

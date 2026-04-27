@@ -249,36 +249,22 @@ stop_pid() {
   kill -9 "$pid" 2>/dev/null || true
 }
 
-sync_seed_state_to_joiners() {
+prepare_joiner_empty_state() {
   local joiner_dir
-
-  if [[ ! -f "$STATE1_DIR/CURRENT" ]]; then
-    echo "[local-3validators] ERROR: seed state is not initialized at $STATE1_DIR"
-    return 1
-  fi
-
-  if ! command -v rsync >/dev/null 2>&1; then
-    echo "[local-3validators] ERROR: rsync is required to snapshot seed state to local joiners"
-    return 1
-  fi
+  local key_backup
 
   for joiner_dir in "$STATE2_DIR" "$STATE3_DIR"; do
+    key_backup=""
+    if [[ -f "$joiner_dir/validator-keypair.json" ]]; then
+      key_backup="$(mktemp)"
+      cp "$joiner_dir/validator-keypair.json" "$key_backup"
+    fi
+    rm -rf "$joiner_dir"
     mkdir -p "$joiner_dir"
-    rsync -a --delete \
-      --exclude='validator-keypair.json' \
-      --exclude='signer-keypair.json' \
-      --exclude='seeds.json' \
-      --exclude='LOCK' \
-      --exclude='IDENTITY' \
-      --exclude='LOG' \
-      --exclude='LOG.old.*' \
-      --exclude='known-peers.json' \
-      --exclude='logs/' \
-      --exclude='home/' \
-      "$STATE1_DIR/" "$joiner_dir/"
-    rm -f "$joiner_dir/known-peers.json" 2>/dev/null || true
-    rm -f "$joiner_dir/seeds.json" 2>/dev/null || true
-    rm -rf "$joiner_dir/home" 2>/dev/null || true
+    if [[ -n "$key_backup" ]]; then
+      cp "$key_backup" "$joiner_dir/validator-keypair.json"
+      rm -f "$key_backup"
+    fi
   done
 }
 
@@ -443,8 +429,8 @@ start_seed_only() {
   echo "[local-3validators] seed-ready pid=$v1pid rpc=$RPC1"
 }
 
-promote_joiners_from_seed_snapshot() {
-  local existing_pids v1pid v1restart_pid v2pid v3pid
+promote_joiners_from_seed_sync() {
+  local existing_pids v1pid v2pid v3pid
 
   if [[ ! -f "$PID_FILE" ]]; then
     echo "[local-3validators] ERROR: seed validator is not running; start it first"
@@ -459,33 +445,18 @@ promote_joiners_from_seed_snapshot() {
     exit 1
   fi
 
-  echo "[local-3validators] stopping V1 for a clean local seed snapshot"
-  stop_pid "$v1pid"
-  if ! wait_rpc_down "$RPC1" 30 1; then
-    echo "[local-3validators] ERROR: seed validator did not stop cleanly"
-    stop_cluster
-    exit 1
-  fi
+  echo "[local-3validators] preparing empty V2/V3 state directories for network sync"
+  prepare_joiner_empty_state
 
-  echo "[local-3validators] syncing seed state into V2/V3 data directories"
-  if ! sync_seed_state_to_joiners; then
-    stop_cluster
-    exit 1
-  fi
-
-  echo "[local-3validators] restarting V1 after snapshot"
-  v1restart_pid="$(start_validator 1 127.0.0.1:9301 "$LOG1" 1)"
-  sleep "$STAGGER_SECS"
-
-  echo "[local-3validators] starting V2 from seed snapshot"
+  echo "[local-3validators] starting V2 as an independent joining validator"
   v2pid="$(start_validator 2 127.0.0.1:9302 "$LOG2")"
   sleep "$STAGGER_SECS"
 
-  echo "[local-3validators] starting V3 from seed snapshot"
+  echo "[local-3validators] starting V3 as an independent joining validator"
   v3pid="$(start_validator 3 127.0.0.1:9303 "$LOG3")"
 
   if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
-    echo "[local-3validators] ERROR: snapshot-provisioned cluster did not become healthy"
+    echo "[local-3validators] ERROR: independently syncing cluster did not become healthy"
     stop_cluster
     exit 1
   fi
@@ -496,8 +467,8 @@ promote_joiners_from_seed_snapshot() {
     exit 1
   fi
 
-  echo "$v1restart_pid $v2pid $v3pid" > "$PID_FILE"
-  echo "[local-3validators] joiners-ready pids=$v1restart_pid,$v2pid,$v3pid"
+  echo "$v1pid $v2pid $v3pid" > "$PID_FILE"
+  echo "[local-3validators] joiners-ready pids=$v1pid,$v2pid,$v3pid"
 }
 
 cmd="${1:-status}"
@@ -514,8 +485,8 @@ case "$cmd" in
   start-reset-seed)
     start_seed_only 1
     ;;
-  start-joiners-from-seed-snapshot)
-    promote_joiners_from_seed_snapshot
+  start-joiners-from-seed-sync)
+    promote_joiners_from_seed_sync
     ;;
   stop)
     stop_cluster
@@ -525,7 +496,7 @@ case "$cmd" in
     status_cluster
     ;;
   *)
-    echo "usage: $0 {start|start-reset|start-seed|start-reset-seed|start-joiners-from-seed-snapshot|stop|status}"
+    echo "usage: $0 {start|start-reset|start-seed|start-reset-seed|start-joiners-from-seed-sync|stop|status}"
     exit 2
     ;;
 esac

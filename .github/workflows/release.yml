@@ -15,8 +15,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  contract-bundle:
+    name: Build genesis contract bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build genesis contracts
+        run: ./scripts/build-all-contracts.sh
+
+      - name: Stage contract artifacts
+        run: |
+          mkdir -p genesis-contracts/contracts
+          while IFS= read -r wasm; do
+            dest="genesis-contracts/${wasm}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$wasm" "$dest"
+          done < <(find contracts -maxdepth 2 -type f -name '*.wasm' | sort)
+          test "$(find genesis-contracts/contracts -maxdepth 2 -type f -name '*.wasm' | wc -l)" -gt 0
+
+      - name: Upload genesis contract bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: genesis-contracts
+          path: genesis-contracts/contracts
+
   build:
     name: Build ${{ matrix.target }}
+    needs: contract-bundle
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,6 +89,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} --bin lichen-validator --bin lichen-genesis --bin lichen --bin zk-prove
 
+      - name: Download genesis contract bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: genesis-contracts
+          path: release-contracts/contracts
+
       - name: Strip binary (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.target != 'aarch64-unknown-linux-gnu'
         run: |
@@ -90,6 +128,7 @@ jobs:
           cp target/${{ matrix.target }}/release/lichen ${{ matrix.artifact }}/
           cp target/${{ matrix.target }}/release/zk-prove ${{ matrix.artifact }}/
           cp seeds.json ${{ matrix.artifact }}/
+          cp -R release-contracts/contracts ${{ matrix.artifact }}/contracts
           tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Create archive (Windows)
@@ -102,6 +141,7 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/lichen.exe ${{ matrix.artifact }}/
           Copy-Item target/${{ matrix.target }}/release/zk-prove.exe ${{ matrix.artifact }}/
           Copy-Item seeds.json ${{ matrix.artifact }}/
+          Copy-Item release-contracts/contracts ${{ matrix.artifact }}/contracts -Recurse
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Upload artifact
@@ -186,14 +226,20 @@ jobs:
 
             # Extract
             tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-            chmod +x lichen-validator zk-prove
+            chmod +x lichen-validator lichen-genesis lichen zk-prove
             mkdir -p "$HOME/.lichen/state-mainnet"
             cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
             ```
 
-            Each archive includes `lichen-validator`, `zk-prove`, and `seeds.json`.
+            Each archive includes `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`,
+            `seeds.json`, and the genesis contract WASM bundle under `contracts/`.
             Install `seeds.json` under your chosen `--db-path` (or `/etc/lichen/seeds.json`)
             so seed-set updates flow through normal release upgrades.
+
+            Fresh validators generate their own identity, fetch the authoritative genesis config
+            from seed RPC, import and verify the opcode-41 block-0 state bundle, then replay later
+            blocks from peers. Do not copy RocksDB state, genesis wallets, genesis keys, peer cache,
+            or consensus WAL from another validator.
 
             Windows artifact:
 

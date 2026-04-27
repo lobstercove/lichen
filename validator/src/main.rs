@@ -22,6 +22,7 @@ mod threshold_signer;
 pub mod updater;
 pub mod wal;
 
+use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use lichen_core::keypair_file::{
     load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
@@ -37,19 +38,20 @@ use lichen_core::nft::decode_token_state;
 use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
     ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
-    GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity,
-    NftActivityKind, PqSignature, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey,
-    RoundStep, SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
-    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
-    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    GENESIS_DISTRIBUTION, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair, MarketActivity,
+    MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature, Precommit, Prevote,
+    ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence, SlashingOffense, StakePool,
+    StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
+    VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
+    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
     genesis_create_trading_pairs, genesis_harden_contract_controls, genesis_initialize_contracts,
-    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
-    genesis_set_fee_exempt_contracts,
+    genesis_seed_analytics_prices, genesis_seed_consensus_oracle_prices,
+    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
 use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -64,6 +66,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -410,11 +413,11 @@ struct SeedsFile {
 
 #[derive(Debug, Deserialize)]
 struct SeedNetwork {
-    /// Retained for seeds.json schema completeness (deserialized but not read directly).
-    #[serde(rename = "chain_id")]
-    _chain_id: String,
+    chain_id: String,
     #[serde(default)]
     bootstrap_peers: Vec<String>,
+    #[serde(default)]
+    rpc_endpoints: Vec<String>,
     #[serde(default)]
     seeds: Vec<SeedEntry>,
 }
@@ -422,6 +425,168 @@ struct SeedNetwork {
 #[derive(Debug, Deserialize)]
 struct SeedEntry {
     address: String,
+    #[serde(default)]
+    rpc: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SeedBootstrapConfig {
+    chain_id: String,
+    peer_strings: Vec<String>,
+    rpc_urls: Vec<String>,
+}
+
+impl SeedsFile {
+    fn network_by_name(&self, network: &str) -> Option<&SeedNetwork> {
+        match network {
+            "testnet" => self.testnet.as_ref(),
+            "mainnet" => self.mainnet.as_ref(),
+            "devnet" => self.devnet.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn network_by_chain_id(&self, chain_id: &str) -> Option<&SeedNetwork> {
+        [
+            self.testnet.as_ref(),
+            self.mainnet.as_ref(),
+            self.devnet.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|network| network.chain_id == chain_id)
+    }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: impl AsRef<str>) {
+    let trimmed = value.as_ref().trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return;
+    }
+    let normalized = trimmed.to_string();
+    if !values.iter().any(|existing| existing == &normalized) {
+        values.push(normalized);
+    }
+}
+
+fn seed_bootstrap_from_network(network: &SeedNetwork) -> SeedBootstrapConfig {
+    let mut peer_strings = Vec::new();
+    let mut rpc_urls = Vec::new();
+
+    for peer in &network.bootstrap_peers {
+        push_unique_string(&mut peer_strings, peer);
+    }
+    for seed in &network.seeds {
+        push_unique_string(&mut peer_strings, &seed.address);
+    }
+
+    for rpc in &network.rpc_endpoints {
+        push_unique_string(&mut rpc_urls, rpc);
+    }
+    for seed in &network.seeds {
+        if let Some(rpc) = seed.rpc.as_deref() {
+            push_unique_string(&mut rpc_urls, rpc);
+        }
+    }
+    for peer in &peer_strings {
+        if let Some(rpc) = derive_rpc_url_from_peer(peer) {
+            push_unique_string(&mut rpc_urls, rpc);
+        }
+    }
+
+    SeedBootstrapConfig {
+        chain_id: network.chain_id.clone(),
+        peer_strings,
+        rpc_urls,
+    }
+}
+
+fn load_seeds_file(path: &Path) -> Result<SeedsFile, String> {
+    let data = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read seeds file {}: {}", path.display(), e))?;
+    serde_json::from_str(&data)
+        .map_err(|e| format!("Failed to parse seeds file {}: {}", path.display(), e))
+}
+
+fn load_seed_bootstrap_by_network(
+    network: &str,
+    seeds_path: &Path,
+) -> Result<Option<SeedBootstrapConfig>, String> {
+    if !seeds_path.exists() {
+        return Ok(None);
+    }
+    let seeds = load_seeds_file(seeds_path)?;
+    Ok(seeds
+        .network_by_name(network)
+        .map(seed_bootstrap_from_network))
+}
+
+fn load_seed_bootstrap_by_chain_id(
+    chain_id: &str,
+    seeds_path: &Path,
+) -> Result<Option<SeedBootstrapConfig>, String> {
+    if !seeds_path.exists() {
+        return Ok(None);
+    }
+    let seeds = load_seeds_file(seeds_path)?;
+    Ok(seeds
+        .network_by_chain_id(chain_id)
+        .map(seed_bootstrap_from_network))
+}
+
+fn load_seed_bootstrap_from_candidates_by_network(
+    network: &str,
+    seed_candidates: &[PathBuf],
+) -> Result<(PathBuf, SeedBootstrapConfig), String> {
+    let mut errors = Vec::new();
+    for path in seed_candidates {
+        match load_seed_bootstrap_by_network(network, path) {
+            Ok(Some(config)) => return Ok((path.clone(), config)),
+            Ok(None) => {}
+            Err(err) => errors.push(err),
+        }
+    }
+
+    let candidate_list = seed_candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if errors.is_empty() {
+        Err(format!(
+            "No seeds.json section found for network '{}' in any candidate path: {}",
+            network, candidate_list
+        ))
+    } else {
+        Err(format!(
+            "Unable to load seeds.json for network '{}': {}",
+            network,
+            errors.join("; ")
+        ))
+    }
+}
+
+fn load_seed_peers_and_rpc(chain_id: &str, seeds_path: &Path) -> (Vec<String>, Vec<String>) {
+    match load_seed_bootstrap_by_chain_id(chain_id, seeds_path) {
+        Ok(Some(config)) => {
+            if config.peer_strings.is_empty() {
+                (load_embedded_seed_peers(chain_id), config.rpc_urls)
+            } else {
+                (config.peer_strings, config.rpc_urls)
+            }
+        }
+        Ok(None) => {
+            info!(
+                "📖 seeds.json not found or missing chain {}, using embedded bootstrap peers",
+                chain_id
+            );
+            (load_embedded_seed_peers(chain_id), Vec::new())
+        }
+        Err(err) => {
+            warn!("{}", err);
+            (load_embedded_seed_peers(chain_id), Vec::new())
+        }
+    }
 }
 
 fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
@@ -569,52 +734,6 @@ fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
         state_home.display()
     );
     state_home
-}
-
-fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
-    let contents = match fs::read_to_string(seeds_path) {
-        Ok(data) => data,
-        Err(_) => {
-            // seeds.json not found — fall back to compile-time embedded seeds
-            info!("📖 seeds.json not found, using embedded bootstrap peers");
-            return load_embedded_seed_peers(chain_id);
-        }
-    };
-
-    let seeds: SeedsFile = match serde_json::from_str(&contents) {
-        Ok(value) => value,
-        Err(e) => {
-            warn!(
-                "⚠️  Failed to parse {}: {} — using embedded bootstrap peers",
-                seeds_path.display(),
-                e
-            );
-            return load_embedded_seed_peers(chain_id);
-        }
-    };
-
-    let network = if chain_id.contains("mainnet") {
-        seeds.mainnet
-    } else if chain_id.contains("testnet") {
-        seeds.testnet
-    } else if chain_id.contains("devnet") {
-        seeds.devnet
-    } else {
-        None
-    };
-
-    let mut peers = Vec::new();
-    if let Some(network) = network {
-        peers.extend(network.bootstrap_peers);
-        peers.extend(network.seeds.into_iter().map(|seed| seed.address));
-    }
-
-    // If seeds.json exists but the network section was empty, fall back to embedded
-    if peers.is_empty() {
-        return load_embedded_seed_peers(chain_id);
-    }
-
-    peers
 }
 
 /// Compile-time fallback bootstrap peers from core/src/network.rs
@@ -773,6 +892,187 @@ fn extract_genesis_config(block: &Block) -> Option<GenesisConfig> {
         }
     }
     None
+}
+
+fn extract_genesis_state_bundle(block: &Block) -> Result<Option<GenesisStateBundle>, String> {
+    let mut chunks = Vec::new();
+    for tx in &block.transactions {
+        for ix in &tx.message.instructions {
+            if ix.program_id == CORE_SYSTEM_PROGRAM_ID
+                && ix.data.len() > 1
+                && ix.data[0] == GENESIS_STATE_CHUNK_OPCODE
+            {
+                let chunk: GenesisStateChunk = bincode::deserialize(&ix.data[1..])
+                    .map_err(|err| format!("invalid genesis state chunk encoding: {}", err))?;
+                chunks.push(chunk);
+            }
+        }
+    }
+
+    if chunks.is_empty() {
+        return Ok(None);
+    }
+
+    let first = chunks[0].clone();
+    if first.version != GENESIS_STATE_BUNDLE_VERSION {
+        return Err(format!(
+            "unsupported genesis state bundle version {}",
+            first.version
+        ));
+    }
+    if first.compression != "gzip" {
+        return Err(format!(
+            "unsupported genesis state compression {}",
+            first.compression
+        ));
+    }
+    if first.total_chunks == 0 || first.total_chunks as usize != chunks.len() {
+        return Err(format!(
+            "genesis state chunk count mismatch: header says {}, block has {}",
+            first.total_chunks,
+            chunks.len()
+        ));
+    }
+    if first.total_chunks > 256 {
+        return Err(format!(
+            "genesis state chunk count {} exceeds safety limit",
+            first.total_chunks
+        ));
+    }
+    if first.compressed_len > lichen_core::MAX_BLOCK_SIZE as u64 {
+        return Err(format!(
+            "genesis state compressed payload too large: {} bytes",
+            first.compressed_len
+        ));
+    }
+    if first.uncompressed_len > 64 * 1024 * 1024 {
+        return Err(format!(
+            "genesis state uncompressed payload too large: {} bytes",
+            first.uncompressed_len
+        ));
+    }
+
+    chunks.sort_by_key(|chunk| chunk.chunk_index);
+    let mut compressed = Vec::with_capacity(first.compressed_len as usize);
+    for (expected_index, chunk) in chunks.iter().enumerate() {
+        if chunk.version != first.version
+            || chunk.state_root != first.state_root
+            || chunk.compression != first.compression
+            || chunk.compressed_len != first.compressed_len
+            || chunk.uncompressed_len != first.uncompressed_len
+            || chunk.compressed_sha256 != first.compressed_sha256
+            || chunk.total_chunks != first.total_chunks
+        {
+            return Err("genesis state chunks have inconsistent metadata".to_string());
+        }
+        if chunk.chunk_index as usize != expected_index {
+            return Err(format!(
+                "missing genesis state chunk {}, got {}",
+                expected_index, chunk.chunk_index
+            ));
+        }
+        compressed.extend_from_slice(&chunk.data);
+    }
+
+    if compressed.len() as u64 != first.compressed_len {
+        return Err(format!(
+            "genesis state compressed length mismatch: expected {}, got {}",
+            first.compressed_len,
+            compressed.len()
+        ));
+    }
+    let digest = Sha256::digest(&compressed);
+    if digest.as_slice() != first.compressed_sha256 {
+        return Err("genesis state compressed SHA-256 mismatch".to_string());
+    }
+
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut raw = Vec::with_capacity(first.uncompressed_len.min(64 * 1024 * 1024) as usize);
+    decoder
+        .read_to_end(&mut raw)
+        .map_err(|err| format!("failed to decompress genesis state bundle: {}", err))?;
+    if raw.len() as u64 != first.uncompressed_len {
+        return Err(format!(
+            "genesis state uncompressed length mismatch: expected {}, got {}",
+            first.uncompressed_len,
+            raw.len()
+        ));
+    }
+
+    let bundle: GenesisStateBundle = bincode::deserialize(&raw)
+        .map_err(|err| format!("invalid genesis state bundle encoding: {}", err))?;
+    if bundle.version != GENESIS_STATE_BUNDLE_VERSION {
+        return Err(format!(
+            "unsupported decoded genesis state bundle version {}",
+            bundle.version
+        ));
+    }
+    if bundle.state_root != first.state_root {
+        return Err("decoded genesis state root does not match chunk metadata".to_string());
+    }
+    if Hash(bundle.state_root) != block.header.state_root {
+        return Err(format!(
+            "decoded genesis state root {} does not match block root {}",
+            hex::encode(bundle.state_root),
+            block.header.state_root.to_hex()
+        ));
+    }
+
+    Ok(Some(bundle))
+}
+
+fn apply_genesis_state_bundle(
+    state: &StateStore,
+    bundle: &GenesisStateBundle,
+) -> Result<(), String> {
+    for category in &bundle.categories {
+        match category.name.as_str() {
+            "stake_pool" => {
+                let Some((_, data)) = category.entries.first() else {
+                    return Err("genesis stake_pool category is empty".to_string());
+                };
+                let pool: StakePool = bincode::deserialize(data)
+                    .map_err(|err| format!("failed to decode genesis stake pool: {}", err))?;
+                state.put_stake_pool(&pool)?;
+            }
+            "mossstake_pool" => {
+                let Some((_, data)) = category.entries.first() else {
+                    return Err("genesis mossstake_pool category is empty".to_string());
+                };
+                let pool: lichen_core::MossStakePool = bincode::deserialize(data)
+                    .map_err(|err| format!("failed to decode genesis MossStake pool: {}", err))?;
+                state.put_mossstake_pool(&pool)?;
+            }
+            "validator_set" => {
+                let Some((_, data)) = category.entries.first() else {
+                    return Err("genesis validator_set category is empty".to_string());
+                };
+                let set: ValidatorSet = bincode::deserialize(data)
+                    .map_err(|err| format!("failed to decode genesis validator set: {}", err))?;
+                state.save_validator_set(&set)?;
+            }
+            category_name => {
+                state.import_snapshot_category(category_name, &category.entries)?;
+            }
+        }
+    }
+
+    state.reconcile_account_count()?;
+    state.reconcile_active_account_count()?;
+    state.reconcile_program_count()?;
+    state.reconcile_validator_count()?;
+    state.invalidate_merkle_cache();
+    let local_root = state.compute_state_root_cold_start();
+    if local_root.0 != bundle.state_root {
+        return Err(format!(
+            "genesis state bundle root mismatch: expected {}, got {}",
+            hex::encode(bundle.state_root),
+            local_root.to_hex()
+        ));
+    }
+    state.save_metrics_counters()?;
+
+    Ok(())
 }
 
 fn parse_genesis_pubkeys(values: &[String], label: &str) -> Vec<Pubkey> {
@@ -2325,6 +2625,9 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "accounts",
     "contract_storage",
     "programs",
+    "symbol_registry",
+    "symbol_by_program",
+    "stats",
     "validator_set",
     "stake_pool",
     "mossstake_pool",
@@ -4257,27 +4560,6 @@ struct BinanceTicker {
     price: String,
 }
 
-fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64, prices: &GenesisPrices) {
-    for (asset, price_raw) in [
-        ("LICN", prices.licn_usd_8dec),
-        ("wSOL", prices.wsol_usd_8dec),
-        ("wETH", prices.weth_usd_8dec),
-        ("wBNB", prices.wbnb_usd_8dec),
-    ] {
-        let has_price = state
-            .get_oracle_consensus_price(asset)
-            .ok()
-            .flatten()
-            .is_some();
-        if has_price {
-            continue;
-        }
-        if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
-            tracing::error!("Failed to seed oracle consensus price for {asset}: {e}");
-        }
-    }
-}
-
 fn build_oracle_attestation_tx(
     state: &StateStore,
     validator_seed: &[u8; 32],
@@ -5033,6 +5315,306 @@ fn load_startup_genesis_config(
     }
 }
 
+fn startup_seed_candidates(data_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        data_dir.join("seeds.json"),
+        PathBuf::from("/etc/lichen/seeds.json"),
+        PathBuf::from("seeds.json"),
+    ]
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0"
+    )
+}
+
+fn genesis_bootstrap_rpc_allowed(network: &str, rpc_url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(rpc_url) {
+        Ok(url) => url,
+        Err(_) => return false,
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => network == "devnet" || parsed.host_str().map(is_loopback_host).unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn persist_bootstrapped_genesis_config(
+    data_dir_genesis: &Path,
+    config: &GenesisConfig,
+) -> Result<(), String> {
+    let parent = data_dir_genesis.parent().ok_or_else(|| {
+        format!(
+            "Cannot persist genesis config: {} has no parent directory",
+            data_dir_genesis.display()
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create genesis config directory {}: {}",
+            parent.display(),
+            e
+        )
+    })?;
+
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize bootstrapped genesis config: {}", e))?;
+    if fs::read_to_string(data_dir_genesis)
+        .map(|existing| existing == json)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    fs::write(data_dir_genesis, json).map_err(|e| {
+        format!(
+            "Failed to persist bootstrapped genesis config {}: {}",
+            data_dir_genesis.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+fn instruction_data_bytes(data: &JsonValue) -> Option<Vec<u8>> {
+    let values = data.as_array()?;
+    let mut bytes = Vec::with_capacity(values.len());
+    for value in values {
+        let byte = value.as_u64()?;
+        if byte > u8::MAX as u64 {
+            return None;
+        }
+        bytes.push(byte as u8);
+    }
+    Some(bytes)
+}
+
+fn rpc_block_transaction_instructions(tx: &JsonValue) -> Option<&Vec<JsonValue>> {
+    tx.get("message")
+        .and_then(|message| message.get("instructions"))
+        .and_then(JsonValue::as_array)
+        .or_else(|| {
+            tx.get("transaction")
+                .and_then(|transaction| transaction.get("message"))
+                .and_then(|message| message.get("instructions"))
+                .and_then(JsonValue::as_array)
+        })
+}
+
+fn extract_genesis_config_from_rpc_block_value(block: &JsonValue) -> Result<GenesisConfig, String> {
+    let transactions = block
+        .get("transactions")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "RPC getBlock result did not include a transactions array".to_string())?;
+
+    for tx in transactions {
+        let Some(instructions) = rpc_block_transaction_instructions(tx) else {
+            continue;
+        };
+        for ix in instructions {
+            if let Some(program_id) = ix.get("program_id").and_then(JsonValue::as_str) {
+                if program_id != CORE_SYSTEM_PROGRAM_ID.to_base58() {
+                    continue;
+                }
+            }
+            let Some(data) = ix.get("data").and_then(instruction_data_bytes) else {
+                continue;
+            };
+            if data.len() > 1 && data[0] == 40 {
+                return serde_json::from_slice(&data[1..]).map_err(|e| {
+                    format!("Genesis config payload from RPC block 0 is invalid: {}", e)
+                });
+            }
+        }
+    }
+
+    Err("RPC block 0 did not contain a system GENESIS_CONFIG instruction".to_string())
+}
+
+async fn fetch_genesis_config_from_rpc(
+    client: &reqwest::Client,
+    rpc_url: &str,
+) -> Result<GenesisConfig, String> {
+    let response = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBlock",
+            "params": [0]
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("RPC getBlock(0) request failed: {}", e))?;
+
+    let response = response
+        .error_for_status()
+        .map_err(|e| format!("RPC getBlock(0) HTTP error: {}", e))?;
+    let body: JsonValue = response
+        .json()
+        .await
+        .map_err(|e| format!("RPC getBlock(0) response was not JSON: {}", e))?;
+
+    if let Some(message) = body
+        .get("error")
+        .and_then(|err| err.get("message"))
+        .and_then(JsonValue::as_str)
+    {
+        return Err(format!("RPC getBlock(0) returned error: {}", message));
+    }
+
+    let block = body
+        .get("result")
+        .ok_or_else(|| "RPC getBlock(0) response did not include result".to_string())?;
+    extract_genesis_config_from_rpc_block_value(block)
+}
+
+async fn load_startup_genesis_config_or_bootstrap(
+    explicit_genesis_path: Option<&str>,
+    data_dir_genesis: &Path,
+    network_arg: Option<&str>,
+    allow_local_default_genesis: bool,
+    seed_candidates: &[PathBuf],
+) -> Result<GenesisConfig, String> {
+    if explicit_genesis_path.is_some() || data_dir_genesis.exists() || network_arg.is_none() {
+        return load_startup_genesis_config(
+            explicit_genesis_path,
+            data_dir_genesis,
+            network_arg,
+            allow_local_default_genesis,
+        );
+    }
+
+    let network = network_arg.unwrap();
+    let (seeds_path, bootstrap) = match load_seed_bootstrap_from_candidates_by_network(
+        network,
+        seed_candidates,
+    ) {
+        Ok(value) => value,
+        Err(err) if allow_local_default_genesis => {
+            warn!(
+                    "⚠️  Network genesis bootstrap unavailable in --dev-mode ({}); falling back to built-in local genesis",
+                    err
+                );
+            return load_startup_genesis_config(
+                explicit_genesis_path,
+                data_dir_genesis,
+                network_arg,
+                allow_local_default_genesis,
+            );
+        }
+        Err(err) => {
+            return Err(format!(
+                "No genesis config found at {} and network bootstrap failed: {}. Provide --genesis <path>, place genesis.json in the data directory, or install a valid seeds.json.",
+                data_dir_genesis.display(),
+                err
+            ));
+        }
+    };
+
+    let rpc_urls: Vec<String> = bootstrap
+        .rpc_urls
+        .iter()
+        .filter(|url| {
+            if genesis_bootstrap_rpc_allowed(network, url) {
+                true
+            } else {
+                warn!(
+                    "⚠️  Ignoring non-authoritative genesis bootstrap RPC for {}: {}",
+                    network, url
+                );
+                false
+            }
+        })
+        .cloned()
+        .collect();
+
+    if rpc_urls.is_empty() {
+        if allow_local_default_genesis {
+            warn!(
+                "⚠️  No allowed genesis bootstrap RPC endpoints in --dev-mode; falling back to built-in local genesis"
+            );
+            return load_startup_genesis_config(
+                explicit_genesis_path,
+                data_dir_genesis,
+                network_arg,
+                allow_local_default_genesis,
+            );
+        }
+        return Err(format!(
+            "No genesis config found at {} and {} did not provide any allowed genesis bootstrap RPC endpoints. Public testnet/mainnet bootstrap requires HTTPS seed RPCs (loopback HTTP is allowed for local/devnet).",
+            data_dir_genesis.display(),
+            seeds_path.display()
+        ));
+    }
+
+    info!(
+        "📜 No local genesis config found; bootstrapping {} genesis config from {}",
+        network,
+        seeds_path.display()
+    );
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to build genesis bootstrap HTTP client: {}", e))?;
+
+    let mut errors = Vec::new();
+    for rpc_url in &rpc_urls {
+        match fetch_genesis_config_from_rpc(&http_client, rpc_url).await {
+            Ok(config) => {
+                if config.chain_id != bootstrap.chain_id {
+                    return Err(format!(
+                        "Seed RPC {} returned chain_id {}, expected {} from {}",
+                        rpc_url,
+                        config.chain_id,
+                        bootstrap.chain_id,
+                        seeds_path.display()
+                    ));
+                }
+                persist_bootstrapped_genesis_config(data_dir_genesis, &config)?;
+                info!(
+                    "✓ Bootstrapped authoritative genesis config for {} from {}",
+                    config.chain_id, rpc_url
+                );
+                info!("  Total supply: {} LICN", config.total_supply_licn());
+                info!("  Initial validators: {}", config.initial_validators.len());
+                return Ok(config);
+            }
+            Err(err) => errors.push(format!("{}: {}", rpc_url, err)),
+        }
+    }
+
+    if allow_local_default_genesis {
+        warn!(
+            "⚠️  Network genesis bootstrap failed in --dev-mode ({}); falling back to built-in local genesis",
+            errors.join("; ")
+        );
+        return load_startup_genesis_config(
+            explicit_genesis_path,
+            data_dir_genesis,
+            network_arg,
+            allow_local_default_genesis,
+        );
+    }
+
+    Err(format!(
+        "No genesis config found at {} and all seed RPC bootstrap attempts failed: {}",
+        data_dir_genesis.display(),
+        errors.join("; ")
+    ))
+}
+
 fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attached: bool) -> bool {
     if !has_flag(args, "--archive-mode") {
         return false;
@@ -5344,6 +5926,17 @@ async fn run_validator() {
     // Parse --dev-mode early because it controls whether built-in local genesis
     // may be used when no explicit genesis file is present.
     let dev_mode = has_flag(&args, "--dev-mode");
+    let sync_only_mode = has_flag(&args, "--sync-only") || env_flag_enabled("LICHEN_SYNC_ONLY");
+    let auto_register_enabled = !(sync_only_mode
+        || has_flag(&args, "--no-auto-register")
+        || env_flag_enabled("LICHEN_NO_AUTO_REGISTER"));
+    if sync_only_mode {
+        info!(
+            "🔎 Sync-only mode enabled: validator will sync and serve RPC/P2P without entering BFT"
+        );
+    } else if !auto_register_enabled {
+        info!("🔎 Auto-registration disabled: validator will not submit RegisterValidator");
+    }
 
     // Parse --p2p-port flag properly
     let p2p_port = get_flag_value(&args, &["--p2p-port"])
@@ -5500,14 +6093,20 @@ async fn run_validator() {
     // ========================================================================
 
     // Load genesis configuration from disk. Built-in defaults are reserved for
-    // explicit local-development starts.
+    // explicit local-development starts. Fresh public nodes bootstrap only the
+    // canonical genesis config from trusted seed RPC metadata, then replay the
+    // chain state from P2P blocks instead of receiving a copied database.
     let data_dir_genesis = data_dir_path.join("genesis.json");
-    let genesis_config = match load_startup_genesis_config(
+    let startup_seed_candidates = startup_seed_candidates(&data_dir_path);
+    let genesis_config = match load_startup_genesis_config_or_bootstrap(
         genesis_path.as_deref(),
         &data_dir_genesis,
         network_arg.as_deref(),
         dev_mode,
-    ) {
+        &startup_seed_candidates,
+    )
+    .await
+    {
         Ok(config) => config,
         Err(err) => {
             error!("{}", err);
@@ -5583,14 +6182,13 @@ async fn run_validator() {
 
     let local_only = listen_addr.ip().is_loopback();
     let state_scoped_seeds_path = data_dir_path.join("seeds.json");
-    let (seeds_path, seed_file_peer_strings) = if local_only {
+    let (seeds_path, seed_file_peer_strings, seed_file_rpc_urls) = if local_only {
         if state_scoped_seeds_path.exists() {
-            (
-                state_scoped_seeds_path.clone(),
-                load_seed_peers(&genesis_config.chain_id, &state_scoped_seeds_path),
-            )
+            let (peers, rpc_urls) =
+                load_seed_peers_and_rpc(&genesis_config.chain_id, &state_scoped_seeds_path);
+            (state_scoped_seeds_path.clone(), peers, rpc_urls)
         } else {
-            (state_scoped_seeds_path.clone(), Vec::new())
+            (state_scoped_seeds_path.clone(), Vec::new(), Vec::new())
         }
     } else {
         let seeds_candidates = [
@@ -5603,8 +6201,8 @@ async fn run_validator() {
             .find(|p| p.exists())
             .cloned()
             .unwrap_or_else(|| PathBuf::from("seeds.json"));
-        let peers = load_seed_peers(&genesis_config.chain_id, &resolved_path);
-        (resolved_path, peers)
+        let (peers, rpc_urls) = load_seed_peers_and_rpc(&genesis_config.chain_id, &resolved_path);
+        (resolved_path, peers, rpc_urls)
     };
 
     if !seed_file_peer_strings.is_empty() {
@@ -5642,6 +6240,25 @@ async fn run_validator() {
     } else {
         cached_peers.iter().map(|peer| peer.to_string()).collect()
     };
+    let mut bootstrap_rpc_urls = seed_file_rpc_urls.clone();
+    if bootstrap_rpc_urls.is_empty() {
+        for peer in &bootstrap_peer_strings {
+            if let Some(rpc_url) = derive_rpc_url_from_peer(peer) {
+                push_unique_string(&mut bootstrap_rpc_urls, rpc_url);
+            }
+        }
+    }
+    if !bootstrap_rpc_urls.is_empty() {
+        info!(
+            "📡 Loaded {} bootstrap RPC endpoint{}",
+            bootstrap_rpc_urls.len(),
+            if bootstrap_rpc_urls.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    }
 
     // Collect all local IP addresses so we can filter out self-referencing seeds
     let local_ips: HashSet<std::net::IpAddr> = {
@@ -5799,74 +6416,53 @@ async fn run_validator() {
         .get_genesis_accounts()
         .map(|v| v.is_empty())
         .unwrap_or(true)
-        && !bootstrap_peer_strings.is_empty()
+        && !bootstrap_rpc_urls.is_empty()
     {
         info!("  🔄 Fetching genesis accounts from a seed peer...");
-        for peer in &bootstrap_peer_strings {
-            // Derive RPC port from P2P port
-            let parts: Vec<&str> = peer.split(':').collect();
-            if let (Some(host), Some(p2p_port_str)) = (parts.first(), parts.get(1)) {
-                if let Ok(peer_p2p) = p2p_port_str.parse::<u16>() {
-                    // AUDIT-FIX V5.1: Use the same port derivation formula
-                    // as the RPC server binding (L6410). The previous formula
-                    // used `peer_p2p % 1000` which produced wrong ports for
-                    // V2/V3 validators (e.g. p2p=7002 → rpc=8901).
-                    let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
-                    let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
-                    let offset = peer_p2p.saturating_sub(base_p2p);
-                    let peer_rpc = base_rpc.saturating_add(offset.saturating_mul(2));
-                    let url = format!("http://{}:{}/", host, peer_rpc);
-                    let body = serde_json::json!({
-                        "jsonrpc": "2.0", "id": 1, "method": "getGenesisAccounts"
-                    });
-                    match reqwest::Client::new()
-                        .post(&url)
-                        .json(&body)
-                        .timeout(std::time::Duration::from_secs(5))
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                if let Some(accounts) = json["result"]["accounts"].as_array() {
-                                    let mut ga_entries = Vec::new();
-                                    for acc in accounts {
-                                        let role = acc["role"].as_str().unwrap_or("").to_string();
-                                        if role == "genesis" {
-                                            continue; // Skip the genesis signer entry
-                                        }
-                                        let pk_str = acc["pubkey"].as_str().unwrap_or("");
-                                        if let Ok(pk) = Pubkey::from_base58(pk_str) {
-                                            let amt = acc["amount_licn"].as_u64().unwrap_or(0);
-                                            let pct = acc["percentage"].as_u64().unwrap_or(0) as u8;
-                                            ga_entries.push((role, pk, amt, pct));
-                                        }
-                                    }
-                                    if !ga_entries.is_empty() {
-                                        if let Err(e) = state.set_genesis_accounts(&ga_entries) {
-                                            warn!(
-                                                "⚠️  Failed to store fetched genesis accounts: {}",
-                                                e
-                                            );
-                                        } else {
-                                            info!(
-                                                "  ✓ Fetched {} genesis accounts from {}",
-                                                ga_entries.len(),
-                                                peer
-                                            );
-                                            break;
-                                        }
-                                    }
+        for url in &bootstrap_rpc_urls {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "getGenesisAccounts"
+            });
+            match reqwest::Client::new()
+                .post(url)
+                .json(&body)
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(accounts) = json["result"]["accounts"].as_array() {
+                            let mut ga_entries = Vec::new();
+                            for acc in accounts {
+                                let role = acc["role"].as_str().unwrap_or("").to_string();
+                                if role == "genesis" {
+                                    continue; // Skip the genesis signer entry
+                                }
+                                let pk_str = acc["pubkey"].as_str().unwrap_or("");
+                                if let Ok(pk) = Pubkey::from_base58(pk_str) {
+                                    let amt = acc["amount_licn"].as_u64().unwrap_or(0);
+                                    let pct = acc["percentage"].as_u64().unwrap_or(0) as u8;
+                                    ga_entries.push((role, pk, amt, pct));
+                                }
+                            }
+                            if !ga_entries.is_empty() {
+                                if let Err(e) = state.set_genesis_accounts(&ga_entries) {
+                                    warn!("⚠️  Failed to store fetched genesis accounts: {}", e);
+                                } else {
+                                    info!(
+                                        "  ✓ Fetched {} genesis accounts from {}",
+                                        ga_entries.len(),
+                                        url
+                                    );
+                                    break;
                                 }
                             }
                         }
-                        Err(e) => {
-                            warn!(
-                                "  ⚠️  Failed to fetch genesis accounts from {}: {}",
-                                peer, e
-                            );
-                        }
                     }
+                }
+                Err(e) => {
+                    warn!("  ⚠️  Failed to fetch genesis accounts from {}: {}", url, e);
                 }
             }
         }
@@ -5881,71 +6477,6 @@ async fn run_validator() {
         // Use CLI command `lichen admin reconcile-accounts` if needed
         let metrics = state.get_metrics();
         info!("  Total accounts (counter): {}", metrics.total_accounts);
-
-        // ================================================================
-        // STARTUP RECONCILIATION: Seed analytics prices if missing.
-        // genesis_seed_analytics_prices was added after genesis block 0
-        // was already created, so the data was never written. This check
-        // runs on every startup and writes the seed data exactly once.
-        // Also reconciles oracle price feeds if missing.
-        // ================================================================
-        {
-            let genesis_pk = genesis_wallet
-                .as_ref()
-                .map(|w| w.pubkey)
-                .unwrap_or(Pubkey([0u8; 32]));
-            let genesis_timestamp = state
-                .get_block_by_slot(0)
-                .ok()
-                .flatten()
-                .map(|block| block.header.timestamp)
-                .unwrap_or(0);
-
-            // For reconciliation, extract prices from genesis block or use defaults
-            let reconcile_prices = state
-                .get_block_by_slot(0)
-                .ok()
-                .flatten()
-                .and_then(|b| extract_genesis_config(&b))
-                .map(|c| c.genesis_prices)
-                .unwrap_or_default();
-
-            // Check if analytics seed data is present (ana_lp_1 = LICN/lUSD)
-            let ana_lp_1_exists = state
-                .get_program_storage("ANALYTICS", b"ana_lp_1")
-                .is_some();
-
-            if !ana_lp_1_exists {
-                info!("🔄 RECONCILE: Analytics price seeds missing — writing initial prices");
-                genesis_seed_analytics_prices(
-                    &state,
-                    &genesis_pk,
-                    genesis_timestamp,
-                    &reconcile_prices,
-                );
-                info!("  ✓ Analytics prices seeded for pairs 1-5");
-            }
-
-            seed_bootstrap_consensus_oracle_prices(
-                &state,
-                state.get_last_slot().unwrap_or(0),
-                &reconcile_prices,
-            );
-
-            // Check if margin prices are present (mrg_mark_1 = LICN/lUSD)
-            let mrg_mark_1_exists = state.get_program_storage("MARGIN", b"mrg_mark_1").is_some();
-
-            if !mrg_mark_1_exists {
-                info!("🔄 RECONCILE: Margin prices missing — seeding mark/index prices");
-                genesis_seed_margin_prices(
-                    &state,
-                    &genesis_pk,
-                    genesis_timestamp,
-                    &reconcile_prices,
-                );
-                info!("  ✓ Margin prices seeded for pairs 1-5");
-            }
-        }
     }
 
     // Treasury keypair kept for governance/manual operations and airdrop signing.
@@ -6760,9 +7291,7 @@ async fn run_validator() {
         );
     }
     if !is_joining_network && current_tip > 0 {
-        let bootstrap_rpc_url_for_restart = bootstrap_peer_strings
-            .first()
-            .and_then(|peer| derive_rpc_url_from_peer(peer));
+        let bootstrap_rpc_url_for_restart = bootstrap_rpc_urls.first().cloned();
         let sm_init = sync_manager.clone();
         tokio::spawn(async move {
             if let Some(bootstrap_rpc_url) = bootstrap_rpc_url_for_restart.as_ref() {
@@ -7490,105 +8019,166 @@ async fn run_validator() {
                             &effective_genesis_config,
                         );
 
-                        // 1. Rent params from genesis config
-                        state_for_blocks
-                            .set_rent_params(
-                                effective_genesis_config
-                                    .features
-                                    .rent_rate_spores_per_kb_month,
-                                effective_genesis_config.features.rent_free_kb,
-                            )
-                            .ok();
+                        let mut canonical_genesis_state_applied = false;
+                        match extract_genesis_state_bundle(&block) {
+                            Ok(Some(bundle)) => {
+                                if let Err(err) =
+                                    apply_genesis_state_bundle(&state_for_blocks, &bundle)
+                                {
+                                    error!(
+                                        "═══════════════════════════════════════════════════════"
+                                    );
+                                    error!("  FATAL: Genesis state bundle import failed!");
+                                    error!("  {}", err);
+                                    error!(
+                                        "═══════════════════════════════════════════════════════"
+                                    );
+                                    std::process::exit(1);
+                                }
 
-                        // 2. Fee config from genesis config
-                        let gc = &effective_genesis_config;
-                        let genesis_fee_config = FeeConfig {
-                            base_fee: gc.features.base_fee_spores,
-                            contract_deploy_fee: CONTRACT_DEPLOY_FEE,
-                            contract_upgrade_fee: CONTRACT_UPGRADE_FEE,
-                            nft_mint_fee: NFT_MINT_FEE,
-                            nft_collection_fee: NFT_COLLECTION_FEE,
-                            fee_burn_percent: gc.features.fee_burn_percentage,
-                            fee_producer_percent: gc.features.fee_producer_percentage,
-                            fee_voters_percent: gc.features.fee_voters_percentage,
-                            fee_community_percent: gc.features.fee_community_percentage,
-                            fee_treasury_percent: gc.features.fee_treasury_percentage,
-                            fee_exempt_contracts: Vec::new(),
-                        };
-                        state_for_blocks
-                            .set_fee_config_full(&genesis_fee_config)
-                            .ok();
+                                if let Ok(pool) = state_for_blocks.get_stake_pool() {
+                                    if let Ok(mut live_pool) = stake_pool_for_blocks.try_write() {
+                                        *live_pool = pool;
+                                    }
+                                }
+                                if let Ok(set) = state_for_blocks.load_validator_set() {
+                                    if let Ok(mut live_vs) = validator_set_for_blocks.try_write() {
+                                        *live_vs = set;
+                                    }
+                                }
 
-                        // 2b. Slot duration from genesis config
-                        state_for_blocks
-                            .set_slot_duration_ms(
-                                effective_genesis_config.consensus.slot_duration_ms.max(1),
-                            )
-                            .ok();
+                                if let Err(e) = state_for_blocks.put_block(&block) {
+                                    error!("Failed to store genesis block: {}", e);
+                                    std::process::exit(1);
+                                }
+                                state_for_blocks.set_last_slot(0).ok();
+                                if let Err(err) = state_for_blocks
+                                    .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                                {
+                                    warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                                }
+                                info!(
+                                    "✅ 📡 [sync] Applied canonical genesis state bundle from block 0"
+                                );
+                                canonical_genesis_state_applied = true;
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    "⚠️  Genesis block has no canonical state bundle; falling back to legacy genesis replay"
+                                );
+                            }
+                            Err(err) => {
+                                error!("═══════════════════════════════════════════════════════");
+                                error!("  FATAL: Invalid genesis state bundle!");
+                                error!("  {}", err);
+                                error!("═══════════════════════════════════════════════════════");
+                                std::process::exit(1);
+                            }
+                        }
 
-                        // 3. Extract genesis pubkey from mint tx
-                        //    tx[0]: Mint — accounts = [GENESIS_MINT_PUBKEY, genesis_pubkey]
-                        //    tx[1..]: Distribution transfers — accounts = [genesis_pubkey, recipient]
-                        //    tx[1] is always the treasury (validator_rewards) for backward compat
-                        let extracted_genesis_pubkey = block
-                            .transactions
-                            .first()
-                            .and_then(|tx| tx.message.instructions.first())
-                            .and_then(|ix| ix.accounts.get(1))
-                            .copied();
+                        if !canonical_genesis_state_applied {
+                            // 1. Rent params from genesis config
+                            state_for_blocks
+                                .set_rent_params(
+                                    effective_genesis_config
+                                        .features
+                                        .rent_rate_spores_per_kb_month,
+                                    effective_genesis_config.features.rent_free_kb,
+                                )
+                                .ok();
 
-                        if let Some(gpk) = extracted_genesis_pubkey {
-                            // 4. Process all distribution transfers from genesis block
-                            let total_supply_licn = 500_000_000u64;
-                            let total_spores = Account::licn_to_spores(total_supply_licn);
-                            let mut total_distributed_spores = 0u64;
+                            // 2. Fee config from genesis config
+                            let gc = &effective_genesis_config;
+                            let genesis_fee_config = FeeConfig {
+                                base_fee: gc.features.base_fee_spores,
+                                contract_deploy_fee: CONTRACT_DEPLOY_FEE,
+                                contract_upgrade_fee: CONTRACT_UPGRADE_FEE,
+                                nft_mint_fee: NFT_MINT_FEE,
+                                nft_collection_fee: NFT_COLLECTION_FEE,
+                                fee_burn_percent: gc.features.fee_burn_percentage,
+                                fee_producer_percent: gc.features.fee_producer_percentage,
+                                fee_voters_percent: gc.features.fee_voters_percentage,
+                                fee_community_percent: gc.features.fee_community_percentage,
+                                fee_treasury_percent: gc.features.fee_treasury_percentage,
+                                fee_exempt_contracts: Vec::new(),
+                            };
+                            state_for_blocks
+                                .set_fee_config_full(&genesis_fee_config)
+                                .ok();
 
-                            let mut dist_recipients: Vec<(String, Pubkey, u64, u8)> = Vec::new();
-                            for (i, tx) in block.transactions.iter().enumerate().skip(1) {
-                                if let Some(ix) = tx.message.instructions.first() {
-                                    if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
-                                        let recipient = ix.accounts[1];
-                                        let amount_spores = if ix.data.len() >= 9 {
-                                            u64::from_le_bytes(
-                                                ix.data[1..9].try_into().unwrap_or([0u8; 8]),
-                                            )
-                                        } else {
-                                            0
-                                        };
+                            // 2b. Slot duration from genesis config
+                            state_for_blocks
+                                .set_slot_duration_ms(
+                                    effective_genesis_config.consensus.slot_duration_ms.max(1),
+                                )
+                                .ok();
 
-                                        let (role, _amount_licn, pct) = GENESIS_DISTRIBUTION
-                                            .get(i - 1)
-                                            .copied()
-                                            .unwrap_or(("unknown", 0, 0));
+                            // 3. Extract genesis pubkey from mint tx
+                            //    tx[0]: Mint — accounts = [GENESIS_MINT_PUBKEY, genesis_pubkey]
+                            //    tx[1..]: Distribution transfers — accounts = [genesis_pubkey, recipient]
+                            //    tx[1] is always the treasury (validator_rewards) for backward compat
+                            let extracted_genesis_pubkey = block
+                                .transactions
+                                .first()
+                                .and_then(|tx| tx.message.instructions.first())
+                                .and_then(|ix| ix.accounts.get(1))
+                                .copied();
 
-                                        let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                                        acct.spores = amount_spores;
-                                        if role == "founding_symbionts" {
-                                            acct.spendable = 0;
-                                            acct.locked = amount_spores;
-                                        } else {
-                                            acct.spendable = amount_spores;
-                                        }
-                                        state_for_blocks.put_account(&recipient, &acct).ok();
-                                        total_distributed_spores += amount_spores;
+                            if let Some(gpk) = extracted_genesis_pubkey {
+                                // 4. Process all distribution transfers from genesis block
+                                let total_supply_licn = 500_000_000u64;
+                                let total_spores = Account::licn_to_spores(total_supply_licn);
+                                let mut total_distributed_spores = 0u64;
 
-                                        dist_recipients.push((
-                                            role.to_string(),
-                                            recipient,
-                                            amount_spores / 1_000_000_000,
-                                            pct,
-                                        ));
+                                let mut dist_recipients: Vec<(String, Pubkey, u64, u8)> =
+                                    Vec::new();
+                                for (i, tx) in block.transactions.iter().enumerate().skip(1) {
+                                    if let Some(ix) = tx.message.instructions.first() {
+                                        if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
+                                            let recipient = ix.accounts[1];
+                                            let amount_spores = if ix.data.len() >= 9 {
+                                                u64::from_le_bytes(
+                                                    ix.data[1..9].try_into().unwrap_or([0u8; 8]),
+                                                )
+                                            } else {
+                                                0
+                                            };
 
-                                        // tx[1] = treasury (validator_rewards)
-                                        if i == 1 {
-                                            state_for_blocks.set_treasury_pubkey(&recipient).ok();
-                                            info!(
-                                                "  ✓ 📡 [sync] Treasury: {} ({} LICN)",
-                                                recipient.to_base58(),
-                                                amount_spores / 1_000_000_000
-                                            );
-                                        } else {
-                                            info!(
+                                            let (role, _amount_licn, pct) = GENESIS_DISTRIBUTION
+                                                .get(i - 1)
+                                                .copied()
+                                                .unwrap_or(("unknown", 0, 0));
+
+                                            let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+                                            acct.spores = amount_spores;
+                                            if role == "founding_symbionts" {
+                                                acct.spendable = 0;
+                                                acct.locked = amount_spores;
+                                            } else {
+                                                acct.spendable = amount_spores;
+                                            }
+                                            state_for_blocks.put_account(&recipient, &acct).ok();
+                                            total_distributed_spores += amount_spores;
+
+                                            dist_recipients.push((
+                                                role.to_string(),
+                                                recipient,
+                                                amount_spores / 1_000_000_000,
+                                                pct,
+                                            ));
+
+                                            // tx[1] = treasury (validator_rewards)
+                                            if i == 1 {
+                                                state_for_blocks
+                                                    .set_treasury_pubkey(&recipient)
+                                                    .ok();
+                                                info!(
+                                                    "  ✓ 📡 [sync] Treasury: {} ({} LICN)",
+                                                    recipient.to_base58(),
+                                                    amount_spores / 1_000_000_000
+                                                );
+                                            } else {
+                                                info!(
                                                 "  ✓ 📡 [sync] Distribution {} ({}): {} ({} LICN){}",
                                                 i,
                                                 role,
@@ -7596,49 +8186,49 @@ async fn run_validator() {
                                                 amount_spores / 1_000_000_000,
                                                 if role == "founding_symbionts" { " [LOCKED]" } else { "" }
                                             );
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            // 4b. Store genesis accounts in state DB (role → pubkey mapping)
-                            if !dist_recipients.is_empty() {
-                                state_for_blocks.set_genesis_accounts(&dist_recipients).ok();
-                                info!(
-                                    "  ✓ 📡 [sync] Stored {} genesis accounts in state DB",
-                                    dist_recipients.len()
-                                );
-                            }
-
-                            // 4c. Governed wallet configs (multi-sig spending rules)
-                            {
-                                let mut all_signers: Vec<Pubkey> =
-                                    dist_recipients.iter().map(|(_, pk, _, _)| *pk).collect();
-                                if !all_signers.contains(&gpk) {
-                                    all_signers.push(gpk);
+                                // 4b. Store genesis accounts in state DB (role → pubkey mapping)
+                                if !dist_recipients.is_empty() {
+                                    state_for_blocks.set_genesis_accounts(&dist_recipients).ok();
+                                    info!(
+                                        "  ✓ 📡 [sync] Stored {} genesis accounts in state DB",
+                                        dist_recipients.len()
+                                    );
                                 }
-                                for (role, pk, _, _) in &dist_recipients {
-                                    if let Some(config) =
-                                        governed_wallet_config_for_role(role, &all_signers)
-                                    {
-                                        state_for_blocks
-                                            .set_governed_wallet_config(pk, &config)
-                                            .ok();
-                                        info!(
+
+                                // 4c. Governed wallet configs (multi-sig spending rules)
+                                {
+                                    let mut all_signers: Vec<Pubkey> =
+                                        dist_recipients.iter().map(|(_, pk, _, _)| *pk).collect();
+                                    if !all_signers.contains(&gpk) {
+                                        all_signers.push(gpk);
+                                    }
+                                    for (role, pk, _, _) in &dist_recipients {
+                                        if let Some(config) =
+                                            governed_wallet_config_for_role(role, &all_signers)
+                                        {
+                                            state_for_blocks
+                                                .set_governed_wallet_config(pk, &config)
+                                                .ok();
+                                            info!(
                                             "  ✓ 📡 [sync] {} governed wallet: threshold={}, {} signers, timelock={} epoch(s)",
                                             role,
                                             config.threshold,
                                             config.signers.len(),
                                             config.timelock_epochs
                                         );
+                                        }
                                     }
-                                }
 
-                                let committee_roles: Vec<(String, Pubkey)> = dist_recipients
-                                    .iter()
-                                    .map(|(role, pk, _, _)| (role.clone(), *pk))
-                                    .collect();
-                                match state_for_blocks.get_community_treasury_pubkey() {
+                                    let committee_roles: Vec<(String, Pubkey)> = dist_recipients
+                                        .iter()
+                                        .map(|(role, pk, _, _)| (role.clone(), *pk))
+                                        .collect();
+                                    match state_for_blocks.get_community_treasury_pubkey() {
                                     Ok(Some(governance_authority)) => {
                                         match incident_guardian_config_for_roles(
                                             &committee_roles,
@@ -7882,360 +8472,366 @@ async fn run_validator() {
                                         err
                                     ),
                                 }
-                            }
-
-                            // 4d. Founding symbionts vesting schedule
-                            if let Some((_, _, founding_licn, _)) = dist_recipients
-                                .iter()
-                                .find(|(r, _, _, _)| r == "founding_symbionts")
-                            {
-                                let cliff_end = block.header.timestamp
-                                    + lichen_core::consensus::FOUNDING_CLIFF_SECONDS;
-                                let vest_end = block.header.timestamp
-                                    + lichen_core::consensus::FOUNDING_VEST_TOTAL_SECONDS;
-                                let total_spores_vest = Account::licn_to_spores(*founding_licn);
-                                state_for_blocks
-                                    .set_founding_vesting_params(
-                                        cliff_end,
-                                        vest_end,
-                                        total_spores_vest,
-                                    )
-                                    .ok();
-                                info!("  ✓ 📡 [sync] Founding vesting: cliff={}, vest_end={}, total={}M LICN", cliff_end, vest_end, founding_licn / 1_000_000);
-                            }
-
-                            // 5. Reconstruct genesis account (total supply minus all distributions)
-                            let mut genesis_account = Account::new(total_supply_licn, gpk);
-                            genesis_account.spores =
-                                total_spores.saturating_sub(total_distributed_spores);
-                            genesis_account.spendable = genesis_account
-                                .spores
-                                .saturating_sub(genesis_account.staked)
-                                .saturating_sub(genesis_account.locked);
-                            state_for_blocks.put_account(&gpk, &genesis_account).ok();
-                            state_for_blocks.set_genesis_pubkey(&gpk).ok();
-                            info!(
-                                "  ✓ 📡 [sync] Genesis account: {} ({} LICN remaining)",
-                                gpk.to_base58(),
-                                genesis_account.spores / 1_000_000_000
-                            );
-
-                            // 6. Create initial accounts from genesis config
-                            for account_info in &effective_genesis_config.initial_accounts {
-                                if let Ok(pubkey) = Pubkey::from_base58(&account_info.address) {
-                                    let account = Account::new(account_info.balance_licn, pubkey);
-                                    state_for_blocks.put_account(&pubkey, &account).ok();
                                 }
-                            }
 
-                            // 6b. Reconstruct explicit slot-0 validator registrations.
-                            if let Ok(Some(treasury_pubkey)) =
-                                state_for_blocks.get_treasury_pubkey()
-                            {
-                                if let Ok(Some(mut treasury_account)) =
-                                    state_for_blocks.get_account(&treasury_pubkey)
+                                // 4d. Founding symbionts vesting schedule
+                                if let Some((_, _, founding_licn, _)) = dist_recipients
+                                    .iter()
+                                    .find(|(r, _, _, _)| r == "founding_symbionts")
                                 {
-                                    let mut pool = state_for_blocks
-                                        .get_stake_pool()
-                                        .unwrap_or_else(|_| StakePool::new());
-                                    for tx in block.transactions.iter().skip(1) {
-                                        let Some(ix) = tx.message.instructions.first() else {
-                                            continue;
-                                        };
-                                        if ix.data.first() != Some(&26) || ix.accounts.is_empty() {
-                                            continue;
-                                        }
+                                    let cliff_end = block.header.timestamp
+                                        + lichen_core::consensus::FOUNDING_CLIFF_SECONDS;
+                                    let vest_end = block.header.timestamp
+                                        + lichen_core::consensus::FOUNDING_VEST_TOTAL_SECONDS;
+                                    let total_spores_vest = Account::licn_to_spores(*founding_licn);
+                                    state_for_blocks
+                                        .set_founding_vesting_params(
+                                            cliff_end,
+                                            vest_end,
+                                            total_spores_vest,
+                                        )
+                                        .ok();
+                                    info!("  ✓ 📡 [sync] Founding vesting: cliff={}, vest_end={}, total={}M LICN", cliff_end, vest_end, founding_licn / 1_000_000);
+                                }
 
-                                        let validator_pubkey = ix.accounts[0];
-                                        if treasury_account
-                                            .deduct_spendable(BOOTSTRAP_GRANT_AMOUNT)
-                                            .is_err()
-                                        {
-                                            warn!(
+                                // 5. Reconstruct genesis account (total supply minus all distributions)
+                                let mut genesis_account = Account::new(total_supply_licn, gpk);
+                                genesis_account.spores =
+                                    total_spores.saturating_sub(total_distributed_spores);
+                                genesis_account.spendable = genesis_account
+                                    .spores
+                                    .saturating_sub(genesis_account.staked)
+                                    .saturating_sub(genesis_account.locked);
+                                state_for_blocks.put_account(&gpk, &genesis_account).ok();
+                                state_for_blocks.set_genesis_pubkey(&gpk).ok();
+                                info!(
+                                    "  ✓ 📡 [sync] Genesis account: {} ({} LICN remaining)",
+                                    gpk.to_base58(),
+                                    genesis_account.spores / 1_000_000_000
+                                );
+
+                                // 6. Create initial accounts from genesis config
+                                for account_info in &effective_genesis_config.initial_accounts {
+                                    if let Ok(pubkey) = Pubkey::from_base58(&account_info.address) {
+                                        let account =
+                                            Account::new(account_info.balance_licn, pubkey);
+                                        state_for_blocks.put_account(&pubkey, &account).ok();
+                                    }
+                                }
+
+                                // 6b. Reconstruct explicit slot-0 validator registrations.
+                                if let Ok(Some(treasury_pubkey)) =
+                                    state_for_blocks.get_treasury_pubkey()
+                                {
+                                    if let Ok(Some(mut treasury_account)) =
+                                        state_for_blocks.get_account(&treasury_pubkey)
+                                    {
+                                        let mut pool = state_for_blocks
+                                            .get_stake_pool()
+                                            .unwrap_or_else(|_| StakePool::new());
+                                        for tx in block.transactions.iter().skip(1) {
+                                            let Some(ix) = tx.message.instructions.first() else {
+                                                continue;
+                                            };
+                                            if ix.data.first() != Some(&26)
+                                                || ix.accounts.is_empty()
+                                            {
+                                                continue;
+                                            }
+
+                                            let validator_pubkey = ix.accounts[0];
+                                            if treasury_account
+                                                .deduct_spendable(BOOTSTRAP_GRANT_AMOUNT)
+                                                .is_err()
+                                            {
+                                                warn!(
                                                 "⚠️  [sync] Treasury could not fund explicit genesis validator {}",
                                                 validator_pubkey.to_base58()
                                             );
-                                            continue;
-                                        }
+                                                continue;
+                                            }
 
-                                        let mut account = state_for_blocks
-                                            .get_account(&validator_pubkey)
-                                            .ok()
-                                            .flatten()
-                                            .unwrap_or_else(|| Account::new(0, Pubkey([0x01; 32])));
-                                        account.spores =
-                                            account.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                        account.staked =
-                                            account.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                        account.spendable = 0;
-                                        state_for_blocks
-                                            .put_account(&validator_pubkey, &account)
-                                            .ok();
+                                            let mut account = state_for_blocks
+                                                .get_account(&validator_pubkey)
+                                                .ok()
+                                                .flatten()
+                                                .unwrap_or_else(|| {
+                                                    Account::new(0, Pubkey([0x01; 32]))
+                                                });
+                                            account.spores = account
+                                                .spores
+                                                .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            account.staked = account
+                                                .staked
+                                                .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            account.spendable = 0;
+                                            state_for_blocks
+                                                .put_account(&validator_pubkey, &account)
+                                                .ok();
 
-                                        if let Err(err) = pool.try_bootstrap_with_fingerprint(
-                                            validator_pubkey,
-                                            BOOTSTRAP_GRANT_AMOUNT,
-                                            0,
-                                            [0u8; 32],
-                                        ) {
-                                            warn!(
+                                            if let Err(err) = pool.try_bootstrap_with_fingerprint(
+                                                validator_pubkey,
+                                                BOOTSTRAP_GRANT_AMOUNT,
+                                                0,
+                                                [0u8; 32],
+                                            ) {
+                                                warn!(
                                                 "⚠️  [sync] Failed to reconstruct genesis validator {}: {}",
                                                 validator_pubkey.to_base58(),
                                                 err
                                             );
-                                        }
-                                    }
-
-                                    state_for_blocks
-                                        .put_account(&treasury_pubkey, &treasury_account)
-                                        .ok();
-                                    state_for_blocks.put_stake_pool(&pool).ok();
-
-                                    // Update in-memory pool/validator-set.
-                                    // Use try_write to avoid deadlocking with
-                                    // the joining-network loop that reads these
-                                    // locks. The joined loop also checks RocksDB
-                                    // directly if in-memory is empty.
-                                    if let Ok(mut live_pool) = stake_pool_for_blocks.try_write() {
-                                        *live_pool = pool.clone();
-                                    }
-
-                                    {
-                                        // Build the validator set from pool data
-                                        // and persist to RocksDB (joining-network
-                                        // loop reads from DB if in-memory is empty).
-                                        let mut reconstructed_vs = ValidatorSet::new();
-                                        let min_stake =
-                                            effective_genesis_config.consensus.min_validator_stake;
-                                        for entry in pool.stake_entries() {
-                                            let resolved_stake = entry.total_stake();
-                                            if resolved_stake < min_stake {
-                                                continue;
                                             }
-                                            reconstructed_vs.add_validator(ValidatorInfo {
-                                                pubkey: entry.validator,
-                                                stake: resolved_stake,
-                                                reputation: 100,
-                                                blocks_proposed: 0,
-                                                votes_cast: 0,
-                                                correct_votes: 0,
-                                                last_active_slot: 0,
-                                                joined_slot: 0,
-                                                last_observed_at_ms: 0,
-                                                last_observed_block_at_ms: 0,
-                                                last_observed_block_slot: 0,
-                                                commission_rate: 500,
-                                                transactions_processed: 0,
-                                                pending_activation: false,
-                                            });
                                         }
 
-                                        if let Err(err) =
-                                            state_for_blocks.save_validator_set(&reconstructed_vs)
+                                        state_for_blocks
+                                            .put_account(&treasury_pubkey, &treasury_account)
+                                            .ok();
+                                        state_for_blocks.put_stake_pool(&pool).ok();
+
+                                        // Update in-memory pool/validator-set.
+                                        // Use try_write to avoid deadlocking with
+                                        // the joining-network loop that reads these
+                                        // locks. The joined loop also checks RocksDB
+                                        // directly if in-memory is empty.
+                                        if let Ok(mut live_pool) = stake_pool_for_blocks.try_write()
                                         {
-                                            warn!(
+                                            *live_pool = pool.clone();
+                                        }
+
+                                        {
+                                            // Build the validator set from pool data
+                                            // and persist to RocksDB (joining-network
+                                            // loop reads from DB if in-memory is empty).
+                                            let mut reconstructed_vs = ValidatorSet::new();
+                                            let min_stake = effective_genesis_config
+                                                .consensus
+                                                .min_validator_stake;
+                                            for entry in pool.stake_entries() {
+                                                let resolved_stake = entry.total_stake();
+                                                if resolved_stake < min_stake {
+                                                    continue;
+                                                }
+                                                reconstructed_vs.add_validator(ValidatorInfo {
+                                                    pubkey: entry.validator,
+                                                    stake: resolved_stake,
+                                                    reputation: 100,
+                                                    blocks_proposed: 0,
+                                                    votes_cast: 0,
+                                                    correct_votes: 0,
+                                                    last_active_slot: 0,
+                                                    joined_slot: 0,
+                                                    last_observed_at_ms: 0,
+                                                    last_observed_block_at_ms: 0,
+                                                    last_observed_block_slot: 0,
+                                                    commission_rate: 500,
+                                                    transactions_processed: 0,
+                                                    pending_activation: false,
+                                                });
+                                            }
+
+                                            if let Err(err) = state_for_blocks
+                                                .save_validator_set(&reconstructed_vs)
+                                            {
+                                                warn!(
                                                 "⚠️  [sync] Failed to persist reconstructed validator set: {}",
                                                 err
                                             );
-                                        }
+                                            }
 
-                                        if let Ok(mut live_vs) =
-                                            validator_set_for_blocks.try_write()
-                                        {
-                                            *live_vs = reconstructed_vs;
+                                            if let Ok(mut live_vs) =
+                                                validator_set_for_blocks.try_write()
+                                            {
+                                                *live_vs = reconstructed_vs;
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            // 7. Genesis transactions already stored + indexed
-                            //    by put_block() above (CF_TRANSACTIONS + CF_TX_TO_SLOT
-                            //    + CF_TX_BY_SLOT in one atomic WriteBatch).
+                                // 7. Genesis transactions already stored + indexed
+                                //    by put_block() above (CF_TRANSACTIONS + CF_TX_TO_SLOT
+                                //    + CF_TX_BY_SLOT in one atomic WriteBatch).
 
-                            // 7b. Extract embedded GenesisPrices from block (opcode 40).
-                            // Falls back to the active local config for pre-standard blocks.
-                            let genesis_prices = effective_genesis_config.genesis_prices.clone();
+                                // 7b. Extract embedded GenesisPrices from block (opcode 40).
+                                // Falls back to the active local config for pre-standard blocks.
+                                let genesis_prices =
+                                    effective_genesis_config.genesis_prices.clone();
 
-                            // 8. Auto-deploy contracts (using frozen genesis prices)
-                            genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
-                            if let Err(err) = genesis_harden_contract_controls(
-                                &state_for_blocks,
-                                &gpk,
-                                "📡 [sync]",
-                            ) {
-                                tracing::error!("genesis hardening during sync failed: {}", err);
-                            };
-                            if let Err(err) = genesis_initialize_contracts(
-                                &state_for_blocks,
-                                &gpk,
-                                "📡 [sync]",
-                                block.header.timestamp,
-                            ) {
-                                tracing::error!(
-                                    "genesis contract initialization during sync failed: {}",
-                                    err
-                                );
-                            };
-                            let bridge_validators = parse_genesis_pubkeys(
-                                &effective_genesis_config.bridge_validators,
-                                "bridge validator",
-                            );
-                            if let Err(err) = genesis_bootstrap_bridge_committee(
-                                &state_for_blocks,
-                                &gpk,
-                                "📡 [sync]",
-                                &bridge_validators,
-                            ) {
-                                tracing::error!(
-                                    "genesis bridge committee bootstrap during sync failed: {}",
-                                    err
-                                );
-                            };
-                            genesis_create_trading_pairs(
-                                &state_for_blocks,
-                                &gpk,
-                                "📡 [sync]",
-                                &genesis_prices,
-                            );
-                            genesis_set_fee_exempt_contracts(&state_for_blocks, &gpk, "📡 [sync]");
-                            let oracle_operators = parse_genesis_pubkeys(
-                                &effective_genesis_config.oracle_operators,
-                                "oracle operator",
-                            );
-                            genesis_seed_oracle(
-                                &state_for_blocks,
-                                &gpk,
-                                "📡 [sync]",
-                                block.header.timestamp,
-                                &genesis_prices,
-                                &oracle_operators,
-                            )
-                            .unwrap_or_else(|err| {
-                                tracing::error!(
-                                    "genesis oracle seeding during sync failed: {}",
-                                    err
-                                )
-                            });
-                            genesis_seed_margin_prices(
-                                &state_for_blocks,
-                                &gpk,
-                                block.header.timestamp,
-                                &genesis_prices,
-                            );
-                            genesis_seed_analytics_prices(
-                                &state_for_blocks,
-                                &gpk,
-                                block.header.timestamp,
-                                &genesis_prices,
-                            );
-
-                            // 9. Genesis identities & achievements
-                            {
-                                let dist_pairs: Vec<(String, Pubkey)> = dist_recipients
-                                    .iter()
-                                    .map(|(role, pk, _, _)| (role.clone(), *pk))
-                                    .collect();
-                                genesis_assign_achievements(
+                                // 8. Auto-deploy contracts (using frozen genesis prices)
+                                genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
+                                if let Err(err) = genesis_harden_contract_controls(
                                     &state_for_blocks,
                                     &gpk,
-                                    &dist_pairs,
+                                    "📡 [sync]",
+                                ) {
+                                    tracing::error!(
+                                        "genesis hardening during sync failed: {}",
+                                        err
+                                    );
+                                };
+                                if let Err(err) = genesis_initialize_contracts(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    "📡 [sync]",
                                     block.header.timestamp,
+                                ) {
+                                    tracing::error!(
+                                        "genesis contract initialization during sync failed: {}",
+                                        err
+                                    );
+                                };
+                                let bridge_validators = parse_genesis_pubkeys(
+                                    &effective_genesis_config.bridge_validators,
+                                    "bridge validator",
                                 );
-                            }
+                                if let Err(err) = genesis_bootstrap_bridge_committee(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    "📡 [sync]",
+                                    &bridge_validators,
+                                ) {
+                                    tracing::error!(
+                                        "genesis bridge committee bootstrap during sync failed: {}",
+                                        err
+                                    );
+                                };
+                                genesis_create_trading_pairs(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    "📡 [sync]",
+                                    &genesis_prices,
+                                );
+                                genesis_set_fee_exempt_contracts(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    "📡 [sync]",
+                                );
+                                let oracle_operators = parse_genesis_pubkeys(
+                                    &effective_genesis_config.oracle_operators,
+                                    "oracle operator",
+                                );
+                                genesis_seed_oracle(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    "📡 [sync]",
+                                    block.header.timestamp,
+                                    &genesis_prices,
+                                    &oracle_operators,
+                                )
+                                .unwrap_or_else(|err| {
+                                    tracing::error!(
+                                        "genesis oracle seeding during sync failed: {}",
+                                        err
+                                    )
+                                });
+                                genesis_seed_margin_prices(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    block.header.timestamp,
+                                    &genesis_prices,
+                                );
+                                genesis_seed_analytics_prices(
+                                    &state_for_blocks,
+                                    &gpk,
+                                    block.header.timestamp,
+                                    &genesis_prices,
+                                );
 
-                            // 10. Flush metrics counters
-                            state_for_blocks.save_metrics_counters().ok();
-
-                            // 11. STATE ROOT VERIFICATION — Cosmos/Substrate standard.
-                            // The genesis block's state_root captures the FULL post-deployment
-                            // state. After replaying everything, our local state must match.
-                            let local_root = state_for_blocks.compute_state_root();
-                            if local_root != block.header.state_root {
-                                error!("═══════════════════════════════════════════════════════");
-                                error!("  FATAL: Genesis state root mismatch!");
-                                error!("  Expected: {}", hex::encode(block.header.state_root.0));
-                                error!("  Got:      {}", hex::encode(local_root.0));
-                                error!("  This means genesis reconstruction produced different");
-                                error!("  state than the genesis creator. Possible causes:");
-                                error!("    - Different WASM contract binaries");
-                                error!("    - Missing contracts/ directory");
-                                error!("    - Corrupted genesis block");
-                                error!("═══════════════════════════════════════════════════════");
-                                std::process::exit(1);
-                            }
-                            info!(
-                                "  ✓ Genesis state root verified: {}",
-                                hex::encode(local_root.0)
-                            );
-
-                            // ── Seed CF_STATS consensus oracle prices ──
-                            // The genesis node's RECONCILE startup code seeds these
-                            // so that apply_oracle_from_block can write deterministic
-                            // oracle prices to contract storage every block. Joining
-                            // nodes must replicate this seeding AFTER genesis state
-                            // root verification (the prices live in CF_STATS, which
-                            // is NOT part of the state root, but drive contract
-                            // storage writes that ARE part of subsequent state roots).
-                            seed_bootstrap_consensus_oracle_prices(
-                                &state_for_blocks,
-                                0, // genesis slot
-                                &genesis_prices,
-                            );
-
-                            // ── Replicate deterministic post-genesis stats seeds ──
-                            // CF_STATS is outside the genesis state root, but these
-                            // seeds drive deterministic contract storage writes for
-                            // later blocks and must match across joining nodes.
-                            {
-                                let mrg_mark_1_exists = state_for_blocks
-                                    .get_program_storage("MARGIN", b"mrg_mark_1")
-                                    .is_some();
-                                if !mrg_mark_1_exists {
-                                    genesis_seed_margin_prices(
+                                // 9. Genesis identities & achievements
+                                {
+                                    let dist_pairs: Vec<(String, Pubkey)> = dist_recipients
+                                        .iter()
+                                        .map(|(role, pk, _, _)| (role.clone(), *pk))
+                                        .collect();
+                                    genesis_assign_achievements(
                                         &state_for_blocks,
                                         &gpk,
+                                        &dist_pairs,
                                         block.header.timestamp,
-                                        &genesis_prices,
                                     );
-                                    info!("  📡 [sync] Replicated RECONCILE margin prices");
                                 }
-                            }
 
-                            // NOW store the genesis block and advance last_slot.
-                            // This must happen AFTER reconstruction so the block
-                            // receiver cannot chain new blocks to an incomplete state.
-                            if let Err(e) = state_for_blocks.put_block(&block) {
-                                error!("Failed to store genesis block: {}", e);
-                                std::process::exit(1);
-                            }
-                            state_for_blocks.set_last_slot(0).ok();
-                            if let Err(err) =
-                                state_for_blocks.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
-                            {
-                                warn!("⚠️  Failed to clear genesis sync marker: {}", err);
-                            }
+                                // 10. Flush metrics counters
+                                state_for_blocks.save_metrics_counters().ok();
 
-                            info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
-                        } else {
-                            warn!(
+                                // 11. STATE ROOT VERIFICATION — Cosmos/Substrate standard.
+                                // The genesis block's state_root captures the FULL post-deployment
+                                // state. After replaying everything, our local state must match.
+                                let local_root = state_for_blocks.compute_state_root();
+                                if local_root != block.header.state_root {
+                                    error!(
+                                        "═══════════════════════════════════════════════════════"
+                                    );
+                                    error!("  FATAL: Genesis state root mismatch!");
+                                    error!(
+                                        "  Expected: {}",
+                                        hex::encode(block.header.state_root.0)
+                                    );
+                                    error!("  Got:      {}", hex::encode(local_root.0));
+                                    error!(
+                                        "  This means genesis reconstruction produced different"
+                                    );
+                                    error!("  state than the genesis creator. Possible causes:");
+                                    error!("    - Different WASM contract binaries");
+                                    error!("    - Missing contracts/ directory");
+                                    error!("    - Corrupted genesis block");
+                                    error!(
+                                        "═══════════════════════════════════════════════════════"
+                                    );
+                                    std::process::exit(1);
+                                }
+                                info!(
+                                    "  ✓ Genesis state root verified: {}",
+                                    hex::encode(local_root.0)
+                                );
+
+                                // ── Seed CF_STATS consensus oracle prices ──
+                                // Legacy genesis replay has no opcode-41 stats bundle, so
+                                // seed the non-root consensus oracle prices before later
+                                // block replay depends on them.
+                                genesis_seed_consensus_oracle_prices(
+                                    &state_for_blocks,
+                                    0, // genesis slot
+                                    &genesis_prices,
+                                );
+
+                                // NOW store the genesis block and advance last_slot.
+                                // This must happen AFTER reconstruction so the block
+                                // receiver cannot chain new blocks to an incomplete state.
+                                if let Err(e) = state_for_blocks.put_block(&block) {
+                                    error!("Failed to store genesis block: {}", e);
+                                    std::process::exit(1);
+                                }
+                                state_for_blocks.set_last_slot(0).ok();
+                                if let Err(err) = state_for_blocks
+                                    .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                                {
+                                    warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                                }
+
+                                info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
+                            } else {
+                                warn!(
                                 "⚠️  Genesis block has no mint tx — cannot extract genesis pubkey"
                             );
-                            // Store genesis even without full reconstruction
-                            if let Err(e) = state_for_blocks.put_block(&block) {
-                                error!("Failed to store genesis block: {}", e);
-                            }
-                            state_for_blocks.set_last_slot(0).ok();
-                            if let Err(err) =
-                                state_for_blocks.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
-                            {
-                                warn!("⚠️  Failed to clear genesis sync marker: {}", err);
-                            }
-                            info!(
+                                // Store genesis even without full reconstruction
+                                if let Err(e) = state_for_blocks.put_block(&block) {
+                                    error!("Failed to store genesis block: {}", e);
+                                }
+                                state_for_blocks.set_last_slot(0).ok();
+                                if let Err(err) = state_for_blocks
+                                    .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+                                {
+                                    warn!("⚠️  Failed to clear genesis sync marker: {}", err);
+                                }
+                                info!(
                                 "✅ 📡 [sync] Applied genesis block (slot 0) from network (state incomplete)"
                             );
+                            }
                         }
 
                         genesis_sync_in_progress_for_blocks.store(false, Ordering::Release);
+                        sync_mgr.record_progress(0).await;
+                        tip_notify_for_blocks.notify_waiters();
 
                         // Try to apply any pending blocks now that we have genesis
                         let genesis_hash = block.hash();
@@ -10487,33 +11083,18 @@ async fn run_validator() {
                             let mut replay_cursor: Option<Vec<u8>> = None;
                             let mut replay_index = 0u64;
                             while replay_index < chunk_index {
-                                let replay_page = match category.as_str() {
-                                    "accounts" => store.export_accounts_cursor_untracked(
+                                let replay_page = store
+                                    .export_snapshot_category_cursor_untracked(
+                                        category,
                                         replay_cursor.as_deref(),
                                         chunk_sz,
-                                    ),
-                                    "contract_storage" => store
-                                        .export_contract_storage_cursor_untracked(
-                                            replay_cursor.as_deref(),
-                                            chunk_sz,
-                                        ),
-                                    "programs" => store.export_programs_cursor_untracked(
-                                        replay_cursor.as_deref(),
-                                        chunk_sz,
-                                    ),
-                                    _ => Ok(lichen_core::state::KvPage {
+                                    )
+                                    .unwrap_or_else(|_| lichen_core::state::KvPage {
                                         entries: Vec::new(),
                                         total: 0,
                                         next_cursor: None,
                                         has_more: false,
-                                    }),
-                                }
-                                .unwrap_or_else(|_| lichen_core::state::KvPage {
-                                    entries: Vec::new(),
-                                    total: 0,
-                                    next_cursor: None,
-                                    has_more: false,
-                                });
+                                    });
 
                                 replay_cursor = replay_page.next_cursor;
                                 replay_index = replay_index.saturating_add(1);
@@ -10525,30 +11106,18 @@ async fn run_validator() {
                             entry.1 = replay_cursor;
                         }
 
-                        let page = match category.as_str() {
-                            "accounts" => {
-                                store.export_accounts_cursor_untracked(entry.1.as_deref(), chunk_sz)
-                            }
-                            "contract_storage" => store.export_contract_storage_cursor_untracked(
+                        let page = store
+                            .export_snapshot_category_cursor_untracked(
+                                category,
                                 entry.1.as_deref(),
                                 chunk_sz,
-                            ),
-                            "programs" => {
-                                store.export_programs_cursor_untracked(entry.1.as_deref(), chunk_sz)
-                            }
-                            _ => Ok(lichen_core::state::KvPage {
+                            )
+                            .unwrap_or_else(|_| lichen_core::state::KvPage {
                                 entries: Vec::new(),
                                 total: 0,
                                 next_cursor: None,
                                 has_more: false,
-                            }),
-                        }
-                        .unwrap_or_else(|_| lichen_core::state::KvPage {
-                            entries: Vec::new(),
-                            total: 0,
-                            next_cursor: None,
-                            has_more: false,
-                        });
+                            });
 
                         entry.0 = chunk_index.saturating_add(1);
                         entry.1 = page.next_cursor.clone();
@@ -10994,11 +11563,6 @@ async fn run_validator() {
                             // Import buffered entries into staging
                             for (cat, entries) in &staged_snapshot_entries {
                                 let res = match cat.as_str() {
-                                    "accounts" => staging_state.import_accounts(entries),
-                                    "contract_storage" => {
-                                        staging_state.import_contract_storage(entries)
-                                    }
-                                    "programs" => staging_state.import_programs(entries),
                                     "validator_set" => {
                                         let Some((_, data)) = entries.first() else {
                                             break 'staging false;
@@ -11043,13 +11607,33 @@ async fn run_validator() {
                                             )),
                                         }
                                     }
-                                    _ => Ok(0),
+                                    category => {
+                                        staging_state.import_snapshot_category(category, entries)
+                                    }
                                 };
                                 if let Err(e) = res {
                                     warn!("⚠️  Staging import of {} failed: {}", cat, e);
                                     break 'staging false;
                                 }
                             }
+
+                            if let Err(e) = staging_state.reconcile_account_count() {
+                                warn!("⚠️  Staging account reconciliation failed: {}", e);
+                                break 'staging false;
+                            }
+                            if let Err(e) = staging_state.reconcile_active_account_count() {
+                                warn!("⚠️  Staging active account reconciliation failed: {}", e);
+                                break 'staging false;
+                            }
+                            if let Err(e) = staging_state.reconcile_program_count() {
+                                warn!("⚠️  Staging program reconciliation failed: {}", e);
+                                break 'staging false;
+                            }
+                            if let Err(e) = staging_state.reconcile_validator_count() {
+                                warn!("⚠️  Staging validator reconciliation failed: {}", e);
+                                break 'staging false;
+                            }
+                            staging_state.invalidate_merkle_cache();
 
                             // Verify state root on staging
                             let expected_root = state_root;
@@ -11085,11 +11669,6 @@ async fn run_validator() {
                         // ── Commit verified entries to live DB ──────────────
                         for (cat, entries) in staged_snapshot_entries.drain() {
                             let res = match cat.as_str() {
-                                "accounts" => state_for_snapshot_apply.import_accounts(&entries),
-                                "contract_storage" => {
-                                    state_for_snapshot_apply.import_contract_storage(&entries)
-                                }
-                                "programs" => state_for_snapshot_apply.import_programs(&entries),
                                 "validator_set" => {
                                     let Some((_, data)) = entries.first() else {
                                         warn!("⚠️  Missing validator_set snapshot payload");
@@ -11161,7 +11740,8 @@ async fn run_validator() {
                                         )),
                                     }
                                 }
-                                _ => Ok(0),
+                                category => state_for_snapshot_apply
+                                    .import_snapshot_category(category, &entries),
                             };
                             match res {
                                 Ok(count) => info!(
@@ -11173,6 +11753,30 @@ async fn run_validator() {
                                 }
                             }
                         }
+
+                        for (label, result) in [
+                            (
+                                "account",
+                                state_for_snapshot_apply.reconcile_account_count(),
+                            ),
+                            (
+                                "active account",
+                                state_for_snapshot_apply.reconcile_active_account_count(),
+                            ),
+                            (
+                                "program",
+                                state_for_snapshot_apply.reconcile_program_count(),
+                            ),
+                            (
+                                "validator",
+                                state_for_snapshot_apply.reconcile_validator_count(),
+                            ),
+                        ] {
+                            if let Err(e) = result {
+                                warn!("⚠️  Failed {} reconciliation after snapshot: {}", label, e);
+                            }
+                        }
+                        state_for_snapshot_apply.invalidate_merkle_cache();
 
                         // Update last_slot to the checkpoint slot
                         if let Err(e) = state_for_snapshot_apply.set_last_slot(snapshot_slot) {
@@ -12608,28 +13212,19 @@ async fn run_validator() {
     //                      Write marker file on success.
     //   Phase 2 — WAIT:   Poll local state until registration appears in synced
     //                      blocks. NEVER resubmit after a successful sendTransaction.
-    if needs_on_chain_registration {
+    if needs_on_chain_registration && auto_register_enabled {
         let state_for_register = state.clone();
         let register_keypair_seed = validator_keypair.to_seed();
         let register_pubkey = validator_pubkey;
         let register_fingerprint = machine_fingerprint;
-        let bootstrap_peer_strings = bootstrap_peer_strings.clone();
+        let bootstrap_rpc_urls = bootstrap_rpc_urls.clone();
         let marker_path = std::path::PathBuf::from(&data_dir).join("registration-submitted.marker");
         let sync_mgr_for_register = sync_manager.clone();
         tokio::spawn(async move {
-            // ── Derive bootstrap peer's RPC URL from its P2P address ──
-            let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
-                if let Some(url) = derive_rpc_url_from_peer(peer_addr) {
-                    url
-                } else {
-                    warn!(
-                        "⚠️  Could not derive bootstrap RPC URL from peer address: {}",
-                        peer_addr
-                    );
-                    return;
-                }
+            let bootstrap_rpc_url = if let Some(url) = bootstrap_rpc_urls.first() {
+                url.clone()
             } else {
-                warn!("⚠️  No bootstrap peers — cannot submit RegisterValidator via RPC");
+                warn!("⚠️  No bootstrap RPC endpoint — cannot submit RegisterValidator");
                 return;
             };
 
@@ -12998,6 +13593,8 @@ async fn run_validator() {
             }
             warn!("⚠️  RegisterValidator not submitted after 3 attempts — may need manual registration");
         });
+    } else if needs_on_chain_registration {
+        info!("🔎 RegisterValidator auto-submit skipped by operator configuration");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -13022,9 +13619,7 @@ async fn run_validator() {
         let sync_manager_join = sync_manager.clone();
         let vs_join = validator_set.clone();
         let sp_join = stake_pool.clone();
-        let bootstrap_rpc_url_for_join = bootstrap_peer_strings
-            .first()
-            .and_then(|peer| derive_rpc_url_from_peer(peer));
+        let bootstrap_rpc_url_for_join = bootstrap_rpc_urls.first().cloned();
         let bootstrap_http_client_for_join = bootstrap_rpc_url_for_join.as_ref().map(|_| {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
@@ -13154,7 +13749,7 @@ async fn run_validator() {
         // Only validators with voting power > 0 participate in BFT.
         // A joining node is a full node until RegisterValidator lands.
         // Block receiver continues applying blocks in the background.
-        if needs_on_chain_registration {
+        if needs_on_chain_registration && auto_register_enabled {
             info!("⏳ Waiting for RegisterValidator to land on-chain before entering consensus...");
             info!("   (Block receiver continues syncing in the background)");
             let mut wait_count = 0u32;
@@ -13178,6 +13773,10 @@ async fn run_validator() {
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
+        } else if needs_on_chain_registration {
+            info!(
+                "🔎 Local validator is not registered; staying out of auto-registration as requested"
+            );
         }
 
         info!(
@@ -13192,6 +13791,13 @@ async fn run_validator() {
         }
         // Clear the pre-consensus sync flag so the watchdog resumes monitoring.
         joining_sync_active.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    if sync_only_mode {
+        info!("✅ Sync-only mode caught up; consensus is disabled and RPC/P2P remain online");
+        joining_sync_active.store(false, std::sync::atomic::Ordering::Relaxed);
+        std::future::pending::<()>().await;
+        return;
     }
 
     // ── Initialize BFT consensus engine ──
@@ -14727,6 +15333,138 @@ mod tests {
             .expect("register symbol");
     }
 
+    fn export_test_category(state: &StateStore, category: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
+        state
+            .export_snapshot_category_cursor_untracked(category, None, 1000)
+            .expect("export category")
+            .entries
+    }
+
+    fn make_genesis_state_chunk_tx(state_root: Hash, bundle: &GenesisStateBundle) -> Transaction {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+
+        let raw = bincode::serialize(bundle).expect("serialize genesis bundle");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&raw).expect("compress genesis bundle");
+        let compressed = encoder.finish().expect("finish gzip");
+        let digest = Sha256::digest(&compressed);
+        let mut compressed_sha256 = [0u8; 32];
+        compressed_sha256.copy_from_slice(&digest[..32]);
+
+        let chunk = GenesisStateChunk {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: state_root.0,
+            compression: "gzip".to_string(),
+            compressed_len: compressed.len() as u64,
+            uncompressed_len: raw.len() as u64,
+            compressed_sha256,
+            chunk_index: 0,
+            total_chunks: 1,
+            data: compressed,
+        };
+        let chunk_bytes = bincode::serialize(&chunk).expect("serialize chunk");
+        let mut data = vec![GENESIS_STATE_CHUNK_OPCODE];
+        data.extend_from_slice(&chunk_bytes);
+
+        Transaction::new(Message {
+            instructions: vec![Instruction {
+                program_id: CORE_SYSTEM_PROGRAM_ID,
+                accounts: vec![Pubkey([1u8; 32])],
+                data,
+            }],
+            recent_blockhash: Hash([0u8; 32]),
+            compute_budget: None,
+            compute_unit_price: None,
+        })
+    }
+
+    #[test]
+    fn genesis_state_bundle_roundtrips_without_local_contract_replay() {
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let dest_dir = tempfile::tempdir().expect("dest temp dir");
+        let source = StateStore::open(source_dir.path().to_str().unwrap()).expect("open source");
+        let dest = StateStore::open(dest_dir.path().to_str().unwrap()).expect("open dest");
+
+        let owner = Pubkey([7u8; 32]);
+        source
+            .put_account(&owner, &Account::new(42, owner))
+            .expect("put account");
+        let program = Pubkey([8u8; 32]);
+        source.index_program(&program).expect("index program");
+        register_test_symbol(&source, "TEST", program);
+        source
+            .put_contract_storage(&program, b"key", b"value")
+            .expect("put contract storage");
+
+        let mut pool = StakePool::new();
+        pool.try_bootstrap_with_fingerprint(owner, MIN_VALIDATOR_STAKE, 0, [0u8; 32])
+            .expect("bootstrap stake");
+        source.put_stake_pool(&pool).expect("put stake pool");
+        source.save_metrics_counters().expect("save metrics");
+        let state_root = source.compute_state_root_cold_start();
+
+        let bundle = GenesisStateBundle {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: state_root.0,
+            categories: vec![
+                lichen_core::GenesisStateCategory {
+                    name: "accounts".to_string(),
+                    entries: export_test_category(&source, "accounts"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "contract_storage".to_string(),
+                    entries: export_test_category(&source, "contract_storage"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "programs".to_string(),
+                    entries: export_test_category(&source, "programs"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "symbol_registry".to_string(),
+                    entries: export_test_category(&source, "symbol_registry"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "symbol_by_program".to_string(),
+                    entries: export_test_category(&source, "symbol_by_program"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "stats".to_string(),
+                    entries: export_test_category(&source, "stats"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "stake_pool".to_string(),
+                    entries: vec![(
+                        b"pool".to_vec(),
+                        bincode::serialize(&pool).expect("serialize stake pool"),
+                    )],
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "mossstake_pool".to_string(),
+                    entries: vec![(
+                        b"pool".to_vec(),
+                        bincode::serialize(&lichen_core::MossStakePool::new())
+                            .expect("serialize mossstake pool"),
+                    )],
+                },
+            ],
+        };
+        let block = Block::genesis(
+            state_root,
+            1,
+            vec![make_genesis_state_chunk_tx(state_root, &bundle)],
+        );
+
+        let extracted = extract_genesis_state_bundle(&block)
+            .expect("extract bundle")
+            .expect("bundle present");
+        apply_genesis_state_bundle(&dest, &extracted).expect("apply bundle");
+
+        assert_eq!(dest.compute_state_root_cold_start(), state_root);
+        assert!(dest.get_symbol_registry("TEST").unwrap().is_some());
+        assert_eq!(dest.get_program_count(), 1);
+    }
+
     #[test]
     fn partial_genesis_scrub_preserves_identity_artifacts() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
@@ -16142,6 +16880,109 @@ mod tests {
     #[test]
     fn derive_rpc_url_from_peer_rejects_invalid_port() {
         assert!(derive_rpc_url_from_peer("127.0.0.1:not-a-port").is_none());
+    }
+
+    #[test]
+    fn load_seed_bootstrap_reads_rpc_endpoints() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let seeds_path = temp_dir.path().join("seeds.json");
+        fs::write(
+            &seeds_path,
+            serde_json::json!({
+                "testnet": {
+                    "chain_id": "lichen-testnet-1",
+                    "bootstrap_peers": ["seed-01.lichen.network:7001"],
+                    "rpc_endpoints": ["https://testnet-rpc.lichen.network"],
+                    "seeds": [
+                        {
+                            "address": "seed-02.lichen.network:7001",
+                            "rpc": "https://testnet-rpc.lichen.network"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .expect("write seeds");
+
+        let config = load_seed_bootstrap_by_network("testnet", &seeds_path)
+            .expect("parse seeds")
+            .expect("testnet section");
+
+        assert_eq!(config.chain_id, "lichen-testnet-1");
+        assert_eq!(
+            config.peer_strings,
+            vec![
+                "seed-01.lichen.network:7001".to_string(),
+                "seed-02.lichen.network:7001".to_string()
+            ]
+        );
+        assert_eq!(
+            config.rpc_urls[0],
+            "https://testnet-rpc.lichen.network".to_string()
+        );
+        assert_eq!(
+            config
+                .rpc_urls
+                .iter()
+                .filter(|url| *url == "https://testnet-rpc.lichen.network")
+                .count(),
+            1,
+            "duplicate seed RPC endpoints should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn genesis_bootstrap_rpc_policy_requires_tls_for_public_networks() {
+        assert!(genesis_bootstrap_rpc_allowed(
+            "testnet",
+            "https://testnet-rpc.lichen.network"
+        ));
+        assert!(!genesis_bootstrap_rpc_allowed(
+            "testnet",
+            "http://seed-01.lichen.network:8899"
+        ));
+        assert!(genesis_bootstrap_rpc_allowed(
+            "testnet",
+            "http://127.0.0.1:8899"
+        ));
+        assert!(genesis_bootstrap_rpc_allowed(
+            "devnet",
+            "http://seed-01.local:8899"
+        ));
+    }
+
+    #[test]
+    fn extract_genesis_config_from_rpc_block_value_reads_opcode_40() {
+        let mut config = GenesisConfig::default_testnet();
+        config.chain_id = "lichen-testnet-rpc-fixture".to_string();
+        let mut data = vec![40u8];
+        data.extend_from_slice(
+            serde_json::to_vec(&config)
+                .expect("serialize genesis config")
+                .as_slice(),
+        );
+        let data_values: Vec<serde_json::Value> =
+            data.into_iter().map(serde_json::Value::from).collect();
+        let block = serde_json::json!({
+            "transactions": [
+                {
+                    "message": {
+                        "instructions": [
+                            {
+                                "program_id": CORE_SYSTEM_PROGRAM_ID.to_base58(),
+                                "data": data_values
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let parsed = extract_genesis_config_from_rpc_block_value(&block)
+            .expect("extract genesis config from rpc block");
+
+        assert_eq!(parsed.chain_id, "lichen-testnet-rpc-fixture");
     }
 
     #[test]

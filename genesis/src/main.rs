@@ -4,6 +4,7 @@
 //!   lichen-genesis --prepare-wallet --network testnet --output-dir ./artifacts/testnet
 //!   lichen-genesis --network testnet --wallet-file ./artifacts/testnet/genesis-wallet.json --initial-validator <base58> --db-path /var/lib/lichen/state-testnet
 
+use flate2::{write::GzEncoder, Compression};
 use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
@@ -18,22 +19,164 @@ use lichen_core::multisig::{
     upgrade_veto_guardian_config_for_roles,
 };
 use lichen_core::{
-    Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisValidator, GenesisWallet, Hash,
-    Instruction, Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
+    Account, Block, FeeConfig, GenesisConfig, GenesisPrices, GenesisStateBundle,
+    GenesisStateCategory, GenesisStateChunk, GenesisValidator, GenesisWallet, Hash, Instruction,
+    Keypair, Message, Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
     genesis_assign_achievements, genesis_auto_deploy, genesis_bootstrap_bridge_committee,
     genesis_create_trading_pairs, genesis_harden_contract_controls, genesis_initialize_contracts,
-    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
-    genesis_set_fee_exempt_contracts,
+    genesis_seed_analytics_prices, genesis_seed_consensus_oracle_prices,
+    genesis_seed_margin_prices, genesis_seed_oracle, genesis_set_fee_exempt_contracts,
 };
+use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
+const GENESIS_STATE_CHUNK_BYTES: usize = 180 * 1024;
+const GENESIS_STATE_KV_CATEGORIES: &[&str] = &[
+    "accounts",
+    "contract_storage",
+    "programs",
+    "symbol_registry",
+    "symbol_by_program",
+    "stats",
+];
+
+type GenesisStateEntry = (Vec<u8>, Vec<u8>);
+type GenesisStateEntries = Vec<GenesisStateEntry>;
+
+fn export_all_category_entries(
+    state: &StateStore,
+    category: &str,
+) -> Result<GenesisStateEntries, String> {
+    let mut entries = Vec::new();
+    let mut cursor: Option<Vec<u8>> = None;
+
+    loop {
+        let page =
+            state.export_snapshot_category_cursor_untracked(category, cursor.as_deref(), 1000)?;
+        entries.extend(page.entries);
+        if !page.has_more {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+
+    Ok(entries)
+}
+
+fn build_genesis_state_bundle(
+    state: &StateStore,
+    state_root: Hash,
+) -> Result<GenesisStateBundle, String> {
+    let mut categories = Vec::new();
+
+    for category in GENESIS_STATE_KV_CATEGORIES {
+        categories.push(GenesisStateCategory {
+            name: (*category).to_string(),
+            entries: export_all_category_entries(state, category)?,
+        });
+    }
+
+    let stake_pool = state.get_stake_pool()?;
+    categories.push(GenesisStateCategory {
+        name: "stake_pool".to_string(),
+        entries: vec![(
+            b"pool".to_vec(),
+            bincode::serialize(&stake_pool)
+                .map_err(|e| format!("Failed to serialize stake pool: {}", e))?,
+        )],
+    });
+
+    let mossstake_pool = state.get_mossstake_pool()?;
+    categories.push(GenesisStateCategory {
+        name: "mossstake_pool".to_string(),
+        entries: vec![(
+            b"pool".to_vec(),
+            bincode::serialize(&mossstake_pool)
+                .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?,
+        )],
+    });
+
+    Ok(GenesisStateBundle {
+        version: GENESIS_STATE_BUNDLE_VERSION,
+        state_root: state_root.0,
+        categories,
+    })
+}
+
+fn encode_genesis_state_chunks(
+    state_root: Hash,
+    bundle: &GenesisStateBundle,
+) -> Result<Vec<GenesisStateChunk>, String> {
+    let raw = bincode::serialize(bundle)
+        .map_err(|e| format!("Failed to serialize genesis state bundle: {}", e))?;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(&raw)
+        .map_err(|e| format!("Failed to compress genesis state bundle: {}", e))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| format!("Failed to finish genesis state compression: {}", e))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&compressed);
+    let digest = hasher.finalize();
+    let mut compressed_sha256 = [0u8; 32];
+    compressed_sha256.copy_from_slice(&digest[..32]);
+
+    let total_chunks = compressed.len().div_ceil(GENESIS_STATE_CHUNK_BYTES).max(1);
+    if total_chunks > u32::MAX as usize {
+        return Err("Genesis state bundle produced too many chunks".to_string());
+    }
+
+    Ok(compressed
+        .chunks(GENESIS_STATE_CHUNK_BYTES)
+        .enumerate()
+        .map(|(index, data)| GenesisStateChunk {
+            version: GENESIS_STATE_BUNDLE_VERSION,
+            state_root: state_root.0,
+            compression: "gzip".to_string(),
+            compressed_len: compressed.len() as u64,
+            uncompressed_len: raw.len() as u64,
+            compressed_sha256,
+            chunk_index: index as u32,
+            total_chunks: total_chunks as u32,
+            data: data.to_vec(),
+        })
+        .collect())
+}
+
+fn append_genesis_state_bundle_txs(
+    genesis_txs: &mut Vec<Transaction>,
+    genesis_pubkey: Pubkey,
+    chunks: Vec<GenesisStateChunk>,
+) -> Result<(), String> {
+    for chunk in chunks {
+        let chunk_bytes = bincode::serialize(&chunk)
+            .map_err(|e| format!("Failed to serialize genesis state chunk: {}", e))?;
+        let mut ix_data = Vec::with_capacity(1 + chunk_bytes.len());
+        ix_data.push(GENESIS_STATE_CHUNK_OPCODE);
+        ix_data.extend_from_slice(&chunk_bytes);
+
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![genesis_pubkey],
+            data: ix_data,
+        };
+        let message = Message::new(vec![instruction], Hash::default());
+        genesis_txs.push(Transaction::new(message));
+    }
+
+    Ok(())
+}
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
@@ -1398,6 +1541,7 @@ fn main() {
     };
     genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
     genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp, gp);
+    genesis_seed_consensus_oracle_prices(&state, 0, gp);
 
     // ════════════════════════════════════════════════════════════════════
     // GENESIS IDENTITIES & ACHIEVEMENTS
@@ -1437,11 +1581,39 @@ fn main() {
         );
     }
 
+    // Persist metrics before exporting canonical genesis state. Metrics live in
+    // CF_STATS outside the state root, but imported validators need the same
+    // operational counters and protocol parameters immediately after slot 0.
+    if let Err(e) = state.save_metrics_counters() {
+        error!("Failed to flush metrics before genesis state export: {}", e);
+        std::process::exit(1);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // EMBED CANONICAL GENESIS STATE (opcode 41)
+    // ════════════════════════════════════════════════════════════════════
+    let state_root = state.compute_state_root();
+    match build_genesis_state_bundle(&state, state_root)
+        .and_then(|bundle| encode_genesis_state_chunks(state_root, &bundle))
+        .and_then(|chunks| {
+            let chunk_count = chunks.len();
+            append_genesis_state_bundle_txs(&mut genesis_txs, genesis_pubkey, chunks)?;
+            Ok(chunk_count)
+        }) {
+        Ok(chunk_count) => info!(
+            "  ✓ Canonical genesis state embedded in {} opcode-41 chunks",
+            chunk_count
+        ),
+        Err(err) => {
+            error!("Failed to embed canonical genesis state: {}", err);
+            std::process::exit(1);
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════════
     // CREATE GENESIS BLOCK — state_root captures FULL state (accounts +
     // contracts + oracle + analytics + margin) per Cosmos/Substrate standard.
     // ════════════════════════════════════════════════════════════════════
-    let state_root = state.compute_state_root();
     let genesis_block = Block::genesis(state_root, genesis_timestamp, genesis_txs);
     if let Err(e) = state.put_block(&genesis_block) {
         error!("Failed to store genesis block: {e}");

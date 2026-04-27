@@ -547,6 +547,11 @@ impl MetricsStore {
         *active_accounts = count;
     }
 
+    pub(super) fn set_program_count(&self, count: u64) {
+        let mut program_count = self.program_count.lock().unwrap_or_else(|e| e.into_inner());
+        *program_count = count;
+    }
+
     pub(super) fn set_validator_count(&self, count: u64) {
         let mut validator_count = self
             .validator_count
@@ -749,6 +754,44 @@ impl StateStore {
     pub fn reconcile_active_account_count(&self) -> Result<(), String> {
         let actual_count = self.count_active_accounts_full_scan()?;
         self.metrics.set_active_accounts(actual_count);
+        self.metrics.save(&self.db)?;
+        Ok(())
+    }
+
+    /// Reconcile deployed program counter with CF_PROGRAMS.
+    pub fn reconcile_program_count(&self) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAMS)
+            .ok_or_else(|| "Programs CF not found".to_string())?;
+        let mut actual_count = 0u64;
+        for _ in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            actual_count = actual_count.saturating_add(1);
+        }
+        self.metrics.set_program_count(actual_count);
+        self.metrics.save(&self.db)?;
+        Ok(())
+    }
+
+    /// Reconcile validator counter with CF_VALIDATORS.
+    pub fn reconcile_validator_count(&self) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_VALIDATORS)
+            .ok_or_else(|| "Validators CF not found".to_string())?;
+        let mut actual_count = 0u64;
+        for _ in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            actual_count = actual_count.saturating_add(1);
+        }
+        self.metrics.set_validator_count(actual_count);
         self.metrics.save(&self.db)?;
         Ok(())
     }

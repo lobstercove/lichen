@@ -451,8 +451,8 @@ else
   exit 1
 fi
 
-echo "🦞 Provisioning joiner validators from the seed snapshot..."
-if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start-joiners-from-seed-snapshot; then
+echo "🦞 Starting joiner validators from empty state via network sync..."
+if ! LICN_LOCAL_NETWORK="$NETWORK" "$LOCAL_CLUSTER_SCRIPT" start-joiners-from-seed-sync; then
   cleanup_started_processes
   exit 1
 fi
@@ -477,7 +477,7 @@ fi
 echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"
 echo "Cluster RPC: $CLUSTER_RPC_URL"
-echo "Validator launcher: $LOCAL_CLUSTER_SCRIPT ${LOCAL_CLUSTER_BOOTSTRAP_CMD} + start-joiners-from-seed-snapshot"
+echo "Validator launcher: $LOCAL_CLUSTER_SCRIPT ${LOCAL_CLUSTER_BOOTSTRAP_CMD} + start-joiners-from-seed-sync"
 echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"

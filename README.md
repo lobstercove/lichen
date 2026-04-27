@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated for release tag `v0.5.18`.
+**Release-ready status:** main validated for release tag `v0.5.19`.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -147,9 +147,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 gh attestation verify lichen-validator-linux-x86_64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
     --network mainnet \
     --p2p-port 8001 \
@@ -167,9 +168,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 gh attestation verify lichen-validator-darwin-aarch64.tar.gz -R lobstercove/lichen
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
     --network mainnet \
     --p2p-port 8001 \
@@ -186,6 +188,7 @@ Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
 Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+$env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
     --network mainnet `
     --p2p-port 8001 `
@@ -196,7 +199,7 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
 
-Release bundles now ship `lichen-validator`, `zk-prove`, and `seeds.json` beside the operator tools so agents can keep shielded-transaction tooling installed with the validator. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
+Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep shielded-transaction tooling and runtime artifacts installed with the validator. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
 ### What Happens On First Start
 
@@ -205,10 +208,11 @@ When an agent starts `lichen-validator` on a fresh machine, the runtime does thi
 1. Creates the state directory if it does not exist.
 2. Creates or reuses the validator identity inside the state directory.
 3. Stores chain data, identity files, signer material, peer cache, and logs under the state path.
-4. Loads seed peers from `{db-path}/seeds.json`, `/etc/lichen/seeds.json`, or `./seeds.json`; if none are present, it falls back to the embedded DNS seed defaults.
-5. Syncs state from the network.
-6. Begins participating as a validator once synced and eligible.
-7. If auto-update is enabled later on a canary node, it periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
+4. Loads `seeds.json` from `{db-path}`, `/etc/lichen`, or the current directory and uses the listed seed RPC endpoint to fetch and persist the authoritative `genesis.json` if the state directory is brand new.
+5. Imports the canonical opcode-41 genesis state bundle from block 0, verifies it against the block state root, then syncs/replays later blocks from peers.
+6. No RocksDB state, genesis wallet, genesis keys, peer cache, consensus WAL, or custody/faucet keys are copied from existing validators.
+7. Submits validator registration once synced, then begins participating after the registration lands and the node is eligible.
+8. If auto-update is enabled later on a canary node, it periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
 
 Important runtime files in the chosen `--db-path`:
 
@@ -395,7 +399,7 @@ For a repo checkout on Linux, the supported unattended path is `sudo bash deploy
 
 That's it. The validator will:
 - Generate a keypair (saved to `~/.lichen/validators/validator-mainnet.json`)
-- Sync the chain from seed nodes
+- Import verified genesis state from block 0 and sync/replay the chain from seed nodes
 - Receive a 100K LICN bootstrap stake grant (first 200 validators only)
 - Begin producing & voting on blocks
 
