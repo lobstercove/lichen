@@ -132,11 +132,11 @@ deploy-local: build-contracts-wasm
 	scripts/first-boot-deploy.sh --rpc=$(RPC_URL)
 
 deploy-testnet: build-contracts-wasm
-	@echo "Remote testnet deployment is private operator tooling and is not shipped in the public repo."
+	@echo "Managed-host testnet deployment tooling is not shipped in the public repo."
 	@exit 1
 
 deploy-mainnet: build-contracts-wasm
-	@echo "Remote mainnet deployment is private operator tooling and is not shipped in the public repo."
+	@echo "Managed-host mainnet deployment tooling is not shipped in the public repo."
 	@exit 1
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Bridge genesis now embeds the planned validator committee and enforces a BFT-style threshold (`2-of-3` on the standard three-validator fleet) before deployment passes.
 - Oracle genesis now authorizes planned operators, seeds all launch feeds through the contract, and exposes operational stats that distinguish contract feeds from native consensus feeds.
-- Clean-slate local and VPS reset flows now pre-generate validator identities before genesis and verify bridge/oracle readiness during post-genesis bootstrap.
+- Clean-slate local and hosted reset flows now pre-generate validator identities before genesis and verify bridge/oracle readiness during post-genesis bootstrap.
 
 ## [0.5.13] - 2026-04-26
 
@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Clean-slate redeploy no longer restarts the validator after installing the signed metadata manifest. RPC reads the configured manifest file on demand, and the restart could interrupt an in-flight proposal during rollout.
-- The deployment runbook now keeps the post-genesis validator running until the controlled snapshot stop, reducing restart-induced orphan proposal state during fresh fleet rebuilds.
+- Hosted deployment now keeps the post-genesis validator running until the controlled snapshot stop, reducing restart-induced orphan proposal state during fresh fleet rebuilds.
 
 ## [0.5.11] - 2026-04-26
 
@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Block timestamp drift: added `wall_clock_safe_delay()` to prevent block timestamps from racing ahead of wall clock time during fast BFT rounds. Previously, second-precision timestamps with 400ms slot time caused ~0.6s drift per block, triggering the 120s future-block rejection threshold after ~200 blocks.
-- Deployment runbook: Step 5 (signed metadata manifest) is now marked mandatory with verification commands. Missing manifest was the root cause of DEX "Missing contract addresses" errors on deployed frontends.
+- Signed metadata manifest generation is now mandatory in hosted deployment. Missing manifest data was the root cause of DEX "Missing contract addresses" errors on deployed frontends.
 
 ### Changed
-- Deployment runbook Step 4: documents that `LICHEN_KEYPAIR_PASSWORD` is auto-generated and shows how to use `lichen identity export` to access validator keys.
-- Deployment runbook Step 6: joining validators now explicitly copy the signed metadata manifest from the genesis VPS.
+- Hosted deployment docs now cover `LICHEN_KEYPAIR_PASSWORD` generation and `lichen identity export` usage for validator key access.
+- Joining validators now receive the signed metadata manifest during hosted bootstrap.
 
 ## [0.5.5] - 2026-04-07
 
@@ -118,14 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.36] - 2026-03-28
 
 ### Added
-- Production readiness audit (`docs/PRODUCTION_READINESS_AUDIT_MARCH_2026.md`)
-- Security audit (`docs/SECURITY_AUDIT_MARCH_2026.md`)
+- Production readiness audit
+- Security audit
 
 ## [0.4.35] - 2026-03-27
 
 ### Changed
 - Clean-slate redeploy: all frontends, contracts, and genesis regenerated
-- BFT consensus stabilized across 3 VPS validators (US/EU/SEA)
+- BFT consensus stabilized across the initial hosted validator set
 
 ## [0.4.34] - 2026-03-26
 
@@ -136,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.33] - 2026-03-25
 
 ### Added
-- Cross-margin DEX design (`docs/CROSS_MARGIN_DESIGN.md`)
+- Cross-margin DEX design
 - Prediction market contracts and RPC endpoints
 
 ### Changed

@@ -1512,7 +1512,7 @@ function promptAdminToken(actionLabel) {
 
 function showIncidentControlUnavailable(actionLabel) {
     const label = actionLabel || 'This incident control';
-    showAlert(`${label} is not exposed by production RPC. Use the validator CLI / SSH operator runbook instead.`);
+    showAlert(`${label} is not exposed by production RPC. Use an authorized server-side operations path instead.`);
 }
 
 async function killswitchBanIP() {

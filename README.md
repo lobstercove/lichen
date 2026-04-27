@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.20`, clean-slate deployed on the 3-VPS testnet with independent validator genesis sync.
+**Current release:** signed `v0.5.20`, deployed on the public testnet with independent validator genesis sync.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -51,7 +51,7 @@ lichen/
 ├── developers/  # Developer portal & documentation hub
 ├── deploy/      # Systemd services, Caddy configs
 ├── infra/       # Docker Compose, Prometheus, Grafana
-├── scripts/     # Operational scripts (genesis, health-check, deploy)
+├── scripts/     # Build, local validation, and helper scripts
 └── tests/       # Local-private E2E harness, intentionally not shipped in the public clone
 ```
 
@@ -114,7 +114,7 @@ If you need custody, faucet, and post-genesis bootstrap on a local testnet too, 
 
 If you already have a `lichen-validator` binary from a release bundle or prior build, you do not need the full repository checkout to join the network. A validator can run from the binary plus a writable state directory.
 
-Manual binary launch is for release bundles or one-off debugging. The supported public repo operator path is `scripts/start-local-3validators.sh` for local validators; hosted production deployment automation is private operator tooling.
+Manual binary launch is for release bundles or one-off debugging. The supported public repo operator path is `scripts/start-local-3validators.sh` for local validators; managed-host deployment automation is outside the public repository.
 
 ### Fast Install From Release
 
@@ -331,7 +331,7 @@ lichen balance Mo1t...YourAddress
 
 ## Deploy Smart Contracts
 
-Lichen smart contracts are Rust programs compiled to WASM. See `docs/guides/CONTRACT_DEVELOPMENT.md` for the full guide.
+Lichen smart contracts are Rust programs compiled to WASM. Public developer guides live at https://developers.lichen.network.
 
 ```bash
 # Install WASM target
@@ -388,7 +388,7 @@ cp ./seeds.json ./data/state-mainnet/seeds.json
     --db-path ./data/state-mainnet
 ```
 
-For a repo checkout on Linux, the foreground command above is the public manual path for ad hoc starts and debugging. Hosted production deployment automation is kept in the private operator runbook.
+For a repo checkout on Linux, the foreground command above is the public manual path for ad hoc starts and debugging. Hosted production automation is outside the public repository.
 
 That's it. The validator will:
 - Generate a keypair (saved to `~/.lichen/validators/validator-mainnet.json`)
@@ -409,7 +409,7 @@ For unattended operation, install the validator as a persistent OS service:
 
 | Platform | Method | Guide |
 |----------|--------|-------|
-| **Linux** | systemd | Use the release archive plus your own systemd unit, or the private operator runbook for Lichen-managed hosts |
+| **Linux** | systemd | Use the release archive plus your own systemd unit |
 | **macOS** | LaunchAgent | See [Validator Guide — macOS LaunchAgent](https://developers.lichen.network/validator.html#macos-service) |
 | **Windows** | NSSM | See [Validator Guide — Windows Service](https://developers.lichen.network/validator.html#windows-service) |
 
@@ -427,10 +427,7 @@ Domain names are preferred over raw IPs for bootstrap because they let the found
 
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 
-**Detailed guides:**
-- [Validator Setup](docs/guides/VALIDATOR_SETUP.md)
-- [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
-- [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
+**Detailed guides:** https://developers.lichen.network
 
 ---
 

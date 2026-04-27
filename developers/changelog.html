@@ -289,11 +289,10 @@
                             tracking via <code>ContractContext.storage_bytes_used</code>; <code>storage_delete</code>
                             reclaims freed bytes. Prevents unbounded state growth (Task 4.3, M-4)
                         </li>
-                        <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; comprehensive research document at
-                            <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing Lichen
-                            building blocks (commit certificates, anchored account inclusion proofs, BFT finality), gap
-                            analysis, and phased
-                            implementation roadmap. Full IBC deferred; LichenBridge adequate for current phase (Task
+                        <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; completed IBC requirements research
+                            covering existing Lichen building blocks (commit certificates, anchored account inclusion
+                            proofs, BFT finality), gap analysis, and phased implementation roadmap. Full IBC deferred;
+                            LichenBridge adequate for current phase (Task
                             4.4,
                             H-14)
                         </li>
@@ -344,9 +343,8 @@
                 <div class="changelog-section" data-type="new">
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New</h4>
                     <ul>
-                        <li>Contract Features &amp; Optimizations Brainstorm document added to
-                            <code>docs/strategy/</code> &mdash; 26 proposed features across 5 tiers with priority
-                            rankings
+                        <li>Contract features and optimizations roadmap expanded with 26 proposed features across 5
+                            tiers with priority rankings
                         </li>
                     </ul>
                 </div>
@@ -405,7 +403,7 @@
                         </li>
                         <li>Website: <code>resolveValidatorCount()</code> filters ghost validators (last_active_slot=0
                             AND blocks_produced=0)</li>
-                        <li>EU VPS crash loop resolved &mdash; RocksDB LOCK held by zombie supervisor process</li>
+                        <li>hosted validator crash loop resolved &mdash; RocksDB LOCK held by zombie supervisor process</li>
                     </ul>
                 </div>
             </div>

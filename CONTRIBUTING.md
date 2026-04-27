@@ -79,8 +79,8 @@ cargo clippy --workspace -- -D warnings
 
 - Public source, docs, deployment manifests, infra configs, and frontend/app code belong in the repository.
 - Never commit credentials, private keys, seed phrases, `.env` files, or operator-only runbooks with live secrets.
-- Put redacted operational documentation in tracked public paths such as `docs/`, `deploy/`, `infra/`, and `monitoring/`.
-- Keep private operator material in ignored paths such as `internal-docs/`, `VPS_CREDENTIALS.md`, local wallet directories, and other gitignored secret files.
+- Put redacted operational documentation only in tracked public paths intended for users and developers.
+- Keep non-public operational material in ignored local paths, local wallet directories, and other gitignored secret files.
 - If a document mixes public architecture with secret values, split it into a tracked redacted document plus an ignored local companion.
 
 ## Building WASM Contracts
@@ -147,7 +147,7 @@ Feature requests are welcome — label them `enhancement`.
 | `contracts/`| On-chain WASM smart contracts        |
 | `sdk/`      | JavaScript/TypeScript SDK            |
 | `tools/`    | Deployment & testing utilities       |
-| `docs/`     | Public architecture, strategy, and guides |
+| public docs | User and developer documentation surfaced through the tracked web portals |
 | `deploy/`   | Public deployment manifests and service files |
 | `infra/`    | Public infrastructure configuration  |
 | `monitoring/` | Public monitoring dashboard sources |

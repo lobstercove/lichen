@@ -174,7 +174,7 @@ fi
 
 if $START_CUSTODY && ! is_local_dev_mode; then
     echo -e "${RED}Error: --custody is restricted to explicit local development.${NC}"
-    echo "Export LICHEN_LOCAL_DEV=1 to use the local custody helper, or use your private operator runbook and systemd for non-dev environments."
+    echo "Export LICHEN_LOCAL_DEV=1 to use the local custody helper, or use a hardened service deployment for non-dev environments."
     exit 1
 fi
 

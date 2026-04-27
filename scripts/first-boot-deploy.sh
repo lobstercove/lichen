@@ -675,7 +675,7 @@ elif [[ -z "$SIGNED_METADATA_KEYPAIR" ]]; then
     fi
 elif ! command -v node >/dev/null 2>&1; then
     if $SIGNED_METADATA_REQUIRED; then
-        echo -e "\n  ${RED}❌ Deployment aborted: Node.js is required to generate signed metadata on VPS deploys${NC}"
+        echo -e "\n  ${RED}❌ Deployment aborted: Node.js is required to generate signed metadata on hosted deploys${NC}"
         exit 1
     fi
     echo -e "\n  ${YELLOW}⚠  Skipping signed metadata manifest generation because Node.js is unavailable${NC}"

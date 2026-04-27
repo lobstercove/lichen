@@ -82,6 +82,20 @@ function Stop-Cluster {
     }
 }
 
+function Reset-LocalState {
+    foreach ($path in @(
+        (Join-Path $Root 'data/state-7001'),
+        (Join-Path $Root 'data/state-7002'),
+        (Join-Path $Root 'data/state-7003'),
+        (Join-Path $Root 'data/state-testnet')
+    )) {
+        Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Remove-Item $PidFile,$Log1,$Log2,$Log3 -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $ArtDir -Force | Out-Null
+}
+
 function Ensure-Binary {
     if (-not (Test-Path $Bin)) {
         Push-Location $Root
@@ -182,12 +196,8 @@ switch ($Command) {
         Write-Host ("[local-3validators] ready pids={0},{1},{2}" -f $v1,$v2,$v3)
     }
     'start-reset' {
-        Push-Location $Root
-        try {
-            bash ./reset-blockchain.sh testnet | Out-Null
-        } finally {
-            Pop-Location
-        }
+        Stop-Cluster
+        Reset-LocalState
         & $PSCommandPath -Command start
     }
 }
