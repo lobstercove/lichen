@@ -7,7 +7,6 @@
     "test-wallet": "node scripts/qa/test_wallet_audit.js",
     "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js",
     "validate-wallet-extension-release": "npm run test-wallet-extension && npm run test-wallet",
-    "deploy-pages": "bash scripts/deploy-cloudflare-pages.sh",
     "package-wallet-extension": "node scripts/package-wallet-extension.mjs",
     "prepare-wallet-extension-release": "npm run validate-wallet-extension-release && npm run package-wallet-extension"
   },

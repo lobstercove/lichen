@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn test_p2p_config_advertise_addr_prefers_external_endpoint() {
-        let external = "15.204.229.189:7001".parse().unwrap();
+        let external = "203.0.113.10:7001".parse().unwrap();
         let config = P2PConfig {
             listen_addr: "0.0.0.0:7001".parse().unwrap(),
             external_addr: Some(external),

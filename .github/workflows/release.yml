@@ -264,6 +264,6 @@ jobs:
 
             > **Note:** To add a detached signature, a maintainer should:
             > 1. Download SHA256SUMS from this release
-            > 2. Sign it offline: `./scripts/sign-release.sh SHA256SUMS release-signing-keypair.json`
+            > 2. Sign it offline using the private maintainer release-signing workflow
             > 3. Upload SHA256SUMS.sig to the release (`SHA256SUMS.sig` is JSON-encoded `PqSignature` data)
             > 4. Publish the release only after the detached signature is attached and the canary gate is approved

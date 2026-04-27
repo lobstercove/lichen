@@ -151,6 +151,22 @@ validator_genesis_section.txt
 Cargo.toml.integration
 DEPLOYMENT_STATUS.md
 VPS_CREDENTIALS.md
+MAINNET_READINESS_*.md
+SESSION_HANDOVER_*.md
+AGENTS.md
+SKILL.md
+wallet/EXTENSION_*_PLAN.md
+
+# ── Private agent/operator scaffolding ─────────────────────
+skills/
+deploy/setup.sh
+scripts/clean-slate-redeploy.sh
+scripts/deploy-cloudflare-pages.sh
+scripts/generate-release-keys.sh
+scripts/governance-watchtower.js
+scripts/incident-status.js
+scripts/sign-release.sh
+scripts/vps-post-genesis.sh
 
 # ── Frontend private / dev-only content ─────────────────────
 # TradingView charting library (proprietary, 540+ files)
