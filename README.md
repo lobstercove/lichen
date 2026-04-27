@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated for release tag `v0.5.20`.
+**Current release:** signed `v0.5.20`, clean-slate deployed on the 3-VPS testnet with independent validator genesis sync.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  

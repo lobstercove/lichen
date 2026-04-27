@@ -25,8 +25,13 @@ The validator join path was audited because the latest VPS redeploy had provisio
 
 ## Follow-Up
 
-- Release prep is now targeting `v0.5.20`.
-- Version metadata, README, developer SKILL content, release workflow body, developer portal install text, deployment status, and current-state memory have been moved from the `v0.5.18` baseline toward the `v0.5.20` independent-join release.
-- Before pushing/tagging, run the focused validator/genesis checks plus the deployment shell syntax checks.
-- After the tag workflow creates the draft GitHub Release, attach `SHA256SUMS.sig`, publish the release, then run the clean-slate redeploy from the published `v0.5.20` archive.
+- `v0.5.19` was published first, then marked prerelease/superseded after the VPS clean-slate reset exposed that fresh joiners rejected official seed HTTP RPC bootstrap endpoints while Cloudflare RPC was unavailable during reset.
+- `v0.5.20` fixed the bootstrap policy narrowly: HTTPS is still allowed; HTTP is allowed only for devnet/loopback or official seed hosts on expected testnet/mainnet ports.
+- Signed `v0.5.20` was published from commit `7435b141ab6db549448239f76bcae54186cc0546`; release workflow `24995138415` passed.
+- Clean-slate VPS redeploy from the `v0.5.20` GitHub Release completed on 2026-04-27 in 3m17s.
+- Installed validator hash on all three VPSes: `13d33bac70b9a2301c2ed16c668b1c9c9edaf9291125c128c28f951a192ba185`.
+- New testnet genesis hash: `9c60dc09c61f1d2819eca6a99c7ca144816affa6dc80dc6186959c80a40390ba`; state root: `eef2f1d247b505b59bc63a8cac051965cf59d8c98331d04070791efefcb241d5`.
+- Validator identities: US `6xSWvNvapMugudhcs55FQNUyxhyzHEokMEjA9w5SqSF`, EU `7F2kWaKF9k3oEQK5t2aQeA1Tg6GuyXiwk3iBaQWjrR6`, SEA `71XQXPuq74DTffzhQEH4awnqToG3B9mbqWe8jzEXQdT`.
+- Joiner logs confirmed empty-state bootstrap through authoritative seed RPC plus `✅ 📡 [sync] Applied canonical genesis state bundle from block 0`, followed by post-genesis replay.
+- Public verification confirmed health OK, 3 active validators, bridge validators=3 required=2 operational, oracle feeds=4 consensus feeds=4 native attestations=12 operational, empty faucet request history, and monitoring/developers portals online.
 - Do not reintroduce RocksDB snapshot provisioning for normal validator joins.
