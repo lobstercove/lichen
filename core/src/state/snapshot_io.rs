@@ -17,6 +17,18 @@ pub struct CheckpointMeta {
 }
 
 impl StateStore {
+    fn snapshot_category_cf(category: &str) -> Option<(&'static str, &'static str)> {
+        match category {
+            "accounts" => Some((CF_ACCOUNTS, "Accounts")),
+            "contract_storage" => Some((CF_CONTRACT_STORAGE, "Contract storage")),
+            "programs" => Some((CF_PROGRAMS, "Programs")),
+            "symbol_registry" => Some((CF_SYMBOL_REGISTRY, "Symbol registry")),
+            "symbol_by_program" => Some((CF_SYMBOL_BY_PROGRAM, "Symbol reverse registry")),
+            "stats" => Some((CF_STATS, "Stats")),
+            _ => None,
+        }
+    }
+
     /// Get a reference to the underlying DB Arc for direct access when needed.
     pub fn db_ref(&self) -> &Arc<DB> {
         &self.db
@@ -250,6 +262,22 @@ impl StateStore {
         self.export_cf_page_cursor_uncounted(CF_PROGRAMS, "Programs", after_key, limit)
     }
 
+    /// Export a cursor-paginated page for a whitelisted snapshot category.
+    ///
+    /// This is intentionally not an arbitrary column-family escape hatch. It is
+    /// used by genesis/state-sync code for categories that are either committed
+    /// by the state root or required to execute the chain after import.
+    pub fn export_snapshot_category_cursor_untracked(
+        &self,
+        category: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        let (cf_name, display_name) = Self::snapshot_category_cf(category)
+            .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
+        self.export_cf_page_cursor_uncounted(cf_name, display_name, after_key, limit)
+    }
+
     /// Generic helper: read a page of (key, value) pairs from a column family.
     fn export_cf_page(
         &self,
@@ -476,6 +504,37 @@ impl StateStore {
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to import programs: {}", e))?;
+
+        Ok(entries.len())
+    }
+
+    /// Import a whitelisted snapshot category.
+    pub fn import_snapshot_category(
+        &self,
+        category: &str,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<usize, String> {
+        match category {
+            "accounts" => return self.import_accounts(entries),
+            "contract_storage" => return self.import_contract_storage(entries),
+            "programs" => return self.import_programs(entries),
+            _ => {}
+        }
+
+        let (cf_name, display_name) = Self::snapshot_category_cf(category)
+            .ok_or_else(|| format!("Unsupported snapshot category: {}", category))?;
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", display_name))?;
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in entries {
+            batch.put_cf(&cf, key, value);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to import {}: {}", category, e))?;
 
         Ok(entries.len())
     }

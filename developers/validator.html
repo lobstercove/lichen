@@ -173,7 +173,8 @@
                 build, you can start a validator immediately without cloning the repository.</p>
 
             <p>The intended agent workflow is: download the latest signed release artifact for the host platform,
-                extract it, keep the bundled <code>zk-prove</code> tool beside the validator, copy the bundled
+                extract it, keep the bundled <code>zk-prove</code>, <code>lichen-genesis</code>,
+                <code>lichen</code>, and <code>contracts/</code> bundle beside the validator, copy the bundled
                 <code>seeds.json</code> into a writable state directory, and run the validator with
                 <code>--auto-update=apply</code>.
             </p>
@@ -190,9 +191,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
@@ -214,9 +216,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
@@ -238,6 +241,7 @@ Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
 Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+$env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
     --network mainnet `
     --rpc-port 9899 `
@@ -262,10 +266,9 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>mkdir -p "$HOME/.lichen/state-mainnet"
-
-mkdir -p "$HOME/.lichen/state-mainnet/home"
-                cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+                <pre><code>mkdir -p "$HOME/.lichen/state-mainnet/home"
+cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 env HOME="$HOME/.lichen/state-mainnet/home" \
 lichen-validator \
@@ -273,7 +276,7 @@ lichen-validator \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-                    --db-path "$HOME/.lichen/state-mainnet" \
+    --db-path "$HOME/.lichen/state-mainnet" \
     --auto-update=apply</code></pre>
             </div>
 
@@ -289,11 +292,16 @@ lichen-validator \
                 <li>It creates the chosen state directory if needed.</li>
                 <li>It generates or reuses the validator identity in that directory.</li>
                 <li>It stores signer material, peer cache, and chain state under the same path.</li>
-                <li>It loads seed peers from <code>{db-path}/seeds.json</code>,
-                    <code>/etc/lichen/seeds.json</code>, or <code>./seeds.json</code>, then falls back to the
-                    embedded DNS seed defaults if none are present.
+                <li>It loads <code>seeds.json</code> from <code>{db-path}</code>,
+                    <code>/etc/lichen</code>, or the current directory, then uses the listed seed RPC endpoint to
+                    fetch and persist the authoritative <code>genesis.json</code> when the state directory is empty.
                 </li>
-                <li>It syncs the network, then resumes or starts validating from the preserved local state.</li>
+                <li>It imports the canonical opcode-41 genesis state bundle from block 0, verifies it against the
+                    block state root, then syncs and replays later blocks from peers.</li>
+                <li>It does not copy RocksDB state, genesis wallet files, genesis keys, peer cache, consensus WAL,
+                    custody keys, or faucet keys from existing validators.</li>
+                <li>It submits validator registration once synced, then starts validating after registration lands and
+                    the node is eligible.</li>
                 <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background, stages
                     a newer signed binary, and requests a restart to apply it.</li>
             </ol>
@@ -1478,7 +1486,8 @@ sudo systemctl start lichen-validator-mainnet</code></pre>
 
             <p>The wrapper script downloads the latest release binary (using semver sorting, not GitHub's
                 <code>latest</code> endpoint), verifies its checksum, installs the bundled <code>seeds.json</code>,
-                keeps the bundled <code>zk-prove</code> tool, and then
+                keeps the bundled <code>zk-prove</code>, <code>lichen-genesis</code>, <code>lichen</code>,
+                and <code>contracts/</code> artifacts, and then
                 <code>exec</code>s the validator.
             </p>
 
@@ -1535,7 +1544,10 @@ print(releases[0]['tag_name'])
     tar xzf "$ASSET" --strip-components=1
     mv lichen-validator "$BINARY"
     mv zk-prove "$INSTALL_DIR/zk-prove"
-    chmod +x "$BINARY" "$INSTALL_DIR/zk-prove"
+    mv lichen-genesis "$INSTALL_DIR/lichen-genesis"
+    mv lichen "$INSTALL_DIR/lichen"
+    cp -R contracts "$INSTALL_DIR/contracts"
+    chmod +x "$BINARY" "$INSTALL_DIR/zk-prove" "$INSTALL_DIR/lichen-genesis" "$INSTALL_DIR/lichen"
     cp seeds.json "$STATE_DIR/seeds.json"
 
     cd /

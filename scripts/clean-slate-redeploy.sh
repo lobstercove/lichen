@@ -4,7 +4,7 @@
 # ============================================================================
 #
 # Stops all services, flushes state, rebuilds, creates genesis, distributes
-# secrets, starts everything, and verifies — all in one shot.
+# service-only secrets, starts everything, and verifies — all in one shot.
 #
 # Usage:
 #   bash scripts/clean-slate-redeploy.sh              # testnet (default)
@@ -19,12 +19,15 @@
 #   - Optional: LICHEN_RELEASE_TAG set to install exact signed GitHub release
 #     runtime artifacts into /usr/local/bin after remote builds
 #
-# Secrets distributed automatically via tarball (atomic, no partial copies):
-#   - genesis-wallet.json + genesis-keys/ (treasury for airdrop)
+# Service secrets distributed automatically via tarball (atomic, no partial copies):
 #   - custody-treasury, faucet keypair
 #   - custody master+deposit seeds
 #   - signed metadata manifest
 #   - release signing key
+#
+# Validator chain state is intentionally NOT copied. Joining VPSes keep only
+# their own validator keypair and seeds.json, fetch the canonical genesis config
+# from seed RPC, and replay/sync blocks from the network.
 #
 # ============================================================================
 
@@ -674,33 +677,20 @@ ssh_run "$GENESIS_VPS" "$POSTGENESIS_SCRIPT"
 phase_done
 
 # ============================================================================
-# Phase 7: Snapshot state + distribute secrets to joining VPSes
+# Phase 7: Distribute service secrets to joining VPSes
 # ============================================================================
-phase "Snapshot genesis state + distribute to joiners"
+phase "Distribute service secrets to joiners"
 
-# Stop genesis validator for a clean RocksDB snapshot (brief downtime)
-echo "  Stopping genesis validator for clean snapshot..."
-ssh_run "$GENESIS_VPS" "sudo systemctl stop $SERVICE"
-
-# Create comprehensive tarball: state snapshot + all secrets
-# Excludes node-specific files (keypairs, LOCK, IDENTITY, LOG*)
-echo "  Creating state + secrets bundle on $GENESIS_VPS..."
+# Create a service-only tarball. Do not include RocksDB, genesis-wallet.json,
+# genesis-keys/, validator-keypair.json, known-peers.json, or consensus WAL.
+echo "  Creating service secrets bundle on $GENESIS_VPS..."
 ssh_run "$GENESIS_VPS" "
   cd /
   FAUCET_BUNDLE_ARGS=''
   if [ '$FAUCET_ENABLED' = '1' ]; then
     FAUCET_BUNDLE_ARGS='var/lib/lichen/faucet-keypair-${NETWORK}.json'
   fi
-  sudo tar czf /tmp/lichen-state-bundle.tar.gz \
-    --exclude='validator-keypair.json' \
-    --exclude='signer-keypair.json' \
-    --exclude='LOCK' \
-    --exclude='IDENTITY' \
-    --exclude='LOG' \
-    --exclude='LOG.old.*' \
-    --exclude='known-peers.json' \
-    --exclude='logs' \
-    var/lib/lichen/$STATE_DIR/ \
+  sudo tar czf /tmp/lichen-service-secrets.tar.gz \
     \$FAUCET_BUNDLE_ARGS \
     etc/lichen/secrets/custody-master-seed-${NETWORK}.txt \
     etc/lichen/secrets/custody-deposit-seed-${NETWORK}.txt \
@@ -708,32 +698,19 @@ ssh_run "$GENESIS_VPS" "
     etc/lichen/custody-treasury-${NETWORK}.json \
     etc/lichen/secrets/release-signing-keypair-${NETWORK}.json \
     2>/dev/null
-  sudo chmod 644 /tmp/lichen-state-bundle.tar.gz
-  echo \"  Bundle size: \$(du -h /tmp/lichen-state-bundle.tar.gz | cut -f1)\"
-"
-
-# Restart genesis validator immediately
-echo "  Restarting genesis validator..."
-ssh_run "$GENESIS_VPS" "sudo systemctl start $SERVICE"
-ssh_run "$GENESIS_VPS" "
-  sudo systemctl start $CUSTODY_SERVICE
-  if [ '$FAUCET_ENABLED' = '1' ]; then
-    sudo systemctl start lichen-faucet
-  fi
+  sudo chmod 644 /tmp/lichen-service-secrets.tar.gz
+  echo \"  Bundle size: \$(du -h /tmp/lichen-service-secrets.tar.gz | cut -f1)\"
 "
 
 for VPS in "${JOINING_VPSES[@]}"; do
-  echo "  Distributing state + secrets to $VPS..."
+  echo "  Distributing service secrets to $VPS..."
 
-  # Single pipe: genesis → tarball → joining VPS → cleanup old RocksDB, extract, fix perms
+  # Single pipe: genesis → tarball → joining VPS. Chain state remains empty.
   ssh_pipe "$GENESIS_VPS" "$VPS" \
-    "cat /tmp/lichen-state-bundle.tar.gz" \
-    "sudo mkdir -p $VPS_DATA/$STATE_DIR/genesis-keys $VPS_CONFIG/secrets && \
-     sudo rm -f $VPS_DATA/$STATE_DIR/*.sst $VPS_DATA/$STATE_DIR/CURRENT $VPS_DATA/$STATE_DIR/MANIFEST-* $VPS_DATA/$STATE_DIR/OPTIONS-* $VPS_DATA/$STATE_DIR/consensus.wal 2>/dev/null; \
+    "cat /tmp/lichen-service-secrets.tar.gz" \
+    "sudo mkdir -p $VPS_DATA/$STATE_DIR $VPS_CONFIG/secrets && \
      sudo tar xzf - -C / && \
      sudo chown -R lichen:lichen $VPS_DATA/$STATE_DIR/ && \
-     sudo chmod 640 $VPS_DATA/$STATE_DIR/genesis-wallet.json && \
-     sudo find $VPS_DATA/$STATE_DIR/genesis-keys -type f -exec chmod 640 {} + && \
      if [ '$FAUCET_ENABLED' = '1' ]; then \
        sudo chown lichen:lichen $VPS_DATA/faucet-keypair-${NETWORK}.json && \
        sudo chmod 600 $VPS_DATA/faucet-keypair-${NETWORK}.json; \
@@ -750,14 +727,16 @@ for VPS in "${JOINING_VPSES[@]}"; do
      sudo chmod 640 $VPS_CONFIG/secrets/release-signing-keypair-${NETWORK}.json"
 
   # Verify
-  COUNT=$(ssh_run "$VPS" "sudo ls $VPS_DATA/$STATE_DIR/genesis-keys/ 2>/dev/null | wc -l")
-  WALLET=$(ssh_run "$VPS" "sudo test -f $VPS_DATA/$STATE_DIR/genesis-wallet.json && echo YES || echo NO")
   SST=$(ssh_run "$VPS" "ls $VPS_DATA/$STATE_DIR/*.sst 2>/dev/null | wc -l")
-  echo -e "  ${GREEN}✓${NC} $VPS: $COUNT genesis-keys, wallet=$WALLET, sst=$SST"
+  if [ "$SST" != "0" ]; then
+    echo -e "${RED}FATAL: $VPS received RocksDB SST files during service-secret distribution${NC}"
+    exit 1
+  fi
+  echo -e "  ${GREEN}✓${NC} $VPS: service secrets installed, chain state remains empty"
 done
 
 # Clean up bundle
-ssh_run "$GENESIS_VPS" "sudo rm -f /tmp/lichen-state-bundle.tar.gz"
+ssh_run "$GENESIS_VPS" "sudo rm -f /tmp/lichen-service-secrets.tar.gz"
 phase_done
 
 # ============================================================================
@@ -772,7 +751,7 @@ for VPS in "${JOINING_VPSES[@]}"; do
     sudo install -m 644 -o lichen -g lichen ~/lichen/seeds.json '"$VPS_DATA/$STATE_DIR"'/seeds.json
 
     # Generate validator keypair if not present (auto-generated on first boot,
-    # but we ensure it exists so the snapshot state is usable immediately)
+    # but we ensure the identity exists before independent network sync)
     KP_PASS=$(sudo grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-'"$NETWORK"' | cut -d= -f2-)
     if [ ! -f '"$VPS_DATA/$STATE_DIR"'/validator-keypair.json ]; then
       echo "  Generating validator keypair..."
@@ -783,9 +762,9 @@ for VPS in "${JOINING_VPSES[@]}"; do
     # Start validator
     sudo systemctl start '"$SERVICE"'
 
-    # Wait for sync (up to 90s) — with state snapshot, sync should be near-instant
+    # Wait for genesis/network sync from peers. No RocksDB state was copied.
     echo "  Waiting for sync..."
-    for i in $(seq 1 18); do
+    for i in $(seq 1 60); do
       sleep 5
       SLOT=$(curl -sf http://127.0.0.1:'"$RPC_PORT"' -X POST -H "Content-Type: application/json" \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\",\"params\":[]}" 2>/dev/null \
@@ -794,7 +773,7 @@ for VPS in "${JOINING_VPSES[@]}"; do
         echo "  Synced to slot $SLOT"
         break
       fi
-      echo "  Still syncing... (${i}/18)"
+      echo "  Still syncing... (${i}/60)"
     done
 
     # Health check
@@ -903,11 +882,19 @@ for VPS in "${ALL_VPSES[@]}"; do
 
   # Treasury
   AIRDROP=$(ssh_run "$VPS" "curl -sf http://127.0.0.1:$RPC_PORT -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"11111111111111111111111111111111\", 1000000000]}'" 2>/dev/null || echo "FAIL")
-  if echo "$AIRDROP" | grep -q "Treasury keypair not configured"; then
-    echo -e "  ${RED}✗${NC} Treasury: NOT CONFIGURED"
-    ALL_GOOD=false
+  if [ "$VPS" = "$GENESIS_VPS" ]; then
+    if echo "$AIRDROP" | grep -q "Treasury keypair not configured"; then
+      echo -e "  ${RED}✗${NC} Treasury: NOT CONFIGURED"
+      ALL_GOOD=false
+    else
+      echo -e "  ${GREEN}✓${NC} Treasury: loaded"
+    fi
   else
-    echo -e "  ${GREEN}✓${NC} Treasury: loaded"
+    if echo "$AIRDROP" | grep -q "Treasury keypair not configured"; then
+      echo -e "  ${GREEN}✓${NC} Validator treasury: absent on independent joiner"
+    else
+      echo -e "  ${YELLOW}⚠${NC} Validator treasury: present on joiner (unexpected)"
+    fi
   fi
 
   if PROTOCOL_STATUS=$(verify_remote_protocol "$VPS" 2>&1); then
@@ -917,7 +904,7 @@ for VPS in "${ALL_VPSES[@]}"; do
     ALL_GOOD=false
   fi
 
-  # Custody on genesis VPS remains required after the snapshot restart.
+  # Custody on genesis VPS remains required after post-genesis service setup.
   if [ "$VPS" = "$GENESIS_VPS" ]; then
     if ssh_run "$VPS" "curl -sf http://127.0.0.1:$CUSTODY_PORT/health" >/dev/null 2>&1; then
       echo -e "  ${GREEN}✓${NC} Custody: healthy"

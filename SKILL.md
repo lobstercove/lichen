@@ -1611,9 +1611,9 @@ lichen validator performance <address>         # Validator performance
 If an agent is asked to install or start a validator on a fresh machine, the default public path is:
 
 1. Download the latest signed release bundle.
-2. Extract `lichen-validator` and `zk-prove`.
+2. Extract `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `seeds.json`, and the bundled `contracts/` WASM artifacts.
 3. Create a writable state directory.
-4. Install the bundled `seeds.json` into the state directory and start mainnet with `--auto-update=apply`.
+4. Set `LICHEN_KEYPAIR_PASSWORD`, install the bundled `seeds.json` into the state directory, and start mainnet with `--auto-update=apply`.
 
 Do not default to `git clone` unless the user explicitly wants source checkout, development, or to modify code.
 
@@ -1625,9 +1625,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
@@ -1645,9 +1646,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
@@ -1665,6 +1667,7 @@ Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
 Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+$env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
   --network mainnet `
   --p2p-port 8001 `
@@ -1678,11 +1681,14 @@ Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
 
 If the machine already has a `lichen-validator` binary, agents do not need the full repo checkout. They can join mainnet immediately with the binary plus a writable state directory:
 
-Release bundles ship `zk-prove` and `seeds.json`, and `--auto-update=apply` refreshes `{db-path}/seeds.json` from newer release archives during apply-mode upgrades.
+Release bundles ship `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `seeds.json`, and the genesis contract WASM bundle, and `--auto-update=apply` refreshes `{db-path}/seeds.json` from newer release archives during apply-mode upgrades.
+
+Fresh validators do not need copied RocksDB state, `genesis-wallet.json`, `genesis-keys/`, custody keys, faucet keys, or metadata bundles. On first start the validator fetches the authoritative genesis config from the seed RPC endpoint in `seeds.json`, persists `{db-path}/genesis.json`, imports and verifies the opcode-41 block-0 state bundle, then syncs/replays later blocks from peers with its own validator identity.
 
 ```bash
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 
 lichen-validator \
   --network mainnet \
@@ -1698,9 +1704,9 @@ lichen-validator \
 Preferred agent flow:
 1. Detect platform.
 2. Download the matching GitHub Release archive.
-3. Extract `lichen-validator` and `zk-prove`.
+3. Extract `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `seeds.json`, and the bundled `contracts/` WASM artifacts.
 4. Create a writable state directory.
-5. Copy the bundled `seeds.json` into that state directory and start with `--auto-update=apply`.
+5. Set `LICHEN_KEYPAIR_PASSWORD`, copy the bundled `seeds.json` into that state directory, and start with `--auto-update=apply`.
 
 Release URL template:
 
@@ -1723,9 +1729,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
 tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
@@ -1743,9 +1750,10 @@ curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lic
 curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
 grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x lichen-validator zk-prove
+chmod +x lichen-validator lichen-genesis lichen zk-prove
 mkdir -p "$HOME/.lichen/state-mainnet"
 cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./lichen-validator \
   --network mainnet \
   --p2p-port 8001 \
@@ -1763,6 +1771,7 @@ Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/
 tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
 Copy-Item .\seeds.json "$HOME\.lichen\state-mainnet\seeds.json" -Force
+$env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
 .\lichen-validator.exe `
   --network mainnet `
   --p2p-port 8001 `
@@ -1781,9 +1790,10 @@ Given a fresh `--db-path`, the validator:
 1. Creates the state directory.
 2. Generates or imports the validator identity there.
 3. Persists validator-local runtime material in that directory.
-4. Loads seed peers from `{db-path}/seeds.json`, `/etc/lichen/seeds.json`, or `./seeds.json`; if none are present, it falls back to the embedded DNS seed defaults.
-5. Syncs the chain and peer graph.
-6. Reuses that same identity on restart if the state directory is preserved.
+4. Loads `seeds.json` from `{db-path}`, `/etc/lichen`, or the current directory.
+5. Fetches and persists the authoritative `genesis.json` from the seed RPC endpoint when starting from an empty state directory.
+6. Imports and verifies the opcode-41 block-0 state bundle against the block state root, then syncs/replays later blocks and peer graph from the network without copied RocksDB state or seed-node secrets.
+7. Reuses that same identity and resumes from local state on restart if the state directory is preserved.
 
 Agents should treat the state directory as persistent machine-local validator state. The repo checkout is optional; the state directory is not.
 
@@ -1985,7 +1995,14 @@ print(releases[0]['tag_name'])")
     /usr/bin/curl -fSL -o "$TMPDIR/$ASSET" "https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
     /usr/bin/curl -fSL -o "$TMPDIR/SHA256SUMS" "https://github.com/$REPO/releases/download/${VERSION}/SHA256SUMS"
     cd "$TMPDIR"; grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
-    tar xzf "$ASSET" --strip-components=1; mv lichen-validator "$BINARY"; mv zk-prove "$INSTALL_DIR/zk-prove"; chmod +x "$BINARY" "$INSTALL_DIR/zk-prove"; cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
+    tar xzf "$ASSET" --strip-components=1
+    mv lichen-validator "$BINARY"
+    mv zk-prove "$INSTALL_DIR/zk-prove"
+    mv lichen-genesis "$INSTALL_DIR/lichen-genesis"
+    mv lichen "$INSTALL_DIR/lichen"
+    cp -R contracts "$INSTALL_DIR/contracts"
+    chmod +x "$BINARY" "$INSTALL_DIR/zk-prove" "$INSTALL_DIR/lichen-genesis" "$INSTALL_DIR/lichen"
+    cp seeds.json "$HOME/.lichen/state-mainnet/seeds.json"
     trap - EXIT; rm -rf "$TMPDIR"
 fi
 exec "$BINARY" --network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 \

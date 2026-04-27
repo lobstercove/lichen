@@ -531,13 +531,13 @@ if [ -d "contracts" ]; then
     CONTRACT_WASM_COUNT=$(command find "$DATA_DIR/contracts" -maxdepth 2 -type f -name '*.wasm' | wc -l | tr -d ' ')
     if [ "$CONTRACT_WASM_COUNT" = "0" ]; then
         echo "   ❌ No top-level contract WASM artifacts were installed under $DATA_DIR/contracts"
-        echo "      Genesis replay uses contracts/<name>/<name>.wasm on every validator."
+        echo "      Genesis creation uses contracts/<name>/<name>.wasm before block 0 is sealed."
         exit 1
     fi
 
     if CONTRACT_BUNDLE_HASH=$(hash_contract_bundle "$DATA_DIR/contracts"); then
         echo "   Contract bundle hash: $CONTRACT_BUNDLE_HASH (${CONTRACT_WASM_COUNT} top-level .wasm files)"
-        echo "   Every validator must use the same bundle hash before genesis creation or join."
+        echo "   Genesis creators must use the same bundle hash; joiners import the verified opcode-41 block-0 state bundle."
     else
         echo "   ⚠  Could not compute a contract bundle hash for $DATA_DIR/contracts"
     fi
@@ -857,21 +857,12 @@ echo ""
 echo "   4. Start the genesis validator:"
 echo "      sudo systemctl start lichen-validator-<net>"
 echo ""
-echo "   5. On joining VPSes, verify /var/lib/lichen/state-<net>/seeds.json matches the staged release file, then start:"
+echo "   5. On joining VPSes, verify /var/lib/lichen/state-<net>/seeds.json matches the staged release file."
+echo "      Do not copy RocksDB state, genesis-wallet.json, genesis-keys/, known-peers.json, or consensus WAL."
+echo "      The validator fetches authoritative genesis.json from seed RPC, imports/verifies the opcode-41"
+echo "      genesis state bundle from block 0, then syncs/replays later blocks from peers."
+echo "      Then start:"
 echo "      sudo systemctl start lichen-validator-<net>"
-echo ""
-echo "   5a. CRITICAL: Distribute genesis-keys to joining VPSes (from genesis VPS):"
-echo "      Without this, joining VPSes cannot serve RPC airdrop requests."
-echo "      export LICHEN_JOINING_VPSES=\"<IP2> <IP3>\""
-echo "      bash scripts/vps-post-genesis.sh <net> --no-restart"
-echo ""
-echo "      Or manually per joining VPS:"
-echo "      sudo cat $DATA_DIR/state-<net>/genesis-wallet.json | ssh -p 2222 ubuntu@<JOINING_IP> \\"
-echo "        \"sudo bash -c 'mkdir -p $DATA_DIR/state-<net>/genesis-keys && cat > $DATA_DIR/state-<net>/genesis-wallet.json && chown lichen:lichen $DATA_DIR/state-<net>/genesis-wallet.json && chmod 640 $DATA_DIR/state-<net>/genesis-wallet.json'\""
-echo "      for f in \$(sudo ls $DATA_DIR/state-<net>/genesis-keys/); do"
-echo "        sudo cat $DATA_DIR/state-<net>/genesis-keys/\$f | ssh -p 2222 ubuntu@<JOINING_IP> \\"
-echo "          \"sudo bash -c 'cat > $DATA_DIR/state-<net>/genesis-keys/\$f && chown lichen:lichen $DATA_DIR/state-<net>/genesis-keys/\$f && chmod 640 $DATA_DIR/state-<net>/genesis-keys/\$f'\""
-echo "      done"
 echo ""
 echo "   6. Install post-genesis key material from the live state:"
 echo "      cd ~/lichen && bash scripts/vps-post-genesis.sh <net>"
