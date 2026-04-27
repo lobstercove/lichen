@@ -6,16 +6,20 @@ Use it before diving into subsystem docs or the large root `SKILL.md`.
 ## Read Order
 
 1. `AGENTS.md`
-2. `memories/repo/current-state.md`
-3. `memories/repo/project-map.md`
-4. `memories/repo/gotchas.md`
-5. The latest dated handover under `memories/repo/session-handovers/` or any root `SESSION_HANDOVER_*.md`
-6. Task-specific docs:
+2. If present locally, private memory files under `memories/repo/`:
+   - `memories/repo/current-state.md`
+   - `memories/repo/project-map.md`
+   - `memories/repo/gotchas.md`
+   - latest dated handover under `memories/repo/session-handovers/`
+3. Any root `SESSION_HANDOVER_*.md`
+4. Task-specific docs:
    - deployment: `DEPLOYMENT_STATUS.md`, `docs/deployment/PRODUCTION_DEPLOYMENT.md`
    - roadmap / priorities: `docs/strategy/PHASE2_AGENT_ECONOMY.md`, `docs/strategy/PHASE2_ACTIVATION_PLAN.md`, `docs/foundation/ROADMAP.md`
    - contracts: `docs/contracts/`, `genesis/src/lib.rs`, contract-local `src/lib.rs`
    - frontend: portal-local files plus shared helpers under `monitoring/shared/`
-7. `SKILL.md`, but only the sections needed for the task
+5. `SKILL.md`, but only the sections needed for the task
+
+`memories/repo/` is local-private continuity context and is intentionally not tracked in the public repository.
 
 ## What Lichen Is
 
@@ -82,10 +86,10 @@ Prefer scoped validation while iterating, then widen before closing the task.
 
 ## Session End
 
-1. Update `memories/repo/current-state.md` if durable repo facts changed.
-2. Add a concise dated handover under `memories/repo/session-handovers/` if the task created non-obvious context.
+1. If local-private memories exist, update `memories/repo/current-state.md` if durable repo facts changed.
+2. If local-private memories exist, add a concise dated handover under `memories/repo/session-handovers/` if the task created non-obvious context.
 3. Update `DEPLOYMENT_STATUS.md` only when deployment reality changed.
-4. Record any new cross-cutting traps in `memories/repo/gotchas.md`.
+4. If local-private memories exist, record any new cross-cutting traps in `memories/repo/gotchas.md`.
 
 ## Specialist Routing
 
