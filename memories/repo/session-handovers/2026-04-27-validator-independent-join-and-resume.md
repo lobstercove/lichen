@@ -25,8 +25,8 @@ The validator join path was audited because the latest VPS redeploy had provisio
 
 ## Follow-Up
 
-- Release prep is now targeting `v0.5.19`.
-- Version metadata, README, developer SKILL content, release workflow body, developer portal install text, deployment status, and current-state memory have been moved from the `v0.5.18` baseline toward the `v0.5.19` independent-join release.
+- Release prep is now targeting `v0.5.20`.
+- Version metadata, README, developer SKILL content, release workflow body, developer portal install text, deployment status, and current-state memory have been moved from the `v0.5.18` baseline toward the `v0.5.20` independent-join release.
 - Before pushing/tagging, run the focused validator/genesis checks plus the deployment shell syntax checks.
-- After the tag workflow creates the draft GitHub Release, attach `SHA256SUMS.sig`, publish the release, then run the clean-slate redeploy from the published `v0.5.19` archive.
+- After the tag workflow creates the draft GitHub Release, attach `SHA256SUMS.sig`, publish the release, then run the clean-slate redeploy from the published `v0.5.20` archive.
 - Do not reintroduce RocksDB snapshot provisioning for normal validator joins.
