@@ -5339,6 +5339,27 @@ fn is_loopback_host(host: &str) -> bool {
     )
 }
 
+fn is_official_seed_rpc_host(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "seed-01.lichen.network" | "seed-02.lichen.network" | "seed-03.lichen.network"
+    )
+}
+
+fn is_expected_direct_seed_rpc(network: &str, parsed: &reqwest::Url) -> bool {
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    if !is_official_seed_rpc_host(host) {
+        return false;
+    }
+
+    matches!(
+        (network, parsed.port_or_known_default()),
+        ("testnet", Some(8899)) | ("mainnet", Some(9899))
+    )
+}
+
 fn genesis_bootstrap_rpc_allowed(network: &str, rpc_url: &str) -> bool {
     let parsed = match reqwest::Url::parse(rpc_url) {
         Ok(url) => url,
@@ -5346,7 +5367,11 @@ fn genesis_bootstrap_rpc_allowed(network: &str, rpc_url: &str) -> bool {
     };
     match parsed.scheme() {
         "https" => true,
-        "http" => network == "devnet" || parsed.host_str().map(is_loopback_host).unwrap_or(false),
+        "http" => {
+            network == "devnet"
+                || parsed.host_str().map(is_loopback_host).unwrap_or(false)
+                || is_expected_direct_seed_rpc(network, &parsed)
+        }
         _ => false,
     }
 }
@@ -16933,14 +16958,26 @@ mod tests {
     }
 
     #[test]
-    fn genesis_bootstrap_rpc_policy_requires_tls_for_public_networks() {
+    fn genesis_bootstrap_rpc_policy_allows_https_and_official_seed_http() {
         assert!(genesis_bootstrap_rpc_allowed(
             "testnet",
             "https://testnet-rpc.lichen.network"
         ));
-        assert!(!genesis_bootstrap_rpc_allowed(
+        assert!(genesis_bootstrap_rpc_allowed(
             "testnet",
             "http://seed-01.lichen.network:8899"
+        ));
+        assert!(genesis_bootstrap_rpc_allowed(
+            "mainnet",
+            "http://seed-02.lichen.network:9899"
+        ));
+        assert!(!genesis_bootstrap_rpc_allowed(
+            "mainnet",
+            "http://seed-02.lichen.network:8899"
+        ));
+        assert!(!genesis_bootstrap_rpc_allowed(
+            "testnet",
+            "http://not-a-seed.lichen.network:8899"
         ));
         assert!(genesis_bootstrap_rpc_allowed(
             "testnet",
