@@ -2,9 +2,6 @@
 
 This directory is the implementation workspace for the Brave/Chrome extension build.
 
-## Reference Plan
-- See `../docs/EXTENSION_FULL_COVERAGE_PLAN.md` for the full architecture, feature coverage, and phased migration plan.
-
 ## Initial Structure
 - `src/popup` — extension popup UI
 - `src/pages` — full-page extension routes (advanced views, approvals)

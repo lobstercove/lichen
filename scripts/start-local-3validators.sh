@@ -181,6 +181,14 @@ clear_local_peer_trust_state() {
   done
 }
 
+reset_local_cluster_state() {
+  echo "[local-3validators] resetting local ${NETWORK} state"
+  rm -rf "$STATE1_DIR" "$STATE2_DIR" "$STATE3_DIR"
+  rm -rf "$ROOT/data/state-${NETWORK}" "$ROOT/data/custody-${NETWORK}"*
+  rm -f "$PID_FILE" "$LOG1" "$LOG2" "$LOG3" "$MANIFEST_FILE"
+  mkdir -p "$ART_DIR"
+}
+
 rpc_ok() {
   local port="$1"
   curl -sf "http://127.0.0.1:${port}" \
@@ -362,7 +370,7 @@ start_cluster() {
   prepare_local_bridge_env
 
   if [[ "$reset" == "1" ]]; then
-    bash "$ROOT/reset-blockchain.sh" "$NETWORK" >/dev/null
+    reset_local_cluster_state
   fi
 
   clear_local_peer_trust_state
@@ -411,7 +419,7 @@ start_seed_only() {
   prepare_local_bridge_env
 
   if [[ "$reset" == "1" ]]; then
-    bash "$ROOT/reset-blockchain.sh" "$NETWORK" >/dev/null
+    reset_local_cluster_state
   fi
 
   clear_local_peer_trust_state

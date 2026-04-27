@@ -2,7 +2,7 @@
 """
 fund-deployer.py — Verify and report deployer account funding status.
 
-Called by reset-blockchain.sh after genesis to confirm the deployer
+Called by local bootstrap flows after genesis to confirm the deployer
 (genesis wallet) is properly funded on-chain before E2E tests run.
 
 The deployer IS the genesis wallet: it is auto-funded with 10,000 LICN
@@ -46,7 +46,7 @@ def main() -> int:
     # Load deployer keypair
     if not DEPLOYER_PATH.exists():
         print(f"  ✗ Deployer keypair not found at {DEPLOYER_PATH}")
-        print("    Run reset-blockchain.sh --restart to regenerate.")
+        print("    Run scripts/start-local-3validators.sh start-reset to regenerate.")
         return 1
 
     try:

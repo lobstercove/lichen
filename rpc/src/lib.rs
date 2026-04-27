@@ -18177,7 +18177,7 @@ mod tests {
                         "hosts": [
                             {
                                 "id": "us",
-                                "label": "US VPS",
+                                "label": "US Seed",
                                 "healthy_services": 1,
                                 "degraded_services": 0,
                                 "intentionally_absent_services": 0,
@@ -18187,7 +18187,7 @@ mod tests {
                                         "label": "Custody",
                                         "service": "custody",
                                         "host_id": "us",
-                                        "host_label": "US VPS",
+                                        "host_label": "US Seed",
                                         "expected": true,
                                         "intentionally_absent": false,
                                         "state": "healthy",

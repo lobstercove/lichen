@@ -160,6 +160,7 @@ wallet/EXTENSION_*_PLAN.md
 # ── Private agent/operator scaffolding ─────────────────────
 skills/
 deploy/setup.sh
+reset-blockchain.sh
 scripts/clean-slate-redeploy.sh
 scripts/deploy-cloudflare-pages.sh
 scripts/generate-release-keys.sh

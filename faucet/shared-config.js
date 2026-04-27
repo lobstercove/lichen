@@ -6,7 +6,7 @@
 //   2. shared-config.js     — this file (reads env, builds LICHEN_CONFIG)
 //   3. app-specific scripts — read LICHEN_CONFIG.networks, LICHEN_CONFIG.rpc(), etc.
 //
-// On VPS: set window.LICHEN_ENV = 'production' in env.js
+// On hosted deployments: set window.LICHEN_ENV = 'production' in env.js
 // Locally: leave it as 'development' (default)
 
 const LICHEN_CONFIG = (() => {

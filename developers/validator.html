@@ -417,7 +417,6 @@ bash scripts/start-local-3validators.sh start-reset
                 </div>
                 <pre><code># Clean local reset
 bash scripts/start-local-3validators.sh stop
-./reset-blockchain.sh testnet
 bash scripts/start-local-3validators.sh start-reset</code></pre>
             </div>
 
@@ -1351,8 +1350,8 @@ docker-compose down</code></pre>
             <!-- ========== 7. SYSTEMD DEPLOYMENT ========== -->
             <h2 id="systemd-deployment">Systemd Deployment</h2>
 
-            <p>For bare-metal Linux servers, install the release binary under a systemd service. Lichen-managed host
-                provisioning and VPS automation live in the private operator runbook, not in the public repo.</p>
+            <p>For bare-metal Linux servers, install the release binary under a systemd service. Managed-host
+                provisioning automation is intentionally outside the public repo.</p>
 
             <h3>Systemd Unit</h3>
 
