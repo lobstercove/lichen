@@ -127,9 +127,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.1.0/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.1.0/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.1.0/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.20/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.20/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.20/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

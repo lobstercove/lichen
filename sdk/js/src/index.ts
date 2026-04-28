@@ -133,7 +133,7 @@ export {
 /**
  * SDK version
  */
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.2';
 
 /**
  * Default RPC URL (override with LICHEN_RPC_URL env var)
