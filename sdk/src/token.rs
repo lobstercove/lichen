@@ -5,7 +5,9 @@
 // Supply:    {prefix}_supply        → u64 LE
 
 use crate::{
-    bytes_to_u64, storage_get, storage_set, u64_to_bytes, Address, ContractError, ContractResult,
+    bytes_to_u64, can_receive as host_can_receive, can_send as host_can_send,
+    can_transfer as host_can_transfer, get_contract_address, storage_get, storage_set,
+    u64_to_bytes, Address, ContractError, ContractResult,
 };
 use alloc::vec::Vec;
 
@@ -69,6 +71,32 @@ impl Token {
         }
     }
 
+    /// Check whether `from` may send `amount` of this token.
+    pub fn can_send(&self, from: Address, amount: u64) -> bool {
+        let balance = self.balance_of(from);
+        host_can_send(get_contract_address(), from, amount, balance)
+    }
+
+    /// Check whether `to` may receive `amount` of this token.
+    pub fn can_receive(&self, to: Address, amount: u64) -> bool {
+        let balance = self.balance_of(to);
+        host_can_receive(get_contract_address(), to, amount, balance)
+    }
+
+    /// Check whether `amount` may move from `from` to `to`.
+    pub fn can_transfer(&self, from: Address, to: Address, amount: u64) -> bool {
+        let from_balance = self.balance_of(from);
+        let to_balance = self.balance_of(to);
+        host_can_transfer(
+            get_contract_address(),
+            from,
+            to,
+            amount,
+            from_balance,
+            to_balance,
+        )
+    }
+
     /// Transfer tokens
     pub fn transfer(&self, from: Address, to: Address, amount: u64) -> ContractResult<()> {
         if amount == 0 || is_zero_address(from) || is_zero_address(to) || from == to {
@@ -82,6 +110,16 @@ impl Token {
         let new_to = to_balance
             .checked_add(amount)
             .ok_or(ContractError::Overflow)?;
+        if !host_can_transfer(
+            get_contract_address(),
+            from,
+            to,
+            amount,
+            from_balance,
+            to_balance,
+        ) {
+            return Err(ContractError::Custom("Transfer restricted"));
+        }
         self.set_balance(from, new_from)?;
         self.set_balance(to, new_to)?;
         Ok(())
@@ -102,6 +140,9 @@ impl Token {
             return Err(ContractError::Unauthorized);
         }
         let balance = self.balance_of(to);
+        if !host_can_receive(get_contract_address(), to, amount, balance) {
+            return Err(ContractError::Custom("Receive restricted"));
+        }
         let new_balance = balance.checked_add(amount).ok_or(ContractError::Overflow)?;
         let current_supply = match storage_get(&self.supply_key()) {
             Some(bytes) => bytes_to_u64(&bytes),
@@ -125,6 +166,9 @@ impl Token {
         let new_balance = balance
             .checked_sub(amount)
             .ok_or(ContractError::InsufficientFunds)?;
+        if !host_can_send(get_contract_address(), from, amount, balance) {
+            return Err(ContractError::Custom("Send restricted"));
+        }
         let current_supply = match storage_get(&self.supply_key()) {
             Some(bytes) => bytes_to_u64(&bytes),
             None => 0,
@@ -313,5 +357,56 @@ mod tests {
         assert_eq!(token.allowance(owner, spender), 100);
         assert_eq!(token.balance_of(owner), 50);
         assert_eq!(token.balance_of(recipient), 0);
+    }
+
+    #[test]
+    fn test_can_transfer_blocks_transfer_without_mutation() {
+        test_mock::reset();
+        test_mock::set_can_transfer(false);
+        let alice = addr(1);
+        let bob = addr(2);
+        let mut token = Token::new("LichenCoin", "LICN", 9, "licn");
+        token.initialize(100, alice).unwrap();
+
+        assert!(matches!(
+            token.transfer(alice, bob, 10),
+            Err(ContractError::Custom("Transfer restricted"))
+        ));
+        assert_eq!(token.balance_of(alice), 100);
+        assert_eq!(token.balance_of(bob), 0);
+        assert_eq!(token.get_total_supply(), 100);
+    }
+
+    #[test]
+    fn test_can_receive_blocks_mint_without_mutation() {
+        test_mock::reset();
+        test_mock::set_can_receive(false);
+        let owner = addr(1);
+        let recipient = addr(2);
+        let mut token = Token::new("LichenCoin", "LICN", 9, "licn");
+        token.initialize(0, owner).unwrap();
+
+        assert!(matches!(
+            token.mint(recipient, 10, owner, owner),
+            Err(ContractError::Custom("Receive restricted"))
+        ));
+        assert_eq!(token.balance_of(recipient), 0);
+        assert_eq!(token.get_total_supply(), 0);
+    }
+
+    #[test]
+    fn test_can_send_blocks_burn_without_mutation() {
+        test_mock::reset();
+        test_mock::set_can_send(false);
+        let alice = addr(1);
+        let mut token = Token::new("LichenCoin", "LICN", 9, "licn");
+        token.initialize(100, alice).unwrap();
+
+        assert!(matches!(
+            token.burn(alice, 10),
+            Err(ContractError::Custom("Send restricted"))
+        ));
+        assert_eq!(token.balance_of(alice), 100);
+        assert_eq!(token.get_total_supply(), 100);
     }
 }

@@ -1,4 +1,8 @@
 use super::*;
+use crate::restrictions::{
+    restriction_mode_blocks_transfer, ProtocolModuleId, RestrictionMode, RestrictionTarget,
+    RestrictionTransferDirection, NATIVE_LICN_ASSET_ID,
+};
 
 impl TxProcessor {
     /// System program: Create NFT collection
@@ -167,14 +171,22 @@ impl TxProcessor {
             .try_into()
             .map_err(|_| "Invalid amount encoding".to_string())?;
         let amount = u64::from_le_bytes(amount_bytes);
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "Stake")?;
 
         let mut account = self
             .b_get_account(&staker)?
             .ok_or_else(|| "Staker account not found".to_string())?;
-        account.stake(amount)?;
-        self.b_put_account(&staker, &account)?;
+        self.ensure_native_account_direction_not_restricted(
+            &staker,
+            RestrictionTransferDirection::Outgoing,
+            amount,
+            account.spendable,
+            "Stake",
+            "staker",
+        )?;
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_stake_pool()?;
         if pool.get_stake(&validator).is_none() {
             return Err(format!(
@@ -182,6 +194,10 @@ impl TxProcessor {
                 validator.to_base58()
             ));
         }
+
+        account.stake(amount)?;
+        self.b_put_account(&staker, &account)?;
+
         pool.stake(validator, amount, current_slot)?;
         self.b_put_stake_pool(&pool)?;
 
@@ -205,6 +221,9 @@ impl TxProcessor {
             .try_into()
             .map_err(|_| "Invalid amount encoding".to_string())?;
         let amount = u64::from_le_bytes(amount_bytes);
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "RequestUnstake")?;
 
         let mut account = self
             .b_get_account(&staker)?
@@ -212,8 +231,15 @@ impl TxProcessor {
         if amount > account.staked {
             return Err("Insufficient staked balance".to_string());
         }
+        self.ensure_account_direction_not_restricted(
+            &staker,
+            RestrictionTransferDirection::Outgoing,
+            amount,
+            account.spendable,
+            "RequestUnstake",
+            "staker",
+        )?;
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_stake_pool()?;
         pool.request_unstake(&validator, amount, current_slot, staker)?;
         self.b_put_stake_pool(&pool)?;
@@ -235,17 +261,26 @@ impl TxProcessor {
         let validator = ix.accounts[1];
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
-        let mut pool = self.b_get_stake_pool()?;
-        let amount = pool.claim_unstake(&validator, current_slot, &staker)?;
-        self.b_put_stake_pool(&pool)?;
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "ClaimUnstake")?;
 
         let mut account = self
             .b_get_account(&staker)?
             .ok_or_else(|| "Staker account not found".to_string())?;
+        let mut pool = self.b_get_stake_pool()?;
+        let amount = pool.claim_unstake(&validator, current_slot, &staker)?;
+        self.ensure_native_account_direction_not_restricted(
+            &staker,
+            RestrictionTransferDirection::Incoming,
+            amount,
+            account.spendable,
+            "ClaimUnstake",
+            "staker",
+        )?;
         if amount > account.locked {
             return Err("Insufficient locked balance".to_string());
         }
         account.unlock(amount)?;
+        self.b_put_stake_pool(&pool)?;
         self.b_put_account(&staker, &account)?;
 
         Ok(())
@@ -279,14 +314,24 @@ impl TxProcessor {
         let tier_byte = ix.data.get(9).copied().unwrap_or(0);
         let tier = crate::mossstake::LockTier::from_u8(tier_byte)
             .ok_or_else(|| format!("Invalid lock tier: {}", tier_byte))?;
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeDeposit")?;
 
         let mut account = self
             .b_get_account(&depositor)?
             .ok_or_else(|| "Depositor account not found".to_string())?;
+        self.ensure_native_account_direction_not_restricted(
+            &depositor,
+            RestrictionTransferDirection::Outgoing,
+            amount,
+            account.spendable,
+            "MossStakeDeposit",
+            "depositor",
+        )?;
         account.deduct_spendable(amount)?;
         self.b_put_account(&depositor, &account)?;
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_mossstake_pool()?;
         let _st_licn = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
         self.b_put_mossstake_pool(&pool)?;
@@ -312,6 +357,16 @@ impl TxProcessor {
         let st_licn_amount = u64::from_le_bytes(amount_bytes);
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeUnstake")?;
+        self.ensure_account_direction_not_restricted(
+            &user,
+            RestrictionTransferDirection::Outgoing,
+            st_licn_amount,
+            0,
+            "MossStakeUnstake",
+            "position owner",
+        )?;
+
         let mut pool = self.b_get_mossstake_pool()?;
         let _request = pool.request_unstake(user, st_licn_amount, current_slot)?;
         self.b_put_mossstake_pool(&pool)?;
@@ -329,19 +384,28 @@ impl TxProcessor {
 
         let user = ix.accounts[0];
         let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeClaim")?;
 
+        let mut account = self
+            .b_get_account(&user)?
+            .ok_or_else(|| "User account not found".to_string())?;
         let mut pool = self.b_get_mossstake_pool()?;
         let licn_claimed = pool.claim_unstake(user, current_slot)?;
-        self.b_put_mossstake_pool(&pool)?;
 
         if licn_claimed == 0 {
             return Err("No claimable LICN (cooldown not complete)".to_string());
         }
 
-        let mut account = self
-            .b_get_account(&user)?
-            .ok_or_else(|| "User account not found".to_string())?;
+        self.ensure_native_account_direction_not_restricted(
+            &user,
+            RestrictionTransferDirection::Incoming,
+            licn_claimed,
+            account.spendable,
+            "MossStakeClaim",
+            "user",
+        )?;
         account.add_spendable(licn_claimed)?;
+        self.b_put_mossstake_pool(&pool)?;
         self.b_put_account(&user, &account)?;
 
         Ok(())
@@ -365,6 +429,24 @@ impl TxProcessor {
             .map_err(|_| "Invalid amount encoding".to_string())?;
         let st_licn_amount = u64::from_le_bytes(amount_bytes);
 
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::MossStake, "MossStakeTransfer")?;
+        self.ensure_account_direction_not_restricted(
+            &from,
+            RestrictionTransferDirection::Outgoing,
+            st_licn_amount,
+            0,
+            "MossStakeTransfer",
+            "sender",
+        )?;
+        self.ensure_account_direction_not_restricted(
+            &to,
+            RestrictionTransferDirection::Incoming,
+            st_licn_amount,
+            0,
+            "MossStakeTransfer",
+            "recipient",
+        )?;
+
         if self.b_get_account(&to)?.is_none() {
             self.b_put_account(&to, &crate::Account::new(0, SYSTEM_PROGRAM_ID))?;
         }
@@ -374,6 +456,75 @@ impl TxProcessor {
         pool.transfer(from, to, st_licn_amount, current_slot)?;
         self.b_put_mossstake_pool(&pool)?;
 
+        Ok(())
+    }
+
+    pub(super) fn ensure_protocol_module_not_paused(
+        &self,
+        module: ProtocolModuleId,
+        operation: &str,
+    ) -> Result<(), String> {
+        let slot = self.b_get_last_slot().unwrap_or(0);
+        let target = RestrictionTarget::ProtocolModule(module);
+        for record in self.b_get_active_restrictions_for_target(&target, slot, 0)? {
+            if record.mode == RestrictionMode::ProtocolPaused {
+                return Err(format!(
+                    "{} blocked by active {:?} protocol pause restriction {}",
+                    operation, module, record.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_account_direction_not_restricted(
+        &self,
+        account: &Pubkey,
+        direction: RestrictionTransferDirection,
+        amount: u64,
+        spendable: u64,
+        operation: &str,
+        role: &str,
+    ) -> Result<(), String> {
+        let slot = self.b_get_last_slot().unwrap_or(0);
+        let target = RestrictionTarget::Account(*account);
+        for record in self.b_get_active_restrictions_for_target(&target, slot, 0)? {
+            if restriction_mode_blocks_transfer(&record.mode, direction, amount, spendable) {
+                return Err(format!(
+                    "{} blocked by active {} account restriction {}",
+                    operation, role, record.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_native_account_direction_not_restricted(
+        &self,
+        account: &Pubkey,
+        direction: RestrictionTransferDirection,
+        amount: u64,
+        spendable: u64,
+        operation: &str,
+        role: &str,
+    ) -> Result<(), String> {
+        self.ensure_account_direction_not_restricted(
+            account, direction, amount, spendable, operation, role,
+        )?;
+
+        let slot = self.b_get_last_slot().unwrap_or(0);
+        let target = RestrictionTarget::AccountAsset {
+            account: *account,
+            asset: NATIVE_LICN_ASSET_ID,
+        };
+        for record in self.b_get_active_restrictions_for_target(&target, slot, 0)? {
+            if restriction_mode_blocks_transfer(&record.mode, direction, amount, spendable) {
+                return Err(format!(
+                    "{} blocked by active {} native account-asset restriction {}",
+                    operation, role, record.id
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -438,6 +589,10 @@ impl TxProcessor {
         if treasury != actual_treasury {
             return Err("DeployContract: incorrect treasury account".to_string());
         }
+
+        let code_hash = Hash::hash(code_bytes);
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_code_hash_not_deploy_blocked(&code_hash, current_slot, "DeployContract")?;
 
         let init_payload = if init_data_bytes.is_empty() {
             None

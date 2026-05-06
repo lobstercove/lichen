@@ -172,6 +172,58 @@ fn store_u64(key: &[u8], val: u64) {
     storage_set(key, &u64_to_bytes(val));
 }
 
+fn remove_storage_key(key: &[u8]) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn storage_delete(key_ptr: *const u8, key_len: u32) -> u32;
+        }
+        unsafe { storage_delete(key.as_ptr(), key.len() as u32) == 1 }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        lichen_sdk::storage::remove(key)
+    }
+}
+
+fn restore_storage_value(key: &[u8], value: &Option<Vec<u8>>) {
+    match value {
+        Some(bytes) => {
+            storage_set(key, bytes);
+        }
+        None => {
+            remove_storage_key(key);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LendingAccountingSnapshot {
+    total_deposits: Option<Vec<u8>>,
+    total_borrows: Option<Vec<u8>>,
+    reserves: Option<Vec<u8>>,
+    last_update: Option<Vec<u8>>,
+    borrow_index: Option<Vec<u8>>,
+}
+
+fn snapshot_lending_accounting() -> LendingAccountingSnapshot {
+    LendingAccountingSnapshot {
+        total_deposits: storage_get(b"ll_total_deposits"),
+        total_borrows: storage_get(b"ll_total_borrows"),
+        reserves: storage_get(b"ll_reserves"),
+        last_update: storage_get(b"ll_last_update"),
+        borrow_index: storage_get(b"ll_borrow_index"),
+    }
+}
+
+fn restore_lending_accounting(snapshot: LendingAccountingSnapshot) {
+    restore_storage_value(b"ll_total_deposits", &snapshot.total_deposits);
+    restore_storage_value(b"ll_total_borrows", &snapshot.total_borrows);
+    restore_storage_value(b"ll_reserves", &snapshot.reserves);
+    restore_storage_value(b"ll_last_update", &snapshot.last_update);
+    restore_storage_value(b"ll_borrow_index", &snapshot.borrow_index);
+}
+
 fn is_paused() -> bool {
     storage_get(PAUSE_KEY)
         .map(|v| v.first().copied() == Some(1))
@@ -520,6 +572,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let hex = hex_encode_addr(&depositor);
+    let accounting_before = snapshot_lending_accounting();
 
     accrue_interest();
 
@@ -562,7 +615,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     if rc != 0 {
         // Revert bookkeeping on transfer failure
         store_u64(&dep_key, current_deposit);
-        store_u64(b"ll_total_deposits", total);
+        restore_lending_accounting(accounting_before);
         reentrancy_exit();
         return rc;
     }
@@ -599,6 +652,14 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let hex = hex_encode_addr(&borrower);
+    let borrow_key = make_key(b"bor:", &hex);
+    let bix_key = make_key(b"bix:", &hex);
+    let ts_key = make_key(b"bts:", &hex);
+    let accounting_before = snapshot_lending_accounting();
+    let borrow_before = storage_get(&borrow_key);
+    let bix_before = storage_get(&bix_key);
+    let ts_before = storage_get(&ts_key);
+    let borrow_count_before = storage_get(BORROW_COUNT_KEY);
 
     accrue_interest();
 
@@ -606,7 +667,6 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let deposit_val = load_u64(&dep_key);
     // P9-SC-01: Settle existing borrow via index before adding new amount
     let current_borrow = settle_user_borrow(&hex);
-    let borrow_key = make_key(b"bor:", &hex);
 
     // AUDIT-FIX CON-10/C-3: Use the configured oracle feed, not borrower bytes.
     let collateral_price = match try_get_oracle_price() {
@@ -646,7 +706,6 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(&borrow_key, new_borrow);
     // P9-SC-01: Always checkpoint the borrow index (settle_user_borrow skips
     // when stored_borrow==0, so first-time borrowers need this)
-    let bix_key = make_key(b"bix:", &hex);
     store_u64(&bix_key, load_u64(b"ll_borrow_index"));
     let new_total_borrows = match total_borrows.checked_add(amount) {
         Some(v) => v,
@@ -665,15 +724,17 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     );
 
     // Track borrow timestamp for interest calculation
-    let ts_key = make_key(b"bts:", &hex);
     store_u64(&ts_key, get_timestamp());
 
     // AUDIT-FIX G9-01: Transfer borrowed tokens to borrower
     let rc = transfer_out(&borrower, amount);
     if rc != 0 {
         // Revert bookkeeping on transfer failure
-        store_u64(&borrow_key, current_borrow);
-        store_u64(b"ll_total_borrows", total_borrows);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_storage_value(&ts_key, &ts_before);
+        restore_storage_value(BORROW_COUNT_KEY, &borrow_count_before);
+        restore_lending_accounting(accounting_before);
         reentrancy_exit();
         return rc;
     }
@@ -788,14 +849,20 @@ pub extern "C" fn liquidate(
         core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32);
     }
     let hex = hex_encode_addr(&borrower);
+    let dep_key = make_key(b"dep:", &hex);
+    let borrow_key = make_key(b"bor:", &hex);
+    let bix_key = make_key(b"bix:", &hex);
+    let accounting_before = snapshot_lending_accounting();
+    let deposit_before = storage_get(&dep_key);
+    let borrow_before = storage_get(&borrow_key);
+    let bix_before = storage_get(&bix_key);
+    let liquidation_count_before = storage_get(LIQUIDATION_COUNT_KEY);
 
     accrue_interest();
 
-    let dep_key = make_key(b"dep:", &hex);
     let deposit = load_u64(&dep_key);
     // P9-SC-01: Settle borrow via index to check true health
     let current_borrow = settle_user_borrow(&hex);
-    let borrow_key = make_key(b"bor:", &hex);
 
     if current_borrow == 0 {
         reentrancy_exit();
@@ -866,10 +933,11 @@ pub extern "C" fn liquidate(
     let rc = transfer_out(&_liquidator, actual_seized);
     if rc != 0 {
         // Revert all bookkeeping on transfer failure
-        store_u64(&borrow_key, current_borrow);
-        store_u64(&dep_key, deposit);
-        store_u64(b"ll_total_borrows", total_borrows);
-        store_u64(b"ll_total_deposits", total_deposits);
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&dep_key, &deposit_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_storage_value(LIQUIDATION_COUNT_KEY, &liquidation_count_before);
+        restore_lending_accounting(accounting_before);
         reentrancy_exit();
         return rc;
     }
@@ -1582,6 +1650,33 @@ mod tests {
     }
 
     #[test]
+    fn test_withdraw_transfer_failure_restores_accrued_interest_state() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(10_000_000);
+        assert_eq!(deposit(user.as_ptr(), 10_000_000), 0);
+        assert_eq!(borrow(user.as_ptr(), 5_000_000), 0);
+
+        let hex = hex_encode_addr(&user);
+        let dep_key = make_key(b"dep:", &hex);
+        test_mock::set_timestamp(11_000);
+        let accounting_before = snapshot_lending_accounting();
+        let deposit_before = load_u64(&dep_key);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(withdraw(user.as_ptr(), 1_000), 31);
+
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(load_u64(&dep_key), deposit_before);
+    }
+
+    #[test]
     fn test_withdraw_exceeds_deposit() {
         setup();
         let admin = [1u8; 32];
@@ -1621,6 +1716,76 @@ mod tests {
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 500_000), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 500_000);
+    }
+
+    #[test]
+    fn test_borrow_transfer_failure_restores_settlement_and_count_state() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(10_000_000);
+        assert_eq!(deposit(user.as_ptr(), 10_000_000), 0);
+        assert_eq!(borrow(user.as_ptr(), 5_000_000), 0);
+
+        let hex = hex_encode_addr(&user);
+        let borrow_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+        let ts_key = make_key(b"bts:", &hex);
+        test_mock::set_timestamp(11_000);
+        let accounting_before = snapshot_lending_accounting();
+        let borrow_before = load_u64(&borrow_key);
+        let bix_before = load_u64(&bix_key);
+        let ts_before = load_u64(&ts_key);
+        let borrow_count_before = load_u64(BORROW_COUNT_KEY);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(borrow(user.as_ptr(), 1_000), 31);
+
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(load_u64(&borrow_key), borrow_before);
+        assert_eq!(load_u64(&bix_key), bix_before);
+        assert_eq!(load_u64(&ts_key), ts_before);
+        assert_eq!(load_u64(BORROW_COUNT_KEY), borrow_count_before);
+    }
+
+    #[test]
+    fn test_first_borrow_transfer_failure_does_not_create_zero_state() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(10_000_000);
+        assert_eq!(deposit(user.as_ptr(), 10_000_000), 0);
+
+        let hex = hex_encode_addr(&user);
+        let borrow_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+        let ts_key = make_key(b"bts:", &hex);
+        let accounting_before = snapshot_lending_accounting();
+        assert_eq!(test_mock::get_storage(&borrow_key), None);
+        assert_eq!(test_mock::get_storage(&bix_key), None);
+        assert_eq!(test_mock::get_storage(&ts_key), None);
+        assert_eq!(test_mock::get_storage(BORROW_COUNT_KEY), None);
+        assert_eq!(test_mock::get_storage(b"ll_reserves"), None);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(borrow(user.as_ptr(), 1_000), 31);
+
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(test_mock::get_storage(&borrow_key), None);
+        assert_eq!(test_mock::get_storage(&bix_key), None);
+        assert_eq!(test_mock::get_storage(&ts_key), None);
+        assert_eq!(test_mock::get_storage(BORROW_COUNT_KEY), None);
+        assert_eq!(test_mock::get_storage(b"ll_reserves"), None);
     }
 
     #[test]
@@ -1851,6 +2016,49 @@ mod tests {
         );
         let borrow_after = load_u64(&bor_key);
         assert!(borrow_after < 860_000);
+    }
+
+    #[test]
+    fn test_liquidate_transfer_failure_restores_borrower_and_interest_state() {
+        setup();
+        test_mock::set_timestamp(1_000);
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let borrower = [2u8; 32];
+        let hex = hex_encode_addr(&borrower);
+        let dep_key = make_key(b"dep:", &hex);
+        let borrow_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+        store_u64(&dep_key, 1_000_000);
+        store_u64(&borrow_key, 900_000);
+        store_u64(&bix_key, BORROW_INDEX_SCALE);
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 900_000);
+        store_u64(LIQUIDATION_COUNT_KEY, 7);
+
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        test_mock::set_value(200_000);
+        test_mock::set_timestamp(11_000);
+        let accounting_before = snapshot_lending_accounting();
+        let deposit_before = load_u64(&dep_key);
+        let borrow_before = load_u64(&borrow_key);
+        let bix_before = load_u64(&bix_key);
+        let liquidation_count_before = load_u64(LIQUIDATION_COUNT_KEY);
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
+            31
+        );
+
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(load_u64(&dep_key), deposit_before);
+        assert_eq!(load_u64(&borrow_key), borrow_before);
+        assert_eq!(load_u64(&bix_key), bix_before);
+        assert_eq!(load_u64(LIQUIDATION_COUNT_KEY), liquidation_count_before);
     }
 
     #[test]

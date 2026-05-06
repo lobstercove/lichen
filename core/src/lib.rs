@@ -28,6 +28,7 @@ pub mod multisig; // Multi-signature wallet support
 pub mod network;
 pub mod nft;
 pub mod processor;
+pub mod restrictions;
 pub mod state;
 pub mod transaction;
 #[cfg(feature = "zk")]
@@ -58,7 +59,7 @@ pub use consensus::{
 pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,
     AbiFunction, AbiParam, AbiReturn, AbiType, ContractAbi, ContractAccount, ContractContext,
-    ContractResult, ContractRuntime, PendingUpgrade, ProgramCallActivity,
+    ContractLifecycleStatus, ContractResult, ContractRuntime, PendingUpgrade, ProgramCallActivity,
     DEFAULT_WASM_MEMORY_PAGES, MAX_WASM_MEMORY_PAGES, WASM_CU_DIVISOR,
 };
 pub use contract_instruction::ContractInstruction;
@@ -72,7 +73,8 @@ pub use evm::{
 };
 pub use genesis::{
     ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisPrices,
-    GenesisStateBundle, GenesisStateCategory, GenesisStateChunk, GenesisValidator, NetworkConfig,
+    GenesisRestriction, GenesisRestrictionMode, GenesisRestrictionTarget, GenesisStateBundle,
+    GenesisStateCategory, GenesisStateChunk, GenesisValidator, NetworkConfig,
     GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
 };
 pub use governance::{GovernanceAction, GovernanceProposal};
@@ -106,6 +108,12 @@ pub use processor::{
     GOV_PARAM_MIN_VALIDATOR_STAKE, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
     NONCE_ACCOUNT_MARKER, NONCE_ACCOUNT_MIN_BALANCE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN,
     ORACLE_STALENESS_SLOTS, RENT_FREE_BYTES, SYSTEM_PROGRAM_ID,
+};
+pub use restrictions::{
+    transferable_after_frozen_amount, ContractRestrictionAccess, EffectiveRestrictionRecord,
+    ProtocolModuleId, RestrictionLiftReason, RestrictionMode, RestrictionReason, RestrictionRecord,
+    RestrictionStatus, RestrictionTarget, RestrictionTransferDirection,
+    GUARDIAN_RESTRICTION_MAX_SLOTS, NATIVE_LICN_ASSET_ID,
 };
 pub use state::AccountProof;
 pub use state::CheckpointMeta;

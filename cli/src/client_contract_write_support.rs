@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lichen_core::{ContractInstruction, Instruction, Keypair, Pubkey};
+use lichen_core::{ContractInstruction, Hash, Instruction, Keypair, Pubkey};
 
 use crate::client::RpcClient;
 use crate::client_tx_support::{serialize_contract_instruction, submit_signed_instruction};
@@ -13,6 +13,14 @@ impl RpcClient {
         contract_address: &Pubkey,
         init_data: Vec<u8>,
     ) -> Result<String> {
+        let code_hash = Hash::hash(&wasm_code);
+        if self.is_code_hash_deploy_blocked(&code_hash).await? {
+            anyhow::bail!(
+                "Deployment blocked: code hash {} has an active DeployBlocked restriction",
+                code_hash.to_hex()
+            );
+        }
+
         let contract_ix = ContractInstruction::Deploy {
             code: wasm_code,
             init_data,
@@ -34,6 +42,14 @@ impl RpcClient {
         wasm_code: Vec<u8>,
         contract_address: &Pubkey,
     ) -> Result<String> {
+        let code_hash = Hash::hash(&wasm_code);
+        if self.is_code_hash_deploy_blocked(&code_hash).await? {
+            anyhow::bail!(
+                "Contract upgrade blocked: code hash {} has an active DeployBlocked restriction",
+                code_hash.to_hex()
+            );
+        }
+
         let contract_ix = ContractInstruction::Upgrade { code: wasm_code };
 
         let instruction = Instruction {

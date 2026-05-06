@@ -2639,6 +2639,23 @@ mod tests {
     }
 
     #[test]
+    fn test_open_position_collateral_lock_failure_without_mutation() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_cross_call_should_fail(true);
+
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            8
+        );
+        assert_eq!(load_u64(POSITION_COUNT_KEY), 0);
+        assert!(storage_get(&position_key(1)).is_none());
+        assert_eq!(load_u64(TOTAL_OPEN_INTEREST_KEY), 0);
+    }
+
+    #[test]
     fn test_open_position_short() {
         let _admin = setup();
         let trader = [2u8; 32];
@@ -2956,6 +2973,26 @@ mod tests {
         assert_eq!(add_margin(trader.as_ptr(), 1, 100), 0);
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_margin(&data), 500_000_100);
+    }
+
+    #[test]
+    fn test_add_margin_lock_failure_preserves_position() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
+        let before = storage_get(&position_key(1)).unwrap();
+
+        test_mock::set_cross_call_should_fail(true);
+        assert_eq!(add_margin(trader.as_ptr(), 1, 100), 7);
+
+        let after = storage_get(&position_key(1)).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(decode_pos_margin(&after), 500_000_000);
     }
 
     #[test]

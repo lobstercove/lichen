@@ -3,8 +3,9 @@
 use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{
-    build_top_level_call_context, ContractAbi, ContractAccount, ContractContext, ContractEvent,
-    ContractRuntime, NativeAccountOp,
+    build_top_level_call_context, contract_lifecycle_status_for_restriction_mode,
+    derive_contract_lifecycle_from_state_store, ContractAbi, ContractAccount, ContractContext,
+    ContractEvent, ContractRuntime, NativeAccountOp,
 };
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
@@ -221,6 +222,9 @@ pub const GOVERNANCE_ACTION_CONTRACT_CLOSE: u8 = 6;
 pub const GOVERNANCE_ACTION_REGISTER_SYMBOL: u8 = 7;
 pub const GOVERNANCE_ACTION_SET_CONTRACT_ABI: u8 = 8;
 pub const GOVERNANCE_ACTION_CONTRACT_CALL: u8 = 9;
+pub const GOVERNANCE_ACTION_RESTRICT: u8 = 10;
+pub const GOVERNANCE_ACTION_LIFT_RESTRICTION: u8 = 11;
+pub const GOVERNANCE_ACTION_EXTEND_RESTRICTION: u8 = 12;
 
 /// base_fee (spores per transaction)
 pub const GOV_PARAM_BASE_FEE: u8 = 0;
@@ -579,6 +583,11 @@ impl TxProcessor {
 mod tests {
     use super::*;
     use crate::consensus::MIN_VALIDATOR_STAKE;
+    use crate::restrictions::{
+        ProtocolModuleId, RestrictionLiftReason, RestrictionMode, RestrictionReason,
+        RestrictionRecord, RestrictionStatus, RestrictionTarget, GUARDIAN_RESTRICTION_MAX_SLOTS,
+        NATIVE_LICN_ASSET_ID,
+    };
     use crate::Hash;
     use crate::Keypair;
     use tempfile::tempdir;
@@ -897,6 +906,26 @@ mod tests {
         tx
     }
 
+    fn make_mossstake_transfer_tx(
+        kp: &Keypair,
+        from: Pubkey,
+        to: Pubkey,
+        st_licn_amount: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![16u8];
+        data.extend_from_slice(&st_licn_amount.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![from, to],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], recent_blockhash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(kp.sign(&tx.message.serialize()));
+        tx
+    }
+
     #[test]
     fn test_mossstake_deposit_reduces_balance() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -1069,6 +1098,261 @@ mod tests {
         let tx = make_mossstake_unstake_tx(&alice_kp, alice, too_much, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Unstaking more than staked should fail");
+    }
+
+    #[test]
+    fn test_mossstake_deposit_rejects_outgoing_restricted_depositor() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_mossstake_pool().unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx =
+            make_mossstake_deposit_tx(&alice_kp, alice, Account::licn_to_spores(100), genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeDeposit blocked by active depositor account restriction"));
+
+        let after_pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(after_pool.st_licn_token.total_licn_staked, 0);
+        assert_eq!(after_pool.positions.len(), before_pool.positions.len());
+        assert!(!after_pool.positions.contains_key(&alice));
+    }
+
+    #[test]
+    fn test_mossstake_deposit_rejects_native_frozen_amount() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let authority_spendable = state.get_account(&alice).unwrap().unwrap().spendable;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: authority_spendable,
+            },
+        );
+
+        let tx =
+            make_mossstake_deposit_tx(&alice_kp, alice, Account::licn_to_spores(100), genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains(
+            "MossStakeDeposit blocked by active depositor native account-asset restriction"
+        ));
+
+        let pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(pool.st_licn_token.total_licn_staked, 0);
+        assert!(!pool.positions.contains_key(&alice));
+    }
+
+    #[test]
+    fn test_mossstake_protocol_pause_rejects_deposit_without_position() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::MossStake),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx =
+            make_mossstake_deposit_tx(&alice_kp, alice, Account::licn_to_spores(100), genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeDeposit blocked by active MossStake protocol pause"));
+
+        let pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(pool.st_licn_token.total_licn_staked, 0);
+        assert!(!pool.positions.contains_key(&alice));
+    }
+
+    #[test]
+    fn test_mossstake_unstake_rejects_outgoing_restricted_position_owner() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let deposit_amount = Account::licn_to_spores(100);
+        let deposit_tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&deposit_tx, &validator)
+                .success
+        );
+
+        let before_pool = state.get_mossstake_pool().unwrap();
+        let st_licn = before_pool.positions.get(&alice).unwrap().st_licn_amount;
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeUnstake blocked by active position owner account restriction"));
+
+        let after_pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(
+            after_pool.positions.get(&alice).unwrap().st_licn_amount,
+            st_licn
+        );
+        assert!(after_pool.get_unstake_requests(&alice).is_empty());
+    }
+
+    #[test]
+    fn test_mossstake_claim_rejects_incoming_restricted_user_without_dropping_request() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let deposit_amount = Account::licn_to_spores(100);
+        let deposit_tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&deposit_tx, &validator)
+                .success
+        );
+
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
+        let unstake_tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&unstake_tx, &validator)
+                .success
+        );
+        let before_requests = state
+            .get_mossstake_pool()
+            .unwrap()
+            .get_unstake_requests(&alice);
+        assert_eq!(before_requests.len(), 1);
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::IncomingOnly,
+        );
+        let future_hash = advance_test_slot(&state, crate::consensus::UNSTAKE_COOLDOWN_SLOTS + 1);
+        let claim_tx = make_mossstake_claim_tx(&alice_kp, alice, future_hash);
+        let result = processor.process_transaction(&claim_tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeClaim blocked by active user account restriction"));
+
+        let after_requests = state
+            .get_mossstake_pool()
+            .unwrap()
+            .get_unstake_requests(&alice);
+        assert_eq!(after_requests.len(), before_requests.len());
+        assert_eq!(
+            after_requests[0].licn_to_receive,
+            before_requests[0].licn_to_receive
+        );
+    }
+
+    #[test]
+    fn test_mossstake_transfer_rejects_outgoing_restricted_sender() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0xB2; 32]);
+        let deposit_amount = Account::licn_to_spores(100);
+        let deposit_tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&deposit_tx, &validator)
+                .success
+        );
+        let st_licn = state
+            .get_mossstake_pool()
+            .unwrap()
+            .positions
+            .get(&alice)
+            .unwrap()
+            .st_licn_amount;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx = make_mossstake_transfer_tx(&alice_kp, alice, bob, st_licn / 2, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeTransfer blocked by active sender account restriction"));
+
+        let pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(pool.positions.get(&alice).unwrap().st_licn_amount, st_licn);
+        assert!(!pool.positions.contains_key(&bob));
+        assert!(state.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_mossstake_transfer_rejects_incoming_restricted_recipient() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob = Pubkey([0xB3; 32]);
+        let deposit_amount = Account::licn_to_spores(100);
+        let deposit_tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&deposit_tx, &validator)
+                .success
+        );
+        let st_licn = state
+            .get_mossstake_pool()
+            .unwrap()
+            .positions
+            .get(&alice)
+            .unwrap()
+            .st_licn_amount;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(bob),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let tx = make_mossstake_transfer_tx(&alice_kp, alice, bob, st_licn / 2, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("MossStakeTransfer blocked by active recipient account restriction"));
+
+        let pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(pool.positions.get(&alice).unwrap().st_licn_amount, st_licn);
+        assert!(!pool.positions.contains_key(&bob));
+        assert!(state.get_account(&bob).unwrap().is_none());
     }
 
     // ── H16 tests: system instruction types 17, 18, 19 ──
@@ -1371,6 +1655,83 @@ mod tests {
         assert!(result.error.unwrap().contains("too small"));
     }
 
+    #[test]
+    fn test_code_hash_deploy_block_rejects_system_deploy_contract() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct
+            .add_spendable(Account::licn_to_spores(100))
+            .unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        let code = valid_wasm_code(0x40);
+        let code_hash = Hash::hash(&code);
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(code_hash),
+            RestrictionMode::DeployBlocked,
+        );
+
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Banned code hash deploy must fail");
+        let error = result.error.as_deref().unwrap_or_default();
+        assert!(error.contains("DeployContract rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&restriction_id.to_string()));
+        assert!(
+            state.get_programs(10).unwrap().is_empty(),
+            "blocked deploy must not index a program"
+        );
+    }
+
+    #[test]
+    fn test_code_hash_deploy_block_rejects_contract_program_deploy() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let code = valid_wasm_code(0x41);
+        let code_hash = Hash::hash(&code);
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(code_hash),
+            RestrictionMode::DeployBlocked,
+        );
+        let contract_addr = Pubkey([0x41; 32]);
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Deploy {
+                code,
+                init_data: Vec::new(),
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success, "Banned code hash deploy must fail");
+        let error = result.error.as_deref().unwrap_or_default();
+        assert!(error.contains("Deploy rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&restriction_id.to_string()));
+        assert!(
+            state.get_account(&contract_addr).unwrap().is_none(),
+            "blocked deploy must not create a contract account"
+        );
+    }
+
     /// Test: ContractInstruction::Deploy via CONTRACT_PROGRAM_ID with init_data
     /// populates the symbol registry atomically.
     #[test]
@@ -1539,6 +1900,57 @@ mod tests {
             "Premium should be refunded on failed deploy, but {} spores kept",
             fee_kept
         );
+    }
+
+    #[test]
+    fn test_failed_premium_fee_refund_bypasses_incoming_restriction() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::IncomingOnly,
+        );
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::IncomingOnly,
+        );
+
+        let initial_balance = state.get_balance(&alice).unwrap();
+        let bad_code = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x00, 0x00, 0x00];
+        let code_hash = Hash::hash(&bad_code);
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[..16].copy_from_slice(&alice.0[..16]);
+        addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+        let contract_addr = Pubkey(addr_bytes);
+
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: crate::ContractInstruction::Deploy {
+                code: bad_code,
+                init_data: vec![],
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Deploy with bad WASM should fail");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("bad magic number"));
+
+        let final_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(initial_balance - final_balance, result.fee_paid);
+        assert_eq!(result.fee_paid, BASE_FEE);
     }
 
     #[test]
@@ -1865,6 +2277,71 @@ mod tests {
             results[1].success,
             "bob→dave should succeed: {:?}",
             results[1].error
+        );
+    }
+
+    #[test]
+    fn test_parallel_fee_charging_preserves_all_treasury_credits() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let validator = Pubkey([42u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+        let genesis_hash = genesis.hash();
+
+        let tx_count = 128usize;
+        let mut txs = Vec::with_capacity(tx_count);
+        for i in 0..tx_count {
+            let payer_kp = Keypair::generate();
+            let payer = payer_kp.pubkey();
+            let mut recipient_bytes = [0x80u8; 32];
+            recipient_bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let recipient = Pubkey(recipient_bytes);
+            state
+                .put_account(&payer, &Account::new(100, payer))
+                .unwrap();
+            txs.push(make_transfer_tx(
+                &payer_kp,
+                payer,
+                recipient,
+                1,
+                genesis_hash,
+            ));
+        }
+
+        let results = processor.process_transactions_parallel(&txs, &validator);
+        for (idx, result) in results.iter().enumerate() {
+            assert!(
+                result.success,
+                "parallel fee tx {} failed: {:?}",
+                idx, result.error
+            );
+        }
+
+        let fee_config = FeeConfig::default_from_constants();
+        let burned_per_tx =
+            (fee_config.base_fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+        let expected_treasury_per_tx = fee_config.base_fee.saturating_sub(burned_per_tx);
+        assert_eq!(
+            state.get_balance(&treasury).unwrap(),
+            expected_treasury_per_tx * tx_count as u64,
+            "parallel fee charging must not lose treasury credits"
         );
     }
 
@@ -2657,6 +3134,110 @@ mod tests {
         state.put_stake_pool(&pool).unwrap();
     }
 
+    fn make_stake_tx(
+        kp: &Keypair,
+        staker: Pubkey,
+        validator: Pubkey,
+        amount: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![staker, validator],
+            data: {
+                let mut d = vec![9u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
+    fn make_request_unstake_tx(
+        kp: &Keypair,
+        staker: Pubkey,
+        validator: Pubkey,
+        amount: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![staker, validator],
+            data: {
+                let mut d = vec![10u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
+    fn make_claim_unstake_tx(
+        kp: &Keypair,
+        staker: Pubkey,
+        validator: Pubkey,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![staker, validator],
+            data: vec![11u8],
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
+    fn make_register_validator_tx(
+        kp: &Keypair,
+        validator: Pubkey,
+        fingerprint: [u8; 32],
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![26u8];
+        data.extend_from_slice(&fingerprint);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data,
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
+    fn make_deregister_validator_tx(
+        kp: &Keypair,
+        validator: Pubkey,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![validator],
+            data: vec![31u8],
+        };
+        make_signed_tx(kp, ix, recent_blockhash)
+    }
+
+    fn fund_treasury_for_validator_bootstrap(state: &StateStore, treasury: Pubkey) {
+        state
+            .put_account(&treasury, &Account::new(500_000, treasury))
+            .unwrap();
+    }
+
+    fn assert_validator_registration_not_granted(
+        state: &StateStore,
+        treasury: Pubkey,
+        before_treasury: &Account,
+        validator: Pubkey,
+        fingerprint: [u8; 32],
+    ) {
+        let after_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert_eq!(after_treasury.spores, before_treasury.spores);
+        assert_eq!(after_treasury.spendable, before_treasury.spendable);
+        assert!(state.get_account(&validator).unwrap().is_none());
+        let pool = state.get_stake_pool().unwrap();
+        assert_eq!(pool.bootstrap_grants_issued(), 0);
+        assert!(pool.get_stake(&validator).is_none());
+        assert!(pool.fingerprint_owner(&fingerprint).is_none());
+    }
+
     #[test]
     fn test_stake_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -2726,6 +3307,158 @@ mod tests {
     }
 
     #[test]
+    fn test_stake_rejects_outgoing_restricted_staker_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_validator_in_pool(&state, validator);
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
+        let before_pool_stake = state
+            .get_stake_pool()
+            .unwrap()
+            .get_stake(&validator)
+            .unwrap()
+            .amount;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx = make_stake_tx(
+            &alice_kp,
+            alice,
+            validator,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Stake blocked by active staker account restriction"));
+
+        let after_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(after_account.staked, 0);
+        assert_eq!(after_account.locked, 0);
+        let after_pool_stake = state
+            .get_stake_pool()
+            .unwrap()
+            .get_stake(&validator)
+            .unwrap()
+            .amount;
+        assert_eq!(after_pool_stake, before_pool_stake);
+    }
+
+    #[test]
+    fn test_stake_rejects_native_frozen_amount_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_validator_in_pool(&state, validator);
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
+        let before_pool_stake = state
+            .get_stake_pool()
+            .unwrap()
+            .get_stake(&validator)
+            .unwrap()
+            .amount;
+        let frozen_amount = state.get_account(&alice).unwrap().unwrap().spendable;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: frozen_amount,
+            },
+        );
+
+        let tx = make_stake_tx(
+            &alice_kp,
+            alice,
+            validator,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Stake blocked by active staker native account-asset restriction"));
+
+        let after_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(after_account.staked, 0);
+        assert_eq!(
+            state
+                .get_stake_pool()
+                .unwrap()
+                .get_stake(&validator)
+                .unwrap()
+                .amount,
+            before_pool_stake
+        );
+    }
+
+    #[test]
+    fn test_staking_protocol_pause_rejects_stake_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_validator_in_pool(&state, validator);
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
+        let before_pool_stake = state
+            .get_stake_pool()
+            .unwrap()
+            .get_stake(&validator)
+            .unwrap()
+            .amount;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Staking),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx = make_stake_tx(
+            &alice_kp,
+            alice,
+            validator,
+            crate::consensus::MIN_VALIDATOR_STAKE,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Stake blocked by active Staking protocol pause"));
+
+        let after_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(after_account.staked, 0);
+        assert_eq!(
+            state
+                .get_stake_pool()
+                .unwrap()
+                .get_stake(&validator)
+                .unwrap()
+                .amount,
+            before_pool_stake
+        );
+    }
+
+    #[test]
     fn test_request_unstake_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
@@ -2777,6 +3510,49 @@ mod tests {
         assert_eq!(
             acct.locked, unstake_amount,
             "Locked should equal unstaked amount"
+        );
+    }
+
+    #[test]
+    fn test_request_unstake_rejects_outgoing_restricted_staker_without_request() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_validator_in_pool(&state, validator);
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
+
+        let amount = crate::consensus::MIN_VALIDATOR_STAKE;
+        let stake_tx = make_stake_tx(&alice_kp, alice, validator, amount, genesis_hash);
+        assert!(processor.process_transaction(&stake_tx, &validator).success);
+        let before_account = state.get_account(&alice).unwrap().unwrap();
+        let before_pool = state.get_stake_pool().unwrap();
+        assert!(before_pool.get_unstake_request(&validator).is_none());
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let unstake_amount = amount / 2;
+        let tx = make_request_unstake_tx(&alice_kp, alice, validator, unstake_amount, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("RequestUnstake blocked by active staker account restriction"));
+
+        let after_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(after_account.staked, before_account.staked);
+        assert_eq!(after_account.locked, before_account.locked);
+        let after_pool = state.get_stake_pool().unwrap();
+        assert!(after_pool.get_unstake_request(&validator).is_none());
+        assert_eq!(
+            after_pool.get_stake(&validator).unwrap().amount,
+            before_pool.get_stake(&validator).unwrap().amount
         );
     }
 
@@ -2879,6 +3655,230 @@ mod tests {
         let tx_claim = make_signed_tx(&alice_kp, ix_claim, genesis_hash);
         let result = processor.process_transaction(&tx_claim, &validator);
         assert!(!result.success, "Claim before cooldown should fail");
+    }
+
+    #[test]
+    fn test_claim_unstake_rejects_incoming_restricted_staker_without_unlocking() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_validator_in_pool(&state, validator);
+        state
+            .put_account(&alice, &Account::new(200_000, alice))
+            .unwrap();
+
+        let amount = crate::consensus::MIN_VALIDATOR_STAKE;
+        let stake_tx = make_stake_tx(&alice_kp, alice, validator, amount, genesis_hash);
+        assert!(processor.process_transaction(&stake_tx, &validator).success);
+        let unstake_amount = amount / 2;
+        let unstake_tx =
+            make_request_unstake_tx(&alice_kp, alice, validator, unstake_amount, genesis_hash);
+        assert!(
+            processor
+                .process_transaction(&unstake_tx, &validator)
+                .success
+        );
+        let before_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(before_account.locked, unstake_amount);
+        assert!(state
+            .get_stake_pool()
+            .unwrap()
+            .get_unstake_request(&validator)
+            .is_some());
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::IncomingOnly,
+        );
+        let future_hash = advance_test_slot(&state, crate::consensus::UNSTAKE_COOLDOWN_SLOTS + 1);
+        let claim_tx = make_claim_unstake_tx(&alice_kp, alice, validator, future_hash);
+        let result = processor.process_transaction(&claim_tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("ClaimUnstake blocked by active staker account restriction"));
+
+        let after_account = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(after_account.staked, before_account.staked);
+        assert_eq!(after_account.locked, before_account.locked);
+        assert!(state
+            .get_stake_pool()
+            .unwrap()
+            .get_unstake_request(&validator)
+            .is_some());
+    }
+
+    #[test]
+    fn test_register_validator_rejects_treasury_outgoing_restriction_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x31; 32];
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(treasury),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("RegisterValidator blocked by active treasury account restriction"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_rejects_treasury_native_frozen_amount_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x32; 32];
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: treasury,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: before_treasury.spendable,
+            },
+        );
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains(
+            "RegisterValidator blocked by active treasury native account-asset restriction"
+        ));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_rejects_incoming_restricted_validator_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x33; 32];
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(validator),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("RegisterValidator blocked by active validator account restriction"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_register_validator_protocol_pause_rejects_without_grant() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        fund_treasury_for_validator_bootstrap(&state, treasury);
+        let before_treasury = state.get_account(&treasury).unwrap().unwrap();
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let fingerprint = [0x34; 32];
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Staking),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx = make_register_validator_tx(&validator_kp, validator, fingerprint, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("RegisterValidator blocked by active Staking protocol pause"));
+        assert_validator_registration_not_granted(
+            &state,
+            treasury,
+            &before_treasury,
+            validator,
+            fingerprint,
+        );
+    }
+
+    #[test]
+    fn test_deregister_validator_protocol_pause_rejects_without_deactivation() {
+        let (processor, state, _alice_kp, _alice, _treasury, genesis_hash) = setup();
+        let block_producer = Pubkey([42u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        setup_active_validator(&state, &validator, MIN_VALIDATOR_STAKE);
+        assert!(
+            state
+                .get_stake_pool()
+                .unwrap()
+                .get_stake(&validator)
+                .unwrap()
+                .is_active
+        );
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Staking),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx = make_deregister_validator_tx(&validator_kp, validator, genesis_hash);
+        let result = processor.process_transaction(&tx, &block_producer);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("DeregisterValidator blocked by active Staking protocol pause"));
+
+        let pool = state.get_stake_pool().unwrap();
+        assert!(pool.get_stake(&validator).unwrap().is_active);
+        assert!(state.get_pending_validator_changes(1).unwrap().is_empty());
     }
 
     // ====================================================================
@@ -3054,6 +4054,9 @@ mod tests {
             previous_code_hash: None,
             upgrade_timelock_epochs: None,
             pending_upgrade: None,
+            lifecycle_status: crate::ContractLifecycleStatus::Active,
+            lifecycle_updated_slot: 0,
+            lifecycle_restriction_id: None,
         };
         let mut acct = Account::new(0, contract_id);
         acct.executable = true;
@@ -3607,6 +4610,298 @@ mod tests {
 
         // Recipient should NOT have received anything
         assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+    }
+
+    fn put_active_processor_test_restriction(
+        state: &StateStore,
+        target: RestrictionTarget,
+        mode: RestrictionMode,
+    ) -> u64 {
+        let id = state.next_restriction_id().unwrap();
+        let record = RestrictionRecord {
+            id,
+            target,
+            mode,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        state.put_restriction(&record).unwrap();
+        id
+    }
+
+    fn lift_processor_test_restriction(state: &StateStore, restriction_id: u64, lifted_by: Pubkey) {
+        let mut record = state
+            .get_restriction(restriction_id)
+            .unwrap()
+            .expect("restriction should exist");
+        record.status = RestrictionStatus::Lifted;
+        record.lifted_by = Some(lifted_by);
+        record.lifted_slot = Some(state.get_last_slot().unwrap());
+        record.lift_reason = Some(RestrictionLiftReason::TestnetDrillComplete);
+        state.put_restriction(&record).unwrap();
+    }
+
+    fn governed_transfer_propose_tx(
+        proposer_kp: &Keypair,
+        proposer: Pubkey,
+        source: Pubkey,
+        recipient: Pubkey,
+        amount: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![21u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![proposer, source, recipient],
+            data,
+        };
+        make_signed_tx(proposer_kp, ix, recent_blockhash)
+    }
+
+    fn governed_transfer_control_tx(
+        signer_kp: &Keypair,
+        signer: Pubkey,
+        opcode: u8,
+        proposal_id: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![opcode];
+        data.extend_from_slice(&proposal_id.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![signer],
+            data,
+        };
+        make_signed_tx(signer_kp, ix, recent_blockhash)
+    }
+
+    #[test]
+    fn test_governed_wallet_direct_transfer_still_requires_proposal_when_restricted() {
+        let (processor, state, _alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let gov_kp = Keypair::generate();
+        let gov = gov_kp.pubkey();
+        let recipient = Pubkey([0x91; 32]);
+
+        state.put_account(&gov, &Account::new(1_000, gov)).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, gov],
+                    "ecosystem_partnerships",
+                ),
+            )
+            .unwrap();
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(gov),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let tx = make_transfer_tx(&gov_kp, gov, recipient, 10, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("multi-sig proposal"));
+        assert!(!result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("restriction"));
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_governed_transfer_source_restriction_blocks_execution_without_losing_proposal() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0x92; 32]);
+        let recipient = Pubkey([0x93; 32]);
+        let amount = Account::licn_to_spores(50);
+
+        state.put_account(&bob, &Account::new(1_000, bob)).unwrap();
+        state.put_account(&gov, &Account::new(1_000, gov)).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "ecosystem_partnerships",
+                )
+                .with_timelock(1)
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::new(
+                        amount * 10,
+                        amount * 2,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ),
+                ),
+            )
+            .unwrap();
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(gov),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let propose_tx =
+            governed_transfer_propose_tx(&alice_kp, alice, gov, recipient, amount, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(result.success, "proposal failed: {:?}", result.error);
+
+        let approve_tx = governed_transfer_control_tx(&bob_kp, bob, 22, 1, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(result.success, "approval failed: {:?}", result.error);
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals.len(), 2);
+        assert!(!proposal.executed);
+
+        let execute_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let execute_tx = governed_transfer_control_tx(&alice_kp, alice, 32, 1, execute_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("sender account restriction"));
+
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals.len(), 2);
+        assert!(!proposal.executed);
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+        let day_bucket = SLOTS_PER_EPOCH / SECONDS_PER_DAY;
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&gov, day_bucket)
+                .unwrap(),
+            0
+        );
+
+        lift_processor_test_restriction(&state, restriction_id, alice);
+        let retry_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH + 1);
+        let retry_tx = governed_transfer_control_tx(&bob_kp, bob, 32, 1, retry_blockhash);
+        let result = processor.process_transaction(&retry_tx, &validator);
+        assert!(result.success, "retry failed: {:?}", result.error);
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        assert_eq!(state.get_balance(&recipient).unwrap(), amount);
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&gov, day_bucket)
+                .unwrap(),
+            amount
+        );
+    }
+
+    #[test]
+    fn test_governed_transfer_recipient_restriction_blocks_execution_without_losing_proposal() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0x94; 32]);
+        let recipient = Pubkey([0x95; 32]);
+        let amount = Account::licn_to_spores(50);
+
+        state.put_account(&bob, &Account::new(1_000, bob)).unwrap();
+        state.put_account(&gov, &Account::new(1_000, gov)).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    2,
+                    vec![alice, bob, gov],
+                    "ecosystem_partnerships",
+                )
+                .with_timelock(1)
+                .with_transfer_velocity_policy(
+                    crate::multisig::GovernedTransferVelocityPolicy::new(
+                        amount * 10,
+                        amount * 2,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ),
+                ),
+            )
+            .unwrap();
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(recipient),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let propose_tx =
+            governed_transfer_propose_tx(&alice_kp, alice, gov, recipient, amount, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &validator);
+        assert!(result.success, "proposal failed: {:?}", result.error);
+
+        let approve_tx = governed_transfer_control_tx(&bob_kp, bob, 22, 1, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &validator);
+        assert!(result.success, "approval failed: {:?}", result.error);
+
+        let execute_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let execute_tx = governed_transfer_control_tx(&alice_kp, alice, 32, 1, execute_blockhash);
+        let result = processor.process_transaction(&execute_tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("recipient account restriction"));
+
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals.len(), 2);
+        assert!(!proposal.executed);
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+        let day_bucket = SLOTS_PER_EPOCH / SECONDS_PER_DAY;
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&gov, day_bucket)
+                .unwrap(),
+            0
+        );
+
+        lift_processor_test_restriction(&state, restriction_id, alice);
+        let retry_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH + 1);
+        let retry_tx = governed_transfer_control_tx(&bob_kp, bob, 32, 1, retry_blockhash);
+        let result = processor.process_transaction(&retry_tx, &validator);
+        assert!(result.success, "retry failed: {:?}", result.error);
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        assert_eq!(state.get_balance(&recipient).unwrap(), amount);
+        assert_eq!(
+            state
+                .get_governed_transfer_day_volume(&gov, day_bucket)
+                .unwrap(),
+            amount
+        );
     }
 
     #[test]
@@ -4310,6 +5605,297 @@ mod tests {
     }
 
     #[cfg(feature = "zk")]
+    fn make_invalid_shield_tx(
+        kp: &Keypair,
+        sender: Pubkey,
+        amount: u64,
+        commitment: [u8; 32],
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![23u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&commitment);
+        data.extend_from_slice(&[0xFF; 7]);
+
+        make_signed_tx(
+            kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![sender],
+                data,
+            },
+            recent_blockhash,
+        )
+    }
+
+    #[cfg(feature = "zk")]
+    fn make_invalid_unshield_tx(
+        kp: &Keypair,
+        recipient: Pubkey,
+        amount: u64,
+        nullifier: [u8; 32],
+        merkle_root: [u8; 32],
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        use crate::zk::{recipient_hash, recipient_preimage_from_bytes};
+
+        let recipient_bytes = recipient_hash(&recipient_preimage_from_bytes(recipient.0));
+        let mut data = vec![24u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&nullifier);
+        data.extend_from_slice(&merkle_root);
+        data.extend_from_slice(&recipient_bytes);
+        data.extend_from_slice(&[0xFF; 7]);
+
+        make_signed_tx(
+            kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![recipient],
+                data,
+            },
+            recent_blockhash,
+        )
+    }
+
+    #[cfg(feature = "zk")]
+    fn make_invalid_shielded_transfer_tx(
+        kp: &Keypair,
+        fee_payer: Pubkey,
+        nullifier_a: [u8; 32],
+        nullifier_b: [u8; 32],
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![25u8];
+        data.extend_from_slice(&nullifier_a);
+        data.extend_from_slice(&nullifier_b);
+        data.extend_from_slice(&[0xC1; 32]);
+        data.extend_from_slice(&[0xC2; 32]);
+        data.extend_from_slice(&[0u8; 32]);
+        data.extend_from_slice(&[0xFF; 7]);
+
+        make_signed_tx(
+            kp,
+            Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![fee_payer],
+                data,
+            },
+            recent_blockhash,
+        )
+    }
+
+    #[cfg(feature = "zk")]
+    fn assert_shielded_pool_unchanged(state: &StateStore, before: &crate::zk::ShieldedPoolState) {
+        let after = state.get_shielded_pool_state().unwrap();
+        assert_eq!(after.merkle_root, before.merkle_root);
+        assert_eq!(after.commitment_count, before.commitment_count);
+        assert_eq!(after.total_shielded, before.total_shielded);
+        assert_eq!(after.nullifier_count, before.nullifier_count);
+        assert_eq!(after.shield_count, before.shield_count);
+        assert_eq!(after.unshield_count, before.unshield_count);
+        assert_eq!(after.transfer_count, before.transfer_count);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_outgoing_restricted_sender_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let commitment = [0xA7; 32];
+        let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Shield blocked by active sender account restriction"));
+
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_native_frozen_amount_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+        let spendable = state.get_account(&alice).unwrap().unwrap().spendable;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount { amount: spendable },
+        );
+
+        let commitment = [0xA8; 32];
+        let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Shield blocked by active sender native account-asset restriction"));
+
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_protocol_pause_rejects_deposit_without_pool_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Shielded),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let commitment = [0xA9; 32];
+        let tx = make_invalid_shield_tx(&alice_kp, alice, 100, commitment, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Shield blocked by active Shielded protocol pause"));
+
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_unshield_rejects_incoming_restricted_recipient_without_spending_nullifier() {
+        use crate::zk::random_scalar_bytes;
+
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+        let nullifier = random_scalar_bytes();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let tx =
+            make_invalid_unshield_tx(&alice_kp, alice, 100, nullifier, [0xEE; 32], genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unshield blocked by active recipient account restriction"));
+
+        assert!(!state.is_nullifier_spent(&nullifier).unwrap());
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_unshield_rejects_native_incoming_restricted_recipient_without_spending_nullifier() {
+        use crate::zk::random_scalar_bytes;
+
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let before_balance = state.get_balance(&alice).unwrap();
+        let nullifier = random_scalar_bytes();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::IncomingOnly,
+        );
+
+        let tx =
+            make_invalid_unshield_tx(&alice_kp, alice, 100, nullifier, [0xEF; 32], genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unshield blocked by active recipient native account-asset restriction"));
+
+        assert!(!state.is_nullifier_spent(&nullifier).unwrap());
+        assert_shielded_pool_unchanged(&state, &before_pool);
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_transfer_protocol_pause_rejects_before_nullifier_mutation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+        let validator = Pubkey([42u8; 32]);
+        let before_pool = state.get_shielded_pool_state().unwrap();
+        let nullifier_a = [0xF1; 32];
+        let nullifier_b = [0xF2; 32];
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Shielded),
+            RestrictionMode::ProtocolPaused,
+        );
+
+        let tx = make_invalid_shielded_transfer_tx(
+            &alice_kp,
+            alice,
+            nullifier_a,
+            nullifier_b,
+            genesis_hash,
+        );
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("ShieldedTransfer blocked by active Shielded protocol pause"));
+
+        assert!(!state.is_nullifier_spent(&nullifier_a).unwrap());
+        assert!(!state.is_nullifier_spent(&nullifier_b).unwrap());
+        assert_shielded_pool_unchanged(&state, &before_pool);
+    }
+
+    #[cfg(feature = "zk")]
     #[test]
     fn test_unshield_rejects_short_data() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -4545,6 +6131,68 @@ mod tests {
             accounts: vec![authority, nonce_pk],
             data,
         }
+    }
+
+    fn make_nonce_withdraw_ix(
+        authority: Pubkey,
+        nonce_pk: Pubkey,
+        recipient: Pubkey,
+        amount: u64,
+    ) -> Instruction {
+        let mut data = vec![28u8, 2u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![authority, nonce_pk, recipient],
+            data,
+        }
+    }
+
+    fn initialize_test_nonce(
+        processor: &TxProcessor,
+        funder_kp: &Keypair,
+        funder: Pubkey,
+        nonce_pk: Pubkey,
+        authority: Pubkey,
+        recent_blockhash: Hash,
+        validator: &Pubkey,
+    ) {
+        let ix = make_nonce_init_ix(funder, nonce_pk, authority);
+        let tx = make_signed_tx(funder_kp, ix, recent_blockhash);
+        let result = processor.process_transaction(&tx, validator);
+        assert!(
+            result.success,
+            "Nonce initialization should succeed: {:?}",
+            result.error
+        );
+    }
+
+    fn assert_failed_nonce_withdraw_keeps_nonce_open(
+        state: &StateStore,
+        nonce_pk: Pubkey,
+        recipient: Pubkey,
+        expected_error: &Option<String>,
+        expected_error_fragment: &str,
+        before_nonce_account: &Account,
+    ) {
+        assert!(
+            expected_error
+                .as_ref()
+                .unwrap()
+                .contains(expected_error_fragment),
+            "Expected error containing '{}', got: {:?}",
+            expected_error_fragment,
+            expected_error
+        );
+        let after_nonce_account = state.get_account(&nonce_pk).unwrap().unwrap();
+        assert_eq!(after_nonce_account.spores, before_nonce_account.spores);
+        assert_eq!(
+            after_nonce_account.spendable,
+            before_nonce_account.spendable
+        );
+        assert_eq!(after_nonce_account.data, before_nonce_account.data);
+        assert_eq!(after_nonce_account.data[0], NONCE_ACCOUNT_MARKER);
+        assert_eq!(state.get_balance(&recipient).unwrap_or(0), 0);
     }
 
     #[test]
@@ -4791,23 +6439,19 @@ mod tests {
         let bob = Pubkey([2u8; 32]);
 
         // Initialize nonce
-        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
-        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
-        let mut tx = Transaction::new(msg);
-        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
-        assert!(processor.process_transaction(&tx, &validator).success);
+        initialize_test_nonce(
+            &processor,
+            &alice_kp,
+            alice,
+            nonce_pk,
+            alice,
+            genesis_hash,
+            &validator,
+        );
 
         // Withdraw funds to bob
-        let mut withdraw_data = vec![28u8, 2u8];
-        withdraw_data.extend_from_slice(&NONCE_ACCOUNT_MIN_BALANCE.to_le_bytes());
-        let withdraw_ix = Instruction {
-            program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![alice, nonce_pk, bob],
-            data: withdraw_data,
-        };
-        let msg2 = crate::transaction::Message::new(vec![withdraw_ix], genesis_hash);
-        let mut tx2 = Transaction::new(msg2);
-        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let withdraw_ix = make_nonce_withdraw_ix(alice, nonce_pk, bob, NONCE_ACCOUNT_MIN_BALANCE);
+        let tx2 = make_signed_tx(&alice_kp, withdraw_ix, genesis_hash);
         let r = processor.process_transaction(&tx2, &validator);
         assert!(r.success, "Withdraw failed: {:?}", r.error);
 
@@ -4818,6 +6462,168 @@ mod tests {
         // Nonce account data should be cleared (closed)
         let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
         assert!(nonce_acct.data.is_empty());
+    }
+
+    #[test]
+    fn test_nonce_withdraw_authority_restriction_blocks_value_exit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        initialize_test_nonce(
+            &processor,
+            &alice_kp,
+            alice,
+            nonce_pk,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+        let before_nonce_account = state.get_account(&nonce_pk).unwrap().unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let withdraw_ix = make_nonce_withdraw_ix(alice, nonce_pk, bob, NONCE_ACCOUNT_MIN_BALANCE);
+        let tx = make_signed_tx(&alice_kp, withdraw_ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert_failed_nonce_withdraw_keeps_nonce_open(
+            &state,
+            nonce_pk,
+            bob,
+            &result.error,
+            "authority value exit blocked by active account restriction",
+            &before_nonce_account,
+        );
+    }
+
+    #[test]
+    fn test_nonce_withdraw_authority_native_frozen_amount_blocks_value_exit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        initialize_test_nonce(
+            &processor,
+            &alice_kp,
+            alice,
+            nonce_pk,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+        let before_nonce_account = state.get_account(&nonce_pk).unwrap().unwrap();
+        let authority_spendable = state
+            .get_account(&alice)
+            .unwrap()
+            .expect("authority account should exist")
+            .spendable;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: authority_spendable,
+            },
+        );
+
+        let withdraw_ix = make_nonce_withdraw_ix(alice, nonce_pk, bob, NONCE_ACCOUNT_MIN_BALANCE);
+        let tx = make_signed_tx(&alice_kp, withdraw_ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert_failed_nonce_withdraw_keeps_nonce_open(
+            &state,
+            nonce_pk,
+            bob,
+            &result.error,
+            "authority value exit blocked by active account-asset restriction",
+            &before_nonce_account,
+        );
+    }
+
+    #[test]
+    fn test_nonce_withdraw_nonce_account_restriction_blocks_value_exit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        initialize_test_nonce(
+            &processor,
+            &alice_kp,
+            alice,
+            nonce_pk,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+        let before_nonce_account = state.get_account(&nonce_pk).unwrap().unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(nonce_pk),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let withdraw_ix = make_nonce_withdraw_ix(alice, nonce_pk, bob, NONCE_ACCOUNT_MIN_BALANCE);
+        let tx = make_signed_tx(&alice_kp, withdraw_ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert_failed_nonce_withdraw_keeps_nonce_open(
+            &state,
+            nonce_pk,
+            bob,
+            &result.error,
+            "sender account restriction",
+            &before_nonce_account,
+        );
+    }
+
+    #[test]
+    fn test_nonce_withdraw_recipient_restriction_blocks_without_closing_nonce() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        initialize_test_nonce(
+            &processor,
+            &alice_kp,
+            alice,
+            nonce_pk,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+        let before_nonce_account = state.get_account(&nonce_pk).unwrap().unwrap();
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(bob),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let withdraw_ix = make_nonce_withdraw_ix(alice, nonce_pk, bob, NONCE_ACCOUNT_MIN_BALANCE);
+        let tx = make_signed_tx(&alice_kp, withdraw_ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert_failed_nonce_withdraw_keeps_nonce_open(
+            &state,
+            nonce_pk,
+            bob,
+            &result.error,
+            "recipient account restriction",
+            &before_nonce_account,
+        );
     }
 
     #[test]
@@ -6241,6 +8047,28 @@ mod tests {
         contract_addr
     }
 
+    fn set_contract_lifecycle_status_for_test(
+        state: &StateStore,
+        contract_addr: Pubkey,
+        status: crate::ContractLifecycleStatus,
+    ) {
+        let mut account = state.get_account(&contract_addr).unwrap().unwrap();
+        let mut contract: crate::ContractAccount = serde_json::from_slice(&account.data).unwrap();
+        contract.lifecycle_status = status;
+        contract.lifecycle_updated_slot = 99;
+        contract.lifecycle_restriction_id = Some(7);
+        account.data = serde_json::to_vec(&contract).unwrap();
+        state.put_account(&contract_addr, &account).unwrap();
+    }
+
+    fn load_contract_account_for_test(
+        state: &StateStore,
+        contract_addr: Pubkey,
+    ) -> crate::ContractAccount {
+        let account = state.get_account(&contract_addr).unwrap().unwrap();
+        serde_json::from_slice(&account.data).unwrap()
+    }
+
     /// Helper: build and submit a contract instruction tx.
     fn submit_contract_ix(
         processor: &TxProcessor,
@@ -6496,6 +8324,2895 @@ mod tests {
         data
     }
 
+    fn assert_contract_record_call_not_mutated(state: &StateStore, contract_addr: Pubkey) {
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_caller")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_contract_lifecycle_active_allows_state_changing_wasm_execution() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        let args = vec![1, 2, 3];
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+
+        assert!(
+            result.success,
+            "active call should succeed: {:?}",
+            result.error
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            args
+        );
+    }
+
+    #[test]
+    fn test_contract_lifecycle_suspended_rejects_state_changing_wasm_before_execution() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_addr,
+            crate::ContractLifecycleStatus::Suspended,
+        );
+
+        let before_caller_balance = state.get_balance(&alice).unwrap();
+        let before_contract_balance = state.get_balance(&contract_addr).unwrap_or(0);
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![4, 5, 6],
+                value: 123,
+            },
+            genesis_hash,
+            &validator,
+        );
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle suspended"));
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+        assert_eq!(
+            state.get_balance(&contract_addr).unwrap_or(0),
+            before_contract_balance
+        );
+        assert_eq!(
+            before_caller_balance - state.get_balance(&alice).unwrap(),
+            result.fee_paid
+        );
+    }
+
+    #[test]
+    fn test_contract_lifecycle_quarantined_rejects_wasm_before_execution() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_addr,
+            crate::ContractLifecycleStatus::Quarantined,
+        );
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![7],
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle quarantined"));
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+    }
+
+    #[test]
+    fn test_contract_lifecycle_terminated_rejects_wasm_before_execution() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_addr,
+            crate::ContractLifecycleStatus::Terminated,
+        );
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![8],
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle terminated"));
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+    }
+
+    #[test]
+    fn test_contract_lifecycle_simulation_rejects_blocked_contract_before_execution() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_addr,
+            crate::ContractLifecycleStatus::Suspended,
+        );
+
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![9],
+                value: 0,
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+        let result = processor.simulate_transaction(&tx);
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle suspended"));
+        assert_eq!(result.state_changes, 0);
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+    }
+
+    #[test]
+    fn restriction_governance_contract_suspend_and_lift_drive_lifecycle_without_owner_spoofing() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+
+        let restrict_data = make_restrict_action_data(
+            target_pubkey_payload(3, contract_addr),
+            &RestrictionMode::StateChangingBlocked,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            None,
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            restrict_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "contract restriction proposal should be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 1, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "contract restriction approval should execute: {:?}",
+            result.error
+        );
+
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Suspended
+        );
+        assert_eq!(contract.lifecycle_restriction_id, Some(1));
+        assert_eq!(contract.owner, alice);
+
+        let destination = Pubkey([0xE1; 32]);
+        let close_result = submit_contract_ix(
+            &processor,
+            &bob_kp,
+            vec![bob, contract_addr, destination],
+            crate::ContractInstruction::Close,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!close_result.success);
+        assert!(close_result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Only contract owner can close"));
+
+        let blocked_call = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![4, 5, 6],
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!blocked_call.success);
+        assert!(blocked_call
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle suspended"));
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+
+        let lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            lift_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "contract restriction lift proposal should be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "contract restriction lift should execute: {:?}",
+            result.error
+        );
+
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Active
+        );
+        assert_eq!(contract.lifecycle_restriction_id, None);
+
+        let args = vec![1, 2, 3];
+        let allowed_call = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: args.clone(),
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            allowed_call.success,
+            "lifted contract call should succeed: {:?}",
+            allowed_call.error
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            args
+        );
+    }
+
+    #[test]
+    fn restriction_governance_contract_temporary_restriction_expires_and_resumes_on_next_call() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+
+        create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            1,
+            1,
+            target_pubkey_payload(3, contract_addr),
+            RestrictionMode::StateChangingBlocked,
+            5,
+        );
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Suspended
+        );
+        assert_eq!(contract.lifecycle_restriction_id, Some(1));
+
+        let blocked_call = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![9],
+                value: 0,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(!blocked_call.success);
+        assert!(blocked_call
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle suspended"));
+
+        let fresh_blockhash = advance_test_slot(&state, 5);
+        let args = vec![10, 11];
+        let resumed_call = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: args.clone(),
+                value: 0,
+            },
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            resumed_call.success,
+            "expired restriction should resume on next call: {:?}",
+            resumed_call.error
+        );
+
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Active
+        );
+        assert_eq!(contract.lifecycle_restriction_id, None);
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"last_args")
+                .unwrap()
+                .unwrap(),
+            args
+        );
+    }
+
+    #[test]
+    fn restriction_governance_contract_termination_is_permanent_and_preserves_state() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 1);
+        let validator = Pubkey([42u8; 32]);
+        let contract_addr =
+            install_test_contract_account(&state, alice, governance_test_contract_code());
+        let preserved_balance = Account::licn_to_spores(25);
+        let preserved_storage = b"audit_value".to_vec();
+        let mut account = state.get_account(&contract_addr).unwrap().unwrap();
+        account.spores = preserved_balance;
+        account.spendable = preserved_balance;
+        state.put_account(&contract_addr, &account).unwrap();
+        state
+            .put_contract_storage(&contract_addr, b"audit_key", &preserved_storage)
+            .unwrap();
+
+        let terminate_data = make_restrict_action_data(
+            target_pubkey_payload(3, contract_addr),
+            &RestrictionMode::Terminated,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            None,
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            terminate_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "termination proposal should be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 1, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "termination approval should be recorded: {:?}",
+            result.error
+        );
+        let early_execute =
+            process_governance_control(&processor, &bob_kp, bob, 36, 1, genesis_hash, &validator);
+        assert!(!early_execute.success);
+        assert!(early_execute
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("timelocked"));
+
+        let terminate_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let result = process_governance_control(
+            &processor,
+            &bob_kp,
+            bob,
+            36,
+            1,
+            terminate_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "termination should execute after timelock: {:?}",
+            result.error
+        );
+
+        let account = state.get_account(&contract_addr).unwrap().unwrap();
+        assert!(account.executable);
+        assert!(!account.data.is_empty());
+        assert_eq!(account.spores, preserved_balance);
+        assert_eq!(account.spendable, preserved_balance);
+        assert_eq!(
+            state
+                .get_contract_storage(&contract_addr, b"audit_key")
+                .unwrap()
+                .unwrap(),
+            preserved_storage
+        );
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Terminated
+        );
+        assert_eq!(contract.lifecycle_restriction_id, Some(1));
+        assert_eq!(contract.owner, alice);
+
+        let blocked_call = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Call {
+                function: "record_call".to_string(),
+                args: vec![12],
+                value: 0,
+            },
+            terminate_blockhash,
+            &validator,
+        );
+        assert!(!blocked_call.success);
+        assert!(blocked_call
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle terminated"));
+        assert_contract_record_call_not_mutated(&state, contract_addr);
+
+        let lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            lift_data,
+            terminate_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "terminated lift proposal should be stored until execution gate: {:?}",
+            result.error
+        );
+        let result = process_governance_control(
+            &processor,
+            &bob_kp,
+            bob,
+            35,
+            2,
+            terminate_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "terminated lift approval should be recorded: {:?}",
+            result.error
+        );
+        let lift_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH * 2);
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 36, 2, lift_blockhash, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("cannot be lifted"));
+
+        let extend_data = make_extend_restriction_action_data(1, Some(SLOTS_PER_EPOCH * 4), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            extend_data,
+            lift_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "terminated extension proposal should be stored until execution gate: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 3, lift_blockhash, &validator);
+        assert!(
+            result.success,
+            "terminated extension approval should be recorded: {:?}",
+            result.error
+        );
+        let extend_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH * 3);
+        let result = process_governance_control(
+            &processor,
+            &bob_kp,
+            bob,
+            36,
+            3,
+            extend_blockhash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("cannot be extended"));
+
+        let account = state.get_account(&contract_addr).unwrap().unwrap();
+        assert!(account.executable);
+        assert_eq!(account.spendable, preserved_balance);
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Terminated
+        );
+        assert_eq!(contract.lifecycle_restriction_id, Some(1));
+    }
+
+    fn setup_restriction_governance(
+        threshold: u8,
+        timelock_epochs: u32,
+    ) -> (
+        TxProcessor,
+        StateStore,
+        Keypair,
+        Pubkey,
+        Keypair,
+        Pubkey,
+        Pubkey,
+        Hash,
+    ) {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let gov = Pubkey([0xA7; 32]);
+        let fund = Account::licn_to_spores(1_000);
+
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+        state.put_account(&gov, &Account::new(fund, gov)).unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&gov).unwrap();
+        state
+            .set_governed_wallet_config(
+                &gov,
+                &crate::multisig::GovernedWalletConfig::new(
+                    threshold,
+                    vec![alice, bob],
+                    "community_treasury",
+                )
+                .with_timelock(timelock_epochs),
+            )
+            .unwrap();
+
+        (
+            processor,
+            state,
+            alice_kp,
+            alice,
+            bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+        )
+    }
+
+    fn make_governance_proposal_ix(
+        proposer: Pubkey,
+        authority: Pubkey,
+        data: Vec<u8>,
+    ) -> Instruction {
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![proposer, authority],
+            data,
+        }
+    }
+
+    fn make_governance_proposal_control_data(instruction_type: u8, proposal_id: u64) -> Vec<u8> {
+        let mut data = vec![instruction_type];
+        data.extend_from_slice(&proposal_id.to_le_bytes());
+        data
+    }
+
+    fn process_governance_proposal(
+        processor: &TxProcessor,
+        signer: &Keypair,
+        signer_pubkey: Pubkey,
+        authority: Pubkey,
+        data: Vec<u8>,
+        recent_blockhash: Hash,
+        validator: &Pubkey,
+    ) -> TxResult {
+        let ix = make_governance_proposal_ix(signer_pubkey, authority, data);
+        let tx = make_signed_tx(signer, ix, recent_blockhash);
+        processor.process_transaction(&tx, validator)
+    }
+
+    fn process_governance_control(
+        processor: &TxProcessor,
+        signer: &Keypair,
+        signer_pubkey: Pubkey,
+        instruction_type: u8,
+        proposal_id: u64,
+        recent_blockhash: Hash,
+        validator: &Pubkey,
+    ) -> TxResult {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![signer_pubkey],
+            data: make_governance_proposal_control_data(instruction_type, proposal_id),
+        };
+        let tx = make_signed_tx(signer, ix, recent_blockhash);
+        processor.process_transaction(&tx, validator)
+    }
+
+    fn parse_governance_action_with_accounts(
+        data: Vec<u8>,
+        accounts: Vec<Pubkey>,
+    ) -> Result<GovernanceAction, String> {
+        let (processor, _state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts,
+            data,
+        };
+        processor
+            .parse_governance_action(&ix)
+            .map(|(_proposer, _authority, action)| action)
+    }
+
+    fn parse_restriction_governance_action(data: Vec<u8>) -> Result<GovernanceAction, String> {
+        parse_governance_action_with_accounts(data, vec![Pubkey([0xA0; 32]), Pubkey([0xA1; 32])])
+    }
+
+    fn target_account_payload(account: Pubkey) -> Vec<u8> {
+        let mut payload = vec![0u8];
+        payload.extend_from_slice(&account.0);
+        payload
+    }
+
+    fn target_account_asset_payload(account: Pubkey, asset: Pubkey) -> Vec<u8> {
+        let mut payload = vec![1u8];
+        payload.extend_from_slice(&account.0);
+        payload.extend_from_slice(&asset.0);
+        payload
+    }
+
+    fn target_pubkey_payload(target_type: u8, pubkey: Pubkey) -> Vec<u8> {
+        let mut payload = vec![target_type];
+        payload.extend_from_slice(&pubkey.0);
+        payload
+    }
+
+    fn target_code_hash_payload(code_hash: Hash) -> Vec<u8> {
+        let mut payload = vec![4u8];
+        payload.extend_from_slice(&code_hash.0);
+        payload
+    }
+
+    fn push_limited_string(payload: &mut Vec<u8>, value: &str) {
+        let value_bytes = value.as_bytes();
+        assert!(u16::try_from(value_bytes.len()).is_ok());
+        payload.extend_from_slice(&(value_bytes.len() as u16).to_le_bytes());
+        payload.extend_from_slice(value_bytes);
+    }
+
+    fn target_bridge_route_payload(chain_id: &str, asset: &str) -> Vec<u8> {
+        let mut payload = vec![5u8];
+        push_limited_string(&mut payload, chain_id);
+        push_limited_string(&mut payload, asset);
+        payload
+    }
+
+    fn target_protocol_module_payload(module: ProtocolModuleId) -> Vec<u8> {
+        vec![6u8, module.as_u8()]
+    }
+
+    fn frozen_mode_amount(mode: &RestrictionMode) -> Option<u64> {
+        match mode {
+            RestrictionMode::FrozenAmount { amount } => Some(*amount),
+            _ => None,
+        }
+    }
+
+    fn make_restrict_action_data(
+        target_payload: Vec<u8>,
+        mode: &RestrictionMode,
+        reason: RestrictionReason,
+        evidence_hash: Option<Hash>,
+        evidence_uri_hash: Option<Hash>,
+        expires_at_slot: Option<u64>,
+    ) -> Vec<u8> {
+        let mut data = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
+        data.extend(target_payload);
+        data.push(mode.mode_id());
+        if let Some(amount) = frozen_mode_amount(mode) {
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        data.push(reason.as_u8());
+        let mut flags = 0u8;
+        if evidence_hash.is_some() {
+            flags |= 0x01;
+        }
+        if evidence_uri_hash.is_some() {
+            flags |= 0x02;
+        }
+        if expires_at_slot.is_some() {
+            flags |= 0x04;
+        }
+        data.push(flags);
+        if let Some(hash) = evidence_hash {
+            data.extend_from_slice(&hash.0);
+        }
+        if let Some(hash) = evidence_uri_hash {
+            data.extend_from_slice(&hash.0);
+        }
+        if let Some(slot) = expires_at_slot {
+            data.extend_from_slice(&slot.to_le_bytes());
+        }
+        data
+    }
+
+    fn make_lift_restriction_action_data(
+        restriction_id: u64,
+        reason: RestrictionLiftReason,
+    ) -> Vec<u8> {
+        let mut data = vec![34u8, GOVERNANCE_ACTION_LIFT_RESTRICTION];
+        data.extend_from_slice(&restriction_id.to_le_bytes());
+        data.push(reason.as_u8());
+        data
+    }
+
+    fn make_extend_restriction_action_data(
+        restriction_id: u64,
+        new_expires_at_slot: Option<u64>,
+        evidence_hash: Option<Hash>,
+    ) -> Vec<u8> {
+        let mut data = vec![34u8, GOVERNANCE_ACTION_EXTEND_RESTRICTION];
+        data.extend_from_slice(&restriction_id.to_le_bytes());
+        let mut flags = 0u8;
+        if new_expires_at_slot.is_some() {
+            flags |= 0x01;
+        }
+        if evidence_hash.is_some() {
+            flags |= 0x02;
+        }
+        data.push(flags);
+        if let Some(slot) = new_expires_at_slot {
+            data.extend_from_slice(&slot.to_le_bytes());
+        }
+        if let Some(hash) = evidence_hash {
+            data.extend_from_slice(&hash.0);
+        }
+        data
+    }
+
+    fn create_active_test_restriction(
+        processor: &TxProcessor,
+        state: &StateStore,
+        alice_kp: &Keypair,
+        alice: Pubkey,
+        bob_kp: &Keypair,
+        bob: Pubkey,
+        gov: Pubkey,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+        expires_at_slot: Option<u64>,
+    ) {
+        let target = Pubkey([0xC1; 32]);
+        let data = make_restrict_action_data(
+            target_account_payload(target),
+            &RestrictionMode::OutgoingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            expires_at_slot,
+        );
+        let result = process_governance_proposal(
+            processor,
+            alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            validator,
+        );
+        assert!(
+            result.success,
+            "Restriction proposal should succeed: {:?}",
+            result.error
+        );
+        assert!(state.get_restriction(1).unwrap().is_none());
+
+        let result =
+            process_governance_control(processor, bob_kp, bob, 35, 1, genesis_hash, validator);
+        assert!(
+            result.success,
+            "Restriction approval should execute: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        assert_eq!(
+            state.get_restriction(1).unwrap().unwrap().status,
+            RestrictionStatus::Active
+        );
+    }
+
+    fn create_active_bridge_split_restriction(
+        processor: &TxProcessor,
+        state: &StateStore,
+        alice_kp: &Keypair,
+        alice: Pubkey,
+        bob_kp: &Keypair,
+        bob: Pubkey,
+        bridge_authority: Pubkey,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+    ) -> Hash {
+        let data = make_restrict_action_data(
+            target_bridge_route_payload("neo-x-testnet", "USDT"),
+            &RestrictionMode::RoutePaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            processor,
+            alice_kp,
+            alice,
+            bridge_authority,
+            data,
+            genesis_hash,
+            validator,
+        );
+        assert!(
+            result.success,
+            "Bridge split restriction proposal should succeed: {:?}",
+            result.error
+        );
+
+        let result =
+            process_governance_control(processor, bob_kp, bob, 35, 1, genesis_hash, validator);
+        assert!(
+            result.success,
+            "Bridge split restriction approval should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed);
+
+        let fresh_blockhash = advance_test_slot(state, SLOTS_PER_EPOCH);
+        let result =
+            process_governance_control(processor, bob_kp, bob, 36, 1, fresh_blockhash, validator);
+        assert!(
+            result.success,
+            "Bridge split restriction execution should succeed: {:?}",
+            result.error
+        );
+
+        let record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(record.status, RestrictionStatus::Active);
+        assert_eq!(record.approval_authority, Some(bridge_authority));
+        fresh_blockhash
+    }
+
+    fn create_active_guardian_test_restriction(
+        processor: &TxProcessor,
+        state: &StateStore,
+        alice_kp: &Keypair,
+        alice: Pubkey,
+        bob_kp: &Keypair,
+        bob: Pubkey,
+        guardian_authority: Pubkey,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+        proposal_id: u64,
+        restriction_id: u64,
+        target_payload: Vec<u8>,
+        mode: RestrictionMode,
+        expires_at_slot: u64,
+    ) -> RestrictionRecord {
+        let data = make_restrict_action_data(
+            target_payload,
+            &mode,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(expires_at_slot),
+        );
+        let result = process_governance_proposal(
+            processor,
+            alice_kp,
+            alice,
+            guardian_authority,
+            data,
+            genesis_hash,
+            validator,
+        );
+        assert!(
+            result.success,
+            "Guardian restriction proposal should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(proposal_id).unwrap().unwrap();
+        assert_eq!(
+            proposal.authority,
+            state.get_governance_authority().unwrap().unwrap()
+        );
+        assert_eq!(proposal.approval_authority, Some(guardian_authority));
+        assert!(!proposal.executed);
+
+        let result = process_governance_control(
+            processor,
+            bob_kp,
+            bob,
+            35,
+            proposal_id,
+            genesis_hash,
+            validator,
+        );
+        assert!(
+            result.success,
+            "Guardian restriction approval should execute: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(proposal_id).unwrap().unwrap();
+        assert!(proposal.executed);
+
+        let record = state.get_restriction(restriction_id).unwrap().unwrap();
+        assert_eq!(record.id, restriction_id);
+        assert_eq!(record.mode, mode);
+        assert_eq!(record.status, RestrictionStatus::Active);
+        assert_eq!(record.approval_authority, Some(guardian_authority));
+        assert_eq!(record.expires_at_slot, Some(expires_at_slot));
+        record
+    }
+
+    fn find_system_event<'a>(
+        events: &'a [ContractEvent],
+        event_name: &str,
+        proposal_id: u64,
+    ) -> &'a ContractEvent {
+        let proposal_id = proposal_id.to_string();
+        events
+            .iter()
+            .find(|event| {
+                event.program == SYSTEM_PROGRAM_ID
+                    && event.name == event_name
+                    && event.data.get("proposal_id").map(String::as_str)
+                        == Some(proposal_id.as_str())
+            })
+            .unwrap_or_else(|| panic!("missing {} for proposal {}", event_name, proposal_id))
+    }
+
+    fn assert_restrict_action(
+        action: GovernanceAction,
+        expected_target: RestrictionTarget,
+        expected_mode: RestrictionMode,
+        expected_reason: RestrictionReason,
+        expected_evidence_hash: Option<Hash>,
+        expected_evidence_uri_hash: Option<Hash>,
+        expected_expires_at_slot: Option<u64>,
+    ) {
+        match action {
+            GovernanceAction::Restrict {
+                target,
+                mode,
+                reason,
+                evidence_hash,
+                evidence_uri_hash,
+                expires_at_slot,
+            } => {
+                assert_eq!(target, expected_target);
+                assert_eq!(mode, expected_mode);
+                assert_eq!(reason, expected_reason);
+                assert_eq!(evidence_hash, expected_evidence_hash);
+                assert_eq!(evidence_uri_hash, expected_evidence_uri_hash);
+                assert_eq!(expires_at_slot, expected_expires_at_slot);
+            }
+            other => panic!("expected Restrict action, got {:?}", other),
+        }
+    }
+
+    fn assert_parse_error(data: Vec<u8>, expected: &str) {
+        let err = parse_restriction_governance_action(data).expect_err("parse should fail");
+        assert!(
+            err.contains(expected),
+            "expected error containing {:?}, got {:?}",
+            expected,
+            err
+        );
+    }
+
+    #[test]
+    fn test_restriction_governance_action_subtypes_are_append_only() {
+        assert_eq!(GOVERNANCE_ACTION_TREASURY_TRANSFER, 0);
+        assert_eq!(GOVERNANCE_ACTION_PARAM_CHANGE, 1);
+        assert_eq!(GOVERNANCE_ACTION_CONTRACT_UPGRADE, 2);
+        assert_eq!(GOVERNANCE_ACTION_SET_UPGRADE_TIMELOCK, 3);
+        assert_eq!(GOVERNANCE_ACTION_EXECUTE_UPGRADE, 4);
+        assert_eq!(GOVERNANCE_ACTION_VETO_UPGRADE, 5);
+        assert_eq!(GOVERNANCE_ACTION_CONTRACT_CLOSE, 6);
+        assert_eq!(GOVERNANCE_ACTION_REGISTER_SYMBOL, 7);
+        assert_eq!(GOVERNANCE_ACTION_SET_CONTRACT_ABI, 8);
+        assert_eq!(GOVERNANCE_ACTION_CONTRACT_CALL, 9);
+        assert_eq!(GOVERNANCE_ACTION_RESTRICT, 10);
+        assert_eq!(GOVERNANCE_ACTION_LIFT_RESTRICTION, 11);
+        assert_eq!(GOVERNANCE_ACTION_EXTEND_RESTRICTION, 12);
+
+        let proposer = Pubkey([0x01; 32]);
+        let authority = Pubkey([0x02; 32]);
+        let recipient = Pubkey([0x03; 32]);
+        let mut treasury_data = vec![34u8, GOVERNANCE_ACTION_TREASURY_TRANSFER];
+        treasury_data.extend_from_slice(&500u64.to_le_bytes());
+        match parse_governance_action_with_accounts(
+            treasury_data,
+            vec![proposer, authority, recipient],
+        )
+        .expect("legacy treasury subtype parses")
+        {
+            GovernanceAction::TreasuryTransfer {
+                recipient: parsed_recipient,
+                amount,
+            } => {
+                assert_eq!(parsed_recipient, recipient);
+                assert_eq!(amount, 500);
+            }
+            other => panic!("expected TreasuryTransfer, got {:?}", other),
+        }
+
+        let contract = Pubkey([0x04; 32]);
+        match parse_governance_action_with_accounts(
+            make_governance_contract_call_data("record_call", &[1, 2, 3], 7),
+            vec![proposer, authority, contract],
+        )
+        .expect("legacy contract call subtype parses")
+        {
+            GovernanceAction::ContractCall {
+                contract: parsed_contract,
+                function,
+                args,
+                value,
+            } => {
+                assert_eq!(parsed_contract, contract);
+                assert_eq!(function, "record_call");
+                assert_eq!(args, vec![1, 2, 3]);
+                assert_eq!(value, 7);
+            }
+            other => panic!("expected ContractCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_restrict_governance_action_target_forms() {
+        let cases = vec![
+            (
+                target_account_payload(Pubkey([0x10; 32])),
+                RestrictionTarget::Account(Pubkey([0x10; 32])),
+                RestrictionMode::OutgoingOnly,
+                RestrictionReason::TestnetDrill,
+                None,
+                None,
+                Some(101),
+            ),
+            (
+                target_account_asset_payload(Pubkey([0x11; 32]), Pubkey([0x12; 32])),
+                RestrictionTarget::AccountAsset {
+                    account: Pubkey([0x11; 32]),
+                    asset: Pubkey([0x12; 32]),
+                },
+                RestrictionMode::FrozenAmount { amount: 55 },
+                RestrictionReason::StolenFunds,
+                Some(Hash([0x21; 32])),
+                None,
+                Some(102),
+            ),
+            (
+                target_pubkey_payload(2, Pubkey([0x13; 32])),
+                RestrictionTarget::Asset(Pubkey([0x13; 32])),
+                RestrictionMode::AssetPaused,
+                RestrictionReason::CustodyIncident,
+                None,
+                Some(Hash([0x22; 32])),
+                Some(103),
+            ),
+            (
+                target_pubkey_payload(3, Pubkey([0x14; 32])),
+                RestrictionTarget::Contract(Pubkey([0x14; 32])),
+                RestrictionMode::Quarantined,
+                RestrictionReason::ScamContract,
+                Some(Hash([0x23; 32])),
+                None,
+                Some(104),
+            ),
+            (
+                target_code_hash_payload(Hash([0x15; 32])),
+                RestrictionTarget::CodeHash(Hash([0x15; 32])),
+                RestrictionMode::DeployBlocked,
+                RestrictionReason::MaliciousCodeHash,
+                Some(Hash([0x24; 32])),
+                None,
+                Some(105),
+            ),
+            (
+                target_bridge_route_payload("neo-x-testnet", "WETH"),
+                RestrictionTarget::BridgeRoute {
+                    chain_id: "neo-x-testnet".to_string(),
+                    asset: "WETH".to_string(),
+                },
+                RestrictionMode::RoutePaused,
+                RestrictionReason::BridgeCompromise,
+                Some(Hash([0x25; 32])),
+                None,
+                Some(106),
+            ),
+            (
+                target_protocol_module_payload(ProtocolModuleId::Mempool),
+                RestrictionTarget::ProtocolModule(ProtocolModuleId::Mempool),
+                RestrictionMode::ProtocolPaused,
+                RestrictionReason::ProtocolBug,
+                Some(Hash([0x26; 32])),
+                None,
+                Some(107),
+            ),
+        ];
+
+        for (
+            target_payload,
+            target,
+            mode,
+            reason,
+            evidence_hash,
+            evidence_uri_hash,
+            expires_at_slot,
+        ) in cases
+        {
+            let data = make_restrict_action_data(
+                target_payload,
+                &mode,
+                reason,
+                evidence_hash,
+                evidence_uri_hash,
+                expires_at_slot,
+            );
+            let action = parse_restriction_governance_action(data).expect("restrict parses");
+            assert_restrict_action(
+                action,
+                target,
+                mode,
+                reason,
+                evidence_hash,
+                evidence_uri_hash,
+                expires_at_slot,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_restrict_governance_action_modes() {
+        let cases = vec![
+            (
+                target_account_payload(Pubkey([0x30; 32])),
+                RestrictionMode::OutgoingOnly,
+            ),
+            (
+                target_account_payload(Pubkey([0x31; 32])),
+                RestrictionMode::IncomingOnly,
+            ),
+            (
+                target_account_payload(Pubkey([0x32; 32])),
+                RestrictionMode::Bidirectional,
+            ),
+            (
+                target_account_asset_payload(Pubkey([0x33; 32]), Pubkey([0x34; 32])),
+                RestrictionMode::FrozenAmount { amount: 77 },
+            ),
+            (
+                target_pubkey_payload(2, Pubkey([0x35; 32])),
+                RestrictionMode::AssetPaused,
+            ),
+            (
+                target_pubkey_payload(3, Pubkey([0x36; 32])),
+                RestrictionMode::ExecuteBlocked,
+            ),
+            (
+                target_pubkey_payload(3, Pubkey([0x37; 32])),
+                RestrictionMode::StateChangingBlocked,
+            ),
+            (
+                target_pubkey_payload(3, Pubkey([0x38; 32])),
+                RestrictionMode::Quarantined,
+            ),
+            (
+                target_code_hash_payload(Hash([0x39; 32])),
+                RestrictionMode::DeployBlocked,
+            ),
+            (
+                target_bridge_route_payload("eth-mainnet", "USDT"),
+                RestrictionMode::RoutePaused,
+            ),
+            (
+                target_protocol_module_payload(ProtocolModuleId::Bridge),
+                RestrictionMode::ProtocolPaused,
+            ),
+            (
+                target_pubkey_payload(3, Pubkey([0x3A; 32])),
+                RestrictionMode::Terminated,
+            ),
+        ];
+
+        for (target_payload, mode) in cases {
+            let data = make_restrict_action_data(
+                target_payload,
+                &mode,
+                RestrictionReason::TestnetDrill,
+                None,
+                None,
+                None,
+            );
+            match parse_restriction_governance_action(data).expect("mode parses") {
+                GovernanceAction::Restrict {
+                    mode: parsed_mode, ..
+                } => assert_eq!(parsed_mode, mode),
+                other => panic!("expected Restrict action, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_lift_and_extend_restriction_governance_actions() {
+        match parse_restriction_governance_action(make_lift_restriction_action_data(
+            42,
+            RestrictionLiftReason::FalsePositive,
+        ))
+        .expect("lift parses")
+        {
+            GovernanceAction::LiftRestriction {
+                restriction_id,
+                reason,
+            } => {
+                assert_eq!(restriction_id, 42);
+                assert_eq!(reason, RestrictionLiftReason::FalsePositive);
+            }
+            other => panic!("expected LiftRestriction, got {:?}", other),
+        }
+
+        match parse_restriction_governance_action(make_extend_restriction_action_data(
+            43,
+            Some(1_000),
+            Some(Hash([0x44; 32])),
+        ))
+        .expect("extend parses")
+        {
+            GovernanceAction::ExtendRestriction {
+                restriction_id,
+                new_expires_at_slot,
+                evidence_hash,
+            } => {
+                assert_eq!(restriction_id, 43);
+                assert_eq!(new_expires_at_slot, Some(1_000));
+                assert_eq!(evidence_hash, Some(Hash([0x44; 32])));
+            }
+            other => panic!("expected ExtendRestriction, got {:?}", other),
+        }
+
+        match parse_restriction_governance_action(make_extend_restriction_action_data(
+            44, None, None,
+        ))
+        .expect("no-op shaped extend parses for execution-time validation")
+        {
+            GovernanceAction::ExtendRestriction {
+                restriction_id,
+                new_expires_at_slot,
+                evidence_hash,
+            } => {
+                assert_eq!(restriction_id, 44);
+                assert_eq!(new_expires_at_slot, None);
+                assert_eq!(evidence_hash, None);
+            }
+            other => panic!("expected ExtendRestriction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_restriction_governance_action_rejects_malformed_payloads() {
+        assert_parse_error(vec![34u8, 13], "Unknown governance action type 13");
+
+        let mut unknown_target = vec![34u8, GOVERNANCE_ACTION_RESTRICT, 99];
+        unknown_target.push(RestrictionMode::OutgoingOnly.mode_id());
+        unknown_target.push(RestrictionReason::TestnetDrill.as_u8());
+        unknown_target.push(0);
+        assert_parse_error(unknown_target, "unknown restriction target type 99");
+
+        let mut unknown_mode = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
+        unknown_mode.extend(target_account_payload(Pubkey([0x50; 32])));
+        unknown_mode.push(99);
+        unknown_mode.push(RestrictionReason::TestnetDrill.as_u8());
+        unknown_mode.push(0);
+        assert_parse_error(unknown_mode, "unknown restriction mode 99");
+
+        let mut missing_frozen_amount = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
+        missing_frozen_amount.extend(target_account_asset_payload(
+            Pubkey([0x51; 32]),
+            Pubkey([0x52; 32]),
+        ));
+        missing_frozen_amount.push(RestrictionMode::FrozenAmount { amount: 1 }.mode_id());
+        assert_parse_error(missing_frozen_amount, "payload truncated at frozen_amount");
+
+        assert_parse_error(
+            make_restrict_action_data(
+                target_account_asset_payload(Pubkey([0x53; 32]), Pubkey([0x54; 32])),
+                &RestrictionMode::FrozenAmount { amount: 0 },
+                RestrictionReason::TestnetDrill,
+                None,
+                None,
+                None,
+            ),
+            "FrozenAmount restriction amount must be > 0",
+        );
+
+        assert_parse_error(
+            make_restrict_action_data(
+                target_account_payload(Pubkey([0x55; 32])),
+                &RestrictionMode::OutgoingOnly,
+                RestrictionReason::StolenFunds,
+                None,
+                None,
+                None,
+            ),
+            "requires evidence_hash or evidence_uri_hash",
+        );
+
+        let mut unexpected_restrict_flags = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
+        unexpected_restrict_flags.extend(target_account_payload(Pubkey([0x56; 32])));
+        unexpected_restrict_flags.push(RestrictionMode::OutgoingOnly.mode_id());
+        unexpected_restrict_flags.push(RestrictionReason::TestnetDrill.as_u8());
+        unexpected_restrict_flags.push(0x08);
+        assert_parse_error(unexpected_restrict_flags, "unexpected flags 0x08");
+
+        let mut trailing_restrict = make_restrict_action_data(
+            target_account_payload(Pubkey([0x57; 32])),
+            &RestrictionMode::OutgoingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            None,
+        );
+        trailing_restrict.push(0xAA);
+        assert_parse_error(trailing_restrict, "trailing bytes");
+
+        let mut empty_route_chain = vec![34u8, GOVERNANCE_ACTION_RESTRICT, 5];
+        empty_route_chain.extend_from_slice(&0u16.to_le_bytes());
+        assert_parse_error(empty_route_chain, "chain_id cannot be empty");
+
+        let mut invalid_route_utf8 = vec![34u8, GOVERNANCE_ACTION_RESTRICT, 5];
+        invalid_route_utf8.extend_from_slice(&1u16.to_le_bytes());
+        invalid_route_utf8.push(0xFF);
+        assert_parse_error(invalid_route_utf8, "chain_id must be valid UTF-8");
+
+        let mut too_long_route = vec![34u8, GOVERNANCE_ACTION_RESTRICT, 5];
+        too_long_route.extend_from_slice(&257u16.to_le_bytes());
+        too_long_route.extend(std::iter::repeat(b'a').take(257));
+        assert_parse_error(too_long_route, "chain_id length 257 exceeds 256");
+
+        let mut unknown_module = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
+        unknown_module.extend([6u8, 99u8]);
+        assert_parse_error(unknown_module, "unknown protocol module id 99");
+
+        let mut bad_lift_id = vec![34u8, GOVERNANCE_ACTION_LIFT_RESTRICTION];
+        bad_lift_id.extend_from_slice(&0u64.to_le_bytes());
+        bad_lift_id.push(RestrictionLiftReason::IncidentResolved.as_u8());
+        assert_parse_error(bad_lift_id, "restriction_id must be greater than zero");
+
+        let mut bad_lift_reason = vec![34u8, GOVERNANCE_ACTION_LIFT_RESTRICTION];
+        bad_lift_reason.extend_from_slice(&1u64.to_le_bytes());
+        bad_lift_reason.push(99);
+        assert_parse_error(bad_lift_reason, "unknown restriction lift reason 99");
+
+        let mut trailing_lift =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        trailing_lift.push(0xAA);
+        assert_parse_error(trailing_lift, "trailing bytes");
+
+        let mut bad_extend_id = vec![34u8, GOVERNANCE_ACTION_EXTEND_RESTRICTION];
+        bad_extend_id.extend_from_slice(&0u64.to_le_bytes());
+        bad_extend_id.push(0);
+        assert_parse_error(bad_extend_id, "restriction_id must be greater than zero");
+
+        let mut bad_extend_flags = vec![34u8, GOVERNANCE_ACTION_EXTEND_RESTRICTION];
+        bad_extend_flags.extend_from_slice(&1u64.to_le_bytes());
+        bad_extend_flags.push(0x04);
+        assert_parse_error(bad_extend_flags, "unexpected flags 0x04");
+
+        let mut truncated_extend = vec![34u8, GOVERNANCE_ACTION_EXTEND_RESTRICTION];
+        truncated_extend.extend_from_slice(&1u64.to_le_bytes());
+        truncated_extend.push(0x02);
+        truncated_extend.extend_from_slice(&[0xAB; 31]);
+        assert_parse_error(truncated_extend, "payload truncated at evidence_hash");
+    }
+
+    #[test]
+    fn test_restriction_governance_create_executes_through_proposal_lifecycle() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 1);
+        let validator = Pubkey([42u8; 32]);
+        let target = Pubkey([0xA1; 32]);
+        let expires_at_slot = SLOTS_PER_EPOCH * 2;
+        let data = make_restrict_action_data(
+            target_account_payload(target),
+            &RestrictionMode::OutgoingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(expires_at_slot),
+        );
+
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Restriction proposal should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals, vec![alice]);
+        assert_eq!(proposal.execute_after_epoch, 1);
+        assert!(!proposal.executed);
+        assert!(state.get_restriction(1).unwrap().is_none());
+
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 1, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Restriction approval should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals, vec![alice, bob]);
+        assert!(!proposal.executed);
+        assert!(state.get_restriction(1).unwrap().is_none());
+
+        let result = process_governance_control(
+            &processor,
+            &alice_kp,
+            alice,
+            36,
+            1,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("timelocked"));
+
+        let fresh_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH);
+        let result = process_governance_control(
+            &processor,
+            &bob_kp,
+            bob,
+            36,
+            1,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Restriction execution should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed);
+        let record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.target, RestrictionTarget::Account(target));
+        assert_eq!(record.mode, RestrictionMode::OutgoingOnly);
+        assert_eq!(record.status, RestrictionStatus::Active);
+        assert_eq!(record.reason, RestrictionReason::TestnetDrill);
+        assert_eq!(record.proposer, alice);
+        assert_eq!(record.authority, gov);
+        assert_eq!(record.approval_authority, None);
+        assert_eq!(record.created_slot, SLOTS_PER_EPOCH);
+        assert_eq!(record.created_epoch, 1);
+        assert_eq!(record.expires_at_slot, Some(expires_at_slot));
+        assert_eq!(record.supersedes, None);
+    }
+
+    #[test]
+    fn test_restriction_governance_lift_preserves_record_id() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let data = make_lift_restriction_action_data(1, RestrictionLiftReason::FalsePositive);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Lift proposal should succeed: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Lift approval should execute: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert!(proposal.executed);
+        let record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.status, RestrictionStatus::Lifted);
+        assert_eq!(record.lifted_by, Some(gov));
+        assert_eq!(record.lifted_slot, Some(0));
+        assert_eq!(
+            record.lift_reason,
+            Some(RestrictionLiftReason::FalsePositive)
+        );
+        assert_eq!(state.get_restriction(2).unwrap(), None);
+    }
+
+    #[test]
+    fn test_restriction_governance_extend_supersedes_and_creates_successor() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let replacement_evidence = Hash([0xE2; 32]);
+        let data = make_extend_restriction_action_data(1, Some(200), Some(replacement_evidence));
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Extend proposal should succeed: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Extend approval should execute: {:?}",
+            result.error
+        );
+
+        let old_record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(old_record.status, RestrictionStatus::Superseded);
+        assert_eq!(old_record.expires_at_slot, Some(100));
+        assert_eq!(old_record.lifted_by, None);
+
+        let successor = state.get_restriction(2).unwrap().unwrap();
+        assert_eq!(successor.id, 2);
+        assert_eq!(successor.status, RestrictionStatus::Active);
+        assert_eq!(successor.target, old_record.target);
+        assert_eq!(successor.mode, old_record.mode);
+        assert_eq!(successor.reason, old_record.reason);
+        assert_eq!(successor.evidence_hash, Some(replacement_evidence));
+        assert_eq!(successor.proposer, alice);
+        assert_eq!(successor.authority, gov);
+        assert_eq!(successor.created_slot, 0);
+        assert_eq!(successor.created_epoch, 0);
+        assert_eq!(successor.expires_at_slot, Some(200));
+        assert_eq!(successor.supersedes, Some(1));
+    }
+
+    #[test]
+    fn test_restriction_governance_cancel_leaves_state_unmutated() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        let data = make_restrict_action_data(
+            target_account_payload(Pubkey([0xB1; 32])),
+            &RestrictionMode::IncomingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(100),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Restriction proposal should succeed: {:?}",
+            result.error
+        );
+        assert!(state.get_restriction(1).unwrap().is_none());
+
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 37, 1, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Cancellation should succeed: {:?}",
+            result.error
+        );
+
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert!(proposal.cancelled);
+        assert!(!proposal.executed);
+        assert!(state.get_restriction(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_restriction_governance_rejects_invalid_transitions_atomically() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let data = make_extend_restriction_action_data(1, Some(100), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Invalid extend proposal should still be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("must be greater than current expiry"));
+
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.approvals, vec![alice]);
+        assert!(!proposal.executed);
+        assert_eq!(
+            state.get_restriction(1).unwrap().unwrap().status,
+            RestrictionStatus::Active
+        );
+        assert!(state.get_restriction(2).unwrap().is_none());
+
+        let fresh_blockhash = advance_test_slot(&state, 100);
+        let data = make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Expired lift proposal should still be stored: {:?}",
+            result.error
+        );
+        let result = process_governance_control(
+            &processor,
+            &bob_kp,
+            bob,
+            35,
+            3,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("not active"));
+
+        let proposal = state.get_governance_proposal(3).unwrap().unwrap();
+        assert_eq!(proposal.approvals, vec![alice]);
+        assert!(!proposal.executed);
+        let record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(record.status, RestrictionStatus::Active);
+        assert_eq!(
+            state
+                .get_effective_restriction_record(1, 100)
+                .unwrap()
+                .unwrap()
+                .effective_status,
+            RestrictionStatus::Expired
+        );
+        assert!(state.get_restriction(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_restriction_governance_extend_rejects_indefinite_records() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            None,
+        );
+
+        let data = make_extend_restriction_action_data(1, Some(200), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Indefinite extend proposal should still be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("has no expiry to extend"));
+
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.approvals, vec![alice]);
+        assert!(!proposal.executed);
+        assert_eq!(
+            state.get_restriction(1).unwrap().unwrap().status,
+            RestrictionStatus::Active
+        );
+        assert!(state.get_restriction(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_restriction_governance_lifecycle_events_use_stored_record_metadata() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 20, None)
+            .unwrap();
+        let created = find_system_event(&events, "RestrictionCreated", 1);
+        assert_eq!(
+            created.data.get("action").map(String::as_str),
+            Some("restrict")
+        );
+        assert_eq!(created.data.get("actor"), Some(&bob.to_base58()));
+        assert_eq!(created.data.get("authority"), Some(&gov.to_base58()));
+        assert_eq!(created.data.get("proposer"), Some(&alice.to_base58()));
+        assert_eq!(created.data.get("approvals").map(String::as_str), Some("2"));
+        assert_eq!(created.data.get("threshold").map(String::as_str), Some("2"));
+        assert_eq!(
+            created.data.get("executed").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            created.data.get("restriction_id").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            created.data.get("restriction_status").map(String::as_str),
+            Some("active")
+        );
+        assert_eq!(
+            created
+                .data
+                .get("restriction_target_type")
+                .map(String::as_str),
+            Some("account")
+        );
+        assert_eq!(
+            created.data.get("restriction_mode").map(String::as_str),
+            Some("outgoing_only")
+        );
+        assert_eq!(
+            created.data.get("restriction_reason").map(String::as_str),
+            Some("testnet_drill")
+        );
+        assert_eq!(
+            created.data.get("created_slot").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            created.data.get("created_epoch").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            created.data.get("expires_at_slot").map(String::as_str),
+            Some("100")
+        );
+
+        let extend_data = make_extend_restriction_action_data(1, Some(200), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            extend_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Extend proposal should succeed: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Extend approval should execute: {:?}",
+            result.error
+        );
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 40, None)
+            .unwrap();
+        let extended = find_system_event(&events, "RestrictionExtended", 2);
+        assert_eq!(
+            extended.data.get("restriction_id").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            extended.data.get("restriction_status").map(String::as_str),
+            Some("active")
+        );
+        assert_eq!(
+            extended.data.get("supersedes").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            extended.data.get("expires_at_slot").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            extended.data.get("restriction_mode").map(String::as_str),
+            Some("outgoing_only")
+        );
+
+        let lift_data =
+            make_lift_restriction_action_data(2, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            lift_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Lift proposal should succeed: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 3, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Lift approval should execute: {:?}",
+            result.error
+        );
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 60, None)
+            .unwrap();
+        let lifted = find_system_event(&events, "RestrictionLifted", 3);
+        assert_eq!(
+            lifted.data.get("restriction_id").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            lifted.data.get("restriction_status").map(String::as_str),
+            Some("lifted")
+        );
+        assert_eq!(lifted.data.get("lifted_by"), Some(&gov.to_base58()));
+        assert_eq!(
+            lifted.data.get("lifted_slot").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            lifted.data.get("lift_reason").map(String::as_str),
+            Some("incident_resolved")
+        );
+        assert_eq!(
+            lifted.data.get("restriction_reason").map(String::as_str),
+            Some("testnet_drill")
+        );
+    }
+
+    #[test]
+    fn test_restriction_governance_failed_execution_emits_no_lifecycle_event() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let validator = Pubkey([42u8; 32]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let invalid_extend_data = make_extend_restriction_action_data(1, Some(100), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            invalid_extend_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Invalid extend proposal should be stored: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(!result.success);
+
+        let events = state
+            .get_events_by_program(&SYSTEM_PROGRAM_ID, 40, None)
+            .unwrap();
+        assert!(!events.iter().any(|event| {
+            event.name == "RestrictionExtended"
+                && event.data.get("proposal_id").map(String::as_str) == Some("2")
+        }));
+    }
+
+    #[test]
+    fn test_restriction_governance_main_authority_remains_higher_authority_for_split_targets() {
+        let (processor, state, alice_kp, alice, _bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let bridge_data = make_restrict_action_data(
+            target_bridge_route_payload("neo-x-testnet", "USDT"),
+            &RestrictionMode::RoutePaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            bridge_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Main governance bridge restriction proposal should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+        assert_eq!(proposal.execute_after_epoch, 5);
+
+        let oracle_data = make_restrict_action_data(
+            target_protocol_module_payload(ProtocolModuleId::Oracle),
+            &RestrictionMode::ProtocolPaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            oracle_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Main governance oracle restriction proposal should succeed: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+        assert_eq!(proposal.execute_after_epoch, 5);
+    }
+
+    #[test]
+    fn test_restriction_governance_split_roles_route_scoped_creates() {
+        let (processor, state, alice_kp, alice, _bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let bridge_authority =
+            configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        let oracle_authority =
+            configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let route_data = make_restrict_action_data(
+            target_bridge_route_payload("neo-x-testnet", "USDT"),
+            &RestrictionMode::RoutePaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            bridge_authority,
+            route_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Bridge route restriction should route to bridge split authority: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(bridge_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+
+        let bridge_module_data = make_restrict_action_data(
+            target_protocol_module_payload(ProtocolModuleId::Bridge),
+            &RestrictionMode::ProtocolPaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            bridge_authority,
+            bridge_module_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Bridge protocol restriction should route to bridge split authority: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(bridge_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+
+        let oracle_data = make_restrict_action_data(
+            target_protocol_module_payload(ProtocolModuleId::Oracle),
+            &RestrictionMode::ProtocolPaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            oracle_authority,
+            oracle_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Oracle protocol restriction should route to oracle split authority: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(3).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(oracle_authority));
+        assert_eq!(proposal.execute_after_epoch, 1);
+    }
+
+    #[test]
+    fn test_restriction_governance_rejects_wrong_split_routing() {
+        let (processor, state, alice_kp, alice, _bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let bridge_authority =
+            configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        let oracle_authority =
+            configure_oracle_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let oracle_data = make_restrict_action_data(
+            target_protocol_module_payload(ProtocolModuleId::Oracle),
+            &RestrictionMode::ProtocolPaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            bridge_authority,
+            oracle_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Governance action authority account mismatch"));
+
+        let route_data = make_restrict_action_data(
+            target_bridge_route_payload("neo-x-testnet", "USDT"),
+            &RestrictionMode::RoutePaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(SLOTS_PER_EPOCH * 4),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            oracle_authority,
+            route_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Governance action authority account mismatch"));
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_can_create_and_lift_temporary_account_restriction() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let record = create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            1,
+            1,
+            target_account_payload(Pubkey([0xD1; 32])),
+            RestrictionMode::OutgoingOnly,
+            100,
+        );
+        assert_eq!(record.authority, gov);
+        assert_eq!(record.created_slot, 0);
+
+        let lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            lift_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Guardian should be able to propose lift for its restriction: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(guardian_authority));
+        assert_eq!(proposal.execute_after_epoch, 0);
+
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Guardian lift approval should execute: {:?}",
+            result.error
+        );
+        let lifted = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(lifted.status, RestrictionStatus::Lifted);
+        assert_eq!(
+            lifted.lift_reason,
+            Some(RestrictionLiftReason::IncidentResolved)
+        );
+        assert_eq!(lifted.approval_authority, Some(guardian_authority));
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_rejects_unbounded_and_disallowed_restrictions() {
+        let (processor, state, alice_kp, alice, _bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let unbounded_data = make_restrict_action_data(
+            target_account_payload(Pubkey([0xD2; 32])),
+            &RestrictionMode::OutgoingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            None,
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            unbounded_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("must include expires_at_slot"));
+
+        let account_freeze_data = make_restrict_action_data(
+            target_account_payload(Pubkey([0xD3; 32])),
+            &RestrictionMode::Bidirectional,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(100),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            account_freeze_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("target/mode is not allowed"));
+
+        let contract_terminated_data = make_restrict_action_data(
+            target_pubkey_payload(3, Pubkey([0xD4; 32])),
+            &RestrictionMode::Terminated,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(100),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            contract_terminated_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("target/mode is not allowed"));
+
+        let native_pause_data = make_restrict_action_data(
+            target_protocol_module_payload(ProtocolModuleId::Native),
+            &RestrictionMode::ProtocolPaused,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(100),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            native_pause_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("target/mode is not allowed"));
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_ttl_cap_enforced() {
+        let (processor, state, alice_kp, alice, _bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let data = make_restrict_action_data(
+            target_account_payload(Pubkey([0xD5; 32])),
+            &RestrictionMode::OutgoingOnly,
+            RestrictionReason::TestnetDrill,
+            None,
+            None,
+            Some(GUARDIAN_RESTRICTION_MAX_SLOTS + 1),
+        );
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("exceeds guardian TTL cap"));
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_can_create_code_hash_and_contract_blocks() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        let code_record = create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            1,
+            1,
+            target_code_hash_payload(Hash([0xD6; 32])),
+            RestrictionMode::DeployBlocked,
+            100,
+        );
+        assert!(matches!(code_record.target, RestrictionTarget::CodeHash(_)));
+
+        let contract_target = Pubkey([0xD7; 32]);
+        deploy_fake_contract(&state, alice, contract_target);
+        let contract_record = create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            2,
+            2,
+            target_pubkey_payload(3, contract_target),
+            RestrictionMode::StateChangingBlocked,
+            120,
+        );
+        assert!(matches!(
+            contract_record.target,
+            RestrictionTarget::Contract(_)
+        ));
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_can_extend_own_temporary_restriction_once() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            1,
+            1,
+            target_account_payload(Pubkey([0xD8; 32])),
+            RestrictionMode::OutgoingOnly,
+            100,
+        );
+
+        let over_cap_data =
+            make_extend_restriction_action_data(1, Some(GUARDIAN_RESTRICTION_MAX_SLOTS + 1), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            over_cap_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("exceeds guardian TTL cap"));
+
+        let extend_data = make_extend_restriction_action_data(1, Some(200), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            extend_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Guardian should be able to propose one extension: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(guardian_authority));
+
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "Guardian extension approval should execute: {:?}",
+            result.error
+        );
+        let old_record = state.get_restriction(1).unwrap().unwrap();
+        assert_eq!(old_record.status, RestrictionStatus::Superseded);
+        let successor = state.get_restriction(2).unwrap().unwrap();
+        assert_eq!(successor.status, RestrictionStatus::Active);
+        assert_eq!(successor.approval_authority, Some(guardian_authority));
+        assert_eq!(successor.supersedes, Some(1));
+        assert_eq!(successor.expires_at_slot, Some(200));
+
+        let main_lift_data =
+            make_lift_restriction_action_data(2, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            main_lift_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Main governance should be able to propose guardian-created lift: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(3).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+    }
+
+    #[test]
+    fn test_restriction_governance_guardian_rejects_second_extension_and_non_owned_lift() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+
+        create_active_guardian_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            guardian_authority,
+            genesis_hash,
+            &validator,
+            1,
+            1,
+            target_account_payload(Pubkey([0xD9; 32])),
+            RestrictionMode::OutgoingOnly,
+            100,
+        );
+        let extend_data = make_extend_restriction_action_data(1, Some(200), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            extend_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "First guardian extension should be proposed: {:?}",
+            result.error
+        );
+        let result =
+            process_governance_control(&processor, &bob_kp, bob, 35, 2, genesis_hash, &validator);
+        assert!(
+            result.success,
+            "First guardian extension should execute: {:?}",
+            result.error
+        );
+
+        let second_extend_data = make_extend_restriction_action_data(2, Some(300), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            second_extend_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap_or("").contains("only once"));
+
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 0);
+        let guardian_authority =
+            configure_incident_guardian_for_test(&state, gov, 2, vec![alice, bob]);
+        create_active_test_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            gov,
+            genesis_hash,
+            &validator,
+            Some(100),
+        );
+
+        let lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            guardian_authority,
+            lift_data,
+            genesis_hash,
+            &validator,
+        );
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("only lift or extend restrictions it created"));
+    }
+
+    #[test]
+    fn test_restriction_governance_split_created_records_allow_stored_and_main_followups() {
+        let (processor, state, alice_kp, alice, bob_kp, bob, gov, genesis_hash) =
+            setup_restriction_governance(2, 5);
+        let validator = Pubkey([42u8; 32]);
+        let bridge_authority =
+            configure_bridge_committee_admin_for_test(&state, gov, 2, vec![alice, bob]);
+        let fresh_blockhash = create_active_bridge_split_restriction(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            &bob_kp,
+            bob,
+            bridge_authority,
+            genesis_hash,
+            &validator,
+        );
+
+        let split_lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            bridge_authority,
+            split_lift_data,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Stored split authority should be able to propose lift: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(2).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(bridge_authority));
+
+        let split_extend_data =
+            make_extend_restriction_action_data(1, Some(SLOTS_PER_EPOCH * 5), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            bridge_authority,
+            split_extend_data,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Stored split authority should be able to propose extension: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(3).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, Some(bridge_authority));
+
+        let main_lift_data =
+            make_lift_restriction_action_data(1, RestrictionLiftReason::IncidentResolved);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            main_lift_data,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Main governance should be able to propose split-created lift: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(4).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+
+        let main_extend_data =
+            make_extend_restriction_action_data(1, Some(SLOTS_PER_EPOCH * 5), None);
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            gov,
+            main_extend_data,
+            fresh_blockhash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "Main governance should be able to propose split-created extension: {:?}",
+            result.error
+        );
+        let proposal = state.get_governance_proposal(5).unwrap().unwrap();
+        assert_eq!(proposal.authority, gov);
+        assert_eq!(proposal.approval_authority, None);
+    }
+
     #[test]
     fn test_upgrade_timelock_set_and_stage() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
@@ -6558,6 +11275,110 @@ mod tests {
         let pending = ca.pending_upgrade.unwrap();
         assert_eq!(pending.code, new_code);
         assert_eq!(pending.execute_after_epoch, pending.submitted_epoch + 3);
+    }
+
+    #[test]
+    fn test_code_hash_deploy_block_rejects_contract_upgrade_stage_and_execute() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
+        );
+
+        let banned_immediate_code = valid_wasm_code(0x42);
+        let banned_immediate_hash = Hash::hash(&banned_immediate_code);
+        let immediate_restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(banned_immediate_hash),
+            RestrictionMode::DeployBlocked,
+        );
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: banned_immediate_code,
+            },
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            !result.success,
+            "Immediate upgrade to a banned code hash must fail"
+        );
+        let error = result.error.as_deref().unwrap_or_default();
+        assert!(error.contains("ContractUpgrade rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&immediate_restriction_id.to_string()));
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(contract.version, 1);
+        assert!(contract.pending_upgrade.is_none());
+        assert_ne!(contract.code_hash, banned_immediate_hash);
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 1 },
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "SetUpgradeTimelock should succeed: {:?}",
+            result.error
+        );
+
+        let pending_code = valid_wasm_code(0x43);
+        let pending_hash = Hash::hash(&pending_code);
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: pending_code },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success, "Upgrade should stage: {:?}", result.error);
+        let pending_restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(pending_hash),
+            RestrictionMode::DeployBlocked,
+        );
+        let execute_blockhash = advance_test_slot(&state, SLOTS_PER_EPOCH * 2);
+
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::ExecuteUpgrade,
+            execute_blockhash,
+            &validator,
+        );
+        assert!(
+            !result.success,
+            "Executing a pending upgrade to a banned code hash must fail"
+        );
+        let error = result.error.as_deref().unwrap_or_default();
+        assert!(error.contains("ExecuteContractUpgrade rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&pending_restriction_id.to_string()));
+        let contract = load_contract_account_for_test(&state, contract_addr);
+        assert_eq!(contract.version, 1);
+        assert_eq!(
+            contract
+                .pending_upgrade
+                .as_ref()
+                .map(|pending| pending.code_hash),
+            Some(pending_hash)
+        );
+        assert_ne!(contract.code_hash, pending_hash);
     }
 
     #[test]
@@ -7697,6 +12518,50 @@ mod tests {
     }
 
     #[test]
+    fn test_restriction_governance_actions_do_not_match_legacy_split_role_policies() {
+        let (processor, _state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let actions = vec![
+            GovernanceAction::Restrict {
+                target: RestrictionTarget::Account(Pubkey([0xD0; 32])),
+                mode: RestrictionMode::OutgoingOnly,
+                reason: RestrictionReason::TestnetDrill,
+                evidence_hash: None,
+                evidence_uri_hash: None,
+                expires_at_slot: Some(100),
+            },
+            GovernanceAction::LiftRestriction {
+                restriction_id: 1,
+                reason: RestrictionLiftReason::IncidentResolved,
+            },
+            GovernanceAction::ExtendRestriction {
+                restriction_id: 1,
+                new_expires_at_slot: Some(200),
+                evidence_hash: None,
+            },
+        ];
+
+        for action in actions {
+            assert!(
+                !processor
+                    .governance_action_requires_treasury_executor_policy(&action)
+                    .unwrap(),
+                "{:?} must not use treasury executor routing",
+                action
+            );
+            assert!(
+                !processor.governance_action_requires_upgrade_proposer_policy(&action),
+                "{:?} must not use upgrade proposer routing",
+                action
+            );
+            assert!(
+                !processor.governance_action_requires_upgrade_veto_guardian_policy(&action),
+                "{:?} must not use upgrade veto guardian routing",
+                action
+            );
+        }
+    }
+
+    #[test]
     fn test_veto_upgrade_governance_action_uses_split_veto_guardian_authority() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
@@ -8708,6 +13573,101 @@ mod tests {
     }
 
     #[test]
+    fn test_contract_close_owner_semantics_preserved_for_non_active_lifecycle_statuses() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        for (idx, status) in [
+            crate::ContractLifecycleStatus::Suspended,
+            crate::ContractLifecycleStatus::Quarantined,
+            crate::ContractLifecycleStatus::Terminated,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let contract_id = Pubkey([0xB0 + idx as u8; 32]);
+            let destination = Pubkey([0xC0 + idx as u8; 32]);
+            let close_amount = Account::licn_to_spores(10 + idx as u64);
+
+            deploy_fake_contract(&state, alice, contract_id);
+            set_contract_lifecycle_status_for_test(&state, contract_id, status);
+            let mut contract_account = state.get_account(&contract_id).unwrap().unwrap();
+            contract_account.spores = close_amount;
+            contract_account.spendable = close_amount;
+            state.put_account(&contract_id, &contract_account).unwrap();
+
+            let result = submit_contract_ix(
+                &processor,
+                &alice_kp,
+                vec![alice, contract_id, destination],
+                crate::ContractInstruction::Close,
+                genesis_hash,
+                &validator,
+            );
+
+            assert!(
+                result.success,
+                "owner close should succeed for {:?}: {:?}",
+                status, result.error
+            );
+            let closed = state.get_account(&contract_id).unwrap().unwrap();
+            assert!(!closed.executable);
+            assert!(closed.data.is_empty());
+            assert_eq!(closed.spendable, 0);
+            assert_eq!(state.get_balance(&destination).unwrap(), close_amount);
+        }
+    }
+
+    #[test]
+    fn test_contract_close_non_owner_still_rejected_for_non_active_lifecycle_contract() {
+        let (processor, state, _alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let eve_kp = Keypair::generate();
+        let eve = eve_kp.pubkey();
+        let contract_id = Pubkey([0xB5; 32]);
+        let destination = Pubkey([0xC5; 32]);
+
+        state
+            .put_account(&eve, &Account::new(Account::licn_to_spores(1_000), eve))
+            .unwrap();
+        deploy_fake_contract(&state, alice, contract_id);
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_id,
+            crate::ContractLifecycleStatus::Terminated,
+        );
+        let mut contract_account = state.get_account(&contract_id).unwrap().unwrap();
+        contract_account.spores = Account::licn_to_spores(15);
+        contract_account.spendable = Account::licn_to_spores(15);
+        state.put_account(&contract_id, &contract_account).unwrap();
+
+        let result = submit_contract_ix(
+            &processor,
+            &eve_kp,
+            vec![eve, contract_id, destination],
+            crate::ContractInstruction::Close,
+            genesis_hash,
+            &validator,
+        );
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Only contract owner can close"));
+        let contract_account = state.get_account(&contract_id).unwrap().unwrap();
+        assert!(contract_account.executable);
+        let contract: crate::ContractAccount =
+            serde_json::from_slice(&contract_account.data).unwrap();
+        assert_eq!(
+            contract.lifecycle_status,
+            crate::ContractLifecycleStatus::Terminated
+        );
+        assert_eq!(state.get_balance(&destination).unwrap_or(0), 0);
+    }
+
+    #[test]
     fn test_contract_close_requires_governance_proposal_when_owner_is_governed() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
@@ -8736,6 +13696,11 @@ mod tests {
             )
             .unwrap();
         deploy_fake_contract(&state, gov, contract_id);
+        set_contract_lifecycle_status_for_test(
+            &state,
+            contract_id,
+            crate::ContractLifecycleStatus::Quarantined,
+        );
 
         let mut contract_account = state.get_account(&contract_id).unwrap().unwrap();
         contract_account.spores = Account::licn_to_spores(25);
@@ -9513,6 +14478,142 @@ mod tests {
             final_balance,
             initial_balance - transfer_amount - expected_total
         );
+    }
+
+    #[test]
+    fn test_fee_debit_bypasses_account_and_native_asset_restrictions() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let spendable = state.get_account(&alice).unwrap().unwrap().spendable;
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount { amount: spendable },
+        );
+
+        let evm_address = [0xAB; 20];
+        let mut data = vec![12u8];
+        data.extend_from_slice(&evm_address);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let before_balance = state.get_balance(&alice).unwrap();
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(
+            result.success,
+            "restricted signer should still pay fee for non-value action: {:?}",
+            result.error
+        );
+
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+        assert_eq!(state.lookup_evm_address(&evm_address).unwrap(), Some(alice));
+    }
+
+    #[test]
+    fn test_restricted_transfer_failure_keeps_only_fee_debit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([0xB4; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let before_balance = state.get_balance(&alice).unwrap();
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Native transfer blocked by active sender account restriction"));
+
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
+        assert_eq!(state.get_balance(&bob).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn test_restricted_governance_authority_can_pay_fee_for_lift_remediation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let fund = Account::licn_to_spores(1_000);
+
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
+        state.set_last_slot(0).unwrap();
+        state.set_governance_authority(&alice).unwrap();
+        state
+            .set_governed_wallet_config(
+                &alice,
+                &crate::multisig::GovernedWalletConfig::new(1, vec![alice], "governance_authority"),
+            )
+            .unwrap();
+
+        let target_restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(Pubkey([0xD8; 32])),
+            RestrictionMode::OutgoingOnly,
+        );
+        let spendable = state.get_account(&alice).unwrap().unwrap().spendable;
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+        put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount { amount: spendable },
+        );
+
+        let before_balance = state.get_balance(&alice).unwrap();
+        let result = process_governance_proposal(
+            &processor,
+            &alice_kp,
+            alice,
+            alice,
+            make_lift_restriction_action_data(
+                target_restriction_id,
+                RestrictionLiftReason::FalsePositive,
+            ),
+            genesis_hash,
+            &validator,
+        );
+        assert!(
+            result.success,
+            "restricted governance authority should lift via governed flow: {:?}",
+            result.error
+        );
+
+        let lifted = state
+            .get_restriction(target_restriction_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifted.status, RestrictionStatus::Lifted);
+        assert_eq!(lifted.lifted_by, Some(alice));
+        let after_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(before_balance - after_balance, result.fee_paid);
     }
 
     #[test]

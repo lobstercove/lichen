@@ -323,9 +323,10 @@ impl SyncManager {
             );
         }
 
-        // If we're behind by more than 1 block and not already syncing
-        // (FIX-FORK-2: lowered from +2 to +1 to catch forks earlier)
-        if highest > current_slot + 1 {
+        // If we're behind at all, request the missing range. A one-block miss is
+        // enough to strand BFT when the node saw the commit votes but missed the
+        // proposal/full block.
+        if highest > current_slot {
             // Determine start slot.
             // InitialSync: normally request current_slot + 1 (no overlap).
             // If pending blocks already exist, include the current tip so we
@@ -618,7 +619,7 @@ impl SyncManager {
     }
 
     /// Check if a checkpoint should be created at this slot.
-    /// Returns true every CHECKPOINT_INTERVAL slots (10K blocks).
+    /// Returns true every CHECKPOINT_INTERVAL slots.
     pub fn should_checkpoint(slot: u64) -> bool {
         CHECKPOINT_INTERVAL > 0 && slot > 0 && slot.is_multiple_of(CHECKPOINT_INTERVAL)
     }
@@ -679,11 +680,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_should_sync_when_one_block_behind() {
+        let sm = SyncManager::new();
+        sm.note_seen(10).await;
+        let batch = sm.should_sync(9).await;
+        assert_eq!(batch, Some((10, 10)));
+    }
+
+    #[tokio::test]
+    async fn test_live_sync_overlaps_current_slot_when_one_block_behind() {
+        let sm = SyncManager::new();
+        sm.transition_to_live().await;
+        sm.note_seen(10).await;
+        let batch = sm.should_sync(9).await;
+        assert_eq!(batch, Some((9, 10)));
+    }
+
+    #[tokio::test]
     async fn test_should_not_sync_when_caught_up() {
         let sm = SyncManager::new();
         sm.note_seen(10).await;
-        // Current slot 9, only 1 behind → no sync (threshold is >1)
-        let batch = sm.should_sync(9).await;
+        let batch = sm.should_sync(10).await;
         assert!(batch.is_none());
     }
 

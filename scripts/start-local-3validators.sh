@@ -276,6 +276,36 @@ prepare_joiner_empty_state() {
   done
 }
 
+assert_joiner_state_has_no_copied_chain_artifacts() {
+  local joiner_dir
+
+  for joiner_dir in "$STATE2_DIR" "$STATE3_DIR"; do
+    if find "$joiner_dir" -maxdepth 1 \
+      \( -name 'CURRENT' \
+      -o -name 'LOCK' \
+      -o -name 'MANIFEST-*' \
+      -o -name 'OPTIONS-*' \
+      -o -name '*.sst' \
+      -o -name '*.log' \
+      -o -name 'consensus_wal*' \
+      -o -name 'genesis-wallet.json' \) \
+      -print -quit | grep -q .; then
+      echo "[local-3validators] ERROR: $joiner_dir contains copied chain-state, WAL, or genesis-wallet artifacts"
+      find "$joiner_dir" -maxdepth 1 \
+        \( -name 'CURRENT' \
+        -o -name 'LOCK' \
+        -o -name 'MANIFEST-*' \
+        -o -name 'OPTIONS-*' \
+        -o -name '*.sst' \
+        -o -name '*.log' \
+        -o -name 'consensus_wal*' \
+        -o -name 'genesis-wallet.json' \) \
+        -print
+      exit 1
+    fi
+  done
+}
+
 generate_signed_metadata_manifest() {
   if ! command -v node >/dev/null 2>&1; then
     echo "[local-3validators] ERROR: Node.js is required to generate ${MANIFEST_FILE}"
@@ -455,6 +485,7 @@ promote_joiners_from_seed_sync() {
 
   echo "[local-3validators] preparing empty V2/V3 state directories for network sync"
   prepare_joiner_empty_state
+  assert_joiner_state_has_no_copied_chain_artifacts
 
   echo "[local-3validators] starting V2 as an independent joining validator"
   v2pid="$(start_validator 2 127.0.0.1:9302 "$LOG2")"

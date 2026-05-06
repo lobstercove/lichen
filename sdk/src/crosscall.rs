@@ -123,7 +123,7 @@ pub fn call_contract(call: CrossCall) -> CallResult<Vec<u8>> {
         let response = test_mock::CROSS_CALL_RESPONSE.with(|c| c.borrow().clone());
         if let Some(response) = response {
             Ok(response)
-        } else if call.function == "transfer" {
+        } else if call.function == "transfer" || call.function == "transfer_from" {
             // Most unit tests do not seed an explicit mock response for token/NFT
             // transfers. Mirror the on-chain token ABI's zero success code so
             // payout paths remain testable by default.

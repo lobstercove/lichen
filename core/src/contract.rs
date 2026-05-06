@@ -1,6 +1,10 @@
 // Lichen Smart Contract System
 // WASM-based programmable contracts with proper host function implementations
 
+use crate::restrictions::{
+    RestrictionMode, RestrictionRecord, RestrictionTarget, RestrictionTransferDirection,
+    NATIVE_LICN_ASSET_ID,
+};
 use crate::{Account, Hash, Pubkey, StateStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -333,6 +337,73 @@ fn wasm_valtype_to_abi(vt: &wasmer::Type) -> AbiType {
 // Contract Account
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractLifecycleStatus {
+    #[default]
+    Active,
+    Suspended,
+    Quarantined,
+    Terminated,
+}
+
+fn lifecycle_status_severity(status: ContractLifecycleStatus) -> u8 {
+    match status {
+        ContractLifecycleStatus::Active => 0,
+        ContractLifecycleStatus::Suspended => 1,
+        ContractLifecycleStatus::Quarantined => 2,
+        ContractLifecycleStatus::Terminated => 3,
+    }
+}
+
+pub fn contract_lifecycle_status_for_restriction_mode(
+    mode: &RestrictionMode,
+) -> Option<ContractLifecycleStatus> {
+    match mode {
+        RestrictionMode::StateChangingBlocked => Some(ContractLifecycleStatus::Suspended),
+        RestrictionMode::ExecuteBlocked | RestrictionMode::Quarantined => {
+            Some(ContractLifecycleStatus::Quarantined)
+        }
+        RestrictionMode::Terminated => Some(ContractLifecycleStatus::Terminated),
+        _ => None,
+    }
+}
+
+pub fn strongest_contract_lifecycle_restriction(
+    records: &[RestrictionRecord],
+) -> Option<(ContractLifecycleStatus, u64)> {
+    records
+        .iter()
+        .filter_map(|record| {
+            contract_lifecycle_status_for_restriction_mode(&record.mode)
+                .map(|status| (status, record.id))
+        })
+        .max_by_key(|(status, id)| (lifecycle_status_severity(*status), *id))
+}
+
+pub fn derive_contract_lifecycle_from_state_store(
+    state_store: &StateStore,
+    contract_address: &Pubkey,
+    contract: &mut ContractAccount,
+    current_slot: u64,
+) -> Result<bool, String> {
+    let target = RestrictionTarget::Contract(*contract_address);
+    let active_records =
+        state_store.get_active_restrictions_for_target(&target, current_slot, 0)?;
+    let linked_restriction_active = match contract.lifecycle_restriction_id {
+        Some(id) => state_store
+            .get_effective_restriction_record(id, current_slot)?
+            .map(|effective| effective.is_active()),
+        None => None,
+    };
+
+    Ok(contract.sync_lifecycle_from_restrictions(
+        &active_records,
+        linked_restriction_active,
+        current_slot,
+    ))
+}
+
 /// Contract account storing bytecode and state
 /// AUDIT-FIX 3.5: NOTE — `code` (Vec<u8>) is serialized as a JSON integer array
 /// by serde_json, causing ~3-4x storage bloat vs base64 or raw bytes. A migration
@@ -376,6 +447,15 @@ pub struct ContractAccount {
     /// on a timelocked contract; cleared on execute or veto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_upgrade: Option<PendingUpgrade>,
+    /// Governance lifecycle layer. Does not replace the account executable marker.
+    #[serde(default)]
+    pub lifecycle_status: ContractLifecycleStatus,
+    /// Slot at which lifecycle metadata was last changed.
+    #[serde(default)]
+    pub lifecycle_updated_slot: u64,
+    /// Restriction record that last drove this lifecycle status, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_restriction_id: Option<u64>,
 }
 
 /// A staged contract upgrade waiting for the timelock to expire.
@@ -458,7 +538,79 @@ impl ContractAccount {
             previous_code_hash: None,
             upgrade_timelock_epochs: None,
             pending_upgrade: None,
+            lifecycle_status: ContractLifecycleStatus::Active,
+            lifecycle_updated_slot: 0,
+            lifecycle_restriction_id: None,
         }
+    }
+
+    pub fn validate_lifecycle_for_execution(
+        &self,
+        function: &str,
+        read_only_context: bool,
+        value: u64,
+    ) -> Result<(), String> {
+        match self.lifecycle_status {
+            ContractLifecycleStatus::Active => Ok(()),
+            ContractLifecycleStatus::Suspended => {
+                if read_only_context && value == 0 && self.abi_function_is_readonly(function) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Contract lifecycle suspended blocks execution of function '{}'",
+                        function
+                    ))
+                }
+            }
+            ContractLifecycleStatus::Quarantined => Err(format!(
+                "Contract lifecycle quarantined blocks execution of function '{}'",
+                function
+            )),
+            ContractLifecycleStatus::Terminated => Err(format!(
+                "Contract lifecycle terminated blocks execution of function '{}'",
+                function
+            )),
+        }
+    }
+
+    pub fn sync_lifecycle_from_restrictions(
+        &mut self,
+        active_records: &[RestrictionRecord],
+        linked_restriction_active: Option<bool>,
+        current_slot: u64,
+    ) -> bool {
+        let next = strongest_contract_lifecycle_restriction(active_records);
+        let (next_status, next_restriction_id) = match next {
+            Some((status, restriction_id)) => (status, Some(restriction_id)),
+            None if self.lifecycle_restriction_id.is_some()
+                && linked_restriction_active == Some(false) =>
+            {
+                (ContractLifecycleStatus::Active, None)
+            }
+            None => return false,
+        };
+
+        if self.lifecycle_status == next_status
+            && self.lifecycle_restriction_id == next_restriction_id
+        {
+            return false;
+        }
+
+        self.lifecycle_status = next_status;
+        self.lifecycle_updated_slot = current_slot;
+        self.lifecycle_restriction_id = next_restriction_id;
+        true
+    }
+
+    pub fn abi_function_is_readonly(&self, function: &str) -> bool {
+        self.abi
+            .as_ref()
+            .map(|abi| {
+                abi.functions
+                    .iter()
+                    .any(|abi_function| abi_function.name == function && abi_function.readonly)
+            })
+            .unwrap_or(false)
     }
 
     /// Get value from the embedded compatibility snapshot.
@@ -563,6 +715,10 @@ pub struct ContractContext {
     pub pending_native_account_ops: Vec<NativeAccountOp>,
     /// Projected account state after applying `pending_native_account_ops`.
     pub pending_native_account_state: HashMap<Pubkey, Account>,
+    /// True for state-discarding read-only execution paths such as RPC query
+    /// execution. Transaction simulation remains false because it models a
+    /// signed state-changing transaction without committing the result.
+    pub read_only: bool,
     /// Current total storage bytes (keys + values). Tracked live during execution
     /// for protocol-level enforcement of MAX_TOTAL_STORAGE_BYTES (Task 4.3 M-4).
     pub storage_bytes_used: usize,
@@ -594,6 +750,7 @@ impl ContractContext {
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
             pending_native_account_ops: Vec::new(),
             pending_native_account_state: HashMap::new(),
+            read_only: false,
             storage_bytes_used: 0,
         }
     }
@@ -631,6 +788,7 @@ impl ContractContext {
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
             pending_native_account_ops: Vec::new(),
             pending_native_account_state: HashMap::new(),
+            read_only: false,
             storage_bytes_used,
         }
     }
@@ -669,6 +827,7 @@ impl ContractContext {
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
             pending_native_account_ops: Vec::new(),
             pending_native_account_state: HashMap::new(),
+            read_only: false,
             storage_bytes_used,
         }
     }
@@ -822,6 +981,8 @@ const COMPUTE_READ_RESULT: u64 = 50; // + per-byte cost
 const COMPUTE_BYTE_COST: u64 = 1;
 /// Compute cost for initiating a cross-contract call (base cost before callee's compute)
 const COMPUTE_CROSS_CALL: u64 = 5_000;
+/// Compute cost for token restriction compliance checks.
+const COMPUTE_COMPLIANCE_CHECK: u64 = 500;
 /// Compute cost for Poseidon hash (SNARK-friendly, more expensive than plain hash)
 const COMPUTE_POSEIDON_HASH: u64 = 2_000;
 /// Maximum cross-contract call depth (prevents infinite recursion)
@@ -966,6 +1127,12 @@ impl ContractRuntime {
         args: &[u8],
         context: ContractContext,
     ) -> Result<ContractResult, String> {
+        contract.validate_lifecycle_for_execution(
+            function_name,
+            context.read_only,
+            context.value,
+        )?;
+
         let mut store = Self::fresh_store();
         let ctx = Self::prepare_execution_context(context, args);
         let initial_compute = ctx.compute_remaining;
@@ -1019,6 +1186,10 @@ impl ContractRuntime {
                 "get_contract_address" => Function::new_typed_with_env(&mut store, &env, host_get_contract_address),
                 "get_value" => Function::new_typed_with_env(&mut store, &env, host_get_value),
                 "get_slot" => Function::new_typed_with_env(&mut store, &env, host_get_slot),
+                // Restriction compliance checks
+                "can_send" => Function::new_typed_with_env(&mut store, &env, host_can_send),
+                "can_receive" => Function::new_typed_with_env(&mut store, &env, host_can_receive),
+                "can_transfer" => Function::new_typed_with_env(&mut store, &env, host_can_transfer),
                 // Args & return data
                 "get_args_len" => Function::new_typed_with_env(&mut store, &env, host_get_args_len),
                 "get_args" => Function::new_typed_with_env(&mut store, &env, host_get_args),
@@ -1865,6 +2036,171 @@ fn host_get_slot(env: FunctionEnvMut<ContractContext>) -> u64 {
     env.data().slot
 }
 
+fn read_pubkey_from_memory(
+    env: &FunctionEnvMut<ContractContext>,
+    memory: &Memory,
+    ptr: u32,
+) -> Option<Pubkey> {
+    let view = memory.view(env);
+    let mut bytes = [0u8; 32];
+    view.read(ptr as u64, &mut bytes).ok()?;
+    Some(Pubkey(bytes))
+}
+
+fn token_account_allowed(
+    env: &mut FunctionEnvMut<ContractContext>,
+    asset_ptr: u32,
+    account_ptr: u32,
+    amount: u64,
+    balance: u64,
+    direction: RestrictionTransferDirection,
+) -> u32 {
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_COMPLIANCE_CHECK) {
+            return 0;
+        }
+    }
+
+    let memory = match env.data().memory.clone() {
+        Some(memory) => memory,
+        None => {
+            push_contract_log(env, "[COMPLIANCE] rejected: memory not initialized");
+            return 0;
+        }
+    };
+    let asset = match read_pubkey_from_memory(env, &memory, asset_ptr) {
+        Some(asset) => asset,
+        None => {
+            push_contract_log(env, "[COMPLIANCE] rejected: failed to read asset address");
+            return 0;
+        }
+    };
+    let contract = env.data().contract;
+    if asset != contract {
+        push_contract_log(
+            env,
+            format!(
+                "[COMPLIANCE] rejected: asset {} does not match executing token contract {}",
+                asset, contract
+            ),
+        );
+        return 0;
+    }
+    let account = match read_pubkey_from_memory(env, &memory, account_ptr) {
+        Some(account) => account,
+        None => {
+            push_contract_log(env, "[COMPLIANCE] rejected: failed to read account address");
+            return 0;
+        }
+    };
+    let (state_store, slot) = match (env.data().state_store.clone(), env.data().slot) {
+        (Some(state_store), slot) => (state_store, slot),
+        (None, _) => return 1,
+    };
+
+    match state_store.is_account_restricted(
+        &account,
+        direction,
+        Some(&asset),
+        amount,
+        balance,
+        slot,
+    ) {
+        Ok(true) => {
+            push_contract_log(
+                env,
+                format!(
+                    "[COMPLIANCE] rejected: {} is restricted for {} token movement on asset {}",
+                    account,
+                    match direction {
+                        RestrictionTransferDirection::Outgoing => "outgoing",
+                        RestrictionTransferDirection::Incoming => "incoming",
+                    },
+                    asset
+                ),
+            );
+            0
+        }
+        Ok(false) => 1,
+        Err(error) => {
+            push_contract_log(
+                env,
+                format!(
+                    "[COMPLIANCE] rejected: failed to evaluate token restrictions for {}: {}",
+                    account, error
+                ),
+            );
+            0
+        }
+    }
+}
+
+fn host_can_send(
+    mut env: FunctionEnvMut<ContractContext>,
+    asset_ptr: u32,
+    from_ptr: u32,
+    amount: u64,
+    balance: u64,
+) -> u32 {
+    token_account_allowed(
+        &mut env,
+        asset_ptr,
+        from_ptr,
+        amount,
+        balance,
+        RestrictionTransferDirection::Outgoing,
+    )
+}
+
+fn host_can_receive(
+    mut env: FunctionEnvMut<ContractContext>,
+    asset_ptr: u32,
+    to_ptr: u32,
+    amount: u64,
+    balance: u64,
+) -> u32 {
+    token_account_allowed(
+        &mut env,
+        asset_ptr,
+        to_ptr,
+        amount,
+        balance,
+        RestrictionTransferDirection::Incoming,
+    )
+}
+
+fn host_can_transfer(
+    mut env: FunctionEnvMut<ContractContext>,
+    asset_ptr: u32,
+    from_ptr: u32,
+    to_ptr: u32,
+    amount: u64,
+    from_balance: u64,
+    to_balance: u64,
+) -> u32 {
+    if token_account_allowed(
+        &mut env,
+        asset_ptr,
+        from_ptr,
+        amount,
+        from_balance,
+        RestrictionTransferDirection::Outgoing,
+    ) == 0
+    {
+        return 0;
+    }
+
+    token_account_allowed(
+        &mut env,
+        asset_ptr,
+        to_ptr,
+        amount,
+        to_balance,
+        RestrictionTransferDirection::Incoming,
+    )
+}
+
 /// Return the length of the args passed to this contract call.
 fn host_get_args_len(env: FunctionEnvMut<ContractContext>) -> u32 {
     env.data().args.len() as u32
@@ -2049,6 +2385,7 @@ fn host_cross_contract_call(
     let pending_events = env.data().pending_ccc_events.clone();
     let pending_logs = env.data().pending_ccc_logs.clone();
     let pending_value_deltas = env.data().pending_ccc_value_deltas.clone();
+    let read_only = env.data().read_only;
 
     // ── Deduct base compute cost ─────────────────────────────────────
     {
@@ -2099,7 +2436,7 @@ fn host_cross_contract_call(
             return 0;
         }
     };
-    let target_contract: ContractAccount = match serde_json::from_slice(&target_account.data) {
+    let mut target_contract: ContractAccount = match serde_json::from_slice(&target_account.data) {
         Ok(c) => c,
         Err(err) => {
             push_contract_log(
@@ -2113,6 +2450,37 @@ fn host_cross_contract_call(
             return 0;
         }
     };
+
+    if let Err(error) = derive_contract_lifecycle_from_state_store(
+        &state_store,
+        &target,
+        &mut target_contract,
+        current_slot,
+    ) {
+        push_contract_log(
+            &mut env,
+            format!(
+                "[CCC] rejected: failed to derive target {} lifecycle: {}",
+                crate::Pubkey(target.0),
+                error
+            ),
+        );
+        return 0;
+    }
+
+    if let Err(error) =
+        target_contract.validate_lifecycle_for_execution(&function_name, read_only, value)
+    {
+        push_contract_log(
+            &mut env,
+            format!(
+                "[CCC] rejected: target {} lifecycle gate failed: {}",
+                crate::Pubkey(target.0),
+                error
+            ),
+        );
+        return 0;
+    }
 
     // ── Build callee storage: base + pending overlay ─────────────────
     // If prior cross-contract calls in this transaction already modified the
@@ -2180,6 +2548,7 @@ fn host_cross_contract_call(
         pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
         pending_native_account_ops: Vec::new(),
         pending_native_account_state: HashMap::new(),
+        read_only,
         storage_bytes_used: callee_storage_bytes,
     };
 
@@ -2386,6 +2755,77 @@ fn queue_native_account_op(
     state_store: &StateStore,
     op: NativeAccountOp,
 ) -> Result<(), String> {
+    match &op {
+        NativeAccountOp::Lock { account, amount } => {
+            let account_state =
+                if let Some(account_state) = ctx.pending_native_account_state.get(account) {
+                    account_state.clone()
+                } else {
+                    state_store
+                        .get_account(account)?
+                        .ok_or_else(|| format!("Native account {} not found", account))?
+                };
+            if state_store.is_account_restricted(
+                account,
+                RestrictionTransferDirection::Outgoing,
+                Some(&NATIVE_LICN_ASSET_ID),
+                *amount,
+                account_state.spendable,
+                ctx.slot,
+            )? {
+                return Err(format!(
+                    "Native account lock blocked by active account/native asset restriction for {}",
+                    account
+                ));
+            }
+        }
+        NativeAccountOp::Transfer { from, to, amount } => {
+            let from_account =
+                if let Some(account_state) = ctx.pending_native_account_state.get(from) {
+                    account_state.clone()
+                } else {
+                    state_store
+                        .get_account(from)?
+                        .ok_or_else(|| format!("Native account {} not found", from))?
+                };
+            if state_store.is_account_restricted(
+                from,
+                RestrictionTransferDirection::Outgoing,
+                Some(&NATIVE_LICN_ASSET_ID),
+                *amount,
+                from_account.spendable,
+                ctx.slot,
+            )? {
+                return Err(format!(
+                    "Native account transfer blocked by active source account/native asset restriction for {}",
+                    from
+                ));
+            }
+
+            let to_account = if let Some(account_state) = ctx.pending_native_account_state.get(to) {
+                account_state.clone()
+            } else {
+                state_store
+                    .get_account(to)?
+                    .unwrap_or_else(|| Account::new(0, *to))
+            };
+            if state_store.is_account_restricted(
+                to,
+                RestrictionTransferDirection::Incoming,
+                Some(&NATIVE_LICN_ASSET_ID),
+                *amount,
+                to_account.spendable,
+                ctx.slot,
+            )? {
+                return Err(format!(
+                    "Native account transfer blocked by active recipient account/native asset restriction for {}",
+                    to
+                ));
+            }
+        }
+        NativeAccountOp::Unlock { .. } | NativeAccountOp::DeductLocked { .. } => {}
+    }
+
     let account_key = op.account();
     let mut account = if let Some(account) = ctx.pending_native_account_state.get(&account_key) {
         account.clone()
@@ -2655,6 +3095,343 @@ fn encode_json_args_to_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::restrictions::{
+        RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
+    };
+    use tempfile::tempdir;
+
+    fn token_compliance_probe_wat() -> &'static str {
+        r#"(module
+            (import "env" "get_args" (func $get_args (param i32 i32) (result i32)))
+            (import "env" "can_send" (func $can_send (param i32 i32 i64 i64) (result i32)))
+            (import "env" "can_receive" (func $can_receive (param i32 i32 i64 i64) (result i32)))
+            (import "env" "can_transfer" (func $can_transfer (param i32 i32 i32 i64 i64 i64) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "check_send") (result i32)
+                (call $get_args (i32.const 0) (i32.const 96))
+                drop
+                (call $can_send
+                    (i32.const 0)
+                    (i32.const 32)
+                    (i64.const 60)
+                    (i64.const 100)
+                )
+            )
+            (func (export "check_receive") (result i32)
+                (call $get_args (i32.const 0) (i32.const 96))
+                drop
+                (call $can_receive
+                    (i32.const 0)
+                    (i32.const 64)
+                    (i64.const 60)
+                    (i64.const 0)
+                )
+            )
+            (func (export "check_transfer") (result i32)
+                (call $get_args (i32.const 0) (i32.const 96))
+                drop
+                (call $can_transfer
+                    (i32.const 0)
+                    (i32.const 32)
+                    (i32.const 64)
+                    (i64.const 60)
+                    (i64.const 100)
+                    (i64.const 0)
+                )
+            )
+        )"#
+    }
+
+    fn token_compliance_args(asset: Pubkey, from: Pubkey, to: Pubkey) -> Vec<u8> {
+        let mut args = Vec::with_capacity(96);
+        args.extend_from_slice(&asset.0);
+        args.extend_from_slice(&from.0);
+        args.extend_from_slice(&to.0);
+        args
+    }
+
+    fn active_restriction(
+        id: u64,
+        target: RestrictionTarget,
+        mode: RestrictionMode,
+    ) -> RestrictionRecord {
+        RestrictionRecord {
+            id,
+            target,
+            mode,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        }
+    }
+
+    fn account_with_spendable(owner: Pubkey, spendable: u64) -> Account {
+        let mut account = Account::new(0, owner);
+        account.spores = spendable;
+        account.spendable = spendable;
+        account
+    }
+
+    fn execute_token_compliance_probe(
+        state_store: Option<StateStore>,
+        function: &str,
+        asset: Pubkey,
+        from: Pubkey,
+        to: Pubkey,
+    ) -> ContractResult {
+        execute_token_compliance_probe_with_contract(state_store, function, asset, asset, from, to)
+    }
+
+    fn execute_token_compliance_probe_with_contract(
+        state_store: Option<StateStore>,
+        function: &str,
+        contract_address: Pubkey,
+        asset: Pubkey,
+        from: Pubkey,
+        to: Pubkey,
+    ) -> ContractResult {
+        let contract = ContractAccount::new(
+            token_compliance_probe_wat().as_bytes().to_vec(),
+            contract_address,
+        );
+        let args = token_compliance_args(asset, from, to);
+        let mut context =
+            ContractContext::with_args(from, contract_address, 0, 0, HashMap::new(), args.clone());
+        context.state_store = state_store;
+        let mut runtime = ContractRuntime::new();
+        runtime
+            .execute(&contract, function, &args, context)
+            .expect("token compliance probe should execute")
+    }
+
+    #[test]
+    fn test_token_compliance_host_allows_without_state_store() {
+        let asset = Pubkey([0x90; 32]);
+        let from = Pubkey([0x91; 32]);
+        let to = Pubkey([0x92; 32]);
+
+        let result = execute_token_compliance_probe(None, "check_transfer", asset, from, to);
+
+        assert_eq!(result.return_code, Some(1));
+        assert!(result.logs.is_empty());
+    }
+
+    #[test]
+    fn test_token_compliance_host_rejects_asset_pointer_spoofing() {
+        let contract_address = Pubkey([0x93; 32]);
+        let spoofed_asset = Pubkey([0x90; 32]);
+        let from = Pubkey([0x91; 32]);
+        let to = Pubkey([0x92; 32]);
+
+        let result = execute_token_compliance_probe_with_contract(
+            None,
+            "check_transfer",
+            contract_address,
+            spoofed_asset,
+            from,
+            to,
+        );
+
+        assert_eq!(result.return_code, Some(0));
+        assert!(result
+            .logs
+            .iter()
+            .any(|log| log.contains("does not match executing token contract")));
+    }
+
+    #[test]
+    fn test_token_compliance_host_blocks_asset_paused_transfer() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let asset = Pubkey([0x90; 32]);
+        let from = Pubkey([0x91; 32]);
+        let to = Pubkey([0x92; 32]);
+        let restriction = active_restriction(
+            1,
+            RestrictionTarget::Asset(asset),
+            RestrictionMode::AssetPaused,
+        );
+        state.put_restriction(&restriction).unwrap();
+
+        let result = execute_token_compliance_probe(Some(state), "check_transfer", asset, from, to);
+
+        assert_eq!(result.return_code, Some(0));
+        assert!(result
+            .logs
+            .iter()
+            .any(|log| log.contains("[COMPLIANCE] rejected")));
+    }
+
+    #[test]
+    fn test_token_compliance_host_blocks_account_asset_frozen_send() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let asset = Pubkey([0x90; 32]);
+        let from = Pubkey([0x91; 32]);
+        let to = Pubkey([0x92; 32]);
+        let restriction = active_restriction(
+            2,
+            RestrictionTarget::AccountAsset {
+                account: from,
+                asset,
+            },
+            RestrictionMode::FrozenAmount { amount: 50 },
+        );
+        state.put_restriction(&restriction).unwrap();
+
+        let send_result =
+            execute_token_compliance_probe(Some(state.clone()), "check_send", asset, from, to);
+        let transfer_result =
+            execute_token_compliance_probe(Some(state), "check_transfer", asset, from, to);
+
+        assert_eq!(send_result.return_code, Some(0));
+        assert_eq!(transfer_result.return_code, Some(0));
+        assert!(transfer_result
+            .logs
+            .iter()
+            .any(|log| log.contains("[COMPLIANCE] rejected")));
+    }
+
+    #[test]
+    fn test_token_compliance_host_blocks_incoming_recipient() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let asset = Pubkey([0x90; 32]);
+        let from = Pubkey([0x91; 32]);
+        let to = Pubkey([0x92; 32]);
+        let restriction = active_restriction(
+            3,
+            RestrictionTarget::Account(to),
+            RestrictionMode::IncomingOnly,
+        );
+        state.put_restriction(&restriction).unwrap();
+
+        let receive_result =
+            execute_token_compliance_probe(Some(state.clone()), "check_receive", asset, from, to);
+        let transfer_result =
+            execute_token_compliance_probe(Some(state), "check_transfer", asset, from, to);
+
+        assert_eq!(receive_result.return_code, Some(0));
+        assert_eq!(transfer_result.return_code, Some(0));
+        assert!(receive_result
+            .logs
+            .iter()
+            .any(|log| log.contains("[COMPLIANCE] rejected")));
+    }
+
+    #[test]
+    fn test_native_contract_transfer_blocks_incoming_restricted_recipient_without_pending_op() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let from = Pubkey([0xA0; 32]);
+        let to = Pubkey([0xA1; 32]);
+        state
+            .put_account(&from, &account_with_spendable(from, 1_000))
+            .unwrap();
+        state
+            .put_restriction(&active_restriction(
+                4,
+                RestrictionTarget::Account(to),
+                RestrictionMode::IncomingOnly,
+            ))
+            .unwrap();
+        let mut ctx = ContractContext::new(Pubkey([0x01; 32]), from, 0, 0);
+
+        let err = queue_native_account_op(
+            &mut ctx,
+            &state,
+            NativeAccountOp::Transfer {
+                from,
+                to,
+                amount: 100,
+            },
+        )
+        .expect_err("incoming-restricted recipient must block native payout");
+
+        assert!(err.contains("recipient"));
+        assert!(ctx.pending_native_account_ops.is_empty());
+        assert!(ctx.pending_native_account_state.is_empty());
+    }
+
+    #[test]
+    fn test_native_contract_transfer_blocks_frozen_source_without_pending_op() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let from = Pubkey([0xA2; 32]);
+        let to = Pubkey([0xA3; 32]);
+        state
+            .put_account(&from, &account_with_spendable(from, 1_000))
+            .unwrap();
+        state
+            .put_restriction(&active_restriction(
+                5,
+                RestrictionTarget::AccountAsset {
+                    account: from,
+                    asset: NATIVE_LICN_ASSET_ID,
+                },
+                RestrictionMode::FrozenAmount { amount: 950 },
+            ))
+            .unwrap();
+        let mut ctx = ContractContext::new(Pubkey([0x01; 32]), from, 0, 0);
+
+        let err = queue_native_account_op(
+            &mut ctx,
+            &state,
+            NativeAccountOp::Transfer {
+                from,
+                to,
+                amount: 100,
+            },
+        )
+        .expect_err("frozen native source must block native payout");
+
+        assert!(err.contains("source"));
+        assert!(ctx.pending_native_account_ops.is_empty());
+        assert!(ctx.pending_native_account_state.is_empty());
+    }
+
+    #[test]
+    fn test_native_lock_blocks_outgoing_restricted_account_without_pending_op() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let trader = Pubkey([0xA4; 32]);
+        state
+            .put_account(&trader, &account_with_spendable(trader, 1_000))
+            .unwrap();
+        state
+            .put_restriction(&active_restriction(
+                6,
+                RestrictionTarget::Account(trader),
+                RestrictionMode::OutgoingOnly,
+            ))
+            .unwrap();
+        let mut ctx = ContractContext::new(trader, Pubkey([0x01; 32]), 0, 0);
+
+        let err = queue_native_account_op(
+            &mut ctx,
+            &state,
+            NativeAccountOp::Lock {
+                account: trader,
+                amount: 100,
+            },
+        )
+        .expect_err("outgoing-restricted trader must not lock native collateral");
+
+        assert!(err.contains("lock"));
+        assert!(ctx.pending_native_account_ops.is_empty());
+        assert!(ctx.pending_native_account_state.is_empty());
+    }
 
     #[test]
     fn test_contract_account() {
@@ -2665,6 +3442,112 @@ mod tests {
         assert_eq!(contract.code, code);
         assert_eq!(contract.owner, owner);
         assert_eq!(contract.storage.len(), 0);
+        assert_eq!(contract.lifecycle_status, ContractLifecycleStatus::Active);
+        assert_eq!(contract.lifecycle_updated_slot, 0);
+        assert_eq!(contract.lifecycle_restriction_id, None);
+    }
+
+    #[test]
+    fn test_contract_lifecycle_status_defaults_to_active_for_legacy_json() {
+        let json = serde_json::json!({
+            "code": [0, 0x61, 0x73, 0x6D],
+            "storage": {},
+            "owner": vec![1u8; 32],
+            "code_hash": vec![0u8; 32],
+            "version": 1
+        });
+        let contract: ContractAccount = serde_json::from_value(json).unwrap();
+
+        assert_eq!(contract.lifecycle_status, ContractLifecycleStatus::Active);
+        assert_eq!(contract.lifecycle_updated_slot, 0);
+        assert_eq!(contract.lifecycle_restriction_id, None);
+    }
+
+    #[test]
+    fn test_contract_lifecycle_metadata_roundtrips() {
+        let owner = Pubkey::new([1u8; 32]);
+        for status in [
+            ContractLifecycleStatus::Suspended,
+            ContractLifecycleStatus::Quarantined,
+            ContractLifecycleStatus::Terminated,
+        ] {
+            let mut contract = ContractAccount::new(vec![0x00, 0x61, 0x73, 0x6d], owner);
+            contract.lifecycle_status = status;
+            contract.lifecycle_updated_slot = 123;
+            contract.lifecycle_restriction_id = Some(77);
+
+            let json = serde_json::to_string(&contract).unwrap();
+            let restored: ContractAccount = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(restored.lifecycle_status, status);
+            assert_eq!(restored.lifecycle_updated_slot, 123);
+            assert_eq!(restored.lifecycle_restriction_id, Some(77));
+        }
+    }
+
+    #[test]
+    fn test_contract_lifecycle_validation_respects_readonly_abi() {
+        let owner = Pubkey::new([1u8; 32]);
+        let mut contract = ContractAccount::new(vec![0x00, 0x61, 0x73, 0x6d], owner);
+        contract.lifecycle_status = ContractLifecycleStatus::Suspended;
+        contract.abi = Some(ContractAbi {
+            version: "1.0".to_string(),
+            name: "lifecycle_test".to_string(),
+            template: None,
+            description: None,
+            functions: vec![
+                AbiFunction {
+                    name: "get".to_string(),
+                    description: None,
+                    params: Vec::new(),
+                    returns: None,
+                    opcode: None,
+                    readonly: true,
+                },
+                AbiFunction {
+                    name: "set".to_string(),
+                    description: None,
+                    params: Vec::new(),
+                    returns: None,
+                    opcode: None,
+                    readonly: false,
+                },
+            ],
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
+
+        assert!(contract
+            .validate_lifecycle_for_execution("get", true, 0)
+            .is_ok());
+        assert!(contract
+            .validate_lifecycle_for_execution("get", true, 1)
+            .unwrap_err()
+            .contains("suspended"));
+        assert!(contract
+            .validate_lifecycle_for_execution("get", false, 0)
+            .unwrap_err()
+            .contains("suspended"));
+        assert!(contract
+            .validate_lifecycle_for_execution("set", true, 0)
+            .unwrap_err()
+            .contains("suspended"));
+        assert!(contract
+            .validate_lifecycle_for_execution("missing", true, 0)
+            .unwrap_err()
+            .contains("suspended"));
+
+        contract.lifecycle_status = ContractLifecycleStatus::Quarantined;
+        assert!(contract
+            .validate_lifecycle_for_execution("get", true, 0)
+            .unwrap_err()
+            .contains("quarantined"));
+
+        contract.lifecycle_status = ContractLifecycleStatus::Terminated;
+        assert!(contract
+            .validate_lifecycle_for_execution("get", true, 0)
+            .unwrap_err()
+            .contains("terminated"));
     }
 
     #[test]
@@ -2675,6 +3558,7 @@ mod tests {
 
         assert_eq!(ctx.value, 1000);
         assert_eq!(ctx.slot, 100);
+        assert!(!ctx.read_only);
         assert!(ctx.storage.is_empty());
         assert!(ctx.storage_changes.is_empty());
         assert!(ctx.args.is_empty());

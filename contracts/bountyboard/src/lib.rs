@@ -1793,6 +1793,43 @@ mod tests {
     }
 
     #[test]
+    fn test_approve_work_false_transfer_preserves_bounty_and_stats() {
+        setup();
+        let creator = [1u8; 32];
+        let worker = [2u8; 32];
+        create_basic_bounty(&creator, 500_000);
+        submit_basic_work(&worker);
+
+        let before = test_mock::get_storage(&bounty_key(0)).unwrap();
+        test_mock::set_caller(creator);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        assert_eq!(approve_work(creator.as_ptr(), 0, 0), 8);
+
+        let after = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(stored_u64(BB_COMPLETED_COUNT_KEY), 0);
+        assert_eq!(stored_u64(BB_REWARD_VOLUME_KEY), 0);
+    }
+
+    #[test]
+    fn test_cancel_bounty_false_refund_preserves_bounty_and_stats() {
+        setup();
+        let creator = [1u8; 32];
+        create_basic_bounty(&creator, 300_000);
+
+        let before = test_mock::get_storage(&bounty_key(0)).unwrap();
+        test_mock::set_caller(creator);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+
+        assert_eq!(cancel_bounty(creator.as_ptr(), 0), 8);
+
+        let after = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(stored_u64(BB_CANCEL_COUNT_KEY), 0);
+    }
+
+    #[test]
     fn test_stats_counters_saturate() {
         setup();
         let creator = [1u8; 32];

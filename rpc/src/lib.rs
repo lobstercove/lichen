@@ -52,14 +52,17 @@ use axum::{
 };
 use chrono::{SecondsFormat, Utc};
 use lichen_core::account::Keypair as TreasuryKeypair;
-use lichen_core::contract::{ContractAccount, ContractEvent, ContractRuntime};
+use lichen_core::contract::{
+    ContractAccount, ContractEvent, ContractLifecycleStatus, ContractRuntime,
+};
 use lichen_core::keypair_file::KeypairFile;
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     FinalityTracker, Hash, Instruction, MarketActivityKind, Message, PqSignature, Pubkey,
-    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet,
-    CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE, SYSTEM_PROGRAM_ID,
+    RestrictionMode, RestrictionRecord, RestrictionTarget, StakePool, StateStore,
+    SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet, CONTRACT_PROGRAM_ID,
+    EVM_PROGRAM_ID, MAX_CONTRACT_CODE, SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -149,6 +152,7 @@ pub(crate) struct GovernanceEventRecord {
     pub event_kind: String,
     pub action: String,
     pub authority: Pubkey,
+    pub approval_authority: Option<Pubkey>,
     pub proposer: Pubkey,
     pub actor: Pubkey,
     pub approvals: u64,
@@ -161,6 +165,22 @@ pub(crate) struct GovernanceEventRecord {
     pub target_function: Option<String>,
     pub call_args_len: Option<u64>,
     pub call_value_spores: Option<u64>,
+    pub restriction_id: Option<u64>,
+    pub restriction_status: Option<String>,
+    pub restriction_target_type: Option<String>,
+    pub restriction_target: Option<String>,
+    pub restriction_mode: Option<String>,
+    pub restriction_amount: Option<u64>,
+    pub restriction_reason: Option<String>,
+    pub restriction_created_slot: Option<u64>,
+    pub restriction_created_epoch: Option<u64>,
+    pub restriction_expires_at_slot: Option<u64>,
+    pub restriction_evidence_hash: Option<String>,
+    pub restriction_evidence_uri_hash: Option<String>,
+    pub restriction_supersedes: Option<u64>,
+    pub restriction_lifted_by: Option<Pubkey>,
+    pub restriction_lifted_slot: Option<u64>,
+    pub restriction_lift_reason: Option<String>,
     pub slot: u64,
 }
 
@@ -170,6 +190,9 @@ fn governance_event_kind(name: &str) -> Option<&'static str> {
         "GovernanceProposalApproved" => Some("approved"),
         "GovernanceProposalExecuted" => Some("executed"),
         "GovernanceProposalCancelled" => Some("cancelled"),
+        "RestrictionCreated" => Some("restriction_created"),
+        "RestrictionExtended" => Some("restriction_extended"),
+        "RestrictionLifted" => Some("restriction_lifted"),
         _ => None,
     }
 }
@@ -187,6 +210,9 @@ pub(crate) fn parse_governance_event(event: &ContractEvent) -> Option<Governance
         event_kind,
         action: data.get("action")?.clone(),
         authority: Pubkey::from_base58(data.get("authority")?).ok()?,
+        approval_authority: data
+            .get("approval_authority")
+            .and_then(|value| Pubkey::from_base58(value).ok()),
         proposer: Pubkey::from_base58(data.get("proposer")?).ok()?,
         actor: Pubkey::from_base58(data.get("actor")?).ok()?,
         approvals: data.get("approvals")?.parse().ok()?,
@@ -205,6 +231,34 @@ pub(crate) fn parse_governance_event(event: &ContractEvent) -> Option<Governance
         call_value_spores: data
             .get("call_value_spores")
             .and_then(|value| value.parse().ok()),
+        restriction_id: data
+            .get("restriction_id")
+            .and_then(|value| value.parse().ok()),
+        restriction_status: data.get("restriction_status").cloned(),
+        restriction_target_type: data.get("restriction_target_type").cloned(),
+        restriction_target: data.get("restriction_target").cloned(),
+        restriction_mode: data.get("restriction_mode").cloned(),
+        restriction_amount: data
+            .get("restriction_amount")
+            .and_then(|value| value.parse().ok()),
+        restriction_reason: data.get("restriction_reason").cloned(),
+        restriction_created_slot: data
+            .get("created_slot")
+            .and_then(|value| value.parse().ok()),
+        restriction_created_epoch: data
+            .get("created_epoch")
+            .and_then(|value| value.parse().ok()),
+        restriction_expires_at_slot: data
+            .get("expires_at_slot")
+            .and_then(|value| value.parse().ok()),
+        restriction_evidence_hash: data.get("evidence_hash").cloned(),
+        restriction_evidence_uri_hash: data.get("evidence_uri_hash").cloned(),
+        restriction_supersedes: data.get("supersedes").and_then(|value| value.parse().ok()),
+        restriction_lifted_by: data
+            .get("lifted_by")
+            .and_then(|value| Pubkey::from_base58(value).ok()),
+        restriction_lifted_slot: data.get("lifted_slot").and_then(|value| value.parse().ok()),
+        restriction_lift_reason: data.get("lift_reason").cloned(),
         slot: event.slot,
     })
 }
@@ -2471,6 +2525,16 @@ fn log_privileged_rpc_mutation(
     let details = serde_json::to_string(&details)
         .unwrap_or_else(|_| "{\"serialization_error\":true}".to_string());
 
+    #[cfg(test)]
+    record_privileged_rpc_mutation_for_test(
+        method,
+        auth_scope,
+        actor,
+        resource_type,
+        resource_id.unwrap_or(""),
+        &details,
+    );
+
     info!(
         target: "audit",
         event = "privileged_rpc_mutation",
@@ -2482,6 +2546,42 @@ fn log_privileged_rpc_mutation(
         details = %details,
         "Privileged RPC mutation executed"
     );
+}
+
+#[cfg(test)]
+fn privileged_rpc_mutation_test_sink() -> &'static std::sync::Mutex<Vec<String>> {
+    static SINK: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    SINK.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+fn record_privileged_rpc_mutation_for_test(
+    method: &str,
+    auth_scope: &str,
+    actor: &str,
+    resource_type: &str,
+    resource_id: &str,
+    details: &str,
+) {
+    privileged_rpc_mutation_test_sink()
+        .lock()
+        .unwrap()
+        .push(format!(
+            "Privileged RPC mutation executed method={method} auth_scope={auth_scope} actor={actor} resource_type={resource_type} resource_id={resource_id} details={details}"
+        ));
+}
+
+#[cfg(test)]
+fn clear_privileged_rpc_mutation_test_sink() {
+    privileged_rpc_mutation_test_sink().lock().unwrap().clear();
+}
+
+#[cfg(test)]
+fn privileged_rpc_mutation_test_output() -> String {
+    privileged_rpc_mutation_test_sink()
+        .lock()
+        .unwrap()
+        .join("\n")
 }
 
 /// T8.4: Constant-time byte comparison to prevent timing side-channel attacks
@@ -4492,6 +4592,12 @@ async fn handle_rpc(
 
         // Contract endpoints
         "getContractInfo" => handle_get_contract_info(&state, req.params).await,
+        "getCodeHashRestrictionStatus" => {
+            handle_get_code_hash_restriction_status(&state, req.params).await
+        }
+        "getBridgeRouteRestrictionStatus" => {
+            handle_get_bridge_route_restriction_status(&state, req.params).await
+        }
         "getContractLogs" => handle_get_contract_logs(&state, req.params).await,
         "getContractAbi" => handle_get_contract_abi(&state, req.params).await,
         "setContractAbi" => {
@@ -7325,7 +7431,24 @@ fn execute_readonly_contract_call(
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let context = lichen_core::contract::build_top_level_call_context(
+    let mut contract = contract.clone();
+    lichen_core::contract::derive_contract_lifecycle_from_state_store(
+        &state.state,
+        &contract_pubkey,
+        &mut contract,
+        current_slot,
+    )
+    .map_err(|error| RpcError {
+        code: -32000,
+        message: error,
+    })?;
+    contract
+        .validate_lifecycle_for_execution(function, true, 0)
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: error,
+        })?;
+    let mut context = lichen_core::contract::build_top_level_call_context(
         lichen_core::contract::ContractContext::with_args(
             caller,
             contract_pubkey,
@@ -7337,10 +7460,11 @@ fn execute_readonly_contract_call(
         state.state.clone(),
         lichen_core::contract::DEFAULT_COMPUTE_LIMIT,
     );
+    context.read_only = true;
     let exec_args = context.args.clone();
 
     let mut runtime = ContractRuntime::get_pooled();
-    let exec_result = runtime.execute(contract, function, &exec_args, context);
+    let exec_result = runtime.execute(&contract, function, &exec_args, context);
     runtime.return_to_pool();
 
     exec_result.map_err(|error| RpcError {
@@ -9528,6 +9652,15 @@ async fn handle_get_account_info(
 // CONTRACT ENDPOINTS
 // ============================================================================
 
+fn contract_lifecycle_status_label(status: ContractLifecycleStatus) -> &'static str {
+    match status {
+        ContractLifecycleStatus::Active => "active",
+        ContractLifecycleStatus::Suspended => "suspended",
+        ContractLifecycleStatus::Quarantined => "quarantined",
+        ContractLifecycleStatus::Terminated => "terminated",
+    }
+}
+
 /// Get contract information
 async fn handle_get_contract_info(
     state: &RpcState,
@@ -9565,151 +9698,179 @@ async fn handle_get_contract_info(
         message: "Contract not found".to_string(),
     })?;
 
-    // Try to parse ContractAccount to get rich metadata
-    let (has_abi, abi_functions, code_hash, owner_b58, token_metadata) = if account.executable {
-        if let Ok(ca) = serde_json::from_slice::<lichen_core::ContractAccount>(&account.data) {
-            let func_count = ca.abi.as_ref().map(|a| a.functions.len()).unwrap_or(0);
-            let abi_fn_names: Vec<String> = ca
-                .abi
-                .as_ref()
-                .map(|a| a.functions.iter().map(|f| f.name.clone()).collect())
-                .unwrap_or_default();
+    let current_slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+    let effective_contract = if account.executable {
+        match serde_json::from_slice::<lichen_core::ContractAccount>(&account.data) {
+            Ok(mut contract) => {
+                lichen_core::contract::derive_contract_lifecycle_from_state_store(
+                    &state.state,
+                    &contract_id,
+                    &mut contract,
+                    current_slot,
+                )
+                .map_err(|error| RpcError {
+                    code: -32000,
+                    message: error,
+                })?;
+                Some(contract)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
 
-            // Extract MT-20 token metadata from contract storage + registry.
-            //
-            // All tokens use prefixed keys: {prefix}_supply (e.g. licn_supply, wbnb_supply).
-            // Primary source: symbol registry entry (has name, symbol, decimals).
-            // Supply value: read directly via {symbol_lowercase}_supply key.
-            let mut tmeta = serde_json::Map::new();
+    // Try to parse ContractAccount to get rich metadata.
+    let (has_abi, abi_functions, code_hash, owner_b58, token_metadata) = if let Some(ca) =
+        effective_contract.as_ref()
+    {
+        let func_count = ca.abi.as_ref().map(|a| a.functions.len()).unwrap_or(0);
+        let abi_fn_names: Vec<String> = ca
+            .abi
+            .as_ref()
+            .map(|a| a.functions.iter().map(|f| f.name.clone()).collect())
+            .unwrap_or_default();
 
-            // Look up registry entry for this contract to get the prefix
-            let reg_entry = state
+        // Extract MT-20 token metadata from contract storage + registry.
+        //
+        // All tokens use prefixed keys: {prefix}_supply (e.g. licn_supply, wbnb_supply).
+        // Primary source: symbol registry entry (has name, symbol, decimals).
+        // Supply value: read directly via {symbol_lowercase}_supply key.
+        let mut tmeta = serde_json::Map::new();
+
+        // Look up registry entry for this contract to get the prefix
+        let reg_entry = state
+            .state
+            .get_symbol_registry_by_program(&contract_id)
+            .ok()
+            .flatten();
+        if let Some(ref entry) = reg_entry {
+            let prefix = entry.symbol.to_lowercase();
+            let supply_key = format!("{}_supply", prefix);
+            if let Ok(Some(v)) = state
                 .state
-                .get_symbol_registry_by_program(&contract_id)
-                .ok()
-                .flatten();
-            if let Some(ref entry) = reg_entry {
-                let prefix = entry.symbol.to_lowercase();
-                let supply_key = format!("{}_supply", prefix);
-                if let Ok(Some(v)) = state
-                    .state
-                    .get_contract_storage(&contract_id, supply_key.as_bytes())
-                {
+                .get_contract_storage(&contract_id, supply_key.as_bytes())
+            {
+                if v.len() == 8 {
+                    let supply =
+                        u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
+                    tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                }
+            }
+            if !tmeta.contains_key("total_supply") {
+                if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
                     if v.len() == 8 {
                         let supply =
                             u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
                         tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                     }
                 }
-                if !tmeta.contains_key("total_supply") {
-                    if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
-                        if v.len() == 8 {
-                            let supply = u64::from_le_bytes([
-                                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-                            ]);
+            }
+            // Fallback: if supply not found in storage, check registry metadata
+            if !tmeta.contains_key("total_supply") {
+                if let Some(ref meta) = entry.metadata {
+                    if let Some(v) = meta.get("total_supply") {
+                        // Accept both number and string representation
+                        if let Some(n) = v.as_u64() {
+                            tmeta.insert("total_supply".to_string(), serde_json::json!(n));
+                        } else if let Some(s) = v.as_str() {
+                            if let Ok(n) = s.parse::<u64>() {
+                                tmeta.insert("total_supply".to_string(), serde_json::json!(n));
+                            }
+                        }
+                    }
+                }
+            }
+            if !tmeta.contains_key("total_supply")
+                && abi_fn_names.iter().any(|name| name == "total_supply")
+            {
+                if let Ok(result) = execute_readonly_contract_call(
+                    state,
+                    contract_id,
+                    ca,
+                    Pubkey::new([0u8; 32]),
+                    "total_supply",
+                    Vec::new(),
+                ) {
+                    if result.success {
+                        if let Some(supply) = decode_contract_result_u64(&result) {
                             tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                         }
                     }
                 }
-                // Fallback: if supply not found in storage, check registry metadata
-                if !tmeta.contains_key("total_supply") {
-                    if let Some(ref meta) = entry.metadata {
-                        if let Some(v) = meta.get("total_supply") {
-                            // Accept both number and string representation
-                            if let Some(n) = v.as_u64() {
-                                tmeta.insert("total_supply".to_string(), serde_json::json!(n));
-                            } else if let Some(s) = v.as_str() {
-                                if let Ok(n) = s.parse::<u64>() {
-                                    tmeta.insert("total_supply".to_string(), serde_json::json!(n));
-                                }
-                            }
-                        }
-                    }
-                }
-                if !tmeta.contains_key("total_supply")
-                    && abi_fn_names.iter().any(|name| name == "total_supply")
-                {
-                    if let Ok(result) = execute_readonly_contract_call(
-                        state,
-                        contract_id,
-                        &ca,
-                        Pubkey::new([0u8; 32]),
-                        "total_supply",
-                        Vec::new(),
-                    ) {
-                        if result.success {
-                            if let Some(supply) = decode_contract_result_u64(&result) {
-                                tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
-                            }
-                        }
-                    }
-                }
-                // Preserve the full live registry profile metadata in token_metadata.
-                if let Some(ref meta) = entry.metadata {
-                    if let Some(obj) = meta.as_object() {
-                        for (key, value) in obj {
-                            tmeta.entry(key.clone()).or_insert_with(|| value.clone());
-                        }
-                    }
-                }
-                if let Some(decimals) = entry.decimals {
-                    tmeta.insert("decimals".to_string(), serde_json::json!(decimals));
-                } else if let Some(ref meta) = entry.metadata {
-                    if let Some(v) = meta.get("decimals") {
-                        tmeta.insert("decimals".to_string(), v.clone());
-                    }
-                }
-                if let Some(ref name) = entry.name {
-                    if !name.trim().is_empty() {
-                        tmeta.insert("token_name".to_string(), serde_json::json!(name));
-                        tmeta
-                            .entry("name".to_string())
-                            .or_insert_with(|| serde_json::json!(name));
-                    }
-                } else if let Some(ref meta) = entry.metadata {
-                    if let Some(v) = meta.get("name") {
-                        tmeta.insert("token_name".to_string(), v.clone());
-                        tmeta.entry("name".to_string()).or_insert_with(|| v.clone());
-                    }
-                }
-                tmeta.insert("token_symbol".to_string(), serde_json::json!(&entry.symbol));
             }
-
-            // Detect mintable/burnable from ABI function names
-            let has_mint = abi_fn_names.iter().any(|n| n == "mint");
-            let has_burn = abi_fn_names.iter().any(|n| n == "burn");
-            tmeta.insert("mintable".to_string(), serde_json::json!(has_mint));
-            tmeta.insert("burnable".to_string(), serde_json::json!(has_burn));
-
-            let token_meta = if tmeta.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::Object(tmeta))
-            };
-
-            (
-                ca.abi.is_some(),
-                func_count,
-                ca.code_hash.to_hex(),
-                ca.owner.to_base58(),
-                token_meta,
-            )
-        } else {
-            (false, 0, String::new(), account.owner.to_base58(), None)
+            // Preserve the full live registry profile metadata in token_metadata.
+            if let Some(ref meta) = entry.metadata {
+                if let Some(obj) = meta.as_object() {
+                    for (key, value) in obj {
+                        tmeta.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+            if let Some(decimals) = entry.decimals {
+                tmeta.insert("decimals".to_string(), serde_json::json!(decimals));
+            } else if let Some(ref meta) = entry.metadata {
+                if let Some(v) = meta.get("decimals") {
+                    tmeta.insert("decimals".to_string(), v.clone());
+                }
+            }
+            if let Some(ref name) = entry.name {
+                if !name.trim().is_empty() {
+                    tmeta.insert("token_name".to_string(), serde_json::json!(name));
+                    tmeta
+                        .entry("name".to_string())
+                        .or_insert_with(|| serde_json::json!(name));
+                }
+            } else if let Some(ref meta) = entry.metadata {
+                if let Some(v) = meta.get("name") {
+                    tmeta.insert("token_name".to_string(), v.clone());
+                    tmeta.entry("name".to_string()).or_insert_with(|| v.clone());
+                }
+            }
+            tmeta.insert("token_symbol".to_string(), serde_json::json!(&entry.symbol));
         }
+
+        // Detect mintable/burnable from ABI function names
+        let has_mint = abi_fn_names.iter().any(|n| n == "mint");
+        let has_burn = abi_fn_names.iter().any(|n| n == "burn");
+        tmeta.insert("mintable".to_string(), serde_json::json!(has_mint));
+        tmeta.insert("burnable".to_string(), serde_json::json!(has_burn));
+
+        let token_meta = if tmeta.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(tmeta))
+        };
+
+        (
+            ca.abi.is_some(),
+            func_count,
+            ca.code_hash.to_hex(),
+            ca.owner.to_base58(),
+            token_meta,
+        )
     } else {
         (false, 0, String::new(), account.owner.to_base58(), None)
     };
 
-    // Extract version + previous_code_hash when available
-    let (contract_version, prev_code_hash) = if account.executable {
-        if let Ok(ca) = serde_json::from_slice::<lichen_core::ContractAccount>(&account.data) {
-            (ca.version, ca.previous_code_hash.map(|h| h.to_hex()))
-        } else {
-            (1u32, None)
-        }
-    } else {
-        (1u32, None)
+    let (
+        contract_version,
+        prev_code_hash,
+        lifecycle_status,
+        lifecycle_updated_slot,
+        lifecycle_restriction_id,
+    ) = match effective_contract.as_ref() {
+        Some(ca) => (
+            ca.version,
+            ca.previous_code_hash.map(|h| h.to_hex()),
+            contract_lifecycle_status_label(ca.lifecycle_status),
+            ca.lifecycle_updated_slot,
+            ca.lifecycle_restriction_id,
+        ),
+        None => (1u32, None, "unknown", 0, None),
     };
 
     let mut result = serde_json::json!({
@@ -9722,6 +9883,10 @@ async fn handle_get_contract_info(
         "code_hash": code_hash,
         "deployed_at": 0,
         "version": contract_version,
+        "lifecycle_status": lifecycle_status,
+        "lifecycle_updated_slot": lifecycle_updated_slot,
+        "lifecycle_restriction_id": lifecycle_restriction_id,
+        "lifecycle_effective_at_slot": current_slot,
     });
     if let Some(pch) = prev_code_hash {
         if let Some(obj) = result.as_object_mut() {
@@ -9746,6 +9911,313 @@ async fn handle_get_contract_info(
     }
 
     Ok(result)
+}
+
+fn parse_code_hash_status_param(params: Option<serde_json::Value>) -> Result<Hash, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let value = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [code_hash_hex]".to_string(),
+        })?;
+
+    let hash_str = if let Some(hash) = value.as_str() {
+        hash
+    } else if let Some(hash) = value
+        .as_object()
+        .and_then(|object| object.get("code_hash").or_else(|| object.get("codeHash")))
+        .and_then(|value| value.as_str())
+    {
+        hash
+    } else {
+        return Err(RpcError {
+            code: -32602,
+            message: "code_hash must be a 32-byte hex string".to_string(),
+        });
+    };
+
+    let normalized = hash_str
+        .strip_prefix("0x")
+        .or_else(|| hash_str.strip_prefix("0X"))
+        .unwrap_or(hash_str);
+    Hash::from_hex(normalized).map_err(|error| RpcError {
+        code: -32602,
+        message: format!("Invalid code_hash: {}", error),
+    })
+}
+
+fn active_code_hash_deploy_blocks(
+    state: &RpcState,
+    code_hash: &Hash,
+) -> Result<(u64, Vec<RestrictionRecord>), RpcError> {
+    let slot = state.state.get_last_slot().map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", error),
+    })?;
+    let target = RestrictionTarget::CodeHash(*code_hash);
+    let active_records = state
+        .state
+        .get_active_restrictions_for_target(&target, slot, 0)
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", error),
+        })?
+        .into_iter()
+        .filter(|record| matches!(&record.mode, RestrictionMode::DeployBlocked))
+        .collect();
+
+    Ok((slot, active_records))
+}
+
+fn restriction_record_status_json(record: &RestrictionRecord) -> serde_json::Value {
+    serde_json::json!({
+        "id": record.id,
+        "status": record.status.as_str(),
+        "target_type": record.target.target_type_label(),
+        "target": record.target.target_value_label(),
+        "mode": record.mode.as_str(),
+        "reason": record.reason.as_str(),
+        "created_slot": record.created_slot,
+        "created_epoch": record.created_epoch,
+        "expires_at_slot": record.expires_at_slot,
+        "supersedes": record.supersedes,
+    })
+}
+
+fn code_hash_restriction_status_json(
+    code_hash: &Hash,
+    slot: u64,
+    active_records: &[RestrictionRecord],
+) -> serde_json::Value {
+    let active_restriction_ids: Vec<u64> = active_records.iter().map(|record| record.id).collect();
+    let active_restrictions: Vec<serde_json::Value> = active_records
+        .iter()
+        .map(restriction_record_status_json)
+        .collect();
+
+    serde_json::json!({
+        "code_hash": code_hash.to_hex(),
+        "slot": slot,
+        "blocked": !active_records.is_empty(),
+        "deploy_blocked": !active_records.is_empty(),
+        "active_restriction_ids": active_restriction_ids,
+        "active_restrictions": active_restrictions,
+    })
+}
+
+async fn handle_get_code_hash_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let code_hash = parse_code_hash_status_param(params)?;
+    let (slot, active_records) = active_code_hash_deploy_blocks(state, &code_hash)?;
+    Ok(code_hash_restriction_status_json(
+        &code_hash,
+        slot,
+        &active_records,
+    ))
+}
+
+fn ensure_rpc_code_hash_not_deploy_blocked(
+    state: &RpcState,
+    code_hash: &Hash,
+    operation: &str,
+) -> Result<(), RpcError> {
+    let (_, active_records) = active_code_hash_deploy_blocks(state, code_hash)?;
+    if let Some(record) = active_records.first() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "{} rejected: code hash {} is blocked by active DeployBlocked restriction {}",
+                operation,
+                code_hash.to_hex(),
+                record.id
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn parse_bridge_route_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(String, String), RpcError> {
+    let chain = object
+        .get("chain")
+        .or_else(|| object.get("chain_id"))
+        .or_else(|| object.get("chainId"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing chain".to_string(),
+        })?;
+    let asset = object
+        .get("asset")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing asset".to_string(),
+        })?;
+
+    Ok((chain, asset))
+}
+
+fn parse_bridge_route_status_param(
+    params: Option<serde_json::Value>,
+) -> Result<(String, String), RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let (chain, asset) = if let Some(object) = params.as_object() {
+        parse_bridge_route_object(object)?
+    } else if let Some(array) = params.as_array() {
+        if array.len() == 1 {
+            let object = array
+                .first()
+                .and_then(|value| value.as_object())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: expected [{ chain, asset }] or [chain, asset]"
+                        .to_string(),
+                })?;
+            parse_bridge_route_object(object)?
+        } else if array.len() == 2 {
+            let chain = array
+                .first()
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: expected [{ chain, asset }] or [chain, asset]"
+                        .to_string(),
+                })?;
+            let asset = array
+                .get(1)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: expected [{ chain, asset }] or [chain, asset]"
+                        .to_string(),
+                })?;
+            (chain.to_string(), asset.to_string())
+        } else {
+            return Err(RpcError {
+                code: -32602,
+                message: "Invalid params: expected [{ chain, asset }] or [chain, asset]"
+                    .to_string(),
+            });
+        }
+    } else {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected [{ chain, asset }] or [chain, asset]".to_string(),
+        });
+    };
+
+    RestrictionTarget::BridgeRoute {
+        chain_id: chain.clone(),
+        asset: asset.clone(),
+    }
+    .validate()
+    .map_err(|error| RpcError {
+        code: -32602,
+        message: format!("Invalid bridge route: {}", error),
+    })?;
+
+    Ok((chain, asset))
+}
+
+fn active_bridge_route_pauses(
+    state: &RpcState,
+    chain: &str,
+    asset: &str,
+) -> Result<(u64, Vec<RestrictionRecord>), RpcError> {
+    let slot = state.state.get_last_slot().map_err(|error| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", error),
+    })?;
+    let target = RestrictionTarget::BridgeRoute {
+        chain_id: chain.to_string(),
+        asset: asset.to_string(),
+    };
+    let active_records = state
+        .state
+        .get_active_restrictions_for_target(&target, slot, 0)
+        .map_err(|error| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", error),
+        })?
+        .into_iter()
+        .filter(|record| matches!(&record.mode, RestrictionMode::RoutePaused))
+        .collect();
+
+    Ok((slot, active_records))
+}
+
+fn bridge_route_restriction_status_json(
+    chain: &str,
+    asset: &str,
+    slot: u64,
+    active_records: &[RestrictionRecord],
+) -> serde_json::Value {
+    let active_restriction_ids: Vec<u64> = active_records.iter().map(|record| record.id).collect();
+    let active_restrictions: Vec<serde_json::Value> = active_records
+        .iter()
+        .map(restriction_record_status_json)
+        .collect();
+
+    serde_json::json!({
+        "chain": chain,
+        "chain_id": chain,
+        "asset": asset,
+        "slot": slot,
+        "paused": !active_records.is_empty(),
+        "route_paused": !active_records.is_empty(),
+        "active_restriction_ids": active_restriction_ids,
+        "active_restrictions": active_restrictions,
+    })
+}
+
+async fn handle_get_bridge_route_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (chain, asset) = parse_bridge_route_status_param(params)?;
+    let (slot, active_records) = active_bridge_route_pauses(state, &chain, &asset)?;
+    Ok(bridge_route_restriction_status_json(
+        &chain,
+        &asset,
+        slot,
+        &active_records,
+    ))
+}
+
+fn ensure_bridge_route_not_paused(
+    state: &RpcState,
+    chain: &str,
+    asset: &str,
+) -> Result<(), RpcError> {
+    let (_, active_records) = active_bridge_route_pauses(state, chain, asset)?;
+    if let Some(record) = active_records.first() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "createBridgeDeposit rejected: bridge route {}:{} is paused by active RoutePaused restriction {}",
+                chain, asset, record.id
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 /// Get contract execution logs
@@ -10229,6 +10701,8 @@ async fn handle_deploy_contract(
             message: "Invalid signature: deployer must sign SHA-256(code)".to_string(),
         });
     }
+    let deploy_code_hash = Hash::hash(&code_bytes);
+    ensure_rpc_code_hash_not_deploy_blocked(state, &deploy_code_hash, "deployContract")?;
 
     // Derive program address: SHA-256(deployer + name + code)
     // Including the name/symbol ensures identical WASMs (e.g. wrapped token stubs)
@@ -10520,6 +10994,8 @@ async fn handle_upgrade_contract(
             message: "Invalid signature: owner must sign SHA-256(code)".to_string(),
         });
     }
+    let upgrade_code_hash = Hash::hash(&code_bytes);
+    ensure_rpc_code_hash_not_deploy_blocked(state, &upgrade_code_hash, "upgradeContract")?;
 
     // Load existing contract
     let contract_account = state
@@ -14700,6 +15176,7 @@ async fn handle_get_governance_events(
                 "kind": event.event_kind,
                 "action": event.action,
                 "authority": event.authority.to_base58(),
+                "approval_authority": event.approval_authority.map(|value| value.to_base58()),
                 "proposer": event.proposer.to_base58(),
                 "actor": event.actor.to_base58(),
                 "approvals": event.approvals,
@@ -14712,6 +15189,22 @@ async fn handle_get_governance_events(
                 "target_function": event.target_function,
                 "call_args_len": event.call_args_len,
                 "call_value_spores": event.call_value_spores,
+                "restriction_id": event.restriction_id,
+                "restriction_status": event.restriction_status,
+                "restriction_target_type": event.restriction_target_type,
+                "restriction_target": event.restriction_target,
+                "restriction_mode": event.restriction_mode,
+                "restriction_amount": event.restriction_amount,
+                "restriction_reason": event.restriction_reason,
+                "restriction_created_slot": event.restriction_created_slot,
+                "restriction_created_epoch": event.restriction_created_epoch,
+                "restriction_expires_at_slot": event.restriction_expires_at_slot,
+                "restriction_evidence_hash": event.restriction_evidence_hash,
+                "restriction_evidence_uri_hash": event.restriction_evidence_uri_hash,
+                "restriction_supersedes": event.restriction_supersedes,
+                "restriction_lifted_by": event.restriction_lifted_by.map(|value| value.to_base58()),
+                "restriction_lifted_slot": event.restriction_lifted_slot,
+                "restriction_lift_reason": event.restriction_lift_reason,
                 "slot": event.slot,
             })
         })
@@ -15953,6 +16446,8 @@ async fn handle_create_bridge_deposit(
         });
     }
 
+    ensure_bridge_route_not_paused(state, chain, asset)?;
+
     let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
         code: -32000,
         message: "Bridge service not configured (CUSTODY_URL)".to_string(),
@@ -16323,21 +16818,23 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
 mod tests {
     use super::{
         bridge_access_message, classify_evm_method_tier, classify_method,
-        classify_solana_method_tier, constant_time_eq, decode_contract_result_u64,
-        encode_readonly_return_data_b64, encode_rpc_response, filter_signatures_for_address,
-        get_cached_program_list_response, handle_create_bridge_deposit,
-        handle_get_all_symbol_registry, handle_get_bridge_deposit, handle_get_contract_info,
-        handle_get_governance_events, handle_get_incident_status, handle_get_program,
-        handle_get_program_stats, handle_get_service_fleet_status,
+        classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
+        decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
+        filter_signatures_for_address, get_cached_program_list_response,
+        handle_create_bridge_deposit, handle_get_all_symbol_registry, handle_get_bridge_deposit,
+        handle_get_bridge_route_restriction_status, handle_get_code_hash_restriction_status,
+        handle_get_contract_info, handle_get_governance_events, handle_get_incident_status,
+        handle_get_program, handle_get_program_stats, handle_get_service_fleet_status,
         handle_get_signed_metadata_manifest, handle_set_fee_config, handle_solana_get_account_info,
         handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
         live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, put_cached_program_list_response, validate_incoming_transaction_limits,
-        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
-        verify_bridge_access_auth_at, AirdropCooldowns, MethodTier, RateLimiter, RpcError,
-        RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        PROGRAM_LIST_CACHE_TTL_MS, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
+        validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
+        AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
+        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, PROGRAM_LIST_CACHE_TTL_MS,
+        SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
     };
     use axum::{
         extract::State,
@@ -16346,11 +16843,15 @@ mod tests {
         Json, Router,
     };
     use lichen_core::account::Keypair as LichenKeypair;
-    use lichen_core::contract::{ContractAccount, ContractEvent, ContractResult};
+    use lichen_core::contract::{
+        AbiFunction, ContractAbi, ContractAccount, ContractEvent, ContractLifecycleStatus,
+        ContractResult,
+    };
     use lichen_core::keypair_file::KeypairFile;
     use lichen_core::{
         consensus::{ValidatorInfo, ValidatorSet},
-        Hash, Pubkey, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID,
+        Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
+        RestrictionTarget, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID,
     };
     use lru::LruCache;
     use std::collections::HashMap;
@@ -16485,6 +16986,38 @@ mod tests {
         state.put_account(&program_pubkey, &account).unwrap();
     }
 
+    fn set_test_contract_lifecycle_and_abi(
+        state: &StateStore,
+        program_pubkey: Pubkey,
+        status: ContractLifecycleStatus,
+        function: &str,
+        readonly: bool,
+    ) {
+        let mut account = state.get_account(&program_pubkey).unwrap().unwrap();
+        let mut contract: ContractAccount = serde_json::from_slice(&account.data).unwrap();
+        contract.lifecycle_status = status;
+        contract.lifecycle_updated_slot = 99;
+        contract.lifecycle_restriction_id = Some(7);
+        contract.abi = Some(ContractAbi {
+            version: "1.0".to_string(),
+            name: "readonly_test".to_string(),
+            template: None,
+            description: None,
+            functions: vec![AbiFunction {
+                name: function.to_string(),
+                description: None,
+                params: Vec::new(),
+                returns: None,
+                opcode: None,
+                readonly,
+            }],
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
+        account.data = serde_json::to_vec(&contract).unwrap();
+        state.put_account(&program_pubkey, &account).unwrap();
+    }
+
     fn make_hash(value: u8) -> Hash {
         Hash([value; 32])
     }
@@ -16574,6 +17107,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contract_info_reports_effective_lifecycle_from_active_restriction() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let program = Pubkey([15u8; 32]);
+        let owner = Pubkey([16u8; 32]);
+        put_test_contract_account(&rpc_state.state, program, owner, &[]);
+
+        let restriction_id = rpc_state.state.next_restriction_id().unwrap();
+        let record = RestrictionRecord {
+            id: restriction_id,
+            target: RestrictionTarget::Contract(program),
+            mode: RestrictionMode::StateChangingBlocked,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        rpc_state.state.put_restriction(&record).unwrap();
+
+        let response =
+            handle_get_contract_info(&rpc_state, Some(serde_json::json!([program.to_base58()])))
+                .await
+                .unwrap();
+
+        assert_eq!(response["lifecycle_status"], serde_json::json!("suspended"));
+        assert_eq!(
+            response["lifecycle_restriction_id"],
+            serde_json::json!(restriction_id)
+        );
+        assert_eq!(response["lifecycle_updated_slot"], serde_json::json!(0));
+        assert_eq!(
+            response["lifecycle_effective_at_slot"],
+            serde_json::json!(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn contract_info_reports_stored_manual_lifecycle_without_backing_restriction() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let program = Pubkey([17u8; 32]);
+        let owner = Pubkey([18u8; 32]);
+        put_test_contract_account(&rpc_state.state, program, owner, &[]);
+        set_test_contract_lifecycle_and_abi(
+            &rpc_state.state,
+            program,
+            ContractLifecycleStatus::Quarantined,
+            "readonly",
+            true,
+        );
+
+        let response =
+            handle_get_contract_info(&rpc_state, Some(serde_json::json!([program.to_base58()])))
+                .await
+                .unwrap();
+
+        assert_eq!(
+            response["lifecycle_status"],
+            serde_json::json!("quarantined")
+        );
+        assert_eq!(response["lifecycle_restriction_id"], serde_json::json!(7));
+        assert_eq!(response["lifecycle_updated_slot"], serde_json::json!(99));
+    }
+
+    #[tokio::test]
+    async fn code_hash_restriction_status_reports_active_deploy_block() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let code_hash = Hash::hash(b"malicious wasm fixture");
+        let restriction_id = rpc_state.state.next_restriction_id().unwrap();
+        let record = RestrictionRecord {
+            id: restriction_id,
+            target: RestrictionTarget::CodeHash(code_hash),
+            mode: RestrictionMode::DeployBlocked,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::MaliciousCodeHash,
+            evidence_hash: Some(Hash::hash(b"evidence bundle")),
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        rpc_state.state.put_restriction(&record).unwrap();
+
+        let response = handle_get_code_hash_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([format!("0x{}", code_hash.to_hex())])),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response["code_hash"], serde_json::json!(code_hash.to_hex()));
+        assert_eq!(response["deploy_blocked"], serde_json::json!(true));
+        assert_eq!(
+            response["active_restriction_ids"],
+            serde_json::json!([restriction_id])
+        );
+        assert_eq!(
+            response["active_restrictions"][0]["mode"],
+            serde_json::json!("deploy_blocked")
+        );
+    }
+
+    #[tokio::test]
     async fn program_endpoints_report_canonical_storage_stats() {
         let dir = tempdir().unwrap();
         let state = StateStore::open(dir.path()).unwrap();
@@ -16659,6 +17319,103 @@ mod tests {
 
         assert_eq!(decoded, rep_data);
         assert_eq!(response["success"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn call_contract_readonly_allows_suspended_abi_readonly_function() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        use base64::Engine as _;
+
+        let caller = Pubkey([31u8; 32]);
+        let program = Pubkey([32u8; 32]);
+        let owner = Pubkey([33u8; 32]);
+        let lichenid_program = Pubkey([34u8; 32]);
+        let rep_key = lichen_core::contract::lichenid_reputation_storage_key(&caller);
+        let rep_data = 77u64.to_le_bytes().to_vec();
+
+        put_test_contract_account_with_code(
+            &rpc_state.state,
+            program,
+            owner,
+            reputation_reader_contract_code(&rep_key),
+            &[],
+        );
+        set_test_contract_lifecycle_and_abi(
+            &rpc_state.state,
+            program,
+            ContractLifecycleStatus::Suspended,
+            "read_reputation",
+            true,
+        );
+        rpc_state
+            .state
+            .put_contract_storage(&program, b"pm_lichenid_addr", &lichenid_program.0)
+            .unwrap();
+        rpc_state
+            .state
+            .put_contract_storage(&lichenid_program, &rep_key, &rep_data)
+            .unwrap();
+
+        let response = super::handle_call_contract(
+            &rpc_state,
+            Some(serde_json::json!({
+                "contract": program.to_base58(),
+                "function": "read_reputation",
+                "from": caller.to_base58(),
+            })),
+        )
+        .await
+        .unwrap();
+
+        let return_data = response["returnData"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(return_data)
+            .unwrap();
+        assert_eq!(decoded, rep_data);
+        assert_eq!(response["success"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn call_contract_readonly_rejects_suspended_non_readonly_function() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let caller = Pubkey([41u8; 32]);
+        let program = Pubkey([42u8; 32]);
+        let owner = Pubkey([43u8; 32]);
+        let rep_key = lichen_core::contract::lichenid_reputation_storage_key(&caller);
+
+        put_test_contract_account_with_code(
+            &rpc_state.state,
+            program,
+            owner,
+            reputation_reader_contract_code(&rep_key),
+            &[],
+        );
+        set_test_contract_lifecycle_and_abi(
+            &rpc_state.state,
+            program,
+            ContractLifecycleStatus::Suspended,
+            "read_reputation",
+            false,
+        );
+
+        let error = super::handle_call_contract(
+            &rpc_state,
+            Some(serde_json::json!({
+                "contract": program.to_base58(),
+                "function": "read_reputation",
+                "from": caller.to_base58(),
+            })),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("lifecycle suspended"));
     }
 
     #[tokio::test]
@@ -16755,6 +17512,35 @@ mod tests {
                 "signature": pq_signature_json(&keypair.sign(&message)),
             }
         })
+    }
+
+    fn put_active_bridge_route_pause(state: &StateStore, chain: &str, asset: &str) -> u64 {
+        state.set_last_slot(19).unwrap();
+        let restriction_id = state.next_restriction_id().unwrap();
+        let record = RestrictionRecord {
+            id: restriction_id,
+            target: RestrictionTarget::BridgeRoute {
+                chain_id: chain.to_string(),
+                asset: asset.to_string(),
+            },
+            mode: RestrictionMode::RoutePaused,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xB1; 32]),
+            authority: Pubkey([0xB2; 32]),
+            approval_authority: None,
+            created_slot: 10,
+            created_epoch: 0,
+            expires_at_slot: None,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        state.put_restriction(&record).unwrap();
+        restriction_id
     }
 
     #[derive(Clone, Default)]
@@ -16958,7 +17744,8 @@ mod tests {
 
     #[test]
     fn test_set_fee_config_emits_privileged_audit_log() {
-        let logs = capture_logs_async(async {
+        capture_logs_async(async {
+            clear_privileged_rpc_mutation_test_sink();
             let dir = tempdir().unwrap();
             let state = StateStore::open(dir.path()).unwrap();
             let rpc_state = make_test_rpc_state(state);
@@ -16977,10 +17764,11 @@ mod tests {
             assert_eq!(response["status"], "ok");
         });
 
-        assert!(logs.contains("Privileged RPC mutation executed"));
-        assert!(logs.contains("setFeeConfig"));
-        assert!(logs.contains("fee_config"));
-        assert!(logs.contains("admin_token"));
+        let audit = privileged_rpc_mutation_test_output();
+        assert!(audit.contains("Privileged RPC mutation executed"));
+        assert!(audit.contains("setFeeConfig"));
+        assert!(audit.contains("fee_config"));
+        assert!(audit.contains("admin_token"));
     }
 
     #[test]
@@ -17405,6 +18193,75 @@ mod tests {
         assert_eq!(parsed.call_value_spores, Some(0));
     }
 
+    #[test]
+    fn test_parse_governance_event_maps_restriction_lifecycle_event() {
+        let mut data = HashMap::new();
+        let authority = lichen_core::Pubkey([0x11u8; 32]);
+        let approval_authority = lichen_core::Pubkey([0x12u8; 32]);
+        let proposer = lichen_core::Pubkey([0x22u8; 32]);
+        let actor = lichen_core::Pubkey([0x33u8; 32]);
+        let lifted_by = lichen_core::Pubkey([0x44u8; 32]);
+        data.insert("proposal_id".to_string(), "12".to_string());
+        data.insert("action".to_string(), "extend_restriction".to_string());
+        data.insert("authority".to_string(), authority.to_base58());
+        data.insert(
+            "approval_authority".to_string(),
+            approval_authority.to_base58(),
+        );
+        data.insert("proposer".to_string(), proposer.to_base58());
+        data.insert("actor".to_string(), actor.to_base58());
+        data.insert("approvals".to_string(), "2".to_string());
+        data.insert("threshold".to_string(), "2".to_string());
+        data.insert("execute_after_epoch".to_string(), "0".to_string());
+        data.insert("executed".to_string(), "true".to_string());
+        data.insert("cancelled".to_string(), "false".to_string());
+        data.insert("metadata".to_string(), "restriction metadata".to_string());
+        data.insert("restriction_id".to_string(), "8".to_string());
+        data.insert("restriction_status".to_string(), "lifted".to_string());
+        data.insert("restriction_target_type".to_string(), "account".to_string());
+        data.insert("restriction_target".to_string(), "target".to_string());
+        data.insert("restriction_mode".to_string(), "outgoing_only".to_string());
+        data.insert(
+            "restriction_reason".to_string(),
+            "testnet_drill".to_string(),
+        );
+        data.insert("created_slot".to_string(), "5".to_string());
+        data.insert("created_epoch".to_string(), "1".to_string());
+        data.insert("expires_at_slot".to_string(), "100".to_string());
+        data.insert("supersedes".to_string(), "7".to_string());
+        data.insert("lifted_by".to_string(), lifted_by.to_base58());
+        data.insert("lifted_slot".to_string(), "90".to_string());
+        data.insert("lift_reason".to_string(), "incident_resolved".to_string());
+
+        let event = ContractEvent {
+            program: SYSTEM_PROGRAM_ID,
+            name: "RestrictionLifted".to_string(),
+            data,
+            slot: 91,
+        };
+
+        let parsed =
+            parse_governance_event(&event).expect("restriction lifecycle event should parse");
+        assert_eq!(parsed.event_kind, "restriction_lifted");
+        assert_eq!(parsed.approval_authority, Some(approval_authority));
+        assert_eq!(parsed.restriction_id, Some(8));
+        assert_eq!(parsed.restriction_status.as_deref(), Some("lifted"));
+        assert_eq!(parsed.restriction_target_type.as_deref(), Some("account"));
+        assert_eq!(parsed.restriction_target.as_deref(), Some("target"));
+        assert_eq!(parsed.restriction_mode.as_deref(), Some("outgoing_only"));
+        assert_eq!(parsed.restriction_reason.as_deref(), Some("testnet_drill"));
+        assert_eq!(parsed.restriction_created_slot, Some(5));
+        assert_eq!(parsed.restriction_created_epoch, Some(1));
+        assert_eq!(parsed.restriction_expires_at_slot, Some(100));
+        assert_eq!(parsed.restriction_supersedes, Some(7));
+        assert_eq!(parsed.restriction_lifted_by, Some(lifted_by));
+        assert_eq!(parsed.restriction_lifted_slot, Some(90));
+        assert_eq!(
+            parsed.restriction_lift_reason.as_deref(),
+            Some("incident_resolved")
+        );
+    }
+
     #[tokio::test]
     async fn test_get_governance_events_returns_structured_results() {
         let tmp = tempfile::tempdir().unwrap();
@@ -17473,6 +18330,80 @@ mod tests {
         assert_eq!(result["events"][0]["call_args_len"], 0);
         assert_eq!(result["events"][0]["call_value_spores"], 0);
         assert_eq!(result["events"][0]["slot"], 88);
+    }
+
+    #[tokio::test]
+    async fn test_get_governance_events_returns_restriction_lifecycle_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state.clone());
+
+        let authority = lichen_core::Pubkey([0x44u8; 32]);
+        let proposer = lichen_core::Pubkey([0x55u8; 32]);
+        let actor = lichen_core::Pubkey([0x66u8; 32]);
+        let mut data = HashMap::new();
+        data.insert("proposal_id".to_string(), "13".to_string());
+        data.insert("action".to_string(), "extend_restriction".to_string());
+        data.insert("authority".to_string(), authority.to_base58());
+        data.insert("proposer".to_string(), proposer.to_base58());
+        data.insert("actor".to_string(), actor.to_base58());
+        data.insert("approvals".to_string(), "2".to_string());
+        data.insert("threshold".to_string(), "2".to_string());
+        data.insert("execute_after_epoch".to_string(), "0".to_string());
+        data.insert("executed".to_string(), "true".to_string());
+        data.insert("cancelled".to_string(), "false".to_string());
+        data.insert("metadata".to_string(), "restriction metadata".to_string());
+        data.insert("restriction_id".to_string(), "9".to_string());
+        data.insert("restriction_status".to_string(), "active".to_string());
+        data.insert(
+            "restriction_target_type".to_string(),
+            "code_hash".to_string(),
+        );
+        data.insert("restriction_target".to_string(), "abcd".to_string());
+        data.insert("restriction_mode".to_string(), "deploy_blocked".to_string());
+        data.insert(
+            "restriction_reason".to_string(),
+            "malicious_code_hash".to_string(),
+        );
+        data.insert("created_slot".to_string(), "7".to_string());
+        data.insert("created_epoch".to_string(), "1".to_string());
+        data.insert("expires_at_slot".to_string(), "200".to_string());
+        data.insert("evidence_hash".to_string(), "ef01".to_string());
+        data.insert("supersedes".to_string(), "8".to_string());
+
+        state
+            .put_contract_event(
+                &SYSTEM_PROGRAM_ID,
+                &ContractEvent {
+                    program: SYSTEM_PROGRAM_ID,
+                    name: "RestrictionExtended".to_string(),
+                    data,
+                    slot: 99,
+                },
+            )
+            .unwrap();
+
+        let result = handle_get_governance_events(&rpc_state, None)
+            .await
+            .expect("governance events RPC should succeed");
+
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["events"][0]["kind"], "restriction_extended");
+        assert_eq!(result["events"][0]["restriction_id"], 9);
+        assert_eq!(result["events"][0]["restriction_status"], "active");
+        assert_eq!(result["events"][0]["restriction_target_type"], "code_hash");
+        assert_eq!(result["events"][0]["restriction_target"], "abcd");
+        assert_eq!(result["events"][0]["restriction_mode"], "deploy_blocked");
+        assert_eq!(
+            result["events"][0]["restriction_reason"],
+            "malicious_code_hash"
+        );
+        assert_eq!(result["events"][0]["restriction_created_slot"], 7);
+        assert_eq!(result["events"][0]["restriction_created_epoch"], 1);
+        assert_eq!(result["events"][0]["restriction_expires_at_slot"], 200);
+        assert_eq!(result["events"][0]["restriction_evidence_hash"], "ef01");
+        assert_eq!(result["events"][0]["restriction_supersedes"], 8);
+        assert_eq!(result["events"][0]["slot"], 99);
     }
 
     #[tokio::test]
@@ -18261,6 +19192,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_bridge_route_restriction_status_reports_active_pause() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let restriction_id = put_active_bridge_route_pause(&rpc_state.state, "solana", "sol");
+
+        let response = handle_get_bridge_route_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([{ "chain": "solana", "asset": "sol" }])),
+        )
+        .await
+        .expect("bridge route restriction status should serialize");
+
+        assert_eq!(response["chain"], serde_json::json!("solana"));
+        assert_eq!(response["chain_id"], serde_json::json!("solana"));
+        assert_eq!(response["asset"], serde_json::json!("sol"));
+        assert_eq!(response["slot"], serde_json::json!(19));
+        assert_eq!(response["route_paused"], serde_json::json!(true));
+        assert_eq!(
+            response["active_restriction_ids"],
+            serde_json::json!([restriction_id])
+        );
+        assert_eq!(
+            response["active_restrictions"][0]["target"],
+            serde_json::json!("solana:sol")
+        );
+        assert_eq!(
+            response["active_restrictions"][0]["mode"],
+            serde_json::json!("route_paused")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_bridge_route_restriction_status_rpc_route_reports_active_pause() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let restriction_id = put_active_bridge_route_pause(&rpc_state.state, "solana", "sol");
+
+        let rpc_url = spawn_mock_server(
+            Router::new()
+                .route("/", post(super::handle_rpc))
+                .with_state(Arc::new(rpc_state)),
+        )
+        .await;
+
+        let response: serde_json::Value = reqwest::Client::new()
+            .post(format!("{}/", rpc_url))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getBridgeRouteRestrictionStatus",
+                "params": [{ "chain": "solana", "asset": "sol" }]
+            }))
+            .send()
+            .await
+            .expect("send RPC request")
+            .json()
+            .await
+            .expect("parse RPC response");
+
+        assert_eq!(response["result"]["route_paused"], serde_json::json!(true));
+        assert_eq!(
+            response["result"]["active_restriction_ids"],
+            serde_json::json!([restriction_id])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_blocked_when_bridge_route_paused() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+        let restriction_id = put_active_bridge_route_pause(&rpc_state.state, "solana", "sol");
+
+        let error = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                51, "solana", "sol"
+            )])),
+        )
+        .await
+        .expect_err("bridge deposit creation must be blocked when its route is paused");
+
+        assert_eq!(error.code, -32000);
+        assert!(
+            error.message.contains("bridge route solana:sol is paused"),
+            "unexpected error message: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&restriction_id.to_string()),
+            "unexpected error message: {}",
+            error.message
+        );
+        assert!(custody_state.requests.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_allows_other_route_when_bridge_route_paused() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+        put_active_bridge_route_pause(&rpc_state.state, "ethereum", "eth");
+
+        let response = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                52, "solana", "sol"
+            )])),
+        )
+        .await
+        .expect("other routes should remain available");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["chain"], serde_json::json!("solana"));
+        assert_eq!(requests[0]["asset"], serde_json::json!("sol"));
+    }
+
+    #[tokio::test]
     async fn test_create_bridge_deposit_forwards_bridge_auth_to_custody() {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
@@ -18299,7 +19380,8 @@ mod tests {
 
     #[test]
     fn test_create_bridge_deposit_emits_privileged_audit_log() {
-        let logs = capture_logs_async(async {
+        capture_logs_async(async {
+            clear_privileged_rpc_mutation_test_sink();
             let tmp = tempdir().unwrap();
             let state = StateStore::open(tmp.path()).unwrap();
 
@@ -18334,18 +19416,22 @@ mod tests {
             assert!(!user_id.is_empty());
         });
 
+        let audit = privileged_rpc_mutation_test_output();
         assert!(
-            logs.contains("Privileged RPC mutation executed"),
-            "captured logs: {logs}"
+            audit.contains("Privileged RPC mutation executed"),
+            "captured audit events: {audit}"
         );
         assert!(
-            logs.contains("createBridgeDeposit"),
-            "captured logs: {logs}"
+            audit.contains("createBridgeDeposit"),
+            "captured audit events: {audit}"
         );
-        assert!(logs.contains("bridge_deposit"), "captured logs: {logs}");
         assert!(
-            logs.contains("11111111-1111-1111-1111-111111111111"),
-            "captured logs: {logs}"
+            audit.contains("bridge_deposit"),
+            "captured audit events: {audit}"
+        );
+        assert!(
+            audit.contains("11111111-1111-1111-1111-111111111111"),
+            "captured audit events: {audit}"
         );
     }
 

@@ -25,7 +25,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+    bytes_to_u64, can_receive, can_send, can_transfer, get_caller, get_contract_address, get_slot,
+    log_info, storage_get, storage_set, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -50,6 +51,7 @@ const RESERVE_WARNING_BPS: u64 = 10_200;
 const ERR_CIRCUIT_BREAKER: u32 = 10;
 const ERR_EPOCH_CAP: u32 = 11;
 const ERR_ARITHMETIC_OVERFLOW: u32 = 12;
+const ERR_COMPLIANCE_RESTRICTED: u32 = 13;
 
 // Storage keys — prefixed "wbnb_" to avoid collision
 const ADMIN_KEY: &[u8] = b"wbnb_admin";
@@ -94,6 +96,45 @@ fn checked_add_u64(lhs: u64, rhs: u64) -> Result<u64, u32> {
 
 fn checked_sub_u64(lhs: u64, rhs: u64) -> Result<u64, u32> {
     lhs.checked_sub(rhs).ok_or(ERR_ARITHMETIC_OVERFLOW)
+}
+
+fn address_from_bytes(bytes: &[u8; 32]) -> Address {
+    Address::new(*bytes)
+}
+
+fn compliance_can_receive(to: &[u8; 32], amount: u64, balance: u64) -> bool {
+    can_receive(
+        get_contract_address(),
+        address_from_bytes(to),
+        amount,
+        balance,
+    )
+}
+
+fn compliance_can_send(from: &[u8; 32], amount: u64, balance: u64) -> bool {
+    can_send(
+        get_contract_address(),
+        address_from_bytes(from),
+        amount,
+        balance,
+    )
+}
+
+fn compliance_can_transfer(
+    from: &[u8; 32],
+    to: &[u8; 32],
+    amount: u64,
+    from_balance: u64,
+    to_balance: u64,
+) -> bool {
+    can_transfer(
+        get_contract_address(),
+        address_from_bytes(from),
+        address_from_bytes(to),
+        amount,
+        from_balance,
+        to_balance,
+    )
 }
 
 fn load_addr(key: &[u8]) -> [u8; 32] {
@@ -359,6 +400,10 @@ pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
 
     let bk = balance_key(&to_addr);
     let bal = load_u64(&bk);
+    if !compliance_can_receive(&to_addr, amount, bal) {
+        reentrancy_exit();
+        return ERR_COMPLIANCE_RESTRICTED;
+    }
     let next_balance = match checked_add_u64(bal, amount) {
         Ok(value) => value,
         Err(code) => {
@@ -434,6 +479,10 @@ pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
     if bal < amount {
         reentrancy_exit();
         return 5;
+    }
+    if !compliance_can_send(&caller_addr, amount, bal) {
+        reentrancy_exit();
+        return ERR_COMPLIANCE_RESTRICTED;
     }
 
     let next_balance = match checked_sub_u64(bal, amount) {
@@ -528,6 +577,10 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
 
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
+    if !compliance_can_transfer(&from_addr, &to_addr, amount, from_bal, to_bal) {
+        reentrancy_exit();
+        return ERR_COMPLIANCE_RESTRICTED;
+    }
 
     let next_from_balance = match checked_sub_u64(from_bal, amount) {
         Ok(value) => value,
@@ -651,6 +704,10 @@ pub extern "C" fn transfer_from(
 
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
+    if !compliance_can_transfer(&from_addr, &to_addr, amount, from_bal, to_bal) {
+        reentrancy_exit();
+        return ERR_COMPLIANCE_RESTRICTED;
+    }
 
     let next_from_balance = match checked_sub_u64(from_bal, amount) {
         Ok(value) => value,
@@ -1156,10 +1213,33 @@ mod tests {
         save_u64(EPOCH_MINTED_KEY, 0);
 
         test_mock::set_caller(admin);
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1), ERR_ARITHMETIC_OVERFLOW);
+        assert_eq!(
+            mint(admin.as_ptr(), user.as_ptr(), 1),
+            ERR_ARITHMETIC_OVERFLOW
+        );
         assert_eq!(balance_of(user.as_ptr()), u64::MAX);
         assert_eq!(total_supply(), 41);
         assert_eq!(total_minted(), 7);
+        assert_eq!(load_u64(EPOCH_MINTED_KEY), 0);
+        assert_eq!(load_u64(MINT_EVENT_COUNT_KEY), 0);
+    }
+
+    #[test]
+    fn test_compliance_blocks_mint_without_mutation() {
+        test_mock::reset();
+        let admin = addr(1);
+        let user = addr(2);
+        initialize(admin.as_ptr());
+
+        test_mock::set_can_receive(false);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            mint(admin.as_ptr(), user.as_ptr(), 1_000_000_000),
+            ERR_COMPLIANCE_RESTRICTED
+        );
+        assert_eq!(balance_of(user.as_ptr()), 0);
+        assert_eq!(total_supply(), 0);
+        assert_eq!(total_minted(), 0);
         assert_eq!(load_u64(EPOCH_MINTED_KEY), 0);
         assert_eq!(load_u64(MINT_EVENT_COUNT_KEY), 0);
     }
@@ -1183,6 +1263,27 @@ mod tests {
     }
 
     #[test]
+    fn test_compliance_blocks_burn_without_mutation() {
+        test_mock::reset();
+        let admin = addr(1);
+        let user = addr(2);
+        initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 5_000_000_000), 0);
+
+        test_mock::set_can_send(false);
+        test_mock::set_caller(user);
+        assert_eq!(
+            burn(user.as_ptr(), 2_000_000_000),
+            ERR_COMPLIANCE_RESTRICTED
+        );
+        assert_eq!(balance_of(user.as_ptr()), 5_000_000_000);
+        assert_eq!(total_supply(), 5_000_000_000);
+        assert_eq!(total_burned(), 0);
+        assert_eq!(load_u64(BURN_EVENT_COUNT_KEY), 0);
+    }
+
+    #[test]
     fn test_transfer_overflow_preserves_state() {
         test_mock::reset();
         let admin = addr(1);
@@ -1193,9 +1294,58 @@ mod tests {
         save_u64(&balance_key(&bob), u64::MAX);
 
         test_mock::set_caller(alice);
-        assert_eq!(transfer(alice.as_ptr(), bob.as_ptr(), 1), ERR_ARITHMETIC_OVERFLOW);
+        assert_eq!(
+            transfer(alice.as_ptr(), bob.as_ptr(), 1),
+            ERR_ARITHMETIC_OVERFLOW
+        );
         assert_eq!(balance_of(alice.as_ptr()), 5);
         assert_eq!(balance_of(bob.as_ptr()), u64::MAX);
+        assert_eq!(load_u64(TRANSFER_COUNT_KEY), 0);
+    }
+
+    #[test]
+    fn test_compliance_blocks_transfer_without_mutation() {
+        test_mock::reset();
+        let admin = addr(1);
+        let alice = addr(2);
+        let bob = addr(3);
+        initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
+        assert_eq!(mint(admin.as_ptr(), alice.as_ptr(), 10_000_000_000), 0);
+
+        test_mock::set_can_transfer(false);
+        test_mock::set_caller(alice);
+        assert_eq!(
+            transfer(alice.as_ptr(), bob.as_ptr(), 3_000_000_000),
+            ERR_COMPLIANCE_RESTRICTED
+        );
+        assert_eq!(balance_of(alice.as_ptr()), 10_000_000_000);
+        assert_eq!(balance_of(bob.as_ptr()), 0);
+        assert_eq!(load_u64(TRANSFER_COUNT_KEY), 0);
+    }
+
+    #[test]
+    fn test_compliance_blocks_transfer_from_without_mutation() {
+        test_mock::reset();
+        let admin = addr(1);
+        let alice = addr(2);
+        let bob = addr(3);
+        let dex = addr(4);
+        initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
+        assert_eq!(mint(admin.as_ptr(), alice.as_ptr(), 10_000_000_000), 0);
+        test_mock::set_caller(alice);
+        assert_eq!(approve(alice.as_ptr(), dex.as_ptr(), 5_000_000_000), 0);
+
+        test_mock::set_can_transfer(false);
+        test_mock::set_caller(dex);
+        assert_eq!(
+            transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 3_000_000_000),
+            ERR_COMPLIANCE_RESTRICTED
+        );
+        assert_eq!(balance_of(alice.as_ptr()), 10_000_000_000);
+        assert_eq!(balance_of(bob.as_ptr()), 0);
+        assert_eq!(allowance(alice.as_ptr(), dex.as_ptr()), 5_000_000_000);
         assert_eq!(load_u64(TRANSFER_COUNT_KEY), 0);
     }
 
@@ -1270,12 +1420,18 @@ mod tests {
         assert_eq!(complete_bootstrap(admin.as_ptr()), 3);
         assert_eq!(set_attester(admin.as_ptr(), attester.as_ptr()), 0);
         assert_eq!(set_minter(admin.as_ptr(), minter.as_ptr()), 0);
-        assert_eq!(attest_reserves(admin.as_ptr(), 5_000_000_000, proof.as_ptr()), 2);
+        assert_eq!(
+            attest_reserves(admin.as_ptr(), 5_000_000_000, proof.as_ptr()),
+            2
+        );
         assert_eq!(complete_bootstrap(admin.as_ptr()), 4);
 
         set_slot(100);
         test_mock::set_caller(attester);
-        assert_eq!(attest_reserves(attester.as_ptr(), 5_000_000_000, proof.as_ptr()), 0);
+        assert_eq!(
+            attest_reserves(attester.as_ptr(), 5_000_000_000, proof.as_ptr()),
+            0
+        );
 
         test_mock::set_caller(admin);
         assert_eq!(complete_bootstrap(admin.as_ptr()), 0);
@@ -1291,7 +1447,10 @@ mod tests {
         assert_eq!(mint(minter.as_ptr(), user.as_ptr(), 1_000_000_000), 10);
 
         test_mock::set_caller(attester);
-        assert_eq!(attest_reserves(attester.as_ptr(), 10_000_000_000, proof.as_ptr()), 0);
+        assert_eq!(
+            attest_reserves(attester.as_ptr(), 10_000_000_000, proof.as_ptr()),
+            0
+        );
 
         test_mock::set_caller(minter);
         assert_eq!(mint(minter.as_ptr(), user.as_ptr(), 1_000_000_000), 0);

@@ -8,6 +8,9 @@
 //
 // Uses WAT (WebAssembly Text) for minimal, self-contained test contracts.
 
+use lichen_core::restrictions::{
+    RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
+};
 use lichen_core::*;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -59,6 +62,84 @@ fn deploy_wasm_contract(state: &StateStore, address: &Pubkey, owner: &Pubkey, wa
     account.executable = true;
     account.data = serde_json::to_vec(&contract).unwrap();
     state.put_account(address, &account).unwrap();
+}
+
+fn set_contract_lifecycle_status(
+    state: &StateStore,
+    address: &Pubkey,
+    status: ContractLifecycleStatus,
+) {
+    let mut account = state.get_account(address).unwrap().unwrap();
+    let mut contract: ContractAccount = serde_json::from_slice(&account.data).unwrap();
+    contract.lifecycle_status = status;
+    contract.lifecycle_updated_slot = 99;
+    contract.lifecycle_restriction_id = Some(7);
+    account.data = serde_json::to_vec(&contract).unwrap();
+    state.put_account(address, &account).unwrap();
+}
+
+fn put_active_contract_restriction(
+    state: &StateStore,
+    target: Pubkey,
+    mode: RestrictionMode,
+) -> u64 {
+    let id = 1;
+    let record = RestrictionRecord {
+        id,
+        target: RestrictionTarget::Contract(target),
+        mode,
+        status: RestrictionStatus::Active,
+        reason: RestrictionReason::TestnetDrill,
+        evidence_hash: None,
+        evidence_uri_hash: None,
+        proposer: Pubkey([0xA1; 32]),
+        authority: Pubkey([0xA2; 32]),
+        approval_authority: None,
+        created_slot: 0,
+        created_epoch: slot_to_epoch(0),
+        expires_at_slot: None,
+        supersedes: None,
+        lifted_by: None,
+        lifted_slot: None,
+        lift_reason: None,
+    };
+    state.put_restriction(&record).unwrap();
+    id
+}
+
+fn submit_proxy_call_transaction(
+    state: &StateStore,
+    processor: &TxProcessor,
+    signer: &Keypair,
+    proxy_addr: Pubkey,
+    target_addr: Pubkey,
+    validator_pubkey: &Pubkey,
+) -> TxResult {
+    let args = target_addr.0.to_vec();
+    let call_ix = ContractInstruction::call("call".to_string(), args, 0);
+    let call_data = call_ix.serialize().unwrap();
+
+    let blockhash = state
+        .get_recent_blockhashes(10)
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .expect("test genesis blockhash should be available");
+
+    let instruction = Instruction {
+        program_id: CONTRACT_PROGRAM_ID,
+        accounts: vec![signer.pubkey(), proxy_addr],
+        data: call_data,
+    };
+    let message = Message::new(vec![instruction], blockhash);
+    let signature = signer.sign(&message.serialize());
+    let tx = Transaction {
+        signatures: vec![signature],
+        message,
+        tx_type: Default::default(),
+    };
+
+    processor.process_transaction(&tx, validator_pubkey)
 }
 
 /// Minimal target WASM: has a `ping` function that writes "ping_key" → "pong"
@@ -335,6 +416,266 @@ fn test_cross_contract_call_target_not_found() {
     assert!(result.success);
     assert_eq!(result.return_code, Some(0));
     assert!(result.cross_call_changes.is_empty());
+}
+
+#[test]
+fn test_cross_contract_call_rejects_suspended_target_before_callee_mutation() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([10u8; 32]);
+    let target_addr = Pubkey::new([20u8; 32]);
+
+    deploy_wasm_contract(&state, &target_addr, &owner, target_ping_wat().as_bytes());
+    set_contract_lifecycle_status(&state, &target_addr, ContractLifecycleStatus::Suspended);
+    deploy_wasm_contract(&state, &caller_addr, &owner, caller_ccc_wat().as_bytes());
+
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let args = target_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state.clone());
+
+    let mut runtime = ContractRuntime::new();
+    let result = runtime
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("caller execution should not trap");
+
+    assert!(result.success);
+    assert_eq!(result.return_code, Some(0));
+    assert!(result.cross_call_changes.is_empty());
+    assert!(result
+        .logs
+        .iter()
+        .any(|log| log.contains("lifecycle suspended")));
+    assert_eq!(
+        state
+            .get_contract_storage(&target_addr, b"ping_key")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn test_cross_contract_call_derives_target_lifecycle_from_active_restriction() {
+    let (state, _tmp) = create_test_state();
+    let owner = Pubkey::new([1u8; 32]);
+    let caller_addr = Pubkey::new([10u8; 32]);
+    let target_addr = Pubkey::new([20u8; 32]);
+
+    deploy_wasm_contract(&state, &target_addr, &owner, target_ping_wat().as_bytes());
+    put_active_contract_restriction(&state, target_addr, RestrictionMode::StateChangingBlocked);
+    deploy_wasm_contract(&state, &caller_addr, &owner, caller_ccc_wat().as_bytes());
+
+    let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
+    let args = target_addr.0.to_vec();
+    let mut ctx = ContractContext::with_args(
+        owner,
+        caller_addr,
+        0,
+        1,
+        caller_contract.storage.clone(),
+        args.clone(),
+    );
+    ctx.state_store = Some(state.clone());
+
+    let mut runtime = ContractRuntime::new();
+    let result = runtime
+        .execute(&caller_contract, "call", &args, ctx)
+        .expect("caller execution should not trap");
+
+    assert!(result.success);
+    assert_eq!(result.return_code, Some(0));
+    assert!(result.cross_call_changes.is_empty());
+    assert!(result
+        .logs
+        .iter()
+        .any(|log| log.contains("lifecycle suspended")));
+    assert_eq!(
+        state
+            .get_contract_storage(&target_addr, b"ping_key")
+            .unwrap(),
+        None
+    );
+    let target_account = state.get_account(&target_addr).unwrap().unwrap();
+    let target_contract: ContractAccount = serde_json::from_slice(&target_account.data).unwrap();
+    assert_eq!(
+        target_contract.lifecycle_status,
+        ContractLifecycleStatus::Active
+    );
+    assert_eq!(target_contract.lifecycle_restriction_id, None);
+}
+
+#[test]
+fn test_scam_contract_proxy_forwarder_cannot_bypass_target_lifecycle_restrictions() {
+    for (mode, expected_lifecycle_log) in [
+        (RestrictionMode::StateChangingBlocked, "lifecycle suspended"),
+        (RestrictionMode::ExecuteBlocked, "lifecycle quarantined"),
+        (RestrictionMode::Quarantined, "lifecycle quarantined"),
+        (RestrictionMode::Terminated, "lifecycle terminated"),
+    ] {
+        let (state, _tmp) = create_test_state();
+        let processor = TxProcessor::new(state.clone());
+        let deployer = Keypair::new();
+        let validator_pubkey = Pubkey::new([42u8; 32]);
+        let target_addr = Pubkey::new([30 + mode.mode_id(); 32]);
+        let proxy_addr = Pubkey::new([70 + mode.mode_id(); 32]);
+
+        state
+            .put_account(
+                &deployer.pubkey(),
+                &account_with_spores(deployer.pubkey(), 10_000_000_000_000),
+            )
+            .unwrap();
+        deploy_wasm_contract(
+            &state,
+            &target_addr,
+            &deployer.pubkey(),
+            target_ping_wat().as_bytes(),
+        );
+        deploy_wasm_contract(
+            &state,
+            &proxy_addr,
+            &deployer.pubkey(),
+            caller_ccc_wat().as_bytes(),
+        );
+        let before_target_account = state.get_account(&target_addr).unwrap().unwrap();
+
+        put_active_contract_restriction(&state, target_addr, mode);
+
+        let result = submit_proxy_call_transaction(
+            &state,
+            &processor,
+            &deployer,
+            proxy_addr,
+            target_addr,
+            &validator_pubkey,
+        );
+
+        assert!(
+            result.success,
+            "proxy transaction itself should not trap: {:?}",
+            result.error
+        );
+        assert_eq!(
+            result.return_code,
+            Some(0),
+            "restricted callee should make the forwarder return CCC failure"
+        );
+        assert!(
+            result
+                .contract_logs
+                .join("\n")
+                .contains(expected_lifecycle_log),
+            "expected CCC lifecycle rejection in logs, got {:?}",
+            result.contract_logs
+        );
+        assert_eq!(
+            state
+                .get_contract_storage(&target_addr, b"ping_key")
+                .unwrap(),
+            None,
+            "restricted scam target must not mutate through a proxy"
+        );
+
+        let after_target_account = state.get_account(&target_addr).unwrap().unwrap();
+        assert!(after_target_account.executable);
+        assert_eq!(after_target_account.owner, before_target_account.owner);
+        assert_eq!(after_target_account.spores, before_target_account.spores);
+        assert_eq!(
+            after_target_account.data, before_target_account.data,
+            "proxy enforcement should derive target lifecycle without rewriting target account data"
+        );
+    }
+}
+
+#[test]
+fn test_scam_proxy_contract_restriction_blocks_forwarded_target_mutation() {
+    let (state, _tmp) = create_test_state();
+    let processor = TxProcessor::new(state.clone());
+    let deployer = Keypair::new();
+    let validator_pubkey = Pubkey::new([42u8; 32]);
+    let target_addr = Pubkey::new([31u8; 32]);
+    let proxy_addr = Pubkey::new([71u8; 32]);
+
+    state
+        .put_account(
+            &deployer.pubkey(),
+            &account_with_spores(deployer.pubkey(), 10_000_000_000_000),
+        )
+        .unwrap();
+    deploy_wasm_contract(
+        &state,
+        &target_addr,
+        &deployer.pubkey(),
+        target_ping_wat().as_bytes(),
+    );
+    deploy_wasm_contract(
+        &state,
+        &proxy_addr,
+        &deployer.pubkey(),
+        caller_ccc_wat().as_bytes(),
+    );
+    let before_proxy_account = state.get_account(&proxy_addr).unwrap().unwrap();
+    let restriction_id =
+        put_active_contract_restriction(&state, proxy_addr, RestrictionMode::Quarantined);
+
+    let result = submit_proxy_call_transaction(
+        &state,
+        &processor,
+        &deployer,
+        proxy_addr,
+        target_addr,
+        &validator_pubkey,
+    );
+
+    assert!(!result.success);
+    assert!(result
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("lifecycle quarantined"));
+    assert_eq!(
+        state
+            .get_contract_storage(&target_addr, b"ping_key")
+            .unwrap(),
+        None,
+        "restricted scam proxy must not forward into an unrestricted target"
+    );
+
+    let after_proxy_account = state.get_account(&proxy_addr).unwrap().unwrap();
+    assert!(after_proxy_account.executable);
+    assert_eq!(after_proxy_account.owner, before_proxy_account.owner);
+    assert_eq!(after_proxy_account.spores, before_proxy_account.spores);
+    assert_eq!(
+        after_proxy_account.data, before_proxy_account.data,
+        "failed restricted proxy execution should not mutate the stored proxy account"
+    );
+    let mut effective_proxy_contract: ContractAccount =
+        serde_json::from_slice(&after_proxy_account.data).unwrap();
+    lichen_core::contract::derive_contract_lifecycle_from_state_store(
+        &state,
+        &proxy_addr,
+        &mut effective_proxy_contract,
+        0,
+    )
+    .unwrap();
+    assert_eq!(effective_proxy_contract.owner, deployer.pubkey());
+    assert_eq!(
+        effective_proxy_contract.lifecycle_status,
+        ContractLifecycleStatus::Quarantined
+    );
+    assert_eq!(
+        effective_proxy_contract.lifecycle_restriction_id,
+        Some(restriction_id)
+    );
 }
 
 // ─── Processor-level test: cross_call_changes applied to state ───────────────

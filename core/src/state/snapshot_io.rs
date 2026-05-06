@@ -24,6 +24,14 @@ impl StateStore {
             "programs" => Some((CF_PROGRAMS, "Programs")),
             "symbol_registry" => Some((CF_SYMBOL_REGISTRY, "Symbol registry")),
             "symbol_by_program" => Some((CF_SYMBOL_BY_PROGRAM, "Symbol reverse registry")),
+            "restrictions" => Some((CF_RESTRICTIONS, "Restrictions")),
+            "restriction_index_target" => {
+                Some((CF_RESTRICTION_INDEX_TARGET, "Restriction target index"))
+            }
+            "restriction_index_code_hash" => Some((
+                CF_RESTRICTION_INDEX_CODE_HASH,
+                "Restriction code-hash index",
+            )),
             "stats" => Some((CF_STATS, "Stats")),
             _ => None,
         }

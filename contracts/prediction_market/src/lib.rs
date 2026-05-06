@@ -4556,6 +4556,10 @@ mod tests {
         save_market(market_id, &record);
     }
 
+    fn failed_transfer_response() -> Vec<u8> {
+        2u32.to_le_bytes().to_vec()
+    }
+
     fn read_outcome_name(market_id: u64, outcome: u8) -> Vec<u8> {
         storage_get(&outcome_name_key(market_id, outcome)).unwrap_or_default()
     }
@@ -5791,13 +5795,41 @@ mod tests {
     }
 
     #[test]
+    fn test_buy_shares_failed_lusd_escrow_preserves_state() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+
+        let before_record = load_market(mid).unwrap();
+        let before_pool_0 = load_outcome_pool(mid, 0).unwrap();
+        let before_pool_1 = load_outcome_pool(mid, 1).unwrap();
+        let before_total_collateral = load_u64(TOTAL_COLLATERAL_KEY);
+
+        test_mock::set_cross_call_response(Some(7u32.to_le_bytes().to_vec()));
+        let r = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
+        assert_eq!(r, 0, "failed lUSD escrow must reject buy_shares");
+
+        assert_eq!(load_market(mid).unwrap(), before_record);
+        assert_eq!(load_outcome_pool(mid, 0).unwrap(), before_pool_0);
+        assert_eq!(load_outcome_pool(mid, 1).unwrap(), before_pool_1);
+        assert_eq!(load_position(mid, &trader, 0), (0, 0));
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), before_total_collateral);
+    }
+
+    #[test]
     fn test_lusd_out_rejects_false_transfer_status() {
         setup();
         init_contract();
         configure_escrow();
         let user = [3u8; 32];
 
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
         assert!(
             !transfer_lusd_out(&user, 1_000_000),
             "Ok(false) token transfer status must fail closed"
@@ -5859,7 +5891,7 @@ mod tests {
         let before_record = load_market(mid).unwrap();
         let before_pool = load_outcome_pool(mid, 0).unwrap();
         let before_position = load_position(mid, &user, 0);
-        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
 
         assert_eq!(redeem_complete_set(user.as_ptr(), mid, 1_000_000), 0);
         let after_record = load_market(mid).unwrap();
@@ -5877,6 +5909,127 @@ mod tests {
             pool_open_interest(&before_pool)
         );
         assert_eq!(load_position(mid, &user, 0), before_position);
+    }
+
+    #[test]
+    fn test_sell_shares_failed_transfer_preserves_state() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        let bought = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+        assert!(bought > 0);
+
+        let before_record = load_market(mid).unwrap();
+        let before_pool_0 = load_outcome_pool(mid, 0).unwrap();
+        let before_pool_1 = load_outcome_pool(mid, 1).unwrap();
+        let before_position = load_position(mid, &trader, 0);
+        let before_total_collateral = load_u64(TOTAL_COLLATERAL_KEY);
+
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5200);
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
+        assert_eq!(sell_shares(trader.as_ptr(), mid, 0, bought as u64 / 2), 0);
+
+        assert_eq!(load_market(mid).unwrap(), before_record);
+        assert_eq!(load_outcome_pool(mid, 0).unwrap(), before_pool_0);
+        assert_eq!(load_outcome_pool(mid, 1).unwrap(), before_pool_1);
+        assert_eq!(load_position(mid, &trader, 0), before_position);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), before_total_collateral);
+    }
+
+    #[test]
+    fn test_redeem_shares_failed_transfer_preserves_state() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        let bought = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+        assert!(bought > 0);
+        force_resolve_market(mid, 0);
+
+        let before_record = load_market(mid).unwrap();
+        let before_pool = load_outcome_pool(mid, 0).unwrap();
+        let before_position = load_position(mid, &trader, 0);
+        let before_total_collateral = load_u64(TOTAL_COLLATERAL_KEY);
+
+        test_mock::set_caller(trader);
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
+        assert_eq!(redeem_shares(trader.as_ptr(), mid, 0), 0);
+
+        assert_eq!(load_market(mid).unwrap(), before_record);
+        assert_eq!(load_outcome_pool(mid, 0).unwrap(), before_pool);
+        assert_eq!(load_position(mid, &trader, 0), before_position);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), before_total_collateral);
+    }
+
+    #[test]
+    fn test_reclaim_collateral_failed_transfer_preserves_state() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        assert_eq!(mint_complete_set(user.as_ptr(), mid, 2_000_000), 1);
+        force_void_market(mid);
+
+        let before_record = load_market(mid).unwrap();
+        let before_position_0 = load_position(mid, &user, 0);
+        let before_position_1 = load_position(mid, &user, 1);
+        let before_lp = load_u64(&lp_key(mid, &user));
+        let before_total_collateral = load_u64(TOTAL_COLLATERAL_KEY);
+
+        test_mock::set_caller(user);
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
+        assert_eq!(reclaim_collateral(user.as_ptr(), mid), 0);
+
+        assert_eq!(load_market(mid).unwrap(), before_record);
+        assert_eq!(load_position(mid, &user, 0), before_position_0);
+        assert_eq!(load_position(mid, &user, 1), before_position_1);
+        assert_eq!(load_u64(&lp_key(mid, &user)), before_lp);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), before_total_collateral);
+    }
+
+    #[test]
+    fn test_withdraw_liquidity_failed_transfer_preserves_state() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let before_record = load_market(mid).unwrap();
+        let before_pool_0 = load_outcome_pool(mid, 0).unwrap();
+        let before_pool_1 = load_outcome_pool(mid, 1).unwrap();
+        let before_lp = load_u64(&lp_key(mid, &creator));
+        let before_total_collateral = load_u64(TOTAL_COLLATERAL_KEY);
+
+        test_mock::set_caller(creator);
+        test_mock::set_cross_call_response(Some(failed_transfer_response()));
+        assert_eq!(withdraw_liquidity(creator.as_ptr(), mid, 2_000_000), 0);
+
+        assert_eq!(load_market(mid).unwrap(), before_record);
+        assert_eq!(load_outcome_pool(mid, 0).unwrap(), before_pool_0);
+        assert_eq!(load_outcome_pool(mid, 1).unwrap(), before_pool_1);
+        assert_eq!(load_u64(&lp_key(mid, &creator)), before_lp);
+        assert_eq!(load_u64(TOTAL_COLLATERAL_KEY), before_total_collateral);
     }
 
     #[test]

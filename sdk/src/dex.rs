@@ -1,20 +1,20 @@
 // LichenSwap - Decentralized Exchange (DEX)
 // Automated Market Maker (AMM) using constant product formula: x * y = k
 
-use crate::{Address, ContractError, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
+use crate::{bytes_to_u64, storage_get, storage_set, u64_to_bytes, Address, ContractError};
 use alloc::vec::Vec;
 
 pub type DexResult<T> = Result<T, ContractError>;
 
 /// Liquidity pool for token pair
 pub struct Pool {
-    pub token_a: Address,       // First token address
-    pub token_b: Address,       // Second token address
-    pub reserve_a: u64,         // Reserve of token A
-    pub reserve_b: u64,         // Reserve of token B
-    pub total_liquidity: u64,   // Total LP tokens
-    pub fee_numerator: u64,     // Fee (e.g., 3 for 0.3%)
-    pub fee_denominator: u64,   // Fee denominator (e.g., 1000)
+    pub token_a: Address,     // First token address
+    pub token_b: Address,     // Second token address
+    pub reserve_a: u64,       // Reserve of token A
+    pub reserve_b: u64,       // Reserve of token B
+    pub total_liquidity: u64, // Total LP tokens
+    pub fee_numerator: u64,   // Fee (e.g., 3 for 0.3%)
+    pub fee_denominator: u64, // Fee denominator (e.g., 1000)
 }
 
 impl Pool {
@@ -26,7 +26,7 @@ impl Pool {
             reserve_a: 0,
             reserve_b: 0,
             total_liquidity: 0,
-            fee_numerator: 3,      // 0.3% fee
+            fee_numerator: 3, // 0.3% fee
             fee_denominator: 1000,
         }
     }
@@ -63,18 +63,24 @@ impl Pool {
             // First liquidity provider
             // Liquidity = sqrt(amount_a * amount_b), use u128 to avoid overflow
             liquidity = Self::sqrt((amount_a as u128) * (amount_b as u128));
-            
+
             if liquidity < min_liquidity {
                 return Err(ContractError::Custom("Insufficient liquidity minted"));
             }
         } else {
             // Subsequent liquidity providers
             // Calculate liquidity proportional to pool reserves (u128 to avoid overflow)
-            let liquidity_a = ((amount_a as u128) * (self.total_liquidity as u128) / (self.reserve_a as u128)) as u64;
-            let liquidity_b = ((amount_b as u128) * (self.total_liquidity as u128) / (self.reserve_b as u128)) as u64;
-            
-            liquidity = if liquidity_a < liquidity_b { liquidity_a } else { liquidity_b };
-            
+            let liquidity_a = ((amount_a as u128) * (self.total_liquidity as u128)
+                / (self.reserve_a as u128)) as u64;
+            let liquidity_b = ((amount_b as u128) * (self.total_liquidity as u128)
+                / (self.reserve_b as u128)) as u64;
+
+            liquidity = if liquidity_a < liquidity_b {
+                liquidity_a
+            } else {
+                liquidity_b
+            };
+
             if liquidity < min_liquidity {
                 return Err(ContractError::Custom("Insufficient liquidity minted"));
             }
@@ -117,8 +123,10 @@ impl Pool {
         }
 
         // Calculate amounts to return (u128 to avoid overflow)
-        let amount_a = ((liquidity as u128) * (self.reserve_a as u128) / (self.total_liquidity as u128)) as u64;
-        let amount_b = ((liquidity as u128) * (self.reserve_b as u128) / (self.total_liquidity as u128)) as u64;
+        let amount_a = ((liquidity as u128) * (self.reserve_a as u128)
+            / (self.total_liquidity as u128)) as u64;
+        let amount_b = ((liquidity as u128) * (self.reserve_b as u128)
+            / (self.total_liquidity as u128)) as u64;
 
         if amount_a < min_amount_a || amount_b < min_amount_b {
             return Err(ContractError::Custom("Insufficient output amount"));
@@ -139,22 +147,20 @@ impl Pool {
     }
 
     /// Swap token A for token B
-    pub fn swap_a_for_b(
-        &mut self,
-        amount_a_in: u64,
-        min_amount_b_out: u64,
-    ) -> DexResult<u64> {
+    pub fn swap_a_for_b(&mut self, amount_a_in: u64, min_amount_b_out: u64) -> DexResult<u64> {
         if amount_a_in == 0 {
             return Err(ContractError::InvalidInput);
         }
 
         // Calculate output amount using constant product formula (u128 to avoid overflow)
         // amount_out = (amount_in * reserve_out * (1 - fee)) / (reserve_in + amount_in * (1 - fee))
-        
-        let amount_a_with_fee = (amount_a_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+
+        let amount_a_with_fee =
+            (amount_a_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
         let numerator = amount_a_with_fee * (self.reserve_b as u128);
-        let denominator = ((self.reserve_a as u128) * (self.fee_denominator as u128)) + amount_a_with_fee;
-        
+        let denominator =
+            ((self.reserve_a as u128) * (self.fee_denominator as u128)) + amount_a_with_fee;
+
         let amount_b_out = (numerator / denominator) as u64;
 
         if amount_b_out < min_amount_b_out {
@@ -176,19 +182,17 @@ impl Pool {
     }
 
     /// Swap token B for token A
-    pub fn swap_b_for_a(
-        &mut self,
-        amount_b_in: u64,
-        min_amount_a_out: u64,
-    ) -> DexResult<u64> {
+    pub fn swap_b_for_a(&mut self, amount_b_in: u64, min_amount_a_out: u64) -> DexResult<u64> {
         if amount_b_in == 0 {
             return Err(ContractError::InvalidInput);
         }
 
-        let amount_b_with_fee = (amount_b_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+        let amount_b_with_fee =
+            (amount_b_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
         let numerator = amount_b_with_fee * (self.reserve_a as u128);
-        let denominator = ((self.reserve_b as u128) * (self.fee_denominator as u128)) + amount_b_with_fee;
-        
+        let denominator =
+            ((self.reserve_b as u128) * (self.fee_denominator as u128)) + amount_b_with_fee;
+
         let amount_a_out = (numerator / denominator) as u64;
 
         if amount_a_out < min_amount_a_out {
@@ -215,10 +219,12 @@ impl Pool {
             return 0;
         }
 
-        let amount_in_with_fee = (amount_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+        let amount_in_with_fee =
+            (amount_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
         let numerator = amount_in_with_fee * (reserve_out as u128);
-        let denominator = ((reserve_in as u128) * (self.fee_denominator as u128)) + amount_in_with_fee;
-        
+        let denominator =
+            ((reserve_in as u128) * (self.fee_denominator as u128)) + amount_in_with_fee;
+
         (numerator / denominator) as u64
     }
 
@@ -292,15 +298,15 @@ impl Pool {
         if x == 0 {
             return 0;
         }
-        
+
         let mut z = x;
         let mut y = (x + 1) / 2;
-        
+
         while y < z {
             z = y;
             y = (x / y + y) / 2;
         }
-        
+
         z as u64
     }
 }

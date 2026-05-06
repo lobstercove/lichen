@@ -29,6 +29,53 @@ fn privileged_processor_regressions_remain_in_suite() {
         "test_allowlisted_emergency_pause_contract_call_stays_timelocked_on_governance_authority",
         "test_bridge_committee_admin_contract_call_rejects_governance_authority_direct_path",
         "test_governed_transfer_velocity_policy_snapshots_escalation",
+        "test_restriction_governance_actions_do_not_match_legacy_split_role_policies",
+        "test_restriction_governance_split_roles_route_scoped_creates",
+        "test_governed_wallet_direct_transfer_still_requires_proposal_when_restricted",
+        "test_governed_transfer_source_restriction_blocks_execution_without_losing_proposal",
+        "test_governed_transfer_recipient_restriction_blocks_execution_without_losing_proposal",
+        "test_nonce_withdraw_authority_restriction_blocks_value_exit",
+        "test_nonce_withdraw_authority_native_frozen_amount_blocks_value_exit",
+        "test_nonce_withdraw_nonce_account_restriction_blocks_value_exit",
+        "test_nonce_withdraw_recipient_restriction_blocks_without_closing_nonce",
+        "test_stake_rejects_outgoing_restricted_staker_without_pool_mutation",
+        "test_stake_rejects_native_frozen_amount_without_pool_mutation",
+        "test_staking_protocol_pause_rejects_stake_without_pool_mutation",
+        "test_request_unstake_rejects_outgoing_restricted_staker_without_request",
+        "test_claim_unstake_rejects_incoming_restricted_staker_without_unlocking",
+        "test_mossstake_deposit_rejects_outgoing_restricted_depositor",
+        "test_mossstake_deposit_rejects_native_frozen_amount",
+        "test_mossstake_protocol_pause_rejects_deposit_without_position",
+        "test_mossstake_unstake_rejects_outgoing_restricted_position_owner",
+        "test_mossstake_claim_rejects_incoming_restricted_user_without_dropping_request",
+        "test_mossstake_transfer_rejects_outgoing_restricted_sender",
+        "test_mossstake_transfer_rejects_incoming_restricted_recipient",
+        "test_register_validator_rejects_treasury_outgoing_restriction_without_grant",
+        "test_register_validator_rejects_treasury_native_frozen_amount_without_grant",
+        "test_register_validator_rejects_incoming_restricted_validator_without_grant",
+        "test_register_validator_protocol_pause_rejects_without_grant",
+        "test_deregister_validator_protocol_pause_rejects_without_deactivation",
+        "test_shield_rejects_outgoing_restricted_sender_without_pool_mutation",
+        "test_shield_rejects_native_frozen_amount_without_pool_mutation",
+        "test_shield_protocol_pause_rejects_deposit_without_pool_mutation",
+        "test_unshield_rejects_incoming_restricted_recipient_without_spending_nullifier",
+        "test_unshield_rejects_native_incoming_restricted_recipient_without_spending_nullifier",
+        "test_shielded_transfer_protocol_pause_rejects_before_nullifier_mutation",
+        "test_fee_debit_bypasses_account_and_native_asset_restrictions",
+        "test_restricted_transfer_failure_keeps_only_fee_debit",
+        "test_restricted_governance_authority_can_pay_fee_for_lift_remediation",
+        "test_failed_premium_fee_refund_bypasses_incoming_restriction",
+        "test_contract_lifecycle_active_allows_state_changing_wasm_execution",
+        "test_contract_lifecycle_suspended_rejects_state_changing_wasm_before_execution",
+        "test_contract_lifecycle_quarantined_rejects_wasm_before_execution",
+        "test_contract_lifecycle_terminated_rejects_wasm_before_execution",
+        "test_contract_lifecycle_simulation_rejects_blocked_contract_before_execution",
+        "restriction_governance_contract_suspend_and_lift_drive_lifecycle_without_owner_spoofing",
+        "restriction_governance_contract_temporary_restriction_expires_and_resumes_on_next_call",
+        "restriction_governance_contract_termination_is_permanent_and_preserves_state",
+        "test_contract_close_owner_semantics_preserved_for_non_active_lifecycle_statuses",
+        "test_contract_close_non_owner_still_rejected_for_non_active_lifecycle_contract",
+        "test_contract_close_requires_governance_proposal_when_owner_is_governed",
     ] {
         assert!(
             source.contains(&format!("fn {}", test_name)),
@@ -54,6 +101,24 @@ fn caller_verification_regressions_remain_in_suite() {
         assert!(
             source.contains(&format!("fn {}", test_name)),
             "REGRESSION: core/tests/caller_verification.rs must keep {}",
+            test_name
+        );
+    }
+}
+
+#[test]
+fn contract_proxy_bypass_regressions_remain_in_suite() {
+    let source = read_workspace_file("core/tests/cross_contract_call.rs");
+
+    for test_name in [
+        "test_cross_contract_call_rejects_suspended_target_before_callee_mutation",
+        "test_cross_contract_call_derives_target_lifecycle_from_active_restriction",
+        "test_scam_contract_proxy_forwarder_cannot_bypass_target_lifecycle_restrictions",
+        "test_scam_proxy_contract_restriction_blocks_forwarded_target_mutation",
+    ] {
+        assert!(
+            source.contains(&format!("fn {}", test_name)),
+            "REGRESSION: core/tests/cross_contract_call.rs must keep contract proxy bypass regression {}",
             test_name
         );
     }

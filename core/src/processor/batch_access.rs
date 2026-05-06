@@ -450,6 +450,67 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_next_restriction_id(&self) -> Result<u64, String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.next_restriction_id()
+        } else {
+            self.state.next_restriction_id()
+        }
+    }
+
+    pub(super) fn b_put_restriction(
+        &self,
+        record: &crate::restrictions::RestrictionRecord,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.put_restriction(record)
+        } else {
+            self.state.put_restriction(record)
+        }
+    }
+
+    pub(super) fn b_get_restriction(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::restrictions::RestrictionRecord>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_restriction(id)
+        } else {
+            self.state.get_restriction(id)
+        }
+    }
+
+    pub(super) fn b_get_effective_restriction_record(
+        &self,
+        id: u64,
+        slot: u64,
+    ) -> Result<Option<crate::restrictions::EffectiveRestrictionRecord>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_effective_restriction_record(id, slot)
+        } else {
+            self.state.get_effective_restriction_record(id, slot)
+        }
+    }
+
+    pub(super) fn b_get_active_restrictions_for_target(
+        &self,
+        target: &crate::restrictions::RestrictionTarget,
+        slot: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::restrictions::RestrictionRecord>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_active_restrictions_for_target(target, slot, limit)
+        } else {
+            self.state
+                .get_active_restrictions_for_target(target, slot, limit)
+        }
+    }
+
     pub(super) fn b_get_governed_proposal(
         &self,
         id: u64,

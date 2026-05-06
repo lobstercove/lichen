@@ -1,7 +1,7 @@
 // Lichen NFT Standard (MT-721)
 // Similar to ERC-721 / Metaplex NFT Standard
 
-use crate::{Address, ContractError, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
+use crate::{bytes_to_u64, storage_get, storage_set, u64_to_bytes, Address, ContractError};
 use alloc::vec::Vec;
 
 pub type NftResult<T> = Result<T, ContractError>;
@@ -28,10 +28,10 @@ impl NFT {
         // Set minter (can mint new tokens)
         let key = Self::minter_key();
         storage_set(&key, minter.0.as_slice());
-        
+
         // Initialize counter
         storage_set(b"total_minted", &u64_to_bytes(0));
-        
+
         Ok(())
     }
 
@@ -148,7 +148,12 @@ impl NFT {
     }
 
     /// Set approval for all tokens
-    pub fn set_approval_for_all(&self, owner: Address, operator: Address, approved: bool) -> NftResult<()> {
+    pub fn set_approval_for_all(
+        &self,
+        owner: Address,
+        operator: Address,
+        approved: bool,
+    ) -> NftResult<()> {
         let key = Self::operator_approval_key(owner, operator);
         storage_set(&key, &[if approved { 1 } else { 0 }]);
         Ok(())
@@ -164,7 +169,13 @@ impl NFT {
     }
 
     /// Transfer from (with approval)
-    pub fn transfer_from(&self, caller: Address, from: Address, to: Address, token_id: u64) -> NftResult<()> {
+    pub fn transfer_from(
+        &self,
+        caller: Address,
+        from: Address,
+        to: Address,
+        token_id: u64,
+    ) -> NftResult<()> {
         // Check ownership
         let owner = self.owner_of(token_id)?;
         if owner.0 != from.0 {
@@ -173,7 +184,9 @@ impl NFT {
 
         // Check authorization
         let is_owner = caller.0 == from.0;
-        let is_approved = self.get_approved(token_id).map_or(false, |a| a.0 == caller.0);
+        let is_approved = self
+            .get_approved(token_id)
+            .map_or(false, |a| a.0 == caller.0);
         let is_operator = self.is_approved_for_all(from, caller);
 
         if !is_owner && !is_approved && !is_operator {

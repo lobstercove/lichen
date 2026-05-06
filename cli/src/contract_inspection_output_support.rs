@@ -6,6 +6,14 @@ pub(super) fn print_contract_info(info: &ContractInfo) {
     println!();
     println!("📍 Address: {}", info.address);
     println!("👤 Owner:    {}", info.owner);
+    println!("🚦 Lifecycle: {}", info.lifecycle_status);
+    if let Some(restriction_id) = info.lifecycle_restriction_id {
+        println!("🔒 Restriction: #{}", restriction_id);
+    }
+    println!("🧭 Lifecycle updated slot: {}", info.lifecycle_updated_slot);
+    if info.lifecycle_effective_at_slot != 0 {
+        println!("⏱️  Lifecycle effective slot: {}", info.lifecycle_effective_at_slot);
+    }
     println!("📏 Code size: {} bytes", info.code_size);
     println!("📅 Deployed at slot: {}", info.deployed_at);
 }

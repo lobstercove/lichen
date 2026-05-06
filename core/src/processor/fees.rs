@@ -146,6 +146,12 @@ impl TxProcessor {
         total_fee: u64,
         priority_fee: u64,
     ) -> Result<(), String> {
+        // Fee charging is a hidden shared-state update: every transaction debits
+        // a payer and usually credits the treasury before instruction execution.
+        // Keep this guard across the full read-modify-write, including the final
+        // RocksDB batch write, so parallel TX groups cannot lose fee updates.
+        let _fee_guard = self.state.lock_treasury()?;
+
         let mut payer_account = self
             .state
             .get_account(payer)?
@@ -189,8 +195,6 @@ impl TxProcessor {
         let treasury_account;
 
         if capped_to_treasury > 0 {
-            let _treasury_guard = self.state.lock_treasury()?;
-
             treasury_pubkey = self
                 .state
                 .get_treasury_pubkey()?

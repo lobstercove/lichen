@@ -5,7 +5,8 @@
 // yet stored or broadcast — that's the consensus engine's responsibility.
 
 use lichen_core::{Block, FeeConfig, Hash, Mempool, Pubkey, StateStore, TxProcessor};
-use tracing::{debug, info};
+use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 /// Compute the minimum delay (in milliseconds) the proposer should wait
 /// after committing before building the next block, so that wall-clock
@@ -48,6 +49,36 @@ fn resolve_parent_timestamp(state: &StateStore, parent_hash: &Hash) -> Option<u6
     Some(parent_block.header.timestamp)
 }
 
+fn proposal_staging_dir(staging_root: &Path, height: u64) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    staging_root.join(format!(
+        "lichen-proposal-stage-{}-{}-{}",
+        std::process::id(),
+        height,
+        nonce
+    ))
+}
+
+fn open_proposal_staging_state(
+    state: &StateStore,
+    staging_root: &Path,
+    height: u64,
+) -> Result<(StateStore, PathBuf), String> {
+    std::fs::create_dir_all(staging_root)
+        .map_err(|e| format!("failed to create proposal staging root: {e}"))?;
+    let staging_dir = proposal_staging_dir(staging_root, height);
+    let staging_path = staging_dir
+        .to_str()
+        .ok_or_else(|| "proposal staging path is not valid UTF-8".to_string())?;
+    let checkpoint_slot = state.get_last_slot().unwrap_or(height.saturating_sub(1));
+    state.create_checkpoint(staging_path, checkpoint_slot)?;
+    let staging_state = StateStore::open_checkpoint(staging_path)?;
+    Ok((staging_state, staging_dir))
+}
+
 /// Build a new block from pending mempool transactions.
 ///
 /// `bft_timestamp`: If `Some`, use this BFT-derived timestamp (weighted
@@ -55,21 +86,22 @@ fn resolve_parent_timestamp(state: &StateStore, parent_hash: &Hash) -> Option<u6
 /// wall-clock time if `None` (genesis, solo validator, or no parent commit).
 ///
 /// Returns `(block, processed_tx_hashes)`:
-///   - `block` has `state_root = Hash::default()` — the caller MUST compute
-///     and set it after applying block effects.
+///   - `block` has a state root computed from speculative proposal execution.
 ///   - `processed_tx_hashes` contains the hashes of transactions included in
 ///     the block, for mempool cleanup.
 ///
 /// This function does NOT:
 ///   - Store the block to state
+///   - Mutate canonical state while evaluating mempool transactions
 ///   - Apply block effects (rewards, staking, oracle)
 ///   - Broadcast the block
-///   - Sign the block (caller signs after setting state_root)
+///   - Sign the block (caller signs the returned proposal block)
 #[allow(clippy::too_many_arguments)]
 pub fn build_block(
     state: &StateStore,
     mempool: &mut Mempool,
-    processor: &TxProcessor,
+    _processor: &TxProcessor,
+    staging_root: &Path,
     height: u64,
     parent_hash: Hash,
     validator_pubkey: &Pubkey,
@@ -80,7 +112,7 @@ pub fn build_block(
     // local ledger has already committed before they reach the processor; they
     // can arrive late through RPC retries or P2P relay after block inclusion.
     let mut stale_hashes = Vec::new();
-    let pending: Vec<_> = mempool
+    let mut pending: Vec<_> = mempool
         .get_top_transactions(2000)
         .into_iter()
         .filter(|tx| {
@@ -104,11 +136,34 @@ pub fn build_block(
     }
     let pending_count = pending.len();
 
-    // Process in parallel (non-conflicting TXs run simultaneously)
-    let results = processor.process_transactions_parallel(&pending, validator_pubkey);
+    // Proposal execution must be speculative until BFT commits the block.  Running
+    // mempool transactions on the live DB lets losing proposals leave durable tx
+    // effects behind, which later makes committed block replay diverge.
+    let mut staging_dir: Option<PathBuf> = None;
+    let mut staging_state: Option<StateStore> = None;
+    let mut results = Vec::new();
+    if !pending.is_empty() {
+        match open_proposal_staging_state(state, staging_root, height) {
+            Ok((stage, dir)) => {
+                let staging_processor = TxProcessor::new(stage.clone());
+                results =
+                    staging_processor.process_transactions_parallel(&pending, validator_pubkey);
+                staging_state = Some(stage);
+                staging_dir = Some(dir);
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️  Proposal staging unavailable at height {}: {}. Building empty liveness block.",
+                    height, e
+                );
+                pending.clear();
+            }
+        }
+    }
 
     // Fee config for computing burn/treasury split when reversing failed fees
-    let fee_config = state
+    let execution_state = staging_state.as_ref().unwrap_or(state);
+    let fee_config = execution_state
         .get_fee_config()
         .unwrap_or_else(|_| FeeConfig::default_from_constants());
 
@@ -188,12 +243,12 @@ pub fn build_block(
             failed_fee_reversals.len(),
             height,
         );
-        let treasury_pk = state.get_treasury_pubkey().ok().flatten();
+        let treasury_pk = execution_state.get_treasury_pubkey().ok().flatten();
         for (fee_payer, fee_paid, to_treasury) in &failed_fee_reversals {
             // Credit fee_paid back to payer
-            if let Ok(Some(mut payer_account)) = state.get_account(fee_payer) {
+            if let Ok(Some(mut payer_account)) = execution_state.get_account(fee_payer) {
                 if payer_account.add_spendable(*fee_paid).is_ok() {
-                    if let Err(e) = state.put_account(fee_payer, &payer_account) {
+                    if let Err(e) = execution_state.put_account(fee_payer, &payer_account) {
                         tracing::error!("Failed to reverse fee for payer: {e}");
                     }
                 }
@@ -201,9 +256,9 @@ pub fn build_block(
             // Debit treasury's portion (everything except burned amount)
             if let Some(ref tpk) = treasury_pk {
                 if *to_treasury > 0 {
-                    if let Ok(Some(mut treasury_account)) = state.get_account(tpk) {
+                    if let Ok(Some(mut treasury_account)) = execution_state.get_account(tpk) {
                         if treasury_account.deduct_spendable(*to_treasury).is_ok() {
-                            if let Err(e) = state.put_account(tpk, &treasury_account) {
+                            if let Err(e) = execution_state.put_account(tpk, &treasury_account) {
                                 tracing::error!("Failed to debit treasury fee reversal: {e}");
                             }
                         }
@@ -239,10 +294,12 @@ pub fn build_block(
         .unwrap_or(wall_clock_timestamp)
         .max(min_block_timestamp);
 
+    let proposal_state_root = execution_state.compute_state_root();
+
     let mut block = Block::new_with_timestamp(
         height,
         parent_hash,
-        Hash::default(), // Placeholder — caller sets after effects
+        proposal_state_root,
         validator_pubkey.0,
         transactions,
         block_timestamp,
@@ -260,13 +317,41 @@ pub fn build_block(
         );
     }
 
+    drop(staging_state);
+    if let Some(dir) = staging_dir {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            warn!("⚠️  Failed to remove proposal staging dir {:?}: {}", dir, e);
+        }
+    }
+
     (block, processed_hashes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lichen_core::{Account, Instruction, Keypair, Message, Transaction, SYSTEM_PROGRAM_ID};
     use tempfile::tempdir;
+
+    fn signed_transfer(
+        from_kp: &Keypair,
+        from: Pubkey,
+        to: Pubkey,
+        amount_licn: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![0u8];
+        data.extend_from_slice(&Account::licn_to_spores(amount_licn).to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![from, to],
+            data,
+        };
+        let message = Message::new(vec![ix], recent_blockhash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(from_kp.sign(&tx.message.serialize()));
+        tx
+    }
 
     #[test]
     fn build_block_fallback_timestamp_advances_past_parent() {
@@ -289,6 +374,7 @@ mod tests {
             &state,
             &mut mempool,
             &processor,
+            temp.path(),
             1,
             parent_hash,
             &validator,
@@ -371,6 +457,7 @@ mod tests {
             &state,
             &mut mempool,
             &processor,
+            temp.path(),
             1,
             parent_hash,
             &validator,
@@ -381,5 +468,54 @@ mod tests {
         assert!(block.transactions.is_empty());
         assert!(processed.is_empty());
         assert!(!mempool.contains(&tx_hash));
+    }
+
+    #[test]
+    fn build_block_executes_transactions_on_staging_state_only() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([9u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+
+        let parent = Block::genesis(Hash::hash(b"parent-state"), 1, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let root_before = state.compute_state_root_cold_start();
+        let tx = signed_transfer(&alice_kp, alice, bob, 10, parent_hash);
+        let tx_hash = tx.hash();
+        mempool.add_transaction(tx, 1, 0).unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            temp.path(),
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            None,
+        );
+
+        assert_eq!(block.transactions.len(), 1);
+        assert_eq!(processed, vec![tx_hash]);
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+        assert!(state.get_transaction(&tx_hash).unwrap().is_none());
+        assert_eq!(state.get_balance(&bob).unwrap_or(0), 0);
     }
 }

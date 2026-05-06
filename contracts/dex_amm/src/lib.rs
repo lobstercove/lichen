@@ -18,12 +18,13 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use lichen_sdk::{
-    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, is_native_token,
-    log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
-};
 #[cfg(target_arch = "wasm32")]
-use lichen_sdk::{call_contract, get_value, CrossCall};
+use lichen_sdk::get_value;
+use lichen_sdk::{
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    is_native_token, log_info, storage_get, storage_set, transfer_native, u64_to_bytes, Address,
+    CrossCall,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -393,30 +394,30 @@ fn pull_tokens(token: &[u8; 32], from: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (token, from, amount);
-        true
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if is_native_token(&Address(*token)) {
+    if is_native_token(&Address(*token)) {
+        #[cfg(target_arch = "wasm32")]
+        {
             let received = get_value();
             return received >= amount;
         }
-        let contract = get_contract_address();
-        let mut args = Vec::with_capacity(104);
-        args.extend_from_slice(&contract.0);
-        args.extend_from_slice(from);
-        args.extend_from_slice(&contract.0);
-        args.extend_from_slice(&u64_to_bytes(amount));
-        let call = CrossCall::new(Address(*token), "transfer_from", args).with_value(0);
-        match call_contract(call) {
-            // Return code 0 = success (wrapped tokens), 1 = success (lichencoin).
-            // Any value >= 2 is a definitive error code.
-            Ok(data) => data.first().map_or(false, |&rc| rc <= 1),
-            Err(_) => false,
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (from, amount);
+            return true;
         }
+    }
+    let contract = get_contract_address();
+    let mut args = Vec::with_capacity(104);
+    args.extend_from_slice(&contract.0);
+    args.extend_from_slice(from);
+    args.extend_from_slice(&contract.0);
+    args.extend_from_slice(&u64_to_bytes(amount));
+    let call = CrossCall::new(Address(*token), "transfer_from", args).with_value(0);
+    match call_contract(call) {
+        // Return code 0 = success (wrapped tokens), 1 = success (lichencoin).
+        // Any value >= 2 is a definitive error code.
+        Ok(data) => data.first().map_or(false, |&rc| rc <= 1),
+        Err(_) => false,
     }
 }
 
@@ -2581,6 +2582,29 @@ mod tests {
     }
 
     #[test]
+    fn test_add_liquidity_second_transfer_failure_preserves_state() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        let pool_before = storage_get(&pool_key(pool_id)).unwrap();
+
+        test_mock::set_cross_call_responses(std::vec![
+            transfer_success_response(),
+            transfer_failure_response(),
+            transfer_success_response(),
+        ]);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000),
+            6
+        );
+
+        assert_eq!(load_u64(POSITION_COUNT_KEY), 0);
+        assert!(storage_get(&position_key(1)).is_none());
+        assert_eq!(storage_get(&pool_key(pool_id)).unwrap(), pool_before);
+    }
+
+    #[test]
     fn test_add_liquidity_invalid_range() {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
@@ -2744,6 +2768,40 @@ mod tests {
             swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 0),
             0
         );
+    }
+
+    #[test]
+    fn test_swap_output_transfer_failure_preserves_pool_state() {
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000),
+            0
+        );
+
+        let pool_before = storage_get(&pool_key(pool_id)).unwrap();
+        let swap_count_before = load_u64(SWAP_COUNT_KEY);
+        let volume_before = load_u64(TOTAL_VOLUME_KEY);
+        let fees_before = load_u64(TOTAL_FEES_KEY);
+
+        test_mock::set_cross_call_responses(std::vec![
+            transfer_success_response(),
+            transfer_failure_response(),
+            transfer_success_response(),
+        ]);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 0),
+            8
+        );
+
+        assert_eq!(storage_get(&pool_key(pool_id)).unwrap(), pool_before);
+        assert_eq!(load_u64(SWAP_COUNT_KEY), swap_count_before);
+        assert_eq!(load_u64(TOTAL_VOLUME_KEY), volume_before);
+        assert_eq!(load_u64(TOTAL_FEES_KEY), fees_before);
     }
 
     #[test]

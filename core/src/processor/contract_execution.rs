@@ -78,7 +78,9 @@ impl TxProcessor {
                 error
             );
         }
-        deploy_result?;
+        let code_hash = deploy_result?;
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_code_hash_not_deploy_blocked(&code_hash, current_slot, "Deploy")?;
 
         let mut owner = *deployer;
         let mut make_public = true;
@@ -193,22 +195,16 @@ impl TxProcessor {
     ) -> Result<(), String> {
         let args = args.to_vec();
 
-        let account = self
-            .b_get_account(contract_address)?
-            .ok_or("Contract not found")?;
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let contract =
+            self.refresh_contract_lifecycle_from_restrictions(contract_address, current_slot)?;
 
-        if !account.executable {
-            return Err("Account is not a contract".to_string());
-        }
-
-        let contract: ContractAccount = serde_json::from_slice(&account.data)
-            .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
+        contract.validate_lifecycle_for_execution(function, false, value)?;
 
         if value > 0 {
             self.b_transfer(caller, contract_address, value)?;
         }
 
-        let current_slot = self.b_get_last_slot().unwrap_or(0);
         let tx_budget = *self
             .tx_compute_budget
             .lock()

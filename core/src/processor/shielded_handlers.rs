@@ -1,4 +1,5 @@
 use super::*;
+use crate::restrictions::{ProtocolModuleId, RestrictionTransferDirection};
 
 impl TxProcessor {
     /// System instruction type 23: Shield deposit (transparent → shielded).
@@ -48,6 +49,26 @@ impl TxProcessor {
         let mut commitment = [0u8; 32];
         commitment.copy_from_slice(&ix.data[9..41]);
 
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Shielded, "Shield")?;
+
+        let mut sender_acct = self
+            .b_get_account(sender)?
+            .ok_or_else(|| "Shield: sender account not found".to_string())?;
+        self.ensure_native_account_direction_not_restricted(
+            sender,
+            RestrictionTransferDirection::Outgoing,
+            amount,
+            sender_acct.spendable,
+            "Shield",
+            "sender",
+        )?;
+        if sender_acct.spendable < amount {
+            return Err(format!(
+                "Shield: insufficient balance ({} < {})",
+                sender_acct.spendable, amount
+            ));
+        }
+
         let proof_bytes = ix.data[41..].to_vec();
         let zk_proof = ZkProof::plonky3(
             ProofType::Shield,
@@ -71,16 +92,6 @@ impl TxProcessor {
             }
         }
 
-        let mut sender_acct = self
-            .b_get_account(sender)?
-            .ok_or_else(|| "Shield: sender account not found".to_string())?;
-
-        if sender_acct.spendable < amount {
-            return Err(format!(
-                "Shield: insufficient balance ({} < {})",
-                sender_acct.spendable, amount
-            ));
-        }
         sender_acct.spendable = sender_acct.spendable.saturating_sub(amount);
         sender_acct.spores = sender_acct
             .spendable
@@ -195,6 +206,18 @@ impl TxProcessor {
             );
         }
 
+        let mut recipient_acct = self
+            .b_get_account(recipient_pubkey)?
+            .unwrap_or_else(|| crate::Account::new(0, crate::SYSTEM_PROGRAM_ID));
+        self.ensure_native_account_direction_not_restricted(
+            recipient_pubkey,
+            RestrictionTransferDirection::Incoming,
+            amount,
+            recipient_acct.spendable,
+            "Unshield",
+            "recipient",
+        )?;
+
         {
             let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
             let pool = if let Some(batch) = guard.as_ref() {
@@ -250,9 +273,6 @@ impl TxProcessor {
             }
         }
 
-        let mut recipient_acct = self
-            .b_get_account(recipient_pubkey)?
-            .unwrap_or_else(|| crate::Account::new(0, crate::SYSTEM_PROGRAM_ID));
         recipient_acct.spendable = recipient_acct.spendable.saturating_add(amount);
         recipient_acct.spores = recipient_acct
             .spendable
@@ -306,6 +326,8 @@ impl TxProcessor {
                 required_len
             ));
         }
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Shielded, "ShieldedTransfer")?;
 
         let mut nullifier_a = [0u8; 32];
         nullifier_a.copy_from_slice(&ix.data[1..33]);

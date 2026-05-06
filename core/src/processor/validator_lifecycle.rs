@@ -1,4 +1,5 @@
 use super::*;
+use crate::restrictions::{ProtocolModuleId, RestrictionTransferDirection};
 
 impl TxProcessor {
     /// On-chain validator registration with bootstrap grant (instruction type 26).
@@ -51,6 +52,8 @@ impl TxProcessor {
         }
         drop(pool);
 
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "RegisterValidator")?;
+
         let treasury_pubkey = self
             .state
             .get_treasury_pubkey()?
@@ -60,11 +63,14 @@ impl TxProcessor {
             .ok_or_else(|| "RegisterValidator: treasury account not found".to_string())?;
 
         let grant_amount = crate::consensus::BOOTSTRAP_GRANT_AMOUNT;
-        treasury
-            .deduct_spendable(grant_amount)
-            .map_err(|e| format!("RegisterValidator: treasury insufficient: {}", e))?;
-        self.b_put_account(&treasury_pubkey, &treasury)?;
-
+        self.ensure_native_account_direction_not_restricted(
+            &treasury_pubkey,
+            RestrictionTransferDirection::Outgoing,
+            grant_amount,
+            treasury.spendable,
+            "RegisterValidator",
+            "treasury",
+        )?;
         let mut account = self
             .b_get_account(&validator_pubkey)?
             .unwrap_or_else(|| Account {
@@ -80,6 +86,20 @@ impl TxProcessor {
                 dormant: false,
                 missed_rent_epochs: 0,
             });
+        self.ensure_native_account_direction_not_restricted(
+            &validator_pubkey,
+            RestrictionTransferDirection::Incoming,
+            grant_amount,
+            account.spendable,
+            "RegisterValidator",
+            "validator",
+        )?;
+
+        treasury
+            .deduct_spendable(grant_amount)
+            .map_err(|e| format!("RegisterValidator: treasury insufficient: {}", e))?;
+        self.b_put_account(&treasury_pubkey, &treasury)?;
+
         account.spores = account.spores.saturating_add(grant_amount);
         account.staked = account.staked.saturating_add(grant_amount);
         self.b_put_account(&validator_pubkey, &account)?;
@@ -282,6 +302,8 @@ impl TxProcessor {
         if !stake_info.is_active {
             return Ok(());
         }
+
+        self.ensure_protocol_module_not_paused(ProtocolModuleId::Staking, "DeregisterValidator")?;
 
         if let Some(si) = pool.get_stake_mut(&validator_pubkey) {
             si.is_active = false;

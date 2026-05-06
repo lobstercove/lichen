@@ -73,6 +73,13 @@ pub enum ConsensusAction {
         block: Block,
         block_hash: Hash,
     },
+    /// Consensus observed a commit certificate for a block that is missing
+    /// locally. The caller should fetch the committed slot from peers.
+    RequestBlockRange {
+        start_slot: u64,
+        end_slot: u64,
+        block_hash: Hash,
+    },
     /// Multiple actions (processed in order).
     Multiple(Vec<ConsensusAction>),
     /// Equivocation detected: a validator signed conflicting votes at the same (height, round).
@@ -248,6 +255,22 @@ impl ConsensusEngine {
         ConsensusAction::ScheduleTimeout(RoundStep::Propose, self.propose_timeout())
     }
 
+    /// Resume after WAL recovery at the first round where this validator has
+    /// not already signed. Signed-vote records remain restored for slashing
+    /// protection; this only avoids replaying already-exhausted rounds.
+    pub fn resume_after_recovered_round(&mut self, recovered_round: u32) {
+        let next_round = recovered_round.saturating_add(1);
+        if next_round <= self.round {
+            return;
+        }
+        self.round = next_round;
+        self.step = RoundStep::Propose;
+        info!(
+            "🔐 WAL: Resuming height {} at round {} after recovered round {}",
+            self.height, self.round, recovered_round
+        );
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  STATE MACHINE TRANSITION GUARD (G-7 fix)
     // ═══════════════════════════════════════════════════════════════
@@ -259,6 +282,7 @@ impl ConsensusEngine {
     ///   Propose  → Prevote
     ///   Prevote  → Precommit
     ///   Precommit → Commit
+    ///   Propose/Prevote → Commit (late commit certificate while catching up)
     ///   Commit   → Propose   (new height via start_height/start_round)
     ///
     /// Note: start_round() sets step directly because it's the canonical
@@ -269,6 +293,8 @@ impl ConsensusEngine {
             (RoundStep::Propose, RoundStep::Prevote)
                 | (RoundStep::Prevote, RoundStep::Precommit)
                 | (RoundStep::Precommit, RoundStep::Commit)
+                | (RoundStep::Propose, RoundStep::Commit)
+                | (RoundStep::Prevote, RoundStep::Commit)
                 // These allow re-entering the same step (idempotent)
                 | (RoundStep::Prevote, RoundStep::Prevote)
                 | (RoundStep::Precommit, RoundStep::Precommit)
@@ -738,6 +764,11 @@ impl ConsensusEngine {
                 "⚠️ BFT: 2/3+ precommits for {} but block not found",
                 hex::encode(&bh.0[..4])
             );
+            actions.push(ConsensusAction::RequestBlockRange {
+                start_slot: self.height,
+                end_slot: self.height,
+                block_hash: bh,
+            });
         }
 
         // Rule 2: 2/3+ precommits for nil → advance to next round
@@ -1668,6 +1699,15 @@ impl ConsensusEngine {
         }
         self.precommit_sigs
             .insert((round, self.validator_pubkey), (signature, timestamp));
+        if let Some(hash) = block_hash {
+            if self
+                .locked_round
+                .is_none_or(|locked_round| round >= locked_round)
+            {
+                self.locked_round = Some(round);
+                self.locked_value = Some(hash);
+            }
+        }
         Ok(())
     }
 
@@ -1756,6 +1796,28 @@ mod tests {
     }
 
     #[test]
+    fn test_resume_after_recovered_round_advances_to_first_unsigned_round() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(42);
+
+        let hash = Hash::hash(b"recovered");
+        let prevote_sig = engine
+            .keypair
+            .sign(&Prevote::signable_bytes(42, 3, &Some(hash)));
+        engine
+            .restore_signed_prevote(42, 3, Some(hash), prevote_sig)
+            .unwrap();
+
+        engine.resume_after_recovered_round(3);
+
+        assert_eq!(engine.height, 42);
+        assert_eq!(engine.round, 4);
+        assert_eq!(engine.step, RoundStep::Propose);
+        assert_eq!(engine.signed_prevote_rounds.get(&3), Some(&Some(hash)));
+    }
+
+    #[test]
     fn test_restore_signed_prevote_blocks_conflicting_self_vote() {
         let (validators, vs, sp) = make_test_env(1);
         let (kp, pk) = validators.into_iter().next().unwrap();
@@ -1801,6 +1863,7 @@ mod tests {
             engine.signed_precommit_rounds.get(&0),
             Some(&Some(restored_hash))
         );
+        assert_eq!(engine.locked_state(), Some((0, restored_hash)));
     }
 
     #[test]
@@ -2271,6 +2334,110 @@ mod tests {
             }
             other => panic!("Expected CommitBlock, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_commit_certificate_can_commit_from_propose_step() {
+        let (validators, vs, sp) = make_test_env(4);
+        let mut validators = validators.into_iter();
+        let (kp1, pk1) = validators.next().unwrap();
+        let (kp2, pk2) = validators.next().unwrap();
+        let (kp3, pk3) = validators.next().unwrap();
+        let mut seed1 = [0u8; 32];
+        seed1[0] = 1;
+        let kp1_sign = Keypair::from_seed(&seed1);
+
+        let mut engine = ConsensusEngine::new(kp1, pk1);
+        engine.start_height(1);
+        assert_eq!(engine.step, RoundStep::Propose);
+
+        let block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"state"),
+            pk1.0,
+            Vec::new(),
+            1000,
+        );
+        let block_hash = block.hash();
+        engine.proposal_blocks.insert(block_hash, block);
+
+        let ts1 = 999u64;
+        let signable1 = Precommit::signable_bytes(1, 0, &Some(block_hash), ts1);
+        engine
+            .precommit_sigs
+            .insert((0, pk1), (kp1_sign.sign(&signable1), ts1));
+        engine
+            .precommits
+            .entry((0, Some(block_hash)))
+            .or_default()
+            .push(pk1);
+        engine.seen_precommits.insert((0, pk1), Some(block_hash));
+        engine.signed_precommit_rounds.insert(0, Some(block_hash));
+
+        let ts2 = 1000u64;
+        let pc2 = Precommit {
+            height: 1,
+            round: 0,
+            block_hash: Some(block_hash),
+            validator: pk2,
+            signature: kp2.sign(&Precommit::signable_bytes(1, 0, &Some(block_hash), ts2)),
+            timestamp: ts2,
+        };
+        let _ = engine.on_precommit(pc2, &vs, &sp);
+
+        let ts3 = 1001u64;
+        let pc3 = Precommit {
+            height: 1,
+            round: 0,
+            block_hash: Some(block_hash),
+            validator: pk3,
+            signature: kp3.sign(&Precommit::signable_bytes(1, 0, &Some(block_hash), ts3)),
+            timestamp: ts3,
+        };
+
+        let action = engine.on_precommit(pc3, &vs, &sp);
+
+        assert!(matches!(action, ConsensusAction::CommitBlock { .. }));
+        assert_eq!(engine.step, RoundStep::Commit);
+    }
+
+    #[test]
+    fn test_commit_certificate_requests_missing_block() {
+        let (validators, vs, sp) = make_test_env(4);
+        let (local_kp, local_pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(local_kp, local_pk);
+        engine.start_height(7);
+        engine.step = RoundStep::Propose;
+
+        let block_hash = Hash::hash(b"missing-committed-block");
+        let mut action = ConsensusAction::None;
+        for (idx, (kp, pk)) in validators.iter().enumerate().take(3) {
+            let timestamp = 1000 + idx as u64;
+            let precommit = Precommit {
+                height: 7,
+                round: 0,
+                block_hash: Some(block_hash),
+                validator: *pk,
+                signature: kp.sign(&Precommit::signable_bytes(
+                    7,
+                    0,
+                    &Some(block_hash),
+                    timestamp,
+                )),
+                timestamp,
+            };
+            action = engine.on_precommit(precommit, &vs, &sp);
+        }
+
+        assert!(matches!(
+            action,
+            ConsensusAction::RequestBlockRange {
+                start_slot: 7,
+                end_slot: 7,
+                block_hash: hash,
+            } if hash == block_hash
+        ));
     }
 
     #[test]

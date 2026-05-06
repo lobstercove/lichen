@@ -166,14 +166,44 @@ fn increment_counter_saturating(key: &[u8]) {
     storage_set(key, &u64_to_bytes(current.saturating_add(1)));
 }
 
-fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
-    if amount == 0 {
-        return;
+fn remove_storage_key(key: &[u8]) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn storage_delete(key_ptr: *const u8, key_len: u32) -> u32;
+        }
+        unsafe { storage_delete(key.as_ptr(), key.len() as u32) == 1 }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        lichen_sdk::storage::remove(key)
+    }
+}
+
+fn restore_storage_value(key: &[u8], value: &Option<Vec<u8>>) {
+    match value {
+        Some(bytes) => {
+            storage_set(key, bytes);
+        }
+        None => {
+            remove_storage_key(key);
+        }
+    }
+}
+
+fn unpaid_payout_key(token: Address, recipient: Address) -> Vec<u8> {
     let mut key = b"unpaid_payout:".to_vec();
     key.extend_from_slice(&token.0);
     key.push(b':');
     key.extend_from_slice(&recipient.0);
+    key
+}
+
+fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let key = unpaid_payout_key(token, recipient);
     let current = stored_u64(&key);
     storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
 }
@@ -777,6 +807,99 @@ pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     increment_counter_saturating(CP_CANCEL_COUNT_KEY);
 
     reentrancy_exit();
+    0
+}
+
+// ============================================================================
+// UNPAID PAYOUT RECOVERY
+// ============================================================================
+
+/// Claim a recipient payout that could not be delivered during cancel_stream.
+/// This is intentionally allowed while paused so recipients can exit once their
+/// account or token transfer restrictions are lifted.
+///
+/// Returns: 0 success, 2 nothing owed, 20 reentrancy, 30/31 escrow config missing,
+///          32 transfer failed, 34 storage mutation failed, 200 caller spoofing.
+#[no_mangle]
+pub extern "C" fn claim_unpaid_payout(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 20;
+    }
+
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 30;
+        }
+    };
+    let self_addr = match get_self_address() {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 31;
+        }
+    };
+
+    let recipient = Address(caller);
+    let key = unpaid_payout_key(token_addr, recipient);
+    let unpaid_before = storage_get(&key);
+    let amount = unpaid_before
+        .as_ref()
+        .map(|d| if d.len() >= 8 { bytes_to_u64(d) } else { 0 })
+        .unwrap_or(0);
+    if amount == 0 {
+        reentrancy_exit();
+        return 2;
+    }
+
+    if !remove_storage_key(&key) {
+        reentrancy_exit();
+        return 34;
+    }
+
+    if !transfer_from_escrow(token_addr, self_addr, recipient, amount) {
+        restore_storage_value(&key, &unpaid_before);
+        reentrancy_exit();
+        return 32;
+    }
+
+    lichen_sdk::set_return_data(&u64_to_bytes(amount));
+    reentrancy_exit();
+    0
+}
+
+/// Query the currently recoverable unpaid payout for a recipient.
+///
+/// Returns: 0 success, 30 token config missing, 40 invalid pointer.
+#[no_mangle]
+pub extern "C" fn get_unpaid_payout(recipient_ptr: *const u8) -> u32 {
+    let recipient = match read_address32(recipient_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
+
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => return 30,
+    };
+
+    let key = unpaid_payout_key(token_addr, Address(recipient));
+    lichen_sdk::set_return_data(&u64_to_bytes(stored_u64(&key)));
     0
 }
 
@@ -1434,11 +1557,7 @@ mod tests {
     }
 
     fn unpaid_key(token: &[u8; 32], recipient: &[u8; 32]) -> Vec<u8> {
-        let mut key = b"unpaid_payout:".to_vec();
-        key.extend_from_slice(token);
-        key.push(b':');
-        key.extend_from_slice(recipient);
-        key
+        unpaid_payout_key(Address(*token), Address(*recipient))
     }
 
     // ====================================================================
@@ -2453,6 +2572,128 @@ mod tests {
         let token = [0xAAu8; 32];
         let unpaid = test_mock::get_storage(&unpaid_key(&token, &recipient)).unwrap();
         assert_eq!(bytes_to_u64(&unpaid), 250_000);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_releases_recorded_recipient_due() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
+        test_mock::set_cross_call_responses(alloc::vec![
+            0u32.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+        ]);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+
+        let token = [0xAAu8; 32];
+        let key = unpaid_key(&token, &recipient);
+        assert_eq!(
+            bytes_to_u64(&test_mock::get_storage(&key).unwrap()),
+            250_000
+        );
+
+        assert_eq!(get_unpaid_payout(recipient.as_ptr()), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 250_000);
+
+        test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(recipient);
+        assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 250_000);
+        assert!(test_mock::get_storage(&key).is_none());
+
+        assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_failed_transfer_preserves_unpaid() {
+        setup();
+        configure_escrow();
+
+        let token = [0xAAu8; 32];
+        let recipient = [2u8; 32];
+        let key = unpaid_key(&token, &recipient);
+        storage_set(&key, &u64_to_bytes(250_000));
+
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        test_mock::set_caller(recipient);
+        assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 32);
+
+        let unpaid = test_mock::get_storage(&key).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 250_000);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_rejects_caller_spoof() {
+        setup();
+        configure_escrow();
+
+        let token = [0xAAu8; 32];
+        let recipient = [2u8; 32];
+        let attacker = [9u8; 32];
+        let key = unpaid_key(&token, &recipient);
+        storage_set(&key, &u64_to_bytes(250_000));
+
+        test_mock::set_caller(attacker);
+        assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 200);
+
+        let unpaid = test_mock::get_storage(&key).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 250_000);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_works_when_paused() {
+        setup();
+        configure_escrow();
+
+        let admin = [10u8; 32];
+        let token = [0xAAu8; 32];
+        let recipient = [2u8; 32];
+        let key = unpaid_key(&token, &recipient);
+        storage_set(&key, &u64_to_bytes(250_000));
+
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+        assert_eq!(pause(admin.as_ptr()), 0);
+
+        test_mock::set_caller(recipient);
+        assert_eq!(claim_unpaid_payout(recipient.as_ptr()), 0);
+        assert!(test_mock::get_storage(&key).is_none());
+    }
+
+    #[test]
+    fn test_cancel_refund_failure_preserves_stream_and_unpaid_state() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 32);
+
+        let stream = test_mock::get_storage(&stream_key(0)).unwrap();
+        assert_eq!(stream[96], 0);
+        assert!(test_mock::get_storage(CP_CANCEL_COUNT_KEY).is_none());
+
+        let token = [0xAAu8; 32];
+        assert!(test_mock::get_storage(&unpaid_key(&token, &recipient)).is_none());
     }
 
     #[test]

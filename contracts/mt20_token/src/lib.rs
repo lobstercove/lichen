@@ -313,6 +313,72 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_respects_can_transfer_compliance() {
+        test_mock::reset();
+        let owner = addr(1);
+        let recipient = addr(2);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(mint(owner.as_ptr(), owner.as_ptr(), 500), 0);
+
+        test_mock::set_can_transfer(false);
+        assert_eq!(transfer(owner.as_ptr(), recipient.as_ptr(), 100), 7);
+        assert_eq!(balance_of(owner.as_ptr()), 500);
+        assert_eq!(balance_of(recipient.as_ptr()), 0);
+        assert_eq!(total_supply(), 500);
+    }
+
+    #[test]
+    fn test_transfer_from_respects_can_transfer_and_preserves_allowance() {
+        test_mock::reset();
+        let owner = addr(1);
+        let spender = addr(2);
+        let recipient = addr(3);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(mint(owner.as_ptr(), owner.as_ptr(), 500), 0);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 250), 0);
+
+        test_mock::set_caller(spender);
+        test_mock::set_can_transfer(false);
+        assert_eq!(
+            transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 100),
+            7
+        );
+        assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 250);
+        assert_eq!(balance_of(owner.as_ptr()), 500);
+        assert_eq!(balance_of(recipient.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_mint_respects_can_receive_compliance() {
+        test_mock::reset();
+        let owner = addr(1);
+        let recipient = addr(2);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+
+        test_mock::set_can_receive(false);
+        assert_eq!(mint(owner.as_ptr(), recipient.as_ptr(), 500), 7);
+        assert_eq!(balance_of(recipient.as_ptr()), 0);
+        assert_eq!(total_supply(), 0);
+    }
+
+    #[test]
+    fn test_burn_respects_can_send_compliance() {
+        test_mock::reset();
+        let owner = addr(1);
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        assert_eq!(mint(owner.as_ptr(), owner.as_ptr(), 500), 0);
+
+        test_mock::set_can_send(false);
+        assert_eq!(burn(owner.as_ptr(), 100), 7);
+        assert_eq!(balance_of(owner.as_ptr()), 500);
+        assert_eq!(total_supply(), 500);
+    }
+
+    #[test]
     fn test_burn_reduces_supply() {
         test_mock::reset();
         let owner = addr(1);

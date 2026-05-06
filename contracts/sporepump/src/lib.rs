@@ -16,8 +16,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use lichen_sdk::{
-    bytes_to_u64, get_caller, get_contract_address, get_timestamp, get_value, log_info,
-    set_return_data, storage_get, storage_set, transfer_token_or_native, u64_to_bytes, Address,
+    bytes_to_u64, can_receive, can_send, get_caller, get_contract_address, get_timestamp,
+    get_value, log_info, set_return_data, storage_get, storage_set, transfer_token_or_native,
+    u64_to_bytes, Address,
 };
 
 // T5.12: Reentrancy guard
@@ -171,6 +172,39 @@ fn is_token_frozen(token_id: u64) -> bool {
     storage_get(&key)
         .map(|v| v.first().copied() == Some(1))
         .unwrap_or(false)
+}
+
+fn launchpad_balance_key(token_id: u64, account: &[u8; 32]) -> Vec<u8> {
+    let id_hex = u64_to_hex(token_id);
+    let account_hex = hex_encode_addr(account);
+    let mut key = Vec::with_capacity(4 + 16 + 1 + 64);
+    key.extend_from_slice(b"bal:");
+    key.extend_from_slice(&id_hex);
+    key.push(b':');
+    key.extend_from_slice(&account_hex);
+    key
+}
+
+fn account_address(account: &[u8; 32]) -> Address {
+    Address::new(*account)
+}
+
+fn launchpad_can_receive(account: &[u8; 32], amount: u64, balance: u64) -> bool {
+    can_receive(
+        get_contract_address(),
+        account_address(account),
+        amount,
+        balance,
+    )
+}
+
+fn launchpad_can_send(account: &[u8; 32], amount: u64, balance: u64) -> bool {
+    can_send(
+        get_contract_address(),
+        account_address(account),
+        amount,
+        balance,
+    )
 }
 
 fn last_buy_key(token_id: u64, buyer_hex: &[u8; 64]) -> Vec<u8> {
@@ -515,30 +549,28 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> 
         }
     };
 
+    let bal_key = launchpad_balance_key(token_id, &buyer);
+    let prev_bal = load_u64(&bal_key);
+    if !launchpad_can_receive(&buyer, tokens_bought, prev_bal) {
+        log_info("Buyer cannot receive launchpad token");
+        reentrancy_exit();
+        return 0;
+    }
+    let new_balance = match prev_bal.checked_add(tokens_bought) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            log_info("Buyer balance overflow");
+            return 0;
+        }
+    };
+
     // Update token data
     data[32..40].copy_from_slice(&u64_to_bytes(new_supply));
     data[40..48].copy_from_slice(&u64_to_bytes(new_raised));
     storage_set(&token_key, &data);
 
     // Track buyer balance
-    let buyer_hex = hex_encode_addr(&buyer);
-    let mut bal_key = Vec::with_capacity(4 + 16 + 1 + 64);
-    bal_key.extend_from_slice(b"bal:");
-    bal_key.extend_from_slice(&id_hex);
-    bal_key.push(b':');
-    bal_key.extend_from_slice(&buyer_hex);
-    let prev_bal = load_u64(&bal_key);
-    let new_balance = match prev_bal.checked_add(tokens_bought) {
-        Some(v) => v,
-        None => {
-            data[32..40].copy_from_slice(&u64_to_bytes(supply_sold));
-            data[40..48].copy_from_slice(&u64_to_bytes(licn_raised));
-            storage_set(&token_key, &data);
-            reentrancy_exit();
-            log_info("Buyer balance overflow");
-            return 0;
-        }
-    };
     store_u64(&bal_key, new_balance);
 
     // Collect platform fee
@@ -662,15 +694,16 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     }
 
     // Check seller balance
-    let mut bal_key = Vec::with_capacity(4 + 16 + 1 + 64);
-    bal_key.extend_from_slice(b"bal:");
-    bal_key.extend_from_slice(&id_hex);
-    bal_key.push(b':');
-    bal_key.extend_from_slice(&seller_hex);
+    let bal_key = launchpad_balance_key(token_id, &seller);
     let balance = load_u64(&bal_key);
 
     if token_amount > balance {
         log_info("Insufficient token balance");
+        reentrancy_exit();
+        return 0;
+    }
+    if !launchpad_can_send(&seller, token_amount, balance) {
+        log_info("Seller cannot send launchpad token");
         reentrancy_exit();
         return 0;
     }
@@ -1268,6 +1301,37 @@ mod tests {
     }
 
     #[test]
+    fn test_compliance_blocks_buy_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let token_before = test_mock::get_storage(&token_key).unwrap();
+        let fees_before = load_u64(b"cp_fees_collected");
+
+        let buyer = [3u8; 32];
+        let bal_key = launchpad_balance_key(token_id, &buyer);
+        let buyer_hex = hex_encode_addr(&buyer);
+        let lbk = last_buy_key(token_id, &buyer_hex);
+        test_mock::set_can_receive(false);
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+
+        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), 0);
+        assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
+        assert_eq!(load_u64(&bal_key), 0);
+        assert_eq!(load_u64(&lbk), 0);
+        assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
+    }
+
+    #[test]
     fn test_buy_zero_amount() {
         setup();
         assert_eq!(buy([3u8; 32].as_ptr(), 1, 0), 0);
@@ -1373,6 +1437,44 @@ mod tests {
         assert_eq!(load_u64(&bal_key), before_balance);
         assert_eq!(storage_get(&token_key).unwrap(), before_token);
         assert_eq!(load_u64(b"cp_fees_collected"), before_fees);
+    }
+
+    #[test]
+    fn test_compliance_blocks_sell_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let licn = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
+        test_mock::set_cross_call_response(Some(vec![1u8]));
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
+
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let bal_key = launchpad_balance_key(token_id, &buyer);
+        let token_before = test_mock::get_storage(&token_key).unwrap();
+        let balance_before = load_u64(&bal_key);
+        let fees_before = load_u64(b"cp_fees_collected");
+
+        test_mock::set_can_send(false);
+        test_mock::set_timestamp(20_000);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
+        assert_eq!(load_u64(&bal_key), balance_before);
+        assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
+        assert!(test_mock::get_last_cross_call().is_none());
     }
 
     #[test]
@@ -1575,6 +1677,47 @@ mod tests {
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_freeze_token_blocks_sell_without_mutation() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let licn = [42u8; 32];
+        assert_eq!(set_licn_token(admin.as_ptr(), licn.as_ptr()), 0);
+        test_mock::set_cross_call_response(Some(vec![1u8]));
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(CREATION_FEE);
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(freeze_token(admin.as_ptr(), token_id), 0);
+
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let bal_key = launchpad_balance_key(token_id, &buyer);
+        let token_before = test_mock::get_storage(&token_key).unwrap();
+        let balance_before = load_u64(&bal_key);
+        let fees_before = load_u64(b"cp_fees_collected");
+
+        test_mock::set_timestamp(20_000);
+        test_mock::set_caller(buyer);
+        assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        assert_eq!(test_mock::get_storage(&token_key).unwrap(), token_before);
+        assert_eq!(load_u64(&bal_key), balance_before);
+        assert_eq!(load_u64(b"cp_fees_collected"), fees_before);
+        assert!(test_mock::get_last_cross_call().is_none());
     }
 
     #[test]

@@ -11,6 +11,78 @@ impl TxProcessor {
         ))
     }
 
+    pub(super) fn b_load_executable_contract(
+        &self,
+        contract_address: &Pubkey,
+    ) -> Result<(Account, ContractAccount), String> {
+        let account = self
+            .b_get_account(contract_address)?
+            .ok_or_else(|| "Contract not found".to_string())?;
+
+        if !account.executable {
+            return Err("Account is not a contract".to_string());
+        }
+
+        let contract: ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
+
+        Ok((account, contract))
+    }
+
+    pub(super) fn refresh_contract_lifecycle_from_restrictions(
+        &self,
+        contract_address: &Pubkey,
+        current_slot: u64,
+    ) -> Result<ContractAccount, String> {
+        let (mut account, mut contract) = self.b_load_executable_contract(contract_address)?;
+        let target = crate::restrictions::RestrictionTarget::Contract(*contract_address);
+        let active_records = self.b_get_active_restrictions_for_target(&target, current_slot, 0)?;
+        let linked_restriction_active = match contract.lifecycle_restriction_id {
+            Some(id) => self
+                .b_get_effective_restriction_record(id, current_slot)?
+                .map(|effective| effective.is_active()),
+            None => None,
+        };
+
+        if contract.sync_lifecycle_from_restrictions(
+            &active_records,
+            linked_restriction_active,
+            current_slot,
+        ) {
+            account.data = serde_json::to_vec(&contract)
+                .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+            self.b_put_account(contract_address, &account)?;
+        }
+
+        Ok(contract)
+    }
+
+    pub(super) fn ensure_code_hash_not_deploy_blocked(
+        &self,
+        code_hash: &Hash,
+        current_slot: u64,
+        operation: &str,
+    ) -> Result<(), String> {
+        let target = crate::restrictions::RestrictionTarget::CodeHash(*code_hash);
+        let active_records = self.b_get_active_restrictions_for_target(&target, current_slot, 0)?;
+
+        if let Some(record) = active_records.into_iter().find(|record| {
+            matches!(
+                record.mode,
+                crate::restrictions::RestrictionMode::DeployBlocked
+            )
+        }) {
+            return Err(format!(
+                "{} rejected: code hash {} is blocked by active DeployBlocked restriction {}",
+                operation,
+                code_hash.to_hex(),
+                record.id
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Upgrade contract (owner only).
     /// If the contract has a timelock, the upgrade is staged rather than applied
     /// immediately. Without a timelock, behaviour is unchanged (instant upgrade).
@@ -55,6 +127,8 @@ impl TxProcessor {
 
         let mut runtime = ContractRuntime::new();
         let new_hash = runtime.deploy(&new_code)?;
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_code_hash_not_deploy_blocked(&new_hash, current_slot, "ContractUpgrade")?;
 
         if let Some(timelock_epochs) = contract.upgrade_timelock_epochs {
             if timelock_epochs > 0 {
@@ -64,7 +138,6 @@ impl TxProcessor {
                             .to_string(),
                     );
                 }
-                let current_slot = self.b_get_last_slot().unwrap_or(0);
                 let current_epoch = crate::consensus::slot_to_epoch(current_slot);
                 contract.pending_upgrade = Some(crate::contract::PendingUpgrade {
                     code: new_code,
@@ -205,6 +278,12 @@ impl TxProcessor {
                 current_epoch, pending.execute_after_epoch,
             ));
         }
+
+        self.ensure_code_hash_not_deploy_blocked(
+            &pending.code_hash,
+            current_slot,
+            "ExecuteContractUpgrade",
+        )?;
 
         contract.previous_code_hash = Some(contract.code_hash);
         contract.version = contract.version.saturating_add(1);
