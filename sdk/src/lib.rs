@@ -56,6 +56,9 @@ pub mod test_mock {
         pub static CROSS_CALL_RESPONSE_QUEUE: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
         pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
         pub static LAST_CROSS_CALL: RefCell<Option<([u8; 32], String, Vec<u8>, u64)>> = RefCell::new(None);
+        pub static CAN_SEND: RefCell<bool> = RefCell::new(true);
+        pub static CAN_RECEIVE: RefCell<bool> = RefCell::new(true);
+        pub static CAN_TRANSFER: RefCell<bool> = RefCell::new(true);
     }
 
     pub fn reset() {
@@ -73,6 +76,9 @@ pub mod test_mock {
         CROSS_CALL_RESPONSE_QUEUE.with(|c| c.borrow_mut().clear());
         CROSS_CALL_SHOULD_FAIL.with(|c| *c.borrow_mut() = false);
         LAST_CROSS_CALL.with(|c| *c.borrow_mut() = None);
+        CAN_SEND.with(|c| *c.borrow_mut() = true);
+        CAN_RECEIVE.with(|c| *c.borrow_mut() = true);
+        CAN_TRANSFER.with(|c| *c.borrow_mut() = true);
     }
 
     pub fn set_caller(addr: [u8; 32]) {
@@ -115,6 +121,18 @@ pub mod test_mock {
 
     pub fn get_last_cross_call() -> Option<([u8; 32], String, Vec<u8>, u64)> {
         LAST_CROSS_CALL.with(|c| c.borrow().clone())
+    }
+
+    pub fn set_can_send(allowed: bool) {
+        CAN_SEND.with(|c| *c.borrow_mut() = allowed);
+    }
+
+    pub fn set_can_receive(allowed: bool) {
+        CAN_RECEIVE.with(|c| *c.borrow_mut() = allowed);
+    }
+
+    pub fn set_can_transfer(allowed: bool) {
+        CAN_TRANSFER.with(|c| *c.borrow_mut() = allowed);
     }
 
     pub fn get_return_data() -> Vec<u8> {
@@ -426,6 +444,90 @@ pub fn get_contract_address() -> Address {
     #[cfg(not(target_arch = "wasm32"))]
     {
         Address(test_mock::CONTRACT_ADDRESS.with(|c| *c.borrow()))
+    }
+}
+
+/// Check whether `from` may send `amount` of `asset`.
+/// `balance` is the sender's current balance before the requested mutation.
+pub fn can_send(asset: Address, from: Address, amount: u64, balance: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn can_send(
+                asset_ptr: *const u8,
+                from_ptr: *const u8,
+                amount: u64,
+                balance: u64,
+            ) -> u32;
+        }
+        unsafe { can_send(asset.0.as_ptr(), from.0.as_ptr(), amount, balance) == 1 }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (asset, from, amount, balance);
+        test_mock::CAN_SEND.with(|allowed| *allowed.borrow())
+    }
+}
+
+/// Check whether `to` may receive `amount` of `asset`.
+/// `balance` is the recipient's current balance before the requested mutation.
+pub fn can_receive(asset: Address, to: Address, amount: u64, balance: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn can_receive(
+                asset_ptr: *const u8,
+                to_ptr: *const u8,
+                amount: u64,
+                balance: u64,
+            ) -> u32;
+        }
+        unsafe { can_receive(asset.0.as_ptr(), to.0.as_ptr(), amount, balance) == 1 }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (asset, to, amount, balance);
+        test_mock::CAN_RECEIVE.with(|allowed| *allowed.borrow())
+    }
+}
+
+/// Check whether `amount` of `asset` may move from `from` to `to`.
+/// The balances are the current account balances before the requested mutation.
+pub fn can_transfer(
+    asset: Address,
+    from: Address,
+    to: Address,
+    amount: u64,
+    from_balance: u64,
+    to_balance: u64,
+) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn can_transfer(
+                asset_ptr: *const u8,
+                from_ptr: *const u8,
+                to_ptr: *const u8,
+                amount: u64,
+                from_balance: u64,
+                to_balance: u64,
+            ) -> u32;
+        }
+        unsafe {
+            can_transfer(
+                asset.0.as_ptr(),
+                from.0.as_ptr(),
+                to.0.as_ptr(),
+                amount,
+                from_balance,
+                to_balance,
+            ) == 1
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (asset, from, to, amount, from_balance, to_balance);
+        test_mock::CAN_TRANSFER.with(|allowed| *allowed.borrow())
     }
 }
 

@@ -128,8 +128,8 @@ fn default_protocol_version() -> u32 {
 pub enum SnapshotKind {
     ValidatorSet,
     StakePool,
-    /// Full state checkpoint — accounts, contract storage, programs, validator
-    /// set, and both stake-pool singletons.
+    /// Full state checkpoint — accounts, contract storage, programs,
+    /// restrictions, validator set, and both stake-pool singletons.
     StateCheckpoint,
 }
 
@@ -225,7 +225,7 @@ pub enum MessageType {
     /// checkpoint-aligned state from a peer's latest checkpoint.
     StateSnapshotRequest {
         /// Which data category: "accounts", "contract_storage", "programs",
-        /// "validator_set", "stake_pool", or "mossstake_pool"
+        /// "restrictions", "validator_set", "stake_pool", or "mossstake_pool"
         category: String,
         /// Chunk index (0-based) for paginated transfer
         chunk_index: u64,

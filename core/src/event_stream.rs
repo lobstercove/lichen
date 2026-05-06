@@ -33,6 +33,42 @@ pub enum ChainEvent {
         proposal_id: u64,
         vote: bool,
     },
+    RestrictionCreated {
+        restriction_id: u64,
+        authority: [u8; 32],
+        approval_authority: Option<[u8; 32]>,
+        proposer: [u8; 32],
+        target_type: String,
+        target: String,
+        mode: String,
+        reason: String,
+        expires_at_slot: Option<u64>,
+    },
+    RestrictionExtended {
+        restriction_id: u64,
+        supersedes: u64,
+        authority: [u8; 32],
+        approval_authority: Option<[u8; 32]>,
+        proposer: [u8; 32],
+        target_type: String,
+        target: String,
+        mode: String,
+        reason: String,
+        expires_at_slot: u64,
+    },
+    RestrictionLifted {
+        restriction_id: u64,
+        authority: [u8; 32],
+        approval_authority: Option<[u8; 32]>,
+        proposer: [u8; 32],
+        target_type: String,
+        target: String,
+        mode: String,
+        reason: String,
+        lifted_by: [u8; 32],
+        lifted_slot: u64,
+        lift_reason: String,
+    },
     BridgeLock {
         sender: [u8; 32],
         recipient: [u8; 32],
@@ -154,6 +190,42 @@ mod tests {
             proposal_id: 1,
             vote: true,
         });
+        buf.emit(ChainEvent::RestrictionCreated {
+            restriction_id: 1,
+            authority: [1u8; 32],
+            approval_authority: None,
+            proposer: [2u8; 32],
+            target_type: "account".to_string(),
+            target: "target".to_string(),
+            mode: "outgoing_only".to_string(),
+            reason: "testnet_drill".to_string(),
+            expires_at_slot: Some(200),
+        });
+        buf.emit(ChainEvent::RestrictionExtended {
+            restriction_id: 2,
+            supersedes: 1,
+            authority: [1u8; 32],
+            approval_authority: Some([3u8; 32]),
+            proposer: [2u8; 32],
+            target_type: "account".to_string(),
+            target: "target".to_string(),
+            mode: "outgoing_only".to_string(),
+            reason: "testnet_drill".to_string(),
+            expires_at_slot: 300,
+        });
+        buf.emit(ChainEvent::RestrictionLifted {
+            restriction_id: 2,
+            authority: [1u8; 32],
+            approval_authority: Some([3u8; 32]),
+            proposer: [2u8; 32],
+            target_type: "account".to_string(),
+            target: "target".to_string(),
+            mode: "outgoing_only".to_string(),
+            reason: "testnet_drill".to_string(),
+            lifted_by: [1u8; 32],
+            lifted_slot: 320,
+            lift_reason: "incident_resolved".to_string(),
+        });
         buf.emit(ChainEvent::BridgeLock {
             sender: [1u8; 32],
             recipient: [2u8; 32],
@@ -177,6 +249,6 @@ mod tests {
             skill: "Rust".to_string(),
             attester: [2u8; 32],
         });
-        assert_eq!(buf.len(), 10);
+        assert_eq!(buf.len(), 13);
     }
 }

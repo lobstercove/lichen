@@ -256,6 +256,22 @@
       "name": "get_platform_stats",
       "opcode": 32,
       "params": []
+    },
+    {
+      "name": "claim_unpaid_payout",
+      "opcode": 33,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_unpaid_payout",
+      "opcode": 34,
+      "params": [
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" }
+      ]
     }
   ]
 }

@@ -1069,47 +1069,41 @@ fn escrow_tokens(token_addr: &[u8; 32], trader: &[u8; 32], amount: u64) -> bool 
             return true;
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        return true;
-    } // Tests: skip actual cross-contract calls
-    #[cfg(target_arch = "wasm32")]
-    {
-        let dex = get_contract_address();
-        let mut args = Vec::with_capacity(104);
-        args.extend_from_slice(&dex.0);
-        args.extend_from_slice(trader);
-        args.extend_from_slice(&dex.0);
-        args.extend_from_slice(&u64_to_bytes(amount));
-        let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
-        match call_contract(call) {
-            Ok(ret) => match ret.first().copied().unwrap_or(255) {
-                0 | 1 => true,
-                5 => {
-                    log_info("Token transfer_from failed: insufficient token balance");
-                    false
-                }
-                7 => {
-                    log_info("Token transfer_from failed: insufficient token allowance");
-                    false
-                }
-                100 => {
-                    log_info("Token transfer_from failed: reentrancy guard active");
-                    false
-                }
-                200 => {
-                    log_info("Token transfer_from failed: caller mismatch");
-                    false
-                }
-                _ => {
-                    log_info("Token transfer_from failed: token contract returned error");
-                    false
-                }
-            },
-            Err(_) => {
-                log_info("Token transfer_from failed: cross-contract call error");
+
+    let dex = get_contract_address();
+    let mut args = Vec::with_capacity(104);
+    args.extend_from_slice(&dex.0);
+    args.extend_from_slice(trader);
+    args.extend_from_slice(&dex.0);
+    args.extend_from_slice(&u64_to_bytes(amount));
+    let call = CrossCall::new(Address(*token_addr), "transfer_from", args).with_value(0);
+    match call_contract(call) {
+        Ok(ret) => match ret.first().copied().unwrap_or(255) {
+            0 | 1 => true,
+            5 => {
+                log_info("Token transfer_from failed: insufficient token balance");
                 false
             }
+            7 => {
+                log_info("Token transfer_from failed: insufficient token allowance");
+                false
+            }
+            100 => {
+                log_info("Token transfer_from failed: reentrancy guard active");
+                false
+            }
+            200 => {
+                log_info("Token transfer_from failed: caller mismatch");
+                false
+            }
+            _ => {
+                log_info("Token transfer_from failed: token contract returned error");
+                false
+            }
+        },
+        Err(_) => {
+            log_info("Token transfer_from failed: cross-contract call error");
+            false
         }
     }
 }
@@ -1133,22 +1127,16 @@ fn release_tokens(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
             return true;
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        return true;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let dex = get_contract_address();
-        let mut args = Vec::with_capacity(72);
-        args.extend_from_slice(&dex.0);
-        args.extend_from_slice(to);
-        args.extend_from_slice(&u64_to_bytes(amount));
-        let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
-        match call_contract(call) {
-            Ok(ret) => matches!(ret.first().copied().unwrap_or(255), 0 | 1),
-            Err(_) => false,
-        }
+
+    let dex = get_contract_address();
+    let mut args = Vec::with_capacity(72);
+    args.extend_from_slice(&dex.0);
+    args.extend_from_slice(to);
+    args.extend_from_slice(&u64_to_bytes(amount));
+    let call = CrossCall::new(Address(*token_addr), "transfer", args).with_value(0);
+    match call_contract(call) {
+        Ok(ret) => matches!(ret.first().copied().unwrap_or(255), 0 | 1),
+        Err(_) => false,
     }
 }
 
@@ -2520,7 +2508,8 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
 }
 
 /// Cancel an order
-/// Returns: 0=success, 1=not found, 2=not owner, 3=already filled/cancelled, 4=reentrancy
+/// Returns: 0=success, 1=not found, 2=not owner, 3=already filled/cancelled, 4=reentrancy,
+///          5=refund failed
 pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -2557,25 +2546,33 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
         return 3;
     }
 
-    update_order_status(&mut data, STATUS_CANCELLED);
-
     // Refund remaining escrow to trader
     let escrow_remaining = decode_order_escrow_locked(&data);
     if escrow_remaining > 0 {
         let order_pair = decode_order_pair_id(&data);
         let order_side = decode_order_side(&data);
-        if let Some(pd) = storage_get(&pair_key(order_pair)) {
+        let pd = match storage_get(&pair_key(order_pair)) {
+            Some(pd) => pd,
+            None => {
+                reentrancy_exit();
+                return 5;
+            }
+        };
+        {
             let refund_token = if order_side == SIDE_SELL {
                 decode_pair_base_token(&pd)
             } else {
                 decode_pair_quote_token(&pd)
             };
             if !release_tokens(&refund_token, &c, escrow_remaining) {
-                log_info("WARNING: Escrow refund failed on cancel");
+                log_info("Escrow refund failed on cancel");
+                reentrancy_exit();
+                return 5;
             }
         }
         update_order_escrow(&mut data, 0);
     }
+    update_order_status(&mut data, STATUS_CANCELLED);
 
     storage_set(&ok, &data);
 
@@ -2608,7 +2605,7 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
 }
 
 /// Cancel all open orders for a trader on a pair
-/// Returns: 0=success, 1=reentrancy
+/// Returns: 0=success, 1=reentrancy, 5=one or more refunds failed
 pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 1;
@@ -2625,6 +2622,7 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
     }
 
     let user_count = load_u64(&user_order_count_key(&c));
+    let mut refund_failed = false;
     for idx in 1..=user_count {
         let oid = load_u64(&user_order_key(&c, idx));
         if oid == 0 {
@@ -2646,7 +2644,11 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
                             } else {
                                 decode_pair_quote_token(&pd)
                             };
-                            release_tokens(&refund_token, &c, escrow_remaining);
+                            if !release_tokens(&refund_token, &c, escrow_remaining) {
+                                log_info("Escrow refund failed on cancel_all");
+                                refund_failed = true;
+                                continue;
+                            }
                         }
                         update_order_escrow(&mut data, 0);
                     }
@@ -2657,11 +2659,16 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
         }
     }
     reentrancy_exit();
-    0
+    if refund_failed {
+        5
+    } else {
+        0
+    }
 }
 
 /// Modify an existing order (cancel + replace)
-/// Returns: 0=success, 1=not found, 2=not owner, 3=not modifiable, 4=reentrancy
+/// Returns: 0=success, 1=not found, 2=not owner, 3=not modifiable, 4=reentrancy,
+///          5=refund failed
 pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quantity: u64) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -2710,7 +2717,11 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
             } else {
                 decode_pair_quote_token(&pd)
             };
-            release_tokens(&refund_token, &c, escrow_remaining);
+            if !release_tokens(&refund_token, &c, escrow_remaining) {
+                log_info("Escrow refund failed on modify");
+                reentrancy_exit();
+                return 5;
+            }
         }
         update_order_escrow(&mut data_mut, 0);
     }
@@ -3452,6 +3463,10 @@ mod tests {
         (admin, 1)
     }
 
+    fn transfer_failure_response() -> std::vec::Vec<u8> {
+        2u32.to_le_bytes().to_vec()
+    }
+
     // --- Initialization ---
 
     #[test]
@@ -3536,6 +3551,22 @@ mod tests {
         test_mock::set_caller(trader);
         assert_eq!(claim_rebate(trader.as_ptr(), pair_id), 0);
         assert_eq!(load_u64(&rk), 0); // cleared after claim
+    }
+
+    #[test]
+    fn test_claim_rebate_transfer_failure_preserves_rebate() {
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [7u8; 32];
+        let mut rk = Vec::from(&b"dex_rebate_"[..]);
+        rk.extend_from_slice(&pair_id.to_le_bytes());
+        rk.push(b'_');
+        rk.extend_from_slice(&trader);
+        save_u64(&rk, 500);
+
+        test_mock::set_cross_call_response(Some(transfer_failure_response()));
+        test_mock::set_caller(trader);
+        assert_eq!(claim_rebate(trader.as_ptr(), pair_id), 2);
+        assert_eq!(load_u64(&rk), 500);
     }
 
     #[test]
@@ -4394,6 +4425,36 @@ mod tests {
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         let data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&data), STATUS_CANCELLED);
+    }
+
+    #[test]
+    fn test_cancel_order_refund_failure_preserves_order() {
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0,
+            ),
+            0
+        );
+        let before = storage_get(&order_key(1)).unwrap();
+
+        test_mock::set_cross_call_response(Some(transfer_failure_response()));
+        assert_eq!(cancel_order(trader.as_ptr(), 1), 5);
+
+        let after = storage_get(&order_key(1)).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(decode_order_status(&after), STATUS_OPEN);
+        assert!(decode_order_escrow_locked(&after) > 0);
     }
 
     #[test]

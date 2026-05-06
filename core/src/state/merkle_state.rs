@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+const STATE_ROOT_PREFIX_WITH_RESTRICTIONS: u8 = 0x03;
+const STATE_ROOT_PREFIX_LEGACY: u8 = 0x02;
+const STATE_ROOT_SCHEMA_KEY: &[u8] = b"state_root_schema";
+const CACHED_STATE_ROOT_SCHEMA_KEY: &[u8] = b"cached_state_root_schema";
+
 /// Merkle inclusion proof for an account in the state tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
@@ -130,6 +135,209 @@ pub(super) fn generate_proof(tree: &[Vec<Hash>], leaf_index: usize) -> Option<Me
 }
 
 impl StateStore {
+    fn state_root_prefix(include_restrictions: bool) -> u8 {
+        if include_restrictions {
+            STATE_ROOT_PREFIX_WITH_RESTRICTIONS
+        } else {
+            STATE_ROOT_PREFIX_LEGACY
+        }
+    }
+
+    fn compose_state_root(
+        &self,
+        accounts_root: Hash,
+        contract_root: Hash,
+        stake_pool_hash: Hash,
+        mossstake_pool_hash: Hash,
+        include_restrictions: bool,
+    ) -> Hash {
+        let restrictions_root = if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
+        let mut composite =
+            Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
+        composite.push(Self::state_root_prefix(include_restrictions));
+        composite.extend_from_slice(&accounts_root.0);
+        composite.extend_from_slice(&contract_root.0);
+        composite.extend_from_slice(&stake_pool_hash.0);
+        composite.extend_from_slice(&mossstake_pool_hash.0);
+        if let Some(restrictions_root) = restrictions_root {
+            composite.extend_from_slice(&restrictions_root.0);
+        }
+        Hash::hash(&composite)
+    }
+
+    fn cache_state_root(&self, root: &Hash, include_restrictions: bool) {
+        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
+                tracing::error!("Failed to cache state root: {e}");
+            }
+            if let Err(e) = self.db.put_cf(
+                &cf_stats,
+                CACHED_STATE_ROOT_SCHEMA_KEY,
+                [u8::from(include_restrictions)],
+            ) {
+                tracing::error!("Failed to cache state-root schema: {e}");
+            }
+        }
+    }
+
+    fn cached_state_root_schema(&self) -> Option<bool> {
+        let cf_stats = self.db.cf_handle(CF_STATS)?;
+        match self.db.get_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY) {
+            Ok(Some(data)) if data.len() == 1 => match data[0] {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn get_state_root_schema(&self) -> Option<bool> {
+        let cf_stats = self.db.cf_handle(CF_STATS)?;
+        match self.db.get_cf(&cf_stats, STATE_ROOT_SCHEMA_KEY) {
+            Ok(Some(data)) if data.len() == 1 => match data[0] {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn set_state_root_schema(&self, include_restrictions: bool) -> Result<(), String> {
+        let cf_stats = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "State stats CF is unavailable".to_string())?;
+
+        let current = self.get_state_root_schema();
+        if let Some(current) = current {
+            if current != include_restrictions {
+                if let Err(e) = self.db.delete_cf(&cf_stats, b"cached_state_root") {
+                    tracing::warn!("Failed to clear cached state root during schema switch: {e}");
+                }
+                if let Err(e) = self.db.delete_cf(&cf_stats, CACHED_STATE_ROOT_SCHEMA_KEY) {
+                    tracing::warn!(
+                        "Failed to clear cached state-root schema during schema switch: {e}"
+                    );
+                }
+            }
+        }
+
+        self.db
+            .put_cf(
+                &cf_stats,
+                STATE_ROOT_SCHEMA_KEY,
+                [u8::from(include_restrictions)],
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn compute_state_root_with_restrictions(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root();
+        let contract_root = self.compute_contract_storage_root();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let restrictions_root = self.compute_restrictions_root();
+        let root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            true,
+        );
+        tracing::debug!(
+            "🔍 STATE_ROOT_COMPONENTS: accts={} contracts={} stake={} moss={} restrictions={} prefix=0x{:02x} → root={}",
+            hex::encode(&accounts_root.0[..8]),
+            hex::encode(&contract_root.0[..8]),
+            hex::encode(&stake_pool_hash.0[..8]),
+            hex::encode(&mossstake_pool_hash.0[..8]),
+            hex::encode(&restrictions_root.0[..8]),
+            STATE_ROOT_PREFIX_WITH_RESTRICTIONS,
+            hex::encode(&root.0[..8]),
+        );
+        root
+    }
+
+    pub fn compute_state_root_without_restrictions(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root();
+        let contract_root = self.compute_contract_storage_root();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            false,
+        );
+        tracing::debug!(
+            "🔍 STATE_ROOT_COMPONENTS: accts={} contracts={} stake={} moss={} prefix=0x{:02x} → root={}",
+            hex::encode(&accounts_root.0[..8]),
+            hex::encode(&contract_root.0[..8]),
+            hex::encode(&stake_pool_hash.0[..8]),
+            hex::encode(&mossstake_pool_hash.0[..8]),
+            STATE_ROOT_PREFIX_LEGACY,
+            hex::encode(&root.0[..8]),
+        );
+        root
+    }
+
+    pub fn compute_state_root_with_restrictions_cold_start(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root_cold_start();
+        let contract_root = self.compute_contract_storage_root_cold_start();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            true,
+        )
+    }
+
+    pub fn compute_state_root_without_restrictions_cold_start(&self) -> Hash {
+        let accounts_root = self.compute_accounts_root_cold_start();
+        let contract_root = self.compute_contract_storage_root_cold_start();
+        let stake_pool_hash = self.compute_stake_pool_hash();
+        let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            false,
+        )
+    }
+
+    pub fn detect_state_root_schema_for_root(&self, expected_root: &Hash) -> Option<bool> {
+        if self.compute_state_root_without_restrictions().0 == expected_root.0 {
+            Some(false)
+        } else if self.compute_state_root_with_restrictions().0 == expected_root.0 {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    pub fn detect_state_root_schema_for_root_cold_start(
+        &self,
+        expected_root: &Hash,
+    ) -> Option<bool> {
+        if self.compute_state_root_without_restrictions_cold_start().0 == expected_root.0 {
+            Some(false)
+        } else if self.compute_state_root_with_restrictions_cold_start().0 == expected_root.0 {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
     /// Generate an inclusion proof for the given account.
     pub fn get_account_proof(&self, pubkey: &Pubkey) -> Option<AccountProof> {
         let cf_accounts = self.db.cf_handle(CF_ACCOUNTS)?;
@@ -170,12 +378,21 @@ impl StateStore {
         let contract_root = self.compute_contract_storage_root();
         let stake_pool_hash = self.compute_stake_pool_hash();
         let mossstake_pool_hash = self.compute_mossstake_pool_hash();
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let restrictions_root = if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
         let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
-        composite.push(0x02);
+        composite.push(Self::state_root_prefix(include_restrictions));
         composite.extend_from_slice(&root.0);
         composite.extend_from_slice(&contract_root.0);
         composite.extend_from_slice(&stake_pool_hash.0);
         composite.extend_from_slice(&mossstake_pool_hash.0);
+        if let Some(restrictions_root) = restrictions_root {
+            composite.extend_from_slice(&restrictions_root.0);
+        }
         let composite_root = Hash::hash(&composite);
 
         Some(AccountProof {
@@ -202,26 +419,32 @@ impl StateStore {
         let contract_root = self.compute_contract_storage_root();
         let stake_pool_hash = self.compute_stake_pool_hash();
         let mossstake_pool_hash = self.compute_mossstake_pool_hash();
-        let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
-        composite.push(0x02);
-        composite.extend_from_slice(&accounts_root.0);
-        composite.extend_from_slice(&contract_root.0);
-        composite.extend_from_slice(&stake_pool_hash.0);
-        composite.extend_from_slice(&mossstake_pool_hash.0);
-        let root = Hash::hash(&composite);
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let restrictions_root = if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
+        let root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+        );
         tracing::debug!(
-            "🔍 STATE_ROOT_COMPONENTS: accts={} contracts={} stake={} moss={} → root={}",
+            "🔍 STATE_ROOT_COMPONENTS: accts={} contracts={} stake={} moss={} restrictions={} prefix=0x{:02x} → root={}",
             hex::encode(&accounts_root.0[..8]),
             hex::encode(&contract_root.0[..8]),
             hex::encode(&stake_pool_hash.0[..8]),
             hex::encode(&mossstake_pool_hash.0[..8]),
+            restrictions_root
+                .map(|root| hex::encode(&root.0[..8]))
+                .unwrap_or_else(|| "disabled".to_string()),
+            Self::state_root_prefix(include_restrictions),
             hex::encode(&root.0[..8]),
         );
-        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
-                tracing::error!("Failed to cache state root: {e}");
-            }
-        }
+        self.cache_state_root(&root, include_restrictions);
         root
     }
 
@@ -492,18 +715,15 @@ impl StateStore {
         let contract_root = self.compute_contract_storage_root_cold_start();
         let stake_pool_hash = self.compute_stake_pool_hash();
         let mossstake_pool_hash = self.compute_mossstake_pool_hash();
-        let mut composite = Vec::with_capacity(1 + 32 + 32 + 32 + 32);
-        composite.push(0x02);
-        composite.extend_from_slice(&accounts_root.0);
-        composite.extend_from_slice(&contract_root.0);
-        composite.extend_from_slice(&stake_pool_hash.0);
-        composite.extend_from_slice(&mossstake_pool_hash.0);
-        let root = Hash::hash(&composite);
-        if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-            if let Err(e) = self.db.put_cf(&cf_stats, b"cached_state_root", root.0) {
-                tracing::error!("Failed to cache cold-start state root: {e}");
-            }
-        }
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+        let root = self.compose_state_root(
+            accounts_root,
+            contract_root,
+            stake_pool_hash,
+            mossstake_pool_hash,
+            include_restrictions,
+        );
+        self.cache_state_root(&root, include_restrictions);
         root
     }
 
@@ -674,6 +894,7 @@ impl StateStore {
 
     pub fn compute_state_root_cached(&self) -> Hash {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
+            let include_restrictions = self.get_state_root_schema().unwrap_or(false);
             let accounts_dirty = match self.db.get_cf(&cf, b"dirty_account_count") {
                 Ok(Some(data)) if data.len() == 8 => {
                     u64::from_le_bytes(data.as_slice().try_into().unwrap_or([0; 8]))
@@ -687,7 +908,10 @@ impl StateStore {
                 _ => 1,
             };
 
-            if accounts_dirty == 0 && contract_dirty == 0 {
+            if accounts_dirty == 0
+                && contract_dirty == 0
+                && self.cached_state_root_schema() == Some(include_restrictions)
+            {
                 if let Ok(Some(data)) = self.db.get_cf(&cf, b"cached_state_root") {
                     if data.len() == 32 {
                         let mut bytes = [0u8; 32];

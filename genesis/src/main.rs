@@ -46,6 +46,9 @@ const GENESIS_STATE_KV_CATEGORIES: &[&str] = &[
     "programs",
     "symbol_registry",
     "symbol_by_program",
+    "restrictions",
+    "restriction_index_target",
+    "restriction_index_code_hash",
     "stats",
 ];
 
@@ -1555,6 +1558,15 @@ fn main() {
             .map(|dw| (dw.role.clone(), dw.pubkey))
             .collect();
         genesis_assign_achievements(&state, &genesis_pubkey, &dist_pairs, genesis_timestamp);
+    }
+
+    match genesis_config.seed_initial_restrictions(&state, genesis_pubkey) {
+        Ok(0) => {}
+        Ok(count) => info!("  ✓ Seeded {} initial genesis restriction(s)", count),
+        Err(err) => {
+            error!("Failed to seed initial genesis restrictions: {}", err);
+            std::process::exit(1);
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════

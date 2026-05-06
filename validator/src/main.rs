@@ -113,6 +113,106 @@ fn should_preserve_partial_genesis_entry(path: &Path) -> bool {
     )
 }
 
+fn state_staging_root(data_dir: &str, suffix: &str) -> PathBuf {
+    let state_path = Path::new(data_dir);
+    let state_name = state_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{state_name}.{suffix}"))
+}
+
+fn reset_staging_root(root: &Path, label: &str) {
+    if let Err(e) = fs::remove_dir_all(root) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                "⚠️  Failed to clear stale {} staging dir {:?}: {}",
+                label, root, e
+            );
+        }
+    }
+    if let Err(e) = fs::create_dir_all(root) {
+        error!("Failed to create {} staging dir {:?}: {}", label, root, e);
+    } else {
+        info!("📦 {} staging root: {:?}", label, root);
+    }
+}
+
+fn should_recover_partial_genesis_state(
+    state: &StateStore,
+    network_arg: Option<&str>,
+    explicit_genesis_path: Option<&str>,
+) -> bool {
+    // Only recover automatically when we are intentionally running against a
+    // named public network. Explicit --genesis starts are operator-directed, so
+    // avoid scrubbing local state behind that flag.
+    if explicit_genesis_path.is_some() {
+        return false;
+    }
+    if !matches!(network_arg, Some("testnet") | Some("mainnet")) {
+        return false;
+    }
+
+    if state.get_block_by_slot(0).unwrap_or(None).is_some() {
+        return false;
+    }
+
+    // Hard evidence: non-zero tip without a block-0 means this is legacy or
+    // partial state and cannot safely continue as a resumable validator state.
+    if state.get_last_slot().unwrap_or(0) > 0 {
+        return true;
+    }
+
+    if matches!(
+        state
+            .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some(b"1")
+    ) {
+        return true;
+    }
+
+    // Strong heuristic evidence of previously initialized chain state.
+    if let Ok(set) = state.load_validator_set() {
+        if !set.validators().is_empty() {
+            return true;
+        }
+    }
+
+    let metrics = state.get_metrics();
+    if metrics.total_blocks > 0 || metrics.total_accounts > 0 {
+        return true;
+    }
+
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupMode {
+    Resume,
+    Join,
+    MissingBootstrap,
+}
+
+fn determine_startup_mode(
+    last_slot: u64,
+    has_genesis_block: bool,
+    has_seed_peers: bool,
+) -> StartupMode {
+    if last_slot > 0 || has_genesis_block {
+        StartupMode::Resume
+    } else if has_seed_peers {
+        StartupMode::Join
+    } else {
+        StartupMode::MissingBootstrap
+    }
+}
+
 fn scrub_partial_genesis_state(data_dir: &Path) -> Result<(), String> {
     let entries = fs::read_dir(data_dir).map_err(|e| {
         format!(
@@ -184,6 +284,11 @@ impl SharedOraclePrices {
 /// Sync request fanout: send block-range requests to top-N peers by score
 /// instead of broadcasting to all peers.
 const SYNC_REQUEST_FANOUT: usize = 3;
+
+/// Live BFT can tolerate a tiny gap through future-message buffering, but once
+/// the peer tip is several heights ahead this node must let sync catch up
+/// instead of proposing or committing from stale canonical state.
+const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
@@ -630,6 +735,10 @@ fn should_gate_bft_on_network_sync(
     is_joining_network || (current_tip > 0 && has_seed_peers)
 }
 
+fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> bool {
+    network_slot > current_slot
+}
+
 fn should_reconsider_duplicate_block(
     block_slot: u64,
     current_slot: u64,
@@ -652,6 +761,50 @@ async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<
         .ok()?;
     let body = response.json::<serde_json::Value>().await.ok()?;
     body["result"].as_u64()
+}
+
+fn is_shared_bootstrap_rpc(rpc_url: &str) -> bool {
+    reqwest::Url::parse(rpc_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            matches!(
+                host.as_str(),
+                "testnet-rpc.lichen.network" | "rpc.lichen.network"
+            )
+        })
+}
+
+async fn fetch_bootstrap_tip(
+    http_client: &reqwest::Client,
+    rpc_urls: &[String],
+) -> Option<(u64, usize, usize)> {
+    let mut max_slot = None;
+    let mut direct_endpoints = 0usize;
+    let mut direct_successes = 0usize;
+
+    for rpc_url in rpc_urls {
+        let is_direct = !is_shared_bootstrap_rpc(rpc_url);
+        if is_direct {
+            direct_endpoints += 1;
+        }
+        if let Some(slot) = fetch_rpc_slot(http_client, rpc_url).await {
+            max_slot = Some(max_slot.map_or(slot, |current: u64| current.max(slot)));
+            if is_direct {
+                direct_successes += 1;
+            }
+        }
+    }
+
+    max_slot.map(|slot| (slot, direct_successes, direct_endpoints))
+}
+
+fn has_enough_direct_bootstrap_observations(
+    direct_successes: usize,
+    direct_endpoints: usize,
+) -> bool {
+    let required = usize::from(direct_endpoints > 0);
+    direct_successes >= required
 }
 
 /// Discover companion binaries installed alongside the validator. Only returns
@@ -808,9 +961,16 @@ fn load_local_stake_pool_amount(stake_pool: &StakePool, validator: &Pubkey) -> O
 }
 
 fn hash_stake_pool(pool: &StakePool) -> Hash {
-    let entries = pool.stake_entries();
-    let data = serde_json::to_vec(&entries).unwrap_or_default();
-    Hash::hash(&data)
+    pool.canonical_hash()
+}
+
+fn reconcile_live_stake_pool_from_state(live_pool: &mut StakePool, loaded_pool: StakePool) -> bool {
+    if hash_stake_pool(live_pool) == hash_stake_pool(&loaded_pool) {
+        return false;
+    }
+
+    *live_pool = loaded_pool;
+    true
 }
 
 fn resolve_treasury_keypair_path(
@@ -1062,17 +1222,95 @@ fn apply_genesis_state_bundle(
     state.reconcile_program_count()?;
     state.reconcile_validator_count()?;
     state.invalidate_merkle_cache();
-    let local_root = state.compute_state_root_cold_start();
-    if local_root.0 != bundle.state_root {
-        return Err(format!(
-            "genesis state bundle root mismatch: expected {}, got {}",
-            hex::encode(bundle.state_root),
-            local_root.to_hex()
-        ));
-    }
+    let expected_root = Hash(bundle.state_root);
+    validate_state_root_with_schema(state, 0, expected_root, "genesis bundle", true)?;
     state.save_metrics_counters()?;
 
     Ok(())
+}
+
+fn validate_state_root_with_schema(
+    state: &StateStore,
+    slot: u64,
+    block_root: Hash,
+    context: &str,
+    use_cold_start: bool,
+) -> Result<(), String> {
+    if block_root == Hash::default() {
+        return Ok(());
+    }
+
+    let initial_root = if use_cold_start {
+        state.compute_state_root_cold_start()
+    } else {
+        state.compute_state_root()
+    };
+
+    if initial_root == block_root {
+        return Ok(());
+    }
+
+    if let Some(include_restrictions) =
+        state.detect_state_root_schema_for_root_cold_start(&block_root)
+    {
+        if let Err(err) = state.set_state_root_schema(include_restrictions) {
+            warn!(
+                "Failed to persist state-root schema {:?} at slot {} ({}): {}",
+                include_restrictions, slot, context, err
+            );
+        }
+        let repaired_root = state.compute_state_root_cold_start();
+        if repaired_root == block_root {
+            info!(
+                "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
+                slot,
+                context,
+                initial_root.to_hex(),
+                repaired_root.to_hex()
+            );
+            return Ok(());
+        }
+    } else if let Some(include_restrictions) = state.detect_state_root_schema_for_root(&block_root)
+    {
+        if let Err(err) = state.set_state_root_schema(include_restrictions) {
+            warn!(
+                "Failed to persist state-root schema {:?} at slot {} ({}): {}",
+                include_restrictions, slot, context, err
+            );
+        }
+        let repaired_root = state.compute_state_root_cold_start();
+        if repaired_root == block_root {
+            info!(
+                "🔄 State root schema repaired at slot {} ({}) from {:?} to {:?}",
+                slot,
+                context,
+                initial_root.to_hex(),
+                repaired_root.to_hex()
+            );
+            return Ok(());
+        }
+    }
+
+    let accounts_root = state.compute_accounts_root();
+    let contracts_root = state.compute_contract_storage_root();
+    let stake_pool_hash = state.compute_stake_pool_hash();
+    let mossstake_pool_hash = state.compute_mossstake_pool_hash();
+    let restrictions_root = state.compute_restrictions_root();
+    let reconciled_root = state.compute_state_root_cold_start();
+
+    Err(format!(
+        "slot {} {} state-root mismatch: local={} reconciled={} expected={} components accts={} contracts={} stake={} moss={} restrictions={}",
+        slot,
+        context,
+        initial_root.to_hex(),
+        reconciled_root.to_hex(),
+        block_root.to_hex(),
+        hex::encode(&accounts_root.0[..8]),
+        hex::encode(&contracts_root.0[..8]),
+        hex::encode(&stake_pool_hash.0[..8]),
+        hex::encode(&mossstake_pool_hash.0[..8]),
+        hex::encode(&restrictions_root.0[..8]),
+    ))
 }
 
 fn parse_genesis_pubkeys(values: &[String], label: &str) -> Vec<Pubkey> {
@@ -2627,6 +2865,9 @@ const WARP_SNAPSHOT_CATEGORIES: &[&str] = &[
     "programs",
     "symbol_registry",
     "symbol_by_program",
+    "restrictions",
+    "restriction_index_target",
+    "restriction_index_code_hash",
     "stats",
     "validator_set",
     "stake_pool",
@@ -2980,12 +3221,24 @@ fn compute_proposed_timestamp(
 /// Uses parallel processing (rayon) for non-conflicting TXs to speed up
 /// block replay during chain sync (FIX-2).
 fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
+    replay_block_transactions_with_logging(processor, block, true);
+}
+
+fn replay_block_transactions_for_validation(processor: &TxProcessor, block: &Block) {
+    replay_block_transactions_with_logging(processor, block, false);
+}
+
+fn replay_block_transactions_with_logging(
+    processor: &TxProcessor,
+    block: &Block,
+    log_details: bool,
+) {
     if block.header.slot == 0 {
         return; // genesis txs use zero blockhash + dummy signatures
     }
     let producer_pubkey = Pubkey(block.header.validator);
     let tx_count = block.transactions.len();
-    if tx_count > 0 {
+    if log_details && tx_count > 0 {
         info!(
             "🔄 Replaying {} tx(s) for slot {} (producer={})",
             tx_count,
@@ -2995,20 +3248,22 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
     }
     let results = processor.process_transactions_parallel(&block.transactions, &producer_pubkey);
     let exact_fees_present = block.tx_fees_paid.len() == block.transactions.len();
-    for (tx, result) in block.transactions.iter().zip(results.iter()) {
-        if result.success {
-            info!(
-                "✅ Tx replay OK in slot {}: {}",
-                block.header.slot,
-                tx.signature().to_hex()
-            );
-        } else {
-            warn!(
-                "⚠️  Tx replay failed in slot {}: {} ({})",
-                block.header.slot,
-                tx.signature().to_hex(),
-                result.error.as_deref().unwrap_or_default()
-            );
+    if log_details {
+        for (tx, result) in block.transactions.iter().zip(results.iter()) {
+            if result.success {
+                info!(
+                    "✅ Tx replay OK in slot {}: {}",
+                    block.header.slot,
+                    tx.signature().to_hex()
+                );
+            } else {
+                warn!(
+                    "⚠️  Tx replay failed in slot {}: {} ({})",
+                    block.header.slot,
+                    tx.signature().to_hex(),
+                    result.error.as_deref().unwrap_or_default()
+                );
+            }
         }
     }
 
@@ -3023,7 +3278,7 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
                 }
             }
         }
-    } else if !block.tx_fees_paid.is_empty() {
+    } else if log_details && !block.tx_fees_paid.is_empty() {
         warn!(
             "⚠️  Slot {} fee metadata length mismatch: block has {} entries for {} transactions",
             block.header.slot,
@@ -3031,6 +3286,73 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
             block.transactions.len(),
         );
     }
+}
+
+fn replay_staging_dir(staging_root: &Path, slot: u64) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    staging_root.join(format!(
+        "lichen-replay-stage-{}-{}-{}",
+        std::process::id(),
+        slot,
+        nonce
+    ))
+}
+
+fn validate_block_replay_on_staging(
+    state: &StateStore,
+    staging_root: &Path,
+    block: &Block,
+    context: &str,
+    allow_schema_detection: bool,
+) -> Result<(), String> {
+    if block.header.slot == 0 {
+        return validate_state_root_with_schema(
+            state,
+            block.header.slot,
+            block.header.state_root,
+            context,
+            allow_schema_detection,
+        );
+    }
+
+    fs::create_dir_all(staging_root).map_err(|e| {
+        format!(
+            "failed to create replay staging root {:?}: {e}",
+            staging_root
+        )
+    })?;
+    let staging_dir = replay_staging_dir(staging_root, block.header.slot);
+    let staging_path = staging_dir
+        .to_str()
+        .ok_or_else(|| "replay staging path is not valid UTF-8".to_string())?;
+    let checkpoint_slot = state
+        .get_last_slot()
+        .unwrap_or(block.header.slot.saturating_sub(1));
+    state.create_checkpoint(staging_path, checkpoint_slot)?;
+    let staging_state = StateStore::open_checkpoint(staging_path)?;
+    let staging_processor = TxProcessor::new(staging_state.clone());
+
+    replay_block_transactions_for_validation(&staging_processor, block);
+    let result = validate_state_root_with_schema(
+        &staging_state,
+        block.header.slot,
+        block.header.state_root,
+        context,
+        allow_schema_detection,
+    );
+
+    drop(staging_processor);
+    drop(staging_state);
+    if let Err(e) = fs::remove_dir_all(&staging_dir) {
+        warn!(
+            "⚠️  Failed to remove replay staging dir {:?}: {}",
+            staging_dir, e
+        );
+    }
+    result
 }
 
 /// Reverse the financial effects of a replaced block during fork choice.
@@ -4314,16 +4636,15 @@ fn latest_verified_checkpoint(
                 continue;
             }
         };
-        let checkpoint_root = checkpoint_store.compute_state_root_cached();
-        if checkpoint_root.0 != meta.state_root {
-            let rebuilt_root = checkpoint_store.compute_state_root_cold_start();
-            if rebuilt_root.0 != meta.state_root {
-                warn!(
-                    "⚠️  Rejecting checkpoint at slot {}: metadata root does not match checkpoint contents",
-                    meta.slot
-                );
-                continue;
-            }
+        if let Err(err) = validate_state_root_with_schema(
+            &checkpoint_store,
+            meta.slot,
+            Hash(meta.state_root),
+            "checkpoint metadata",
+            true,
+        ) {
+            warn!("⚠️  Rejecting checkpoint at slot {}: {}", meta.slot, err);
+            continue;
         }
         if let Err(err) = verify_committed_block_authenticity(&block, validator_set, stake_pool) {
             warn!(
@@ -6035,16 +6356,15 @@ async fn run_validator() {
         }
     };
 
-    let genesis_sync_incomplete = matches!(
-        state
-            .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
-            .ok()
-            .flatten()
-            .as_deref(),
-        Some(b"1")
-    );
+    let data_dir_genesis = data_dir_path.join("genesis.json");
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
-    if !has_genesis_block && genesis_sync_incomplete {
+    let should_recover_partial_state = should_recover_partial_genesis_state(
+        &state,
+        network_arg.as_deref(),
+        genesis_path.as_deref(),
+    );
+
+    if should_recover_partial_state {
         warn!(
             "⚠️  Detected partial genesis replay state without a stored slot-0 block; scrubbing local RocksDB state before retry"
         );
@@ -6062,9 +6382,19 @@ async fn run_validator() {
                 return;
             }
         };
-    } else if has_genesis_block && genesis_sync_incomplete {
-        if let Err(e) = state.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0") {
-            warn!("⚠️  Failed to clear stale genesis sync marker: {}", e);
+    } else {
+        let genesis_sync_incomplete = matches!(
+            state
+                .get_metadata(GENESIS_SYNC_INCOMPLETE_MARKER)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some(b"1")
+        );
+        if has_genesis_block && genesis_sync_incomplete {
+            if let Err(e) = state.put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0") {
+                warn!("⚠️  Failed to clear stale genesis sync marker: {}", e);
+            }
         }
     }
 
@@ -6121,7 +6451,6 @@ async fn run_validator() {
     // explicit local-development starts. Fresh public nodes bootstrap only the
     // canonical genesis config from trusted seed RPC metadata, then replay the
     // chain state from P2P blocks instead of receiving a copied database.
-    let data_dir_genesis = data_dir_path.join("genesis.json");
     let startup_seed_candidates = startup_seed_candidates(&data_dir_path);
     let genesis_config = match load_startup_genesis_config_or_bootstrap(
         genesis_path.as_deref(),
@@ -6260,30 +6589,7 @@ async fn run_validator() {
     let mut seed_peers = resolve_peer_list(&seed_file_peer_strings);
     let cached_peers = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
     seed_peers.extend(cached_peers.iter().copied());
-    let bootstrap_peer_strings = if !seed_file_peer_strings.is_empty() {
-        seed_file_peer_strings.clone()
-    } else {
-        cached_peers.iter().map(|peer| peer.to_string()).collect()
-    };
     let mut bootstrap_rpc_urls = seed_file_rpc_urls.clone();
-    if bootstrap_rpc_urls.is_empty() {
-        for peer in &bootstrap_peer_strings {
-            if let Some(rpc_url) = derive_rpc_url_from_peer(peer) {
-                push_unique_string(&mut bootstrap_rpc_urls, rpc_url);
-            }
-        }
-    }
-    if !bootstrap_rpc_urls.is_empty() {
-        info!(
-            "📡 Loaded {} bootstrap RPC endpoint{}",
-            bootstrap_rpc_urls.len(),
-            if bootstrap_rpc_urls.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-    }
 
     // Collect all local IP addresses so we can filter out self-referencing seeds
     let local_ips: HashSet<std::net::IpAddr> = {
@@ -6327,6 +6633,22 @@ async fn run_validator() {
         }
         seen.insert(*addr)
     });
+    for peer in &seed_peers {
+        if let Some(rpc_url) = derive_rpc_url_from_peer(&peer.to_string()) {
+            push_unique_string(&mut bootstrap_rpc_urls, rpc_url);
+        }
+    }
+    if !bootstrap_rpc_urls.is_empty() {
+        info!(
+            "📡 Loaded {} bootstrap RPC endpoint{}",
+            bootstrap_rpc_urls.len(),
+            if bootstrap_rpc_urls.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    }
 
     let p2p_config = P2PConfig {
         listen_addr,
@@ -6376,33 +6698,38 @@ async fn run_validator() {
     // restart-only seed override paths. If the node has blocks,
     // it resumes from where it left off. Period.
     // ────────────────────────────────────────────────────────────────
-    let is_joining_network = if last_slot > 0 || has_genesis_block {
-        // Node has state on disk — resume from local state.
-        info!(
-            "🔄 Resuming from slot {} (genesis: {})",
-            last_slot,
-            if has_genesis_block {
-                "present"
-            } else {
-                "missing"
+    let is_joining_network =
+        match determine_startup_mode(last_slot, has_genesis_block, has_any_seed_peers) {
+            StartupMode::Resume => {
+                // Node has state on disk — resume from local state.
+                info!(
+                    "🔄 Resuming from slot {} (genesis: {})",
+                    last_slot,
+                    if has_genesis_block {
+                        "present"
+                    } else {
+                        "missing"
+                    }
+                );
+                false
             }
-        );
-        false
-    } else if has_any_seed_peers {
-        // Fresh node with no state — join the existing network
-        info!("🔄 Fresh node — will sync from existing network");
-        info!(
-            "   Seeds: {} from seeds.json, {} cached",
-            seed_file_peer_strings.len(),
-            cached_peers.len(),
-        );
-        true
-    } else {
-        // No state, no seeds — can't start
-        error!("❌ No blocks on disk and no seed peers available.");
-        error!("   Run lichen-genesis first, or install seeds.json for this network.");
-        std::process::exit(1);
-    };
+            StartupMode::Join => {
+                // Fresh node with no state — join the existing network.
+                info!("🔄 Fresh node — will sync from existing network");
+                info!(
+                    "   Seeds: {} from seeds.json, {} cached",
+                    seed_file_peer_strings.len(),
+                    cached_peers.len(),
+                );
+                true
+            }
+            StartupMode::MissingBootstrap => {
+                // No state, no seeds — can't start.
+                error!("❌ No blocks on disk and no seed peers available.");
+                error!("   Run lichen-genesis first, or install seeds.json for this network.");
+                std::process::exit(1);
+            }
+        };
 
     // ========================================================================
     // GENESIS STATE INITIALIZATION
@@ -7316,17 +7643,18 @@ async fn run_validator() {
         );
     }
     if !is_joining_network && current_tip > 0 {
-        let bootstrap_rpc_url_for_restart = bootstrap_rpc_urls.first().cloned();
+        let bootstrap_rpc_urls_for_restart = bootstrap_rpc_urls.clone();
         let sm_init = sync_manager.clone();
+        let gate_bft_until_pre_consensus_sync = wait_for_pre_consensus_sync;
         tokio::spawn(async move {
-            if let Some(bootstrap_rpc_url) = bootstrap_rpc_url_for_restart.as_ref() {
+            if !bootstrap_rpc_urls_for_restart.is_empty() {
                 let http_client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(3))
                     .build()
                     .ok();
                 if let Some(http_client) = http_client.as_ref() {
-                    if let Some(bootstrap_slot) =
-                        fetch_rpc_slot(http_client, bootstrap_rpc_url).await
+                    if let Some((bootstrap_slot, _, _)) =
+                        fetch_bootstrap_tip(http_client, &bootstrap_rpc_urls_for_restart).await
                     {
                         sm_init.note_seen(bootstrap_slot).await;
                         if needs_bootstrap_slot_catch_up(current_tip, bootstrap_slot, 5) {
@@ -7340,7 +7668,9 @@ async fn run_validator() {
                 }
             }
 
-            sm_init.transition_to_live().await;
+            if !gate_bft_until_pre_consensus_sync {
+                sm_init.transition_to_live().await;
+            }
         });
     }
     let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(is_joining_network)));
@@ -7368,6 +7698,8 @@ async fn run_validator() {
     let tip_notify_for_producer = tip_notify.clone();
 
     let slot_duration_ms = genesis_config.consensus.slot_duration_ms.max(1);
+    let replay_staging_root = state_staging_root(&data_dir, "replay-staging");
+    reset_staging_root(&replay_staging_root, "Replay");
 
     // AUDIT-FIX A2-01: Derive genesis_time as Unix seconds for deterministic
     // block timestamp derivation: timestamp = genesis_time + slot * slot_duration / 1000.
@@ -7552,6 +7884,10 @@ async fn run_validator() {
     // causing the receiver's compute_state_root to read hybrid state
     // (partially modified by BFT's apply_block_effects).
     let bft_committing_slot = Arc::new(AtomicU64::new(0));
+    // Serializes canonical block application between the block receiver/sync
+    // path and the BFT CommitBlock path. The atomic above is only advisory; a
+    // sync response for the active BFT height can still race the commit path.
+    let block_apply_lock = Arc::new(Mutex::new(()));
     let genesis_sync_in_progress = Arc::new(AtomicBool::new(false));
 
     // Start incoming block handler with voting
@@ -7579,6 +7915,7 @@ async fn run_validator() {
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
         let tip_notify_for_blocks = tip_notify_for_blocks.clone();
         let data_dir_for_blocks = data_dir.clone();
+        let replay_staging_root_for_blocks = replay_staging_root.clone();
         let finality_for_blocks = finality_tracker.clone();
         let vote_authority_for_rx = vote_authority.clone();
         // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
@@ -7587,6 +7924,7 @@ async fn run_validator() {
         let p2p_config_for_slash_blocks = p2p_config.clone();
         let p2p_pm_for_slash_blocks = p2p_pm.clone();
         let bft_committing_for_blocks = bft_committing_slot.clone();
+        let block_apply_lock_for_blocks = block_apply_lock.clone();
         let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
@@ -8775,23 +9113,41 @@ async fn run_validator() {
                                     );
                                 }
 
+                                match effective_genesis_config
+                                    .seed_initial_restrictions(&state_for_blocks, gpk)
+                                {
+                                    Ok(0) => {}
+                                    Ok(count) => info!(
+                                        "  ✓ 📡 [sync] Seeded {} initial genesis restriction(s)",
+                                        count
+                                    ),
+                                    Err(err) => {
+                                        error!(
+                                            "Failed to seed initial genesis restrictions during sync: {}",
+                                            err
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+
                                 // 10. Flush metrics counters
                                 state_for_blocks.save_metrics_counters().ok();
 
                                 // 11. STATE ROOT VERIFICATION — Cosmos/Substrate standard.
                                 // The genesis block's state_root captures the FULL post-deployment
                                 // state. After replaying everything, our local state must match.
-                                let local_root = state_for_blocks.compute_state_root();
-                                if local_root != block.header.state_root {
+                                if let Err(err) = validate_state_root_with_schema(
+                                    &state_for_blocks,
+                                    0,
+                                    block.header.state_root,
+                                    "genesis block replay",
+                                    true,
+                                ) {
                                     error!(
                                         "═══════════════════════════════════════════════════════"
                                     );
                                     error!("  FATAL: Genesis state root mismatch!");
-                                    error!(
-                                        "  Expected: {}",
-                                        hex::encode(block.header.state_root.0)
-                                    );
-                                    error!("  Got:      {}", hex::encode(local_root.0));
+                                    error!("  {}", err);
                                     error!(
                                         "  This means genesis reconstruction produced different"
                                     );
@@ -8804,6 +9160,7 @@ async fn run_validator() {
                                     );
                                     std::process::exit(1);
                                 }
+                                let local_root = state_for_blocks.compute_state_root();
                                 info!(
                                     "  ✓ Genesis state root verified: {}",
                                     hex::encode(local_root.0)
@@ -8863,6 +9220,7 @@ async fn run_validator() {
                         let pending = sync_mgr.try_apply_pending(0, genesis_hash).await;
                         for pending_block in pending {
                             let pending_slot = pending_block.header.slot;
+                            let _block_apply_guard = block_apply_lock_for_blocks.lock().await;
 
                             // Skip if BFT already committed this block.
                             if state_for_blocks
@@ -8881,28 +9239,21 @@ async fn run_validator() {
                             let did_full_validate =
                                 sync_mgr.should_full_validate(pending_slot).await;
                             if did_full_validate {
-                                replay_block_transactions(&processor_for_blocks, &pending_block);
-                            }
-                            // STATE-ROOT-CHECK: Validate state root for pending blocks
-                            // (same phase boundary as the proposer: after TX replay,
-                            // before apply_block_effects). This catches divergence
-                            // immediately instead of waiting until live sync.
-                            if did_full_validate {
-                                let local_root = state_for_blocks.compute_state_root();
-                                let block_root = pending_block.header.state_root;
-                                if local_root != block_root && block_root != Hash::default() {
-                                    warn!(
-                                        "⚠️  PENDING STATE MISMATCH at slot {}: local={} block={}",
-                                        pending_slot,
-                                        hex::encode(&local_root.0[..8]),
-                                        hex::encode(&block_root.0[..8]),
-                                    );
+                                if let Err(err) = validate_block_replay_on_staging(
+                                    &state_for_blocks,
+                                    &replay_staging_root_for_blocks,
+                                    &pending_block,
+                                    "pending block",
+                                    false,
+                                ) {
+                                    warn!("{}", err);
                                     error!(
-	                                        "FATAL: refusing to store pending block {} after state-root mismatch",
-	                                        pending_slot
-	                                    );
+                                        "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                        pending_slot
+                                    );
                                     std::process::exit(1);
                                 }
+                                replay_block_transactions(&processor_for_blocks, &pending_block);
                             }
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
@@ -9150,6 +9501,8 @@ async fn run_validator() {
                             continue;
                         }
 
+                        let _block_apply_guard = block_apply_lock_for_blocks.lock().await;
+
                         // RACE GUARD: If this block's slot was already stored by the
                         // pending-block path (genesis sync) or BFT CommitBlock, skip
                         // the entire block receiver processing to prevent duplicate
@@ -9242,42 +9595,21 @@ async fn run_validator() {
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
                         let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
                         if did_full_validate {
-                            replay_block_transactions(&processor_for_blocks, &block);
-                        }
-                        // STATE-ROOT-FIX: Verify state_root BEFORE apply_block_effects.
-                        // The proposer stamps state_root after TX execution but before
-                        // effects (rewards, fees, staking).  Verifying at the same phase
-                        // boundary ensures the roots match.  Only check when we did full
-                        // TX replay (header-only sync skips TXs so the root won't match).
-                        if did_full_validate {
-                            let local_root = state_for_blocks.compute_state_root();
-                            let block_root = block.header.state_root;
-                            if local_root != block_root && block_root != Hash::default() {
-                                warn!(
-                                    "⚠️  SYNC STATE MISMATCH at slot {}: local={} block={}",
-                                    block_slot,
-                                    hex::encode(&local_root.0[..8]),
-                                    hex::encode(&block_root.0[..8]),
-                                );
-                                // Diagnostic: log individual components for debugging
-                                let accts = state_for_blocks.compute_accounts_root();
-                                let contracts = state_for_blocks.compute_contract_storage_root();
-                                let stake = state_for_blocks.compute_stake_pool_hash();
-                                let moss = state_for_blocks.compute_mossstake_pool_hash();
-                                warn!(
-	                                    "⚠️  SYNC MISMATCH COMPONENTS slot={}: accts={} contracts={} stake={} moss={}",
-	                                    block_slot,
-	                                    hex::encode(&accts.0[..8]),
-	                                    hex::encode(&contracts.0[..8]),
-	                                    hex::encode(&stake.0[..8]),
-	                                    hex::encode(&moss.0[..8]),
-	                                );
+                            if let Err(err) = validate_block_replay_on_staging(
+                                &state_for_blocks,
+                                &replay_staging_root_for_blocks,
+                                &block,
+                                "sync block",
+                                false,
+                            ) {
+                                warn!("{}", err);
                                 error!(
-	                                    "FATAL: refusing to store synced block {} after state-root mismatch",
-	                                    block_slot
-	                                );
+                                    "FATAL: refusing to replay synced block {} into canonical state after staging state-root mismatch",
+                                    block_slot
+                                );
                                 std::process::exit(1);
                             }
+                            replay_block_transactions(&processor_for_blocks, &block);
                         }
                         // SYNC-FIX: Apply block effects (rewards, staking) during sync
                         // so that the joining node's CF_ACCOUNTS state matches the
@@ -9499,6 +9831,20 @@ async fn run_validator() {
                                     .should_full_validate(pending_block.header.slot)
                                     .await
                                 {
+                                    if let Err(err) = validate_block_replay_on_staging(
+                                        &state_for_blocks,
+                                        &replay_staging_root_for_blocks,
+                                        &pending_block,
+                                        "pending block",
+                                        false,
+                                    ) {
+                                        warn!("{}", err);
+                                        error!(
+                                            "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                            pending_slot
+                                        );
+                                        std::process::exit(1);
+                                    }
                                     replay_block_transactions(
                                         &processor_for_blocks,
                                         &pending_block,
@@ -9802,6 +10148,11 @@ async fn run_validator() {
                     if block_slot < current_slot {
                         continue;
                     }
+                    let _block_apply_guard = block_apply_lock_for_blocks.lock().await;
+                    let current_slot = state_for_blocks.get_last_slot().unwrap_or(current_slot);
+                    if block_slot < current_slot {
+                        continue;
+                    }
                     let sync_phase = sync_mgr.get_sync_phase().await;
                     if sync_phase == sync::SyncPhase::InitialSync {
                         // InitialSync normally trusts the sequential chain from peers.
@@ -9930,6 +10281,22 @@ async fn run_validator() {
                                 // and "new block committed". On crash recovery, F-03's
                                 // idempotency guard (reward_distribution_hash check) ensures
                                 // apply_block_effects runs for the block on disk.
+                                if sync_mgr.should_full_validate(block.header.slot).await {
+                                    if let Err(err) = validate_block_replay_on_staging(
+                                        &state_for_blocks,
+                                        &replay_staging_root_for_blocks,
+                                        &block,
+                                        "fork replacement block",
+                                        false,
+                                    ) {
+                                        warn!("{}", err);
+                                        error!(
+                                            "FATAL: refusing to replay fork replacement block {} into canonical state after staging state-root mismatch",
+                                            block.header.slot
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
                                 if state_for_blocks
                                     .put_block_atomic(&block, None, None)
                                     .is_ok()
@@ -10026,6 +10393,20 @@ async fn run_validator() {
                                             .should_full_validate(pending_block.header.slot)
                                             .await
                                         {
+                                            if let Err(err) = validate_block_replay_on_staging(
+                                                &state_for_blocks,
+                                                &replay_staging_root_for_blocks,
+                                                &pending_block,
+                                                "pending block",
+                                                false,
+                                            ) {
+                                                warn!("{}", err);
+                                                error!(
+                                                    "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                                    pending_slot
+                                                );
+                                                std::process::exit(1);
+                                            }
                                             replay_block_transactions(
                                                 &processor_for_blocks,
                                                 &pending_block,
@@ -10409,52 +10790,21 @@ async fn run_validator() {
                     );
                     persist_validator_set = true;
 
-                    // Check for fingerprint migration (same pubkey, new machine)
+                    // Announcements are peer-discovery metadata. Do not mutate
+                    // the consensus StakePool from them: fingerprint registration
+                    // and migration must be committed through canonical state so
+                    // every validator reports the same pool hash.
                     if announcement.machine_fingerprint != [0u8; 32] {
-                        let mut pool = stake_pool_for_announce.write().await;
+                        let pool = stake_pool_for_announce.read().await;
                         if let Some(stake_info) = pool.get_stake(&announcement.pubkey) {
                             let current_fp = stake_info.machine_fingerprint;
-                            if current_fp != [0u8; 32]
-                                && current_fp != announcement.machine_fingerprint
-                            {
-                                info!(
-                                    "🔄 Machine migration detected for {} — updating fingerprint",
+                            if current_fp != announcement.machine_fingerprint {
+                                debug!(
+                                    "Ignoring non-consensus fingerprint announcement for {}",
                                     announcement.pubkey.to_base58()
                                 );
-                                match pool.migrate_fingerprint(
-                                    &announcement.pubkey,
-                                    announcement.machine_fingerprint,
-                                    announcement.current_slot,
-                                ) {
-                                    Ok(()) => info!(
-                                        "✅ Fingerprint migrated for {}",
-                                        announcement.pubkey.to_base58()
-                                    ),
-                                    Err(e) => warn!(
-                                        "⚠️  Fingerprint migration failed for {}: {}",
-                                        announcement.pubkey.to_base58(),
-                                        e
-                                    ),
-                                }
-                            } else if current_fp == [0u8; 32] {
-                                // Legacy validator — register fingerprint for the first time
-                                match pool.register_fingerprint(
-                                    &announcement.pubkey,
-                                    announcement.machine_fingerprint,
-                                ) {
-                                    Ok(()) => info!(
-                                        "🔒 Late fingerprint registered for {}",
-                                        announcement.pubkey.to_base58()
-                                    ),
-                                    Err(e) => debug!(
-                                        "Fingerprint registration skipped for {}: {}",
-                                        announcement.pubkey.to_base58(),
-                                        e
-                                    ),
-                                }
                             }
                         }
-                        drop(pool);
                     }
                 } else {
                     // Unknown announcements are never allowed to create
@@ -11662,14 +12012,23 @@ async fn run_validator() {
 
                             // Verify state root on staging
                             let expected_root = state_root;
-                            let computed_root = staging_state.compute_state_root_cold_start();
-                            if computed_root.0 == expected_root {
+                            if validate_state_root_with_schema(
+                                &staging_state,
+                                snapshot_slot,
+                                Hash(expected_root),
+                                "snapshot staging",
+                                true,
+                            )
+                            .is_ok()
+                            {
+                                let computed_root = staging_state.compute_state_root();
                                 info!(
                                     "✅ State root verified on staging: {} (matches snapshot)",
                                     hex::encode(&computed_root.0[..8])
                                 );
                                 true
                             } else {
+                                let computed_root = staging_state.compute_state_root();
                                 warn!(
                                     "⚠️  State root MISMATCH on staging! Computed {} vs expected {}. \
                                      Snapshot rejected — live DB untouched.",
@@ -12623,23 +12982,7 @@ async fn run_validator() {
 
             if let Ok(loaded_pool) = state_for_reconcile.get_stake_pool() {
                 let mut pool = stake_pool_for_reconcile.write().await;
-                if hash_stake_pool(&pool) != hash_stake_pool(&loaded_pool) {
-                    // Full-fidelity merge from disk (includes bootstrap debt, vesting, etc.)
-                    for entry in loaded_pool.stake_entries() {
-                        let existing = pool.get_stake(&entry.validator);
-                        let should_upsert = match existing {
-                            None => true,
-                            Some(local) => {
-                                entry.amount > local.amount
-                                    || entry.total_debt_repaid > local.total_debt_repaid
-                                    || (local.bootstrap_index == u64::MAX
-                                        && entry.bootstrap_index != u64::MAX)
-                            }
-                        };
-                        if should_upsert {
-                            pool.upsert_stake_full(entry);
-                        }
-                    }
+                if reconcile_live_stake_pool_from_state(&mut pool, loaded_pool) {
                     info!("🔄 Stake pool reconciled from state");
                 }
             }
@@ -13644,13 +13987,18 @@ async fn run_validator() {
         let sync_manager_join = sync_manager.clone();
         let vs_join = validator_set.clone();
         let sp_join = stake_pool.clone();
-        let bootstrap_rpc_url_for_join = bootstrap_rpc_urls.first().cloned();
-        let bootstrap_http_client_for_join = bootstrap_rpc_url_for_join.as_ref().map(|_| {
+        let bootstrap_rpc_urls_for_join = bootstrap_rpc_urls.clone();
+        let bootstrap_http_client_for_join = (!bootstrap_rpc_urls_for_join.is_empty()).then(|| {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
                 .build()
                 .expect("Failed to build bootstrap sync HTTP client")
         });
+        let direct_bootstrap_endpoint_count = bootstrap_rpc_urls_for_join
+            .iter()
+            .filter(|url| !is_shared_bootstrap_rpc(url))
+            .count();
+        let pre_consensus_sync_started = Instant::now();
         loop {
             let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
             if !has_genesis {
@@ -13732,33 +14080,43 @@ async fn run_validator() {
 
             // Wait for chain sync
             let current_slot = state.get_last_slot().unwrap_or(0);
-            if !sync_manager_join.is_caught_up(current_slot).await {
-                let network_slot = sync_manager_join.get_highest_seen().await;
+            let mut network_slot = sync_manager_join.get_highest_seen().await;
+            let mut direct_bootstrap_successes = 0usize;
+            let mut direct_bootstrap_endpoints = direct_bootstrap_endpoint_count;
+            if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
+                if let Some((bootstrap_slot, direct_successes, direct_endpoints)) =
+                    fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join).await
+                {
+                    sync_manager_join.note_seen(bootstrap_slot).await;
+                    network_slot = network_slot.max(bootstrap_slot);
+                    direct_bootstrap_successes = direct_successes;
+                    direct_bootstrap_endpoints = direct_endpoints;
+                }
+            }
+            if !is_joining_network
+                && current_slot > 0
+                && !has_enough_direct_bootstrap_observations(
+                    direct_bootstrap_successes,
+                    direct_bootstrap_endpoints,
+                )
+                && network_slot <= current_slot
+                && (direct_bootstrap_endpoints > 0
+                    || pre_consensus_sync_started.elapsed() < Duration::from_secs(10))
+            {
                 info!(
-                    "⏳ Syncing to network (current: {}, network: {}, {} validators)",
+                    "⏳ Waiting for peer tip observation before consensus (current: {}, observed: {})",
+                    current_slot, network_slot
+                );
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
+                info!(
+                    "⏳ Syncing to exact network tip before consensus (current: {}, network: {}, {} validators)",
                     current_slot, network_slot, validator_count
                 );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
-            }
-
-            if let (Some(bootstrap_rpc_url), Some(bootstrap_http_client)) = (
-                bootstrap_rpc_url_for_join.as_ref(),
-                bootstrap_http_client_for_join.as_ref(),
-            ) {
-                if let Some(bootstrap_slot) =
-                    fetch_rpc_slot(bootstrap_http_client, bootstrap_rpc_url).await
-                {
-                    sync_manager_join.note_seen(bootstrap_slot).await;
-                    if needs_bootstrap_slot_catch_up(current_slot, bootstrap_slot, 5) {
-                        info!(
-                            "⏳ Syncing to bootstrap peer (current: {}, bootstrap: {}, {} validators)",
-                            current_slot, bootstrap_slot, validator_count
-                        );
-                        time::sleep(Duration::from_millis(500)).await;
-                        continue;
-                    }
-                }
             }
 
             info!(
@@ -13768,6 +14126,7 @@ async fn run_validator() {
             );
             break;
         }
+        sync_manager.transition_to_live().await;
 
         // ── Wait for on-chain registration before entering BFT ──
         // Cosmos/Tendermint: full nodes sync blocks but DO NOT vote.
@@ -13840,6 +14199,8 @@ async fn run_validator() {
         bft_timeouts,
     );
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    let proposal_staging_root = state_staging_root(&data_dir, "proposal-staging");
+    reset_staging_root(&proposal_staging_root, "Proposal");
 
     // ── Initialize Consensus WAL (G-1/G-2 fix) ──
     let mut consensus_wal = wal::ConsensusWal::open(&data_dir);
@@ -13911,6 +14272,8 @@ async fn run_validator() {
 
     // Start the first height
     let start_height = state.get_last_slot().unwrap_or(0) + 1;
+    let recovered_bft_round =
+        wal_recovery.max_recovered_round_for_height(start_height, &validator_pubkey);
     bft.start_height(start_height);
     // Signal block receiver: BFT owns this height and above.
     bft_committing_slot.store(start_height, Ordering::Release);
@@ -13955,6 +14318,9 @@ async fn run_validator() {
             }
         }
     }
+    if let Some(recovered_round) = recovered_bft_round {
+        bft.resume_after_recovered_round(recovered_round);
+    }
     parent_hash = get_parent_hash(&state);
 
     let (mut height_vs, mut height_pool) = freeze_consensus_snapshot_for_height(
@@ -13979,6 +14345,7 @@ async fn run_validator() {
                 &state,
                 &mut mp,
                 &processor,
+                &proposal_staging_root,
                 start_height,
                 parent_hash,
                 &validator_pubkey,
@@ -13987,7 +14354,6 @@ async fn run_validator() {
             );
             drop(mp);
             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-            block.header.state_root = state.compute_state_root();
             block.sign(&validator_keypair);
             let action = bft.create_proposal(block, &height_vs, &height_pool);
             execute_consensus_actions(
@@ -14014,6 +14380,7 @@ async fn run_validator() {
                 slot_duration_ms,
                 &validator_keypair,
                 min_validator_stake,
+                &block_apply_lock,
                 &bft_committing_slot,
             )
             .await;
@@ -14116,6 +14483,7 @@ async fn run_validator() {
                 slot_duration_ms,
                 &validator_keypair,
                 min_validator_stake,
+                &block_apply_lock,
                 &bft_committing_slot,
             )
             .await;
@@ -14134,6 +14502,7 @@ async fn run_validator() {
                     &state,
                     &mut mp,
                     &processor,
+                    &proposal_staging_root,
                     new_height,
                     parent_hash,
                     &validator_pubkey,
@@ -14142,7 +14511,6 @@ async fn run_validator() {
                 );
                 drop(mp);
                 block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                block.header.state_root = state.compute_state_root();
                 block.sign(&validator_keypair);
                 let action = bft.create_proposal(block, &height_vs, &height_pool);
                 execute_consensus_actions(
@@ -14169,6 +14537,7 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
+                    &block_apply_lock,
                     &bft_committing_slot,
                 )
                 .await;
@@ -14216,16 +14585,18 @@ async fn run_validator() {
             }
         }
 
-        // G-4 fix: Freeze production when significantly behind.
-        // The BFT engine handles 1-3 block gaps via tip_notify + future
-        // message buffer. Only freeze when truly far behind (10+ blocks),
-        // which indicates the node should let sync catch up rather than
-        // participating in consensus with stale state.
+        // Freeze live BFT when peer evidence shows this node is beyond the
+        // small gap covered by future-message buffering. Continuing to propose
+        // or replay stale heights while sync is applying a newer chain can
+        // corrupt derived state such as oracle candles and analytics.
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot + 10 {
-                // Far behind — sleep and let sync catch up
+            if network_highest > tip_slot.saturating_add(LIVE_BFT_CATCH_UP_GAP) {
+                debug!(
+                    "🔄 BFT paused for catch-up: local tip {} peer tip {}",
+                    tip_slot, network_highest
+                );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
@@ -14259,7 +14630,8 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
-                    &bft_committing_slot,
+                    &block_apply_lock,
+                &bft_committing_slot,
                 ).await;
             }
 
@@ -14290,7 +14662,8 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
-                    &bft_committing_slot,
+                    &block_apply_lock,
+                &bft_committing_slot,
                 ).await;
             }
 
@@ -14321,7 +14694,8 @@ async fn run_validator() {
                     slot_duration_ms,
                     &validator_keypair,
                     min_validator_stake,
-                    &bft_committing_slot,
+                    &block_apply_lock,
+                &bft_committing_slot,
                 ).await;
             }
 
@@ -14354,6 +14728,7 @@ async fn run_validator() {
                             &state,
                             &mut mp,
                             &processor,
+                            &proposal_staging_root,
                             bft.height,
                             parent_hash,
                             &validator_pubkey,
@@ -14362,7 +14737,6 @@ async fn run_validator() {
                         );
                         drop(mp);
                         block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                        block.header.state_root = state.compute_state_root();
                         block.sign(&validator_keypair);
                         let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
@@ -14389,7 +14763,8 @@ async fn run_validator() {
                             slot_duration_ms,
                             &validator_keypair,
                             min_validator_stake,
-                            &bft_committing_slot,
+                            &block_apply_lock,
+                &bft_committing_slot,
                         ).await;
                         // Schedule timeout for post-proposal step
                         timeout_handle = match bft.step {
@@ -14444,7 +14819,8 @@ async fn run_validator() {
                         slot_duration_ms,
                         &validator_keypair,
                         min_validator_stake,
-                        &bft_committing_slot,
+                        &block_apply_lock,
+                &bft_committing_slot,
                     ).await;
 
                     // After timeout handling, if we moved to a new round's Propose step
@@ -14463,6 +14839,7 @@ async fn run_validator() {
                                 &state,
                                 &mut mp,
                                 &processor,
+                                &proposal_staging_root,
                                 bft.height,
                                 parent_hash,
                                 &validator_pubkey,
@@ -14471,7 +14848,6 @@ async fn run_validator() {
                             );
                             drop(mp);
                             block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                            block.header.state_root = state.compute_state_root();
                             block.sign(&validator_keypair);
                             let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                             execute_consensus_actions(
@@ -14498,7 +14874,8 @@ async fn run_validator() {
                                 slot_duration_ms,
                                 &validator_keypair,
                                 min_validator_stake,
-                                &bft_committing_slot,
+                                &block_apply_lock,
+                &bft_committing_slot,
                             ).await;
                     }
                 }
@@ -14546,6 +14923,7 @@ async fn run_validator() {
                             &state,
                             &mut mp,
                             &processor,
+                            &proposal_staging_root,
                             bft.height,
                             parent_hash,
                             &validator_pubkey,
@@ -14555,7 +14933,6 @@ async fn run_validator() {
                         drop(mp);
                         block.header.validators_hash =
                             compute_validators_hash(&height_vs, &height_pool);
-                        block.header.state_root = state.compute_state_root();
                         block.sign(&validator_keypair);
                         let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
@@ -14582,6 +14959,7 @@ async fn run_validator() {
                             slot_duration_ms,
                             &validator_keypair,
                             min_validator_stake,
+                            &block_apply_lock,
                             &bft_committing_slot,
                         )
                         .await;
@@ -14688,6 +15066,7 @@ async fn run_validator() {
                         slot_duration_ms,
                         &validator_keypair,
                         min_validator_stake,
+                        &block_apply_lock,
                         &bft_committing_slot,
                     )
                     .await;
@@ -14781,6 +15160,36 @@ async fn run_validator() {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BftCommitStorageDecision {
+    FreshNextBlock,
+    DuplicateAtTip,
+    StaleAlreadyApplied,
+    StoredAheadOfTip,
+    StaleMissingBlock,
+    MissingParentGap,
+    ConflictingStoredHash,
+}
+
+fn classify_bft_commit_storage(
+    height: u64,
+    current_tip: u64,
+    stored_hash: Option<Hash>,
+    block_hash: Hash,
+) -> BftCommitStorageDecision {
+    match stored_hash {
+        Some(hash) if hash != block_hash => BftCommitStorageDecision::ConflictingStoredHash,
+        Some(_) if height < current_tip => BftCommitStorageDecision::StaleAlreadyApplied,
+        Some(_) if height == current_tip => BftCommitStorageDecision::DuplicateAtTip,
+        Some(_) => BftCommitStorageDecision::StoredAheadOfTip,
+        None if height <= current_tip => BftCommitStorageDecision::StaleMissingBlock,
+        None if height > current_tip.saturating_add(1) => {
+            BftCommitStorageDecision::MissingParentGap
+        }
+        None => BftCommitStorageDecision::FreshNextBlock,
+    }
+}
+
 /// Execute one or more ConsensusActions returned by the BFT engine.
 ///
 /// This is the bridge between the pure state machine (ConsensusEngine) and
@@ -14810,6 +15219,7 @@ async fn execute_consensus_actions(
     slot_duration_ms: u64,
     validator_keypair: &Keypair,
     min_validator_stake: u64,
+    block_apply_lock: &Arc<Mutex<()>>,
     bft_committing_slot: &Arc<AtomicU64>,
 ) {
     match action {
@@ -14903,6 +15313,17 @@ async fn execute_consensus_actions(
                     );
                     return;
                 }
+                if let Some(block_hash) = precommit.block_hash {
+                    if let Err(e) =
+                        consensus_wal.log_lock_result(precommit.height, precommit.round, block_hash)
+                    {
+                        error!(
+                            "📋 WAL: Refusing to broadcast precommit without durable lock record: {}",
+                            e
+                        );
+                        return;
+                    }
+                }
             }
             {
                 let mut live_vs = validator_set.write().await;
@@ -14945,86 +15366,93 @@ async fn execute_consensus_actions(
             block,
             block_hash,
         } => {
-            // DOUBLE-PROCESSING GUARD: If the block receiver already
-            // processed and stored this block (race between compact block
-            // reconstruction and BFT commit), skip TX replay + state root
-            // check.  The block receiver applied effects, so we only need
-            // to advance BFT state.  Without this, TX replay would either
-            // fail ("Transaction already processed") or corrupt state by
-            // double-charging fees.
-            let already_stored = state.get_block_by_slot(height).ok().flatten().is_some();
+            let _block_apply_guard = block_apply_lock.lock().await;
 
-            // Non-proposer nodes must replay the block's transactions so
-            // their on-chain state (accounts, stake pool, contracts) matches
-            // the proposer.  The proposer already executed TXs during
-            // build_block, so replay is skipped for our own blocks.
-            let our_pubkey = validator_keypair.pubkey();
-            if !already_stored && block.header.validator != our_pubkey.0 {
-                replay_block_transactions(processor, &block);
+            let current_tip = state.get_last_slot().unwrap_or(0);
+            let stored_block = state.get_block_by_slot(height).ok().flatten();
+            let stored_hash = stored_block.as_ref().map(Block::hash);
+            let final_hash = block.hash();
+            if final_hash != block_hash {
+                error!(
+                    "FATAL: BFT commit block hash mismatch at height {}: action={} block={}",
+                    height,
+                    hex::encode(&block_hash.0[..8]),
+                    hex::encode(&final_hash.0[..8]),
+                );
+                std::process::exit(1);
             }
 
-            // Verify state_root BEFORE apply_block_effects.  The proposer
-            // stamps state_root after TX execution but before effects
-            // (rewards, fees, staking), so non-proposers must verify at
-            // the same phase boundary.  Verifying after effects would
-            // compare a post-TX root against post-TX-plus-effects state,
-            // causing systematic mismatches on every block with fees or
-            // epoch rewards.
-            // Skip verification if already stored — block receiver already
-            // applied effects, so state is past the pre-effects boundary.
-            if !already_stored {
-                let local_root = state.compute_state_root();
-                let block_root = block.header.state_root;
-                if local_root == block_root {
-                    debug!(
-                        "✅ State root verified at height {}: {}",
-                        height,
-                        hex::encode(&local_root.0[..8])
+            match classify_bft_commit_storage(height, current_tip, stored_hash, block_hash) {
+                BftCommitStorageDecision::FreshNextBlock => {}
+                BftCommitStorageDecision::DuplicateAtTip => {
+                    info!(
+                        "🔐 BFT: Block {} already applied at tip — skipping duplicate canonical side effects",
+                        height
                     );
-                } else if block_root != Hash::default() {
-                    // Incremental Merkle cache may have a transient stale leaf.
-                    // Self-heal: invalidate the cache and recompute from scratch.
-                    // If the cold-start root matches the block, the cache was
-                    // stale and is now repaired.  If it still mismatches, log
-                    // the genuine divergence for debugging.
-                    state.invalidate_merkle_cache();
-                    let healed_root = state.compute_state_root();
-                    if healed_root == block_root {
-                        info!(
-                            "🔄 State root self-healed at height {} via cold-start rebuild (was={}, now={})",
-                            height,
-                            hex::encode(&local_root.0[..8]),
-                            hex::encode(&healed_root.0[..8]),
-                        );
-                    } else {
-                        warn!(
-                            "⚠️  STATE ROOT MISMATCH at height {}: local={} cold_start={} block={}",
-                            height,
-                            hex::encode(&local_root.0[..8]),
-                            hex::encode(&healed_root.0[..8]),
-                            hex::encode(&block_root.0[..8]),
-                        );
-                        // Diagnostic: log individual components for debugging
-                        let accts = state.compute_accounts_root();
-                        let contracts = state.compute_contract_storage_root();
-                        let stake = state.compute_stake_pool_hash();
-                        let moss = state.compute_mossstake_pool_hash();
-                        warn!(
-                            "⚠️  MISMATCH COMPONENTS h={}: accts={} contracts={} stake={} moss={}",
-                            height,
-                            hex::encode(&accts.0[..8]),
-                            hex::encode(&contracts.0[..8]),
-                            hex::encode(&stake.0[..8]),
-                            hex::encode(&moss.0[..8]),
-                        );
-                        error!(
-                            "FATAL: refusing to store committed block {} after state-root mismatch",
-                            height
-                        );
-                        std::process::exit(1);
-                    }
+                    sync_manager.record_progress(height).await;
+                    *parent_hash = block_hash;
+                    return;
+                }
+                BftCommitStorageDecision::StaleAlreadyApplied => {
+                    warn!(
+                        "🔐 BFT: Ignoring stale commit for height {} already below local tip {}",
+                        height, current_tip
+                    );
+                    return;
+                }
+                BftCommitStorageDecision::StoredAheadOfTip => {
+                    error!(
+                        "FATAL: block {} is stored but local tip is only {}; refusing inconsistent BFT commit",
+                        height, current_tip
+                    );
+                    std::process::exit(1);
+                }
+                BftCommitStorageDecision::StaleMissingBlock => {
+                    error!(
+                        "FATAL: BFT commit for height {} is below/equal local tip {} but block is missing from storage",
+                        height, current_tip
+                    );
+                    std::process::exit(1);
+                }
+                BftCommitStorageDecision::MissingParentGap => {
+                    warn!(
+                        "🔐 BFT: Commit for height {} is ahead of local tip {}; deferring to block sync",
+                        height, current_tip
+                    );
+                    sync_manager.note_seen(height).await;
+                    return;
+                }
+                BftCommitStorageDecision::ConflictingStoredHash => {
+                    let stored = stored_hash.expect("stored hash exists for conflict");
+                    error!(
+                        "FATAL: stored block conflict at height {}: stored={} committed={}",
+                        height,
+                        hex::encode(&stored.0[..8]),
+                        hex::encode(&block_hash.0[..8]),
+                    );
+                    std::process::exit(1);
                 }
             }
+
+            // Proposal execution is speculative. Every validator, including the
+            // proposer, replays the committed block into canonical state exactly
+            // once at the BFT commit boundary.
+            let consensus_replay_staging_root = state_staging_root(data_dir, "replay-staging");
+            if let Err(err) = validate_block_replay_on_staging(
+                state,
+                &consensus_replay_staging_root,
+                &block,
+                "committed block",
+                false,
+            ) {
+                warn!("{}", err);
+                error!(
+                    "FATAL: refusing to replay committed block {} into canonical state after staging state-root mismatch",
+                    height
+                );
+                std::process::exit(1);
+            }
+            replay_block_transactions(processor, &block);
 
             // Apply block effects (rewards, staking, oracle) — these
             // mutations are deterministic and applied identically on all
@@ -15033,40 +15461,29 @@ async fn execute_consensus_actions(
             // Store block FIRST — before effects, so the block receiver's
             // duplicate guard (get_block_by_slot) fires and prevents the
             // same block from being processed twice via BFT + P2P paths.
-            // If already stored (block receiver won the race), skip storage.
-            let final_hash = block.hash();
-            if !already_stored {
-                info!(
-                    "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
-                    height,
-                    hex::encode(&final_hash.0[..8]),
-                    hex::encode(&block.header.state_root.0[..8]),
-                    Pubkey(block.header.validator).to_base58(),
-                );
+            info!(
+                "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
+                height,
+                hex::encode(&final_hash.0[..8]),
+                hex::encode(&block.header.state_root.0[..8]),
+                Pubkey(block.header.validator).to_base58(),
+            );
 
-                let confirmed_slot = height;
-                let finalized_slot = height;
+            let confirmed_slot = height;
+            let finalized_slot = height;
 
-                // Store block, tip, and commitment metadata atomically.
-                if let Err(e) =
-                    state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
-                {
-                    error!("Failed to store block at height {}: {e}", height);
-                }
-            } else {
-                info!(
-                    "🔐 BFT: Block {} already stored by block receiver — skipping storage",
-                    height
-                );
+            // Store block, tip, and commitment metadata atomically.
+            if let Err(e) =
+                state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
+            {
+                error!("Failed to store block at height {}: {e}", height);
             }
 
             // Now apply effects AFTER the block is stored. This ordering
             // ensures the block receiver's duplicate guard fires if it
-            // tries to process the same block concurrently.
-            // apply_block_effects has its own idempotency guard (per-slot
-            // reward_distribution_hash), so calling it when the block
-            // receiver already applied effects is safe — it will return
-            // early.
+            // tries to process the same block concurrently. Duplicate or
+            // stale commits return above before reaching any canonical side
+            // effects.
             apply_block_effects(
                 state,
                 validator_set,
@@ -15225,6 +15642,37 @@ async fn execute_consensus_actions(
             // to the next height. Block receiver skips all slots >= guard.
         }
 
+        ConsensusAction::RequestBlockRange {
+            start_slot,
+            end_slot,
+            block_hash,
+        } => {
+            info!(
+                "📡 BFT: requesting missing committed block range {}..{} for hash {}",
+                start_slot,
+                end_slot,
+                hex::encode(&block_hash.0[..4])
+            );
+            sync_manager.note_seen(end_slot).await;
+            if start_slot <= end_slot {
+                for slot in start_slot..=end_slot {
+                    sync_manager.mark_requested(slot).await;
+                }
+            }
+            if let Some(ref pm) = p2p_peer_manager {
+                let msg = P2PMessage::new(
+                    MessageType::BlockRangeRequest {
+                        start_slot,
+                        end_slot,
+                    },
+                    p2p_config.listen_addr,
+                );
+                pm.broadcast(msg).await;
+            } else {
+                warn!("📡 BFT: missing-block request skipped — no P2P peer manager");
+            }
+        }
+
         ConsensusAction::EquivocationDetected {
             height,
             round,
@@ -15283,6 +15731,7 @@ async fn execute_consensus_actions(
                     slot_duration_ms,
                     validator_keypair,
                     min_validator_stake,
+                    block_apply_lock,
                     bft_committing_slot,
                 ))
                 .await;
@@ -15341,6 +15790,26 @@ mod tests {
         }
     }
 
+    fn make_signed_transfer_tx(
+        from_kp: &Keypair,
+        from: Pubkey,
+        to: Pubkey,
+        amount_licn: u64,
+        recent_blockhash: Hash,
+    ) -> Transaction {
+        let mut data = vec![0u8];
+        data.extend_from_slice(&Account::licn_to_spores(amount_licn).to_le_bytes());
+        let ix = Instruction {
+            program_id: CORE_SYSTEM_PROGRAM_ID,
+            accounts: vec![from, to],
+            data,
+        };
+        let message = Message::new(vec![ix], recent_blockhash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(from_kp.sign(&tx.message.serialize()));
+        tx
+    }
+
     fn register_test_symbol(state: &StateStore, symbol: &str, program: Pubkey) {
         state
             .register_symbol(
@@ -15363,6 +15832,92 @@ mod tests {
             .export_snapshot_category_cursor_untracked(category, None, 1000)
             .expect("export category")
             .entries
+    }
+
+    #[test]
+    fn classify_bft_commit_storage_allows_only_fresh_next_block() {
+        let block_hash = Hash([1u8; 32]);
+
+        assert_eq!(
+            classify_bft_commit_storage(11, 10, None, block_hash),
+            BftCommitStorageDecision::FreshNextBlock
+        );
+        assert_eq!(
+            classify_bft_commit_storage(10, 10, Some(block_hash), block_hash),
+            BftCommitStorageDecision::DuplicateAtTip
+        );
+        assert_eq!(
+            classify_bft_commit_storage(9, 10, Some(block_hash), block_hash),
+            BftCommitStorageDecision::StaleAlreadyApplied
+        );
+        assert_eq!(
+            classify_bft_commit_storage(12, 10, Some(block_hash), block_hash),
+            BftCommitStorageDecision::StoredAheadOfTip
+        );
+        assert_eq!(
+            classify_bft_commit_storage(10, 10, None, block_hash),
+            BftCommitStorageDecision::StaleMissingBlock
+        );
+        assert_eq!(
+            classify_bft_commit_storage(12, 10, None, block_hash),
+            BftCommitStorageDecision::MissingParentGap
+        );
+        assert_eq!(
+            classify_bft_commit_storage(10, 10, Some(Hash([2u8; 32])), block_hash),
+            BftCommitStorageDecision::ConflictingStoredHash
+        );
+    }
+
+    #[test]
+    fn staging_replay_mismatch_does_not_mutate_canonical_state() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let tx_hash = tx.hash();
+        let block =
+            Block::new_with_timestamp(1, genesis_hash, Hash([9u8; 32]), validator.0, vec![tx], 1);
+        let canonical_root_before = state.compute_state_root_cold_start();
+        let alice_before = state
+            .get_account(&alice)
+            .expect("read alice")
+            .expect("alice exists");
+
+        let staging_root = temp_dir.path().join("replay-staging");
+        let err =
+            validate_block_replay_on_staging(&state, &staging_root, &block, "test replay", false)
+                .expect_err("wrong state root should fail staging validation");
+
+        assert!(err.contains("state-root mismatch"));
+        assert_eq!(state.compute_state_root_cold_start(), canonical_root_before);
+        let alice_after = state
+            .get_account(&alice)
+            .expect("read alice after")
+            .expect("alice remains");
+        assert_eq!(alice_after.spores, alice_before.spores);
+        assert_eq!(alice_after.spendable, alice_before.spendable);
+        assert!(state.get_account(&bob).expect("read bob").is_none());
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
     }
 
     fn make_genesis_state_chunk_tx(state_root: Hash, bundle: &GenesisStateBundle) -> Transaction {
@@ -15405,6 +15960,34 @@ mod tests {
     }
 
     #[test]
+    fn stake_pool_reconciliation_replaces_live_only_fingerprint_mutation() {
+        let validator = Pubkey([42u8; 32]);
+        let mut loaded_pool = StakePool::new();
+        loaded_pool
+            .try_bootstrap_with_fingerprint(validator, MIN_VALIDATOR_STAKE, 0, [0u8; 32])
+            .expect("bootstrap validator");
+
+        let mut live_pool = loaded_pool.clone();
+        live_pool
+            .register_fingerprint(&validator, [7u8; 32])
+            .expect("mutate live fingerprint");
+
+        assert_ne!(hash_stake_pool(&live_pool), hash_stake_pool(&loaded_pool));
+        assert!(reconcile_live_stake_pool_from_state(
+            &mut live_pool,
+            loaded_pool.clone()
+        ));
+        assert_eq!(hash_stake_pool(&live_pool), hash_stake_pool(&loaded_pool));
+        assert_eq!(
+            live_pool
+                .get_stake(&validator)
+                .expect("stake entry")
+                .machine_fingerprint,
+            [0u8; 32]
+        );
+    }
+
+    #[test]
     fn genesis_state_bundle_roundtrips_without_local_contract_replay() {
         let source_dir = tempfile::tempdir().expect("source temp dir");
         let dest_dir = tempfile::tempdir().expect("dest temp dir");
@@ -15421,11 +16004,36 @@ mod tests {
         source
             .put_contract_storage(&program, b"key", b"value")
             .expect("put contract storage");
+        let restriction = lichen_core::RestrictionRecord {
+            id: source.next_restriction_id().expect("next restriction id"),
+            target: lichen_core::RestrictionTarget::Account(owner),
+            mode: lichen_core::RestrictionMode::OutgoingOnly,
+            status: lichen_core::RestrictionStatus::Active,
+            reason: lichen_core::RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: owner,
+            authority: Pubkey([9u8; 32]),
+            approval_authority: None,
+            created_slot: 1,
+            created_epoch: 0,
+            expires_at_slot: Some(100),
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        source
+            .put_restriction(&restriction)
+            .expect("put restriction");
 
         let mut pool = StakePool::new();
         pool.try_bootstrap_with_fingerprint(owner, MIN_VALIDATOR_STAKE, 0, [0u8; 32])
             .expect("bootstrap stake");
         source.put_stake_pool(&pool).expect("put stake pool");
+        source
+            .set_state_root_schema(true)
+            .expect("activate restriction state-root schema");
         source.save_metrics_counters().expect("save metrics");
         let state_root = source.compute_state_root_cold_start();
 
@@ -15452,6 +16060,18 @@ mod tests {
                 lichen_core::GenesisStateCategory {
                     name: "symbol_by_program".to_string(),
                     entries: export_test_category(&source, "symbol_by_program"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "restrictions".to_string(),
+                    entries: export_test_category(&source, "restrictions"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "restriction_index_target".to_string(),
+                    entries: export_test_category(&source, "restriction_index_target"),
+                },
+                lichen_core::GenesisStateCategory {
+                    name: "restriction_index_code_hash".to_string(),
+                    entries: export_test_category(&source, "restriction_index_code_hash"),
                 },
                 lichen_core::GenesisStateCategory {
                     name: "stats".to_string(),
@@ -15487,6 +16107,10 @@ mod tests {
 
         assert_eq!(dest.compute_state_root_cold_start(), state_root);
         assert!(dest.get_symbol_registry("TEST").unwrap().is_some());
+        assert_eq!(
+            dest.get_restriction(restriction.id).unwrap(),
+            Some(restriction)
+        );
         assert_eq!(dest.get_program_count(), 1);
     }
 
@@ -15496,7 +16120,12 @@ mod tests {
         let root = temp_dir.path();
 
         fs::write(root.join("CURRENT"), b"rocksdb-current").expect("write current");
+        fs::write(root.join("LOCK"), b"rocksdb-lock").expect("write lock");
+        fs::write(root.join("MANIFEST-000001"), b"rocksdb-manifest").expect("write manifest");
+        fs::write(root.join("OPTIONS-000001"), b"rocksdb-options").expect("write options");
+        fs::write(root.join("000009.sst"), b"rocksdb-sst").expect("write sst");
         fs::write(root.join("000007.log"), b"rocksdb-wal").expect("write wal");
+        fs::write(root.join("consensus_wal.bin"), b"consensus-wal").expect("write consensus wal");
         fs::create_dir(root.join("archive")).expect("create archive dir");
         fs::write(root.join("registration-submitted.marker"), b"1").expect("write marker");
 
@@ -15521,7 +16150,12 @@ mod tests {
         assert!(root.join("logs").exists());
 
         assert!(!root.join("CURRENT").exists());
+        assert!(!root.join("LOCK").exists());
+        assert!(!root.join("MANIFEST-000001").exists());
+        assert!(!root.join("OPTIONS-000001").exists());
+        assert!(!root.join("000009.sst").exists());
         assert!(!root.join("000007.log").exists());
+        assert!(!root.join("consensus_wal.bin").exists());
         assert!(!root.join("archive").exists());
         assert!(!root.join("registration-submitted.marker").exists());
     }
@@ -17038,6 +17672,32 @@ mod tests {
     }
 
     #[test]
+    fn pre_consensus_tip_catch_up_requires_exact_tip() {
+        assert!(needs_pre_consensus_tip_catch_up(306_993, 306_994));
+        assert!(!needs_pre_consensus_tip_catch_up(306_994, 306_994));
+        assert!(!needs_pre_consensus_tip_catch_up(306_995, 306_994));
+    }
+
+    #[test]
+    fn shared_bootstrap_rpc_is_not_a_direct_peer_observation() {
+        assert!(is_shared_bootstrap_rpc(
+            "https://testnet-rpc.lichen.network"
+        ));
+        assert!(is_shared_bootstrap_rpc("https://rpc.lichen.network"));
+        assert!(!is_shared_bootstrap_rpc(
+            "http://seed-01.lichen.network:8899"
+        ));
+        assert!(!is_shared_bootstrap_rpc("http://15.204.229.189:8899"));
+    }
+
+    #[test]
+    fn direct_bootstrap_observation_requires_one_direct_success() {
+        assert!(has_enough_direct_bootstrap_observations(0, 0));
+        assert!(!has_enough_direct_bootstrap_observations(0, 2));
+        assert!(has_enough_direct_bootstrap_observations(1, 2));
+    }
+
+    #[test]
     fn reconsider_duplicate_block_only_at_current_tip() {
         assert!(should_reconsider_duplicate_block(12, 12, true));
         assert!(!should_reconsider_duplicate_block(11, 12, true));
@@ -17328,5 +17988,96 @@ mod tests {
             .expect("data-dir genesis should override network defaults");
 
         assert_eq!(loaded.chain_id, "lichen-testnet-custom");
+    }
+
+    #[test]
+    fn should_recover_partial_genesis_state_ignores_fresh_networkless_bootstrap() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        assert!(!should_recover_partial_genesis_state(&state, None, None));
+    }
+
+    #[test]
+    fn should_recover_partial_genesis_state_triggers_on_non_zero_tip_without_genesis() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        state.set_last_slot(42).expect("seed last slot");
+        state
+            .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"0")
+            .expect("store marker");
+
+        assert!(should_recover_partial_genesis_state(
+            &state,
+            Some("testnet"),
+            None
+        ));
+    }
+
+    #[test]
+    fn should_recover_partial_genesis_state_triggers_with_persisted_genesis_marker() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        fs::write(temp_dir.path().join("genesis.json"), b"{}").expect("write genesis config");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        state
+            .put_metadata(GENESIS_SYNC_INCOMPLETE_MARKER, b"1")
+            .expect("store marker");
+
+        assert!(should_recover_partial_genesis_state(
+            &state,
+            Some("testnet"),
+            None
+        ));
+    }
+
+    #[test]
+    fn startup_mode_resumes_existing_state_even_when_seeded() {
+        assert_eq!(determine_startup_mode(42, false, true), StartupMode::Resume);
+        assert_eq!(determine_startup_mode(0, true, true), StartupMode::Resume);
+    }
+
+    #[test]
+    fn startup_mode_joins_only_from_empty_seeded_state() {
+        assert_eq!(determine_startup_mode(0, false, true), StartupMode::Join);
+    }
+
+    #[test]
+    fn startup_mode_rejects_empty_state_without_seeds() {
+        assert_eq!(
+            determine_startup_mode(0, false, false),
+            StartupMode::MissingBootstrap
+        );
+    }
+
+    #[test]
+    fn rg402a_checkpoint_interval_is_current_join_verification_point() {
+        let checkpoint_interval = sync::SyncManager::checkpoint_interval();
+
+        assert!(checkpoint_interval > 0);
+        assert!(checkpoint_interval < lichen_core::SLOTS_PER_EPOCH);
+        assert!(sync::SyncManager::should_checkpoint(checkpoint_interval));
+    }
+
+    #[test]
+    fn validate_state_root_with_schema_repairs_legacy_root() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let pubkey = Pubkey([4u8; 32]);
+        state
+            .put_account(&pubkey, &Account::new(100, pubkey))
+            .expect("seed account");
+
+        let legacy_root = state.compute_state_root_without_restrictions_cold_start();
+        state
+            .set_state_root_schema(true)
+            .expect("force prefixed schema");
+        assert_ne!(state.compute_state_root_cold_start(), legacy_root);
+
+        validate_state_root_with_schema(&state, 7, legacy_root, "test legacy repair", true)
+            .expect("legacy root should repair schema");
+
+        assert_eq!(state.get_state_root_schema(), Some(false));
+        assert_eq!(state.compute_state_root_cached(), legacy_root);
     }
 }

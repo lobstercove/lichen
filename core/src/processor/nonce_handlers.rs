@@ -1,4 +1,8 @@
 use super::*;
+use crate::restrictions::{
+    restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
+    NATIVE_LICN_ASSET_ID,
+};
 
 impl TxProcessor {
     /// System program: Durable nonce operations (instruction type 28).
@@ -160,6 +164,9 @@ impl TxProcessor {
             return Err("NonceWithdraw: amount must be > 0".to_string());
         }
 
+        let value_exit_amount = amount.min(nonce_account.spores);
+        self.ensure_nonce_authority_value_exit_not_restricted(&authority, value_exit_amount)?;
+
         if amount >= nonce_account.spores {
             let full_amount = nonce_account.spores;
             self.b_transfer(&nonce_pk, &recipient, full_amount)?;
@@ -170,6 +177,53 @@ impl TxProcessor {
             self.b_put_account(&nonce_pk, &acct)?;
         } else {
             self.b_transfer(&nonce_pk, &recipient, amount)?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_nonce_authority_value_exit_not_restricted(
+        &self,
+        authority: &Pubkey,
+        amount: u64,
+    ) -> Result<(), String> {
+        let slot = self.b_get_last_slot().unwrap_or(0);
+        let authority_spendable = self
+            .b_get_account(authority)?
+            .map(|account| account.spendable)
+            .unwrap_or(0);
+
+        let account_target = RestrictionTarget::Account(*authority);
+        for record in self.b_get_active_restrictions_for_target(&account_target, slot, 0)? {
+            if restriction_mode_blocks_transfer(
+                &record.mode,
+                RestrictionTransferDirection::Outgoing,
+                amount,
+                authority_spendable,
+            ) {
+                return Err(format!(
+                    "NonceWithdraw: authority value exit blocked by active account restriction {}",
+                    record.id
+                ));
+            }
+        }
+
+        let account_asset_target = RestrictionTarget::AccountAsset {
+            account: *authority,
+            asset: NATIVE_LICN_ASSET_ID,
+        };
+        for record in self.b_get_active_restrictions_for_target(&account_asset_target, slot, 0)? {
+            if restriction_mode_blocks_transfer(
+                &record.mode,
+                RestrictionTransferDirection::Outgoing,
+                amount,
+                authority_spendable,
+            ) {
+                return Err(format!(
+                    "NonceWithdraw: authority value exit blocked by active account-asset restriction {}",
+                    record.id
+                ));
+            }
         }
 
         Ok(())

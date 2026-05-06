@@ -28,6 +28,7 @@ mod metrics_state;
 mod mossstake_state;
 mod nft_state;
 mod program_state;
+mod restriction_state;
 mod secondary_indexes;
 mod shielded_state;
 mod snapshot_io;
@@ -109,6 +110,9 @@ const CF_EVM_LOGS_BY_SLOT: &str = "evm_logs_by_slot"; // slot(8,BE) -> Vec<EvmLo
 const CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots"; // pubkey(32)+slot(8,BE) -> Account (Task 3.9 archive mode)
 const CF_PENDING_VALIDATOR_CHANGES: &str = "pending_validator_changes"; // epoch(8,BE)+slot(8,BE)+pubkey(8) -> PendingValidatorChange
 const CF_TX_META: &str = "tx_meta"; // tx_hash(32) -> compute_units_used(8,LE) — execution metadata
+const CF_RESTRICTIONS: &str = "restrictions"; // restriction_id(8,BE) -> RestrictionRecord
+const CF_RESTRICTION_INDEX_TARGET: &str = "restriction_index_target"; // target_key + restriction_id
+const CF_RESTRICTION_INDEX_CODE_HASH: &str = "restriction_index_code_hash"; // code_hash + restriction_id
 
 const SOLANA_TOKEN_PROGRAM_ID_B58: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID_B58: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -255,8 +259,9 @@ pub struct StateStore {
     /// Mutex to serialize add_minted read-modify-write operations,
     /// preventing lost updates under concurrent access.
     minted_lock: Arc<std::sync::Mutex<()>>,
-    /// AUDIT-FIX B-1: Mutex to serialize treasury read-modify-write in charge_fee_direct,
-    /// preventing lost-update race when parallel TX groups credit fees concurrently.
+    /// Mutex to serialize fee-account read-modify-write in charge_fee_direct,
+    /// preventing lost-update races when parallel TX groups debit payers and
+    /// credit the treasury concurrently.
     treasury_lock: Arc<std::sync::Mutex<()>>,
     /// AUDIT-FIX C-7: Per-instance blockhash cache (was previously a static global).
     /// Populated lazily on first `get_recent_blockhashes`, kept warm by `push_blockhash_cache`.
@@ -318,6 +323,16 @@ pub struct StateBatch {
     governance_proposal_counter: Option<u64>,
     /// Pending governance parameter changes queued inside this batch.
     pending_governance_change_overlay: std::collections::HashMap<u8, u64>,
+    /// Restriction records written in this batch, keyed by durable ID.
+    restriction_overlay: std::collections::HashMap<u64, crate::restrictions::RestrictionRecord>,
+    /// Target index additions written in this batch, keyed by canonical target key.
+    restriction_target_index_overlay:
+        std::collections::HashMap<Vec<u8>, std::collections::BTreeSet<u64>>,
+    /// Code-hash index additions written in this batch.
+    restriction_code_hash_index_overlay:
+        std::collections::HashMap<[u8; 32], std::collections::BTreeSet<u64>>,
+    /// Restriction ID counter override for atomic in-batch allocation.
+    restriction_counter: Option<u64>,
     /// Per-deployer contract deploy nonce overlay for batch-safe address
     /// allocation.
     contract_deploy_nonce_overlay: std::collections::HashMap<Pubkey, u64>,
@@ -342,7 +357,126 @@ mod tests {
     };
     use super::*;
     use crate::block::Block;
+    use crate::restrictions::{
+        ContractRestrictionAccess, ProtocolModuleId, RestrictionLiftReason, RestrictionMode,
+        RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
+        RestrictionTransferDirection, NATIVE_LICN_ASSET_ID,
+    };
     use tempfile::tempdir;
+
+    fn restriction_test_record(
+        id: u64,
+        target: RestrictionTarget,
+        mode: RestrictionMode,
+    ) -> RestrictionRecord {
+        RestrictionRecord {
+            id,
+            target,
+            mode,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xA1; 32]),
+            authority: Pubkey([0xA2; 32]),
+            approval_authority: None,
+            created_slot: 10,
+            created_epoch: 1,
+            expires_at_slot: Some(20),
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        }
+    }
+
+    fn put_active_restriction(
+        state: &StateStore,
+        target: RestrictionTarget,
+        mode: RestrictionMode,
+    ) -> u64 {
+        let id = state.next_restriction_id().unwrap();
+        let record = restriction_test_record(id, target, mode);
+        state.put_restriction(&record).unwrap();
+        id
+    }
+
+    fn account_snapshot(
+        state: &StateStore,
+        pubkey: &Pubkey,
+    ) -> Option<(u64, u64, u64, u64, bool, u64)> {
+        state.get_account(pubkey).unwrap().map(|account| {
+            (
+                account.spores,
+                account.spendable,
+                account.staked,
+                account.locked,
+                account.dormant,
+                account.missed_rent_epochs,
+            )
+        })
+    }
+
+    fn batch_account_snapshot(
+        batch: &StateBatch,
+        pubkey: &Pubkey,
+    ) -> Option<(u64, u64, u64, u64, bool, u64)> {
+        batch.get_account(pubkey).unwrap().map(|account| {
+            (
+                account.spores,
+                account.spendable,
+                account.staked,
+                account.locked,
+                account.dormant,
+                account.missed_rent_epochs,
+            )
+        })
+    }
+
+    fn assert_direct_transfer_rejected_without_mutation(
+        state: &StateStore,
+        from: &Pubkey,
+        to: &Pubkey,
+        spores: u64,
+        expected_error: &str,
+    ) {
+        let before_from = account_snapshot(state, from);
+        let before_to = account_snapshot(state, to);
+        let error = state.transfer(from, to, spores).unwrap_err();
+        assert!(
+            error.contains(expected_error),
+            "expected error containing '{}', got '{}'",
+            expected_error,
+            error
+        );
+        assert_eq!(account_snapshot(state, from), before_from);
+        assert_eq!(account_snapshot(state, to), before_to);
+    }
+
+    fn assert_batch_transfer_rejected_without_mutation(
+        state: &StateStore,
+        batch: &mut StateBatch,
+        from: &Pubkey,
+        to: &Pubkey,
+        spores: u64,
+        expected_error: &str,
+    ) {
+        let before_batch_from = batch_account_snapshot(batch, from);
+        let before_batch_to = batch_account_snapshot(batch, to);
+        let before_committed_from = account_snapshot(state, from);
+        let before_committed_to = account_snapshot(state, to);
+        let error = batch.transfer(from, to, spores).unwrap_err();
+        assert!(
+            error.contains(expected_error),
+            "expected error containing '{}', got '{}'",
+            expected_error,
+            error
+        );
+        assert_eq!(batch_account_snapshot(batch, from), before_batch_from);
+        assert_eq!(batch_account_snapshot(batch, to), before_batch_to);
+        assert_eq!(account_snapshot(state, from), before_committed_from);
+        assert_eq!(account_snapshot(state, to), before_committed_to);
+    }
 
     #[test]
     fn test_hot_db_tuning_profile_pins_wal_and_background_settings() {
@@ -496,6 +630,497 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_transfer_rejects_outgoing_restricted_sender() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "sender account restriction",
+        );
+        assert!(state.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_direct_transfer_rejects_incoming_restricted_recipient() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(bob),
+            RestrictionMode::IncomingOnly,
+        );
+
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "recipient account restriction",
+        );
+        assert!(state.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_direct_transfer_rejects_bidirectional_restricted_sender_and_recipient() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(1000, bob)).unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::Bidirectional,
+        );
+
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "sender account restriction",
+        );
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &bob,
+            &alice,
+            Account::licn_to_spores(100),
+            "recipient account restriction",
+        );
+    }
+
+    #[test]
+    fn test_direct_transfer_rejects_native_frozen_amount_above_unfrozen_balance() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: Account::licn_to_spores(900),
+            },
+        );
+
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &bob,
+            Account::licn_to_spores(101),
+            "sender account-asset restriction",
+        );
+
+        state
+            .transfer(&alice, &bob, Account::licn_to_spores(100))
+            .unwrap();
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::licn_to_spores(900)
+        );
+        assert_eq!(
+            state.get_balance(&bob).unwrap(),
+            Account::licn_to_spores(100)
+        );
+    }
+
+    #[test]
+    fn test_direct_transfer_native_frozen_amount_above_balance_catches_future_inflow() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        let carol = Pubkey([3u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(500, bob)).unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: Account::licn_to_spores(1200),
+            },
+        );
+
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &carol,
+            Account::licn_to_spores(1),
+            "sender account-asset restriction",
+        );
+
+        state
+            .transfer(&bob, &alice, Account::licn_to_spores(500))
+            .unwrap();
+        assert_direct_transfer_rejected_without_mutation(
+            &state,
+            &alice,
+            &carol,
+            Account::licn_to_spores(301),
+            "sender account-asset restriction",
+        );
+
+        state
+            .transfer(&alice, &carol, Account::licn_to_spores(300))
+            .unwrap();
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::licn_to_spores(1200)
+        );
+        assert_eq!(
+            state.get_balance(&carol).unwrap(),
+            Account::licn_to_spores(300)
+        );
+    }
+
+    #[test]
+    fn test_batch_transfer_rejects_outgoing_restricted_sender() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let mut batch = state.begin_batch();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "sender account restriction",
+        );
+        assert!(batch.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_batch_transfer_rejects_incoming_restricted_recipient() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(bob),
+            RestrictionMode::IncomingOnly,
+        );
+
+        let mut batch = state.begin_batch();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "recipient account restriction",
+        );
+        assert!(batch.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_batch_transfer_rejects_bidirectional_restricted_sender_and_recipient() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(1000, bob)).unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::Bidirectional,
+        );
+
+        let mut batch = state.begin_batch();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "sender account restriction",
+        );
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &bob,
+            &alice,
+            Account::licn_to_spores(100),
+            "recipient account restriction",
+        );
+    }
+
+    #[test]
+    fn test_batch_transfer_rejects_native_frozen_amount_above_unfrozen_balance() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: Account::licn_to_spores(900),
+            },
+        );
+
+        let mut batch = state.begin_batch();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &bob,
+            Account::licn_to_spores(101),
+            "sender account-asset restriction",
+        );
+
+        batch
+            .transfer(&alice, &bob, Account::licn_to_spores(100))
+            .unwrap();
+        assert_eq!(
+            batch.get_account(&alice).unwrap().unwrap().spendable,
+            Account::licn_to_spores(900)
+        );
+        assert_eq!(
+            batch.get_account(&bob).unwrap().unwrap().spendable,
+            Account::licn_to_spores(100)
+        );
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::licn_to_spores(1000)
+        );
+        assert!(state.get_account(&bob).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_batch_transfer_replays_restriction_overlay_before_commit() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+
+        let mut batch = state.begin_batch();
+        let id = batch.next_restriction_id().unwrap();
+        let record = restriction_test_record(
+            id,
+            RestrictionTarget::Account(alice),
+            RestrictionMode::OutgoingOnly,
+        );
+        batch.put_restriction(&record).unwrap();
+        assert!(!state
+            .is_account_restricted(
+                &alice,
+                RestrictionTransferDirection::Outgoing,
+                Some(&NATIVE_LICN_ASSET_ID),
+                Account::licn_to_spores(1),
+                Account::licn_to_spores(1000),
+                19
+            )
+            .unwrap());
+
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &bob,
+            Account::licn_to_spores(100),
+            "sender account restriction",
+        );
+    }
+
+    #[test]
+    fn test_batch_transfer_frozen_amount_uses_overlay_spendable() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        let carol = Pubkey([3u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: Account::licn_to_spores(900),
+            },
+        );
+
+        let mut batch = state.begin_batch();
+        batch
+            .transfer(&alice, &bob, Account::licn_to_spores(60))
+            .unwrap();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &carol,
+            Account::licn_to_spores(50),
+            "sender account-asset restriction",
+        );
+        assert_eq!(
+            batch.get_account(&alice).unwrap().unwrap().spendable,
+            Account::licn_to_spores(940)
+        );
+        assert_eq!(
+            batch.get_account(&bob).unwrap().unwrap().spendable,
+            Account::licn_to_spores(60)
+        );
+        assert!(batch.get_account(&carol).unwrap().is_none());
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::licn_to_spores(1000)
+        );
+        assert!(state.get_account(&bob).unwrap().is_none());
+        assert!(state.get_account(&carol).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_batch_transfer_native_frozen_amount_above_balance_catches_future_inflow() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+        let carol = Pubkey([3u8; 32]);
+        let dave = Pubkey([4u8; 32]);
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+        state.put_account(&bob, &Account::new(500, bob)).unwrap();
+        put_active_restriction(
+            &state,
+            RestrictionTarget::AccountAsset {
+                account: alice,
+                asset: NATIVE_LICN_ASSET_ID,
+            },
+            RestrictionMode::FrozenAmount {
+                amount: Account::licn_to_spores(1200),
+            },
+        );
+
+        let mut batch = state.begin_batch();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &carol,
+            Account::licn_to_spores(1),
+            "sender account-asset restriction",
+        );
+
+        batch
+            .transfer(&bob, &alice, Account::licn_to_spores(500))
+            .unwrap();
+        assert_batch_transfer_rejected_without_mutation(
+            &state,
+            &mut batch,
+            &alice,
+            &carol,
+            Account::licn_to_spores(301),
+            "sender account-asset restriction",
+        );
+
+        batch
+            .transfer(&alice, &dave, Account::licn_to_spores(300))
+            .unwrap();
+        assert_eq!(
+            batch.get_account(&alice).unwrap().unwrap().spendable,
+            Account::licn_to_spores(1200)
+        );
+        assert_eq!(
+            batch.get_account(&dave).unwrap().unwrap().spendable,
+            Account::licn_to_spores(300)
+        );
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::licn_to_spores(1000)
+        );
+        assert!(state.get_account(&carol).unwrap().is_none());
+        assert!(state.get_account(&dave).unwrap().is_none());
+    }
+
+    #[test]
     fn test_state_root_deterministic() {
         let temp1 = tempdir().unwrap();
         let state1 = StateStore::open(temp1.path()).unwrap();
@@ -533,6 +1158,332 @@ mod tests {
             root1, root2,
             "Changed balance should produce different state root"
         );
+    }
+
+    #[test]
+    fn test_state_root_schema_detects_and_persists_legacy_compatibility() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([3u8; 32]);
+        state.put_account(&pk, &Account::new(100, pk)).unwrap();
+
+        let legacy_root = state.compute_state_root_without_restrictions_cold_start();
+        let prefixed_root = state.compute_state_root_with_restrictions_cold_start();
+        assert_ne!(
+            legacy_root, prefixed_root,
+            "schema prefixes must keep legacy and prefixed roots distinct"
+        );
+        assert_eq!(
+            state.detect_state_root_schema_for_root_cold_start(&legacy_root),
+            Some(false)
+        );
+        assert_eq!(
+            state.detect_state_root_schema_for_root_cold_start(&prefixed_root),
+            Some(true)
+        );
+        assert_eq!(
+            state.compute_state_root_cold_start(),
+            legacy_root,
+            "unset schema must remain legacy-compatible"
+        );
+
+        state.set_state_root_schema(true).unwrap();
+        assert_eq!(state.compute_state_root_cached(), prefixed_root);
+        drop(state);
+
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_state_root_schema(), Some(true));
+        assert_eq!(reopened.compute_state_root_cached(), prefixed_root);
+
+        reopened.set_state_root_schema(false).unwrap();
+        assert_eq!(reopened.compute_state_root_cached(), legacy_root);
+    }
+
+    #[test]
+    fn test_restriction_id_allocation_is_monotonic_and_overflow_checked() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        assert_eq!(state.next_restriction_id().unwrap(), 1);
+        assert_eq!(state.next_restriction_id().unwrap(), 2);
+
+        drop(state);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.next_restriction_id().unwrap(), 3);
+
+        let cf_stats = reopened.db.cf_handle(CF_STATS).unwrap();
+        reopened
+            .db
+            .put_cf(&cf_stats, b"restriction_counter", u64::MAX.to_le_bytes())
+            .unwrap();
+        assert!(reopened
+            .next_restriction_id()
+            .unwrap_err()
+            .contains("overflow"));
+
+        let mut batch = reopened.begin_batch();
+        assert!(batch
+            .next_restriction_id()
+            .unwrap_err()
+            .contains("overflow"));
+    }
+
+    #[test]
+    fn test_restriction_records_persist_indexes_and_effective_status() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let account = Pubkey([0xB1; 32]);
+        let id = state.next_restriction_id().unwrap();
+        let record = restriction_test_record(
+            id,
+            RestrictionTarget::Account(account),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        state.put_restriction(&record).unwrap();
+        assert_eq!(state.get_restriction(id).unwrap(), Some(record.clone()));
+        assert_eq!(
+            state
+                .get_effective_restriction_record(id, 19)
+                .unwrap()
+                .unwrap()
+                .effective_status,
+            RestrictionStatus::Active
+        );
+        assert_eq!(
+            state
+                .get_effective_restriction_record(id, 20)
+                .unwrap()
+                .unwrap()
+                .effective_status,
+            RestrictionStatus::Expired
+        );
+
+        let target = RestrictionTarget::Account(account);
+        assert_eq!(
+            state
+                .list_effective_restrictions_by_target(&target, 19, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(state
+            .is_account_restricted(
+                &account,
+                RestrictionTransferDirection::Outgoing,
+                None,
+                1,
+                100,
+                19
+            )
+            .unwrap());
+        assert!(!state
+            .is_account_restricted(
+                &account,
+                RestrictionTransferDirection::Incoming,
+                None,
+                1,
+                100,
+                19
+            )
+            .unwrap());
+        assert!(!state
+            .is_account_restricted(
+                &account,
+                RestrictionTransferDirection::Outgoing,
+                None,
+                1,
+                100,
+                20
+            )
+            .unwrap());
+
+        let mut lifted = record.clone();
+        lifted.status = RestrictionStatus::Lifted;
+        lifted.lifted_by = Some(Pubkey([0xB2; 32]));
+        lifted.lifted_slot = Some(18);
+        lifted.lift_reason = Some(RestrictionLiftReason::TestnetDrillComplete);
+        state.put_restriction(&lifted).unwrap();
+        assert!(state
+            .get_active_restrictions_for_target(&target, 19, 10)
+            .unwrap()
+            .is_empty());
+
+        drop(state);
+        let reopened = StateStore::open(temp.path()).unwrap();
+        assert_eq!(reopened.get_restriction(id).unwrap(), Some(lifted));
+    }
+
+    #[test]
+    fn test_restriction_batch_overlay_commit_and_rollback() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let account = Pubkey([0xC1; 32]);
+
+        {
+            let mut batch = state.begin_batch();
+            let id = batch.next_restriction_id().unwrap();
+            let record = restriction_test_record(
+                id,
+                RestrictionTarget::AccountAsset {
+                    account,
+                    asset: NATIVE_LICN_ASSET_ID,
+                },
+                RestrictionMode::FrozenAmount { amount: 80 },
+            );
+            batch.put_restriction(&record).unwrap();
+
+            assert_eq!(batch.get_restriction(id).unwrap(), Some(record));
+            assert!(batch
+                .is_account_restricted(
+                    &account,
+                    RestrictionTransferDirection::Outgoing,
+                    Some(&NATIVE_LICN_ASSET_ID),
+                    30,
+                    100,
+                    19
+                )
+                .unwrap());
+            assert!(!state
+                .is_account_restricted(
+                    &account,
+                    RestrictionTransferDirection::Outgoing,
+                    Some(&NATIVE_LICN_ASSET_ID),
+                    30,
+                    100,
+                    19
+                )
+                .unwrap());
+        }
+
+        assert_eq!(
+            state.next_restriction_id().unwrap(),
+            1,
+            "dropped batch must not advance durable restriction counter"
+        );
+
+        let mut batch = state.begin_batch();
+        let id = batch.next_restriction_id().unwrap();
+        let record = restriction_test_record(
+            id,
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Mempool),
+            RestrictionMode::ProtocolPaused,
+        );
+        batch.put_restriction(&record).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        assert!(state
+            .is_protocol_module_paused(ProtocolModuleId::Mempool, 19)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_restriction_query_helpers_cover_contract_code_and_route_targets() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let contract = Pubkey([0xD1; 32]);
+        let code_hash = Hash([0xD2; 32]);
+
+        state
+            .put_restriction(&restriction_test_record(
+                state.next_restriction_id().unwrap(),
+                RestrictionTarget::Contract(contract),
+                RestrictionMode::StateChangingBlocked,
+            ))
+            .unwrap();
+        assert!(!state
+            .is_contract_restricted(&contract, ContractRestrictionAccess::ReadOnly, 19)
+            .unwrap());
+        assert!(state
+            .is_contract_restricted(&contract, ContractRestrictionAccess::StateChanging, 19)
+            .unwrap());
+
+        state
+            .put_restriction(&restriction_test_record(
+                state.next_restriction_id().unwrap(),
+                RestrictionTarget::CodeHash(code_hash),
+                RestrictionMode::DeployBlocked,
+            ))
+            .unwrap();
+        assert!(state.is_code_hash_blocked(&code_hash, 19).unwrap());
+
+        state
+            .put_restriction(&restriction_test_record(
+                state.next_restriction_id().unwrap(),
+                RestrictionTarget::BridgeRoute {
+                    chain_id: "neo-x".to_string(),
+                    asset: "WLICN".to_string(),
+                },
+                RestrictionMode::RoutePaused,
+            ))
+            .unwrap();
+        assert!(state.is_bridge_route_paused("neo-x", "WLICN", 19).unwrap());
+    }
+
+    #[test]
+    fn test_restriction_state_root_and_snapshot_roundtrip() {
+        let source_dir = tempdir().unwrap();
+        let dest_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+
+        let legacy_before = source.compute_state_root_without_restrictions_cold_start();
+        let record = restriction_test_record(
+            source.next_restriction_id().unwrap(),
+            RestrictionTarget::Account(Pubkey([0xE1; 32])),
+            RestrictionMode::Bidirectional,
+        );
+        source.put_restriction(&record).unwrap();
+
+        let legacy_after = source.compute_state_root_without_restrictions_cold_start();
+        let restricted_root = source.compute_state_root_with_restrictions_cold_start();
+        assert_eq!(
+            legacy_before, legacy_after,
+            "legacy schema must ignore restriction records until activated"
+        );
+        assert_ne!(
+            legacy_after, restricted_root,
+            "restriction schema must commit restriction records"
+        );
+
+        source.set_state_root_schema(true).unwrap();
+        assert_eq!(source.compute_state_root_cold_start(), restricted_root);
+
+        let cached_before_second_record = source.compute_state_root_cached();
+        let second_record = restriction_test_record(
+            source.next_restriction_id().unwrap(),
+            RestrictionTarget::Contract(Pubkey([0xE2; 32])),
+            RestrictionMode::Quarantined,
+        );
+        source.put_restriction(&second_record).unwrap();
+        let cached_after_second_record = source.compute_state_root_cached();
+        assert_ne!(
+            cached_before_second_record, cached_after_second_record,
+            "restriction writes must invalidate cached state roots"
+        );
+        let restricted_root = source.compute_state_root_with_restrictions_cold_start();
+        assert_eq!(cached_after_second_record, restricted_root);
+
+        for category in [
+            "restrictions",
+            "restriction_index_target",
+            "restriction_index_code_hash",
+            "stats",
+        ] {
+            let page = source
+                .export_snapshot_category_cursor_untracked(category, None, 1000)
+                .unwrap();
+            dest.import_snapshot_category(category, &page.entries)
+                .unwrap();
+        }
+
+        assert_eq!(dest.get_restriction(record.id).unwrap(), Some(record));
+        assert_eq!(
+            dest.get_restriction(second_record.id).unwrap(),
+            Some(second_record)
+        );
+        assert_eq!(dest.compute_state_root_cold_start(), restricted_root);
     }
 
     #[test]

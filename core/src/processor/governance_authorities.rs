@@ -1,4 +1,5 @@
 use super::*;
+use crate::restrictions::{ProtocolModuleId, RestrictionTarget};
 
 impl TxProcessor {
     pub(super) fn get_governed_governance_authority(
@@ -137,6 +138,104 @@ impl TxProcessor {
         Ok((approval_authority, config))
     }
 
+    fn restriction_create_split_authority(
+        &self,
+        target: &RestrictionTarget,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        match target {
+            RestrictionTarget::BridgeRoute { .. }
+            | RestrictionTarget::ProtocolModule(ProtocolModuleId::Bridge) => {
+                self.get_governed_bridge_committee_admin_authority()
+            }
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::Oracle) => {
+                self.get_governed_oracle_committee_admin_authority()
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn resolve_stored_restriction_approval_authority(
+        &self,
+        requested_authority: &Pubkey,
+        restriction_id: u64,
+    ) -> Result<Option<(Pubkey, crate::multisig::GovernedWalletConfig)>, String> {
+        let Some(record) = self.b_get_restriction(restriction_id)? else {
+            return Ok(None);
+        };
+        let Some(approval_authority) = record.approval_authority else {
+            return Ok(None);
+        };
+        if *requested_authority != approval_authority {
+            return Ok(None);
+        }
+        let Some(config) = self.state.get_governed_wallet_config(&approval_authority)? else {
+            return Err(format!(
+                "Restriction {} approval authority {} is not configured as a governed wallet",
+                restriction_id,
+                approval_authority.to_base58()
+            ));
+        };
+        Ok(Some((approval_authority, config)))
+    }
+
+    fn resolve_restriction_governance_proposal_authority(
+        &self,
+        requested_authority: &Pubkey,
+        action: &GovernanceAction,
+        governance_authority: Pubkey,
+        governance_config: crate::multisig::GovernedWalletConfig,
+    ) -> Result<
+        (
+            Pubkey,
+            Option<Pubkey>,
+            crate::multisig::GovernedWalletConfig,
+        ),
+        String,
+    > {
+        if *requested_authority == governance_authority {
+            return Ok((governance_authority, None, governance_config));
+        }
+
+        if let Some((guardian_authority, guardian_config)) =
+            self.get_governed_incident_guardian_authority()?
+        {
+            if *requested_authority == guardian_authority {
+                self.validate_incident_guardian_restriction_action(action, &guardian_authority)?;
+                return Ok((
+                    governance_authority,
+                    Some(guardian_authority),
+                    guardian_config,
+                ));
+            }
+        }
+
+        match action {
+            GovernanceAction::Restrict { target, .. } => {
+                if let Some((approval_authority, config)) =
+                    self.restriction_create_split_authority(target)?
+                {
+                    if *requested_authority == approval_authority {
+                        return Ok((governance_authority, Some(approval_authority), config));
+                    }
+                }
+            }
+            GovernanceAction::LiftRestriction { restriction_id, .. }
+            | GovernanceAction::ExtendRestriction { restriction_id, .. } => {
+                if let Some((approval_authority, config)) = self
+                    .resolve_stored_restriction_approval_authority(
+                        requested_authority,
+                        *restriction_id,
+                    )?
+                {
+                    return Ok((governance_authority, Some(approval_authority), config));
+                }
+            }
+            _ => {}
+        }
+
+        Err("Governance action authority account mismatch".to_string())
+    }
+
     pub(super) fn resolve_governance_proposal_authority(
         &self,
         requested_authority: &Pubkey,
@@ -206,6 +305,20 @@ impl TxProcessor {
                 );
             }
             return Ok((governance_authority, Some(veto_authority), veto_config));
+        }
+
+        if matches!(
+            action,
+            GovernanceAction::Restrict { .. }
+                | GovernanceAction::LiftRestriction { .. }
+                | GovernanceAction::ExtendRestriction { .. }
+        ) {
+            return self.resolve_restriction_governance_proposal_authority(
+                requested_authority,
+                action,
+                governance_authority,
+                governance_config,
+            );
         }
 
         if self.governance_action_requires_bridge_committee_admin_policy(action)? {

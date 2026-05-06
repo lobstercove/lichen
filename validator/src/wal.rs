@@ -209,12 +209,24 @@ impl ConsensusWal {
     }
 
     /// Record that the validator locked on a value.
-    pub fn log_lock(&mut self, height: u64, round: u32, block_hash: Hash) {
-        self.append(WalEntry::Locked {
+    pub fn log_lock_result(
+        &mut self,
+        height: u64,
+        round: u32,
+        block_hash: Hash,
+    ) -> Result<(), String> {
+        self.append_result(WalEntry::Locked {
             height,
             round,
             block_hash,
-        });
+        })
+    }
+
+    /// Record that the validator locked on a value.
+    pub fn log_lock(&mut self, height: u64, round: u32, block_hash: Hash) {
+        if let Err(e) = self.log_lock_result(height, round, block_hash) {
+            error!("{}", e);
+        }
     }
 
     /// Record a commit decision.
@@ -348,6 +360,24 @@ impl ConsensusWal {
                 }
                 WalEntry::SignedVote(record) => {
                     if last_checkpoint.is_none_or(|cp| record.height > cp) {
+                        // A non-nil precommit is itself evidence that this
+                        // validator locked on that value. The explicit Locked
+                        // WAL entry is written before broadcast in new builds,
+                        // but deriving it here protects recovery from older
+                        // WALs and crashes between SignedVote and Locked.
+                        if record.vote_type == SignedVoteType::Precommit {
+                            if let Some(block_hash) = record.block_hash {
+                                let replace_lock = last_lock
+                                    .map(|(h, r, _)| {
+                                        record.height > h
+                                            || (record.height == h && record.round >= r)
+                                    })
+                                    .unwrap_or(true);
+                                if replace_lock {
+                                    last_lock = Some((record.height, record.round, block_hash));
+                                }
+                            }
+                        }
                         signed_votes.push(record.clone());
                     }
                 }
@@ -384,6 +414,30 @@ pub struct WalRecovery {
     pub last_height_started: Option<u64>,
     /// Signed local votes not superseded by a checkpoint.
     pub signed_votes: Vec<SignedVoteRecord>,
+}
+
+impl WalRecovery {
+    /// Highest recovered local consensus round for `height`.
+    ///
+    /// The WAL still carries the signed-vote records for slashing protection,
+    /// but BFT should not restart from round 0 when the WAL already contains
+    /// many signed rounds for the same height. Restarting at round 0 forces the
+    /// engine to skip each recovered round before it can sign again, which can
+    /// stall liveness after a crash or state repair.
+    pub fn max_recovered_round_for_height(&self, height: u64, validator: &Pubkey) -> Option<u32> {
+        let mut max_round = self
+            .locked_state
+            .and_then(|(lock_height, round, _)| (lock_height == height).then_some(round));
+
+        for record in &self.signed_votes {
+            if record.height == height && &record.validator == validator {
+                max_round =
+                    Some(max_round.map_or(record.round, |current| current.max(record.round)));
+            }
+        }
+
+        max_round
+    }
 }
 
 #[cfg(test)]
@@ -465,5 +519,82 @@ mod tests {
         assert!(err.contains("slashing protection"));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_recovery_derives_lock_from_signed_precommit() {
+        let dir = temp_data_dir("signed-precommit-lock");
+        let kp = keypair(5);
+        let hash = Hash::hash(b"locked-by-precommit");
+        let timestamp = 12345;
+        let precommit = Precommit {
+            height: 12,
+            round: 4,
+            block_hash: Some(hash),
+            validator: kp.pubkey(),
+            signature: kp.sign(&Precommit::signable_bytes(12, 4, &Some(hash), timestamp)),
+            timestamp,
+        };
+
+        let mut wal = ConsensusWal::open(dir.to_str().unwrap());
+        wal.log_height_start(12);
+        wal.log_signed_precommit(&precommit).unwrap();
+
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert_eq!(recovered.locked_state, Some((12, 4, hash)));
+        assert_eq!(recovered.signed_votes.len(), 1);
+
+        let mut wal = ConsensusWal::open(dir.to_str().unwrap());
+        wal.checkpoint(12);
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert_eq!(recovered.locked_state, None);
+        assert!(recovered.signed_votes.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_max_recovered_round_filters_height_and_validator() {
+        let kp = keypair(3);
+        let other = keypair(4);
+        let hash = Hash::hash(b"round-filter");
+        let vote = |height, round, validator: Pubkey| SignedVoteRecord {
+            height,
+            round,
+            vote_type: SignedVoteType::Prevote,
+            block_hash: Some(hash),
+            validator,
+            signature: kp.sign(&Prevote::signable_bytes(height, round, &Some(hash))),
+            timestamp: None,
+        };
+
+        let recovery = WalRecovery {
+            locked_state: Some((11, 2, hash)),
+            last_checkpoint: Some(10),
+            last_height_started: Some(11),
+            signed_votes: vec![
+                vote(11, 1, kp.pubkey()),
+                vote(11, 7, kp.pubkey()),
+                vote(11, 9, other.pubkey()),
+                vote(12, 20, kp.pubkey()),
+            ],
+        };
+
+        assert_eq!(
+            recovery.max_recovered_round_for_height(11, &kp.pubkey()),
+            Some(7)
+        );
+        assert_eq!(
+            recovery.max_recovered_round_for_height(11, &other.pubkey()),
+            Some(9)
+        );
+        assert_eq!(
+            recovery.max_recovered_round_for_height(12, &kp.pubkey()),
+            Some(20)
+        );
+        assert_eq!(
+            recovery.max_recovered_round_for_height(13, &kp.pubkey()),
+            None
+        );
     }
 }

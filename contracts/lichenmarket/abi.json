@@ -116,6 +116,22 @@
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" }
       ]
+    },
+    {
+      "name": "claim_unpaid_payout",
+      "opcode": 13,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_unpaid_payout",
+      "opcode": 14,
+      "params": [
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" }
+      ]
     }
   ]
 }

@@ -5,7 +5,11 @@ use crate::consensus::{
     DEFAULT_BFT_MAX_PHASE_TIMEOUT_MS, DEFAULT_BFT_PRECOMMIT_TIMEOUT_BASE_MS,
     DEFAULT_BFT_PREVOTE_TIMEOUT_BASE_MS, DEFAULT_BFT_PROPOSE_TIMEOUT_BASE_MS,
 };
-use crate::{Account, Pubkey, ValidatorInfo};
+use crate::restrictions::{
+    ProtocolModuleId, RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
+    RestrictionTarget, NATIVE_LICN_ASSET_ID,
+};
+use crate::{Account, Hash, Pubkey, StateStore, ValidatorInfo};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -119,6 +123,238 @@ pub struct GenesisConfig {
     /// frozen forever, embedded in the genesis block for deterministic replay.
     #[serde(default)]
     pub genesis_prices: GenesisPrices,
+
+    /// Optional testnet-only restrictions materialized into consensus state at
+    /// slot 0 for incident-response drills. Mainnet genesis rejects this field
+    /// when non-empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_restrictions: Vec<GenesisRestriction>,
+}
+
+/// Human-facing restriction entry for genesis config files.
+///
+/// The runtime consensus representation is [`RestrictionRecord`]. This config
+/// type keeps genesis JSON ergonomic: addresses are base58 strings, hashes are
+/// hex strings, and IDs are assigned deterministically from config order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisRestriction {
+    pub target: GenesisRestrictionTarget,
+    pub mode: GenesisRestrictionMode,
+
+    #[serde(default = "default_genesis_restriction_reason")]
+    pub reason: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_hash: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_uri_hash: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposer: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_authority: Option<String>,
+
+    #[serde(default)]
+    pub created_slot: u64,
+
+    #[serde(default)]
+    pub created_epoch: u64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_slot: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GenesisRestrictionTarget {
+    Account { account: String },
+    AccountAsset { account: String, asset: String },
+    Asset { asset: String },
+    Contract { contract: String },
+    CodeHash { code_hash: String },
+    BridgeRoute { chain_id: String, asset: String },
+    ProtocolModule { module: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GenesisRestrictionMode {
+    OutgoingOnly,
+    IncomingOnly,
+    Bidirectional,
+    FrozenAmount { amount: u64 },
+    AssetPaused,
+    ExecuteBlocked,
+    StateChangingBlocked,
+    Quarantined,
+    DeployBlocked,
+    RoutePaused,
+    ProtocolPaused,
+    Terminated,
+}
+
+fn default_genesis_restriction_reason() -> String {
+    RestrictionReason::TestnetDrill.as_str().to_string()
+}
+
+fn parse_optional_pubkey(value: &Option<String>, field: &str) -> Result<Option<Pubkey>, String> {
+    value
+        .as_deref()
+        .map(|raw| Pubkey::from_base58(raw).map_err(|err| format!("Invalid {field}: {err}")))
+        .transpose()
+}
+
+fn parse_hash_hex(value: &str, field: &str) -> Result<Hash, String> {
+    let trimmed = value.strip_prefix("0x").unwrap_or(value);
+    Hash::from_hex(trimmed).map_err(|err| format!("Invalid {field}: {err}"))
+}
+
+fn parse_optional_hash(value: &Option<String>, field: &str) -> Result<Option<Hash>, String> {
+    value
+        .as_deref()
+        .map(|raw| parse_hash_hex(raw, field))
+        .transpose()
+}
+
+fn parse_asset_pubkey(value: &str, field: &str) -> Result<Pubkey, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "native" | "licn" | "native_licn" => Ok(NATIVE_LICN_ASSET_ID),
+        _ => Pubkey::from_base58(value).map_err(|err| format!("Invalid {field}: {err}")),
+    }
+}
+
+fn parse_protocol_module(value: &str) -> Result<ProtocolModuleId, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "native" => Ok(ProtocolModuleId::Native),
+        "governance" => Ok(ProtocolModuleId::Governance),
+        "staking" => Ok(ProtocolModuleId::Staking),
+        "moss_stake" | "mossstake" => Ok(ProtocolModuleId::MossStake),
+        "shielded" => Ok(ProtocolModuleId::Shielded),
+        "contracts" | "contract" => Ok(ProtocolModuleId::Contracts),
+        "tokens" | "token" => Ok(ProtocolModuleId::Tokens),
+        "dex" => Ok(ProtocolModuleId::Dex),
+        "lending" => Ok(ProtocolModuleId::Lending),
+        "marketplace" => Ok(ProtocolModuleId::Marketplace),
+        "bridge" => Ok(ProtocolModuleId::Bridge),
+        "custody" => Ok(ProtocolModuleId::Custody),
+        "oracle" => Ok(ProtocolModuleId::Oracle),
+        "validator" | "validators" => Ok(ProtocolModuleId::Validator),
+        "mempool" => Ok(ProtocolModuleId::Mempool),
+        other => Err(format!("Invalid protocol module: {other}")),
+    }
+}
+
+fn parse_restriction_reason(value: &str) -> Result<RestrictionReason, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "exploit_active" => Ok(RestrictionReason::ExploitActive),
+        "stolen_funds" => Ok(RestrictionReason::StolenFunds),
+        "bridge_compromise" => Ok(RestrictionReason::BridgeCompromise),
+        "oracle_compromise" => Ok(RestrictionReason::OracleCompromise),
+        "scam_contract" => Ok(RestrictionReason::ScamContract),
+        "malicious_code_hash" => Ok(RestrictionReason::MaliciousCodeHash),
+        "sanctions_or_legal_order" => Ok(RestrictionReason::SanctionsOrLegalOrder),
+        "phishing_or_impersonation" => Ok(RestrictionReason::PhishingOrImpersonation),
+        "custody_incident" => Ok(RestrictionReason::CustodyIncident),
+        "protocol_bug" => Ok(RestrictionReason::ProtocolBug),
+        "governance_error_correction" => Ok(RestrictionReason::GovernanceErrorCorrection),
+        "false_positive_lift" => Ok(RestrictionReason::FalsePositiveLift),
+        "testnet_drill" => Ok(RestrictionReason::TestnetDrill),
+        other => Err(format!("Invalid restriction reason: {other}")),
+    }
+}
+
+fn is_mainnet_chain_id(chain_id: &str) -> bool {
+    chain_id.to_ascii_lowercase().contains("mainnet")
+}
+
+impl GenesisRestrictionTarget {
+    fn to_restriction_target(&self) -> Result<RestrictionTarget, String> {
+        match self {
+            Self::Account { account } => Ok(RestrictionTarget::Account(
+                Pubkey::from_base58(account)
+                    .map_err(|err| format!("Invalid account target: {err}"))?,
+            )),
+            Self::AccountAsset { account, asset } => Ok(RestrictionTarget::AccountAsset {
+                account: Pubkey::from_base58(account)
+                    .map_err(|err| format!("Invalid account_asset account: {err}"))?,
+                asset: parse_asset_pubkey(asset, "account_asset asset")?,
+            }),
+            Self::Asset { asset } => Ok(RestrictionTarget::Asset(parse_asset_pubkey(
+                asset,
+                "asset target",
+            )?)),
+            Self::Contract { contract } => Ok(RestrictionTarget::Contract(
+                Pubkey::from_base58(contract)
+                    .map_err(|err| format!("Invalid contract target: {err}"))?,
+            )),
+            Self::CodeHash { code_hash } => Ok(RestrictionTarget::CodeHash(parse_hash_hex(
+                code_hash,
+                "code_hash",
+            )?)),
+            Self::BridgeRoute { chain_id, asset } => Ok(RestrictionTarget::BridgeRoute {
+                chain_id: chain_id.clone(),
+                asset: asset.clone(),
+            }),
+            Self::ProtocolModule { module } => Ok(RestrictionTarget::ProtocolModule(
+                parse_protocol_module(module)?,
+            )),
+        }
+    }
+}
+
+impl GenesisRestrictionMode {
+    fn to_restriction_mode(&self) -> RestrictionMode {
+        match self {
+            Self::OutgoingOnly => RestrictionMode::OutgoingOnly,
+            Self::IncomingOnly => RestrictionMode::IncomingOnly,
+            Self::Bidirectional => RestrictionMode::Bidirectional,
+            Self::FrozenAmount { amount } => RestrictionMode::FrozenAmount { amount: *amount },
+            Self::AssetPaused => RestrictionMode::AssetPaused,
+            Self::ExecuteBlocked => RestrictionMode::ExecuteBlocked,
+            Self::StateChangingBlocked => RestrictionMode::StateChangingBlocked,
+            Self::Quarantined => RestrictionMode::Quarantined,
+            Self::DeployBlocked => RestrictionMode::DeployBlocked,
+            Self::RoutePaused => RestrictionMode::RoutePaused,
+            Self::ProtocolPaused => RestrictionMode::ProtocolPaused,
+            Self::Terminated => RestrictionMode::Terminated,
+        }
+    }
+}
+
+impl GenesisRestriction {
+    fn to_record(&self, id: u64, default_authority: Pubkey) -> Result<RestrictionRecord, String> {
+        let record = RestrictionRecord {
+            id,
+            target: self.target.to_restriction_target()?,
+            mode: self.mode.to_restriction_mode(),
+            status: RestrictionStatus::Active,
+            reason: parse_restriction_reason(&self.reason)?,
+            evidence_hash: parse_optional_hash(&self.evidence_hash, "evidence_hash")?,
+            evidence_uri_hash: parse_optional_hash(&self.evidence_uri_hash, "evidence_uri_hash")?,
+            proposer: parse_optional_pubkey(&self.proposer, "proposer")?
+                .unwrap_or(default_authority),
+            authority: parse_optional_pubkey(&self.authority, "authority")?
+                .unwrap_or(default_authority),
+            approval_authority: parse_optional_pubkey(
+                &self.approval_authority,
+                "approval_authority",
+            )?,
+            created_slot: self.created_slot,
+            created_epoch: self.created_epoch,
+            expires_at_slot: self.expires_at_slot,
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        record.validate()?;
+        Ok(record)
+    }
 }
 
 /// Consensus parameters
@@ -447,7 +683,77 @@ impl GenesisConfig {
             ));
         }
 
+        self.validate_initial_restrictions()?;
+
         Ok(())
+    }
+
+    /// Validate genesis restriction config without assigning live state IDs.
+    pub fn validate_initial_restrictions(&self) -> Result<(), String> {
+        if !self.initial_restrictions.is_empty() && is_mainnet_chain_id(&self.chain_id) {
+            return Err(
+                "Initial genesis restrictions are testnet-only and cannot be set on mainnet"
+                    .to_string(),
+            );
+        }
+
+        self.materialize_initial_restrictions(Pubkey([0u8; 32]))
+            .map(|_| ())
+    }
+
+    /// Convert config-facing initial restrictions into deterministic consensus
+    /// records. IDs are 1-based and assigned in config order.
+    pub fn materialize_initial_restrictions(
+        &self,
+        default_authority: Pubkey,
+    ) -> Result<Vec<RestrictionRecord>, String> {
+        if !self.initial_restrictions.is_empty() && is_mainnet_chain_id(&self.chain_id) {
+            return Err(
+                "Initial genesis restrictions are testnet-only and cannot be set on mainnet"
+                    .to_string(),
+            );
+        }
+
+        self.initial_restrictions
+            .iter()
+            .enumerate()
+            .map(|(index, restriction)| {
+                let id = u64::try_from(index)
+                    .ok()
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| "Too many initial genesis restrictions".to_string())?;
+                restriction.to_record(id, default_authority)
+            })
+            .collect()
+    }
+
+    /// Seed deterministic initial restrictions into an empty genesis state DB.
+    ///
+    /// This reserves IDs through the normal state counter, stores records through
+    /// the consensus restriction registry, and activates the state-root schema
+    /// that commits restriction state when at least one record is seeded.
+    pub fn seed_initial_restrictions(
+        &self,
+        state: &StateStore,
+        default_authority: Pubkey,
+    ) -> Result<usize, String> {
+        let records = self.materialize_initial_restrictions(default_authority)?;
+        for record in &records {
+            let allocated_id = state.next_restriction_id()?;
+            if allocated_id != record.id {
+                return Err(format!(
+                    "Initial genesis restriction ID mismatch: expected {}, allocated {}",
+                    record.id, allocated_id
+                ));
+            }
+            state.put_restriction(record)?;
+        }
+
+        if !records.is_empty() {
+            state.set_state_root_schema(true)?;
+        }
+
+        Ok(records.len())
     }
 
     /// Convert to runtime accounts
@@ -603,6 +909,7 @@ impl GenesisConfig {
                 enable_slashing: true,
             },
             genesis_prices: GenesisPrices::default(),
+            initial_restrictions: vec![],
         }
     }
 
@@ -657,6 +964,7 @@ impl GenesisConfig {
                 enable_slashing: true,
             },
             genesis_prices: GenesisPrices::default(),
+            initial_restrictions: vec![],
         }
     }
 }
@@ -664,11 +972,47 @@ impl GenesisConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    fn test_pubkey(byte: u8) -> Pubkey {
+        Pubkey([byte; 32])
+    }
+
+    fn test_genesis_restriction(account: Pubkey) -> GenesisRestriction {
+        GenesisRestriction {
+            target: GenesisRestrictionTarget::Account {
+                account: account.to_base58(),
+            },
+            mode: GenesisRestrictionMode::OutgoingOnly,
+            reason: "testnet_drill".to_string(),
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: None,
+            authority: None,
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: Some(10),
+        }
+    }
 
     #[test]
     fn test_default_testnet_valid() {
         let genesis = GenesisConfig::default_testnet();
         assert!(genesis.validate().is_ok());
+        assert!(genesis.initial_restrictions.is_empty());
+        let json = serde_json::to_string(&genesis).unwrap();
+        assert!(
+            !json.contains("initial_restrictions"),
+            "empty initial restrictions should be omitted from genesis JSON"
+        );
+    }
+
+    #[test]
+    fn test_default_mainnet_has_no_initial_restrictions() {
+        let genesis = GenesisConfig::default_mainnet();
+        assert!(genesis.validate().is_ok());
+        assert!(genesis.initial_restrictions.is_empty());
     }
 
     #[test]
@@ -750,5 +1094,151 @@ mod tests {
             .validate()
             .expect_err("max timeout below a base timeout must fail validation");
         assert!(error.contains("max phase timeout"));
+    }
+
+    #[test]
+    fn test_validate_rejects_mainnet_initial_restrictions() {
+        let mut genesis = GenesisConfig::default_mainnet();
+        genesis
+            .initial_restrictions
+            .push(test_genesis_restriction(test_pubkey(1)));
+
+        let error = genesis
+            .validate()
+            .expect_err("mainnet genesis restrictions must be rejected");
+        assert!(error.contains("testnet-only"));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_initial_restriction_record() {
+        let mut genesis = GenesisConfig::default_testnet();
+        let mut restriction = test_genesis_restriction(test_pubkey(2));
+        restriction.mode = GenesisRestrictionMode::AssetPaused;
+        genesis.initial_restrictions.push(restriction);
+
+        let error = genesis
+            .validate()
+            .expect_err("account target cannot use asset pause mode");
+        assert!(error.contains("not valid for target type account"));
+    }
+
+    #[test]
+    fn test_validate_rejects_initial_restriction_missing_required_evidence() {
+        let mut genesis = GenesisConfig::default_testnet();
+        let mut restriction = test_genesis_restriction(test_pubkey(3));
+        restriction.reason = "stolen_funds".to_string();
+        genesis.initial_restrictions.push(restriction);
+
+        let error = genesis
+            .validate()
+            .expect_err("non-drill reason must include evidence");
+        assert!(error.contains("requires evidence_hash or evidence_uri_hash"));
+    }
+
+    #[test]
+    fn test_initial_restrictions_materialize_deterministic_ids_and_native_alias() {
+        let authority = test_pubkey(9);
+        let account = test_pubkey(4);
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis
+            .initial_restrictions
+            .push(test_genesis_restriction(account));
+        genesis.initial_restrictions.push(GenesisRestriction {
+            target: GenesisRestrictionTarget::AccountAsset {
+                account: account.to_base58(),
+                asset: "native_licn".to_string(),
+            },
+            mode: GenesisRestrictionMode::FrozenAmount { amount: 42 },
+            reason: "testnet_drill".to_string(),
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: None,
+            authority: None,
+            approval_authority: None,
+            created_slot: 0,
+            created_epoch: 0,
+            expires_at_slot: Some(20),
+        });
+
+        let records = genesis
+            .materialize_initial_restrictions(authority)
+            .expect("materialize initial restrictions");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[1].id, 2);
+        assert_eq!(records[0].proposer, authority);
+        assert_eq!(records[0].authority, authority);
+        assert_eq!(
+            records[1].target,
+            RestrictionTarget::AccountAsset {
+                account,
+                asset: NATIVE_LICN_ASSET_ID,
+            }
+        );
+    }
+
+    #[test]
+    fn test_seed_initial_restrictions_reserves_ids_and_activates_schema() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let authority = test_pubkey(10);
+        let account = test_pubkey(11);
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis
+            .initial_restrictions
+            .push(test_genesis_restriction(account));
+
+        let seeded = genesis
+            .seed_initial_restrictions(&state, authority)
+            .expect("seed initial restrictions");
+
+        assert_eq!(seeded, 1);
+        let stored = state.get_restriction(1).unwrap().expect("restriction 1");
+        assert_eq!(stored.target, RestrictionTarget::Account(account));
+        assert_eq!(stored.authority, authority);
+        assert_eq!(state.get_state_root_schema(), Some(true));
+        assert_eq!(
+            state.next_restriction_id().unwrap(),
+            2,
+            "post-genesis IDs must continue after seeded records"
+        );
+    }
+
+    #[test]
+    fn test_seeded_initial_restrictions_snapshot_roundtrip() {
+        let source_dir = tempdir().unwrap();
+        let dest_dir = tempdir().unwrap();
+        let source = StateStore::open(source_dir.path()).unwrap();
+        let dest = StateStore::open(dest_dir.path()).unwrap();
+        let authority = test_pubkey(12);
+        let account = test_pubkey(13);
+        let mut genesis = GenesisConfig::default_testnet();
+        genesis
+            .initial_restrictions
+            .push(test_genesis_restriction(account));
+        genesis
+            .seed_initial_restrictions(&source, authority)
+            .expect("seed source restrictions");
+
+        let source_root = source.compute_state_root_cold_start();
+        for category in [
+            "restrictions",
+            "restriction_index_target",
+            "restriction_index_code_hash",
+            "stats",
+        ] {
+            let page = source
+                .export_snapshot_category_cursor_untracked(category, None, 1000)
+                .unwrap();
+            dest.import_snapshot_category(category, &page.entries)
+                .unwrap();
+        }
+
+        assert_eq!(
+            dest.get_restriction(1).unwrap(),
+            source.get_restriction(1).unwrap()
+        );
+        assert_eq!(dest.compute_state_root_cold_start(), source_root);
     }
 }

@@ -623,11 +623,47 @@ impl TxProcessor {
 
                                 match self.state.get_account(contract_addr) {
                                     Ok(Some(account)) if account.executable => {
-                                        if let Ok(contract) =
+                                        if let Ok(mut contract) =
                                             serde_json::from_slice::<ContractAccount>(&account.data)
                                         {
                                             let current_slot =
                                                 self.state.get_last_slot().unwrap_or(0);
+                                            if let Err(error) =
+                                                derive_contract_lifecycle_from_state_store(
+                                                    &self.state,
+                                                    contract_addr,
+                                                    &mut contract,
+                                                    current_slot,
+                                                )
+                                            {
+                                                return SimulationResult {
+                                                    success: false,
+                                                    fee: total_fee,
+                                                    logs,
+                                                    error: Some(error),
+                                                    compute_used: total_compute,
+                                                    return_data: last_return_data,
+                                                    return_code: last_return_code,
+                                                    state_changes: total_state_changes,
+                                                };
+                                            }
+                                            if let Err(error) = contract
+                                                .validate_lifecycle_for_execution(
+                                                    &function, false, value,
+                                                )
+                                            {
+                                                return SimulationResult {
+                                                    success: false,
+                                                    fee: total_fee,
+                                                    logs,
+                                                    error: Some(error),
+                                                    compute_used: total_compute,
+                                                    return_data: last_return_data,
+                                                    return_code: last_return_code,
+                                                    state_changes: total_state_changes,
+                                                };
+                                            }
+
                                             let live_storage = self
                                                 .state
                                                 .load_contract_storage_map(contract_addr)

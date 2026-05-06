@@ -226,14 +226,19 @@ fn increment_counter_saturating(key: &[u8]) {
     storage_set(key, &u64_to_bytes(current.saturating_add(1)));
 }
 
-fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
-    if amount == 0 {
-        return;
-    }
+fn unpaid_payout_key(token: Address, recipient: Address) -> Vec<u8> {
     let mut key = b"unpaid_payout:".to_vec();
     key.extend_from_slice(&token.0);
     key.push(b':');
     key.extend_from_slice(&recipient.0);
+    key
+}
+
+fn record_unpaid_payout(token: Address, recipient: Address, amount: u64) {
+    if amount == 0 {
+        return;
+    }
+    let key = unpaid_payout_key(token, recipient);
     let current = stored_u64(&key);
     storage_set(&key, &u64_to_bytes(current.saturating_add(amount)));
 }
@@ -1481,6 +1486,80 @@ pub extern "C" fn get_escrow(job_id: u64) -> u32 {
         }
         None => 1,
     }
+}
+
+/// Claim an unpaid payout recorded after a partial dispute split.
+/// This remains available while paused so recipients can exit after restrictions lift.
+///
+/// Returns: 0 success, 2 nothing owed, 20 reentrancy, 32 transfer failed,
+///          98 invalid pointer, 200 caller spoofing.
+#[no_mangle]
+pub extern "C" fn claim_unpaid_payout(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 20;
+    }
+
+    let caller = match read_address32(caller_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+    let token = match read_address32(token_ptr) {
+        Some(addr) => addr,
+        None => {
+            reentrancy_exit();
+            return 98;
+        }
+    };
+
+    if !signer_matches(&caller) {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let token = Address(token);
+    let recipient = Address(caller);
+    let key = unpaid_payout_key(token, recipient);
+    let amount = stored_u64(&key);
+    if amount == 0 {
+        reentrancy_exit();
+        return 2;
+    }
+
+    storage_set(&key, &u64_to_bytes(0));
+    match transfer_token_or_native(token, get_contract_address(), recipient, amount) {
+        Ok(true) => {
+            lichen_sdk::set_return_data(&u64_to_bytes(amount));
+            reentrancy_exit();
+            0
+        }
+        Ok(false) | Err(_) => {
+            storage_set(&key, &u64_to_bytes(amount));
+            reentrancy_exit();
+            32
+        }
+    }
+}
+
+/// Query an unpaid compute-market payout.
+#[no_mangle]
+pub extern "C" fn get_unpaid_payout(token_ptr: *const u8, recipient_ptr: *const u8) -> u32 {
+    let token = match read_address32(token_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+    let recipient = match read_address32(recipient_ptr) {
+        Some(addr) => addr,
+        None => return 98,
+    };
+
+    lichen_sdk::set_return_data(&u64_to_bytes(stored_u64(&unpaid_payout_key(
+        Address(token),
+        Address(recipient),
+    ))));
+    0
 }
 
 // ============================================================================
@@ -2883,6 +2962,54 @@ mod tests {
         assert_eq!(bytes_to_u64(&escrowed), 0);
         let unpaid =
             test_mock::get_storage(&unpaid_payout_key(&TEST_TOKEN_ADDR, &provider_addr)).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 4000);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_retries_after_failed_transfer() {
+        setup();
+        let provider_addr = [1u8; 32];
+        let key = unpaid_payout_key(&TEST_TOKEN_ADDR, &provider_addr);
+        storage_set(&key, &u64_to_bytes(4000));
+
+        assert_eq!(
+            get_unpaid_payout(TEST_TOKEN_ADDR.as_ptr(), provider_addr.as_ptr()),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 4000);
+
+        test_mock::set_caller(provider_addr);
+        test_mock::set_cross_call_response(Some(2u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            claim_unpaid_payout(provider_addr.as_ptr(), TEST_TOKEN_ADDR.as_ptr()),
+            32
+        );
+        let unpaid = test_mock::get_storage(&key).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 4000);
+
+        test_mock::set_cross_call_response(Some(1u32.to_le_bytes().to_vec()));
+        assert_eq!(
+            claim_unpaid_payout(provider_addr.as_ptr(), TEST_TOKEN_ADDR.as_ptr()),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 4000);
+        let unpaid = test_mock::get_storage(&key).unwrap();
+        assert_eq!(bytes_to_u64(&unpaid), 0);
+    }
+
+    #[test]
+    fn test_claim_unpaid_payout_rejects_caller_spoof() {
+        setup();
+        let provider_addr = [1u8; 32];
+        let key = unpaid_payout_key(&TEST_TOKEN_ADDR, &provider_addr);
+        storage_set(&key, &u64_to_bytes(4000));
+
+        test_mock::set_caller([9u8; 32]);
+        assert_eq!(
+            claim_unpaid_payout(provider_addr.as_ptr(), TEST_TOKEN_ADDR.as_ptr()),
+            200
+        );
+        let unpaid = test_mock::get_storage(&key).unwrap();
         assert_eq!(bytes_to_u64(&unpaid), 4000);
     }
 

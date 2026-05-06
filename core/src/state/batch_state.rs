@@ -1,5 +1,9 @@
 use super::evm_state;
 use super::*;
+use crate::restrictions::{
+    restriction_mode_blocks_transfer, RestrictionTarget, RestrictionTransferDirection,
+    NATIVE_LICN_ASSET_ID,
+};
 
 impl StateStore {
     // ─── Atomic Batch API (T1.4 / T3.1) ─────────────────────────────
@@ -32,6 +36,10 @@ impl StateStore {
             governance_proposal_overlay: std::collections::HashMap::new(),
             governance_proposal_counter: None,
             pending_governance_change_overlay: std::collections::HashMap::new(),
+            restriction_overlay: std::collections::HashMap::new(),
+            restriction_target_index_overlay: std::collections::HashMap::new(),
+            restriction_code_hash_index_overlay: std::collections::HashMap::new(),
+            restriction_counter: None,
             contract_deploy_nonce_overlay: std::collections::HashMap::new(),
             new_programs: 0,
             event_seq: 0,
@@ -340,6 +348,24 @@ impl StateBatch {
         let mut from_account = self
             .get_account(from)?
             .ok_or_else(|| "Sender account not found".to_string())?;
+        let slot = self.get_last_slot()?;
+        self.ensure_native_transfer_not_restricted(
+            from,
+            RestrictionTransferDirection::Outgoing,
+            spores,
+            from_account.spendable,
+            slot,
+            "sender",
+        )?;
+        self.ensure_native_transfer_not_restricted(
+            to,
+            RestrictionTransferDirection::Incoming,
+            spores,
+            0,
+            slot,
+            "recipient",
+        )?;
+
         from_account
             .deduct_spendable(spores)
             .map_err(|_| "Insufficient spendable balance".to_string())?;
@@ -356,6 +382,41 @@ impl StateBatch {
 
         self.put_account(from, &from_account)?;
         self.put_account(to, &to_account)?;
+        Ok(())
+    }
+
+    fn ensure_native_transfer_not_restricted(
+        &self,
+        account: &Pubkey,
+        direction: RestrictionTransferDirection,
+        amount: u64,
+        spendable: u64,
+        slot: u64,
+        role: &str,
+    ) -> Result<(), String> {
+        let account_target = RestrictionTarget::Account(*account);
+        for record in self.get_active_restrictions_for_target(&account_target, slot, 0)? {
+            if restriction_mode_blocks_transfer(&record.mode, direction, amount, spendable) {
+                return Err(format!(
+                    "Native transfer blocked by active {} account restriction {}",
+                    role, record.id
+                ));
+            }
+        }
+
+        let asset_target = RestrictionTarget::AccountAsset {
+            account: *account,
+            asset: NATIVE_LICN_ASSET_ID,
+        };
+        for record in self.get_active_restrictions_for_target(&asset_target, slot, 0)? {
+            if restriction_mode_blocks_transfer(&record.mode, direction, amount, spendable) {
+                return Err(format!(
+                    "Native transfer blocked by active {} account-asset restriction {}",
+                    role, record.id
+                ));
+            }
+        }
+
         Ok(())
     }
 

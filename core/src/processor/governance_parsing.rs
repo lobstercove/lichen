@@ -1,4 +1,163 @@
 use super::*;
+use crate::restrictions::{
+    ProtocolModuleId, RestrictionLiftReason, RestrictionMode, RestrictionReason, RestrictionTarget,
+    MAX_BRIDGE_ROUTE_COMPONENT_LEN,
+};
+
+const RESTRICT_FLAG_EVIDENCE_HASH: u8 = 0x01;
+const RESTRICT_FLAG_EVIDENCE_URI_HASH: u8 = 0x02;
+const RESTRICT_FLAG_EXPIRES_AT_SLOT: u8 = 0x04;
+const RESTRICT_FLAGS_ALLOWED: u8 =
+    RESTRICT_FLAG_EVIDENCE_HASH | RESTRICT_FLAG_EVIDENCE_URI_HASH | RESTRICT_FLAG_EXPIRES_AT_SLOT;
+
+const EXTEND_FLAG_EXPIRES_AT_SLOT: u8 = 0x01;
+const EXTEND_FLAG_EVIDENCE_HASH: u8 = 0x02;
+const EXTEND_FLAGS_ALLOWED: u8 = EXTEND_FLAG_EXPIRES_AT_SLOT | EXTEND_FLAG_EVIDENCE_HASH;
+
+struct GovernanceActionReader<'a> {
+    action: &'static str,
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> GovernanceActionReader<'a> {
+    fn new(action: &'static str, data: &'a [u8]) -> Self {
+        Self {
+            action,
+            data,
+            offset: 0,
+        }
+    }
+
+    fn read_exact(&mut self, len: usize, field: &str) -> Result<&'a [u8], String> {
+        if self.data.len().saturating_sub(self.offset) < len {
+            return Err(format!("{} payload truncated at {}", self.action, field));
+        }
+        let start = self.offset;
+        self.offset += len;
+        Ok(&self.data[start..start + len])
+    }
+
+    fn read_u8(&mut self, field: &str) -> Result<u8, String> {
+        Ok(self.read_exact(1, field)?[0])
+    }
+
+    fn read_u16_le(&mut self, field: &str) -> Result<u16, String> {
+        let bytes = self.read_exact(2, field)?;
+        Ok(u16::from_le_bytes(bytes.try_into().map_err(|_| {
+            format!("{} invalid u16 encoding for {}", self.action, field)
+        })?))
+    }
+
+    fn read_u64_le(&mut self, field: &str) -> Result<u64, String> {
+        let bytes = self.read_exact(8, field)?;
+        Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
+            format!("{} invalid u64 encoding for {}", self.action, field)
+        })?))
+    }
+
+    fn read_pubkey(&mut self, field: &str) -> Result<Pubkey, String> {
+        let bytes = self.read_exact(32, field)?;
+        let mut pubkey = [0u8; 32];
+        pubkey.copy_from_slice(bytes);
+        Ok(Pubkey(pubkey))
+    }
+
+    fn read_hash(&mut self, field: &str) -> Result<Hash, String> {
+        let bytes = self.read_exact(32, field)?;
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(bytes);
+        Ok(Hash(hash))
+    }
+
+    fn read_limited_utf8(&mut self, field: &str) -> Result<String, String> {
+        let len = self.read_u16_le(&format!("{}_len", field))? as usize;
+        if len == 0 {
+            return Err(format!("{} {} cannot be empty", self.action, field));
+        }
+        if len > MAX_BRIDGE_ROUTE_COMPONENT_LEN {
+            return Err(format!(
+                "{} {} length {} exceeds {}",
+                self.action, field, len, MAX_BRIDGE_ROUTE_COMPONENT_LEN
+            ));
+        }
+        let bytes = self.read_exact(len, field)?;
+        std::str::from_utf8(bytes)
+            .map(|value| value.to_string())
+            .map_err(|_| format!("{} {} must be valid UTF-8", self.action, field))
+    }
+
+    fn finish(&self) -> Result<(), String> {
+        if self.offset != self.data.len() {
+            return Err(format!(
+                "{} payload has {} trailing bytes",
+                self.action,
+                self.data.len() - self.offset
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn parse_restriction_target(
+    reader: &mut GovernanceActionReader<'_>,
+) -> Result<RestrictionTarget, String> {
+    let target_type = reader.read_u8("target_type")?;
+    let target = match target_type {
+        0 => RestrictionTarget::Account(reader.read_pubkey("account")?),
+        1 => RestrictionTarget::AccountAsset {
+            account: reader.read_pubkey("account")?,
+            asset: reader.read_pubkey("asset")?,
+        },
+        2 => RestrictionTarget::Asset(reader.read_pubkey("asset")?),
+        3 => RestrictionTarget::Contract(reader.read_pubkey("contract")?),
+        4 => RestrictionTarget::CodeHash(reader.read_hash("code_hash")?),
+        5 => RestrictionTarget::BridgeRoute {
+            chain_id: reader.read_limited_utf8("chain_id")?,
+            asset: reader.read_limited_utf8("asset")?,
+        },
+        6 => {
+            let module_id = reader.read_u8("module_id")?;
+            RestrictionTarget::ProtocolModule(ProtocolModuleId::from_u8(module_id).ok_or_else(
+                || format!("{} unknown protocol module id {}", reader.action, module_id),
+            )?)
+        }
+        _ => {
+            return Err(format!(
+                "{} unknown restriction target type {}",
+                reader.action, target_type
+            ));
+        }
+    };
+    target
+        .validate()
+        .map_err(|e| format!("{} {}", reader.action, e))?;
+    Ok(target)
+}
+
+fn parse_restriction_mode(
+    reader: &mut GovernanceActionReader<'_>,
+) -> Result<RestrictionMode, String> {
+    let mode_id = reader.read_u8("restriction_mode")?;
+    let frozen_amount = if mode_id == 3 {
+        Some(reader.read_u64_le("frozen_amount")?)
+    } else {
+        None
+    };
+    let mode = RestrictionMode::from_u8(mode_id, frozen_amount)
+        .ok_or_else(|| format!("{} unknown restriction mode {}", reader.action, mode_id))?;
+    mode.validate()
+        .map_err(|e| format!("{} {}", reader.action, e))?;
+    Ok(mode)
+}
+
+fn parse_restriction_reason(
+    reader: &mut GovernanceActionReader<'_>,
+) -> Result<RestrictionReason, String> {
+    let reason_id = reader.read_u8("restriction_reason")?;
+    RestrictionReason::from_u8(reason_id)
+        .ok_or_else(|| format!("{} unknown restriction reason {}", reader.action, reason_id))
+}
 
 impl TxProcessor {
     pub(super) fn parse_symbol_registration_fields(
@@ -145,6 +304,110 @@ impl TxProcessor {
         }
 
         Ok(())
+    }
+
+    fn parse_restrict_governance_action(&self, data: &[u8]) -> Result<GovernanceAction, String> {
+        let mut reader = GovernanceActionReader::new("Restrict", data);
+        let target = parse_restriction_target(&mut reader)?;
+        let mode = parse_restriction_mode(&mut reader)?;
+        let reason = parse_restriction_reason(&mut reader)?;
+        let flags = reader.read_u8("flags")?;
+        if flags & !RESTRICT_FLAGS_ALLOWED != 0 {
+            return Err(format!("Restrict unexpected flags 0x{:02x}", flags));
+        }
+
+        let evidence_hash = if flags & RESTRICT_FLAG_EVIDENCE_HASH != 0 {
+            Some(reader.read_hash("evidence_hash")?)
+        } else {
+            None
+        };
+        let evidence_uri_hash = if flags & RESTRICT_FLAG_EVIDENCE_URI_HASH != 0 {
+            Some(reader.read_hash("evidence_uri_hash")?)
+        } else {
+            None
+        };
+        let expires_at_slot = if flags & RESTRICT_FLAG_EXPIRES_AT_SLOT != 0 {
+            Some(reader.read_u64_le("expires_at_slot")?)
+        } else {
+            None
+        };
+        reader.finish()?;
+
+        if reason.requires_evidence() && evidence_hash.is_none() && evidence_uri_hash.is_none() {
+            return Err(format!(
+                "Restrict reason {} requires evidence_hash or evidence_uri_hash",
+                reason.as_str()
+            ));
+        }
+
+        Ok(GovernanceAction::Restrict {
+            target,
+            mode,
+            reason,
+            evidence_hash,
+            evidence_uri_hash,
+            expires_at_slot,
+        })
+    }
+
+    fn parse_lift_restriction_governance_action(
+        &self,
+        data: &[u8],
+    ) -> Result<GovernanceAction, String> {
+        let mut reader = GovernanceActionReader::new("LiftRestriction", data);
+        let restriction_id = reader.read_u64_le("restriction_id")?;
+        if restriction_id == 0 {
+            return Err("LiftRestriction restriction_id must be greater than zero".to_string());
+        }
+        let reason_id = reader.read_u8("lift_reason")?;
+        let reason = RestrictionLiftReason::from_u8(reason_id).ok_or_else(|| {
+            format!(
+                "LiftRestriction unknown restriction lift reason {}",
+                reason_id
+            )
+        })?;
+        reader.finish()?;
+
+        Ok(GovernanceAction::LiftRestriction {
+            restriction_id,
+            reason,
+        })
+    }
+
+    fn parse_extend_restriction_governance_action(
+        &self,
+        data: &[u8],
+    ) -> Result<GovernanceAction, String> {
+        let mut reader = GovernanceActionReader::new("ExtendRestriction", data);
+        let restriction_id = reader.read_u64_le("restriction_id")?;
+        if restriction_id == 0 {
+            return Err("ExtendRestriction restriction_id must be greater than zero".to_string());
+        }
+        let flags = reader.read_u8("flags")?;
+        if flags & !EXTEND_FLAGS_ALLOWED != 0 {
+            return Err(format!(
+                "ExtendRestriction unexpected flags 0x{:02x}",
+                flags
+            ));
+        }
+
+        let new_expires_at_slot = if flags & EXTEND_FLAG_EXPIRES_AT_SLOT != 0 {
+            Some(reader.read_u64_le("new_expires_at_slot")?)
+        } else {
+            None
+        };
+        let evidence_hash = if flags & EXTEND_FLAG_EVIDENCE_HASH != 0 {
+            Some(reader.read_hash("evidence_hash")?)
+        } else {
+            None
+        };
+        reader.finish()?;
+
+        Ok(GovernanceAction::ExtendRestriction {
+            restriction_id,
+            new_expires_at_slot,
+            evidence_hash,
+        })
     }
 
     pub(super) fn tx_updates_governance_fee_distribution(tx: &Transaction) -> bool {
@@ -407,6 +670,13 @@ impl TxProcessor {
                     contract: ix.accounts[2],
                     abi,
                 }
+            }
+            GOVERNANCE_ACTION_RESTRICT => self.parse_restrict_governance_action(&ix.data[2..])?,
+            GOVERNANCE_ACTION_LIFT_RESTRICTION => {
+                self.parse_lift_restriction_governance_action(&ix.data[2..])?
+            }
+            GOVERNANCE_ACTION_EXTEND_RESTRICTION => {
+                self.parse_extend_restriction_governance_action(&ix.data[2..])?
             }
             action_type => {
                 return Err(format!("Unknown governance action type {}", action_type));

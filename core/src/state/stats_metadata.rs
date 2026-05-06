@@ -1093,9 +1093,9 @@ impl StateStore {
         }
     }
 
-    /// AUDIT-FIX B-1: Acquire treasury lock to serialize concurrent treasury
+    /// Acquire the fee-account lock to serialize concurrent payer/treasury
     /// read-modify-write operations during parallel fee charging.
-    /// Returns a MutexGuard that must be held for the entire treasury RMW cycle.
+    /// Returns a MutexGuard that must be held through the final RocksDB write.
     pub fn lock_treasury(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
         self.treasury_lock
             .lock()

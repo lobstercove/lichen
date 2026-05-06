@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lichen_core::{Keypair, Pubkey};
+use lichen_core::{Hash, Keypair, Pubkey};
 use std::path::PathBuf;
 
 use crate::cli_args::ContractTemplate;
@@ -47,6 +47,13 @@ pub(super) async fn prepare_deploy(
     let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
     let deployer = keypair_mgr.load_keypair(&path)?;
     let wasm_code = load_wasm_code(&contract, DEPLOY_WASM_VALIDATION)?;
+    let code_hash = Hash::hash(&wasm_code);
+    if client.is_code_hash_deploy_blocked(&code_hash).await? {
+        anyhow::bail!(
+            "Deployment blocked: code hash {} has an active DeployBlocked restriction",
+            code_hash.to_hex()
+        );
+    }
     let contract_addr = derive_contract_address(client, &deployer, &wasm_code).await;
     let metadata = parse_metadata(metadata)?;
     let init_data = build_init_data(
