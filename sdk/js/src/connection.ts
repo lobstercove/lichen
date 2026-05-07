@@ -192,6 +192,16 @@ export class Connection {
     return data.result;
   }
 
+  /**
+   * Make a raw JSON-RPC request.
+   *
+   * SDK feature clients use this to expose typed wrappers without duplicating
+   * timeout, HTTP, and JSON-RPC error handling.
+   */
+  async rpcRequest<T = any>(method: string, params: any[] = []): Promise<T> {
+    return this.rpc(method, params) as Promise<T>;
+  }
+
   // ============================================================================
   // BASIC QUERIES
   // ============================================================================

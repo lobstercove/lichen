@@ -19,7 +19,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "tsc --noEmit",
+    "test": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit && npm run test:restrictions",
+    "test:restrictions": "npm run build && node test_restrictions_client.js",
     "prepare": "npm run build"
   },
   "keywords": [
