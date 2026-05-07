@@ -11011,10 +11011,10 @@ fn parse_restriction_movement_param(
             code: -32602,
             message: "Missing account".to_string(),
         })?;
-    let account = Pubkey::from_base58(account_str).map_err(|error| RpcError {
-        code: -32602,
-        message: format!("Invalid account pubkey: {}", error),
-    })?;
+    let account = parse_pubkey_value(
+        &serde_json::Value::String(account_str.to_string()),
+        "account",
+    )?;
 
     let asset = object
         .get("asset")
@@ -11024,16 +11024,16 @@ fn parse_restriction_movement_param(
         })
         .and_then(parse_restriction_asset_param)?;
 
-    let amount = object.get("amount").and_then(|value| {
-        value
-            .as_u64()
-            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
-    });
+    let amount = object
+        .get("amount")
+        .map(|value| parse_u64_value(value, "amount"))
+        .transpose()?
+        .unwrap_or(0);
 
     Ok(RestrictionMovementParam {
         account,
         asset,
-        amount: amount.unwrap_or(0),
+        amount,
     })
 }
 
@@ -11043,19 +11043,13 @@ fn movement_spendable(state: &RpcState, account: &Pubkey, asset: &Pubkey) -> Res
             .state
             .get_account(account)
             .map(|account| account.map(|account| account.spendable).unwrap_or(0))
-            .map_err(|error| RpcError {
-                code: -32000,
-                message: format!("Database error: {}", error),
-            });
+            .map_err(db_error);
     }
 
     state
         .state
         .get_token_balance(asset, account)
-        .map_err(|error| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", error),
-        })
+        .map_err(db_error)
 }
 
 fn active_movement_restrictions(
@@ -11074,10 +11068,7 @@ fn active_movement_restrictions(
         state
             .state
             .get_active_restrictions_for_target(&account_target, slot, 0)
-            .map_err(|error| RpcError {
-                code: -32000,
-                message: format!("Database error: {}", error),
-            })?
+            .map_err(db_error)?
             .into_iter()
             .filter(|record| {
                 lichen_core::restriction_mode_blocks_transfer(
@@ -11097,10 +11088,7 @@ fn active_movement_restrictions(
         state
             .state
             .get_active_restrictions_for_target(&account_asset_target, slot, 0)
-            .map_err(|error| RpcError {
-                code: -32000,
-                message: format!("Database error: {}", error),
-            })?
+            .map_err(db_error)?
             .into_iter()
             .filter(|record| {
                 lichen_core::restriction_mode_blocks_transfer(
@@ -11117,10 +11105,7 @@ fn active_movement_restrictions(
         state
             .state
             .get_active_restrictions_for_target(&asset_target, slot, 0)
-            .map_err(|error| RpcError {
-                code: -32000,
-                message: format!("Database error: {}", error),
-            })?
+            .map_err(db_error)?
             .into_iter()
             .filter(|record| matches!(record.mode, RestrictionMode::AssetPaused)),
     );
@@ -11163,10 +11148,7 @@ fn movement_restriction_status(
     kind: RestrictionMovementKind,
 ) -> Result<serde_json::Value, RpcError> {
     let parsed = parse_restriction_movement_param(params, kind)?;
-    let slot = state.state.get_last_slot().map_err(|error| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", error),
-    })?;
+    let slot = current_restriction_slot(state)?;
     let spendable = movement_spendable(state, &parsed.account, &parsed.asset)?;
     let direction = match kind {
         RestrictionMovementKind::Send => RestrictionTransferDirection::Outgoing,
@@ -11240,11 +11222,8 @@ fn parse_can_transfer_param(
         .and_then(parse_restriction_asset_param)?;
     let amount = object
         .get("amount")
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
-        })
+        .map(|value| parse_u64_value(value, "amount"))
+        .transpose()?
         .unwrap_or(0);
     let from = object
         .get("from")
@@ -11255,10 +11234,7 @@ fn parse_can_transfer_param(
             message: "Missing from".to_string(),
         })
         .and_then(|value| {
-            Pubkey::from_base58(value).map_err(|error| RpcError {
-                code: -32602,
-                message: format!("Invalid from pubkey: {}", error),
-            })
+            parse_pubkey_value(&serde_json::Value::String(value.to_string()), "from")
         })?;
     let to = object
         .get("to")
@@ -11269,10 +11245,7 @@ fn parse_can_transfer_param(
             message: "Missing to".to_string(),
         })
         .and_then(|value| {
-            Pubkey::from_base58(value).map_err(|error| RpcError {
-                code: -32602,
-                message: format!("Invalid to pubkey: {}", error),
-            })
+            parse_pubkey_value(&serde_json::Value::String(value.to_string()), "to")
         })?;
 
     Ok((
@@ -11294,13 +11267,10 @@ async fn handle_can_transfer(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let (send, receive) = parse_can_transfer_param(params)?;
-    let slot = state.state.get_last_slot().map_err(|error| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", error),
-    })?;
+    let slot = current_restriction_slot(state)?;
 
     let send_spendable = movement_spendable(state, &send.account, &send.asset)?;
-    let mut active_records = active_movement_restrictions(
+    let send_records = active_movement_restrictions(
         state,
         &send.account,
         &send.asset,
@@ -11310,7 +11280,7 @@ async fn handle_can_transfer(
         slot,
     )?;
     let receive_spendable = movement_spendable(state, &receive.account, &receive.asset)?;
-    active_records.extend(active_movement_restrictions(
+    let receive_records = active_movement_restrictions(
         state,
         &receive.account,
         &receive.asset,
@@ -11318,12 +11288,27 @@ async fn handle_can_transfer(
         receive.amount,
         receive_spendable,
         slot,
-    )?);
+    )?;
+
+    let mut active_records = Vec::new();
+    active_records.extend(send_records.iter().cloned());
+    active_records.extend(receive_records.iter().cloned());
     let mut seen_restriction_ids = HashSet::new();
     active_records.retain(|record| seen_restriction_ids.insert(record.id));
 
     let active_restriction_ids: Vec<u64> = active_records.iter().map(|record| record.id).collect();
     let active_restrictions: Vec<serde_json::Value> = active_records
+        .iter()
+        .map(restriction_record_status_json)
+        .collect();
+    let send_restriction_ids: Vec<u64> = send_records.iter().map(|record| record.id).collect();
+    let send_restrictions: Vec<serde_json::Value> = send_records
+        .iter()
+        .map(restriction_record_status_json)
+        .collect();
+    let receive_restriction_ids: Vec<u64> =
+        receive_records.iter().map(|record| record.id).collect();
+    let receive_restrictions: Vec<serde_json::Value> = receive_records
         .iter()
         .map(restriction_record_status_json)
         .collect();
@@ -11339,6 +11324,14 @@ async fn handle_can_transfer(
         "slot": slot,
         "allowed": active_records.is_empty(),
         "blocked": !active_records.is_empty(),
+        "send_allowed": send_records.is_empty(),
+        "receive_allowed": receive_records.is_empty(),
+        "source_blocked": !send_records.is_empty(),
+        "recipient_blocked": !receive_records.is_empty(),
+        "source_restriction_ids": send_restriction_ids,
+        "source_restrictions": send_restrictions,
+        "recipient_restriction_ids": receive_restriction_ids,
+        "recipient_restrictions": receive_restrictions,
         "active_restriction_ids": active_restriction_ids,
         "active_restrictions": active_restrictions,
     }))
@@ -17945,20 +17938,20 @@ mod tests {
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
         decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
         filter_signatures_for_address, get_cached_program_list_response, handle_can_receive,
-        handle_can_send, handle_create_bridge_deposit, handle_get_account_asset_restriction_status,
-        handle_get_account_restriction_status, handle_get_all_symbol_registry,
-        handle_get_asset_restriction_status, handle_get_bridge_deposit,
-        handle_get_bridge_route_restriction_status, handle_get_code_hash_restriction_status,
-        handle_get_contract_info, handle_get_contract_lifecycle_status,
-        handle_get_governance_events, handle_get_incident_status, handle_get_program,
-        handle_get_program_stats, handle_get_restriction, handle_get_restriction_status,
-        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
-        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
-        handle_solana_get_account_info, handle_solana_get_token_account_balance,
-        handle_solana_get_token_accounts_by_owner, live_signed_metadata_source_rpc,
-        parse_bridge_access_auth, parse_get_block_slot_param, parse_governance_event,
-        parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
-        privileged_rpc_mutation_test_output, put_cached_program_list_response,
+        handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
+        handle_get_account_asset_restriction_status, handle_get_account_restriction_status,
+        handle_get_all_symbol_registry, handle_get_asset_restriction_status,
+        handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
+        handle_get_code_hash_restriction_status, handle_get_contract_info,
+        handle_get_contract_lifecycle_status, handle_get_governance_events,
+        handle_get_incident_status, handle_get_program, handle_get_program_stats,
+        handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
+        handle_get_signed_metadata_manifest, handle_list_active_restrictions,
+        handle_list_restrictions, handle_set_fee_config, handle_solana_get_account_info,
+        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
+        live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
+        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
+        pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
         AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
@@ -18726,6 +18719,15 @@ mod tests {
         };
         state.put_restriction(&record).unwrap();
         restriction_id
+    }
+
+    fn json_u64_array(value: &serde_json::Value, field: &str) -> Vec<u64> {
+        value[field]
+            .as_array()
+            .unwrap_or_else(|| panic!("{field} should be an array"))
+            .iter()
+            .map(|value| value.as_u64().expect("array values should be u64"))
+            .collect()
     }
 
     #[tokio::test]
@@ -20676,6 +20678,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_can_send_true_false_matrix() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let asset = Pubkey([0x91; 32]);
+
+        let unrestricted = Pubkey([0x92; 32]);
+        rpc_state
+            .state
+            .update_token_balance(&asset, &unrestricted, 1_000)
+            .unwrap();
+        let allowed = handle_can_send(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": unrestricted.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("unrestricted canSend should serialize");
+        assert_eq!(allowed["allowed"], serde_json::json!(true));
+        assert!(json_u64_array(&allowed, "active_restriction_ids").is_empty());
+
+        let outgoing_blocked = Pubkey([0x93; 32]);
+        let outgoing_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(outgoing_blocked),
+            RestrictionMode::OutgoingOnly,
+        );
+        let blocked = handle_can_send(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": outgoing_blocked.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("outgoing-blocked canSend should serialize");
+        assert_eq!(blocked["allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&blocked, "active_restriction_ids"),
+            vec![outgoing_id]
+        );
+
+        let incoming_only = Pubkey([0x94; 32]);
+        put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(incoming_only),
+            RestrictionMode::IncomingOnly,
+        );
+        let incoming_only_send = handle_can_send(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": incoming_only.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("incoming-only account should still send");
+        assert_eq!(incoming_only_send["allowed"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
     async fn test_can_send_respects_account_asset_frozen_amount_balance() {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
@@ -20724,6 +20792,247 @@ mod tests {
             serde_json::json!([restriction_id])
         );
         assert_eq!(blocked["spendable"], serde_json::json!(1_000));
+    }
+
+    #[tokio::test]
+    async fn test_can_receive_true_false_matrix() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let asset = Pubkey([0x95; 32]);
+
+        let unrestricted = Pubkey([0x96; 32]);
+        let allowed = handle_can_receive(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": unrestricted.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("unrestricted canReceive should serialize");
+        assert_eq!(allowed["allowed"], serde_json::json!(true));
+
+        let incoming_blocked = Pubkey([0x97; 32]);
+        let incoming_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(incoming_blocked),
+            RestrictionMode::IncomingOnly,
+        );
+        let blocked = handle_can_receive(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": incoming_blocked.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("incoming-blocked canReceive should serialize");
+        assert_eq!(blocked["allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&blocked, "active_restriction_ids"),
+            vec![incoming_id]
+        );
+
+        let outgoing_only = Pubkey([0x98; 32]);
+        put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(outgoing_only),
+            RestrictionMode::OutgoingOnly,
+        );
+        let outgoing_only_receive = handle_can_receive(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": outgoing_only.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("outgoing-only account should still receive");
+        assert_eq!(outgoing_only_receive["allowed"], serde_json::json!(true));
+
+        let paused_asset = Pubkey([0x99; 32]);
+        let paused_recipient = Pubkey([0x9A; 32]);
+        let pause_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Asset(paused_asset),
+            RestrictionMode::AssetPaused,
+        );
+        let paused = handle_can_receive(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "account": paused_recipient.to_base58(),
+                "asset": paused_asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("asset-paused canReceive should serialize");
+        assert_eq!(paused["allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&paused, "active_restriction_ids"),
+            vec![pause_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_can_transfer_true_false_matrix_and_side_details() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let asset = Pubkey([0xA5; 32]);
+        let source = Pubkey([0xA6; 32]);
+        let recipient = Pubkey([0xA7; 32]);
+        rpc_state
+            .state
+            .update_token_balance(&asset, &source, 1_000)
+            .unwrap();
+
+        let allowed = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": source.to_base58(),
+                "to": recipient.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("unrestricted canTransfer should serialize");
+        assert_eq!(allowed["allowed"], serde_json::json!(true));
+        assert_eq!(allowed["send_allowed"], serde_json::json!(true));
+        assert_eq!(allowed["receive_allowed"], serde_json::json!(true));
+
+        let source_blocked = Pubkey([0xA8; 32]);
+        let source_block_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(source_blocked),
+            RestrictionMode::OutgoingOnly,
+        );
+        let source_block = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": source_blocked.to_base58(),
+                "to": recipient.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("source-blocked canTransfer should serialize");
+        assert_eq!(source_block["allowed"], serde_json::json!(false));
+        assert_eq!(source_block["send_allowed"], serde_json::json!(false));
+        assert_eq!(source_block["receive_allowed"], serde_json::json!(true));
+        assert_eq!(
+            json_u64_array(&source_block, "source_restriction_ids"),
+            vec![source_block_id]
+        );
+
+        let recipient_blocked = Pubkey([0xA9; 32]);
+        let recipient_block_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(recipient_blocked),
+            RestrictionMode::IncomingOnly,
+        );
+        let recipient_block = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": source.to_base58(),
+                "to": recipient_blocked.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("recipient-blocked canTransfer should serialize");
+        assert_eq!(recipient_block["allowed"], serde_json::json!(false));
+        assert_eq!(recipient_block["send_allowed"], serde_json::json!(true));
+        assert_eq!(recipient_block["receive_allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&recipient_block, "recipient_restriction_ids"),
+            vec![recipient_block_id]
+        );
+
+        let frozen_source = Pubkey([0xAA; 32]);
+        rpc_state
+            .state
+            .update_token_balance(&asset, &frozen_source, 1_000)
+            .unwrap();
+        let frozen_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::AccountAsset {
+                account: frozen_source,
+                asset,
+            },
+            RestrictionMode::FrozenAmount { amount: 800 },
+        );
+        let frozen_allowed = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": frozen_source.to_base58(),
+                "to": recipient.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 200
+            }])),
+        )
+        .await
+        .expect("transfer above frozen floor should serialize");
+        assert_eq!(frozen_allowed["allowed"], serde_json::json!(true));
+
+        let frozen_blocked = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": frozen_source.to_base58(),
+                "to": recipient.to_base58(),
+                "asset": asset.to_base58(),
+                "amount": 201
+            }])),
+        )
+        .await
+        .expect("transfer into frozen floor should serialize");
+        assert_eq!(frozen_blocked["allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&frozen_blocked, "source_restriction_ids"),
+            vec![frozen_id]
+        );
+
+        let paused_asset = Pubkey([0xAB; 32]);
+        let paused_source = Pubkey([0xAC; 32]);
+        let paused_recipient = Pubkey([0xAD; 32]);
+        let pause_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Asset(paused_asset),
+            RestrictionMode::AssetPaused,
+        );
+        let paused = handle_can_transfer(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "from": paused_source.to_base58(),
+                "to": paused_recipient.to_base58(),
+                "asset": paused_asset.to_base58(),
+                "amount": 100
+            }])),
+        )
+        .await
+        .expect("asset-paused canTransfer should serialize");
+        assert_eq!(paused["allowed"], serde_json::json!(false));
+        assert_eq!(paused["send_allowed"], serde_json::json!(false));
+        assert_eq!(paused["receive_allowed"], serde_json::json!(false));
+        assert_eq!(
+            json_u64_array(&paused, "active_restriction_ids"),
+            vec![pause_id]
+        );
+        assert_eq!(
+            json_u64_array(&paused, "source_restriction_ids"),
+            vec![pause_id]
+        );
+        assert_eq!(
+            json_u64_array(&paused, "recipient_restriction_ids"),
+            vec![pause_id]
+        );
     }
 
     #[tokio::test]

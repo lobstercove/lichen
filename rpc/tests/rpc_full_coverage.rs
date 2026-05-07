@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Covers every JSON-RPC method across all three dispatch planes:
-//   - Native Lichen RPC (116 methods on /)
+//   - Native Lichen RPC (119 methods on /)
 //   - Solana-compat RPC (13 methods on /solana-compat)
 //   - EVM-compat RPC (20 methods on /evm)
 // Plus all REST API endpoints on /api/v1/*.
@@ -964,6 +964,61 @@ async fn test_native_get_contract_lifecycle_status() {
         "/",
         "getContractLifecycleStatus",
         json!(["11111111111111111111111111111111"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_can_send() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "canSend",
+        json!([{
+            "account": "11111111111111111111111111111111",
+            "asset": "native",
+            "amount": 1
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_can_receive() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "canReceive",
+        json!([{
+            "account": "11111111111111111111111111111111",
+            "asset": "native",
+            "amount": 1
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_can_transfer() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "canTransfer",
+        json!([{
+            "from": "11111111111111111111111111111111",
+            "to": "11111111111111111111111111111111",
+            "asset": "native",
+            "amount": 1
+        }]),
     )
     .await
     .unwrap();
