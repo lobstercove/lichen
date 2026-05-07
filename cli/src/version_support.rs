@@ -39,7 +39,7 @@ pub(super) fn handle_version(rpc_url: &str, json_output: bool) -> Result<()> {
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!();
         println!("Chain:       Lichen (custom L1)");
-        println!("Consensus:   Tendermint BFT (~800ms blocks)");
+        println!("Consensus:   Tendermint BFT (400ms slots)");
         println!("Signing:     ML-DSA-65");
         println!("Contracts:   WASM (Rust → wasm32-unknown-unknown)");
         println!("ZK Proofs:   Plonky3 STARK");

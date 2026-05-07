@@ -1212,7 +1212,7 @@ impl StakePool {
         &mut self,
         validator: &Pubkey,
         slot: u64,
-        _is_heartbeat: bool,
+        _is_liveness_only: bool,
         _total_supply: u64,
     ) -> u64 {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
@@ -5832,9 +5832,9 @@ mod tests {
         let info = pool.get_stake(&v1).unwrap();
         assert_eq!(info.last_reward_slot, 1);
 
-        // Heartbeat also returns 0
-        let hb_reward = pool.distribute_block_reward(&v1, 2, true, GENESIS_SUPPLY_SPORES);
-        assert_eq!(hb_reward, 0, "Heartbeat must also return 0");
+        // Empty liveness slots also return 0.
+        let liveness_reward = pool.distribute_block_reward(&v1, 2, true, GENESIS_SUPPLY_SPORES);
+        assert_eq!(liveness_reward, 0, "Liveness slot must also return 0");
 
         let info = pool.get_stake(&v1).unwrap();
         assert_eq!(info.last_reward_slot, 2);

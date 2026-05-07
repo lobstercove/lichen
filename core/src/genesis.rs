@@ -63,7 +63,7 @@ pub struct GenesisStateChunk {
 /// candles, margin prices, oracle feeds).
 ///
 /// The oracle attestation system updates prices to live within seconds after
-/// genesis — these defaults only affect the first few heartbeat blocks.
+/// genesis — these defaults only affect the first few startup liveness blocks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisPrices {
     /// LICN/USD price with 8 decimals (e.g. 10_000_000 = $0.10)

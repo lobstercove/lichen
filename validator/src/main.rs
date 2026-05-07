@@ -3758,7 +3758,7 @@ async fn apply_block_effects(
     let slot = block.header.slot;
 
     let has_user_transactions = !block.transactions.is_empty();
-    let is_heartbeat = !has_user_transactions;
+    let is_liveness_only = !has_user_transactions;
     let reward_already = if !skip_rewards {
         match state.get_reward_distribution_hash(slot) {
             Ok(Some(_)) => true, // per-slot guard: any reward for this slot = skip
@@ -3843,7 +3843,7 @@ async fn apply_block_effects(
                 .unwrap_or(false);
             if !already_counted {
                 // distribute_block_reward now only updates last_reward_slot (returns 0)
-                pool.distribute_block_reward(&producer, slot, is_heartbeat, total_supply);
+                pool.distribute_block_reward(&producer, slot, is_liveness_only, total_supply);
                 pool.record_block_produced(&producer);
             } else {
                 debug!(
@@ -4916,14 +4916,14 @@ fn should_submit_oracle_attestation(
     last: Option<&(u64, Instant)>,
     price_raw: u64,
     min_interval: Duration,
-    heartbeat: Duration,
+    max_staleness: Duration,
     min_change_bps: u64,
 ) -> bool {
     match last {
         None => true,
         Some((last_price, last_at)) => {
             let elapsed = last_at.elapsed();
-            elapsed >= heartbeat
+            elapsed >= max_staleness
                 || (elapsed >= min_interval
                     && price_delta_bps(*last_price, price_raw) >= min_change_bps)
         }
@@ -5122,15 +5122,14 @@ fn spawn_oracle_price_feeder(
         let candle_intervals: [u64; 9] =
             [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
         let mut last_attested: HashMap<&'static str, (u64, Instant)> = HashMap::new();
-        let oracle_attestation_min_interval =
-            env_duration_secs("LICHEN_ORACLE_ATTEST_MIN_SECS", 30);
-        let oracle_attestation_heartbeat =
-            env_duration_secs("LICHEN_ORACLE_ATTEST_HEARTBEAT_SECS", 60);
-        let oracle_attestation_min_change_bps = env_u64("LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS", 10);
+        let oracle_attestation_min_interval = env_duration_secs("LICHEN_ORACLE_ATTEST_MIN_SECS", 5);
+        let oracle_attestation_max_staleness =
+            env_duration_secs("LICHEN_ORACLE_ATTEST_MAX_STALENESS_SECS", 15);
+        let oracle_attestation_min_change_bps = env_u64("LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS", 1);
         info!(
-            "🔮 Oracle attestation cadence: min={}s heartbeat={}s change={}bps",
+            "🔮 Oracle attestation cadence: min={}s max_staleness={}s change={}bps",
             oracle_attestation_min_interval.as_secs(),
-            oracle_attestation_heartbeat.as_secs(),
+            oracle_attestation_max_staleness.as_secs(),
             oracle_attestation_min_change_bps,
         );
 
@@ -5215,7 +5214,7 @@ fn spawn_oracle_price_feeder(
                     last_attested.get(asset),
                     price_raw,
                     oracle_attestation_min_interval,
-                    oracle_attestation_heartbeat,
+                    oracle_attestation_max_staleness,
                     oracle_attestation_min_change_bps,
                 );
                 if !should_submit {
@@ -12939,7 +12938,7 @@ async fn run_validator() {
     //
     // In proper blockchains (Ethereum, Cosmos, Solana), validators are ONLY
     // removed through consensus transactions (DeregisterValidator) or epoch-
-    // boundary processing — never by background heartbeat tasks.
+    // boundary processing — never by background liveness tasks.
     // Inactive validators simply miss rewards; they are not evicted unilaterally.
     //
     // Deterministic removal is handled at epoch boundaries via pending
@@ -14442,8 +14441,8 @@ async fn run_validator() {
     // When we are the proposer after a commit, delay briefly to coalesce
     // near-boundary mempool arrivals without consuming a full target slot.
     // If the mempool was empty when the timer was armed, the timer emits a
-    // heartbeat-only block; newly arrived TXs wait for the next height rather
-    // than turning that heartbeat into a late expensive proposal.
+    // liveness-only block; newly arrived TXs wait for the next height rather
+    // than turning that empty block into a late expensive proposal.
     let mut propose_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut propose_include_transactions: Option<bool> = None;
 
@@ -15111,7 +15110,7 @@ async fn run_validator() {
                         // Delay only for a short grace window so the 400ms slot
                         // target remains reachable and tx proposal construction
                         // has room inside the round-0 timeout. Snapshot whether
-                        // TXs were present now; empty timers stay heartbeats.
+                        // TXs were present now; empty timers stay liveness-only blocks.
                         let has_pending_txs = {
                             let mp = mempool.lock().await;
                             mp.size() > 0
@@ -16975,34 +16974,34 @@ mod tests {
     }
 
     #[test]
-    fn oracle_attestation_cadence_throttles_small_price_changes() {
+    fn oracle_attestation_cadence_throttles_sub_bps_price_changes() {
         let now = Instant::now();
-        let last = (1_000_000u64, now - Duration::from_secs(10));
+        let last = (1_000_000u64, now - Duration::from_secs(3));
 
         assert!(!should_submit_oracle_attestation(
             Some(&last),
             1_000_001,
-            Duration::from_secs(30),
-            Duration::from_secs(60),
-            10,
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+            1,
         ));
 
-        let old_enough = (1_000_000u64, now - Duration::from_secs(35));
+        let old_enough = (1_000_000u64, now - Duration::from_secs(6));
         assert!(should_submit_oracle_attestation(
             Some(&old_enough),
-            1_002_000,
-            Duration::from_secs(30),
-            Duration::from_secs(60),
-            10,
+            1_000_100,
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+            1,
         ));
 
-        let heartbeat_due = (1_000_000u64, now - Duration::from_secs(65));
+        let stale_due = (1_000_000u64, now - Duration::from_secs(16));
         assert!(should_submit_oracle_attestation(
-            Some(&heartbeat_due),
+            Some(&stale_due),
             1_000_000,
-            Duration::from_secs(30),
-            Duration::from_secs(60),
-            10,
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+            1,
         ));
     }
 

@@ -258,8 +258,8 @@ fi
 
 echo ""
 echo "Block Production (Tendermint BFT):"
-echo "   No TXs: Heartbeat ~800ms (0.01 LICN)"
-echo "   With TXs: ~400ms blocks (0.02 LICN)"
+echo "   Continuous 400ms slots"
+echo "   Empty liveness and transaction blocks use the same cadence"
 echo ""
 
 if [ -z "${LICHEN_SIGNER_BIND:-}" ]; then

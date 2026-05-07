@@ -5570,7 +5570,7 @@ async fn handle_get_block(
                     "projected_per_slot_licn": projected_per_slot as f64 / 1_000_000_000.0,
                     "distribution": "epoch",
                     "epoch": current_epoch,
-                    "type": if has_user_txs { "transaction" } else { "heartbeat" },
+                    "type": if has_user_txs { "transaction" } else { "liveness" },
                     "recipient": Pubkey(block.header.validator).to_base58(),
                 },
                 "commit_signatures": block.commit_signatures.iter().map(|cs| {

@@ -42,7 +42,7 @@ pub(super) enum CodegenLang {
 #[command(about = "Lichen CLI - Economic freedom for agents 🦞⚡")]
 #[command(
     long_about = "Lichen CLI — command-line interface for Lichen, a Layer 1 blockchain\n\
-    built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
+    built by agents, for agents. Tendermint BFT consensus, 400ms slots,\n\
     WASM smart contracts, ML-DSA-65 signing, ZK privacy (Plonky3 STARK).\n\n\
     Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
     Run 'lichen fees' for current fee schedule\n\n\

@@ -26,7 +26,7 @@ pub struct Metrics {
     /// Observer-side rolling median block interval in milliseconds.
     #[serde(default)]
     pub observed_block_interval_ms: u64,
-    /// Expected target cadence for the current recent block mix.
+    /// Expected canonical slot cadence.
     #[serde(default)]
     pub cadence_target_ms: u64,
     /// Milliseconds since this node last observed a new canonical block.
@@ -292,16 +292,7 @@ impl MetricsStore {
             }
         };
 
-        let cadence_target_ms = {
-            let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
-            if window.is_empty() {
-                slot_duration_ms.max(1)
-            } else {
-                let targets: VecDeque<u64> =
-                    window.iter().map(|_| slot_duration_ms.max(1)).collect();
-                Self::median_sample(&targets)
-            }
-        };
+        let cadence_target_ms = slot_duration_ms.max(1);
 
         let (observed_block_interval_ms, cadence_samples) = {
             let samples = self

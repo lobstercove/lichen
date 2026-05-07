@@ -435,9 +435,9 @@ fi
 if $FOREGROUND && ! $IS_GENESIS; then
     # Foreground mode — no first-boot or custody, just run
     echo -e ""
-    echo -e "  📊 Adaptive Block Production (Tendermint BFT):"
-    echo -e "     • No TXs: Heartbeat ~800ms (0.01 LICN)"
-    echo -e "     • With TXs: ~200ms blocks (0.02 LICN)"
+    echo -e "  📊 Block Production (Tendermint BFT):"
+    echo -e "     • Continuous 400ms slots"
+    echo -e "     • Empty liveness and transaction blocks use the same cadence"
     echo -e ""
     echo -e "  Starting in foreground (Ctrl+C to stop)..."
     exec "$SUPERVISOR_PATH" "${NETWORK}-primary-p${P2P_PORT}" -- "${VALIDATOR_CMD[@]}"
