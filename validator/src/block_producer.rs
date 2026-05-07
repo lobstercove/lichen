@@ -6,22 +6,21 @@
 
 use lichen_core::{Block, FeeConfig, Hash, Mempool, Pubkey, StateStore, TxProcessor};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tracing::{debug, info, warn};
 
 /// Compute the minimum delay (in milliseconds) the proposer should wait
 /// after committing before building the next block, so that wall-clock
-/// time has advanced past `parent_timestamp + 1`.
+/// time has not fallen behind the parent timestamp.
 ///
-/// Block timestamps are second-precision and must be strictly increasing
-/// (`proposed_ts > parent_ts`). If a proposer completes a round faster
-/// than one second (e.g. solo BFT or low-latency 3-of-3 commit), the
-/// `parent_timestamp + 1` floor in `build_block` would push the next
-/// block's timestamp ahead of wall clock, causing cumulative drift.
-/// Joining validators reject blocks whose timestamps exceed wall clock
-/// by more than 120 s.
+/// Block timestamps are second-precision while testnet targets sub-second
+/// slots. Consensus therefore requires nondecreasing timestamps
+/// (`proposed_ts >= parent_ts`), not a one-second increase per block. If
+/// the parent timestamp is already in the future, wait for wall clock to
+/// catch up enough that the next proposal does not add more future drift.
 ///
 /// This function returns:
-///   `max(base_delay_ms, millis_until_wall_clock ≥ parent_ts + 1) + 50`
+///   `max(base_delay_ms, millis_until_wall_clock ≥ parent_ts) + 50`
 ///
 /// The +50 ms pad absorbs timer jitter so we never wake up 1 ms early.
 pub fn wall_clock_safe_delay(state: &StateStore, parent_hash: &Hash, base_delay_ms: u64) -> u64 {
@@ -30,7 +29,7 @@ pub fn wall_clock_safe_delay(state: &StateStore, parent_hash: &Hash, base_delay_
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let target_ms = (parent_ts + 1) * 1000; // next block needs ts ≥ parent+1
+    let target_ms = parent_ts * 1000; // next block may reuse the parent second.
     let catch_up_ms = target_ms.saturating_sub(now_ms);
     base_delay_ms.max(catch_up_ms).saturating_add(50)
 }
@@ -73,8 +72,7 @@ fn open_proposal_staging_state(
     let staging_path = staging_dir
         .to_str()
         .ok_or_else(|| "proposal staging path is not valid UTF-8".to_string())?;
-    let checkpoint_slot = state.get_last_slot().unwrap_or(height.saturating_sub(1));
-    state.create_checkpoint(staging_path, checkpoint_slot)?;
+    state.create_raw_checkpoint(staging_path)?;
     let staging_state = StateStore::open_checkpoint(staging_path)?;
     Ok((staging_state, staging_dir))
 }
@@ -106,26 +104,36 @@ pub fn build_block(
     parent_hash: Hash,
     validator_pubkey: &Pubkey,
     oracle_prices: Vec<(String, u64)>,
+    max_transactions: usize,
     bft_timestamp: Option<u64>,
 ) -> (Block, Vec<Hash>) {
+    let build_started = Instant::now();
+
     // Collect pending transactions (up to 2000).  Drop transactions that the
     // local ledger has already committed before they reach the processor; they
     // can arrive late through RPC retries or P2P relay after block inclusion.
+    let collect_started = Instant::now();
     let mut stale_hashes = Vec::new();
-    let mut pending: Vec<_> = mempool
-        .get_top_transactions(2000)
-        .into_iter()
-        .filter(|tx| {
-            let tx_hash = tx.hash();
-            match state.get_transaction(&tx_hash) {
-                Ok(Some(_)) => {
-                    stale_hashes.push(tx_hash);
-                    false
+    let tx_limit = max_transactions.min(2000);
+    let mut pending: Vec<_> = if tx_limit == 0 {
+        Vec::new()
+    } else {
+        mempool
+            .get_top_transactions(tx_limit)
+            .into_iter()
+            .filter(|tx| {
+                let tx_hash = tx.hash();
+                match state.get_transaction(&tx_hash) {
+                    Ok(Some(_)) => {
+                        stale_hashes.push(tx_hash);
+                        false
+                    }
+                    _ => true,
                 }
-                _ => true,
-            }
-        })
-        .collect();
+            })
+            .collect()
+    };
+    let collect_ms = collect_started.elapsed().as_millis();
     if !stale_hashes.is_empty() {
         debug!(
             "🧹 Dropping {} already-committed tx(s) from mempool before height {}",
@@ -142,12 +150,18 @@ pub fn build_block(
     let mut staging_dir: Option<PathBuf> = None;
     let mut staging_state: Option<StateStore> = None;
     let mut results = Vec::new();
+    let mut staging_open_ms = 0;
+    let mut execution_ms = 0;
     if !pending.is_empty() {
+        let staging_started = Instant::now();
         match open_proposal_staging_state(state, staging_root, height) {
             Ok((stage, dir)) => {
+                staging_open_ms = staging_started.elapsed().as_millis();
                 let staging_processor = TxProcessor::new(stage.clone());
+                let execution_started = Instant::now();
                 results =
                     staging_processor.process_transactions_parallel(&pending, validator_pubkey);
+                execution_ms = execution_started.elapsed().as_millis();
                 staging_state = Some(stage);
                 staging_dir = Some(dir);
             }
@@ -284,9 +298,7 @@ pub fn build_block(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let min_block_timestamp = resolve_parent_timestamp(state, &parent_hash)
-        .map(|timestamp| timestamp.saturating_add(1))
-        .unwrap_or(0);
+    let min_block_timestamp = resolve_parent_timestamp(state, &parent_hash).unwrap_or(0);
 
     // Use BFT timestamp (weighted median of parent commit) if available,
     // falling back to wall clock for genesis or solo validator scenarios.
@@ -294,7 +306,9 @@ pub fn build_block(
         .unwrap_or(wall_clock_timestamp)
         .max(min_block_timestamp);
 
+    let root_started = Instant::now();
     let proposal_state_root = execution_state.compute_state_root();
+    let root_ms = root_started.elapsed().as_millis();
 
     let mut block = Block::new_with_timestamp(
         height,
@@ -311,9 +325,14 @@ pub fn build_block(
         debug!("📦 Built empty block (heartbeat) at height {}", height);
     } else {
         info!(
-            "📦 Built block at height {} with {} txs",
+            "📦 Built block at height {} with {} txs (total_ms={} collect_ms={} staging_ms={} exec_ms={} root_ms={})",
             height,
-            block.transactions.len()
+            block.transactions.len(),
+            build_started.elapsed().as_millis(),
+            collect_ms,
+            staging_open_ms,
+            execution_ms,
+            root_ms,
         );
     }
 
@@ -354,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn build_block_fallback_timestamp_advances_past_parent() {
+    fn build_block_fallback_timestamp_is_nondecreasing_from_parent() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
         let validator = Pubkey([7u8; 32]);
@@ -379,35 +398,52 @@ mod tests {
             parent_hash,
             &validator,
             Vec::new(),
+            2000,
             None,
         );
 
         assert!(processed.is_empty());
-        assert_eq!(block.header.timestamp, parent_timestamp.saturating_add(1));
+        assert_eq!(block.header.timestamp, parent_timestamp);
     }
 
     #[test]
-    fn wall_clock_safe_delay_pads_when_parent_timestamp_ahead() {
+    fn wall_clock_safe_delay_pads_when_parent_timestamp_is_in_future() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
 
-        // Create a parent block whose timestamp is at wall clock (i.e. now)
+        // Create a parent block whose timestamp is ahead of wall clock.
         let wall_now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let parent = Block::genesis(Hash::hash(b"safe-delay"), wall_now, Vec::new());
+        let parent = Block::genesis(Hash::hash(b"safe-delay"), wall_now + 1, Vec::new());
         let parent_hash = parent.hash();
         state.put_block(&parent).unwrap();
 
-        // With parent at wall_now, next block needs ts >= wall_now+1,
-        // so we need to wait ~1000ms from now. base_delay of 400ms
-        // should be overridden by the catch-up.
+        // With the parent one second ahead, base_delay of 400ms should be
+        // overridden by the catch-up.
         let delay = wall_clock_safe_delay(&state, &parent_hash, 400);
         // Must be at least 400ms (base), and should include catch-up + 50ms pad
         assert!(delay >= 400, "delay {} should be >= base 400", delay);
-        // Should not be absurdly large (parent is at now, not far in the future)
+        // Should not be absurdly large (parent is only one second ahead)
         assert!(delay <= 1200, "delay {} should be <= 1200ms", delay);
+    }
+
+    #[test]
+    fn wall_clock_safe_delay_allows_same_second_parent_timestamp() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let wall_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let parent = Block::genesis(Hash::hash(b"same-second-parent"), wall_now, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+
+        let delay = wall_clock_safe_delay(&state, &parent_hash, 400);
+        assert_eq!(delay, 450);
     }
 
     #[test]
@@ -424,7 +460,7 @@ mod tests {
         let parent_hash = parent.hash();
         state.put_block(&parent).unwrap();
 
-        // Wall clock is already past parent+1, so base_delay dominates
+        // Wall clock is already past the parent timestamp, so base_delay dominates.
         let delay = wall_clock_safe_delay(&state, &parent_hash, 800);
         // Should be base (800) + 50 pad = 850
         assert_eq!(delay, 850);
@@ -462,12 +498,61 @@ mod tests {
             parent_hash,
             &validator,
             Vec::new(),
+            2000,
             None,
         );
 
         assert!(block.transactions.is_empty());
         assert!(processed.is_empty());
         assert!(!mempool.contains(&tx_hash));
+    }
+
+    #[test]
+    fn build_block_can_emit_heartbeat_without_draining_pending_transactions() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let validator = Pubkey([7u8; 32]);
+        let processor = TxProcessor::new(state.clone());
+        let mut mempool = Mempool::new(100, 300);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([9u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .unwrap();
+
+        let parent = Block::genesis(Hash::hash(b"parent-state"), 1, Vec::new());
+        let parent_hash = parent.hash();
+        state.put_block(&parent).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let tx = signed_transfer(&alice_kp, alice, bob, 10, parent_hash);
+        let tx_hash = tx.hash();
+        mempool.add_transaction(tx, 1, 0).unwrap();
+
+        let (block, processed) = build_block(
+            &state,
+            &mut mempool,
+            &processor,
+            temp.path(),
+            1,
+            parent_hash,
+            &validator,
+            Vec::new(),
+            0,
+            None,
+        );
+
+        assert!(block.transactions.is_empty());
+        assert!(processed.is_empty());
+        assert!(mempool.contains(&tx_hash));
+        assert!(state.get_transaction(&tx_hash).unwrap().is_none());
     }
 
     #[test]
@@ -509,6 +594,7 @@ mod tests {
             parent_hash,
             &validator,
             Vec::new(),
+            2000,
             None,
         );
 

@@ -44,25 +44,16 @@ impl StateStore {
 
     // ── Checkpoint creation (RocksDB native hardlink snapshot) ────────────
 
-    /// Create a point-in-time checkpoint of the entire database.
+    /// Create a point-in-time checkpoint without snapshot metadata.
     ///
-    /// Uses RocksDB's native `Checkpoint` API which creates hardlinks to SST
-    /// files — effectively O(1) in time and zero additional disk space until
-    /// compaction replaces the SST files.
-    ///
-    /// `checkpoint_dir` is the directory where the checkpoint will be stored,
-    /// e.g. `data/state-8000/checkpoints/slot-10000`.
-    ///
-    /// Returns the `CheckpointMeta` for the created checkpoint.
-    pub fn create_checkpoint(
-        &self,
-        checkpoint_dir: &str,
-        slot: u64,
-    ) -> Result<CheckpointMeta, String> {
+    /// This is used by short-lived staging databases on hot paths. Persistent
+    /// sync checkpoints should use `create_checkpoint`, which writes metadata
+    /// and computes the checkpoint state root.
+    pub fn create_raw_checkpoint(&self, checkpoint_dir: &str) -> Result<(), String> {
         use rocksdb::checkpoint::Checkpoint;
 
-        // Persist in-memory counters first so the checkpoint captures the same
-        // metrics view that the live store is tracking.
+        // Persist in-memory counters first so the checkpoint sees a coherent
+        // DB view, matching regular snapshot checkpoint behavior.
         self.save_metrics_counters()?;
 
         let parent = std::path::Path::new(checkpoint_dir)
@@ -79,7 +70,25 @@ impl StateStore {
         let cp = Checkpoint::new(&self.db)
             .map_err(|e| format!("Failed to create checkpoint object: {}", e))?;
         cp.create_checkpoint(checkpoint_dir)
-            .map_err(|e| format!("Failed to create checkpoint: {}", e))?;
+            .map_err(|e| format!("Failed to create checkpoint: {}", e))
+    }
+
+    /// Create a point-in-time checkpoint of the entire database.
+    ///
+    /// Uses RocksDB's native `Checkpoint` API which creates hardlinks to SST
+    /// files — effectively O(1) in time and zero additional disk space until
+    /// compaction replaces the SST files.
+    ///
+    /// `checkpoint_dir` is the directory where the checkpoint will be stored,
+    /// e.g. `data/state-8000/checkpoints/slot-10000`.
+    ///
+    /// Returns the `CheckpointMeta` for the created checkpoint.
+    pub fn create_checkpoint(
+        &self,
+        checkpoint_dir: &str,
+        slot: u64,
+    ) -> Result<CheckpointMeta, String> {
+        self.create_raw_checkpoint(checkpoint_dir)?;
         let checkpoint_store = Self::open_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to open created checkpoint: {}", e))?;
         let state_root = checkpoint_store.compute_state_root_cached();

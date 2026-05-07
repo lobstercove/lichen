@@ -151,7 +151,7 @@ pub struct ConsensusEngine {
     /// Rounds for which we already signed a precommit, to prevent equivocation.
     signed_precommit_rounds: HashMap<u32, Option<Hash>>,
     /// Timestamp of the last committed block header so new proposals can be
-    /// rejected if they do not advance monotonically.
+    /// rejected if they move time backwards.
     last_committed_block_timestamp: Option<u64>,
 
     // ── Future message buffers (G-10 fix) ───────────────────────────
@@ -435,9 +435,9 @@ impl ConsensusEngine {
             .as_secs();
         let proposed_ts = proposal.block.header.timestamp;
         if let Some(parent_ts) = self.last_committed_block_timestamp {
-            if proposed_ts <= parent_ts {
+            if proposed_ts < parent_ts {
                 warn!(
-                    "🚨 BFT: Proposal timestamp {} does not advance past parent timestamp {}",
+                    "🚨 BFT: Proposal timestamp {} is older than parent timestamp {}",
                     proposed_ts, parent_ts
                 );
                 return ConsensusAction::None;
@@ -2509,7 +2509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_proposal_rejects_non_monotonic_parent_timestamp() {
+    fn test_on_proposal_rejects_timestamp_older_than_parent() {
         let (kp, pk) = make_validator(1);
 
         let mut vs = ValidatorSet::new();
@@ -2539,7 +2539,7 @@ mod tests {
             Hash::hash(b"state"),
             pk.0,
             Vec::new(),
-            1_000,
+            999,
         );
         block.sign(&kp);
 

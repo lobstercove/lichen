@@ -349,8 +349,9 @@ impl Block {
 /// manipulate the block timestamp unilaterally.
 ///
 /// If `min_timestamp` is provided (typically parent block's timestamp),
-/// the result is clamped to be at least `min_timestamp + 1` to guarantee
-/// strict monotonic increase.
+/// the result is clamped to be at least `min_timestamp`. Lichen targets
+/// sub-second slots while block timestamps are second-precision, so multiple
+/// adjacent blocks may legitimately share a timestamp.
 ///
 /// Returns `None` if there are no commit signatures (genesis block).
 pub fn compute_bft_timestamp(
@@ -399,10 +400,10 @@ pub fn compute_bft_timestamp(
         }
     }
 
-    // Enforce monotonicity: BFT time must be > parent time
+    // Enforce monotonicity: BFT time must not go backwards from parent time.
     if let Some(min_ts) = min_timestamp {
-        if median_ts <= min_ts {
-            median_ts = min_ts + 1;
+        if median_ts < min_ts {
+            median_ts = min_ts;
         }
     }
 
@@ -1507,9 +1508,9 @@ mod tests {
             timestamp: 500,
         }];
 
-        // Parent timestamp is 1000, BFT median is 500 → clamps to 1001
+        // Parent timestamp is 1000, BFT median is 500 → clamps to 1000
         let result = compute_bft_timestamp(&sigs, &vs, &sp, Some(1000));
-        assert_eq!(result, Some(1001));
+        assert_eq!(result, Some(1000));
     }
 
     #[test]
