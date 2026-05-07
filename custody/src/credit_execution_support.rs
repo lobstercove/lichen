@@ -33,6 +33,41 @@ pub(super) async fn process_credit_jobs(state: &CustodyState) -> Result<(), Stri
         if !is_ready_for_credit_retry(&job) {
             continue;
         }
+        if let Err(error) = ensure_credit_restrictions_allow(
+            state,
+            &job.to_address,
+            &job.source_chain,
+            &job.source_asset,
+            job.amount_spores,
+        )
+        .await
+        {
+            let retry_after = chrono::Utc::now()
+                .timestamp()
+                .saturating_add(state.config.poll_interval_secs as i64);
+            if job.last_error.as_deref() != Some(error.as_str())
+                || job.next_attempt_at != Some(retry_after)
+            {
+                job.last_error = Some(error.clone());
+                job.next_attempt_at = Some(retry_after);
+                store_credit_job(&state.db, &job)?;
+                emit_custody_event(
+                    state,
+                    "security.credit_restriction_hold",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    None,
+                    Some(&json!({
+                        "to_address": job.to_address,
+                        "asset": job.source_asset,
+                        "amount_spores": job.amount_spores,
+                        "reason": error,
+                        "retry_after": retry_after,
+                    })),
+                );
+            }
+            continue;
+        }
         // AUDIT-FIX M4: Record intent before credit broadcast
         if let Err(e) = record_tx_intent(&state.db, "credit", &job.job_id, "lichen") {
             let error = format!("failed to record credit tx intent: {e}");

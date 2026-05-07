@@ -41,6 +41,19 @@ pub(super) async fn create_withdrawal(
         return response;
     }
 
+    if let Err(error) = ensure_withdrawal_restrictions_allow(
+        &state,
+        &req.user_id,
+        &asset_lower,
+        req.amount,
+        &req.dest_chain,
+        &req.preferred_stablecoin,
+    )
+    .await
+    {
+        return Json(json!({ "error": error }));
+    }
+
     if let Err(response) = enforce_withdrawal_rate_limits(&state, &req).await {
         return response;
     }

@@ -110,10 +110,10 @@ pub use processor::{
     ORACLE_STALENESS_SLOTS, RENT_FREE_BYTES, SYSTEM_PROGRAM_ID,
 };
 pub use restrictions::{
-    transferable_after_frozen_amount, ContractRestrictionAccess, EffectiveRestrictionRecord,
-    ProtocolModuleId, RestrictionLiftReason, RestrictionMode, RestrictionReason, RestrictionRecord,
-    RestrictionStatus, RestrictionTarget, RestrictionTransferDirection,
-    GUARDIAN_RESTRICTION_MAX_SLOTS, NATIVE_LICN_ASSET_ID,
+    restriction_mode_blocks_transfer, transferable_after_frozen_amount, ContractRestrictionAccess,
+    EffectiveRestrictionRecord, ProtocolModuleId, RestrictionLiftReason, RestrictionMode,
+    RestrictionReason, RestrictionRecord, RestrictionStatus, RestrictionTarget,
+    RestrictionTransferDirection, GUARDIAN_RESTRICTION_MAX_SLOTS, NATIVE_LICN_ASSET_ID,
 };
 pub use state::AccountProof;
 pub use state::CheckpointMeta;
