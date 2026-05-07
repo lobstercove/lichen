@@ -7,5 +7,9 @@
   "include": [
     "src/**/*",
     "test-all-features.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
   ]
 }
