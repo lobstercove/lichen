@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Covers every JSON-RPC method across all three dispatch planes:
-//   - Native Lichen RPC (108 methods on /)
+//   - Native Lichen RPC (116 methods on /)
 //   - Solana-compat RPC (13 methods on /solana-compat)
 //   - EVM-compat RPC (20 methods on /evm)
 // Plus all REST API endpoints on /api/v1/*.
@@ -866,6 +866,103 @@ async fn test_native_get_contract_info() {
         &app,
         "/",
         "getContractInfo",
+        json!(["11111111111111111111111111111111"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_restriction() {
+    let app = fresh_app();
+    let resp = rpc_p(&app, "/", "getRestriction", json!([1u64]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_list_restrictions() {
+    let app = fresh_app();
+    let resp = rpc_p(&app, "/", "listRestrictions", json!([{ "limit": 10 }]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_list_active_restrictions() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "listActiveRestrictions",
+        json!([{ "limit": 10 }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_restriction_status() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getRestrictionStatus",
+        json!([{ "type": "account", "account": "11111111111111111111111111111111" }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_account_restriction_status() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountRestrictionStatus",
+        json!(["11111111111111111111111111111111"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_asset_restriction_status() {
+    let app = fresh_app();
+    let resp = rpc_p(&app, "/", "getAssetRestrictionStatus", json!(["native"]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_account_asset_restriction_status() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountAssetRestrictionStatus",
+        json!(["11111111111111111111111111111111", "native"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_contract_lifecycle_status() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getContractLifecycleStatus",
         json!(["11111111111111111111111111111111"]),
     )
     .await

@@ -59,10 +59,11 @@ use lichen_core::keypair_file::KeypairFile;
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
-    FinalityTracker, Hash, Instruction, MarketActivityKind, Message, PqSignature, Pubkey,
-    RestrictionMode, RestrictionRecord, RestrictionTarget, RestrictionTransferDirection, StakePool,
-    StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet, CONTRACT_PROGRAM_ID,
-    EVM_PROGRAM_ID, MAX_CONTRACT_CODE, NATIVE_LICN_ASSET_ID, SYSTEM_PROGRAM_ID,
+    EffectiveRestrictionRecord, FinalityTracker, Hash, Instruction, MarketActivityKind, Message,
+    PqSignature, ProtocolModuleId, Pubkey, RestrictionMode, RestrictionRecord, RestrictionTarget,
+    RestrictionTransferDirection, StakePool, StateStore, SymbolRegistryEntry, Transaction,
+    TxProcessor, ValidatorSet, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE,
+    NATIVE_LICN_ASSET_ID, SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -2681,6 +2682,16 @@ fn classify_method(method: &str) -> MethodTier {
         | "getDexAnalyticsStats"
         | "getDexPairs"
         | "getBridgeDeposit"
+        | "getRestriction"
+        | "getRestrictionStatus"
+        | "listRestrictions"
+        | "listActiveRestrictions"
+        | "getAccountRestrictionStatus"
+        | "getAssetRestrictionStatus"
+        | "getAccountAssetRestrictionStatus"
+        | "getContractLifecycleStatus"
+        | "getCodeHashRestrictionStatus"
+        | "getBridgeRouteRestrictionStatus"
         | "canSend"
         | "canReceive"
         | "canTransfer"
@@ -4595,6 +4606,22 @@ async fn handle_rpc(
 
         // Contract endpoints
         "getContractInfo" => handle_get_contract_info(&state, req.params).await,
+        "getRestriction" => handle_get_restriction(&state, req.params).await,
+        "listRestrictions" => handle_list_restrictions(&state, req.params).await,
+        "listActiveRestrictions" => handle_list_active_restrictions(&state, req.params).await,
+        "getRestrictionStatus" => handle_get_restriction_status(&state, req.params).await,
+        "getAccountRestrictionStatus" => {
+            handle_get_account_restriction_status(&state, req.params).await
+        }
+        "getAssetRestrictionStatus" => {
+            handle_get_asset_restriction_status(&state, req.params).await
+        }
+        "getAccountAssetRestrictionStatus" => {
+            handle_get_account_asset_restriction_status(&state, req.params).await
+        }
+        "getContractLifecycleStatus" => {
+            handle_get_contract_lifecycle_status(&state, req.params).await
+        }
         "getCodeHashRestrictionStatus" => {
             handle_get_code_hash_restriction_status(&state, req.params).await
         }
@@ -9919,33 +9946,94 @@ async fn handle_get_contract_info(
     Ok(result)
 }
 
-fn parse_code_hash_status_param(params: Option<serde_json::Value>) -> Result<Hash, RpcError> {
+const RESTRICTION_LIST_DEFAULT_LIMIT: usize = 100;
+const RESTRICTION_LIST_MAX_LIMIT: usize = 500;
+
+fn invalid_params(message: impl Into<String>) -> RpcError {
+    RpcError {
+        code: -32602,
+        message: message.into(),
+    }
+}
+
+fn db_error(error: impl std::fmt::Display) -> RpcError {
+    RpcError {
+        code: -32000,
+        message: format!("Database error: {}", error),
+    }
+}
+
+fn single_rpc_param(
+    params: Option<serde_json::Value>,
+    expected: &str,
+) -> Result<serde_json::Value, RpcError> {
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
         message: "Missing params".to_string(),
     })?;
 
-    let value = params
-        .as_array()
-        .and_then(|arr| arr.first())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: expected [code_hash_hex]".to_string(),
-        })?;
+    if let Some(array) = params.as_array() {
+        array
+            .first()
+            .cloned()
+            .ok_or_else(|| invalid_params(expected))
+    } else {
+        Ok(params)
+    }
+}
 
+fn parse_u64_value(value: &serde_json::Value, field: &str) -> Result<u64, RpcError> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+        .ok_or_else(|| invalid_params(format!("{} must be an unsigned integer", field)))
+}
+
+fn object_string_field<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    missing: &str,
+) -> Result<&'a str, RpcError> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(|value| value.as_str()))
+        .ok_or_else(|| invalid_params(missing))
+}
+
+fn parse_pubkey_value(value: &serde_json::Value, field: &str) -> Result<Pubkey, RpcError> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid_params(format!("{} must be a base58 public key", field)))?;
+    Pubkey::from_base58(text)
+        .map_err(|error| invalid_params(format!("Invalid {} pubkey: {}", field, error)))
+}
+
+fn parse_pubkey_param(
+    params: Option<serde_json::Value>,
+    keys: &[&str],
+    expected: &str,
+    field: &str,
+) -> Result<Pubkey, RpcError> {
+    let value = single_rpc_param(params, expected)?;
+    if value.is_string() {
+        return parse_pubkey_value(&value, field);
+    }
+    let object = value.as_object().ok_or_else(|| invalid_params(expected))?;
+    let text = object_string_field(object, keys, &format!("Missing {}", field))?;
+    Pubkey::from_base58(text)
+        .map_err(|error| invalid_params(format!("Invalid {} pubkey: {}", field, error)))
+}
+
+fn parse_code_hash_value(value: &serde_json::Value) -> Result<Hash, RpcError> {
     let hash_str = if let Some(hash) = value.as_str() {
         hash
-    } else if let Some(hash) = value
-        .as_object()
-        .and_then(|object| object.get("code_hash").or_else(|| object.get("codeHash")))
-        .and_then(|value| value.as_str())
-    {
-        hash
+    } else if let Some(object) = value.as_object() {
+        object_string_field(
+            object,
+            &["code_hash", "codeHash", "hash"],
+            "Missing code_hash",
+        )?
     } else {
-        return Err(RpcError {
-            code: -32602,
-            message: "code_hash must be a 32-byte hex string".to_string(),
-        });
+        return Err(invalid_params("code_hash must be a 32-byte hex string"));
     };
 
     let normalized = hash_str
@@ -9958,27 +10046,302 @@ fn parse_code_hash_status_param(params: Option<serde_json::Value>) -> Result<Has
     })
 }
 
-fn active_code_hash_deploy_blocks(
-    state: &RpcState,
-    code_hash: &Hash,
-) -> Result<(u64, Vec<RestrictionRecord>), RpcError> {
-    let slot = state.state.get_last_slot().map_err(|error| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", error),
-    })?;
-    let target = RestrictionTarget::CodeHash(*code_hash);
-    let active_records = state
-        .state
-        .get_active_restrictions_for_target(&target, slot, 0)
-        .map_err(|error| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", error),
-        })?
-        .into_iter()
-        .filter(|record| matches!(&record.mode, RestrictionMode::DeployBlocked))
-        .collect();
+fn parse_code_hash_status_param(params: Option<serde_json::Value>) -> Result<Hash, RpcError> {
+    let value = single_rpc_param(params, "Invalid params: expected [code_hash_hex]")?;
+    parse_code_hash_value(&value)
+}
 
-    Ok((slot, active_records))
+fn parse_protocol_module_value(value: &serde_json::Value) -> Result<ProtocolModuleId, RpcError> {
+    if let Some(number) = value.as_u64() {
+        return u8::try_from(number)
+            .ok()
+            .and_then(ProtocolModuleId::from_u8)
+            .ok_or_else(|| invalid_params("Invalid protocol module id"));
+    }
+
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid_params("protocol module must be a name or id"))?;
+    let normalized = text.to_ascii_lowercase().replace('-', "_");
+    match normalized.as_str() {
+        "native" => Ok(ProtocolModuleId::Native),
+        "governance" => Ok(ProtocolModuleId::Governance),
+        "staking" => Ok(ProtocolModuleId::Staking),
+        "moss_stake" | "mossstake" => Ok(ProtocolModuleId::MossStake),
+        "shielded" => Ok(ProtocolModuleId::Shielded),
+        "contracts" | "contract" => Ok(ProtocolModuleId::Contracts),
+        "tokens" | "token" => Ok(ProtocolModuleId::Tokens),
+        "dex" => Ok(ProtocolModuleId::Dex),
+        "lending" => Ok(ProtocolModuleId::Lending),
+        "marketplace" => Ok(ProtocolModuleId::Marketplace),
+        "bridge" => Ok(ProtocolModuleId::Bridge),
+        "custody" => Ok(ProtocolModuleId::Custody),
+        "oracle" => Ok(ProtocolModuleId::Oracle),
+        "validator" => Ok(ProtocolModuleId::Validator),
+        "mempool" => Ok(ProtocolModuleId::Mempool),
+        _ => Err(invalid_params(format!("Invalid protocol module: {}", text))),
+    }
+}
+
+fn parse_restriction_target_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RestrictionTarget, RpcError> {
+    let target_type = object
+        .get("type")
+        .or_else(|| object.get("target_type"))
+        .or_else(|| object.get("targetType"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_ascii_lowercase().replace('-', "_"));
+
+    let inferred = if target_type.is_none() {
+        if object.contains_key("chain")
+            || object.contains_key("chain_id")
+            || object.contains_key("chainId")
+        {
+            Some("bridge_route".to_string())
+        } else if object.contains_key("account") && object.contains_key("asset") {
+            Some("account_asset".to_string())
+        } else if object.contains_key("contract")
+            || object.contains_key("contract_id")
+            || object.contains_key("contractId")
+        {
+            Some("contract".to_string())
+        } else if object.contains_key("code_hash") || object.contains_key("codeHash") {
+            Some("code_hash".to_string())
+        } else if object.contains_key("module")
+            || object.contains_key("module_id")
+            || object.contains_key("moduleId")
+        {
+            Some("protocol_module".to_string())
+        } else if object.contains_key("asset") {
+            Some("asset".to_string())
+        } else if object.contains_key("account")
+            || object.contains_key("address")
+            || object.contains_key("pubkey")
+        {
+            Some("account".to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let target_type = target_type
+        .or(inferred)
+        .ok_or_else(|| invalid_params("Missing restriction target type"))?;
+
+    match target_type.as_str() {
+        "account" => {
+            let value = serde_json::Value::String(
+                object_string_field(object, &["account", "address", "pubkey"], "Missing account")?
+                    .to_string(),
+            );
+            Ok(RestrictionTarget::Account(parse_pubkey_value(
+                &value, "account",
+            )?))
+        }
+        "account_asset" | "accountasset" => {
+            let account_value = serde_json::Value::String(
+                object_string_field(object, &["account", "address", "pubkey"], "Missing account")?
+                    .to_string(),
+            );
+            let account = parse_pubkey_value(&account_value, "account")?;
+            let asset_value = object
+                .get("asset")
+                .or_else(|| object.get("mint"))
+                .ok_or_else(|| invalid_params("Missing asset"))?;
+            let asset = parse_restriction_asset_param(asset_value)?;
+            Ok(RestrictionTarget::AccountAsset { account, asset })
+        }
+        "asset" => {
+            let asset_value = object
+                .get("asset")
+                .or_else(|| object.get("mint"))
+                .ok_or_else(|| invalid_params("Missing asset"))?;
+            Ok(RestrictionTarget::Asset(parse_restriction_asset_param(
+                asset_value,
+            )?))
+        }
+        "contract" => {
+            let value = serde_json::Value::String(
+                object_string_field(
+                    object,
+                    &["contract", "contract_id", "contractId", "account"],
+                    "Missing contract",
+                )?
+                .to_string(),
+            );
+            Ok(RestrictionTarget::Contract(parse_pubkey_value(
+                &value, "contract",
+            )?))
+        }
+        "code_hash" | "codehash" => Ok(RestrictionTarget::CodeHash(parse_code_hash_value(
+            &serde_json::Value::Object(object.clone()),
+        )?)),
+        "bridge_route" | "bridgeroute" => {
+            let (chain_id, asset) = parse_bridge_route_object(object)?;
+            Ok(RestrictionTarget::BridgeRoute { chain_id, asset })
+        }
+        "protocol_module" | "protocolmodule" => {
+            let module_value = object
+                .get("module")
+                .or_else(|| object.get("module_id"))
+                .or_else(|| object.get("moduleId"))
+                .ok_or_else(|| invalid_params("Missing module"))?;
+            Ok(RestrictionTarget::ProtocolModule(
+                parse_protocol_module_value(module_value)?,
+            ))
+        }
+        _ => Err(invalid_params(format!(
+            "Unsupported restriction target type: {}",
+            target_type
+        ))),
+    }
+}
+
+fn parse_restriction_target_param(
+    params: Option<serde_json::Value>,
+) -> Result<RestrictionTarget, RpcError> {
+    let value = single_rpc_param(params, "Invalid params: expected restriction target object")?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_params("Invalid params: expected restriction target object"))?;
+    parse_restriction_target_object(object)
+}
+
+fn parse_restriction_id_param(params: Option<serde_json::Value>) -> Result<u64, RpcError> {
+    let value = single_rpc_param(params, "Invalid params: expected [restriction_id]")?;
+    if value.is_u64() || value.is_string() {
+        return parse_u64_value(&value, "restriction_id");
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_params("Invalid params: expected [restriction_id]"))?;
+    let id_value = object
+        .get("id")
+        .or_else(|| object.get("restriction_id"))
+        .or_else(|| object.get("restrictionId"))
+        .ok_or_else(|| invalid_params("Missing restriction_id"))?;
+    parse_u64_value(id_value, "restriction_id")
+}
+
+fn apply_restriction_page_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+    limit: &mut u64,
+    after_id: &mut Option<u64>,
+) -> Result<(), RpcError> {
+    if let Some(value) = object.get("limit") {
+        *limit = parse_u64_value(value, "limit")?;
+    }
+    if let Some(value) = object
+        .get("cursor")
+        .or_else(|| object.get("after"))
+        .or_else(|| object.get("after_id"))
+        .or_else(|| object.get("afterId"))
+    {
+        *after_id = Some(parse_u64_value(value, "cursor")?);
+    }
+    Ok(())
+}
+
+fn parse_restriction_page_params(
+    params: Option<serde_json::Value>,
+) -> Result<(usize, Option<u64>), RpcError> {
+    let mut limit = RESTRICTION_LIST_DEFAULT_LIMIT as u64;
+    let mut after_id = None;
+
+    if let Some(value) = params {
+        if let Some(array) = value.as_array() {
+            if let Some(first) = array.first() {
+                if first.is_object() {
+                    apply_restriction_page_object(
+                        first.as_object().unwrap(),
+                        &mut limit,
+                        &mut after_id,
+                    )?;
+                } else if first.is_u64() {
+                    limit = parse_u64_value(first, "limit")?;
+                } else if first.is_string() {
+                    after_id = Some(parse_u64_value(first, "cursor")?);
+                }
+            }
+            if let Some(second) = array.get(1) {
+                if second.is_object() {
+                    apply_restriction_page_object(
+                        second.as_object().unwrap(),
+                        &mut limit,
+                        &mut after_id,
+                    )?;
+                } else {
+                    after_id = Some(parse_u64_value(second, "cursor")?);
+                }
+            }
+        } else if let Some(object) = value.as_object() {
+            apply_restriction_page_object(object, &mut limit, &mut after_id)?;
+        } else if value.is_u64() {
+            limit = parse_u64_value(&value, "limit")?;
+        } else if value.is_string() {
+            after_id = Some(parse_u64_value(&value, "cursor")?);
+        }
+    }
+
+    let limit = limit.clamp(1, RESTRICTION_LIST_MAX_LIMIT as u64) as usize;
+    Ok((limit, after_id))
+}
+
+fn current_restriction_slot(state: &RpcState) -> Result<u64, RpcError> {
+    state.state.get_last_slot().map_err(db_error)
+}
+
+fn restriction_mode_amount(mode: &RestrictionMode) -> Option<u64> {
+    match mode {
+        RestrictionMode::FrozenAmount { amount } => Some(*amount),
+        _ => None,
+    }
+}
+
+fn restriction_mode_json(mode: &RestrictionMode) -> serde_json::Value {
+    serde_json::json!({
+        "kind": mode.as_str(),
+        "frozen_amount": restriction_mode_amount(mode),
+    })
+}
+
+fn restriction_target_json(target: &RestrictionTarget) -> serde_json::Value {
+    match target {
+        RestrictionTarget::Account(account) => serde_json::json!({
+            "type": "account",
+            "account": account.to_base58(),
+        }),
+        RestrictionTarget::AccountAsset { account, asset } => serde_json::json!({
+            "type": "account_asset",
+            "account": account.to_base58(),
+            "asset": asset.to_base58(),
+        }),
+        RestrictionTarget::Asset(asset) => serde_json::json!({
+            "type": "asset",
+            "asset": asset.to_base58(),
+        }),
+        RestrictionTarget::Contract(contract) => serde_json::json!({
+            "type": "contract",
+            "contract": contract.to_base58(),
+        }),
+        RestrictionTarget::CodeHash(code_hash) => serde_json::json!({
+            "type": "code_hash",
+            "code_hash": code_hash.to_hex(),
+        }),
+        RestrictionTarget::BridgeRoute { chain_id, asset } => serde_json::json!({
+            "type": "bridge_route",
+            "chain": chain_id,
+            "chain_id": chain_id,
+            "asset": asset,
+        }),
+        RestrictionTarget::ProtocolModule(module) => serde_json::json!({
+            "type": "protocol_module",
+            "module": module.as_str(),
+            "module_id": module.as_u8(),
+        }),
+    }
 }
 
 fn restriction_record_status_json(record: &RestrictionRecord) -> serde_json::Value {
@@ -9987,13 +10350,369 @@ fn restriction_record_status_json(record: &RestrictionRecord) -> serde_json::Val
         "status": record.status.as_str(),
         "target_type": record.target.target_type_label(),
         "target": record.target.target_value_label(),
+        "target_details": restriction_target_json(&record.target),
         "mode": record.mode.as_str(),
+        "mode_details": restriction_mode_json(&record.mode),
+        "frozen_amount": restriction_mode_amount(&record.mode),
         "reason": record.reason.as_str(),
+        "evidence_hash": record.evidence_hash.map(|hash| hash.to_hex()),
+        "evidence_uri_hash": record.evidence_uri_hash.map(|hash| hash.to_hex()),
+        "proposer": record.proposer.to_base58(),
+        "authority": record.authority.to_base58(),
+        "approval_authority": record.approval_authority.map(|authority| authority.to_base58()),
         "created_slot": record.created_slot,
         "created_epoch": record.created_epoch,
         "expires_at_slot": record.expires_at_slot,
         "supersedes": record.supersedes,
+        "lifted_by": record.lifted_by.map(|authority| authority.to_base58()),
+        "lifted_slot": record.lifted_slot,
+        "lift_reason": record.lift_reason.map(|reason| reason.as_str()),
     })
+}
+
+fn effective_restriction_record_json(record: &EffectiveRestrictionRecord) -> serde_json::Value {
+    let mut value = restriction_record_status_json(&record.record);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "effective_status".to_string(),
+            serde_json::json!(record.effective_status.as_str()),
+        );
+        object.insert("active".to_string(), serde_json::json!(record.is_active()));
+    }
+    value
+}
+
+fn restriction_target_status_json(
+    target: &RestrictionTarget,
+    slot: u64,
+    records: &[EffectiveRestrictionRecord],
+) -> serde_json::Value {
+    let active_restriction_ids: Vec<u64> = records
+        .iter()
+        .filter(|record| record.is_active())
+        .map(|record| record.record.id)
+        .collect();
+    let restriction_ids: Vec<u64> = records.iter().map(|record| record.record.id).collect();
+    let active_restrictions: Vec<serde_json::Value> = records
+        .iter()
+        .filter(|record| record.is_active())
+        .map(effective_restriction_record_json)
+        .collect();
+    let restrictions: Vec<serde_json::Value> = records
+        .iter()
+        .map(effective_restriction_record_json)
+        .collect();
+
+    serde_json::json!({
+        "slot": slot,
+        "target_type": target.target_type_label(),
+        "target": target.target_value_label(),
+        "target_details": restriction_target_json(target),
+        "restricted": !active_restriction_ids.is_empty(),
+        "active": !active_restriction_ids.is_empty(),
+        "restriction_ids": restriction_ids,
+        "active_restriction_ids": active_restriction_ids,
+        "restrictions": restrictions,
+        "active_restrictions": active_restrictions,
+    })
+}
+
+fn fetch_target_restriction_status(
+    state: &RpcState,
+    target: &RestrictionTarget,
+) -> Result<serde_json::Value, RpcError> {
+    let slot = current_restriction_slot(state)?;
+    let records = state
+        .state
+        .list_effective_restrictions_by_target(target, slot, RESTRICTION_LIST_MAX_LIMIT)
+        .map_err(db_error)?;
+    Ok(restriction_target_status_json(target, slot, &records))
+}
+
+fn paginated_restriction_list_json(
+    records: &mut Vec<EffectiveRestrictionRecord>,
+    limit: usize,
+) -> serde_json::Value {
+    let has_more = records.len() > limit;
+    if has_more {
+        records.truncate(limit);
+    }
+    let next_cursor = if has_more {
+        records.last().map(|record| record.record.id.to_string())
+    } else {
+        None
+    };
+    let list: Vec<serde_json::Value> = records
+        .iter()
+        .map(effective_restriction_record_json)
+        .collect();
+
+    serde_json::json!({
+        "restrictions": list,
+        "count": list.len(),
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    })
+}
+
+async fn handle_get_restriction(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let restriction_id = parse_restriction_id_param(params)?;
+    let slot = current_restriction_slot(state)?;
+    let restriction = state
+        .state
+        .get_effective_restriction_record(restriction_id, slot)
+        .map_err(db_error)?;
+
+    Ok(match restriction {
+        Some(record) => serde_json::json!({
+            "id": restriction_id,
+            "slot": slot,
+            "found": true,
+            "restriction": effective_restriction_record_json(&record),
+        }),
+        None => serde_json::json!({
+            "id": restriction_id,
+            "slot": slot,
+            "found": false,
+            "restriction": serde_json::Value::Null,
+        }),
+    })
+}
+
+async fn handle_list_restrictions(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (limit, after_id) = parse_restriction_page_params(params)?;
+    let slot = current_restriction_slot(state)?;
+    let mut records = state
+        .state
+        .list_restrictions(slot, limit.saturating_add(1), after_id)
+        .map_err(db_error)?;
+    let mut response = paginated_restriction_list_json(&mut records, limit);
+    if let Some(object) = response.as_object_mut() {
+        object.insert("slot".to_string(), serde_json::json!(slot));
+    }
+    Ok(response)
+}
+
+async fn handle_list_active_restrictions(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (limit, after_id) = parse_restriction_page_params(params)?;
+    let slot = current_restriction_slot(state)?;
+    let mut records = state
+        .state
+        .list_active_restrictions_paginated(slot, limit.saturating_add(1), after_id)
+        .map_err(db_error)?;
+    let mut response = paginated_restriction_list_json(&mut records, limit);
+    if let Some(object) = response.as_object_mut() {
+        object.insert("slot".to_string(), serde_json::json!(slot));
+        object.insert("active_only".to_string(), serde_json::json!(true));
+    }
+    Ok(response)
+}
+
+async fn handle_get_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let target = parse_restriction_target_param(params)?;
+    fetch_target_restriction_status(state, &target)
+}
+
+async fn handle_get_account_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let account = parse_pubkey_param(
+        params,
+        &["account", "address", "pubkey"],
+        "Invalid params: expected [account] or [{ account }]",
+        "account",
+    )?;
+    fetch_target_restriction_status(state, &RestrictionTarget::Account(account))
+}
+
+fn parse_asset_status_param(params: Option<serde_json::Value>) -> Result<Pubkey, RpcError> {
+    let value = single_rpc_param(params, "Invalid params: expected [asset] or [{ asset }]")?;
+    if value.is_string() {
+        return parse_restriction_asset_param(&value);
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_params("Invalid params: expected [asset] or [{ asset }]"))?;
+    let asset_value = object
+        .get("asset")
+        .or_else(|| object.get("mint"))
+        .ok_or_else(|| invalid_params("Missing asset"))?;
+    parse_restriction_asset_param(asset_value)
+}
+
+async fn handle_get_asset_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let asset = parse_asset_status_param(params)?;
+    fetch_target_restriction_status(state, &RestrictionTarget::Asset(asset))
+}
+
+fn parse_account_asset_status_param(
+    params: Option<serde_json::Value>,
+) -> Result<(Pubkey, Pubkey), RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    if let Some(array) = params.as_array() {
+        if array.len() == 2 {
+            let account = parse_pubkey_value(&array[0], "account")?;
+            let asset = parse_restriction_asset_param(&array[1])?;
+            return Ok((account, asset));
+        }
+        if let Some(first) = array.first().and_then(|value| value.as_object()) {
+            let target = parse_restriction_target_object(first)?;
+            if let RestrictionTarget::AccountAsset { account, asset } = target {
+                return Ok((account, asset));
+            }
+        }
+        return Err(invalid_params(
+            "Invalid params: expected [account, asset] or [{ account, asset }]",
+        ));
+    }
+
+    let object = params.as_object().ok_or_else(|| {
+        invalid_params("Invalid params: expected [account, asset] or { account, asset }")
+    })?;
+    let target = parse_restriction_target_object(object)?;
+    if let RestrictionTarget::AccountAsset { account, asset } = target {
+        Ok((account, asset))
+    } else {
+        Err(invalid_params("Expected account_asset restriction target"))
+    }
+}
+
+async fn handle_get_account_asset_restriction_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (account, asset) = parse_account_asset_status_param(params)?;
+    fetch_target_restriction_status(state, &RestrictionTarget::AccountAsset { account, asset })
+}
+
+fn parse_contract_status_param(params: Option<serde_json::Value>) -> Result<Pubkey, RpcError> {
+    parse_pubkey_param(
+        params,
+        &["contract", "contract_id", "contractId", "account"],
+        "Invalid params: expected [contract] or [{ contract }]",
+        "contract",
+    )
+}
+
+async fn handle_get_contract_lifecycle_status(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let contract_id = parse_contract_status_param(params)?;
+    let slot = current_restriction_slot(state)?;
+    let target = RestrictionTarget::Contract(contract_id);
+    let active_records = state
+        .state
+        .get_active_restrictions_for_target(&target, slot, 0)
+        .map_err(db_error)?;
+    let active_effective_records: Vec<EffectiveRestrictionRecord> = active_records
+        .iter()
+        .cloned()
+        .map(|record| EffectiveRestrictionRecord::new(record, slot))
+        .collect();
+    let account = state.state.get_account(&contract_id).map_err(db_error)?;
+
+    let mut lifecycle_status = "unknown";
+    let mut lifecycle_updated_slot = 0;
+    let mut lifecycle_restriction_id = None;
+    let mut is_executable = false;
+    let mut derived_from_restriction = false;
+
+    if let Some(account) = account.as_ref() {
+        is_executable = account.executable;
+        if account.executable {
+            if let Ok(mut contract) =
+                serde_json::from_slice::<lichen_core::ContractAccount>(&account.data)
+            {
+                derived_from_restriction =
+                    lichen_core::contract::derive_contract_lifecycle_from_state_store(
+                        &state.state,
+                        &contract_id,
+                        &mut contract,
+                        slot,
+                    )
+                    .map_err(|error| RpcError {
+                        code: -32000,
+                        message: error,
+                    })?;
+                lifecycle_status = contract_lifecycle_status_label(contract.lifecycle_status);
+                lifecycle_updated_slot = contract.lifecycle_updated_slot;
+                lifecycle_restriction_id = contract.lifecycle_restriction_id;
+            }
+        }
+    }
+
+    if lifecycle_status == "unknown" {
+        if let Some((status, restriction_id)) =
+            lichen_core::contract::strongest_contract_lifecycle_restriction(&active_records)
+        {
+            lifecycle_status = contract_lifecycle_status_label(status);
+            lifecycle_updated_slot = active_records
+                .iter()
+                .find(|record| record.id == restriction_id)
+                .map(|record| record.created_slot)
+                .unwrap_or(slot);
+            lifecycle_restriction_id = Some(restriction_id);
+            derived_from_restriction = true;
+        }
+    }
+
+    let active_restriction_ids: Vec<u64> = active_records.iter().map(|record| record.id).collect();
+    let active_restrictions: Vec<serde_json::Value> = active_effective_records
+        .iter()
+        .map(effective_restriction_record_json)
+        .collect();
+
+    Ok(serde_json::json!({
+        "contract": contract_id.to_base58(),
+        "slot": slot,
+        "found": account.is_some(),
+        "is_executable": is_executable,
+        "lifecycle_status": lifecycle_status,
+        "lifecycle_updated_slot": lifecycle_updated_slot,
+        "lifecycle_restriction_id": lifecycle_restriction_id,
+        "derived_from_restriction": derived_from_restriction,
+        "active": !active_restriction_ids.is_empty(),
+        "active_restriction_ids": active_restriction_ids,
+        "active_restrictions": active_restrictions,
+    }))
+}
+
+fn active_code_hash_deploy_blocks(
+    state: &RpcState,
+    code_hash: &Hash,
+) -> Result<(u64, Vec<RestrictionRecord>), RpcError> {
+    let slot = current_restriction_slot(state)?;
+    let target = RestrictionTarget::CodeHash(*code_hash);
+    let active_records = state
+        .state
+        .get_active_restrictions_for_target(&target, slot, 0)
+        .map_err(db_error)?
+        .into_iter()
+        .filter(|record| matches!(&record.mode, RestrictionMode::DeployBlocked))
+        .collect();
+
+    Ok((slot, active_records))
 }
 
 fn code_hash_restriction_status_json(
@@ -17226,16 +17945,20 @@ mod tests {
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
         decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
         filter_signatures_for_address, get_cached_program_list_response, handle_can_receive,
-        handle_can_send, handle_create_bridge_deposit, handle_get_all_symbol_registry,
-        handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
-        handle_get_code_hash_restriction_status, handle_get_contract_info,
+        handle_can_send, handle_create_bridge_deposit, handle_get_account_asset_restriction_status,
+        handle_get_account_restriction_status, handle_get_all_symbol_registry,
+        handle_get_asset_restriction_status, handle_get_bridge_deposit,
+        handle_get_bridge_route_restriction_status, handle_get_code_hash_restriction_status,
+        handle_get_contract_info, handle_get_contract_lifecycle_status,
         handle_get_governance_events, handle_get_incident_status, handle_get_program,
-        handle_get_program_stats, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_set_fee_config, handle_solana_get_account_info,
-        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
-        live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
-        parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
-        pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
+        handle_get_program_stats, handle_get_restriction, handle_get_restriction_status,
+        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
+        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
+        handle_solana_get_account_info, handle_solana_get_token_account_balance,
+        handle_solana_get_token_accounts_by_owner, live_signed_metadata_source_rpc,
+        parse_bridge_access_auth, parse_get_block_slot_param, parse_governance_event,
+        parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash, pq_signature_json,
+        privileged_rpc_mutation_test_output, put_cached_program_list_response,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
         AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
@@ -17977,6 +18700,223 @@ mod tests {
         };
         state.put_restriction(&record).unwrap();
         restriction_id
+    }
+
+    fn put_expired_account_restriction(state: &StateStore, account: Pubkey) -> u64 {
+        state.set_last_slot(19).unwrap();
+        let restriction_id = state.next_restriction_id().unwrap();
+        let record = RestrictionRecord {
+            id: restriction_id,
+            target: RestrictionTarget::Account(account),
+            mode: RestrictionMode::OutgoingOnly,
+            status: RestrictionStatus::Active,
+            reason: RestrictionReason::TestnetDrill,
+            evidence_hash: None,
+            evidence_uri_hash: None,
+            proposer: Pubkey([0xD1; 32]),
+            authority: Pubkey([0xD2; 32]),
+            approval_authority: None,
+            created_slot: 10,
+            created_epoch: 0,
+            expires_at_slot: Some(15),
+            supersedes: None,
+            lifted_by: None,
+            lifted_slot: None,
+            lift_reason: None,
+        };
+        state.put_restriction(&record).unwrap();
+        restriction_id
+    }
+
+    #[tokio::test]
+    async fn test_list_restrictions_paginates_and_marks_effective_status() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+
+        let id1 = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(Pubkey([0x01; 32])),
+            RestrictionMode::OutgoingOnly,
+        );
+        let id2 = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Asset(Pubkey([0x02; 32])),
+            RestrictionMode::AssetPaused,
+        );
+        let id3 = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Contract(Pubkey([0x03; 32])),
+            RestrictionMode::ExecuteBlocked,
+        );
+        let expired_id = put_expired_account_restriction(&rpc_state.state, Pubkey([0x04; 32]));
+
+        let first_page =
+            handle_list_restrictions(&rpc_state, Some(serde_json::json!([{ "limit": 2 }])))
+                .await
+                .expect("listRestrictions should serialize");
+
+        assert_eq!(first_page["slot"], serde_json::json!(19));
+        assert_eq!(first_page["count"], serde_json::json!(2));
+        assert_eq!(first_page["has_more"], serde_json::json!(true));
+        assert_eq!(
+            first_page["next_cursor"],
+            serde_json::json!(id2.to_string())
+        );
+        assert_eq!(first_page["restrictions"][0]["id"], serde_json::json!(id1));
+        assert_eq!(first_page["restrictions"][1]["id"], serde_json::json!(id2));
+
+        let second_page = handle_list_restrictions(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 10, "cursor": id2.to_string() }])),
+        )
+        .await
+        .expect("listRestrictions cursor should serialize");
+        assert_eq!(second_page["has_more"], serde_json::json!(false));
+        assert_eq!(second_page["restrictions"][0]["id"], serde_json::json!(id3));
+        assert_eq!(
+            second_page["restrictions"][1]["effective_status"],
+            serde_json::json!("expired")
+        );
+        assert_eq!(
+            second_page["restrictions"][1]["active"],
+            serde_json::json!(false)
+        );
+
+        let active_page =
+            handle_list_active_restrictions(&rpc_state, Some(serde_json::json!([{ "limit": 10 }])))
+                .await
+                .expect("listActiveRestrictions should serialize");
+        let active_ids: Vec<u64> = active_page["restrictions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(active_ids, vec![id1, id2, id3]);
+
+        let expired = handle_get_restriction(&rpc_state, Some(serde_json::json!([expired_id])))
+            .await
+            .expect("getRestriction should serialize expired record");
+        assert_eq!(expired["found"], serde_json::json!(true));
+        assert_eq!(
+            expired["restriction"]["effective_status"],
+            serde_json::json!("expired")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restriction_status_methods_report_exact_targets() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let account = Pubkey([0xA3; 32]);
+        let asset = Pubkey([0xA4; 32]);
+        let account_restriction_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(account),
+            RestrictionMode::Bidirectional,
+        );
+        let asset_restriction_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Asset(asset),
+            RestrictionMode::AssetPaused,
+        );
+        let account_asset_restriction_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::AccountAsset { account, asset },
+            RestrictionMode::FrozenAmount { amount: 900 },
+        );
+
+        let account_status = handle_get_account_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([account.to_base58()])),
+        )
+        .await
+        .expect("getAccountRestrictionStatus should serialize");
+        assert_eq!(
+            account_status["active_restriction_ids"],
+            serde_json::json!([account_restriction_id])
+        );
+
+        let asset_status = handle_get_asset_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([{ "asset": asset.to_base58() }])),
+        )
+        .await
+        .expect("getAssetRestrictionStatus should serialize");
+        assert_eq!(
+            asset_status["active_restriction_ids"],
+            serde_json::json!([asset_restriction_id])
+        );
+
+        let account_asset_status = handle_get_account_asset_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([account.to_base58(), asset.to_base58()])),
+        )
+        .await
+        .expect("getAccountAssetRestrictionStatus should serialize");
+        assert_eq!(
+            account_asset_status["active_restriction_ids"],
+            serde_json::json!([account_asset_restriction_id])
+        );
+        assert_eq!(
+            account_asset_status["active_restrictions"][0]["frozen_amount"],
+            serde_json::json!(900)
+        );
+
+        let generic_status = handle_get_restriction_status(
+            &rpc_state,
+            Some(serde_json::json!([{
+                "type": "account_asset",
+                "account": account.to_base58(),
+                "asset": asset.to_base58()
+            }])),
+        )
+        .await
+        .expect("getRestrictionStatus should serialize target object");
+        assert_eq!(
+            generic_status["target_details"]["type"],
+            serde_json::json!("account_asset")
+        );
+        assert_eq!(
+            generic_status["active_restriction_ids"],
+            serde_json::json!([account_asset_restriction_id])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_contract_lifecycle_status_reports_effective_restriction() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let program = Pubkey([0xE1; 32]);
+        let owner = Pubkey([0xE2; 32]);
+        put_test_contract_account(&rpc_state.state, program, owner, &[]);
+        let restriction_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Contract(program),
+            RestrictionMode::StateChangingBlocked,
+        );
+
+        let response = handle_get_contract_lifecycle_status(
+            &rpc_state,
+            Some(serde_json::json!([{ "contract": program.to_base58() }])),
+        )
+        .await
+        .expect("getContractLifecycleStatus should serialize");
+
+        assert_eq!(response["found"], serde_json::json!(true));
+        assert_eq!(response["is_executable"], serde_json::json!(true));
+        assert_eq!(response["lifecycle_status"], serde_json::json!("suspended"));
+        assert_eq!(
+            response["lifecycle_restriction_id"],
+            serde_json::json!(restriction_id)
+        );
+        assert_eq!(
+            response["active_restriction_ids"],
+            serde_json::json!([restriction_id])
+        );
     }
 
     #[derive(Clone, Default)]
