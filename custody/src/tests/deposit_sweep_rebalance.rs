@@ -223,7 +223,10 @@ async fn test_create_deposit_rate_limit_rejection_returns_bad_request_status() {
     let base_url = spawn_mock_server(app).await;
     let (user_id, auth) = test_bridge_access_auth_payload(23);
     let keypair = Keypair::from_seed(&[23; 32]);
-    let second_issued_at = current_unix_secs().unwrap().saturating_sub(1);
+    let first_issued_at = auth["issued_at"]
+        .as_u64()
+        .expect("test bridge auth includes issued_at");
+    let second_issued_at = first_issued_at.saturating_sub(1);
     let second_expires_at = second_issued_at + 600;
     let second_message = bridge_access_message(&user_id, second_issued_at, second_expires_at);
     let second_auth = json!({
