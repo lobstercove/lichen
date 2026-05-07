@@ -7976,7 +7976,6 @@ async fn run_validator() {
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
         let tip_notify_for_blocks = tip_notify_for_blocks.clone();
         let data_dir_for_blocks = data_dir.clone();
-        let replay_staging_root_for_blocks = replay_staging_root.clone();
         let finality_for_blocks = finality_tracker.clone();
         let vote_authority_for_rx = vote_authority.clone();
         // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
@@ -9300,10 +9299,11 @@ async fn run_validator() {
                             let did_full_validate =
                                 sync_mgr.should_full_validate(pending_slot).await;
                             if did_full_validate {
-                                if let Err(err) = validate_block_replay_on_staging(
+                                replay_block_transactions(&processor_for_blocks, &pending_block);
+                                if let Err(err) = validate_state_root_with_schema(
                                     &state_for_blocks,
-                                    &replay_staging_root_for_blocks,
-                                    &pending_block,
+                                    pending_slot,
+                                    pending_block.header.state_root,
                                     "pending block",
                                     false,
                                 ) {
@@ -9314,7 +9314,6 @@ async fn run_validator() {
                                     );
                                     std::process::exit(1);
                                 }
-                                replay_block_transactions(&processor_for_blocks, &pending_block);
                             }
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
@@ -9656,10 +9655,11 @@ async fn run_validator() {
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
                         let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
                         if did_full_validate {
-                            if let Err(err) = validate_block_replay_on_staging(
+                            replay_block_transactions(&processor_for_blocks, &block);
+                            if let Err(err) = validate_state_root_with_schema(
                                 &state_for_blocks,
-                                &replay_staging_root_for_blocks,
-                                &block,
+                                block_slot,
+                                block.header.state_root,
                                 "sync block",
                                 false,
                             ) {
@@ -9670,7 +9670,6 @@ async fn run_validator() {
                                 );
                                 std::process::exit(1);
                             }
-                            replay_block_transactions(&processor_for_blocks, &block);
                         }
                         // SYNC-FIX: Apply block effects (rewards, staking) during sync
                         // so that the joining node's CF_ACCOUNTS state matches the
@@ -9892,20 +9891,6 @@ async fn run_validator() {
                                     .should_full_validate(pending_block.header.slot)
                                     .await
                                 {
-                                    if let Err(err) = validate_block_replay_on_staging(
-                                        &state_for_blocks,
-                                        &replay_staging_root_for_blocks,
-                                        &pending_block,
-                                        "pending block",
-                                        false,
-                                    ) {
-                                        warn!("{}", err);
-                                        error!(
-                                            "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
-                                            pending_slot
-                                        );
-                                        std::process::exit(1);
-                                    }
                                     replay_block_transactions(
                                         &processor_for_blocks,
                                         &pending_block,
@@ -10342,22 +10327,6 @@ async fn run_validator() {
                                 // and "new block committed". On crash recovery, F-03's
                                 // idempotency guard (reward_distribution_hash check) ensures
                                 // apply_block_effects runs for the block on disk.
-                                if sync_mgr.should_full_validate(block.header.slot).await {
-                                    if let Err(err) = validate_block_replay_on_staging(
-                                        &state_for_blocks,
-                                        &replay_staging_root_for_blocks,
-                                        &block,
-                                        "fork replacement block",
-                                        false,
-                                    ) {
-                                        warn!("{}", err);
-                                        error!(
-                                            "FATAL: refusing to replay fork replacement block {} into canonical state after staging state-root mismatch",
-                                            block.header.slot
-                                        );
-                                        std::process::exit(1);
-                                    }
-                                }
                                 if state_for_blocks
                                     .put_block_atomic(&block, None, None)
                                     .is_ok()
@@ -10454,20 +10423,6 @@ async fn run_validator() {
                                             .should_full_validate(pending_block.header.slot)
                                             .await
                                         {
-                                            if let Err(err) = validate_block_replay_on_staging(
-                                                &state_for_blocks,
-                                                &replay_staging_root_for_blocks,
-                                                &pending_block,
-                                                "pending block",
-                                                false,
-                                            ) {
-                                                warn!("{}", err);
-                                                error!(
-                                                    "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
-                                                    pending_slot
-                                                );
-                                                std::process::exit(1);
-                                            }
                                             replay_block_transactions(
                                                 &processor_for_blocks,
                                                 &pending_block,
