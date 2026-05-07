@@ -322,7 +322,7 @@ pub fn build_block(
     block.oracle_prices = oracle_prices;
 
     if block.transactions.is_empty() {
-        debug!("📦 Built empty block (heartbeat) at height {}", height);
+        debug!("📦 Built empty liveness block at height {}", height);
     } else {
         info!(
             "📦 Built block at height {} with {} txs (total_ms={} collect_ms={} staging_ms={} exec_ms={} root_ms={})",
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn build_block_can_emit_heartbeat_without_draining_pending_transactions() {
+    fn build_block_can_emit_liveness_block_without_draining_pending_transactions() {
         let temp = tempdir().unwrap();
         let state = StateStore::open(temp.path()).unwrap();
         let validator = Pubkey([7u8; 32]);

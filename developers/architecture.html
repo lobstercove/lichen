@@ -110,7 +110,7 @@
                 <div class="arch-layer layer-consensus">
                     <div class="layer-name"><i class="fas fa-handshake"></i> Consensus Layer (Tendermint BFT)
                     </div>
-                    <div class="layer-desc">Propose → Prevote → Precommit → Commit, adaptive block time, validator
+                    <div class="layer-desc">Propose → Prevote → Precommit → Commit, 400ms slot cadence, validator
                         scoring
                     </div>
                 </div>
@@ -143,9 +143,8 @@
                 deterministic finality: Propose → Prevote → Precommit → Commit.</p>
 
             <h3>Block Production</h3>
-            <p>Block time is <strong>adaptive</strong>: ~800ms for heartbeat (empty) blocks, ~200ms for
-                blocks containing transactions. The proposer waits for pending transactions before building a block,
-                then the BFT round delivers final commitment in a single round-trip.</p>
+            <p>Block time targets a continuous <strong>400ms slot cadence</strong>. Validators produce liveness blocks
+                even when the mempool is empty, and transaction-bearing blocks use the same slot target.</p>
 
             <h3>Leader Selection</h3>
             <p>Leaders are selected via weighted random sampling where the weight is:</p>
@@ -179,7 +178,7 @@ contribution_score = (
             </ol>
 
             <p>A block is considered <strong>finalized</strong> once 2/3+ of validators (by stake weight) submit commit
-                votes. Typical finality time is 800ms–1.2 seconds.</p>
+                votes. Under normal network conditions, Lichen targets finality on the 400ms slot cadence.</p>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Fast Finality</div>

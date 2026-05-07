@@ -654,8 +654,8 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
                         <td><code>slot_duration_ms</code></td>
                         <td>Integer</td>
                         <td><code>400</code></td>
-                        <td>Base slot duration in milliseconds. Actual block time is adaptive: ~800ms for heartbeat
-                            blocks, ~200ms with transactions (Tendermint BFT).</td>
+                        <td>Canonical slot duration in milliseconds. Empty liveness blocks and transaction-bearing
+                            blocks both target the same 400ms Tendermint BFT cadence.</td>
                     </tr>
                     <tr>
                         <td><code>enable_slashing</code></td>

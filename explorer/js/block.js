@@ -265,7 +265,7 @@ async function displayBlock(block) {
             rewardCard.style.display = '';
             document.getElementById('rewardAmount').textContent =
                 projectedLicn.toFixed(6) + ' LICN/slot estimate';
-            const typeLabel = reward.type === 'heartbeat' ? 'Heartbeat slot' : 'Transaction slot';
+            const typeLabel = reward.type === 'transaction' ? 'Transaction slot' : 'Liveness slot';
             const epochLabel = reward.epoch !== undefined ? ' · Epoch ' + reward.epoch : '';
             document.getElementById('rewardType').innerHTML =
                 '<span class="badge badge-info">' + typeLabel + '</span>' +
