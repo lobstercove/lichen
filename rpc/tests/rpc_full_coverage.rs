@@ -184,8 +184,8 @@ fn public_network_app_with_admin_token() -> axum::Router {
         None,
         None,
         None,
-        "lichen-testnet".to_string(),
-        "lichen-testnet".to_string(),
+        "lichen-testnet-1".to_string(),
+        "lichen-testnet-1".to_string(),
         Some(TEST_ADMIN_TOKEN.to_string()),
         None,
         None,
@@ -1268,6 +1268,56 @@ async fn test_native_legacy_admin_rpcs_accept_bearer_header_on_dev_networks() {
     .unwrap();
     assert_valid_rpc(&resp);
     assert_eq!(resp["result"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn test_native_legacy_admin_rpcs_reject_json_body_admin_token_on_dev_networks() {
+    let app = dev_network_app_with_admin_token();
+
+    let resp = rpc_p_with_auth_and_connect_info(
+        &app,
+        "/",
+        "setFeeConfig",
+        json!({
+            "base_fee_spores": 1000,
+            "admin_token": TEST_ADMIN_TOKEN
+        }),
+        None,
+        Some("127.0.0.1:9000".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let message = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("Missing Authorization: Bearer <token> header"),
+        "expected header-only auth rejection, got: {}",
+        message
+    );
+}
+
+#[tokio::test]
+async fn test_native_legacy_admin_rpcs_ignore_json_body_admin_token_when_header_is_valid() {
+    let app = dev_network_app_with_admin_token();
+
+    let resp = rpc_p_with_auth_and_connect_info(
+        &app,
+        "/",
+        "setFeeConfig",
+        json!({
+            "base_fee_spores": 1000,
+            "admin_token": "wrong-body-token"
+        }),
+        Some(TEST_BEARER_ADMIN_TOKEN),
+        Some("127.0.0.1:9000".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(
+        resp["result"]["status"], "ok",
+        "valid Authorization header should be the only accepted admin credential"
+    );
 }
 
 #[tokio::test]
