@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Covers every JSON-RPC method across all three dispatch planes:
-//   - Native Lichen RPC (119 methods on /)
+//   - Native Lichen RPC (134 methods on /)
 //   - Solana-compat RPC (13 methods on /solana-compat)
 //   - EVM-compat RPC (20 methods on /evm)
 // Plus all REST API endpoints on /api/v1/*.
@@ -1023,6 +1023,161 @@ async fn test_native_can_transfer() {
     .await
     .unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_restriction_transaction_builders() {
+    let app = fresh_app();
+    let proposer = Pubkey([0x21; 32]).to_base58();
+    let authority = Pubkey([0x22; 32]).to_base58();
+    let account = Pubkey([0x23; 32]).to_base58();
+    let asset = Pubkey([0x24; 32]).to_base58();
+    let contract = Pubkey([0x25; 32]).to_base58();
+    let blockhash = Hash([0x26; 32]).to_hex();
+    let code_hash = Hash([0x27; 32]).to_hex();
+
+    let base = |extra: serde_json::Value| {
+        let mut object = extra.as_object().expect("object").clone();
+        object.insert("proposer".to_string(), json!(proposer.clone()));
+        object.insert("governance_authority".to_string(), json!(authority.clone()));
+        object.insert("recent_blockhash".to_string(), json!(blockhash.clone()));
+        serde_json::Value::Object(object)
+    };
+
+    let cases = vec![
+        (
+            "buildRestrictAccountTx",
+            base(json!({
+                "account": account.clone(),
+                "mode": "outgoing_only",
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildUnrestrictAccountTx",
+            base(json!({
+                "account": account.clone(),
+                "restriction_id": 1,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+        (
+            "buildRestrictAccountAssetTx",
+            base(json!({
+                "account": account.clone(),
+                "asset": asset.clone(),
+                "mode": "bidirectional",
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildUnrestrictAccountAssetTx",
+            base(json!({
+                "account": account.clone(),
+                "asset": asset.clone(),
+                "restriction_id": 2,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+        (
+            "buildSetFrozenAssetAmountTx",
+            base(json!({
+                "account": account.clone(),
+                "asset": asset.clone(),
+                "amount": 100,
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildSuspendContractTx",
+            base(json!({
+                "contract": contract.clone(),
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildResumeContractTx",
+            base(json!({
+                "contract": contract.clone(),
+                "restriction_id": 3,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+        (
+            "buildQuarantineContractTx",
+            base(json!({
+                "contract": contract.clone(),
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildTerminateContractTx",
+            base(json!({
+                "contract": contract.clone(),
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildBanCodeHashTx",
+            base(json!({
+                "code_hash": code_hash.clone(),
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildUnbanCodeHashTx",
+            base(json!({
+                "code_hash": code_hash.clone(),
+                "restriction_id": 4,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+        (
+            "buildPauseBridgeRouteTx",
+            base(json!({
+                "chain": "ethereum",
+                "asset": "eth",
+                "reason": "testnet_drill"
+            })),
+        ),
+        (
+            "buildResumeBridgeRouteTx",
+            base(json!({
+                "chain": "ethereum",
+                "asset": "eth",
+                "restriction_id": 5,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+        (
+            "buildExtendRestrictionTx",
+            base(json!({
+                "restriction_id": 6,
+                "new_expires_at_slot": 1000
+            })),
+        ),
+        (
+            "buildLiftRestrictionTx",
+            base(json!({
+                "restriction_id": 7,
+                "lift_reason": "testnet_drill_complete"
+            })),
+        ),
+    ];
+
+    for (method, params) in cases {
+        let resp = rpc_p(&app, "/", method, json!([params])).await.unwrap();
+        assert_valid_rpc(&resp);
+        assert_eq!(
+            resp["result"]["unsigned"],
+            json!(true),
+            "{method} should return an unsigned transaction"
+        );
+        assert!(
+            resp["result"]["transaction_base64"].is_string(),
+            "{method} should return a signable transaction"
+        );
+    }
 }
 
 #[tokio::test]
