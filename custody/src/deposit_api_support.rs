@@ -55,6 +55,9 @@ pub(super) async fn create_deposit(
     )?;
 
     ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+    ensure_deposit_restrictions_allow(&state, &user_id, &chain, &asset)
+        .await
+        .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
 
     let _replay_guard = state.bridge_auth_replay_lock.lock().await;
     prune_expired_bridge_auth_replays(&state.db, now, BRIDGE_AUTH_REPLAY_PRUNE_BATCH)

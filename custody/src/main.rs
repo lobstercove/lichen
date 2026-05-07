@@ -108,11 +108,11 @@ use chain_config::{
     rpc_url_for_chain, treasury_for_chain,
 };
 use chain_confirmation_support::{check_evm_tx_confirmed, check_solana_tx_confirmed};
-#[cfg(test)]
-use credit_execution_support::list_credit_jobs_by_status;
 use credit_execution_support::{
     build_credit_job, count_credit_jobs, credit_worker_loop, store_credit_job,
 };
+#[cfg(test)]
+use credit_execution_support::{list_credit_jobs_by_status, process_credit_jobs};
 use custody_constants::*;
 #[cfg(test)]
 use deposit_api_support::CreateDepositRequest;
@@ -192,9 +192,11 @@ use runtime_types::{
 #[cfg(test)]
 use security_guards::validate_custody_security_configuration_with_mode;
 use security_guards::{
-    default_signer_threshold, ensure_deposit_creation_allowed, local_rebalance_policy_error,
-    local_sweep_policy_error, validate_custody_security_configuration,
-    validate_pq_signer_configuration, withdrawal_incident_block_reason,
+    default_signer_threshold, ensure_credit_restrictions_allow, ensure_deposit_creation_allowed,
+    ensure_deposit_restrictions_allow, ensure_withdrawal_restrictions_allow,
+    local_rebalance_policy_error, local_sweep_policy_error,
+    validate_custody_security_configuration, validate_pq_signer_configuration,
+    withdrawal_incident_block_reason,
 };
 use seed_support::{load_optional_seed_secret, load_required_seed_secret};
 use service_api_support::{get_reserves, health, status};

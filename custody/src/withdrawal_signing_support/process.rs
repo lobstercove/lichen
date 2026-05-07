@@ -11,6 +11,38 @@ pub(in super::super) async fn process_burned_withdrawals(
         }
 
         let now = chrono::Utc::now().timestamp();
+        let asset_lower = job.asset.to_lowercase();
+        if let Err(error) = ensure_withdrawal_restrictions_allow(
+            state,
+            &job.user_id,
+            &asset_lower,
+            job.amount,
+            &job.dest_chain,
+            &job.preferred_stablecoin,
+        )
+        .await
+        {
+            let retry_after = now.saturating_add(state.config.poll_interval_secs as i64);
+            if update_withdrawal_hold(&mut job, error.clone(), Some(retry_after)) {
+                store_withdrawal_job(&state.db, &job)?;
+                emit_custody_event(
+                    state,
+                    "security.withdrawal_restriction_hold",
+                    &job.job_id,
+                    None,
+                    job.burn_tx_signature.as_deref(),
+                    Some(&serde_json::json!({
+                        "asset": job.asset,
+                        "amount": job.amount,
+                        "dest_chain": job.dest_chain,
+                        "reason": error,
+                        "retry_after": retry_after,
+                    })),
+                );
+            }
+            continue;
+        }
+
         match evaluate_withdrawal_velocity_gate(state, &job, now)? {
             WithdrawalVelocityGate::Ready => clear_withdrawal_hold(&mut job),
             WithdrawalVelocityGate::AwaitingRelease { release_after } => {
@@ -74,7 +106,7 @@ pub(in super::super) async fn process_burned_withdrawals(
             }
         }
 
-        let outbound_asset = match job.asset.to_lowercase().as_str() {
+        let outbound_asset = match asset_lower.as_str() {
             "musd" => job.preferred_stablecoin.clone(),
             "wsol" => "sol".to_string(),
             "weth" => "eth".to_string(),

@@ -338,6 +338,14 @@ pub(super) async fn mock_licn_rpc_handler(
         .unwrap_or_default();
     let result = match method {
         "getTransaction" => state.transaction_result.clone(),
+        "getBridgeRouteRestrictionStatus" => json!({
+            "route_paused": false,
+            "active_restriction_ids": [],
+        }),
+        "canReceive" | "canSend" | "canTransfer" => json!({
+            "allowed": true,
+            "active_restriction_ids": [],
+        }),
         _ => Value::Null,
     };
 

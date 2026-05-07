@@ -1,5 +1,72 @@
 use super::*;
 
+#[derive(Clone)]
+struct MockRestrictionRpcState {
+    route_paused: bool,
+    can_receive_allowed: bool,
+    can_send_allowed: bool,
+    requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
+}
+
+async fn mock_restriction_rpc_handler(
+    State(state): State<MockRestrictionRpcState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    state.requests.lock().await.push(payload.clone());
+    let method = payload
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let result = match method {
+        "getBridgeRouteRestrictionStatus" => json!({
+            "route_paused": state.route_paused,
+            "active_restriction_ids": if state.route_paused { json!([91]) } else { json!([]) },
+        }),
+        "canReceive" => json!({
+            "allowed": state.can_receive_allowed,
+            "active_restriction_ids": if state.can_receive_allowed { json!([]) } else { json!([92]) },
+        }),
+        "canSend" => json!({
+            "allowed": state.can_send_allowed,
+            "active_restriction_ids": if state.can_send_allowed { json!([]) } else { json!([93]) },
+        }),
+        "getTransaction" => Value::Null,
+        _ => Value::Null,
+    };
+
+    Json(json!({
+        "jsonrpc": "2.0",
+        "id": payload.get("id").cloned().unwrap_or(json!(1)),
+        "result": result,
+    }))
+}
+
+async fn configure_restriction_rpc(
+    state: &mut CustodyState,
+    route_paused: bool,
+    can_receive_allowed: bool,
+    can_send_allowed: bool,
+) -> std::sync::Arc<tokio::sync::Mutex<Vec<Value>>> {
+    let requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let rpc_url = spawn_mock_server(
+        Router::new()
+            .route("/", post(mock_restriction_rpc_handler))
+            .with_state(MockRestrictionRpcState {
+                route_paused,
+                can_receive_allowed,
+                can_send_allowed,
+                requests: requests.clone(),
+            }),
+    )
+    .await;
+    state.config.licn_rpc_url = Some(rpc_url);
+    state.config.musd_contract_addr = Some(Keypair::from_seed(&[0xA1; 32]).pubkey().to_base58());
+    state.config.wsol_contract_addr = Some(Keypair::from_seed(&[0xA2; 32]).pubkey().to_base58());
+    state.config.weth_contract_addr = Some(Keypair::from_seed(&[0xA3; 32]).pubkey().to_base58());
+    state.config.wbnb_contract_addr = Some(Keypair::from_seed(&[0xA4; 32]).pubkey().to_base58());
+    requests
+}
+
 #[test]
 fn test_is_solana_stablecoin() {
     assert!(is_solana_stablecoin("usdc"));
@@ -367,6 +434,123 @@ async fn test_create_deposit_blocked_when_deposits_are_paused() {
 }
 
 #[tokio::test]
+async fn test_create_deposit_blocked_when_consensus_route_is_paused() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, true, true, true).await;
+    let (user_id, auth) = test_bridge_access_auth_payload(25);
+
+    let response = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("custody must reject direct deposits for paused consensus routes");
+
+    assert_eq!(response.code, "invalid_request");
+    assert!(response
+        .message
+        .contains("bridge route solana:sol is paused"));
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    let dr = state.deposit_rate.lock().await;
+    assert_eq!(dr.count_this_minute, 0);
+}
+
+#[tokio::test]
+async fn test_create_deposit_blocked_when_consensus_receive_is_restricted() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, false, false, true).await;
+    let (user_id, auth) = test_bridge_access_auth_payload(26);
+
+    let response = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: user_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect_err("custody must reject direct deposits for receive-restricted users/assets");
+
+    assert_eq!(response.code, "invalid_request");
+    assert!(response.message.contains("cannot receive asset"));
+    assert!(response.message.contains(&user_id));
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    assert_eq!(
+        requests[1].get("method").and_then(|value| value.as_str()),
+        Some("canReceive")
+    );
+    let dr = state.deposit_rate.lock().await;
+    assert_eq!(dr.count_this_minute, 0);
+}
+
+#[tokio::test]
+async fn test_queued_credit_held_when_consensus_receive_is_restricted() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, false, false, true).await;
+    state.config.treasury_keypair_path =
+        Some("/tmp/not-needed-for-restriction-hold.json".to_string());
+    let recipient = Keypair::from_seed(&[0xB5; 32]).pubkey().to_base58();
+    let job = CreditJob {
+        job_id: "credit-restriction-hold".to_string(),
+        deposit_id: "deposit-restriction-hold".to_string(),
+        to_address: recipient,
+        amount_spores: 123,
+        source_asset: "sol".to_string(),
+        source_chain: "solana".to_string(),
+        status: "queued".to_string(),
+        tx_signature: None,
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        created_at: chrono::Utc::now().timestamp(),
+    };
+    store_credit_job(&state.db, &job).expect("store queued credit job");
+
+    process_credit_jobs(&state)
+        .await
+        .expect("restriction hold should not fail credit worker");
+
+    let queued = list_credit_jobs_by_status(&state.db, "queued").expect("list queued credits");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].attempts, 0);
+    assert!(queued[0]
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("cannot receive asset"));
+    assert!(queued[0].next_attempt_at.is_some());
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    assert_eq!(
+        requests[1].get("method").and_then(|value| value.as_str()),
+        Some("canReceive")
+    );
+}
+
+#[tokio::test]
 async fn test_create_withdrawal_allows_deposit_guard_mode() {
     let mut state = test_state();
     state.config.incident_status_path = Some(write_test_incident_status(serde_json::json!({
@@ -418,6 +602,102 @@ async fn test_create_withdrawal_blocked_when_bridge_is_paused() {
     assert_eq!(
         response.0.get("error").and_then(|value| value.as_str()),
         Some("bridge redemptions are temporarily paused while bridge risk is assessed")
+    );
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_blocked_when_consensus_route_is_paused() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, true, true, true).await;
+    let request = test_withdrawal_request();
+
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+
+    assert!(response
+        .0
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .contains("bridge route solana:sol is paused"));
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    assert_eq!(count_withdrawal_jobs(&state.db).unwrap().total, 0);
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_blocked_when_consensus_send_is_restricted() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, false, true, false).await;
+    let request = test_withdrawal_request();
+    let user_id = request.user_id.clone();
+
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+
+    let error = response
+        .0
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains("cannot send asset"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains(&user_id), "unexpected error: {error}");
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    assert_eq!(
+        requests[1].get("method").and_then(|value| value.as_str()),
+        Some("canSend")
+    );
+    assert_eq!(count_withdrawal_jobs(&state.db).unwrap().total, 0);
+}
+
+#[tokio::test]
+async fn test_burned_withdrawal_held_when_consensus_send_becomes_restricted() {
+    let mut state = test_state();
+    let requests = configure_restriction_rpc(&mut state, false, true, false).await;
+
+    let mut job = test_withdrawal_job();
+    job.job_id = "withdrawal-consensus-hold".to_string();
+    job.asset = "wSOL".to_string();
+    job.amount = 500;
+    job.status = "burned".to_string();
+    job.burn_tx_signature = Some("burned-before-restriction".to_string());
+    store_withdrawal_job(&state.db, &job).expect("store burned withdrawal job");
+
+    process_withdrawal_jobs(&state)
+        .await
+        .expect("restriction hold should not fail worker");
+
+    let stored = fetch_withdrawal_job(&state.db, &job.job_id)
+        .expect("fetch withdrawal")
+        .expect("withdrawal should remain stored");
+    assert_eq!(stored.status, "burned");
+    assert!(stored
+        .last_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("cannot send asset"));
+    assert!(stored.next_attempt_at.is_some());
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].get("method").and_then(|value| value.as_str()),
+        Some("getBridgeRouteRestrictionStatus")
+    );
+    assert_eq!(
+        requests[1].get("method").and_then(|value| value.as_str()),
+        Some("canSend")
     );
 }
 
