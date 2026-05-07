@@ -237,6 +237,25 @@ impl StateStore {
             .map(|record| EffectiveRestrictionRecord::new(record, slot)))
     }
 
+    pub fn list_restrictions(
+        &self,
+        slot: u64,
+        limit: usize,
+        after_id: Option<u64>,
+    ) -> Result<Vec<EffectiveRestrictionRecord>, String> {
+        let mut records = Vec::new();
+        for record in all_restrictions_from_db(&self.db)? {
+            if after_id.is_some_and(|id| record.id <= id) {
+                continue;
+            }
+            records.push(EffectiveRestrictionRecord::new(record, slot));
+            if limit > 0 && records.len() >= limit {
+                break;
+            }
+        }
+        Ok(records)
+    }
+
     pub fn list_effective_restrictions_by_target(
         &self,
         target: &RestrictionTarget,
@@ -274,6 +293,28 @@ impl StateStore {
         for record in all_restrictions_from_db(&self.db)? {
             if record.is_effectively_active(slot) {
                 records.push(record);
+                if limit > 0 && records.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(records)
+    }
+
+    pub fn list_active_restrictions_paginated(
+        &self,
+        slot: u64,
+        limit: usize,
+        after_id: Option<u64>,
+    ) -> Result<Vec<EffectiveRestrictionRecord>, String> {
+        let mut records = Vec::new();
+        for record in all_restrictions_from_db(&self.db)? {
+            if after_id.is_some_and(|id| record.id <= id) {
+                continue;
+            }
+            let effective = EffectiveRestrictionRecord::new(record, slot);
+            if effective.is_active() {
+                records.push(effective);
                 if limit > 0 && records.len() >= limit {
                     break;
                 }
