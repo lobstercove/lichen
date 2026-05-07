@@ -60,10 +60,11 @@ use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityK
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     EffectiveRestrictionRecord, FinalityTracker, Hash, Instruction, MarketActivityKind, Message,
-    PqSignature, ProtocolModuleId, Pubkey, RestrictionMode, RestrictionRecord, RestrictionTarget,
-    RestrictionTransferDirection, StakePool, StateStore, SymbolRegistryEntry, Transaction,
-    TxProcessor, ValidatorSet, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE,
-    NATIVE_LICN_ASSET_ID, SYSTEM_PROGRAM_ID,
+    PqSignature, ProtocolModuleId, Pubkey, RestrictionLiftReason, RestrictionMode,
+    RestrictionReason, RestrictionRecord, RestrictionTarget, RestrictionTransferDirection,
+    StakePool, StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorSet,
+    CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, MAX_CONTRACT_CODE, NATIVE_LICN_ASSET_ID,
+    SYSTEM_PROGRAM_ID,
 };
 use lru::LruCache;
 
@@ -2695,6 +2696,21 @@ fn classify_method(method: &str) -> MethodTier {
         | "canSend"
         | "canReceive"
         | "canTransfer"
+        | "buildRestrictAccountTx"
+        | "buildUnrestrictAccountTx"
+        | "buildRestrictAccountAssetTx"
+        | "buildUnrestrictAccountAssetTx"
+        | "buildSetFrozenAssetAmountTx"
+        | "buildSuspendContractTx"
+        | "buildResumeContractTx"
+        | "buildQuarantineContractTx"
+        | "buildTerminateContractTx"
+        | "buildBanCodeHashTx"
+        | "buildUnbanCodeHashTx"
+        | "buildPauseBridgeRouteTx"
+        | "buildResumeBridgeRouteTx"
+        | "buildExtendRestrictionTx"
+        | "buildLiftRestrictionTx"
         | "getShieldedMerklePath"
         | "getShieldedCommitments"
         | "getPredictionMarkets"
@@ -4631,6 +4647,29 @@ async fn handle_rpc(
         "canSend" => handle_can_send(&state, req.params).await,
         "canReceive" => handle_can_receive(&state, req.params).await,
         "canTransfer" => handle_can_transfer(&state, req.params).await,
+        "buildRestrictAccountTx" => handle_build_restrict_account_tx(&state, req.params).await,
+        "buildUnrestrictAccountTx" => handle_build_unrestrict_account_tx(&state, req.params).await,
+        "buildRestrictAccountAssetTx" => {
+            handle_build_restrict_account_asset_tx(&state, req.params).await
+        }
+        "buildUnrestrictAccountAssetTx" => {
+            handle_build_unrestrict_account_asset_tx(&state, req.params).await
+        }
+        "buildSetFrozenAssetAmountTx" => {
+            handle_build_set_frozen_asset_amount_tx(&state, req.params).await
+        }
+        "buildSuspendContractTx" => handle_build_suspend_contract_tx(&state, req.params).await,
+        "buildResumeContractTx" => handle_build_resume_contract_tx(&state, req.params).await,
+        "buildQuarantineContractTx" => {
+            handle_build_quarantine_contract_tx(&state, req.params).await
+        }
+        "buildTerminateContractTx" => handle_build_terminate_contract_tx(&state, req.params).await,
+        "buildBanCodeHashTx" => handle_build_ban_code_hash_tx(&state, req.params).await,
+        "buildUnbanCodeHashTx" => handle_build_unban_code_hash_tx(&state, req.params).await,
+        "buildPauseBridgeRouteTx" => handle_build_pause_bridge_route_tx(&state, req.params).await,
+        "buildResumeBridgeRouteTx" => handle_build_resume_bridge_route_tx(&state, req.params).await,
+        "buildExtendRestrictionTx" => handle_build_extend_restriction_tx(&state, req.params).await,
+        "buildLiftRestrictionTx" => handle_build_lift_restriction_tx(&state, req.params).await,
         "getContractLogs" => handle_get_contract_logs(&state, req.params).await,
         "getContractAbi" => handle_get_contract_abi(&state, req.params).await,
         "setContractAbi" => {
@@ -11337,6 +11376,1011 @@ async fn handle_can_transfer(
     }))
 }
 
+const SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX: u8 = 34;
+const BUILDER_RESTRICT_FLAG_EVIDENCE_HASH: u8 = 0x01;
+const BUILDER_RESTRICT_FLAG_EVIDENCE_URI_HASH: u8 = 0x02;
+const BUILDER_RESTRICT_FLAG_EXPIRES_AT_SLOT: u8 = 0x04;
+const BUILDER_EXTEND_FLAG_EXPIRES_AT_SLOT: u8 = 0x01;
+const BUILDER_EXTEND_FLAG_EVIDENCE_HASH: u8 = 0x02;
+
+fn parse_builder_object(
+    params: Option<serde_json::Value>,
+    expected: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, RpcError> {
+    let value = single_rpc_param(params, expected)?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| invalid_params(expected))
+}
+
+fn object_pubkey_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    field: &str,
+) -> Result<Pubkey, RpcError> {
+    keys.iter()
+        .find_map(|key| object.get(*key))
+        .ok_or_else(|| invalid_params(format!("Missing {}", field)))
+        .and_then(|value| parse_pubkey_value(value, field))
+}
+
+fn object_u64_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    field: &str,
+) -> Result<u64, RpcError> {
+    keys.iter()
+        .find_map(|key| object.get(*key))
+        .ok_or_else(|| invalid_params(format!("Missing {}", field)))
+        .and_then(|value| parse_u64_value(value, field))
+}
+
+fn optional_object_u64_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    field: &str,
+) -> Result<Option<u64>, RpcError> {
+    keys.iter()
+        .find_map(|key| object.get(*key))
+        .map(|value| parse_u64_value(value, field))
+        .transpose()
+}
+
+fn parse_hash_hex_value(value: &serde_json::Value, field: &str) -> Result<Hash, RpcError> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid_params(format!("{} must be a 32-byte hex string", field)))?;
+    let normalized = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    Hash::from_hex(normalized)
+        .map_err(|error| invalid_params(format!("Invalid {}: {}", field, error)))
+}
+
+fn optional_hash_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    field: &str,
+) -> Result<Option<Hash>, RpcError> {
+    keys.iter()
+        .find_map(|key| object.get(*key))
+        .map(|value| parse_hash_hex_value(value, field))
+        .transpose()
+}
+
+fn parse_builder_recent_blockhash(
+    state: &RpcState,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(Hash, Option<u64>), RpcError> {
+    if let Some(value) = object
+        .get("recent_blockhash")
+        .or_else(|| object.get("recentBlockhash"))
+        .or_else(|| object.get("blockhash"))
+    {
+        return Ok((parse_hash_hex_value(value, "recent_blockhash")?, None));
+    }
+
+    let slot = state.state.get_last_slot().map_err(db_error)?;
+    if slot == 0 {
+        return Err(RpcError {
+            code: -32001,
+            message: "No blocks yet; provide recent_blockhash explicitly".to_string(),
+        });
+    }
+    let block = state
+        .state
+        .get_block_by_slot(slot)
+        .map_err(db_error)?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Latest block not found; provide recent_blockhash explicitly".to_string(),
+        })?;
+    Ok((block.hash(), Some(slot)))
+}
+
+fn parse_restriction_reason_builder_value(
+    value: &serde_json::Value,
+) -> Result<RestrictionReason, RpcError> {
+    if let Some(number) = value.as_u64() {
+        return u8::try_from(number)
+            .ok()
+            .and_then(RestrictionReason::from_u8)
+            .ok_or_else(|| invalid_params(format!("Invalid restriction reason id {}", number)));
+    }
+
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid_params("restriction reason must be a name or id"))?;
+    let normalized = text.to_ascii_lowercase().replace('-', "_");
+    match normalized.as_str() {
+        "exploit_active" => Ok(RestrictionReason::ExploitActive),
+        "stolen_funds" => Ok(RestrictionReason::StolenFunds),
+        "bridge_compromise" => Ok(RestrictionReason::BridgeCompromise),
+        "oracle_compromise" => Ok(RestrictionReason::OracleCompromise),
+        "scam_contract" => Ok(RestrictionReason::ScamContract),
+        "malicious_code_hash" => Ok(RestrictionReason::MaliciousCodeHash),
+        "sanctions_or_legal_order" => Ok(RestrictionReason::SanctionsOrLegalOrder),
+        "phishing_or_impersonation" => Ok(RestrictionReason::PhishingOrImpersonation),
+        "custody_incident" => Ok(RestrictionReason::CustodyIncident),
+        "protocol_bug" => Ok(RestrictionReason::ProtocolBug),
+        "governance_error_correction" => Ok(RestrictionReason::GovernanceErrorCorrection),
+        "false_positive_lift" => Ok(RestrictionReason::FalsePositiveLift),
+        "testnet_drill" => Ok(RestrictionReason::TestnetDrill),
+        _ => Err(invalid_params(format!(
+            "Invalid restriction reason: {}",
+            text
+        ))),
+    }
+}
+
+fn parse_restriction_reason_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RestrictionReason, RpcError> {
+    object
+        .get("reason")
+        .or_else(|| object.get("restriction_reason"))
+        .or_else(|| object.get("restrictionReason"))
+        .ok_or_else(|| invalid_params("Missing restriction reason"))
+        .and_then(parse_restriction_reason_builder_value)
+}
+
+fn parse_lift_reason_builder_value(
+    value: &serde_json::Value,
+) -> Result<RestrictionLiftReason, RpcError> {
+    if let Some(number) = value.as_u64() {
+        return u8::try_from(number)
+            .ok()
+            .and_then(RestrictionLiftReason::from_u8)
+            .ok_or_else(|| invalid_params(format!("Invalid lift reason id {}", number)));
+    }
+
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid_params("lift reason must be a name or id"))?;
+    let normalized = text.to_ascii_lowercase().replace('-', "_");
+    match normalized.as_str() {
+        "incident_resolved" => Ok(RestrictionLiftReason::IncidentResolved),
+        "false_positive" => Ok(RestrictionLiftReason::FalsePositive),
+        "evidence_rejected" => Ok(RestrictionLiftReason::EvidenceRejected),
+        "governance_override" => Ok(RestrictionLiftReason::GovernanceOverride),
+        "expired_cleanup" => Ok(RestrictionLiftReason::ExpiredCleanup),
+        "testnet_drill_complete" => Ok(RestrictionLiftReason::TestnetDrillComplete),
+        _ => Err(invalid_params(format!("Invalid lift reason: {}", text))),
+    }
+}
+
+fn parse_lift_reason_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RestrictionLiftReason, RpcError> {
+    object
+        .get("lift_reason")
+        .or_else(|| object.get("liftReason"))
+        .or_else(|| object.get("reason"))
+        .ok_or_else(|| invalid_params("Missing lift reason"))
+        .and_then(parse_lift_reason_builder_value)
+}
+
+fn parse_restriction_mode_builder_value(
+    value: &serde_json::Value,
+    frozen_amount: Option<u64>,
+) -> Result<RestrictionMode, RpcError> {
+    let mode = if let Some(number) = value.as_u64() {
+        let id = u8::try_from(number)
+            .map_err(|_| invalid_params(format!("Invalid restriction mode id {}", number)))?;
+        RestrictionMode::from_u8(id, frozen_amount)
+            .ok_or_else(|| invalid_params(format!("Invalid restriction mode id {}", number)))?
+    } else {
+        let text = value
+            .as_str()
+            .ok_or_else(|| invalid_params("restriction mode must be a name or id"))?;
+        let normalized = text.to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "outgoing_only" => RestrictionMode::OutgoingOnly,
+            "incoming_only" => RestrictionMode::IncomingOnly,
+            "bidirectional" => RestrictionMode::Bidirectional,
+            "frozen_amount" => RestrictionMode::FrozenAmount {
+                amount: frozen_amount
+                    .ok_or_else(|| invalid_params("FrozenAmount requires amount"))?,
+            },
+            "asset_paused" => RestrictionMode::AssetPaused,
+            "execute_blocked" => RestrictionMode::ExecuteBlocked,
+            "state_changing_blocked" => RestrictionMode::StateChangingBlocked,
+            "quarantined" => RestrictionMode::Quarantined,
+            "deploy_blocked" => RestrictionMode::DeployBlocked,
+            "route_paused" => RestrictionMode::RoutePaused,
+            "protocol_paused" => RestrictionMode::ProtocolPaused,
+            "terminated" => RestrictionMode::Terminated,
+            _ => {
+                return Err(invalid_params(format!(
+                    "Invalid restriction mode: {}",
+                    text
+                )));
+            }
+        }
+    };
+    mode.validate().map_err(invalid_params)?;
+    Ok(mode)
+}
+
+fn parse_optional_restriction_mode_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    default_mode: RestrictionMode,
+) -> Result<RestrictionMode, RpcError> {
+    let frozen_amount = optional_object_u64_builder_field(
+        object,
+        &["amount", "frozen_amount", "frozenAmount"],
+        "amount",
+    )?;
+    object
+        .get("mode")
+        .or_else(|| object.get("restriction_mode"))
+        .or_else(|| object.get("restrictionMode"))
+        .map(|value| parse_restriction_mode_builder_value(value, frozen_amount))
+        .unwrap_or_else(|| Ok(default_mode))
+}
+
+fn validate_builder_target_mode(
+    target: &RestrictionTarget,
+    mode: &RestrictionMode,
+) -> Result<(), RpcError> {
+    let valid = match target {
+        RestrictionTarget::Account(_) => matches!(
+            mode,
+            RestrictionMode::OutgoingOnly
+                | RestrictionMode::IncomingOnly
+                | RestrictionMode::Bidirectional
+        ),
+        RestrictionTarget::AccountAsset { .. } => matches!(
+            mode,
+            RestrictionMode::OutgoingOnly
+                | RestrictionMode::IncomingOnly
+                | RestrictionMode::Bidirectional
+                | RestrictionMode::FrozenAmount { .. }
+        ),
+        RestrictionTarget::Asset(_) => matches!(mode, RestrictionMode::AssetPaused),
+        RestrictionTarget::Contract(_) => matches!(
+            mode,
+            RestrictionMode::ExecuteBlocked
+                | RestrictionMode::StateChangingBlocked
+                | RestrictionMode::Quarantined
+                | RestrictionMode::Terminated
+        ),
+        RestrictionTarget::CodeHash(_) => matches!(mode, RestrictionMode::DeployBlocked),
+        RestrictionTarget::BridgeRoute { .. } => matches!(mode, RestrictionMode::RoutePaused),
+        RestrictionTarget::ProtocolModule(_) => matches!(mode, RestrictionMode::ProtocolPaused),
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_params(format!(
+            "Restriction mode {} is not valid for target type {}",
+            mode.as_str(),
+            target.target_type_label()
+        )))
+    }
+}
+
+fn validate_builder_restrict_action(
+    target: &RestrictionTarget,
+    mode: &RestrictionMode,
+    reason: RestrictionReason,
+    evidence_hash: Option<Hash>,
+    evidence_uri_hash: Option<Hash>,
+    expires_at_slot: Option<u64>,
+) -> Result<(), RpcError> {
+    target.validate().map_err(invalid_params)?;
+    mode.validate().map_err(invalid_params)?;
+    validate_builder_target_mode(target, mode)?;
+    if reason.requires_evidence() && evidence_hash.is_none() && evidence_uri_hash.is_none() {
+        return Err(invalid_params(format!(
+            "Restriction reason {} requires evidence_hash or evidence_uri_hash",
+            reason.as_str()
+        )));
+    }
+    if matches!(target, RestrictionTarget::Contract(_))
+        && matches!(mode, RestrictionMode::Terminated)
+        && expires_at_slot.is_some()
+    {
+        return Err(invalid_params(
+            "Terminated contract restriction must be permanent and cannot expire",
+        ));
+    }
+    Ok(())
+}
+
+fn encode_builder_target_component(
+    data: &mut Vec<u8>,
+    value: &str,
+    field: &str,
+) -> Result<(), RpcError> {
+    if value.is_empty() {
+        return Err(invalid_params(format!("{} cannot be empty", field)));
+    }
+    if value.len() > lichen_core::restrictions::MAX_BRIDGE_ROUTE_COMPONENT_LEN {
+        return Err(invalid_params(format!("{} is too long", field)));
+    }
+    let len =
+        u16::try_from(value.len()).map_err(|_| invalid_params(format!("{} is too long", field)))?;
+    data.extend_from_slice(&len.to_le_bytes());
+    data.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn encode_restriction_target_for_builder(target: &RestrictionTarget) -> Result<Vec<u8>, RpcError> {
+    let mut data = vec![target.target_type_id()];
+    match target {
+        RestrictionTarget::Account(account)
+        | RestrictionTarget::Asset(account)
+        | RestrictionTarget::Contract(account) => {
+            data.extend_from_slice(&account.0);
+        }
+        RestrictionTarget::AccountAsset { account, asset } => {
+            data.extend_from_slice(&account.0);
+            data.extend_from_slice(&asset.0);
+        }
+        RestrictionTarget::CodeHash(hash) => {
+            data.extend_from_slice(&hash.0);
+        }
+        RestrictionTarget::BridgeRoute { chain_id, asset } => {
+            encode_builder_target_component(&mut data, chain_id, "chain_id")?;
+            encode_builder_target_component(&mut data, asset, "asset")?;
+        }
+        RestrictionTarget::ProtocolModule(module) => {
+            data.push(module.as_u8());
+        }
+    }
+    Ok(data)
+}
+
+fn build_restrict_governance_action_data(
+    target: &RestrictionTarget,
+    mode: &RestrictionMode,
+    reason: RestrictionReason,
+    evidence_hash: Option<Hash>,
+    evidence_uri_hash: Option<Hash>,
+    expires_at_slot: Option<u64>,
+) -> Result<Vec<u8>, RpcError> {
+    validate_builder_restrict_action(
+        target,
+        mode,
+        reason,
+        evidence_hash,
+        evidence_uri_hash,
+        expires_at_slot,
+    )?;
+
+    let mut data = vec![
+        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+        lichen_core::processor::GOVERNANCE_ACTION_RESTRICT,
+    ];
+    data.extend(encode_restriction_target_for_builder(target)?);
+    data.push(mode.mode_id());
+    if let RestrictionMode::FrozenAmount { amount } = mode {
+        data.extend_from_slice(&amount.to_le_bytes());
+    }
+    data.push(reason.as_u8());
+
+    let mut flags = 0u8;
+    if evidence_hash.is_some() {
+        flags |= BUILDER_RESTRICT_FLAG_EVIDENCE_HASH;
+    }
+    if evidence_uri_hash.is_some() {
+        flags |= BUILDER_RESTRICT_FLAG_EVIDENCE_URI_HASH;
+    }
+    if expires_at_slot.is_some() {
+        flags |= BUILDER_RESTRICT_FLAG_EXPIRES_AT_SLOT;
+    }
+    data.push(flags);
+    if let Some(hash) = evidence_hash {
+        data.extend_from_slice(&hash.0);
+    }
+    if let Some(hash) = evidence_uri_hash {
+        data.extend_from_slice(&hash.0);
+    }
+    if let Some(slot) = expires_at_slot {
+        data.extend_from_slice(&slot.to_le_bytes());
+    }
+    Ok(data)
+}
+
+fn build_lift_governance_action_data(
+    restriction_id: u64,
+    reason: RestrictionLiftReason,
+) -> Result<Vec<u8>, RpcError> {
+    if restriction_id == 0 {
+        return Err(invalid_params("restriction_id must be greater than zero"));
+    }
+    let mut data = vec![
+        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+        lichen_core::processor::GOVERNANCE_ACTION_LIFT_RESTRICTION,
+    ];
+    data.extend_from_slice(&restriction_id.to_le_bytes());
+    data.push(reason.as_u8());
+    Ok(data)
+}
+
+fn build_extend_governance_action_data(
+    restriction_id: u64,
+    new_expires_at_slot: Option<u64>,
+    evidence_hash: Option<Hash>,
+) -> Result<Vec<u8>, RpcError> {
+    if restriction_id == 0 {
+        return Err(invalid_params("restriction_id must be greater than zero"));
+    }
+    let mut data = vec![
+        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+        lichen_core::processor::GOVERNANCE_ACTION_EXTEND_RESTRICTION,
+    ];
+    data.extend_from_slice(&restriction_id.to_le_bytes());
+    let mut flags = 0u8;
+    if new_expires_at_slot.is_some() {
+        flags |= BUILDER_EXTEND_FLAG_EXPIRES_AT_SLOT;
+    }
+    if evidence_hash.is_some() {
+        flags |= BUILDER_EXTEND_FLAG_EVIDENCE_HASH;
+    }
+    data.push(flags);
+    if let Some(slot) = new_expires_at_slot {
+        data.extend_from_slice(&slot.to_le_bytes());
+    }
+    if let Some(hash) = evidence_hash {
+        data.extend_from_slice(&hash.0);
+    }
+    Ok(data)
+}
+
+fn unsigned_governance_builder_response(
+    state: &RpcState,
+    object: &serde_json::Map<String, serde_json::Value>,
+    method: &str,
+    action_label: &str,
+    action: serde_json::Value,
+    data: Vec<u8>,
+) -> Result<serde_json::Value, RpcError> {
+    let proposer =
+        object_pubkey_builder_field(object, &["proposer", "payer", "signer"], "proposer")?;
+    let governance_authority = object_pubkey_builder_field(
+        object,
+        &["governance_authority", "governanceAuthority", "authority"],
+        "governance_authority",
+    )?;
+    let (recent_blockhash, slot) = parse_builder_recent_blockhash(state, object)?;
+    let instruction = Instruction {
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: vec![proposer, governance_authority],
+        data,
+    };
+    let transaction = Transaction::new(Message::new(vec![instruction.clone()], recent_blockhash));
+    let wire = transaction.to_wire();
+    use base64::{engine::general_purpose, Engine as _};
+    let transaction_base64 = general_purpose::STANDARD.encode(&wire);
+    let instruction_data_hex = hex::encode(&instruction.data);
+
+    Ok(serde_json::json!({
+        "method": method,
+        "unsigned": true,
+        "encoding": "base64",
+        "wire_format": "lichen_tx_v1",
+        "tx_type": "native",
+        "transaction_base64": transaction_base64.clone(),
+        "transaction": transaction_base64,
+        "wire_size": wire.len(),
+        "message_hash": transaction.message_hash().to_hex(),
+        "signature_count": transaction.signatures.len(),
+        "recent_blockhash": recent_blockhash.to_hex(),
+        "slot": slot,
+        "proposer": proposer.to_base58(),
+        "governance_authority": governance_authority.to_base58(),
+        "action_label": action_label,
+        "action": action,
+        "instruction": {
+            "program_id": instruction.program_id.to_base58(),
+            "accounts": instruction.accounts.iter().map(|account| account.to_base58()).collect::<Vec<_>>(),
+            "instruction_type": SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+            "governance_action_type": instruction.data.get(1).copied(),
+            "data_hex": instruction_data_hex,
+        },
+    }))
+}
+
+struct RestrictBuilderCommon {
+    reason: RestrictionReason,
+    evidence_hash: Option<Hash>,
+    evidence_uri_hash: Option<Hash>,
+    expires_at_slot: Option<u64>,
+}
+
+fn parse_restrict_builder_common(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RestrictBuilderCommon, RpcError> {
+    let reason = parse_restriction_reason_builder_field(object)?;
+    let evidence_hash =
+        optional_hash_builder_field(object, &["evidence_hash", "evidenceHash"], "evidence_hash")?;
+    let evidence_uri_hash = optional_hash_builder_field(
+        object,
+        &["evidence_uri_hash", "evidenceUriHash"],
+        "evidence_uri_hash",
+    )?;
+    let expires_at_slot = optional_object_u64_builder_field(
+        object,
+        &["expires_at_slot", "expiresAtSlot"],
+        "expires_at_slot",
+    )?;
+    Ok(RestrictBuilderCommon {
+        reason,
+        evidence_hash,
+        evidence_uri_hash,
+        expires_at_slot,
+    })
+}
+
+fn build_restrict_tx_response(
+    state: &RpcState,
+    object: serde_json::Map<String, serde_json::Value>,
+    method: &str,
+    target: RestrictionTarget,
+    mode: RestrictionMode,
+) -> Result<serde_json::Value, RpcError> {
+    let common = parse_restrict_builder_common(&object)?;
+    let data = build_restrict_governance_action_data(
+        &target,
+        &mode,
+        common.reason,
+        common.evidence_hash,
+        common.evidence_uri_hash,
+        common.expires_at_slot,
+    )?;
+    unsigned_governance_builder_response(
+        state,
+        &object,
+        method,
+        "restrict",
+        serde_json::json!({
+            "kind": "restrict",
+            "target": restriction_target_json(&target),
+            "mode": restriction_mode_json(&mode),
+            "reason": common.reason.as_str(),
+            "evidence_hash": common.evidence_hash.map(|hash| hash.to_hex()),
+            "evidence_uri_hash": common.evidence_uri_hash.map(|hash| hash.to_hex()),
+            "expires_at_slot": common.expires_at_slot,
+        }),
+        data,
+    )
+}
+
+fn optional_restriction_id_builder_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<u64>, RpcError> {
+    optional_object_u64_builder_field(
+        object,
+        &["restriction_id", "restrictionId", "id"],
+        "restriction_id",
+    )
+}
+
+fn restriction_mode_id_allowed(mode: &RestrictionMode, allowed_mode_ids: &[u8]) -> bool {
+    allowed_mode_ids.contains(&mode.mode_id())
+}
+
+fn resolve_lift_restriction_id_for_target(
+    state: &RpcState,
+    target: &RestrictionTarget,
+    allowed_mode_ids: &[u8],
+) -> Result<u64, RpcError> {
+    let slot = current_restriction_slot(state)?;
+    let active = state
+        .state
+        .get_active_restrictions_for_target(target, slot, 0)
+        .map_err(db_error)?;
+    let matching: Vec<&RestrictionRecord> = active
+        .iter()
+        .filter(|record| restriction_mode_id_allowed(&record.mode, allowed_mode_ids))
+        .collect();
+    match matching.as_slice() {
+        [record] => Ok(record.id),
+        [] => Err(invalid_params(format!(
+            "No active restriction found for {} target {}",
+            target.target_type_label(),
+            target.target_value_label()
+        ))),
+        _ => Err(invalid_params(format!(
+            "Multiple active restrictions match {} target {}; provide restriction_id",
+            target.target_type_label(),
+            target.target_value_label()
+        ))),
+    }
+}
+
+fn build_lift_tx_response(
+    state: &RpcState,
+    object: serde_json::Map<String, serde_json::Value>,
+    method: &str,
+    restriction_id: u64,
+    resolved_target: Option<RestrictionTarget>,
+) -> Result<serde_json::Value, RpcError> {
+    let reason = parse_lift_reason_builder_field(&object)?;
+    let data = build_lift_governance_action_data(restriction_id, reason)?;
+    unsigned_governance_builder_response(
+        state,
+        &object,
+        method,
+        "lift_restriction",
+        serde_json::json!({
+            "kind": "lift_restriction",
+            "restriction_id": restriction_id,
+            "reason": reason.as_str(),
+            "resolved_target": resolved_target.as_ref().map(restriction_target_json),
+        }),
+        data,
+    )
+}
+
+async fn handle_build_restrict_account_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let account =
+        object_pubkey_builder_field(&object, &["account", "address", "pubkey"], "account")?;
+    let mode =
+        parse_optional_restriction_mode_builder_field(&object, RestrictionMode::Bidirectional)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildRestrictAccountTx",
+        RestrictionTarget::Account(account),
+        mode,
+    )
+}
+
+async fn handle_build_unrestrict_account_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let account =
+        object_pubkey_builder_field(&object, &["account", "address", "pubkey"], "account")?;
+    let target = RestrictionTarget::Account(account);
+    let restriction_id = match optional_restriction_id_builder_field(&object)? {
+        Some(id) => id,
+        None => resolve_lift_restriction_id_for_target(state, &target, &[0, 1, 2])?,
+    };
+    build_lift_tx_response(
+        state,
+        object,
+        "buildUnrestrictAccountTx",
+        restriction_id,
+        Some(target),
+    )
+}
+
+async fn handle_build_restrict_account_asset_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let account =
+        object_pubkey_builder_field(&object, &["account", "address", "pubkey"], "account")?;
+    let asset = object
+        .get("asset")
+        .or_else(|| object.get("mint"))
+        .ok_or_else(|| invalid_params("Missing asset"))
+        .and_then(parse_restriction_asset_param)?;
+    let mode =
+        parse_optional_restriction_mode_builder_field(&object, RestrictionMode::Bidirectional)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildRestrictAccountAssetTx",
+        RestrictionTarget::AccountAsset { account, asset },
+        mode,
+    )
+}
+
+async fn handle_build_unrestrict_account_asset_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let account =
+        object_pubkey_builder_field(&object, &["account", "address", "pubkey"], "account")?;
+    let asset = object
+        .get("asset")
+        .or_else(|| object.get("mint"))
+        .ok_or_else(|| invalid_params("Missing asset"))
+        .and_then(parse_restriction_asset_param)?;
+    let target = RestrictionTarget::AccountAsset { account, asset };
+    let restriction_id = match optional_restriction_id_builder_field(&object)? {
+        Some(id) => id,
+        None => resolve_lift_restriction_id_for_target(state, &target, &[0, 1, 2, 3])?,
+    };
+    build_lift_tx_response(
+        state,
+        object,
+        "buildUnrestrictAccountAssetTx",
+        restriction_id,
+        Some(target),
+    )
+}
+
+async fn handle_build_set_frozen_asset_amount_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let account =
+        object_pubkey_builder_field(&object, &["account", "address", "pubkey"], "account")?;
+    let asset = object
+        .get("asset")
+        .or_else(|| object.get("mint"))
+        .ok_or_else(|| invalid_params("Missing asset"))
+        .and_then(parse_restriction_asset_param)?;
+    let amount = object_u64_builder_field(
+        &object,
+        &["amount", "frozen_amount", "frozenAmount"],
+        "amount",
+    )?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildSetFrozenAssetAmountTx",
+        RestrictionTarget::AccountAsset { account, asset },
+        RestrictionMode::FrozenAmount { amount },
+    )
+}
+
+fn contract_builder_target(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RestrictionTarget, RpcError> {
+    object_pubkey_builder_field(
+        object,
+        &["contract", "contract_id", "contractId", "account"],
+        "contract",
+    )
+    .map(RestrictionTarget::Contract)
+}
+
+async fn handle_build_suspend_contract_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let target = contract_builder_target(&object)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildSuspendContractTx",
+        target,
+        RestrictionMode::StateChangingBlocked,
+    )
+}
+
+async fn handle_build_resume_contract_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let target = contract_builder_target(&object)?;
+    let restriction_id = match optional_restriction_id_builder_field(&object)? {
+        Some(id) => id,
+        None => resolve_lift_restriction_id_for_target(state, &target, &[5, 6, 7])?,
+    };
+    build_lift_tx_response(
+        state,
+        object,
+        "buildResumeContractTx",
+        restriction_id,
+        Some(target),
+    )
+}
+
+async fn handle_build_quarantine_contract_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let target = contract_builder_target(&object)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildQuarantineContractTx",
+        target,
+        RestrictionMode::Quarantined,
+    )
+}
+
+async fn handle_build_terminate_contract_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let target = contract_builder_target(&object)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildTerminateContractTx",
+        target,
+        RestrictionMode::Terminated,
+    )
+}
+
+async fn handle_build_ban_code_hash_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let code_hash = parse_code_hash_value(&serde_json::Value::Object(object.clone()))?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildBanCodeHashTx",
+        RestrictionTarget::CodeHash(code_hash),
+        RestrictionMode::DeployBlocked,
+    )
+}
+
+async fn handle_build_unban_code_hash_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let target = RestrictionTarget::CodeHash(parse_code_hash_value(&serde_json::Value::Object(
+        object.clone(),
+    ))?);
+    let restriction_id = match optional_restriction_id_builder_field(&object)? {
+        Some(id) => id,
+        None => resolve_lift_restriction_id_for_target(state, &target, &[8])?,
+    };
+    build_lift_tx_response(
+        state,
+        object,
+        "buildUnbanCodeHashTx",
+        restriction_id,
+        Some(target),
+    )
+}
+
+async fn handle_build_pause_bridge_route_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let (chain_id, asset) = parse_bridge_route_object(&object)?;
+    build_restrict_tx_response(
+        state,
+        object,
+        "buildPauseBridgeRouteTx",
+        RestrictionTarget::BridgeRoute { chain_id, asset },
+        RestrictionMode::RoutePaused,
+    )
+}
+
+async fn handle_build_resume_bridge_route_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let (chain_id, asset) = parse_bridge_route_object(&object)?;
+    let target = RestrictionTarget::BridgeRoute { chain_id, asset };
+    let restriction_id = match optional_restriction_id_builder_field(&object)? {
+        Some(id) => id,
+        None => resolve_lift_restriction_id_for_target(state, &target, &[9])?,
+    };
+    build_lift_tx_response(
+        state,
+        object,
+        "buildResumeBridgeRouteTx",
+        restriction_id,
+        Some(target),
+    )
+}
+
+async fn handle_build_extend_restriction_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let restriction_id = object_u64_builder_field(
+        &object,
+        &["restriction_id", "restrictionId", "id"],
+        "restriction_id",
+    )?;
+    let new_expires_at_slot = optional_object_u64_builder_field(
+        &object,
+        &[
+            "new_expires_at_slot",
+            "newExpiresAtSlot",
+            "expires_at_slot",
+            "expiresAtSlot",
+        ],
+        "new_expires_at_slot",
+    )?;
+    let evidence_hash =
+        optional_hash_builder_field(&object, &["evidence_hash", "evidenceHash"], "evidence_hash")?;
+    let data =
+        build_extend_governance_action_data(restriction_id, new_expires_at_slot, evidence_hash)?;
+    unsigned_governance_builder_response(
+        state,
+        &object,
+        "buildExtendRestrictionTx",
+        "extend_restriction",
+        serde_json::json!({
+            "kind": "extend_restriction",
+            "restriction_id": restriction_id,
+            "new_expires_at_slot": new_expires_at_slot,
+            "evidence_hash": evidence_hash.map(|hash| hash.to_hex()),
+        }),
+        data,
+    )
+}
+
+async fn handle_build_lift_restriction_tx(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let object = parse_builder_object(
+        params,
+        "Invalid params: expected restriction builder object",
+    )?;
+    let restriction_id = object_u64_builder_field(
+        &object,
+        &["restriction_id", "restrictionId", "id"],
+        "restriction_id",
+    )?;
+    build_lift_tx_response(
+        state,
+        object,
+        "buildLiftRestrictionTx",
+        restriction_id,
+        None,
+    )
+}
+
 /// Get contract execution logs
 async fn handle_get_contract_logs(
     state: &RpcState,
@@ -17937,8 +18981,16 @@ mod tests {
         bridge_access_message, classify_evm_method_tier, classify_method,
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
         decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
-        filter_signatures_for_address, get_cached_program_list_response, handle_can_receive,
-        handle_can_send, handle_can_transfer, handle_create_bridge_deposit,
+        filter_signatures_for_address, get_cached_program_list_response,
+        handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
+        handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
+        handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
+        handle_build_restrict_account_tx, handle_build_resume_bridge_route_tx,
+        handle_build_resume_contract_tx, handle_build_set_frozen_asset_amount_tx,
+        handle_build_suspend_contract_tx, handle_build_terminate_contract_tx,
+        handle_build_unban_code_hash_tx, handle_build_unrestrict_account_asset_tx,
+        handle_build_unrestrict_account_tx, handle_can_receive, handle_can_send,
+        handle_can_transfer, handle_create_bridge_deposit,
         handle_get_account_asset_restriction_status, handle_get_account_restriction_status,
         handle_get_all_symbol_registry, handle_get_asset_restriction_status,
         handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
@@ -17957,6 +19009,7 @@ mod tests {
         AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
         AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, PROGRAM_LIST_CACHE_TTL_MS,
         SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
         extract::State,
@@ -17973,7 +19026,7 @@ mod tests {
     use lichen_core::{
         consensus::{ValidatorInfo, ValidatorSet},
         Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
-        RestrictionTarget, StateStore, SymbolRegistryEntry, SYSTEM_PROGRAM_ID,
+        RestrictionTarget, StateStore, SymbolRegistryEntry, Transaction, SYSTEM_PROGRAM_ID,
     };
     use lru::LruCache;
     use std::collections::HashMap;
@@ -21032,6 +22085,437 @@ mod tests {
         assert_eq!(
             json_u64_array(&paused, "recipient_restriction_ids"),
             vec![pause_id]
+        );
+    }
+
+    fn base_builder_object(
+        proposer: Pubkey,
+        authority: Pubkey,
+        blockhash: Hash,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut object = serde_json::Map::new();
+        object.insert(
+            "proposer".to_string(),
+            serde_json::json!(proposer.to_base58()),
+        );
+        object.insert(
+            "governance_authority".to_string(),
+            serde_json::json!(authority.to_base58()),
+        );
+        object.insert(
+            "recent_blockhash".to_string(),
+            serde_json::json!(blockhash.to_hex()),
+        );
+        object
+    }
+
+    fn builder_value(
+        proposer: Pubkey,
+        authority: Pubkey,
+        blockhash: Hash,
+        fields: &[(&str, serde_json::Value)],
+    ) -> Option<serde_json::Value> {
+        let mut object = base_builder_object(proposer, authority, blockhash);
+        for (key, value) in fields {
+            object.insert((*key).to_string(), value.clone());
+        }
+        Some(serde_json::Value::Object(object))
+    }
+
+    fn decode_builder_transaction(value: &serde_json::Value) -> Transaction {
+        use base64::{engine::general_purpose, Engine as _};
+        let encoded = value["transaction_base64"]
+            .as_str()
+            .expect("builder response should include transaction_base64");
+        let bytes = general_purpose::STANDARD
+            .decode(encoded)
+            .expect("transaction_base64 should decode");
+        Transaction::from_wire(&bytes, 5 * 1024 * 1024).expect("builder tx should decode")
+    }
+
+    fn assert_no_builder_mutation(state: &StateStore) {
+        assert!(
+            state.get_governance_proposal(1).unwrap().is_none(),
+            "builder must not create governance proposal state"
+        );
+        assert!(
+            state.list_restrictions(0, 10, None).unwrap().is_empty(),
+            "builder must not create restriction records"
+        );
+    }
+
+    fn assert_unsigned_governance_builder_tx(
+        response: &serde_json::Value,
+        expected_action_type: u8,
+    ) -> Transaction {
+        assert_eq!(response["unsigned"], serde_json::json!(true));
+        assert_eq!(response["signature_count"], serde_json::json!(0));
+        let tx = decode_builder_transaction(response);
+        assert!(tx.signatures.is_empty());
+        assert_eq!(tx.message.instructions.len(), 1);
+        let ix = &tx.message.instructions[0];
+        assert_eq!(ix.program_id, SYSTEM_PROGRAM_ID);
+        assert_eq!(ix.data[0], SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX);
+        assert_eq!(ix.data[1], expected_action_type);
+        tx
+    }
+
+    #[tokio::test]
+    async fn test_restriction_builder_builds_unsigned_tx_without_state_mutation() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let proposer = Pubkey([0xD1; 32]);
+        let authority = Pubkey([0xD2; 32]);
+        let account = Pubkey([0xD3; 32]);
+        let blockhash = Hash([0xD4; 32]);
+
+        let response = handle_build_restrict_account_tx(
+            &rpc_state,
+            builder_value(
+                proposer,
+                authority,
+                blockhash,
+                &[
+                    ("account", serde_json::json!(account.to_base58())),
+                    ("mode", serde_json::json!("outgoing_only")),
+                    ("reason", serde_json::json!("testnet_drill")),
+                ],
+            ),
+        )
+        .await
+        .expect("restrict account builder should serialize");
+
+        let tx = assert_unsigned_governance_builder_tx(
+            &response,
+            lichen_core::processor::GOVERNANCE_ACTION_RESTRICT,
+        );
+        let ix = &tx.message.instructions[0];
+        assert_eq!(ix.accounts, vec![proposer, authority]);
+        assert_eq!(ix.data[2], 0, "target type should be account");
+        assert_eq!(&ix.data[3..35], &account.0);
+        assert_eq!(ix.data[35], RestrictionMode::OutgoingOnly.mode_id());
+        assert_eq!(ix.data[36], RestrictionReason::TestnetDrill.as_u8());
+        assert_eq!(ix.data[37], 0, "no optional restrict flags");
+        assert_no_builder_mutation(&rpc_state.state);
+    }
+
+    #[tokio::test]
+    async fn test_all_restriction_builders_return_unsigned_transactions_without_mutation() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let proposer = Pubkey([0xE1; 32]);
+        let authority = Pubkey([0xE2; 32]);
+        let account = Pubkey([0xE3; 32]);
+        let asset = Pubkey([0xE4; 32]);
+        let contract = Pubkey([0xE5; 32]);
+        let blockhash = Hash([0xE6; 32]);
+        let code_hash = Hash([0xE7; 32]);
+
+        let restrict_responses = [
+            handle_build_restrict_account_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("account", serde_json::json!(account.to_base58())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_restrict_account_asset_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("account", serde_json::json!(account.to_base58())),
+                        ("asset", serde_json::json!(asset.to_base58())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_set_frozen_asset_amount_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("account", serde_json::json!(account.to_base58())),
+                        ("asset", serde_json::json!(asset.to_base58())),
+                        ("amount", serde_json::json!(500u64)),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_suspend_contract_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("contract", serde_json::json!(contract.to_base58())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_quarantine_contract_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("contract", serde_json::json!(contract.to_base58())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_terminate_contract_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("contract", serde_json::json!(contract.to_base58())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_ban_code_hash_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("code_hash", serde_json::json!(code_hash.to_hex())),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_pause_bridge_route_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("chain", serde_json::json!("ethereum")),
+                        ("asset", serde_json::json!("eth")),
+                        ("reason", serde_json::json!("testnet_drill")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+        ];
+        for response in restrict_responses {
+            assert_unsigned_governance_builder_tx(
+                &response,
+                lichen_core::processor::GOVERNANCE_ACTION_RESTRICT,
+            );
+        }
+
+        let lift_responses = [
+            handle_build_unrestrict_account_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("account", serde_json::json!(account.to_base58())),
+                        ("restriction_id", serde_json::json!(11u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_unrestrict_account_asset_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("account", serde_json::json!(account.to_base58())),
+                        ("asset", serde_json::json!(asset.to_base58())),
+                        ("restriction_id", serde_json::json!(12u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_resume_contract_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("contract", serde_json::json!(contract.to_base58())),
+                        ("restriction_id", serde_json::json!(13u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_unban_code_hash_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("code_hash", serde_json::json!(code_hash.to_hex())),
+                        ("restriction_id", serde_json::json!(14u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_resume_bridge_route_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("chain", serde_json::json!("ethereum")),
+                        ("asset", serde_json::json!("eth")),
+                        ("restriction_id", serde_json::json!(15u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+            handle_build_lift_restriction_tx(
+                &rpc_state,
+                builder_value(
+                    proposer,
+                    authority,
+                    blockhash,
+                    &[
+                        ("restriction_id", serde_json::json!(16u64)),
+                        ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                    ],
+                ),
+            )
+            .await
+            .unwrap(),
+        ];
+        for response in lift_responses {
+            assert_unsigned_governance_builder_tx(
+                &response,
+                lichen_core::processor::GOVERNANCE_ACTION_LIFT_RESTRICTION,
+            );
+        }
+
+        let extend = handle_build_extend_restriction_tx(
+            &rpc_state,
+            builder_value(
+                proposer,
+                authority,
+                blockhash,
+                &[
+                    ("restriction_id", serde_json::json!(17u64)),
+                    ("new_expires_at_slot", serde_json::json!(12_345u64)),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+        assert_unsigned_governance_builder_tx(
+            &extend,
+            lichen_core::processor::GOVERNANCE_ACTION_EXTEND_RESTRICTION,
+        );
+        assert_no_builder_mutation(&rpc_state.state);
+    }
+
+    #[tokio::test]
+    async fn test_unrestrict_builder_resolves_existing_restriction_without_mutating_it() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        state.set_last_slot(19).unwrap();
+        let rpc_state = make_test_rpc_state(state);
+        let proposer = Pubkey([0xF1; 32]);
+        let authority = Pubkey([0xF2; 32]);
+        let account = Pubkey([0xF3; 32]);
+        let blockhash = Hash([0xF4; 32]);
+        let restriction_id = put_active_restriction(
+            &rpc_state.state,
+            RestrictionTarget::Account(account),
+            RestrictionMode::OutgoingOnly,
+        );
+
+        let response = handle_build_unrestrict_account_tx(
+            &rpc_state,
+            builder_value(
+                proposer,
+                authority,
+                blockhash,
+                &[
+                    ("account", serde_json::json!(account.to_base58())),
+                    ("lift_reason", serde_json::json!("testnet_drill_complete")),
+                ],
+            ),
+        )
+        .await
+        .expect("unrestrict builder should resolve single active restriction");
+
+        let tx = assert_unsigned_governance_builder_tx(
+            &response,
+            lichen_core::processor::GOVERNANCE_ACTION_LIFT_RESTRICTION,
+        );
+        assert_eq!(
+            response["action"]["restriction_id"],
+            serde_json::json!(restriction_id)
+        );
+        let ix = &tx.message.instructions[0];
+        assert_eq!(
+            u64::from_le_bytes(ix.data[2..10].try_into().unwrap()),
+            restriction_id
+        );
+        let record = rpc_state
+            .state
+            .get_restriction(restriction_id)
+            .unwrap()
+            .expect("existing restriction should remain");
+        assert_eq!(record.status, RestrictionStatus::Active);
+        assert!(
+            rpc_state
+                .state
+                .get_governance_proposal(1)
+                .unwrap()
+                .is_none(),
+            "builder must not create governance proposal state"
         );
     }
 
