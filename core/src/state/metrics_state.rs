@@ -7,7 +7,6 @@ use super::*;
 const OBSERVED_CADENCE_WINDOW: usize = 120;
 const OBSERVED_CADENCE_MAX_SLOT_DELTA: u64 = 8;
 const OBSERVED_CADENCE_MAX_LIVE_LAG_SECS: u64 = 5;
-const HEARTBEAT_BLOCK_TARGET_MS: u64 = 800;
 
 /// Metrics data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,16 +297,8 @@ impl MetricsStore {
             if window.is_empty() {
                 slot_duration_ms.max(1)
             } else {
-                let targets: VecDeque<u64> = window
-                    .iter()
-                    .map(|(_, tx_count)| {
-                        if *tx_count > 0 {
-                            slot_duration_ms.max(1)
-                        } else {
-                            slot_duration_ms.max(HEARTBEAT_BLOCK_TARGET_MS)
-                        }
-                    })
-                    .collect();
+                let targets: VecDeque<u64> =
+                    window.iter().map(|_| slot_duration_ms.max(1)).collect();
                 Self::median_sample(&targets)
             }
         };
@@ -844,6 +835,6 @@ mod tests {
         assert!(live_metrics.observed_block_interval_ms > 0);
         assert!(live_metrics.head_staleness_ms < 5_000);
         assert_eq!(live_metrics.last_observed_block_slot, 13);
-        assert_eq!(live_metrics.cadence_target_ms, HEARTBEAT_BLOCK_TARGET_MS);
+        assert_eq!(live_metrics.cadence_target_ms, 400);
     }
 }

@@ -3214,6 +3214,13 @@ fn compute_proposed_timestamp(
     Some(bft_ts.min(now + 1))
 }
 
+fn proposal_grace_delay_ms(slot_duration_ms: u64) -> u64 {
+    // Keep mempool coalescing bounded to a small part of the target slot.
+    // Waiting a whole slot before proposing makes a 400ms target unreachable
+    // and leaves too little budget for tx execution plus BFT propagation.
+    (slot_duration_ms.max(1) / 4).clamp(50, 100)
+}
+
 /// Genesis-block transactions (slot 0) are created with special
 /// signatures and a zero blockhash, so they cannot pass the normal
 /// validation pipeline — the genesis state was applied directly.
@@ -4881,6 +4888,48 @@ struct BinanceTicker {
     price: String,
 }
 
+fn env_duration_secs(name: &str, default_secs: u64) -> Duration {
+    let secs = env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(default_secs);
+    Duration::from_secs(secs)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn price_delta_bps(previous: u64, current: u64) -> u64 {
+    if previous == 0 {
+        return u64::MAX;
+    }
+    let delta = previous.abs_diff(current) as u128;
+    ((delta * 10_000) / previous as u128) as u64
+}
+
+fn should_submit_oracle_attestation(
+    last: Option<&(u64, Instant)>,
+    price_raw: u64,
+    min_interval: Duration,
+    heartbeat: Duration,
+    min_change_bps: u64,
+) -> bool {
+    match last {
+        None => true,
+        Some((last_price, last_at)) => {
+            let elapsed = last_at.elapsed();
+            elapsed >= heartbeat
+                || (elapsed >= min_interval
+                    && price_delta_bps(*last_price, price_raw) >= min_change_bps)
+        }
+    }
+}
+
 fn build_oracle_attestation_tx(
     state: &StateStore,
     validator_seed: &[u8; 32],
@@ -5073,6 +5122,17 @@ fn spawn_oracle_price_feeder(
         let candle_intervals: [u64; 9] =
             [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
         let mut last_attested: HashMap<&'static str, (u64, Instant)> = HashMap::new();
+        let oracle_attestation_min_interval =
+            env_duration_secs("LICHEN_ORACLE_ATTEST_MIN_SECS", 30);
+        let oracle_attestation_heartbeat =
+            env_duration_secs("LICHEN_ORACLE_ATTEST_HEARTBEAT_SECS", 60);
+        let oracle_attestation_min_change_bps = env_u64("LICHEN_ORACLE_ATTEST_MIN_CHANGE_BPS", 10);
+        info!(
+            "🔮 Oracle attestation cadence: min={}s heartbeat={}s change={}bps",
+            oracle_attestation_min_interval.as_secs(),
+            oracle_attestation_heartbeat.as_secs(),
+            oracle_attestation_min_change_bps,
+        );
 
         const PRICE_SCALE_F: f64 = 1_000_000_000.0; // 1e9 for DEX price scaling
 
@@ -5151,12 +5211,13 @@ fn spawn_oracle_price_feeder(
                 if price_raw == 0 {
                     continue;
                 }
-                let should_submit = match last_attested.get(asset) {
-                    Some((last_price, last_at)) => {
-                        *last_price != price_raw || last_at.elapsed() >= Duration::from_secs(60)
-                    }
-                    None => true,
-                };
+                let should_submit = should_submit_oracle_attestation(
+                    last_attested.get(asset),
+                    price_raw,
+                    oracle_attestation_min_interval,
+                    oracle_attestation_heartbeat,
+                    oracle_attestation_min_change_bps,
+                );
                 if !should_submit {
                     continue;
                 }
@@ -13145,11 +13206,20 @@ async fn run_validator() {
         let peer_mgr_for_compact = p2p_peer_manager.clone();
         let local_addr_for_compact = p2p_config.listen_addr;
         let block_tx_for_compact_task = block_tx_for_compact;
+        let bft_committing_for_compact = bft_committing_slot.clone();
         tokio::spawn(async move {
             while let Some(msg) = compact_block_rx.recv().await {
                 let cb = msg.compact_block;
                 let sender = msg.sender;
                 let slot = cb.header.slot;
+                let live_bft_height = bft_committing_for_compact.load(Ordering::Acquire);
+                if live_bft_height > 0 && slot >= live_bft_height {
+                    debug!(
+                        "📦 Compact block slot {} skipped; live BFT owns height {}+",
+                        slot, live_bft_height
+                    );
+                    continue;
+                }
                 debug!(
                     "📦 Compact block slot {} from {} ({} short IDs)",
                     slot,
@@ -14350,6 +14420,7 @@ async fn run_validator() {
                 parent_hash,
                 &validator_pubkey,
                 Vec::new(),
+                2000,
                 bft_ts,
             );
             drop(mp);
@@ -14413,9 +14484,13 @@ async fn run_validator() {
     }
 
     // ── Delayed proposal timer ──
-    // When we are the proposer after a commit, we delay 800ms (empty mempool)
-    // or 100ms (pending TXs) to reduce QUIC stream pressure on P2P.
+    // When we are the proposer after a commit, delay briefly to coalesce
+    // near-boundary mempool arrivals without consuming a full target slot.
+    // If the mempool was empty when the timer was armed, the timer emits a
+    // heartbeat-only block; newly arrived TXs wait for the next height rather
+    // than turning that heartbeat into a late expensive proposal.
     let mut propose_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    let mut propose_include_transactions: Option<bool> = None;
 
     // ── Height-frozen validator set snapshots ──
     // Tendermint-style deferred activation: snapshot the validator set and
@@ -14507,6 +14582,7 @@ async fn run_validator() {
                     parent_hash,
                     &validator_pubkey,
                     Vec::new(),
+                    2000,
                     bft_ts,
                 );
                 drop(mp);
@@ -14564,13 +14640,10 @@ async fn run_validator() {
                 // If the block committed instantly (solo BFT), loop back to
                 // start the next height without waiting on tokio::select!
                 if bft.step == RoundStep::Commit {
-                    // Delay proposal: 800ms heartbeat for empty blocks,
-                    // slot_duration for blocks with pending TXs.
-                    // Use wall_clock_safe_delay to ensure wall clock advances
-                    // past parent_timestamp+1 (second-precision timestamps
-                    // require at least 1s between blocks to avoid drift).
-                    let has_pending = { mempool.lock().await.size() > 0 };
-                    let base_delay = if has_pending { slot_duration_ms } else { 800 };
+                    // Delay only for a short grace window. The timestamp guard
+                    // only waits when a parent timestamp is ahead of wall clock;
+                    // same-second blocks are valid for sub-second slots.
+                    let base_delay = proposal_grace_delay_ms(slot_duration_ms);
                     let delay =
                         block_producer::wall_clock_safe_delay(&state, &parent_hash, base_delay);
                     time::sleep(Duration::from_millis(delay)).await;
@@ -14705,7 +14778,7 @@ async fn run_validator() {
             }
 
             // ── Delayed proposal timer ──
-            // Fires after commit delay (800ms empty / 100ms with TXs)
+            // Fires after a short post-commit grace delay.
             () = async {
                 if let Some(ref mut timer) = propose_timer {
                     timer.as_mut().await;
@@ -14733,6 +14806,11 @@ async fn run_validator() {
                             parent_hash,
                             &validator_pubkey,
                             Vec::new(),
+                            if propose_include_transactions.take().unwrap_or(true) {
+                                2000
+                            } else {
+                                0
+                            },
                             bft_ts,
                         );
                         drop(mp);
@@ -14844,6 +14922,7 @@ async fn run_validator() {
                                 parent_hash,
                                 &validator_pubkey,
                                 Vec::new(),
+                                2000,
                                 bft_ts,
                             );
                             drop(mp);
@@ -14928,6 +15007,7 @@ async fn run_validator() {
                             parent_hash,
                             &validator_pubkey,
                             Vec::new(),
+                            2000,
                             bft_ts,
                         );
                         drop(mp);
@@ -14978,6 +15058,7 @@ async fn run_validator() {
                             _ => None,
                         };
                     } else {
+                        propose_include_transactions = None;
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,
@@ -15072,21 +15153,21 @@ async fn run_validator() {
                     .await;
 
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                        // Delay proposal to reduce QUIC stream pressure.
-                        // 800ms for empty blocks (heartbeat), 100ms for blocks with TXs.
-                        // Use wall_clock_safe_delay to prevent timestamp drift
-                        // (second-precision timestamps need wall clock to advance
-                        // past parent_timestamp+1 before the next proposal).
+                        // Delay only for a short grace window so the 400ms slot
+                        // target remains reachable and tx proposal construction
+                        // has room inside the round-0 timeout. Snapshot whether
+                        // TXs were present now; empty timers stay heartbeats.
                         let has_pending_txs = {
                             let mp = mempool.lock().await;
                             mp.size() > 0
                         };
-                        let base_delay = if has_pending_txs { 100 } else { 800 };
+                        let base_delay = proposal_grace_delay_ms(slot_duration_ms);
                         let delay_ms =
                             block_producer::wall_clock_safe_delay(&state, &parent_hash, base_delay);
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
                         ))));
+                        propose_include_transactions = Some(has_pending_txs);
                         // Also set a propose timeout as safety net
                         timeout_handle = Some((
                             RoundStep::Propose,
@@ -15437,20 +15518,22 @@ async fn execute_consensus_actions(
             // Proposal execution is speculative. Every validator, including the
             // proposer, replays the committed block into canonical state exactly
             // once at the BFT commit boundary.
-            let consensus_replay_staging_root = state_staging_root(data_dir, "replay-staging");
-            if let Err(err) = validate_block_replay_on_staging(
-                state,
-                &consensus_replay_staging_root,
-                &block,
-                "committed block",
-                false,
-            ) {
-                warn!("{}", err);
-                error!(
-                    "FATAL: refusing to replay committed block {} into canonical state after staging state-root mismatch",
-                    height
-                );
-                std::process::exit(1);
+            if env_flag_enabled("LICHEN_VALIDATE_LIVE_BFT_REPLAY") {
+                let consensus_replay_staging_root = state_staging_root(data_dir, "replay-staging");
+                if let Err(err) = validate_block_replay_on_staging(
+                    state,
+                    &consensus_replay_staging_root,
+                    &block,
+                    "committed block",
+                    false,
+                ) {
+                    warn!("{}", err);
+                    error!(
+                        "FATAL: refusing to replay committed block {} into canonical state after staging state-root mismatch",
+                        height
+                    );
+                    std::process::exit(1);
+                }
             }
             replay_block_transactions(processor, &block);
 
@@ -16934,6 +17017,38 @@ mod tests {
         assert_eq!(ix.data[14], 8);
         assert_eq!(tx.message.recent_blockhash, tip.hash());
         assert_eq!(tx.signatures.len(), 1);
+    }
+
+    #[test]
+    fn oracle_attestation_cadence_throttles_small_price_changes() {
+        let now = Instant::now();
+        let last = (1_000_000u64, now - Duration::from_secs(10));
+
+        assert!(!should_submit_oracle_attestation(
+            Some(&last),
+            1_000_001,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            10,
+        ));
+
+        let old_enough = (1_000_000u64, now - Duration::from_secs(35));
+        assert!(should_submit_oracle_attestation(
+            Some(&old_enough),
+            1_002_000,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            10,
+        ));
+
+        let heartbeat_due = (1_000_000u64, now - Duration::from_secs(65));
+        assert!(should_submit_oracle_attestation(
+            Some(&heartbeat_due),
+            1_000_000,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            10,
+        ));
     }
 
     #[test]

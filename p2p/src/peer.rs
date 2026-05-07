@@ -38,6 +38,7 @@ fn runtime_lichen_dir(runtime_home: Option<&Path>) -> PathBuf {
 pub struct PeerInfo {
     pub address: SocketAddr,
     pub connection: Option<Connection>,
+    connection_id: Option<usize>,
     secure_session: Option<Arc<SecureSession>>,
     pub last_seen: u64,
     pub reputation: u64,
@@ -70,6 +71,7 @@ impl PeerInfo {
         PeerInfo {
             address,
             connection: None,
+            connection_id: None,
             secure_session: None,
             last_seen: now,
             reputation: 500,
@@ -124,6 +126,31 @@ impl PeerInfo {
             .saturating_sub(self.tracking_since)
             .max(1);
         self.bytes_received as f64 / elapsed as f64
+    }
+}
+
+fn remove_peer_if_connection_matches(
+    peers: &DashMap<SocketAddr, PeerInfo>,
+    peer_addr: SocketAddr,
+    connection_id: usize,
+    label: &str,
+) {
+    let should_remove = peers
+        .get(&peer_addr)
+        .map(|peer| peer.connection_id == Some(connection_id))
+        .unwrap_or(false);
+
+    if should_remove {
+        peers.remove(&peer_addr);
+        info!(
+            "P2P: {} {} disconnected, removed from peer map",
+            label, peer_addr
+        );
+    } else {
+        info!(
+            "P2P: {} {} disconnected, but a newer connection is active; keeping peer map entry",
+            label, peer_addr
+        );
     }
 }
 
@@ -650,8 +677,10 @@ impl PeerManager {
         self.update_kademlia(remote_identity.node_id, peer_addr);
 
         // Store peer info
+        let connection_id = connection.stable_id();
         let mut peer_info = PeerInfo::new(peer_addr);
         peer_info.connection = Some(connection.clone());
+        peer_info.connection_id = Some(connection_id);
         peer_info.secure_session = Some(Arc::new(secure_session.clone()));
         peer_info.node_id = remote_identity.node_id;
         self.peers.insert(peer_addr, peer_info);
@@ -679,14 +708,9 @@ impl PeerManager {
             {
                 error!("P2P: Connection error with {}: {}", peer_addr, e);
             }
-            // AUDIT-FIX H2: Remove peer from DashMap when connection drops.
-            // Without this, dead peers linger until cleanup_stale_peers runs,
-            // causing failed sends and inflated peer counts.
-            peers.remove(&peer_addr);
-            info!(
-                "P2P: Peer {} disconnected, removed from peer map",
-                peer_addr
-            );
+            // Remove only the connection this task owns. A reconnect can replace
+            // the same peer address while the old QUIC handler is still exiting.
+            remove_peer_if_connection_matches(&peers, peer_addr, connection_id, "Peer");
         });
 
         Ok(())
@@ -1299,8 +1323,10 @@ impl PeerManager {
                             }
 
                             // Store peer
+                            let connection_id = connection.stable_id();
                             let mut peer_info = PeerInfo::new(peer_addr);
                             peer_info.connection = Some(connection.clone());
+                            peer_info.connection_id = Some(connection_id);
                             peer_info.secure_session = Some(Arc::new(secure_session.clone()));
                             peer_info.node_id = remote_identity.node_id;
                             peers.insert(peer_addr, peer_info);
@@ -1322,11 +1348,14 @@ impl PeerManager {
                             {
                                 error!("P2P: Connection error with {}: {}", peer_addr, e);
                             }
-                            // AUDIT-FIX H2: Remove peer on disconnect (inbound path)
-                            peers.remove(&peer_addr);
-                            info!(
-                                "P2P: Inbound peer {} disconnected, removed from peer map",
-                                peer_addr
+                            // Remove only the connection this task owns. A newer
+                            // outbound or inbound connection for the same address
+                            // must remain available for consensus broadcasts.
+                            remove_peer_if_connection_matches(
+                                &peers,
+                                peer_addr,
+                                connection_id,
+                                "Inbound peer",
                             );
                         }
                         Err(e) => {
@@ -2544,6 +2573,26 @@ mod tests {
         assert!(validator_addrs.contains(&addr1));
         assert!(validator_addrs.contains(&addr3));
         assert!(!validator_addrs.contains(&addr2));
+    }
+
+    #[test]
+    fn disconnect_cleanup_keeps_newer_connection_for_same_peer() {
+        let peers: DashMap<SocketAddr, PeerInfo> = DashMap::new();
+        let addr: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+
+        let mut old_peer = PeerInfo::new(addr);
+        old_peer.connection_id = Some(1);
+        peers.insert(addr, old_peer);
+
+        let mut newer_peer = PeerInfo::new(addr);
+        newer_peer.connection_id = Some(2);
+        peers.insert(addr, newer_peer);
+
+        remove_peer_if_connection_matches(&peers, addr, 1, "test peer");
+        assert_eq!(peers.get(&addr).unwrap().connection_id, Some(2));
+
+        remove_peer_if_connection_matches(&peers, addr, 2, "test peer");
+        assert!(!peers.contains_key(&addr));
     }
 
     #[test]
