@@ -2404,17 +2404,20 @@ async fn put_cached_program_list_response(
 }
 
 /// AUDIT-FIX HIGH-03: Exact allowlist instead of substring matching.
-/// Only the following network/chain IDs enable legacy admin RPCs:
+/// Only local/dev fixture IDs enable legacy admin RPCs. Public-style chain IDs
+/// such as `lichen-testnet-1`, `lichen-devnet-1`, and mainnet IDs are
+/// intentionally excluded even when an admin token is configured.
 const LEGACY_ADMIN_ALLOWED_IDS: &[&str] = &[
     "local",
     "dev",
     "localnet",
     "devnet",
-    "lichen-test",
+    "local-testnet",
+    "local-devnet",
     "lichen-testnet-local",
-    "lichen-testnet-1",
-    "lichen-devnet-1",
+    "lichen-devnet-local",
     "lichen-local",
+    "lichen-dev",
 ];
 
 fn allow_legacy_admin_rpc(chain_id: &str, network_id: &str) -> bool {
@@ -4255,15 +4258,23 @@ fn build_rpc_router_internal(
     let solana_tx_cache = Arc::new(RwLock::new(LruCache::new(
         NonZeroUsize::new(10_000).unwrap(),
     )));
-    // Filter empty admin token to None
-    let admin_token = admin_token.filter(|t| !t.is_empty());
+    // Filter empty admin token to None, then drop it entirely outside the
+    // exact local/dev allowlist. The request path also checks the network gate;
+    // this prevents later token hot-reload from accidentally arming public RPC.
+    let configured_admin_token = admin_token.filter(|t| !t.is_empty());
+    let admin_token = if legacy_admin_rpc_enabled {
+        configured_admin_token
+    } else {
+        if configured_admin_token.is_some() {
+            warn!(
+                "Ignoring LICHEN_ADMIN_TOKEN on non-local/dev network {} — legacy admin RPCs are disabled",
+                network_id
+            );
+        }
+        None
+    };
     if legacy_admin_rpc_enabled && admin_token.is_some() {
         info!("\u{1f512} Legacy dev-only admin RPC token configured");
-    } else if admin_token.is_some() {
-        warn!(
-            "Ignoring LICHEN_ADMIN_TOKEN on non-local/dev network {} — legacy admin RPCs are disabled",
-            network_id
-        );
     } else {
         info!(
             "\u{26a0}\u{fe0f}  Legacy admin RPCs disabled unless running in local/dev mode with an admin token"
@@ -4272,7 +4283,7 @@ fn build_rpc_router_internal(
     let admin_token = Arc::new(std::sync::RwLock::new(admin_token));
 
     // Spawn background task to hot-reload admin token from LICHEN_ADMIN_TOKEN env var
-    {
+    if legacy_admin_rpc_enabled {
         let token_ref = Arc::clone(&admin_token);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -19004,11 +19015,11 @@ mod tests {
         live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
         pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
-        validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
-        AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
-        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, PROGRAM_LIST_CACHE_TTL_MS,
-        SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
+        strip_admin_token_from_params, validate_incoming_transaction_limits,
+        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
+        verify_bridge_access_auth_at, AirdropCooldowns, MethodTier, RateLimiter, RpcError,
+        RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        PROGRAM_LIST_CACHE_TTL_MS, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
         SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
@@ -20315,6 +20326,74 @@ mod tests {
         assert!(constant_time_eq(b"admin-token", b"admin-token"));
         assert!(!constant_time_eq(b"admin-token", b"admin-tokfn"));
         assert!(!constant_time_eq(b"admin-token", b"admin-token-extra"));
+    }
+
+    #[test]
+    fn test_rg603_legacy_admin_rpc_allowlist_is_local_dev_only() {
+        for id in [
+            "local",
+            "dev",
+            "localnet",
+            "devnet",
+            "local-testnet",
+            "local-devnet",
+            "lichen-testnet-local",
+            "lichen-devnet-local",
+            "lichen-local",
+            "lichen-dev",
+        ] {
+            assert!(
+                super::allow_legacy_admin_rpc(id, "production"),
+                "{id} should be explicitly allowed as a local/dev chain id"
+            );
+            assert!(
+                super::allow_legacy_admin_rpc("production", id),
+                "{id} should be explicitly allowed as a local/dev network id"
+            );
+        }
+
+        for (chain_id, network_id) in [
+            ("lichen-testnet-1", "lichen-testnet-1"),
+            ("lichen-devnet-1", "lichen-devnet-1"),
+            ("lichen-mainnet-1", "lichen-mainnet-1"),
+            ("lichen-developer-mainnet", "lichen-mainnet-1"),
+            ("production-locality-1", "production"),
+            ("lichen-testnet-local-copy", "lichen-testnet-1"),
+        ] {
+            assert!(
+                !super::allow_legacy_admin_rpc(chain_id, network_id),
+                "{chain_id}/{network_id} must not enable legacy admin RPC"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rg603_admin_token_is_stripped_from_json_params() {
+        let stripped = strip_admin_token_from_params(Some(serde_json::json!({
+            "base_fee_spores": 42,
+            "admin_token": "must-not-reach-handler"
+        })))
+        .expect("object params");
+        assert!(stripped.get("admin_token").is_none());
+        assert_eq!(stripped["base_fee_spores"], serde_json::json!(42));
+
+        let stripped = strip_admin_token_from_params(Some(serde_json::json!([
+            {
+                "rent_free_kb": 64,
+                "admin_token": "must-not-reach-handler"
+            },
+            "unchanged",
+            {
+                "abi": [],
+                "admin_token": "must-not-reach-handler"
+            }
+        ])))
+        .expect("array params");
+        let arr = stripped.as_array().expect("array");
+        assert!(arr[0].get("admin_token").is_none());
+        assert_eq!(arr[0]["rent_free_kb"], serde_json::json!(64));
+        assert_eq!(arr[1], serde_json::json!("unchanged"));
+        assert!(arr[2].get("admin_token").is_none());
     }
 
     #[test]
