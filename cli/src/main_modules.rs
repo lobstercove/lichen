@@ -45,6 +45,7 @@ mod client_peer_query_support;
 mod client_peer_types_support;
 mod client_protocol_query_support;
 mod client_reward_adjustment_query_support;
+mod client_restriction_query_support;
 mod client_staking_query_support;
 mod client_staking_types_support;
 mod client_symbol_query_support;
@@ -119,6 +120,8 @@ mod query_account_support;
 mod query_chain_support;
 #[allow(dead_code)]
 mod query_rpc_support;
+mod restriction_output_support;
+mod restriction_support;
 mod stake_add_support;
 mod stake_address_support;
 mod stake_query_output_support;

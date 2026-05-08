@@ -9190,6 +9190,7 @@ mod tests {
         data
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_active_test_restriction(
         processor: &TxProcessor,
         state: &StateStore,
@@ -9243,6 +9244,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_active_bridge_split_restriction(
         processor: &TxProcessor,
         state: &StateStore,
@@ -9302,6 +9304,7 @@ mod tests {
         fresh_blockhash
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_active_guardian_test_restriction(
         processor: &TxProcessor,
         state: &StateStore,
@@ -9798,7 +9801,7 @@ mod tests {
 
         let mut too_long_route = vec![34u8, GOVERNANCE_ACTION_RESTRICT, 5];
         too_long_route.extend_from_slice(&257u16.to_le_bytes());
-        too_long_route.extend(std::iter::repeat(b'a').take(257));
+        too_long_route.extend(std::iter::repeat_n(b'a', 257));
         assert_parse_error(too_long_route, "chain_id length 257 exceeds 256");
 
         let mut unknown_module = vec![34u8, GOVERNANCE_ACTION_RESTRICT];
