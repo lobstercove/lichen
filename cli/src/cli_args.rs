@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Recognized contract template categories
@@ -283,6 +283,10 @@ pub(super) enum Commands {
     /// Governance operations (propose, vote, list)
     #[command(subcommand)]
     Gov(GovCommands),
+
+    /// Restriction governance operations
+    #[command(subcommand)]
+    Restriction(RestrictionCommands),
 
     /// Show version and build information
     Version,
@@ -726,6 +730,372 @@ pub(super) enum GovCommands {
         /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum RestrictionCommands {
+    /// Fetch one restriction by ID
+    Get {
+        /// Restriction ID
+        id: u64,
+    },
+
+    /// List restrictions
+    List {
+        /// Return active restrictions only
+        #[arg(long)]
+        active: bool,
+
+        /// Maximum number of records to return
+        #[arg(long, default_value = "50")]
+        limit: u64,
+
+        /// Return records after this restriction ID
+        #[arg(long, alias = "cursor")]
+        after_id: Option<u64>,
+    },
+
+    /// Show restriction status for a target
+    #[command(subcommand)]
+    Status(RestrictionStatusCommands),
+
+    /// Check whether an account can send an asset amount
+    CanSend {
+        /// Source account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        #[arg(long, default_value = "native")]
+        asset: String,
+
+        /// Amount in base units
+        #[arg(long, default_value = "0")]
+        amount: u64,
+    },
+
+    /// Check whether an account can receive an asset amount
+    CanReceive {
+        /// Recipient account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        #[arg(long, default_value = "native")]
+        asset: String,
+
+        /// Amount in base units
+        #[arg(long, default_value = "0")]
+        amount: u64,
+    },
+
+    /// Check whether an asset transfer would be allowed
+    CanTransfer {
+        /// Source account address
+        from: String,
+
+        /// Recipient account address
+        to: String,
+
+        /// Asset address, or native/licn for native LICN
+        #[arg(long, default_value = "native")]
+        asset: String,
+
+        /// Amount in base units
+        #[arg(long, default_value = "0")]
+        amount: u64,
+    },
+
+    /// Build unsigned restriction-governance transactions
+    #[command(subcommand)]
+    Build(RestrictionBuildCommands),
+}
+
+#[derive(Subcommand)]
+pub(super) enum RestrictionStatusCommands {
+    /// Account restriction status
+    Account {
+        /// Account address
+        account: String,
+    },
+
+    /// Account-asset restriction status
+    AccountAsset {
+        /// Account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        asset: String,
+    },
+
+    /// Asset restriction status
+    Asset {
+        /// Asset address, or native/licn for native LICN
+        asset: String,
+    },
+
+    /// Contract lifecycle restriction status
+    Contract {
+        /// Contract address
+        contract: String,
+    },
+
+    /// Code-hash deploy restriction status
+    CodeHash {
+        /// 32-byte code hash in hex
+        code_hash: String,
+    },
+
+    /// Bridge-route pause status
+    BridgeRoute {
+        /// External chain identifier
+        chain: String,
+
+        /// External asset identifier
+        asset: String,
+    },
+
+    /// Protocol-module pause status
+    ProtocolModule {
+        /// Protocol module name or numeric ID
+        module: String,
+    },
+
+    /// Generic target status from a JSON target object
+    Target {
+        /// Restriction target JSON object
+        #[arg(long)]
+        target_json: String,
+    },
+}
+
+#[derive(Args)]
+pub(super) struct RestrictionBuilderBaseArgs {
+    /// Governance action proposer address
+    #[arg(long, alias = "payer", alias = "signer")]
+    pub(super) proposer: String,
+
+    /// Governance authority address
+    #[arg(long, alias = "authority")]
+    pub(super) governance_authority: String,
+
+    /// Recent blockhash in hex. If omitted, the RPC uses the current head.
+    #[arg(long, alias = "blockhash")]
+    pub(super) recent_blockhash: Option<String>,
+}
+
+#[derive(Args)]
+pub(super) struct RestrictionRestrictCommonArgs {
+    #[command(flatten)]
+    pub(super) base: RestrictionBuilderBaseArgs,
+
+    /// Restriction reason name or numeric ID
+    #[arg(long)]
+    pub(super) reason: String,
+
+    /// Evidence hash in hex
+    #[arg(long)]
+    pub(super) evidence_hash: Option<String>,
+
+    /// Evidence URI hash in hex
+    #[arg(long)]
+    pub(super) evidence_uri_hash: Option<String>,
+
+    /// Expiry slot for temporary restrictions
+    #[arg(long)]
+    pub(super) expires_at_slot: Option<u64>,
+}
+
+#[derive(Args)]
+pub(super) struct RestrictionLiftCommonArgs {
+    #[command(flatten)]
+    pub(super) base: RestrictionBuilderBaseArgs,
+
+    /// Lift reason name or numeric ID
+    #[arg(long)]
+    pub(super) lift_reason: String,
+
+    /// Restriction ID. Target-specific commands can resolve this when exactly one active restriction matches.
+    #[arg(long)]
+    pub(super) restriction_id: Option<u64>,
+}
+
+#[derive(Subcommand)]
+pub(super) enum RestrictionBuildCommands {
+    /// Build an account restriction proposal transaction
+    RestrictAccount {
+        /// Account address
+        account: String,
+
+        /// Account restriction mode: outgoing-only, incoming-only, or bidirectional
+        #[arg(long)]
+        mode: Option<String>,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build an account restriction lift proposal transaction
+    UnrestrictAccount {
+        /// Account address
+        account: String,
+
+        #[command(flatten)]
+        common: RestrictionLiftCommonArgs,
+    },
+
+    /// Build an account-asset restriction proposal transaction
+    RestrictAccountAsset {
+        /// Account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        asset: String,
+
+        /// Restriction mode: outgoing-only, incoming-only, bidirectional, or frozen-amount
+        #[arg(long)]
+        mode: Option<String>,
+
+        /// Frozen floor amount in base units when mode is frozen-amount
+        #[arg(long)]
+        amount: Option<u64>,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build an account-asset restriction lift proposal transaction
+    UnrestrictAccountAsset {
+        /// Account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        asset: String,
+
+        #[command(flatten)]
+        common: RestrictionLiftCommonArgs,
+    },
+
+    /// Build a frozen-amount account-asset restriction proposal transaction
+    SetFrozenAssetAmount {
+        /// Account address
+        account: String,
+
+        /// Asset address, or native/licn for native LICN
+        asset: String,
+
+        /// Frozen floor amount in base units
+        amount: u64,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a contract suspend proposal transaction
+    SuspendContract {
+        /// Contract address
+        contract: String,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a contract resume proposal transaction
+    ResumeContract {
+        /// Contract address
+        contract: String,
+
+        #[command(flatten)]
+        common: RestrictionLiftCommonArgs,
+    },
+
+    /// Build a contract quarantine proposal transaction
+    QuarantineContract {
+        /// Contract address
+        contract: String,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a permanent contract termination proposal transaction
+    TerminateContract {
+        /// Contract address
+        contract: String,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a code-hash deploy-ban proposal transaction
+    BanCodeHash {
+        /// 32-byte code hash in hex
+        code_hash: String,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a code-hash deploy-ban lift proposal transaction
+    UnbanCodeHash {
+        /// 32-byte code hash in hex
+        code_hash: String,
+
+        #[command(flatten)]
+        common: RestrictionLiftCommonArgs,
+    },
+
+    /// Build a bridge-route pause proposal transaction
+    PauseBridgeRoute {
+        /// External chain identifier
+        chain: String,
+
+        /// External asset identifier
+        asset: String,
+
+        #[command(flatten)]
+        common: RestrictionRestrictCommonArgs,
+    },
+
+    /// Build a bridge-route resume proposal transaction
+    ResumeBridgeRoute {
+        /// External chain identifier
+        chain: String,
+
+        /// External asset identifier
+        asset: String,
+
+        #[command(flatten)]
+        common: RestrictionLiftCommonArgs,
+    },
+
+    /// Build a generic restriction extension proposal transaction
+    ExtendRestriction {
+        /// Restriction ID
+        restriction_id: u64,
+
+        /// New expiry slot
+        #[arg(long)]
+        new_expires_at_slot: Option<u64>,
+
+        /// Evidence hash in hex
+        #[arg(long)]
+        evidence_hash: Option<String>,
+
+        #[command(flatten)]
+        base: RestrictionBuilderBaseArgs,
+    },
+
+    /// Build a generic restriction lift proposal transaction
+    LiftRestriction {
+        /// Restriction ID
+        restriction_id: u64,
+
+        /// Lift reason name or numeric ID
+        #[arg(long)]
+        lift_reason: String,
+
+        #[command(flatten)]
+        base: RestrictionBuilderBaseArgs,
     },
 }
 
