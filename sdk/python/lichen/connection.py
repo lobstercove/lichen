@@ -100,6 +100,15 @@ class Connection:
             return data.get("result")
 
         raise Exception("RPC Error: exceeded retry budget while waiting for blocks")
+
+    async def rpc_request(
+        self,
+        method: str,
+        params: List[Any] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        """Make a raw JSON-RPC call through the SDK transport."""
+        return await self._rpc(method, params, headers)
     
     # ============================================================================
     # BASIC QUERIES
