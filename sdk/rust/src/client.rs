@@ -54,7 +54,7 @@ impl Client {
     }
     
     /// Make an RPC call
-    async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = json!({
             "jsonrpc": "2.0",
