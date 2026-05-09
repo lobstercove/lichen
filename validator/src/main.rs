@@ -3214,21 +3214,40 @@ fn compute_proposed_timestamp(
     Some(bft_ts.min(now + 1))
 }
 
-fn slot_cadence_remaining_ms(slot_duration_ms: u64, elapsed_since_last_block: Duration) -> u64 {
-    let target_ms = slot_duration_ms.max(1);
-    let elapsed_ms = elapsed_since_last_block
+fn current_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
         .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
-    target_ms.saturating_sub(elapsed_ms)
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn chain_slot_clock_delay_ms(
+    genesis_time_secs: u64,
+    height: u64,
+    slot_duration_ms: u64,
+    now_ms: u64,
+) -> u64 {
+    let slot_duration_ms = slot_duration_ms.max(1);
+    let genesis_ms = genesis_time_secs.saturating_mul(1000);
+    let slot_offset_ms = height.saturating_mul(slot_duration_ms);
+    let target_ms = genesis_ms.saturating_add(slot_offset_ms);
+    target_ms.saturating_sub(now_ms)
 }
 
 fn proposal_slot_delay_ms(
     state: &StateStore,
     parent_hash: &Hash,
+    genesis_time_secs: u64,
+    height: u64,
     slot_duration_ms: u64,
-    last_slot_start_time: Instant,
 ) -> u64 {
-    let cadence_delay = slot_cadence_remaining_ms(slot_duration_ms, last_slot_start_time.elapsed());
+    let cadence_delay = chain_slot_clock_delay_ms(
+        genesis_time_secs,
+        height,
+        slot_duration_ms,
+        current_unix_millis(),
+    );
     block_producer::wall_clock_safe_delay(state, parent_hash, cadence_delay)
 }
 
@@ -7753,15 +7772,12 @@ async fn run_validator() {
     let received_network_slots: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let received_network_slots_for_blocks = received_network_slots.clone();
 
-    // Track committed/received block time for watchdog/readiness, and slot-start
-    // time for round-0 proposal cadence. These are intentionally separate:
-    // proposal spacing is measured from the prior slot start, not from the
-    // prior commit, so BFT vote latency does not get added to every slot.
+    // Track committed/received block time for watchdog/readiness. Round-0
+    // proposal cadence is derived from the deterministic chain slot clock
+    // (genesis_time + height * slot_duration_ms), not local observation time.
     let last_block_time = Arc::new(Mutex::new(std::time::Instant::now()));
     let last_block_time_for_blocks = last_block_time.clone();
     let last_block_time_for_local = last_block_time.clone();
-    let last_slot_start_time = Arc::new(Mutex::new(std::time::Instant::now()));
-    let last_slot_start_time_for_local = last_slot_start_time.clone();
     let global_last_user_tx_activity = Arc::new(Mutex::new(std::time::Instant::now()));
     let global_last_user_tx_activity_for_blocks = global_last_user_tx_activity.clone();
 
@@ -14380,12 +14396,12 @@ async fn run_validator() {
     // If we're the proposer for round 0, arm the slot-cadence timer.
     {
         if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-            let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
             let delay_ms = proposal_slot_delay_ms(
                 &state,
                 &parent_hash,
+                genesis_time_secs,
+                start_height,
                 slot_duration_ms,
-                last_slot_start_time,
             );
             info!(
                 "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
@@ -14491,12 +14507,12 @@ async fn run_validator() {
             }
 
             if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
                 let delay_ms = proposal_slot_delay_ms(
                     &state,
                     &parent_hash,
+                    genesis_time_secs,
+                    new_height,
                     slot_duration_ms,
-                    last_slot_start_time,
                 );
                 info!(
                     "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
@@ -14540,15 +14556,7 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
-                let proposal_height = proposal.height;
-                let proposal_round = proposal.round;
                 let action = bft.on_proposal(proposal, &height_vs, &height_pool);
-                if proposal_height == bft.height
-                    && proposal_round == 0
-                    && !matches!(&action, ConsensusAction::None)
-                {
-                    *last_slot_start_time_for_local.lock().await = std::time::Instant::now();
-                }
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -14661,7 +14669,6 @@ async fn run_validator() {
                 if bft.step == RoundStep::Propose
                     && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
                 {
-                    *last_slot_start_time_for_local.lock().await = std::time::Instant::now();
                     info!(
                         "👑 BFT: We are proposer for height={} round={}",
                         bft.height, bft.round
@@ -15022,12 +15029,12 @@ async fn run_validator() {
                     .await;
 
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                        let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
                         let delay_ms = proposal_slot_delay_ms(
                             &state,
                             &parent_hash,
+                            genesis_time_secs,
+                            new_height,
                             slot_duration_ms,
-                            last_slot_start_time,
                         );
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
@@ -15783,24 +15790,27 @@ mod tests {
     }
 
     #[test]
-    fn slot_cadence_remaining_uses_full_configured_slot() {
+    fn chain_slot_clock_delay_uses_genesis_slot_boundary() {
+        let genesis = 1_700_000_000;
+        let height = 10;
+        let target_ms = genesis * 1000 + height * 400;
+
         assert_eq!(
-            slot_cadence_remaining_ms(400, Duration::from_millis(0)),
-            400
+            chain_slot_clock_delay_ms(genesis, height, 400, target_ms - 150),
+            150
         );
         assert_eq!(
-            slot_cadence_remaining_ms(400, Duration::from_millis(150)),
-            250
-        );
-        assert_eq!(
-            slot_cadence_remaining_ms(400, Duration::from_millis(400)),
+            chain_slot_clock_delay_ms(genesis, height, 400, target_ms),
             0
         );
         assert_eq!(
-            slot_cadence_remaining_ms(400, Duration::from_millis(900)),
+            chain_slot_clock_delay_ms(genesis, height, 400, target_ms + 900),
             0
         );
-        assert_eq!(slot_cadence_remaining_ms(0, Duration::from_millis(0)), 1);
+        assert_eq!(
+            chain_slot_clock_delay_ms(genesis, height, 0, genesis * 1000 + height),
+            0
+        );
     }
 
     #[test]
