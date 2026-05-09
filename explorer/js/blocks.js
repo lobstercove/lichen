@@ -1,13 +1,14 @@
 // Blocks Page Logic
 
-let currentPage = 1;
 const blocksPerPage = 50;
-let allBlocks = [];
-let filteredBlocks = [];
+let currentBlocks = [];
+let cursorStack = [];
+let nextBeforeSlot = null;
 let blocksPolling = null;
-let lastRenderedSlot = null;
+let blockRefreshTimer = null;
 let hasRenderedBlocks = false;
 let isLoadingBlocks = false;
+let currentFilter = { fromSlot: null, toSlot: null };
 
 function renderBlockValidator(validator) {
     if (!validator) return 'N/A';
@@ -30,63 +31,70 @@ function bindStaticControls() {
     });
 }
 
-async function loadAllBlocks() {
+function currentPageCursor() {
+    return cursorStack.length > 0 ? cursorStack[cursorStack.length - 1] : undefined;
+}
+
+function requestedBeforeSlot(explicitBeforeSlot) {
+    if (explicitBeforeSlot !== undefined && explicitBeforeSlot !== null) {
+        return explicitBeforeSlot;
+    }
+    if (currentFilter.toSlot !== null && currentFilter.toSlot !== undefined) {
+        return currentFilter.toSlot + 1;
+    }
+    return undefined;
+}
+
+function blockMatchesFilter(block) {
+    if (currentFilter.fromSlot !== null && block.slot < currentFilter.fromSlot) return false;
+    if (currentFilter.toSlot !== null && block.slot > currentFilter.toSlot) return false;
+    return true;
+}
+
+async function fetchBlocksPage(beforeSlot) {
+    const params = { limit: blocksPerPage };
+    const requestedBefore = requestedBeforeSlot(beforeSlot);
+    if (requestedBefore !== undefined && requestedBefore !== null) {
+        params.before_slot = requestedBefore;
+    }
+
+    if (typeof rpc.getRecentBlocks === 'function') {
+        return rpc.getRecentBlocks(params);
+    }
+    return rpc.call('getRecentBlocks', [params]);
+}
+
+async function loadBlocksPage(beforeSlot, options = {}) {
     const table = document.getElementById('blocksTableFull');
     if (!table) return;
 
     if (isLoadingBlocks) return;
     isLoadingBlocks = true;
 
+    if (options.showSpinner || !hasRenderedBlocks) {
+        table.innerHTML = '<tr class="loading-row"><td colspan="6"><div class="loading-spinner"></div> Loading blocks...</td></tr>';
+    }
+
     try {
-        const latestBlock = await rpc.getLatestBlock();
-        if (!latestBlock) {
-            isLoadingBlocks = false;
-            table.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">No blocks found</td></tr>';
-            return;
+        const result = await fetchBlocksPage(beforeSlot);
+        const blocks = Array.isArray(result?.blocks) ? result.blocks : [];
+        currentBlocks = blocks.filter(blockMatchesFilter);
+
+        nextBeforeSlot = result?.has_more ? result.next_before_slot ?? null : null;
+        if (
+            currentFilter.fromSlot !== null &&
+            nextBeforeSlot !== null &&
+            nextBeforeSlot <= currentFilter.fromSlot
+        ) {
+            nextBeforeSlot = null;
         }
 
-        if (lastRenderedSlot !== null && latestBlock.slot === lastRenderedSlot) {
-            isLoadingBlocks = false;
-            return;
-        }
-
-        const blocks = [];
-        const currentSlot = latestBlock.slot;
-        const maxPages = 5;
-        const totalToLoad = Math.min(blocksPerPage * maxPages, currentSlot + 1);
-
-        // Load blocks in parallel batches of 10
-        const BATCH_SIZE = 10;
-        for (let start = 0; start < totalToLoad; start += BATCH_SIZE) {
-            const batchEnd = Math.min(start + BATCH_SIZE, totalToLoad);
-            const promises = [];
-            for (let i = start; i < batchEnd; i++) {
-                promises.push(rpc.getBlock(currentSlot - i).catch(() => null));
-            }
-            const results = await Promise.all(promises);
-            results.forEach(b => { if (b) blocks.push(b); });
-
-            // Update progressively
-            if (!hasRenderedBlocks && start % 20 === 0) {
-                table.innerHTML = `<tr class="loading-row"><td colspan="6"><div class="loading-spinner"></div> Loading blocks... ${start}/${totalToLoad}</td></tr>`;
-            }
-
-            // Brief pause between batches to avoid rate limiting
-            if (start + BATCH_SIZE < totalToLoad) {
-                await new Promise(r => setTimeout(r, 30));
-            }
-        }
-
-        allBlocks = blocks;
-        filteredBlocks = blocks;
         renderBlocks();
         hasRenderedBlocks = true;
-        lastRenderedSlot = currentSlot;
-        isLoadingBlocks = false;
-
     } catch (error) {
         console.error('Failed to load blocks:', error);
         table.innerHTML = '<tr><td colspan="6" style="text-align:center; color: #FF6B6B;">Failed to load blocks</td></tr>';
+    } finally {
         isLoadingBlocks = false;
     }
 }
@@ -95,16 +103,13 @@ function renderBlocks() {
     const table = document.getElementById('blocksTableFull');
     if (!table) return;
 
-    const start = (currentPage - 1) * blocksPerPage;
-    const end = start + blocksPerPage;
-    const pageBlocks = filteredBlocks.slice(start, end);
-
-    if (pageBlocks.length === 0) {
+    if (currentBlocks.length === 0) {
         table.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">No blocks found</td></tr>';
+        updatePagination();
         return;
     }
 
-    table.innerHTML = pageBlocks.map(block => `
+    table.innerHTML = currentBlocks.map(block => `
         <tr>
             <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
             <td>
@@ -124,28 +129,27 @@ function renderBlocks() {
 }
 
 function updatePagination() {
-    const totalPages = Math.ceil(filteredBlocks.length / blocksPerPage);
-    document.getElementById('paginationInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+    const info = document.getElementById('paginationInfo');
+    const prev = document.getElementById('prevPage');
+    const next = document.getElementById('nextPage');
 
-    document.getElementById('prevPage').disabled = currentPage === 1;
-    document.getElementById('nextPage').disabled = currentPage >= totalPages;
+    if (info) info.textContent = `Page ${cursorStack.length + 1}`;
+    if (prev) prev.disabled = cursorStack.length === 0 || isLoadingBlocks;
+    if (next) next.disabled = nextBeforeSlot === null || isLoadingBlocks;
 }
 
 function nextPage() {
-    const totalPages = Math.ceil(filteredBlocks.length / blocksPerPage);
-    if (currentPage < totalPages) {
-        currentPage++;
-        renderBlocks();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
+    if (nextBeforeSlot === null || isLoadingBlocks) return;
+    cursorStack.push(nextBeforeSlot);
+    loadBlocksPage(nextBeforeSlot, { showSpinner: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function previousPage() {
-    if (currentPage > 1) {
-        currentPage--;
-        renderBlocks();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
+    if (cursorStack.length === 0 || isLoadingBlocks) return;
+    cursorStack.pop();
+    loadBlocksPage(currentPageCursor(), { showSpinner: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function setSlotFilterError(message) {
@@ -211,9 +215,9 @@ function applyFilters() {
         return;
     }
 
-    const fromSlot = fromParsed.value ?? 0;
-    const toSlot = toParsed.value ?? Infinity;
-    if (fromSlot > toSlot) {
+    const fromSlot = fromParsed.value;
+    const toSlot = toParsed.value;
+    if (fromSlot !== null && toSlot !== null && fromSlot > toSlot) {
         const message = 'From slot must be less than or equal to To slot.';
         fromInput.setCustomValidity(message);
         toInput.setCustomValidity(message);
@@ -225,31 +229,44 @@ function applyFilters() {
         return;
     }
 
-    filteredBlocks = allBlocks.filter(block =>
-        block.slot >= fromSlot && block.slot <= toSlot
-    );
-
-    currentPage = 1;
-    renderBlocks();
+    currentFilter = { fromSlot, toSlot };
+    cursorStack = [];
+    nextBeforeSlot = null;
+    loadBlocksPage(undefined, { showSpinner: true });
 }
 
 function clearFilters() {
     document.getElementById('slotFromFilter').value = '';
     document.getElementById('slotToFilter').value = '';
     clearSlotFilterValidation();
-    filteredBlocks = allBlocks;
-    currentPage = 1;
-    renderBlocks();
+    currentFilter = { fromSlot: null, toSlot: null };
+    cursorStack = [];
+    nextBeforeSlot = null;
+    loadBlocksPage(undefined, { showSpinner: true });
+}
+
+function scheduleBlocksRefresh(delayMs = 500) {
+    if (blockRefreshTimer) return;
+    blockRefreshTimer = setTimeout(() => {
+        blockRefreshTimer = null;
+        if (cursorStack.length === 0) {
+            loadBlocksPage(undefined);
+        }
+    }, delayMs);
 }
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     bindStaticControls();
-    loadAllBlocks();
+    loadBlocksPage(undefined, { showSpinner: true });
 
     const startPolling = () => {
         if (blocksPolling) return;
-        blocksPolling = setInterval(loadAllBlocks, 5000);
+        blocksPolling = setInterval(() => {
+            if (cursorStack.length === 0) {
+                loadBlocksPage(undefined);
+            }
+        }, 5000);
     };
 
     const stopPolling = () => {
@@ -262,7 +279,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof ws !== 'undefined') {
         ws.onOpen(() => {
             stopPolling();
-            ws.subscribe('subscribeBlocks', () => loadAllBlocks());
+            ws.subscribe('subscribeBlocks', () => scheduleBlocksRefresh());
         });
 
         ws.onClose(() => {

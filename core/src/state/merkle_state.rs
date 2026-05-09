@@ -448,6 +448,172 @@ impl StateStore {
         root
     }
 
+    /// Compute the post-transaction state root for an uncommitted batch.
+    ///
+    /// This is used by proposers to evaluate candidate blocks without cloning
+    /// or mutating the live RocksDB state. It first brings the canonical
+    /// incremental Merkle leaf caches up to date, then overlays the batch's
+    /// account/contract/restriction changes in memory.
+    pub fn compute_state_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        let accounts_root = self.compute_accounts_root_for_batch(batch);
+        let contract_root = self.compute_contract_storage_root_for_batch(batch);
+        let stake_pool_hash = batch
+            .stake_pool_overlay
+            .as_ref()
+            .map(|pool| pool.canonical_hash())
+            .unwrap_or_else(|| self.compute_stake_pool_hash());
+        let mossstake_pool_hash = batch
+            .mossstake_pool_overlay
+            .as_ref()
+            .map(|pool| pool.canonical_hash())
+            .unwrap_or_else(|| self.compute_mossstake_pool_hash());
+        let include_restrictions = self.get_state_root_schema().unwrap_or(false);
+
+        let restrictions_root = if include_restrictions && !batch.restriction_overlay.is_empty() {
+            Some(self.compute_restrictions_root_for_batch(batch))
+        } else if include_restrictions {
+            Some(self.compute_restrictions_root())
+        } else {
+            None
+        };
+
+        let mut composite =
+            Vec::with_capacity(1 + 32 + 32 + 32 + 32 + restrictions_root.map_or(0, |_| 32));
+        composite.push(Self::state_root_prefix(include_restrictions));
+        composite.extend_from_slice(&accounts_root.0);
+        composite.extend_from_slice(&contract_root.0);
+        composite.extend_from_slice(&stake_pool_hash.0);
+        composite.extend_from_slice(&mossstake_pool_hash.0);
+        if let Some(restrictions_root) = restrictions_root {
+            composite.extend_from_slice(&restrictions_root.0);
+        }
+        Hash::hash(&composite)
+    }
+
+    fn serialized_account_value(account: &Account) -> Result<Vec<u8>, String> {
+        let mut value = Vec::with_capacity(256);
+        value.push(0xBC);
+        bincode::serialize_into(&mut value, account)
+            .map_err(|e| format!("Failed to serialize account: {}", e))?;
+        Ok(value)
+    }
+
+    fn compute_accounts_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        // Make sure canonical dirty markers have been folded into leaf cache.
+        let _ = self.compute_accounts_root();
+
+        let cf_leaves = match self.db.cf_handle(CF_MERKLE_LEAVES) {
+            Some(handle) => handle,
+            None => return self.compute_accounts_root_full_scan(),
+        };
+
+        let mut leaves = std::collections::BTreeMap::<Vec<u8>, Hash>::new();
+        for item in self
+            .db
+            .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            if value.len() == 32 {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&value);
+                leaves.insert(key.to_vec(), Hash(bytes));
+            }
+        }
+
+        for (pubkey, account) in &batch.account_overlay {
+            if account.dormant {
+                leaves.remove(pubkey.0.as_slice());
+                continue;
+            }
+            match Self::serialized_account_value(account) {
+                Ok(value) => {
+                    leaves.insert(pubkey.0.to_vec(), Hash::hash_two_parts(&pubkey.0, &value));
+                }
+                Err(err) => tracing::warn!("Failed to overlay account in state root: {}", err),
+            }
+        }
+
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+
+        let ordered: Vec<Hash> = leaves.into_values().collect();
+        Self::merkle_root_from_leaves(&ordered)
+    }
+
+    fn compute_contract_storage_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        // Make sure canonical dirty markers have been folded into leaf cache.
+        let _ = self.compute_contract_storage_root();
+
+        let cf_leaves = match self.db.cf_handle(CF_CONTRACT_MERKLE_LEAVES) {
+            Some(handle) => handle,
+            None => return self.compute_contract_storage_root_full_scan(),
+        };
+
+        let mut leaves = std::collections::BTreeMap::<Vec<u8>, Hash>::new();
+        for item in self
+            .db
+            .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            if value.len() == 32 {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&value);
+                leaves.insert(key.to_vec(), Hash(bytes));
+            }
+        }
+
+        for (full_key, value) in &batch.contract_storage_overlay {
+            match value {
+                Some(value) => {
+                    leaves.insert(full_key.clone(), Hash::hash_two_parts(full_key, value));
+                }
+                None => {
+                    leaves.remove(full_key.as_slice());
+                }
+            }
+        }
+
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+
+        let ordered: Vec<Hash> = leaves.into_values().collect();
+        Self::merkle_root_from_leaves(&ordered)
+    }
+
+    fn compute_restrictions_root_for_batch(&self, batch: &StateBatch) -> Hash {
+        let cf = match self.db.cf_handle(CF_RESTRICTIONS) {
+            Some(cf) => cf,
+            None => return Hash::default(),
+        };
+        let mut leaves = std::collections::BTreeMap::<Vec<u8>, Hash>::new();
+        for item in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
+            let (key, value) = item;
+            leaves.insert(key.to_vec(), Hash::hash_two_parts(&key, &value));
+        }
+        for (id, record) in &batch.restriction_overlay {
+            match bincode::serialize(record) {
+                Ok(value) => {
+                    let key = id.to_be_bytes().to_vec();
+                    leaves.insert(key.clone(), Hash::hash_two_parts(&key, &value));
+                }
+                Err(err) => tracing::warn!("Failed to overlay restriction in state root: {}", err),
+            }
+        }
+        if leaves.is_empty() {
+            return Hash::default();
+        }
+        let ordered: Vec<Hash> = leaves.into_values().collect();
+        Self::merkle_root_from_leaves(&ordered)
+    }
+
     pub fn compute_stake_pool_hash(&self) -> Hash {
         match self.get_stake_pool() {
             Ok(pool) => pool.canonical_hash(),

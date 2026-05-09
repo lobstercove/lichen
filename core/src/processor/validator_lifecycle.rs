@@ -221,12 +221,14 @@ impl TxProcessor {
             .unwrap_or(0);
 
         if original_stake == 0 {
-            self.state.put_metadata(&offense_key, b"1").map_err(|e| {
-                format!(
-                    "SlashValidator: failed to persist idempotency marker: {}",
-                    e
-                )
-            })?;
+            if !self.is_speculative() {
+                self.state.put_metadata(&offense_key, b"1").map_err(|e| {
+                    format!(
+                        "SlashValidator: failed to persist idempotency marker: {}",
+                        e
+                    )
+                })?;
+            }
             return Ok(());
         }
 
@@ -266,12 +268,14 @@ impl TxProcessor {
             }
         }
 
-        self.state.put_metadata(&offense_key, b"1").map_err(|e| {
-            format!(
-                "SlashValidator: failed to persist idempotency marker: {}",
-                e
-            )
-        })?;
+        if !self.is_speculative() {
+            self.state.put_metadata(&offense_key, b"1").map_err(|e| {
+                format!(
+                    "SlashValidator: failed to persist idempotency marker: {}",
+                    e
+                )
+            })?;
+        }
 
         Ok(())
     }

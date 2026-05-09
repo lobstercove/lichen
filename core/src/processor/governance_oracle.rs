@@ -105,7 +105,15 @@ impl TxProcessor {
         }
         let signer_stake = stake_info.total_stake();
 
-        let current_slot = self.state.get_last_slot().unwrap_or(0);
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        if self.is_speculative() {
+            // Oracle attestation records and derived consensus prices are not
+            // part of the state-root commitment. Canonical replay persists
+            // them exactly once at commit; proposal execution only needs to
+            // validate that the attestation transaction is includable.
+            return Ok(());
+        }
+
         self.state.put_oracle_attestation(
             asset,
             &signer,

@@ -27,8 +27,7 @@ impl TxProcessor {
         let hex = Self::pubkey_to_hex(&caller);
         let identity_key = format!("id:{}", hex);
         if self
-            .state
-            .get_contract_storage(&lichenid_addr, identity_key.as_bytes())
+            .b_get_contract_storage(&lichenid_addr, identity_key.as_bytes())
             .ok()
             .flatten()
             .is_none()
@@ -484,7 +483,7 @@ impl TxProcessor {
         let key = format!("ach:{}:{:02}", hex, achievement_id);
         let key_bytes = key.as_bytes();
 
-        if let Ok(Some(_)) = self.state.get_contract_storage(lichenid_addr, key_bytes) {
+        if let Ok(Some(_)) = self.b_get_contract_storage(lichenid_addr, key_bytes) {
             return Ok(());
         }
 
@@ -496,8 +495,7 @@ impl TxProcessor {
         let count_key = format!("ach_count:{}", hex);
         let count_bytes = count_key.as_bytes();
         let prev = self
-            .state
-            .get_contract_storage(lichenid_addr, count_bytes)
+            .b_get_contract_storage(lichenid_addr, count_bytes)
             .ok()
             .flatten()
             .and_then(|d| {
@@ -526,8 +524,7 @@ impl TxProcessor {
         let key = format!("cont:{}:{}", hex, contribution_type);
         let key_bytes = key.as_bytes();
         let prev = self
-            .state
-            .get_contract_storage(lichenid_addr, key_bytes)
+            .b_get_contract_storage(lichenid_addr, key_bytes)
             .ok()
             .flatten()
             .and_then(|d| {

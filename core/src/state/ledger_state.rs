@@ -358,6 +358,67 @@ impl StateStore {
         }
     }
 
+    /// Get recent blocks via the slot index, newest first.
+    /// Pass `before_slot` to fetch the next page strictly before that slot.
+    pub fn get_recent_blocks(
+        &self,
+        limit: usize,
+        before_slot: Option<u64>,
+    ) -> Result<Vec<Block>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        let seek_key = before_slot.unwrap_or(u64::MAX).to_be_bytes().to_vec();
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let iter = self.db.iterator_cf_opt(
+            &slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
+        );
+
+        let mut blocks = Vec::with_capacity(limit);
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("Slot index iterator error: {}", e))?;
+
+            // CF_SLOTS also stores metadata such as last_slot/confirmed_slot.
+            if key.len() != 8 || value.len() != 32 {
+                continue;
+            }
+
+            let slot = u64::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| "Invalid slot index key".to_string())?,
+            );
+
+            if let Some(before) = before_slot {
+                if slot >= before {
+                    continue;
+                }
+            }
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(value.as_ref());
+            if let Some(block) = self.get_block(&Hash(hash_bytes))? {
+                blocks.push(block);
+            }
+
+            if blocks.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(blocks)
+    }
+
     /// Store a transaction
     pub fn put_transaction(&self, tx: &Transaction) -> Result<(), String> {
         let cf = self

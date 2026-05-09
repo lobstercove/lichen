@@ -287,6 +287,12 @@ pub struct StateBatch {
     /// In-memory overlay for accounts modified in this batch.
     /// Reads check here first, then fall through to on-disk state.
     account_overlay: std::collections::HashMap<Pubkey, Account>,
+    /// Transactions written in this batch, for duplicate detection during
+    /// multi-transaction speculative execution.
+    transaction_overlay: std::collections::HashSet<Hash>,
+    /// Contract storage overlay keyed by full storage key
+    /// (`program_pubkey || storage_key`). `None` represents a deletion.
+    contract_storage_overlay: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// In-memory overlay for stake pool (set on put, read on get)
     stake_pool_overlay: Option<crate::consensus::StakePool>,
     /// In-memory overlay for MossStake pool (set on put, read on get)
@@ -3005,6 +3011,39 @@ mod tests {
             state.get_block_by_slot(11).unwrap().unwrap().header.slot,
             11
         );
+    }
+
+    #[test]
+    fn test_get_recent_blocks_uses_slot_index_and_cursor() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        for slot in 1..=4 {
+            let block = make_test_block(slot);
+            state
+                .put_block_atomic(&block, Some(slot), Some(slot))
+                .unwrap();
+        }
+
+        let first = state.get_recent_blocks(2, None).unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|block| block.header.slot)
+                .collect::<Vec<_>>(),
+            vec![4, 3]
+        );
+
+        let second = state.get_recent_blocks(3, Some(3)).unwrap();
+        assert_eq!(
+            second
+                .iter()
+                .map(|block| block.header.slot)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+
+        assert!(state.get_recent_blocks(0, None).unwrap().is_empty());
     }
 
     #[test]

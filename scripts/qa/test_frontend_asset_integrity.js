@@ -247,6 +247,88 @@ function analyzeAssetRefs(portal, pagePath, refs, kind) {
     assert(uncoveredIgnoredAssets.length === 0, `${relativePage} has no undeclared gitignored local ${kind} refs`);
 }
 
+function extractFunctionBody(source, functionName) {
+    const signatureIndex = source.indexOf(`function ${functionName}(`);
+    if (signatureIndex === -1) return '';
+    const bodyStart = source.indexOf('{', signatureIndex);
+    if (bodyStart === -1) return '';
+
+    let depth = 0;
+    for (let i = bodyStart; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        if (source[i] === '}') depth--;
+        if (depth === 0) {
+            return source.slice(bodyStart + 1, i);
+        }
+    }
+    return '';
+}
+
+function validateMonitoringIncidentControls() {
+    const monitoringRoot = path.join(repoRoot, 'monitoring');
+    const html = fs.readFileSync(path.join(monitoringRoot, 'index.html'), 'utf8');
+    const js = fs.readFileSync(path.join(monitoringRoot, 'js', 'monitoring.js'), 'utf8');
+    const css = fs.readFileSync(path.join(monitoringRoot, 'css', 'monitoring.css'), 'utf8');
+
+    const fakeControlHtmlTokens = [
+        'killswitch',
+        'banList',
+        'Operator Actions',
+        'killswitchBanIpBtn',
+        'killswitchEmergencyShutdownBtn',
+    ];
+    assert(
+        fakeControlHtmlTokens.every((token) => !html.includes(token)),
+        'monitoring incident panel exposes no fake browser control buttons'
+    );
+
+    const fakeControlJsTokens = [
+        'killswitchBanIP',
+        'killswitchRateLimit',
+        'killswitchBlockMethod',
+        'killswitchFreezeAccount',
+        'killswitchEmergencyShutdown',
+        'killswitchDenyAll',
+        'showIncidentControlUnavailable',
+        'promptAdminToken',
+        'quickBan',
+        'quickThrottle',
+        'activeBans',
+        'addBan',
+        'removeBan',
+        'renderBans',
+        'data-remove-ban',
+    ];
+    assert(
+        fakeControlJsTokens.every((token) => !js.includes(token)),
+        'monitoring JavaScript has no placeholder incident mutations or local ban state'
+    );
+
+    const fakeControlCssTokens = [
+        '.killswitch',
+        '.ban-item',
+        '.ban-type',
+        '.ban-target',
+        '.attack-actions',
+        '.btn-xs',
+    ];
+    assert(
+        fakeControlCssTokens.every((token) => !css.includes(token)),
+        'monitoring CSS has no stale fake incident-control styles'
+    );
+
+    assert(
+        html.includes('incidentAuthorityGrid') && js.includes('updateIncidentAuthorityBoard'),
+        'monitoring incident panel is backed by live incident authority state'
+    );
+
+    const recentBlocksBody = extractFunctionBody(js, 'updateRecentBlocks');
+    assert(
+        recentBlocksBody.includes("rpc('getRecentBlocks'") && !/rpc\(['"]getBlock['"]/.test(recentBlocksBody),
+        'monitoring recent blocks use indexed getRecentBlocks instead of per-slot getBlock fanout'
+    );
+}
+
 console.log('\n── Frontend Asset Integrity ──');
 
 for (const portal of portals) {
@@ -260,6 +342,8 @@ for (const portal of portals) {
         analyzeAssetRefs(portal, pagePath, extractLinkRefs(html), 'link');
     }
 }
+
+validateMonitoringIncidentControls();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

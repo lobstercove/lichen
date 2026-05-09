@@ -62,6 +62,18 @@ pub struct TxResult {
     pub return_data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxProcessorMode {
+    Canonical,
+    Speculative,
+}
+
+/// Result of deterministic proposal execution against an in-memory batch.
+pub struct SpeculativeBlockExecution {
+    pub results: Vec<TxResult>,
+    pub batch: StateBatch,
+}
+
 /// Persistent transaction execution metadata stored in CF_TX_META.
 /// Extends the old 8-byte CU-only format with full contract result data.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
@@ -496,6 +508,7 @@ impl FeeConfig {
 pub struct TxProcessor {
     state: StateStore,
     batch: Mutex<Option<StateBatch>>,
+    mode: TxProcessorMode,
     #[allow(clippy::type_complexity)]
     contract_meta: Mutex<(Option<i64>, Vec<String>, u64, Vec<u8>)>,
     tx_compute_budget: Mutex<u64>,
@@ -508,11 +521,28 @@ impl TxProcessor {
         TxProcessor {
             state,
             batch: Mutex::new(None),
+            mode: TxProcessorMode::Canonical,
             contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
             tx_compute_budget: Mutex::new(0),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
+    }
+
+    pub fn new_speculative(state: StateStore) -> Self {
+        TxProcessor {
+            state,
+            batch: Mutex::new(None),
+            mode: TxProcessorMode::Speculative,
+            contract_meta: Mutex::new((None, Vec::new(), 0, Vec::new())),
+            tx_compute_budget: Mutex::new(0),
+            #[cfg(feature = "zk")]
+            zk_verifier: Mutex::new(crate::zk::Verifier::new()),
+        }
+    }
+
+    fn is_speculative(&self) -> bool {
+        self.mode == TxProcessorMode::Speculative
     }
 
     fn verify_transaction_signatures(tx: &Transaction) -> Result<(), String> {

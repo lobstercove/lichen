@@ -1395,45 +1395,6 @@ body {
     white-space: nowrap;
 }
 
-.attack-actions {
-    display: flex;
-    gap: 0.3rem;
-}
-
-.btn-xs {
-    padding: 0.2rem 0.4rem;
-    font-size: 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xs);
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-xs:hover {
-    background: var(--bg-hover);
-    border-color: var(--text-muted);
-}
-
-.btn-xs.danger {
-    border-color: rgba(239, 71, 111, 0.4);
-    color: var(--danger);
-}
-
-.btn-xs.danger:hover {
-    background: rgba(239, 71, 111, 0.15);
-}
-
-.btn-xs.warning {
-    border-color: rgba(255, 210, 63, 0.4);
-    color: var(--warning);
-}
-
-.btn-xs.warning:hover {
-    background: rgba(255, 210, 63, 0.15);
-}
-
 .ir-section {
     margin-top: 1.5rem;
     padding-top: 1.5rem;
@@ -1462,115 +1423,48 @@ body {
     font-style: italic;
 }
 
-.ban-list {
-    max-height: 200px;
-    overflow-y: auto;
-}
-
-.ban-item {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    font-size: 0.8rem;
-}
-
-.ban-item:hover {
-    background: var(--bg-hover);
-}
-
-.ban-type {
-    font-size: 0.6rem;
-    font-weight: 800;
-    letter-spacing: 0.05em;
-    padding: 0.15rem 0.5rem;
-    border-radius: var(--radius-xs);
-    background: rgba(239, 71, 111, 0.2);
-    color: var(--danger);
-    white-space: nowrap;
-}
-
-.ban-type.throttle {
-    background: rgba(255, 210, 63, 0.2);
-    color: var(--warning);
-}
-
-.ban-type.deny-all {
-    background: rgba(239, 71, 111, 0.3);
-    color: #ff3366;
-}
-
-.ban-target {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    color: var(--text-primary);
-    font-weight: 600;
-}
-
-.ban-reason {
-    flex: 1;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-}
-
-.ban-time {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.72rem;
-    color: var(--text-muted);
-}
-
-.killswitch-grid {
+.incident-authority-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.75rem;
 }
 
-.killswitch {
+.incident-authority-card {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 1rem;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0.85rem 1rem;
     background: var(--bg-darker);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: all 0.2s;
-    font-size: 0.8rem;
-    font-weight: 600;
 }
 
-.killswitch i {
-    font-size: 1.4rem;
+.incident-authority-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--text-muted);
-    transition: color 0.2s;
 }
 
-.killswitch:hover {
-    background: var(--bg-hover);
-    border-color: var(--danger);
+.incident-authority-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    font-weight: 800;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
 }
 
-.killswitch:hover i {
-    color: var(--danger);
-}
-
-.killswitch.emergency {
-    border-color: rgba(239, 71, 111, 0.3);
-    background: rgba(239, 71, 111, 0.05);
-}
-
-.killswitch.emergency i {
-    color: var(--danger);
-}
-
-.killswitch.emergency:hover {
-    background: rgba(239, 71, 111, 0.15);
-    border-color: var(--danger);
-    box-shadow: 0 0 20px rgba(239, 71, 111, 0.2);
+.incident-authority-note {
+    margin-top: 0.75rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid rgba(239, 71, 111, 0.22);
+    border-radius: var(--radius-sm);
+    background: rgba(239, 71, 111, 0.04);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.5;
 }
 
 .panel-badge.pulse {
@@ -2226,7 +2120,8 @@ body {
     }
 
     .metric-card-grid--6,
-    .control-plane-grid {
+    .control-plane-grid,
+    .incident-authority-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -2254,7 +2149,8 @@ body {
     .mission-card-grid-4,
     .inline-mission-card-grid,
     .metric-card-grid--6,
-    .control-plane-grid {
+    .control-plane-grid,
+    .incident-authority-grid {
         grid-template-columns: 1fr;
     }
 }

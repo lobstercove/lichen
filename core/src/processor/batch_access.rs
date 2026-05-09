@@ -37,6 +37,15 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_has_transaction(&self, sig: &Hash) -> Result<bool, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.has_transaction(sig)
+        } else {
+            Ok(self.state.get_transaction(sig)?.is_some())
+        }
+    }
+
     /// Store full transaction metadata, peeking at contract_meta for return_code/data/logs.
     /// Used for both success and failure paths (outside of batches).
     pub(super) fn store_tx_meta(&self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
@@ -140,15 +149,36 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_get_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_contract_storage(program, storage_key)
+        } else {
+            self.state.get_contract_storage(program, storage_key)
+        }
+    }
+
     pub(super) fn b_load_contract_storage_map(
         &self,
         program: &Pubkey,
     ) -> Result<HashMap<Vec<u8>, Vec<u8>>, String> {
-        Ok(self
-            .state
-            .load_contract_storage_map(program)?
-            .into_iter()
-            .collect())
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            Ok(batch
+                .load_contract_storage_map(program)?
+                .into_iter()
+                .collect())
+        } else {
+            Ok(self
+                .state
+                .load_contract_storage_map(program)?
+                .into_iter()
+                .collect())
+        }
     }
 
     /// Delete contract storage key from CF_CONTRACT_STORAGE.

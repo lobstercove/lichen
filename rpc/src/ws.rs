@@ -171,6 +171,10 @@ const MAX_WS_CONNECTIONS: usize = 500;
 const WS_EVENT_CHANNEL_CAPACITY: usize = 4096;
 /// Bounded per-connection outbound queue. Slow consumers are disconnected once this fills.
 const WS_CONNECTION_QUEUE_CAPACITY: usize = 100;
+/// Governance WS storage polling only runs while the connection has a governance subscription.
+const WS_GOVERNANCE_SCAN_INTERVAL_MS: u64 = 500;
+/// Bound catch-up work per tick so a lagging connection cannot scan an unbounded slot range.
+const WS_GOVERNANCE_SCAN_MAX_SLOTS_PER_TICK: u64 = 256;
 
 fn ws_limit_response(status: u16, message: &'static str) -> Response {
     Response::builder()
@@ -383,6 +387,30 @@ impl SubscriptionManager {
         let mut subs = self.subscriptions.write().await;
         subs.remove(&id).is_some()
     }
+}
+
+async fn governance_subscription_ids(subscription_manager: &SubscriptionManager) -> Vec<u64> {
+    let subs = subscription_manager.subscriptions.read().await;
+    subs.iter()
+        .filter_map(|(sub_id, sub_type)| {
+            if matches!(sub_type, SubscriptionType::Governance) {
+                Some(*sub_id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn governance_scan_to_slot(next_scan_slot: u64, last_slot: u64) -> Option<u64> {
+    if next_scan_slot > last_slot {
+        return None;
+    }
+    Some(
+        next_scan_slot
+            .saturating_add(WS_GOVERNANCE_SCAN_MAX_SLOTS_PER_TICK.saturating_sub(1))
+            .min(last_slot),
+    )
 }
 
 /// WebSocket state
@@ -868,29 +896,26 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     let governance_subscription_manager = subscription_manager.clone();
     let governance_state = state.state.clone();
     let governance_event_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
+            WS_GOVERNANCE_SCAN_INTERVAL_MS,
+        ));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut next_scan_slot = governance_state.get_last_slot().unwrap_or(0);
+        let mut next_scan_slot = governance_state
+            .get_last_slot()
+            .unwrap_or(0)
+            .saturating_add(1);
         let mut delivered_keys: HashSet<String> = HashSet::new();
         let mut delivered_order: VecDeque<String> = VecDeque::new();
 
         loop {
             interval.tick().await;
 
-            let sub_ids: Vec<u64> = {
-                let subs = governance_subscription_manager.subscriptions.read().await;
-                subs.iter()
-                    .filter_map(|(sub_id, sub_type)| {
-                        if matches!(sub_type, SubscriptionType::Governance) {
-                            Some(*sub_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
+            let sub_ids = governance_subscription_ids(&governance_subscription_manager).await;
 
             if sub_ids.is_empty() {
+                if let Ok(last_slot) = governance_state.get_last_slot() {
+                    next_scan_slot = last_slot.saturating_add(1);
+                }
                 continue;
             }
 
@@ -898,8 +923,11 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 Ok(slot) => slot,
                 Err(_) => continue,
             };
+            let Some(scan_to_slot) = governance_scan_to_slot(next_scan_slot, last_slot) else {
+                continue;
+            };
 
-            for slot in next_scan_slot..=last_slot {
+            for slot in next_scan_slot..=scan_to_slot {
                 let events = match governance_state.get_events_by_slot(slot, 256) {
                     Ok(events) => events,
                     Err(_) => continue,
@@ -959,7 +987,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 }
             }
 
-            next_scan_slot = last_slot;
+            next_scan_slot = scan_to_slot.saturating_add(1);
         }
     });
 
@@ -2251,6 +2279,30 @@ mod tests {
         // Should succeed since we freed a slot
         let id2 = sm.subscribe(SubscriptionType::Blocks).await.unwrap();
         assert!(id2 > id);
+    }
+
+    #[tokio::test]
+    async fn governance_subscription_ids_filters_non_governance_subscriptions() {
+        let sm = SubscriptionManager::new();
+        sm.subscribe(SubscriptionType::Slots).await.unwrap();
+        let first_governance_id = sm.subscribe(SubscriptionType::Governance).await.unwrap();
+        sm.subscribe(SubscriptionType::Transactions).await.unwrap();
+        let second_governance_id = sm.subscribe(SubscriptionType::Governance).await.unwrap();
+
+        let mut ids = governance_subscription_ids(&sm).await;
+        ids.sort_unstable();
+
+        assert_eq!(ids, vec![first_governance_id, second_governance_id]);
+    }
+
+    #[test]
+    fn governance_scan_to_slot_skips_caught_up_and_bounds_catchup() {
+        assert_eq!(governance_scan_to_slot(10, 9), None);
+        assert_eq!(governance_scan_to_slot(10, 10), Some(10));
+        assert_eq!(
+            governance_scan_to_slot(10, 10 + WS_GOVERNANCE_SCAN_MAX_SLOTS_PER_TICK + 5),
+            Some(10 + WS_GOVERNANCE_SCAN_MAX_SLOTS_PER_TICK - 1)
+        );
     }
 
     // ── handle_subscription_request ──
