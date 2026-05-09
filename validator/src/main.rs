@@ -3226,9 +3226,9 @@ fn proposal_slot_delay_ms(
     state: &StateStore,
     parent_hash: &Hash,
     slot_duration_ms: u64,
-    last_block_time: Instant,
+    last_slot_start_time: Instant,
 ) -> u64 {
-    let cadence_delay = slot_cadence_remaining_ms(slot_duration_ms, last_block_time.elapsed());
+    let cadence_delay = slot_cadence_remaining_ms(slot_duration_ms, last_slot_start_time.elapsed());
     block_producer::wall_clock_safe_delay(state, parent_hash, cadence_delay)
 }
 
@@ -7753,10 +7753,15 @@ async fn run_validator() {
     let received_network_slots: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let received_network_slots_for_blocks = received_network_slots.clone();
 
-    // Track last block time for leader timeout handling
+    // Track committed/received block time for watchdog/readiness, and slot-start
+    // time for round-0 proposal cadence. These are intentionally separate:
+    // proposal spacing is measured from the prior slot start, not from the
+    // prior commit, so BFT vote latency does not get added to every slot.
     let last_block_time = Arc::new(Mutex::new(std::time::Instant::now()));
     let last_block_time_for_blocks = last_block_time.clone();
     let last_block_time_for_local = last_block_time.clone();
+    let last_slot_start_time = Arc::new(Mutex::new(std::time::Instant::now()));
+    let last_slot_start_time_for_local = last_slot_start_time.clone();
     let global_last_user_tx_activity = Arc::new(Mutex::new(std::time::Instant::now()));
     let global_last_user_tx_activity_for_blocks = global_last_user_tx_activity.clone();
 
@@ -14375,9 +14380,13 @@ async fn run_validator() {
     // If we're the proposer for round 0, arm the slot-cadence timer.
     {
         if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-            let last_block_time = *last_block_time_for_local.lock().await;
-            let delay_ms =
-                proposal_slot_delay_ms(&state, &parent_hash, slot_duration_ms, last_block_time);
+            let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
+            let delay_ms = proposal_slot_delay_ms(
+                &state,
+                &parent_hash,
+                slot_duration_ms,
+                last_slot_start_time,
+            );
             info!(
                 "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
                 start_height, delay_ms
@@ -14482,9 +14491,13 @@ async fn run_validator() {
             }
 
             if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                let last_block_time = *last_block_time_for_local.lock().await;
-                let delay_ms =
-                    proposal_slot_delay_ms(&state, &parent_hash, slot_duration_ms, last_block_time);
+                let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
+                let delay_ms = proposal_slot_delay_ms(
+                    &state,
+                    &parent_hash,
+                    slot_duration_ms,
+                    last_slot_start_time,
+                );
                 info!(
                     "👑 BFT: We are proposer for height={} round=0; proposing in {}ms",
                     new_height, delay_ms
@@ -14527,7 +14540,15 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
+                let proposal_height = proposal.height;
+                let proposal_round = proposal.round;
                 let action = bft.on_proposal(proposal, &height_vs, &height_pool);
+                if proposal_height == bft.height
+                    && proposal_round == 0
+                    && !matches!(&action, ConsensusAction::None)
+                {
+                    *last_slot_start_time_for_local.lock().await = std::time::Instant::now();
+                }
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -14640,69 +14661,72 @@ async fn run_validator() {
                 if bft.step == RoundStep::Propose
                     && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
                 {
-                        info!(
-                            "👑 BFT: We are proposer for height={} round={}",
-                            bft.height, bft.round
-                        );
-                        let mut mp = mempool.lock().await;
-                        let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
-                        let (mut block, _) = block_producer::build_block(
-                            &state,
-                            &mut mp,
-                            &processor,
-                            &proposal_staging_root,
-                            bft.height,
-                            parent_hash,
-                                &validator_pubkey,
-                                Vec::new(),
-                                2000,
-                                bft_ts,
-                            );
-                        drop(mp);
-                        block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
-                        block.sign(&validator_keypair);
-                        let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
-                        execute_consensus_actions(
-                            proposal_action,
-                            &bft,
-                            &mut consensus_wal,
-                            &state,
-                            &validator_set,
-                            &stake_pool,
-                            &vote_aggregator,
-                            &mempool,
-                            &processor,
-                            &finality_tracker,
-                            &p2p_peer_manager,
-                            &p2p_config,
-                            &ws_event_tx,
-                            &ws_dex_broadcaster,
-                            &shared_oracle_prices,
-                            &last_block_time_for_local,
-                            &mut last_dex_trade_count,
-                            &data_dir,
-                            &sync_manager,
-                            &mut parent_hash,
-                            slot_duration_ms,
-                            &validator_keypair,
-                            min_validator_stake,
-                            &block_apply_lock,
-                &bft_committing_slot,
-                        ).await;
-                        // Schedule timeout for post-proposal step
-                        timeout_handle = match bft.step {
-                            RoundStep::Prevote => Some((
-                                RoundStep::Prevote,
-                                bft.round,
-                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
-                            )),
-                            RoundStep::Precommit => Some((
-                                RoundStep::Precommit,
-                                bft.round,
-                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
-                            )),
-                            _ => None,
-                        };
+                    *last_slot_start_time_for_local.lock().await = std::time::Instant::now();
+                    info!(
+                        "👑 BFT: We are proposer for height={} round={}",
+                        bft.height, bft.round
+                    );
+                    let mut mp = mempool.lock().await;
+                    let bft_ts =
+                        compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
+                    let (mut block, _) = block_producer::build_block(
+                        &state,
+                        &mut mp,
+                        &processor,
+                        &proposal_staging_root,
+                        bft.height,
+                        parent_hash,
+                        &validator_pubkey,
+                        Vec::new(),
+                        2000,
+                        bft_ts,
+                    );
+                    drop(mp);
+                    block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                    block.sign(&validator_keypair);
+                    let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
+                    execute_consensus_actions(
+                        proposal_action,
+                        &bft,
+                        &mut consensus_wal,
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        &vote_aggregator,
+                        &mempool,
+                        &processor,
+                        &finality_tracker,
+                        &p2p_peer_manager,
+                        &p2p_config,
+                        &ws_event_tx,
+                        &ws_dex_broadcaster,
+                        &shared_oracle_prices,
+                        &last_block_time_for_local,
+                        &mut last_dex_trade_count,
+                        &data_dir,
+                        &sync_manager,
+                        &mut parent_hash,
+                        slot_duration_ms,
+                        &validator_keypair,
+                        min_validator_stake,
+                        &block_apply_lock,
+                        &bft_committing_slot,
+                    )
+                    .await;
+                    // Schedule timeout for post-proposal step.
+                    timeout_handle = match bft.step {
+                        RoundStep::Prevote => Some((
+                            RoundStep::Prevote,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                        )),
+                        RoundStep::Precommit => Some((
+                            RoundStep::Precommit,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                        )),
+                        _ => None,
+                    };
                 }
             }
 
@@ -14998,12 +15022,12 @@ async fn run_validator() {
                     .await;
 
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
-                        let last_block_time = *last_block_time_for_local.lock().await;
+                        let last_slot_start_time = *last_slot_start_time_for_local.lock().await;
                         let delay_ms = proposal_slot_delay_ms(
                             &state,
                             &parent_hash,
                             slot_duration_ms,
-                            last_block_time,
+                            last_slot_start_time,
                         );
                         propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
                             delay_ms,
