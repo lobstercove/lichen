@@ -65,6 +65,7 @@ class LichenRPC {
     // Block Operations
     async getBlock(slot) { return this.call('getBlock', [slot]); }
     async getLatestBlock() { return this.call('getLatestBlock'); }
+    async getRecentBlocks(options = {}) { return this.call('getRecentBlocks', [options]); }
     async getSlot() { return this.call('getSlot'); }
 
     // Transaction Operations
@@ -730,24 +731,12 @@ async function updateLatestBlocks() {
     if (!blocksTable) return;
 
     try {
-        const latestBlock = await rpc.getLatestBlock();
-        if (!latestBlock) {
+        const result = await rpc.getRecentBlocks({ limit: 10 });
+        const blocks = Array.isArray(result?.blocks) ? result.blocks : [];
+        if (blocks.length === 0) {
             blocksTable.innerHTML = '<tr><td colspan="5" style="text-align:center; color: var(--text-muted);">No blocks found</td></tr>';
             return;
         }
-
-        // Get last 10 blocks in parallel
-        const blocks = [latestBlock];
-        const currentSlot = latestBlock.slot;
-
-        const slotsToFetch = [];
-        for (let i = 1; i < 10 && (currentSlot - i) >= 0; i++) {
-            slotsToFetch.push(currentSlot - i);
-        }
-        const fetched = await Promise.all(
-            slotsToFetch.map(s => rpc.call('getBlock', [s]).catch(() => null))
-        );
-        fetched.forEach(b => { if (b) blocks.push(b); });
 
         // Render blocks
         blocksTable.innerHTML = blocks.map(block => `

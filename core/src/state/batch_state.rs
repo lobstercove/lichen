@@ -19,6 +19,8 @@ impl StateStore {
         StateBatch {
             batch: WriteBatch::default(),
             account_overlay: std::collections::HashMap::new(),
+            transaction_overlay: std::collections::HashSet::new(),
+            contract_storage_overlay: std::collections::HashMap::new(),
             stake_pool_overlay: None,
             mossstake_pool_overlay: None,
             new_accounts: 0,
@@ -136,6 +138,47 @@ impl StateStore {
 }
 
 impl StateBatch {
+    /// Clone the logical contents of a batch for speculative execution.
+    ///
+    /// RocksDB `WriteBatch` is not `Clone`, but it exposes a stable serialized
+    /// representation. Proposal execution uses this to create per-transaction
+    /// savepoints without touching canonical state.
+    pub fn clone_for_speculative(&self) -> Self {
+        Self {
+            batch: WriteBatch::from_data(self.batch.data()),
+            account_overlay: self.account_overlay.clone(),
+            transaction_overlay: self.transaction_overlay.clone(),
+            contract_storage_overlay: self.contract_storage_overlay.clone(),
+            stake_pool_overlay: self.stake_pool_overlay.clone(),
+            mossstake_pool_overlay: self.mossstake_pool_overlay.clone(),
+            new_accounts: self.new_accounts,
+            active_account_delta: self.active_account_delta,
+            burned_delta: self.burned_delta,
+            minted_delta: self.minted_delta,
+            nft_token_id_overlay: self.nft_token_id_overlay.clone(),
+            symbol_overlay: self.symbol_overlay.clone(),
+            spent_nullifier_overlay: self.spent_nullifier_overlay.clone(),
+            shielded_commitment_overlay: self.shielded_commitment_overlay.clone(),
+            shielded_pool_overlay: self.shielded_pool_overlay.clone(),
+            governed_proposal_overlay: self.governed_proposal_overlay.clone(),
+            governed_proposal_counter: self.governed_proposal_counter,
+            governed_transfer_volume_overlay: self.governed_transfer_volume_overlay.clone(),
+            governance_proposal_overlay: self.governance_proposal_overlay.clone(),
+            governance_proposal_counter: self.governance_proposal_counter,
+            pending_governance_change_overlay: self.pending_governance_change_overlay.clone(),
+            restriction_overlay: self.restriction_overlay.clone(),
+            restriction_target_index_overlay: self.restriction_target_index_overlay.clone(),
+            restriction_code_hash_index_overlay: self.restriction_code_hash_index_overlay.clone(),
+            restriction_counter: self.restriction_counter,
+            contract_deploy_nonce_overlay: self.contract_deploy_nonce_overlay.clone(),
+            new_programs: self.new_programs,
+            event_seq: self.event_seq,
+            dirty_contract_keys: self.dirty_contract_keys.clone(),
+            archive_slot: self.archive_slot,
+            db: Arc::clone(&self.db),
+        }
+    }
+
     /// B-7: Check symbol registry against both batch overlay and committed state.
     pub fn symbol_exists(&self, symbol: &str) -> Result<bool, String> {
         let normalized = StateStore::normalize_symbol(symbol)?;
@@ -431,7 +474,22 @@ impl StateBatch {
         bincode::serialize_into(&mut value, tx)
             .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
         self.batch.put_cf(&cf, sig.0, &value);
+        self.transaction_overlay.insert(sig);
         Ok(())
+    }
+
+    pub fn has_transaction(&self, sig: &Hash) -> Result<bool, String> {
+        if self.transaction_overlay.contains(sig) {
+            return Ok(true);
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, sig.0)
+            .map(|value| value.is_some())
+            .map_err(|e| format!("Database error: {}", e))
     }
 
     pub fn put_tx_meta(&mut self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
@@ -696,6 +754,8 @@ impl StateBatch {
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
         self.batch.put_cf(&cf, &key, value);
+        self.contract_storage_overlay
+            .insert(key.clone(), Some(value.to_vec()));
         self.dirty_contract_keys.push(key);
         Ok(())
     }
@@ -713,8 +773,68 @@ impl StateBatch {
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
         self.batch.delete_cf(&cf, &key);
+        self.contract_storage_overlay.insert(key.clone(), None);
         self.dirty_contract_keys.push(key);
         Ok(())
+    }
+
+    pub fn get_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+
+        if let Some(value) = self.contract_storage_overlay.get(&key) {
+            return Ok(value.clone());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, &key)
+            .map_err(|e| format!("Database error: {}", e))
+    }
+
+    pub fn load_contract_storage_map(&self, program: &Pubkey) -> Result<KvEntries, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let prefix = program.0.to_vec();
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        );
+        let mut entries = std::collections::BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        for item in iter.flatten() {
+            let (key, value) = item;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            entries.insert(key[32..].to_vec(), value.to_vec());
+        }
+
+        for (full_key, value) in &self.contract_storage_overlay {
+            if !full_key.starts_with(&program.0) {
+                continue;
+            }
+            let storage_key = full_key[32..].to_vec();
+            match value {
+                Some(value) => {
+                    entries.insert(storage_key, value.clone());
+                }
+                None => {
+                    entries.remove(&storage_key);
+                }
+            }
+        }
+
+        Ok(entries.into_iter().collect())
     }
 
     pub fn update_token_balance(

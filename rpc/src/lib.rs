@@ -76,6 +76,12 @@ use lru::LruCache;
 const TX_LIST_MAX_DB_READS: usize = 600;
 const TX_LIST_DB_READS_PER_TX_ESTIMATE: usize = 4;
 const TX_LIST_MAX_LIMIT: usize = TX_LIST_MAX_DB_READS / TX_LIST_DB_READS_PER_TX_ESTIMATE;
+// Explorer block lists should use the slot index directly instead of fanning
+// out into one getBlock call per visible row.
+const BLOCK_LIST_MAX_DB_READS: usize = 600;
+const BLOCK_LIST_DB_READS_PER_BLOCK_ESTIMATE: usize = 2;
+const BLOCK_LIST_MAX_LIMIT: usize =
+    BLOCK_LIST_MAX_DB_READS / BLOCK_LIST_DB_READS_PER_BLOCK_ESTIMATE;
 const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
 const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
 const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
@@ -85,6 +91,9 @@ const LIVE_SIGNED_METADATA_SOURCE_RPC: &str = "live-rpc";
 const SOLANA_SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
 const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
+const RPC_STALE_BLOCK_SECS: u64 = 120;
+const RPC_DISK_CRITICAL_USED_PCT: u64 = 95;
+const RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// P9-RPC-02: Maximum size for transaction wire deserialization.
 /// Prevents OOM/DoS from maliciously large payloads and matches the core
@@ -1333,6 +1342,219 @@ fn now_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiskReadiness {
+    available_bytes: u64,
+    total_bytes: u64,
+    used_percent: u64,
+    critical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RpcReadiness {
+    status: &'static str,
+    reason: &'static str,
+    slot: u64,
+    block_age_secs: Option<u64>,
+    disk: Option<DiskReadiness>,
+}
+
+impl RpcReadiness {
+    fn is_ready(&self) -> bool {
+        self.status == "ok"
+    }
+}
+
+fn disk_readiness_from_counts(
+    block_size: u64,
+    blocks_total: u64,
+    blocks_available: u64,
+) -> Option<DiskReadiness> {
+    if block_size == 0 || blocks_total == 0 {
+        return None;
+    }
+
+    let total_bytes = blocks_total.saturating_mul(block_size);
+    if total_bytes == 0 {
+        return None;
+    }
+
+    let available_bytes = blocks_available.saturating_mul(block_size).min(total_bytes);
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
+    let used_percent = used_bytes.saturating_mul(100) / total_bytes;
+    let critical = used_percent >= RPC_DISK_CRITICAL_USED_PCT
+        || available_bytes < RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES;
+
+    Some(DiskReadiness {
+        available_bytes,
+        total_bytes,
+        used_percent,
+        critical,
+    })
+}
+
+#[cfg(unix)]
+fn disk_readiness_for_path(path: &Path) -> Option<DiskReadiness> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+
+    let stat = unsafe { stat.assume_init() };
+    let block_size = if stat.f_frsize > 0 {
+        stat.f_frsize
+    } else {
+        stat.f_bsize
+    };
+
+    disk_readiness_from_counts(block_size, stat.f_blocks as u64, stat.f_bavail as u64)
+}
+
+#[cfg(not(unix))]
+fn disk_readiness_for_path(_path: &Path) -> Option<DiskReadiness> {
+    None
+}
+
+fn rpc_disk_readiness(state: &RpcState) -> Option<DiskReadiness> {
+    state
+        .data_dir_path
+        .as_deref()
+        .and_then(disk_readiness_for_path)
+}
+
+fn rpc_readiness(state: &RpcState) -> RpcReadiness {
+    let slot = state.state.get_last_slot().unwrap_or(0);
+    let block_age_secs = state
+        .state
+        .get_block_by_slot(slot)
+        .ok()
+        .flatten()
+        .map(|block| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(block.header.timestamp)
+        });
+
+    let mut readiness = if slot == 0 {
+        RpcReadiness {
+            status: "behind",
+            reason: "no_tip",
+            slot,
+            block_age_secs,
+            disk: None,
+        }
+    } else if block_age_secs.is_none() {
+        RpcReadiness {
+            status: "behind",
+            reason: "tip_block_missing",
+            slot,
+            block_age_secs,
+            disk: None,
+        }
+    } else if block_age_secs.unwrap_or(0) > RPC_STALE_BLOCK_SECS {
+        RpcReadiness {
+            status: "behind",
+            reason: "stale_tip",
+            slot,
+            block_age_secs,
+            disk: None,
+        }
+    } else {
+        RpcReadiness {
+            status: "ok",
+            reason: "ok",
+            slot,
+            block_age_secs,
+            disk: None,
+        }
+    };
+
+    readiness.disk = rpc_disk_readiness(state);
+    if readiness.disk.as_ref().is_some_and(|disk| disk.critical) {
+        readiness.status = "degraded";
+        readiness.reason = "disk_critical";
+    }
+
+    readiness
+}
+
+fn rpc_readiness_json(state: &RpcState) -> serde_json::Value {
+    let readiness = rpc_readiness(state);
+    let mut payload = serde_json::json!({
+        "status": readiness.status,
+        "reason": readiness.reason,
+        "slot": readiness.slot,
+    });
+
+    if let Some(block_age_secs) = readiness.block_age_secs {
+        payload["block_age_secs"] = serde_json::json!(block_age_secs);
+    }
+    if let Some(disk) = readiness.disk {
+        payload["disk"] = serde_json::json!({
+            "available_bytes": disk.available_bytes,
+            "total_bytes": disk.total_bytes,
+            "used_percent": disk.used_percent,
+            "critical": disk.critical,
+        });
+    }
+
+    payload
+}
+
+fn rpc_unready_error(state: &RpcState) -> Option<RpcError> {
+    let readiness = rpc_readiness(state);
+    if readiness.is_ready() {
+        return None;
+    }
+
+    let message = match readiness.reason {
+        "disk_critical" => {
+            if let Some(disk) = readiness.disk {
+                format!(
+                    "RPC node is not ready: disk free space is critical ({}% used, {} bytes available)",
+                    disk.used_percent, disk.available_bytes
+                )
+            } else {
+                "RPC node is not ready: disk free space is critical".to_string()
+            }
+        }
+        "stale_tip" => format!(
+            "RPC node is not ready: local tip is stale at slot {} (age {}s)",
+            readiness.slot,
+            readiness.block_age_secs.unwrap_or(0)
+        ),
+        "tip_block_missing" => format!(
+            "RPC node is not ready: tip block is missing at slot {}",
+            readiness.slot
+        ),
+        "no_tip" => "RPC node is not ready: no local tip is available".to_string(),
+        reason => format!("RPC node is not ready: {}", reason),
+    };
+
+    Some(RpcError {
+        code: -32050,
+        message,
+    })
+}
+
+fn method_allowed_when_rpc_unready(method: &str) -> bool {
+    matches!(
+        method,
+        "health" | "getHealth" | "getIncidentStatus" | "getServiceFleetStatus" | "getVersion"
+    )
+}
+
+fn solana_method_allowed_when_rpc_unready(method: &str) -> bool {
+    matches!(method, "getHealth" | "getVersion")
+}
+
 fn write_json_file_atomic<T: Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2082,6 +2304,8 @@ struct RpcState {
     state: StateStore,
     /// Channel to send transactions to mempool
     tx_sender: Option<mpsc::Sender<Transaction>>,
+    /// Filesystem path for the hot state store, used by readiness checks.
+    data_dir_path: Option<PathBuf>,
     /// P2P network (optional, for peer count queries)
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     /// Stake pool (optional, for staking queries)
@@ -2659,6 +2883,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getTransaction"
         | "getTransactionProof"
         | "getRecentTransactions"
+        | "getRecentBlocks"
         | "getBlock"
         | "getBlockCommit"
         | "getLatestBlock"
@@ -4137,6 +4362,7 @@ pub async fn start_rpc_server(
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
     treasury_keypair: Option<TreasuryKeypair>,
+    data_dir_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_rpc_router_internal(
         state,
@@ -4152,6 +4378,7 @@ pub async fn start_rpc_server(
         dex_broadcaster,
         prediction_broadcaster,
         treasury_keypair,
+        data_dir_path,
     );
 
     let addr = format!("0.0.0.0:{}", port);
@@ -4202,6 +4429,7 @@ pub fn build_rpc_router(
         dex_broadcaster,
         prediction_broadcaster,
         treasury_keypair,
+        None,
     )
 }
 
@@ -4234,6 +4462,7 @@ pub fn build_rpc_router_with_min_validator_stake(
         dex_broadcaster,
         prediction_broadcaster,
         treasury_keypair,
+        None,
     )
 }
 
@@ -4252,6 +4481,7 @@ fn build_rpc_router_internal(
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
     treasury_keypair: Option<TreasuryKeypair>,
+    data_dir_path: Option<PathBuf>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
     let legacy_admin_rpc_enabled = allow_legacy_admin_rpc(&chain_id, &network_id);
@@ -4309,6 +4539,7 @@ fn build_rpc_router_internal(
     let rpc_state = RpcState {
         state,
         tx_sender,
+        data_dir_path,
         p2p,
         stake_pool,
         live_validator_set,
@@ -4539,6 +4770,17 @@ async fn handle_rpc(
     // Capture auth header as owned String for admin handlers
     let auth_header_owned: Option<String> = auth_header.map(String::from);
 
+    if !method_allowed_when_rpc_unready(&req.method) {
+        if let Some(error) = rpc_unready_error(&state) {
+            return jsonrpc_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                request_id,
+                error.code,
+                error.message,
+            );
+        }
+    }
+
     // Route to appropriate handler
     let result = match req.method.as_str() {
         // Basic queries (canonical Lichen endpoints)
@@ -4549,6 +4791,7 @@ async fn handle_rpc(
         "getBlockCommit" => handle_get_block_commit(&state, req.params).await,
         "getAccountProof" => handle_get_account_proof(&state, req.params).await,
         "getLatestBlock" => handle_get_latest_block(&state).await,
+        "getRecentBlocks" => handle_get_recent_blocks(&state, req.params).await,
         "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
         "getTransactionProof" => handle_get_transaction_proof(&state, req.params).await,
@@ -4572,25 +4815,7 @@ async fn handle_rpc(
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
-        "health" | "getHealth" => {
-            // GX-07: Check block staleness — return 503-equivalent if stalled
-            let slot = state.state.get_last_slot().unwrap_or(0);
-            let stale = if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let age = now.saturating_sub(block.header.timestamp);
-                age > 120 // stale if no block in 2 minutes
-            } else {
-                slot == 0 // stale if no blocks at all
-            };
-            if stale {
-                Ok(serde_json::json!({"status": "behind", "slot": slot}))
-            } else {
-                Ok(serde_json::json!({"status": "ok", "slot": slot}))
-            }
-        }
+        "health" | "getHealth" => Ok(rpc_readiness_json(&state)),
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
@@ -4928,6 +5153,17 @@ async fn handle_solana_rpc(
         Err(response) => return response,
     };
 
+    if !solana_method_allowed_when_rpc_unready(&req.method) {
+        if let Some(error) = rpc_unready_error(&state) {
+            return jsonrpc_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                req.id.clone(),
+                error.code,
+                error.message,
+            );
+        }
+    }
+
     let result = match req.method.as_str() {
         "getLatestBlockhash" => handle_solana_get_latest_blockhash(&state).await,
         "getRecentBlockhash" => handle_solana_get_latest_blockhash(&state).await,
@@ -4948,24 +5184,7 @@ async fn handle_solana_rpc(
         "getTokenAccountBalance" => {
             handle_solana_get_token_account_balance(&state, req.params).await
         }
-        "getHealth" => {
-            let slot = state.state.get_last_slot().unwrap_or(0);
-            let stale = if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let age = now.saturating_sub(block.header.timestamp);
-                age > 120
-            } else {
-                slot == 0
-            };
-            if stale {
-                Ok(serde_json::json!({"status": "behind", "slot": slot}))
-            } else {
-                Ok(serde_json::json!({"status": "ok", "slot": slot}))
-            }
-        }
+        "getHealth" => Ok(rpc_readiness_json(&state)),
         "getVersion" => Ok(
             serde_json::json!({"solana-core": format!("lichen-{}", state.version), "feature-set": 0}),
         ),
@@ -5575,6 +5794,21 @@ async fn handle_get_account_at_slot(
             ),
         }),
     }
+}
+
+fn block_summary_json(block: &lichen_core::Block) -> serde_json::Value {
+    let block_hash = block.hash();
+    serde_json::json!({
+        "slot": block.header.slot,
+        "hash": block_hash.to_hex(),
+        "commit_round": block.commit_round,
+        "parent_hash": block.header.parent_hash.to_hex(),
+        "state_root": block.header.state_root.to_hex(),
+        "tx_root": block.header.tx_root.to_hex(),
+        "timestamp": block.header.timestamp,
+        "validator": Pubkey(block.header.validator).to_base58(),
+        "transaction_count": block.transactions.len(),
+    })
 }
 
 /// Get block
@@ -8567,6 +8801,57 @@ async fn handle_solana_get_token_account_balance(
     }))
 }
 
+/// Get recent block summaries using the slot index.
+/// params: [{ limit?, before_slot? }]  or  []
+async fn handle_get_recent_blocks(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let opts = params
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first());
+
+    let requested_limit = opts
+        .and_then(|v| v.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .min(500) as usize;
+    let limit = requested_limit.clamp(1, BLOCK_LIST_MAX_LIMIT);
+
+    let before_slot = opts
+        .and_then(|v| v.get("before_slot"))
+        .and_then(|v| v.as_u64());
+
+    let fetch_limit = limit.saturating_add(1);
+    let indexed = state
+        .state
+        .get_recent_blocks(fetch_limit, before_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
+    let next_before_slot = if has_more {
+        page_items.last().map(|block| block.header.slot)
+    } else {
+        None
+    };
+    let blocks: Vec<serde_json::Value> = page_items.iter().map(block_summary_json).collect();
+
+    Ok(serde_json::json!({
+        "blocks": blocks,
+        "has_more": has_more,
+        "next_before_slot": next_before_slot,
+    }))
+}
+
 /// Get latest block
 async fn handle_get_latest_block(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let slot = state.state.get_last_slot().map_err(|e| RpcError {
@@ -8580,19 +8865,7 @@ async fn handle_get_latest_block(state: &RpcState) -> Result<serde_json::Value, 
     })?;
 
     match block {
-        Some(block) => {
-            let block_hash = block.hash();
-            Ok(serde_json::json!({
-                "slot": block.header.slot,
-                "hash": block_hash.to_hex(),
-                "parent_hash": block.header.parent_hash.to_hex(),
-                "state_root": block.header.state_root.to_hex(),
-                "tx_root": block.header.tx_root.to_hex(),
-                "timestamp": block.header.timestamp,
-                "validator": Pubkey(block.header.validator).to_base58(),
-                "transaction_count": block.transactions.len(),
-            }))
-        }
+        Some(block) => Ok(block_summary_json(&block)),
         None => Err(RpcError {
             code: -32001,
             message: "Latest block not found".to_string(),
@@ -18991,8 +19264,8 @@ mod tests {
     use super::{
         bridge_access_message, classify_evm_method_tier, classify_method,
         classify_solana_method_tier, clear_privileged_rpc_mutation_test_sink, constant_time_eq,
-        decode_contract_result_u64, encode_readonly_return_data_b64, encode_rpc_response,
-        filter_signatures_for_address, get_cached_program_list_response,
+        decode_contract_result_u64, disk_readiness_from_counts, encode_readonly_return_data_b64,
+        encode_rpc_response, filter_signatures_for_address, get_cached_program_list_response,
         handle_build_ban_code_hash_tx, handle_build_extend_restriction_tx,
         handle_build_lift_restriction_tx, handle_build_pause_bridge_route_tx,
         handle_build_quarantine_contract_tx, handle_build_restrict_account_asset_tx,
@@ -19008,23 +19281,27 @@ mod tests {
         handle_get_code_hash_restriction_status, handle_get_contract_info,
         handle_get_contract_lifecycle_status, handle_get_governance_events,
         handle_get_incident_status, handle_get_program, handle_get_program_stats,
-        handle_get_restriction, handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_list_active_restrictions,
-        handle_list_restrictions, handle_set_fee_config, handle_solana_get_account_info,
-        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
-        live_signed_metadata_source_rpc, parse_bridge_access_auth, parse_get_block_slot_param,
+        handle_get_recent_blocks, handle_get_restriction, handle_get_restriction_status,
+        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
+        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
+        handle_solana_get_account_info, handle_solana_get_token_account_balance,
+        handle_solana_get_token_accounts_by_owner, live_signed_metadata_source_rpc,
+        method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
         pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
-        strip_admin_token_from_params, validate_incoming_transaction_limits,
-        validate_solana_encoding, validate_solana_transaction_details, verify_admin_auth,
-        verify_bridge_access_auth_at, AirdropCooldowns, MethodTier, RateLimiter, RpcError,
-        RpcResponse, RpcState, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        PROGRAM_LIST_CACHE_TTL_MS, SOLANA_SPL_TOKEN_PROGRAM_ID, SOLANA_TOKEN_ACCOUNT_SPACE,
-        SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
+        rpc_readiness, rpc_readiness_json, rpc_unready_error,
+        solana_method_allowed_when_rpc_unready, strip_admin_token_from_params,
+        validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
+        AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
+        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS, PROGRAM_LIST_CACHE_TTL_MS,
+        RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES, SOLANA_SPL_TOKEN_PROGRAM_ID,
+        SOLANA_TOKEN_ACCOUNT_SPACE, SYSTEM_PROPOSE_GOVERNANCE_ACTION_IX,
     };
     use axum::{
+        body::{to_bytes, Body},
         extract::State,
-        http::{HeaderMap, Method},
+        http::{HeaderMap, Method, Request, StatusCode},
         routing::post,
         Json, Router,
     };
@@ -19036,16 +19313,18 @@ mod tests {
     use lichen_core::keypair_file::KeypairFile;
     use lichen_core::{
         consensus::{ValidatorInfo, ValidatorSet},
-        Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord, RestrictionStatus,
-        RestrictionTarget, StateStore, SymbolRegistryEntry, Transaction, SYSTEM_PROGRAM_ID,
+        Block, Hash, Pubkey, RestrictionMode, RestrictionReason, RestrictionRecord,
+        RestrictionStatus, RestrictionTarget, StateStore, SymbolRegistryEntry, Transaction,
+        SYSTEM_PROGRAM_ID,
     };
     use lru::LruCache;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tempfile::tempdir;
     use tokio::sync::{Mutex as TokioMutex, RwLock};
+    use tower::ServiceExt;
 
     fn make_test_rpc_state_with_program_cache_capacity(
         state: StateStore,
@@ -19054,6 +19333,7 @@ mod tests {
         RpcState {
             state,
             tx_sender: None,
+            data_dir_path: None,
             p2p: None,
             stake_pool: None,
             live_validator_set: None,
@@ -19094,6 +19374,195 @@ mod tests {
 
     fn make_test_rpc_state(state: StateStore) -> RpcState {
         make_test_rpc_state_with_program_cache_capacity(state, 16)
+    }
+
+    fn current_unix_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    fn put_tip_block_with_timestamp(state: &StateStore, slot: u64, timestamp: u64) {
+        let block = Block::new_with_timestamp(
+            slot,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            timestamp,
+        );
+        state
+            .put_block_atomic(&block, Some(slot), Some(slot))
+            .expect("put tip block");
+    }
+
+    #[tokio::test]
+    async fn rpc_get_recent_blocks_uses_slot_index_and_cursor() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        for slot in 1..=4 {
+            put_tip_block_with_timestamp(&state, slot, 1_700_000_000 + slot);
+        }
+
+        let rpc_state = make_test_rpc_state(state);
+        let first = handle_get_recent_blocks(&rpc_state, Some(serde_json::json!([{ "limit": 2 }])))
+            .await
+            .unwrap();
+        let first_slots = first["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["slot"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(first_slots, vec![4, 3]);
+        assert_eq!(first["next_before_slot"].as_u64(), Some(3));
+        assert_eq!(first["has_more"].as_bool(), Some(true));
+        assert!(first["blocks"][0].get("transactions").is_none());
+
+        let second = handle_get_recent_blocks(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 2, "before_slot": 3 }])),
+        )
+        .await
+        .unwrap();
+        let second_slots = second["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["slot"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(second_slots, vec![2, 1]);
+        assert_eq!(second["has_more"].as_bool(), Some(false));
+        assert!(second["next_before_slot"].is_null());
+    }
+
+    #[test]
+    fn rpc_disk_readiness_flags_full_or_low_space_filesystems() {
+        let full = disk_readiness_from_counts(4096, 100, 4).expect("disk stats");
+        assert_eq!(full.used_percent, 96);
+        assert!(full.critical);
+
+        let low_available = disk_readiness_from_counts(
+            1024 * 1024 * 1024,
+            100,
+            (RPC_DISK_CRITICAL_MIN_AVAILABLE_BYTES / (1024 * 1024 * 1024)).saturating_sub(1),
+        )
+        .expect("disk stats");
+        assert!(low_available.critical);
+
+        let healthy = disk_readiness_from_counts(1024 * 1024 * 1024, 100, 20).expect("disk stats");
+        assert_eq!(healthy.used_percent, 80);
+        assert!(!healthy.critical);
+    }
+
+    #[tokio::test]
+    async fn rpc_readiness_reports_ok_for_fresh_tip() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        put_tip_block_with_timestamp(&state, 7, current_unix_secs());
+
+        let rpc_state = make_test_rpc_state(state);
+        let readiness = rpc_readiness(&rpc_state);
+        assert_eq!(readiness.status, "ok");
+        assert_eq!(readiness.reason, "ok");
+        assert!(rpc_unready_error(&rpc_state).is_none());
+
+        let payload = rpc_readiness_json(&rpc_state);
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["slot"], 7);
+    }
+
+    #[tokio::test]
+    async fn rpc_readiness_fails_closed_for_stale_tip() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        put_tip_block_with_timestamp(&state, 42, current_unix_secs().saturating_sub(121));
+
+        let rpc_state = make_test_rpc_state(state);
+        let readiness = rpc_readiness(&rpc_state);
+        assert_eq!(readiness.status, "behind");
+        assert_eq!(readiness.reason, "stale_tip");
+        assert_eq!(readiness.slot, 42);
+        assert!(readiness.block_age_secs.unwrap_or(0) >= 121);
+
+        let error = rpc_unready_error(&rpc_state).expect("stale node should fail closed");
+        assert_eq!(error.code, -32050);
+        assert!(error.message.contains("local tip is stale"));
+
+        assert!(method_allowed_when_rpc_unready("getHealth"));
+        assert!(method_allowed_when_rpc_unready("getServiceFleetStatus"));
+        assert!(!method_allowed_when_rpc_unready("getSlot"));
+        assert!(solana_method_allowed_when_rpc_unready("getHealth"));
+        assert!(!solana_method_allowed_when_rpc_unready("getSlot"));
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatch_fails_closed_for_stale_regular_methods() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        put_tip_block_with_timestamp(&state, 42, current_unix_secs().saturating_sub(121));
+
+        let app = super::build_rpc_router(
+            state,
+            None,
+            None,
+            None,
+            "lichen-test".to_string(),
+            "local-testnet".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let stale_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let stale_body = to_bytes(stale_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let stale_json: serde_json::Value = serde_json::from_slice(&stale_body).unwrap();
+        assert_eq!(stale_json["error"]["code"], -32050);
+        assert!(stale_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("local tip is stale"));
+
+        let health_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":2,"method":"getHealth","params":[]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health_response.status(), StatusCode::OK);
+        let health_body = to_bytes(health_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health_json: serde_json::Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_json["result"]["status"], "behind");
+        assert_eq!(health_json["result"]["reason"], "stale_tip");
     }
 
     #[tokio::test]
@@ -21742,6 +22211,7 @@ mod tests {
         let rpc_state = make_test_rpc_state(state);
 
         let restriction_id = put_active_bridge_route_pause(&rpc_state.state, "solana", "sol");
+        put_tip_block_with_timestamp(&rpc_state.state, 19, current_unix_secs());
 
         let rpc_url = spawn_mock_server(
             Router::new()
@@ -22982,6 +23452,7 @@ mod tests {
         rpc_state.custody_url = Some(custody_url);
         rpc_state.custody_auth_token = Some("test-auth-token".to_string());
         rpc_state.incident_status_path = Some(status_path);
+        put_tip_block_with_timestamp(&rpc_state.state, 1, current_unix_secs());
 
         let rpc_url = spawn_mock_server(
             Router::new()

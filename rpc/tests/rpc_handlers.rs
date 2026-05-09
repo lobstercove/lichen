@@ -4,7 +4,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use lichen_core::{
-    contract::ContractAccount, Account, Pubkey, StateStore, SymbolRegistryEntry,
+    contract::ContractAccount, Account, Block, Hash, Pubkey, StateStore, SymbolRegistryEntry,
     CONTRACT_PROGRAM_ID,
 };
 use lichen_rpc::build_rpc_router;
@@ -12,6 +12,28 @@ use serde_json::json;
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn put_ready_tip(state: &StateStore, slot: u64) {
+    assert!(slot > 0, "ready RPC fixtures must have a non-genesis tip");
+    let block = Block::new_with_timestamp(
+        slot,
+        Hash::default(),
+        state.compute_state_root(),
+        [0u8; 32],
+        Vec::new(),
+        current_unix_secs(),
+    );
+    state
+        .put_block_atomic(&block, Some(slot), Some(slot))
+        .expect("put ready tip");
+}
 
 async fn rpc_call(app: &axum::Router, path: &str, method: &str) -> RpcResult {
     let payload = json!({
@@ -81,6 +103,7 @@ async fn rpc_call_with_params(
 fn create_test_app() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     // Leak the tempdir so it isn't deleted while the app exists
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
@@ -302,6 +325,7 @@ fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
             .put_contract_storage(&lichenid_program, key, value)
             .expect("put CF storage");
     }
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state,
@@ -392,6 +416,7 @@ async fn test_get_contract_info_includes_registry_profile_metadata() {
             },
         )
         .expect("register symbol");
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state,

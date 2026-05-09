@@ -81,7 +81,6 @@ const cadenceTracker = {
     head: null,
     validators: new Map(),
 };
-const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
 const wsProbe = {
     socket: null,
     reconnectTimer: null,
@@ -762,6 +761,8 @@ function resetMonitoringCaches() {
     ecosystemMonitorLoaded = false;
     controlPlaneMonitorLoaded = false;
     controlPlaneMonitorLoadedAt = 0;
+    incidentAuthorityLoaded = false;
+    incidentAuthorityLoadedAt = 0;
     missionControlExpansionLoaded = false;
     missionControlExpansionLoadedAt = 0;
     lastRpcLatencyMs = null;
@@ -1083,6 +1084,11 @@ async function refresh() {
         // ─ Threat Detection ─
         detectThreats(metrics, probes);
 
+        // ─ Incident Authority ─
+        if (!incidentAuthorityLoaded || Date.now() - incidentAuthorityLoadedAt >= CONTRACT_REFRESH_MS) {
+            await updateIncidentAuthorityBoard();
+        }
+
         // ─ Recent Blocks ─
         await updateRecentBlocks(slot);
 
@@ -1310,13 +1316,6 @@ function bindStaticControls() {
             setTPSRange(button.dataset.tpsRange, event);
         });
     });
-
-    document.getElementById('killswitchBanIpBtn')?.addEventListener('click', killswitchBanIP);
-    document.getElementById('killswitchRateLimitBtn')?.addEventListener('click', killswitchRateLimit);
-    document.getElementById('killswitchBlockMethodBtn')?.addEventListener('click', killswitchBlockMethod);
-    document.getElementById('killswitchFreezeAccountBtn')?.addEventListener('click', killswitchFreezeAccount);
-    document.getElementById('killswitchEmergencyShutdownBtn')?.addEventListener('click', killswitchEmergencyShutdown);
-    document.getElementById('killswitchDenyAllBtn')?.addEventListener('click', killswitchDenyAll);
 }
 
 // ── Recent Blocks ───────────────────────────────────────────
@@ -1326,22 +1325,15 @@ let displayedBlocks = [];
 async function updateRecentBlocks(currentSlot) {
     if (!currentSlot || currentSlot < 1) return;
 
-    const newBlocks = [];
-    for (let s = currentSlot; s > Math.max(0, currentSlot - 10); s--) {
-        if (displayedBlocks.find(b => b.slot === s)) continue;
-        const block = await rpc('getBlock', [s]);
-        if (block && !block.code) {
-            newBlocks.push({
-                slot: s,
-                hash: block.hash || block.blockhash || '--',
-                txCount: block.transactions?.length || block.transaction_count || 0,
-                time: block.timestamp || block.blockTime || 0,
-            });
-        }
-    }
-
-    if (newBlocks.length > 0) {
-        displayedBlocks = [...newBlocks, ...displayedBlocks].slice(0, 20);
+    const envelope = await rpc('getRecentBlocks', [{ limit: 20 }]).catch(() => null);
+    const blocks = Array.isArray(envelope?.blocks) ? envelope.blocks : [];
+    if (blocks.length > 0) {
+        displayedBlocks = blocks.map(block => ({
+            slot: Number(block.slot || 0),
+            hash: block.hash || block.blockhash || '--',
+            txCount: block.transaction_count ?? block.txCount ?? block.transactions?.length ?? 0,
+            time: block.timestamp || block.blockTime || 0,
+        })).filter(block => block.slot > 0);
         renderBlocks();
     }
 }
@@ -1400,7 +1392,6 @@ async function updateContracts(force = false) {
 // ── Incident Response Engine ────────────────────────────────
 
 let threats = [];
-let activeBans = [];
 let threatStats = { critical: 0, high: 0, medium: 0, low: 0 };
 let lastThreatCheck = 0;
 
@@ -1491,99 +1482,51 @@ function clearThreats() {
     updateThreatLevel();
 }
 
-// ── Kill Switches ───────────────────────────────────────────
-// AUDIT-FIX I8-01 / P0-7: All admin actions require per-action authentication
-// via admin_token. Tokens are never persisted in browser storage.
+function incidentStatusHasEnforcement(status) {
+    const enforcement = status?.enforcement;
+    if (!enforcement || typeof enforcement !== 'object') return false;
+    return Object.values(enforcement).some((value) => {
+        if (Array.isArray(value)) return value.length > 0;
+        if (value && typeof value === 'object') return Object.keys(value).length > 0;
+        return Boolean(value);
+    });
+}
+
+async function updateIncidentAuthorityBoard() {
+    const status = await rpc('getIncidentStatus').catch(() => null);
+
+    if (!status) {
+        setText('incidentAuthorityMode', '--');
+        setText('incidentAuthoritySeverity', '--');
+        setText('incidentAuthorityMutations', 'SERVER');
+        setText('incidentAuthorityUpdated', '--');
+        setText('incidentAuthorityNote', 'Incident status RPC is unavailable.');
+        incidentAuthorityLoaded = false;
+        incidentAuthorityLoadedAt = Date.now();
+        return;
+    }
+
+    const mode = String(status.mode || 'unknown').toUpperCase();
+    const severity = String(status.severity || 'info').toUpperCase();
+    const updated = status.updated_at ? formatDateTime(status.updated_at) : 'Manifest default';
+    const mutationState = incidentStatusHasEnforcement(status) ? 'RPC ENFORCED' : 'SERVER ONLY';
+    const note = status.summary || status.headline || 'No incident-response mode is active.';
+
+    setText('incidentAuthorityMode', mode);
+    setText('incidentAuthoritySeverity', severity);
+    setText('incidentAuthorityMutations', mutationState);
+    setText('incidentAuthorityUpdated', updated);
+    setText('incidentAuthorityNote', note);
+    incidentAuthorityLoaded = true;
+    incidentAuthorityLoadedAt = Date.now();
+}
 
 function purgeLegacyAdminToken() {
     try {
-        sessionStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
+        sessionStorage.removeItem('lichen_admin_token');
     } catch (e) {
         // Ignore storage access failures.
     }
-}
-
-function promptAdminToken(actionLabel) {
-    const label = actionLabel ? ` for ${actionLabel}` : '';
-    const token = prompt(`Admin authentication required${label}.\nEnter admin token:`);
-    const normalized = String(token || '').trim();
-    return normalized || null;
-}
-
-function showIncidentControlUnavailable(actionLabel) {
-    const label = actionLabel || 'This incident control';
-    showAlert(`${label} is not exposed by production RPC. Use an authorized server-side operations path instead.`);
-}
-
-async function killswitchBanIP() {
-    showIncidentControlUnavailable('Ban IP');
-}
-
-async function killswitchRateLimit() {
-    showIncidentControlUnavailable('Throttle');
-}
-
-async function killswitchBlockMethod() {
-    showIncidentControlUnavailable('Block Method');
-}
-
-async function killswitchFreezeAccount() {
-    showIncidentControlUnavailable('Freeze Account');
-}
-
-async function killswitchEmergencyShutdown() {
-    showIncidentControlUnavailable('Emergency Stop');
-}
-
-async function killswitchDenyAll() {
-    showIncidentControlUnavailable('Deny All');
-}
-
-function quickBan(source) {
-    if (!source || source === 'System' || source === 'Network') return;
-    showIncidentControlUnavailable('Threat-log ban');
-}
-
-function quickThrottle(source) {
-    if (!source || source === 'System' || source === 'Network') return;
-    showIncidentControlUnavailable('Threat-log throttle');
-}
-
-function addBan(type, target, reason) {
-    activeBans.unshift({ type, target, reason, time: now(), timestamp: Date.now() });
-    renderBans();
-}
-
-function removeBan(index) {
-    const ban = activeBans[index];
-    if (!ban) return;
-    activeBans.splice(index, 1);
-    renderBans();
-    addEvent('info', 'unlock', `Removed restriction: ${ban.target}`);
-}
-
-function renderBans() {
-    const el = document.getElementById('banList');
-    if (!el) return;
-    if (activeBans.length === 0) {
-        el.innerHTML = '<div class="ir-empty">No active restrictions</div>';
-        return;
-    }
-    // F17.3 fix: escape user-supplied ban target/reason + use data-attributes for removeBan
-    el.innerHTML = activeBans.map((b, i) => `
-        <div class="ban-item">
-            <span class="ban-type ${escapeHtml(b.type)}">${escapeHtml(b.type.toUpperCase())}</span>
-            <span class="ban-target">${escapeHtml(b.target)}</span>
-            <span class="ban-reason">${escapeHtml(b.reason)}</span>
-            <span class="ban-time">${escapeHtml(b.time)}</span>
-            <button class="btn-xs" data-remove-ban="${i}" title="Remove">
-                <i class="fas fa-times"></i>
-            </button>
-        </div>
-    `).join('');
-    el.querySelectorAll('[data-remove-ban]').forEach(btn => {
-        btn.addEventListener('click', () => removeBan(parseInt(btn.dataset.removeBan, 10)));
-    });
 }
 
 // ── Threat Detection ────────────────────────────────────────
@@ -2457,6 +2400,8 @@ async function updateEcosystemMonitor() {
 
 let controlPlaneMonitorLoaded = false;
 let controlPlaneMonitorLoadedAt = 0;
+let incidentAuthorityLoaded = false;
+let incidentAuthorityLoadedAt = 0;
 
 async function updateControlPlaneMonitor() {
     const badge = document.getElementById('controlPlaneBadge');

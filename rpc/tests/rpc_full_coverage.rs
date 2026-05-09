@@ -32,6 +32,28 @@ const TEST_BEARER_ADMIN_TOKEN: &str = "Bearer test-admin-token";
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn put_ready_tip(state: &StateStore, slot: u64) {
+    assert!(slot > 0, "ready RPC fixtures must have a non-genesis tip");
+    let block = Block::new_with_timestamp(
+        slot,
+        Hash::default(),
+        state.compute_state_root(),
+        [0u8; 32],
+        Vec::new(),
+        current_unix_secs(),
+    );
+    state
+        .put_block_atomic(&block, Some(slot), Some(slot))
+        .expect("put ready tip");
+}
+
 async fn rpc(app: &axum::Router, path: &str, method: &str) -> RpcResult {
     rpc_p(app, path, method, json!([])).await
 }
@@ -109,6 +131,7 @@ async fn rest_get(app: &axum::Router, path: &str) -> RpcResult {
 fn fresh_app() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
         state,
@@ -128,6 +151,7 @@ fn fresh_app() -> axum::Router {
 fn fresh_app_with_min_validator_stake(min_validator_stake: u64) -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     let stake_pool = StakePool::new();
     build_rpc_router_with_min_validator_stake(
@@ -155,6 +179,7 @@ fn fresh_app_with_runtime_settings(
     state
         .set_fee_config_full(&fee_config)
         .expect("set fee config");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     let stake_pool = StakePool::new();
     build_rpc_router_with_min_validator_stake(
@@ -176,6 +201,7 @@ fn fresh_app_with_runtime_settings(
 fn public_network_app_with_admin_token() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     // Test fixture only. Production admin tokens come from runtime config,
     // never from committed test sources.
@@ -197,6 +223,7 @@ fn public_network_app_with_admin_token() -> axum::Router {
 fn dev_network_app_with_admin_token() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     // Test fixture only. Production admin tokens come from runtime config,
     // never from committed test sources.
@@ -220,13 +247,13 @@ fn app_with_consensus_oracle_prices() -> axum::Router {
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
 
-    state.set_last_slot(100).expect("set slot");
     state
         .put_oracle_consensus_price("LICN", 12_500_000, 8, 95, 3)
         .expect("put LICN oracle price");
     state
         .put_oracle_consensus_price("wSOL", 14_875_000_000, 8, 96, 3)
         .expect("put wSOL oracle price");
+    put_ready_tip(&state, 100);
 
     build_rpc_router(
         state,
@@ -284,6 +311,8 @@ fn app_with_state() -> (axum::Router, String) {
             },
         )
         .expect("register");
+
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state,
@@ -582,8 +611,8 @@ async fn test_native_health() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "health").await.unwrap();
     assert_valid_rpc(&resp);
-    // Fresh app has no blocks (slot 0) → health correctly reports "behind"
-    assert_eq!(resp["result"]["status"], "behind");
+    assert_eq!(resp["result"]["status"], "ok");
+    assert_eq!(resp["result"]["slot"], 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2785,7 +2814,7 @@ fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
 
     let validator = Pubkey([8u8; 32]);
     let validator_b58 = validator.to_base58();
-    state.set_last_slot(123_456).expect("set slot");
+    put_ready_tip(&state, 123_456);
 
     let mut stake_pool = StakePool::new();
     let mut stake_info = StakeInfo::with_bootstrap_index(validator, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
@@ -3467,13 +3496,13 @@ async fn test_solana_get_health_is_ok() {
     let app = fresh_app();
     let resp = rpc(&app, "/solana-compat", "getHealth").await.unwrap();
     assert_valid_rpc(&resp);
-    // Fresh state with no blocks reports as behind with slot 0
     let result = &resp["result"];
     assert!(
         result.get("status").is_some(),
         "getHealth should return status object"
     );
-    assert_eq!(result["slot"], 0);
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["slot"], 1);
 }
 
 // ── Solana getVersion returns version info ───────────────────────────────────
@@ -4381,6 +4410,7 @@ async fn test_native_get_account_at_slot_not_found() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     state.set_archive_mode(true);
+    put_ready_tip(&state, 10);
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
         state,
@@ -4416,6 +4446,7 @@ async fn test_native_get_account_at_slot_found() {
     let pk = Pubkey([0x42; 32]);
     let acc = Account::new(5, Pubkey([0u8; 32])); // 5 LICN = 5_000_000_000 spores
     state.put_account_snapshot(&pk, &acc, 100).unwrap();
+    put_ready_tip(&state, 100);
 
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
@@ -4445,6 +4476,7 @@ async fn test_native_get_account_at_slot_missing_params() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     state.set_archive_mode(true);
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
         state,
@@ -4489,7 +4521,7 @@ async fn test_send_transaction_wire_envelope() {
     let mut sender = lichen_core::Account::new(100, pk);
     sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
-    let _ = state.set_last_slot(1);
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state.clone(),
@@ -4557,7 +4589,7 @@ async fn test_send_transaction_raw_bincode() {
     let mut sender = lichen_core::Account::new(100, pk);
     sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
-    let _ = state.set_last_slot(1);
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state.clone(),
@@ -4620,7 +4652,7 @@ async fn test_simulate_transaction_wire_envelope() {
     let mut sender = lichen_core::Account::new(100, pk);
     sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
-    let _ = state.set_last_slot(1);
+    put_ready_tip(&state, 1);
 
     let app = build_rpc_router(
         state.clone(),

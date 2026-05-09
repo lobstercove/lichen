@@ -22,6 +22,14 @@ impl TxProcessor {
         self.batch.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
+    fn set_active_batch(&self, batch: StateBatch) {
+        *self.batch.lock().unwrap_or_else(|e| e.into_inner()) = Some(batch);
+    }
+
+    fn take_active_batch(&self) -> Option<StateBatch> {
+        self.batch.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
     /// Process a transaction.
     pub fn process_transaction(&self, tx: &Transaction, _validator: &Pubkey) -> TxResult {
         self.process_transaction_inner(tx, _validator, None)
@@ -60,7 +68,16 @@ impl TxProcessor {
         }
 
         let tx_hash = tx.hash();
-        if let Ok(Some(_)) = self.state.get_transaction(&tx_hash) {
+        let already_processed = if self.is_speculative() {
+            self.b_has_transaction(&tx_hash).unwrap_or(false)
+        } else {
+            self.state
+                .get_transaction(&tx_hash)
+                .ok()
+                .flatten()
+                .is_some()
+        };
+        if already_processed {
             return self.make_result(
                 false,
                 0,
@@ -137,15 +154,33 @@ impl TxProcessor {
             }
         }
 
-        self.begin_batch();
+        if self.is_speculative() {
+            if self
+                .batch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+            {
+                return self.make_result(
+                    false,
+                    total_fee,
+                    Some("Speculative execution requires an active state batch".to_string()),
+                    0,
+                );
+            }
+        } else {
+            self.begin_batch();
+        }
 
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
-            if let Err(e2) = self.state.put_transaction(tx) {
-                tracing::error!("Failed to store failed TX after rent error: {e2}");
-            }
-            if let Err(e2) = self.store_tx_meta(&tx.signature(), 0) {
-                tracing::error!("Failed to store TX meta after rent error: {e2}");
+            if !self.is_speculative() {
+                if let Err(e2) = self.state.put_transaction(tx) {
+                    tracing::error!("Failed to store failed TX after rent error: {e2}");
+                }
+                if let Err(e2) = self.store_tx_meta(&tx.signature(), 0) {
+                    tracing::error!("Failed to store TX meta after rent error: {e2}");
+                }
             }
             return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)), 0);
         }
@@ -153,11 +188,13 @@ impl TxProcessor {
         let native_cu = compute_units_for_tx(tx);
         if native_cu > compute_budget {
             self.rollback_batch();
-            if let Err(e) = self.state.put_transaction(tx) {
-                tracing::error!("Failed to store failed TX after CU budget exceeded: {e}");
-            }
-            if let Err(e) = self.store_tx_meta(&tx.signature(), native_cu) {
-                tracing::error!("Failed to store TX meta after CU budget exceeded: {e}");
+            if !self.is_speculative() {
+                if let Err(e) = self.state.put_transaction(tx) {
+                    tracing::error!("Failed to store failed TX after CU budget exceeded: {e}");
+                }
+                if let Err(e) = self.store_tx_meta(&tx.signature(), native_cu) {
+                    tracing::error!("Failed to store TX meta after CU budget exceeded: {e}");
+                }
             }
             return self.make_result(
                 false,
@@ -176,17 +213,19 @@ impl TxProcessor {
                 self.rollback_batch();
 
                 let premium = Self::compute_premium_fee(tx, &fee_config);
-                if premium > 0 {
+                if !self.is_speculative() && premium > 0 {
                     if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
                         tracing::error!("Failed to refund deploy premium: {}", refund_err);
                     }
                 }
 
-                if let Err(e2) = self.state.put_transaction(tx) {
-                    tracing::error!("Failed to store failed TX after execution error: {e2}");
-                }
-                if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
-                    tracing::error!("Failed to store TX meta after execution error: {e2}");
+                if !self.is_speculative() {
+                    if let Err(e2) = self.state.put_transaction(tx) {
+                        tracing::error!("Failed to store failed TX after execution error: {e2}");
+                    }
+                    if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
+                        tracing::error!("Failed to store TX meta after execution error: {e2}");
+                    }
                 }
 
                 let actual_fee = total_fee.saturating_sub(premium);
@@ -207,11 +246,15 @@ impl TxProcessor {
 
                 if total_cu > compute_budget {
                     self.rollback_batch();
-                    if let Err(e) = self.state.put_transaction(tx) {
-                        tracing::error!("Failed to store failed TX after WASM CU exceeded: {e}");
-                    }
-                    if let Err(e) = self.store_tx_meta(&tx.signature(), total_cu) {
-                        tracing::error!("Failed to store TX meta after WASM CU exceeded: {e}");
+                    if !self.is_speculative() {
+                        if let Err(e) = self.state.put_transaction(tx) {
+                            tracing::error!(
+                                "Failed to store failed TX after WASM CU exceeded: {e}"
+                            );
+                        }
+                        if let Err(e) = self.store_tx_meta(&tx.signature(), total_cu) {
+                            tracing::error!("Failed to store TX meta after WASM CU exceeded: {e}");
+                        }
                     }
                     return self.make_result(
                         false,
@@ -231,21 +274,23 @@ impl TxProcessor {
                 self.rollback_batch();
 
                 let premium = Self::compute_premium_fee(tx, &fee_config);
-                if premium > 0 {
+                if !self.is_speculative() && premium > 0 {
                     if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
                         tracing::error!("Failed to refund deploy premium: {}", refund_err);
                     }
                 }
 
-                if let Err(e2) = self.state.put_transaction(tx) {
-                    tracing::error!(
-                        "Failed to store failed TX after governance validation error: {e2}"
-                    );
-                }
-                if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
-                    tracing::error!(
-                        "Failed to store TX meta after governance validation error: {e2}"
-                    );
+                if !self.is_speculative() {
+                    if let Err(e2) = self.state.put_transaction(tx) {
+                        tracing::error!(
+                            "Failed to store failed TX after governance validation error: {e2}"
+                        );
+                    }
+                    if let Err(e2) = self.store_tx_meta(&tx.signature(), total_cu) {
+                        tracing::error!(
+                            "Failed to store TX meta after governance validation error: {e2}"
+                        );
+                    }
                 }
 
                 let actual_fee = total_fee.saturating_sub(premium);
@@ -265,7 +310,7 @@ impl TxProcessor {
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
             let premium = Self::compute_premium_fee(tx, &fee_config);
-            if premium > 0 {
+            if !self.is_speculative() && premium > 0 {
                 if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
                     tracing::error!("Failed to refund deploy premium: {}", refund_err);
                 }
@@ -283,24 +328,64 @@ impl TxProcessor {
             tracing::error!("Failed to store TX meta in commit batch: {e}");
         }
 
-        if let Err(e) = self.commit_batch() {
-            self.rollback_batch();
-            let premium = Self::compute_premium_fee(tx, &fee_config);
-            if premium > 0 {
-                if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
-                    tracing::error!("Failed to refund deploy premium: {}", refund_err);
+        if !self.is_speculative() {
+            if let Err(e) = self.commit_batch() {
+                self.rollback_batch();
+                let premium = Self::compute_premium_fee(tx, &fee_config);
+                if premium > 0 {
+                    if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                        tracing::error!("Failed to refund deploy premium: {}", refund_err);
+                    }
                 }
+                let actual_fee = total_fee.saturating_sub(premium);
+                return self.make_result(
+                    false,
+                    actual_fee,
+                    Some(format!("Atomic commit failed: {}", e)),
+                    total_cu,
+                );
             }
-            let actual_fee = total_fee.saturating_sub(premium);
-            return self.make_result(
-                false,
-                actual_fee,
-                Some(format!("Atomic commit failed: {}", e)),
-                total_cu,
-            );
         }
 
         self.make_result(true, total_fee, None, total_cu)
+    }
+
+    /// Deterministically execute a proposal candidate against an in-memory
+    /// batch. Canonical RocksDB is not mutated; successful transaction effects
+    /// are accumulated in the returned batch and failed transaction effects are
+    /// discarded via per-transaction savepoints.
+    pub fn process_transactions_speculative(
+        &self,
+        txs: &[Transaction],
+        validator: &Pubkey,
+    ) -> SpeculativeBlockExecution {
+        let cached_blockhashes: HashSet<Hash> = self
+            .state
+            .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let mut cumulative = self.state.begin_batch();
+        let mut results = Vec::with_capacity(txs.len());
+        for tx in txs {
+            let child = cumulative.clone_for_speculative();
+            self.set_active_batch(child);
+            let result = self.process_transaction_inner(tx, validator, Some(&cached_blockhashes));
+            if result.success {
+                if let Some(updated) = self.take_active_batch() {
+                    cumulative = updated;
+                }
+            } else {
+                let _ = self.take_active_batch();
+            }
+            results.push(result);
+        }
+
+        SpeculativeBlockExecution {
+            results,
+            batch: cumulative,
+        }
     }
 
     /// Process multiple transactions in parallel where possible.
@@ -309,6 +394,12 @@ impl TxProcessor {
         txs: &[Transaction],
         validator: &Pubkey,
     ) -> Vec<TxResult> {
+        if self.is_speculative() {
+            return self
+                .process_transactions_speculative(txs, validator)
+                .results;
+        }
+
         let cached_blockhashes: HashSet<Hash> = self
             .state
             .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
@@ -997,7 +1088,23 @@ impl TxProcessor {
             }
         }
 
-        self.begin_batch();
+        if self.is_speculative() {
+            if self
+                .batch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+            {
+                return self.make_result(
+                    false,
+                    fee_paid,
+                    Some("Speculative EVM execution requires an active state batch".to_string()),
+                    0,
+                );
+            }
+        } else {
+            self.begin_batch();
+        }
 
         if let Err(e) = self.b_put_evm_tx(&record) {
             self.rollback_batch();
@@ -1051,14 +1158,16 @@ impl TxProcessor {
             );
         }
 
-        if let Err(e) = self.commit_batch() {
-            self.rollback_batch();
-            return self.make_result(
-                false,
-                fee_paid,
-                Some(format!("Atomic commit failed: {}", e)),
-                0,
-            );
+        if !self.is_speculative() {
+            if let Err(e) = self.commit_batch() {
+                self.rollback_batch();
+                return self.make_result(
+                    false,
+                    fee_paid,
+                    Some(format!("Atomic commit failed: {}", e)),
+                    0,
+                );
+            }
         }
 
         self.make_result(

@@ -26,6 +26,30 @@ type RpcResult = Result<serde_json::Value, String>;
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn put_ready_tip(state: &StateStore, slot: u64) -> Hash {
+    assert!(slot > 0, "ready RPC fixtures must have a non-genesis tip");
+    let block = Block::new_with_timestamp(
+        slot,
+        Hash::default(),
+        state.compute_state_root(),
+        [0u8; 32],
+        Vec::new(),
+        current_unix_secs(),
+    );
+    let hash = block.hash();
+    state
+        .put_block_atomic(&block, Some(slot), Some(slot))
+        .expect("put ready tip");
+    hash
+}
+
 async fn rpc_call(app: &axum::Router, method: &str) -> RpcResult {
     rpc_call_with_params(app, method, json!([])).await
 }
@@ -101,6 +125,7 @@ async fn rest_post(app: &axum::Router, path: &str, body_json: serde_json::Value)
 fn create_empty_app() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
         state,
@@ -154,6 +179,7 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
     state
         .put_shielded_pool_state(&pool_state)
         .expect("put pool state");
+    put_ready_tip(&state, 1);
 
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
@@ -188,15 +214,7 @@ fn create_submission_harness() -> ShieldedSubmissionHarness {
     sender_account.spendable = sender_account.spores;
     state.put_account(&sender_pubkey, &sender_account).unwrap();
 
-    let block = Block::new_with_timestamp(
-        1,
-        Hash::default(),
-        Hash::hash(b"shielded-submission-state"),
-        sender_pubkey.0,
-        vec![],
-        1,
-    );
-    state.put_block_atomic(&block, Some(1), Some(1)).unwrap();
+    let recent_blockhash = put_ready_tip(&state, 1);
 
     let (tx_sender, mempool_rx) = mpsc::channel(4);
 
@@ -219,7 +237,7 @@ fn create_submission_harness() -> ShieldedSubmissionHarness {
         app,
         mempool_rx,
         sender_keypair,
-        recent_blockhash: block.hash(),
+        recent_blockhash,
     }
 }
 
@@ -1042,6 +1060,7 @@ async fn test_merkle_proof_roundtrip_verification() {
 
 /// Helper: create a test app from an existing StateStore (for processor→RPC tests).
 fn create_app_from_state(state: StateStore) -> axum::Router {
+    put_ready_tip(&state, 1);
     build_rpc_router(
         state,
         None,

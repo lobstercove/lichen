@@ -1293,10 +1293,26 @@
                 </div>
 
                 <div class="ir-section">
-                    <h4 class="ir-section-title"><i class="fas fa-toolbox"></i> Operator Actions</h4>
-                    <div class="ir-empty" id="banList">
-                        Monitoring is read-only on production networks. Use SSH or the validator CLI for bans, throttles,
-                        account freezes, and shutdown procedures.
+                    <h4 class="ir-section-title"><i class="fas fa-shield-halved"></i> Incident Authority</h4>
+                    <div class="incident-authority-grid" id="incidentAuthorityGrid">
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Mode</span>
+                            <span class="incident-authority-value" id="incidentAuthorityMode">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Severity</span>
+                            <span class="incident-authority-value" id="incidentAuthoritySeverity">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Mutations</span>
+                            <span class="incident-authority-value" id="incidentAuthorityMutations">SERVER</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Updated</span>
+                            <span class="incident-authority-value" id="incidentAuthorityUpdated">--</span>
+                        </div>
+                    </div>
+                    <div class="incident-authority-note" id="incidentAuthorityNote">Loading incident authority state...
                     </div>
                 </div>
             </div>

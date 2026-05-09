@@ -1,6 +1,6 @@
 [package]
 name = "lichen-rpc"
-version = "0.5.21"
+version = "0.5.22"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen JSON-RPC server"
@@ -30,6 +30,7 @@ rmp-serde = "1.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.10"

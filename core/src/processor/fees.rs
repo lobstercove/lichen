@@ -146,6 +146,10 @@ impl TxProcessor {
         total_fee: u64,
         priority_fee: u64,
     ) -> Result<(), String> {
+        if self.is_speculative() {
+            return self.charge_fee_with_priority_in_batch(payer, total_fee, priority_fee);
+        }
+
         // Fee charging is a hidden shared-state update: every transaction debits
         // a payer and usually credits the treasury before instruction execution.
         // Keep this guard across the full read-modify-write, including the final
@@ -215,6 +219,66 @@ impl TxProcessor {
         Ok(())
     }
 
+    fn charge_fee_with_priority_in_batch(
+        &self,
+        payer: &Pubkey,
+        total_fee: u64,
+        priority_fee: u64,
+    ) -> Result<(), String> {
+        let mut payer_account = self
+            .b_get_account(payer)?
+            .ok_or_else(|| "Payer account not found".to_string())?;
+
+        payer_account.deduct_spendable(total_fee)?;
+
+        let fee_config = self
+            .state
+            .get_fee_config()
+            .unwrap_or_else(|_| FeeConfig::default_from_constants());
+
+        let base_portion = total_fee.saturating_sub(priority_fee);
+        let base_burn = (base_portion as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+        let base_producer =
+            (base_portion as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
+        let base_voters =
+            (base_portion as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
+        let base_community =
+            (base_portion as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
+        let base_allocated = base_burn
+            .saturating_add(base_producer)
+            .saturating_add(base_voters)
+            .saturating_add(base_community);
+        let base_treasury = base_portion.saturating_sub(base_allocated);
+
+        let priority_burn = priority_fee / 2;
+        let priority_producer = priority_fee.saturating_sub(priority_burn);
+
+        let burn_amount = base_burn.saturating_add(priority_burn);
+        let total_to_treasury = base_treasury
+            .saturating_add(base_producer)
+            .saturating_add(base_voters)
+            .saturating_add(base_community)
+            .saturating_add(priority_producer);
+        let capped_to_treasury =
+            std::cmp::min(total_to_treasury, total_fee.saturating_sub(burn_amount));
+
+        self.b_put_account(payer, &payer_account)?;
+
+        if capped_to_treasury > 0 {
+            let treasury_pubkey = self
+                .state
+                .get_treasury_pubkey()?
+                .ok_or_else(|| "Treasury pubkey not set".to_string())?;
+            let mut treasury = self
+                .b_get_account(&treasury_pubkey)?
+                .unwrap_or_else(|| Account::new(0, treasury_pubkey));
+            treasury.add_spendable(capped_to_treasury)?;
+            self.b_put_account(&treasury_pubkey, &treasury)?;
+        }
+
+        Ok(())
+    }
+
     /// Compute the premium portion of a transaction fee (deploy/upgrade fees).
     pub(super) fn compute_premium_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
         let mut premium = 0u64;
@@ -243,6 +307,14 @@ impl TxProcessor {
 
     /// Refund a premium fee amount to the payer account.
     pub(super) fn refund_premium(&self, payer: &Pubkey, amount: u64) -> Result<(), String> {
+        if self.is_speculative() {
+            let mut payer_account = self
+                .b_get_account(payer)?
+                .ok_or_else(|| "Payer account not found for refund".to_string())?;
+            payer_account.add_spendable(amount)?;
+            return self.b_put_account(payer, &payer_account);
+        }
+
         let mut payer_account = self
             .state
             .get_account(payer)?
