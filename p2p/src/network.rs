@@ -13,6 +13,7 @@ use lichen_core::{
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -22,6 +23,7 @@ const MAX_COMPACT_BLOCK_TX_IDS: usize = MAX_TX_PER_BLOCK;
 const MAX_GET_BLOCK_TXS_HASHES: usize = MAX_TX_PER_BLOCK;
 const MAX_BLOCK_TXS_TRANSACTIONS: usize = MAX_TX_PER_BLOCK;
 const MAX_EXPENSIVE_REQUESTS_PER_WINDOW: u32 = 30;
+const SYNC_BLOCK_QUEUE_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn is_rejected_find_node_response_addr(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -889,15 +891,30 @@ impl P2PNetwork {
             }
 
             MessageType::BlockResponse(block) => {
+                let slot = block.header.slot;
                 debug!(
                     "P2P: Received block response for slot {} from {}",
-                    block.header.slot, peer_addr
+                    slot, peer_addr
                 );
-                if let Err(e) = self.sync_block_tx.try_send(block) {
-                    warn!(
-                        "P2P: Sync block channel full, dropping block response from {} ({})",
-                        peer_addr, e
-                    );
+                match tokio::time::timeout(
+                    SYNC_BLOCK_QUEUE_SEND_TIMEOUT,
+                    self.sync_block_tx.send(block),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!(
+                            "P2P: Sync block receiver closed while enqueueing block response from {} slot {} ({})",
+                            peer_addr, slot, e
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            "P2P: Sync block channel backpressure timed out for block response from {} slot {}",
+                            peer_addr, slot
+                        );
+                    }
                 }
             }
 
@@ -921,12 +938,27 @@ impl P2PNetwork {
                 );
                 for block in blocks {
                     let slot = block.header.slot;
-                    if let Err(e) = self.sync_block_tx.try_send(block) {
-                        warn!(
-                            "P2P: Sync block channel full during range response from {} slot {} ({})",
-                            peer_addr, slot, e
-                        );
-                        break; // Stop sending remaining blocks — will be re-requested
+                    match tokio::time::timeout(
+                        SYNC_BLOCK_QUEUE_SEND_TIMEOUT,
+                        self.sync_block_tx.send(block),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "P2P: Sync block receiver closed during range response from {} slot {} ({})",
+                                peer_addr, slot, e
+                            );
+                            break;
+                        }
+                        Err(_) => {
+                            warn!(
+                                "P2P: Sync block channel backpressure timed out during range response from {} slot {}",
+                                peer_addr, slot
+                            );
+                            break;
+                        }
                     }
                 }
             }

@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.26`, deployed on the public testnet with independent validator genesis sync.
+**Current release:** signed `v0.5.27`, deployed on the public testnet with independent validator genesis sync.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -127,9 +127,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.26/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.26/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.26/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.27/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.27/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.27/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

@@ -8419,6 +8419,22 @@ async fn run_validator() {
                     }
                 }
 
+                let current_slot_for_initial_window = state_for_blocks.get_last_slot().unwrap_or(0);
+                if sync_mgr
+                    .should_defer_far_future_block(current_slot_for_initial_window, block_slot)
+                    .await
+                {
+                    sync_mgr.note_seen(block_slot).await;
+                    *last_block_time_for_blocks.lock().await = std::time::Instant::now();
+                    debug!(
+                        "⏭️  Deferring far-future block {} during InitialSync (tip={}, window={})",
+                        block_slot,
+                        current_slot_for_initial_window,
+                        sync::INITIAL_SYNC_FORWARD_WINDOW,
+                    );
+                    continue;
+                }
+
                 // AUDIT-FIX C5: Reject blocks from non-member validators BEFORE
                 // note_seen / fork-choice to prevent outsiders from influencing
                 // sync target or fork selection.
