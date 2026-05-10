@@ -51,6 +51,11 @@ pub const P2P_BLOCK_RANGE_LIMIT: u64 = 500;
 /// Overlaps download and application to eliminate idle time between batches.
 pub const SYNC_PIPELINE_DEPTH: u64 = 3;
 
+/// Forward window accepted by the block receiver during InitialSync. Blocks
+/// beyond this window are not actionable until the local tip advances, and
+/// buffering them first can starve the exact parent blocks needed for catch-up.
+pub const INITIAL_SYNC_FORWARD_WINDOW: u64 = P2P_BLOCK_RANGE_LIMIT;
+
 /// Maximum blocks to hold in pending state (memory limit).
 /// Sized to hold one full pipeline: SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH.
 const MAX_PENDING_BLOCKS: usize = (SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH) as usize;
@@ -449,6 +454,16 @@ impl SyncManager {
     /// Get the current sync phase
     pub async fn get_sync_phase(&self) -> SyncPhase {
         *self.sync_phase.lock().await
+    }
+
+    /// During InitialSync, keep the block receiver focused on the next catch-up
+    /// window. LiveSync accepts far-future blocks for normal fork recovery.
+    pub async fn should_defer_far_future_block(&self, current_slot: u64, block_slot: u64) -> bool {
+        if block_slot <= current_slot.saturating_add(INITIAL_SYNC_FORWARD_WINDOW) {
+            return false;
+        }
+
+        *self.sync_phase.lock().await == SyncPhase::InitialSync
     }
 
     /// Transition to LiveSync phase.  Called when the node is within 2
@@ -1114,8 +1129,36 @@ mod tests {
     fn test_batch_size_constants() {
         assert_eq!(SYNC_BATCH_SIZE, 2000);
         assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
+        assert_eq!(INITIAL_SYNC_FORWARD_WINDOW, P2P_BLOCK_RANGE_LIMIT);
         // 2000 / 500 = 4 chunks per batch
         assert_eq!(SYNC_BATCH_SIZE / P2P_BLOCK_RANGE_LIMIT, 4);
+    }
+
+    /// InitialSync must not let far-future range responses starve the exact
+    /// parent blocks needed to advance the canonical tip.
+    #[tokio::test]
+    async fn test_initial_sync_defers_far_future_blocks() {
+        let sm = SyncManager::new();
+
+        assert!(!sm.should_defer_far_future_block(100, 101).await);
+        assert!(
+            !sm.should_defer_far_future_block(100, 100 + INITIAL_SYNC_FORWARD_WINDOW)
+                .await
+        );
+        assert!(
+            sm.should_defer_far_future_block(100, 101 + INITIAL_SYNC_FORWARD_WINDOW)
+                .await
+        );
+    }
+
+    /// LiveSync remains permissive because near-tip fork recovery needs to
+    /// observe blocks beyond the local tip.
+    #[tokio::test]
+    async fn test_live_sync_accepts_far_future_blocks() {
+        let sm = SyncManager::new();
+        sm.transition_to_live().await;
+
+        assert!(!sm.should_defer_far_future_block(100, 10_000).await);
     }
 
     /// P1-1: SyncMode enum round-trips for runtime-supported modes
