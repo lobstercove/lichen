@@ -248,7 +248,11 @@ function analyzeAssetRefs(portal, pagePath, refs, kind) {
 }
 
 function extractFunctionBody(source, functionName) {
-    const signatureIndex = source.indexOf(`function ${functionName}(`);
+    const signatures = [`function ${functionName}(`, `async function ${functionName}(`];
+    const signatureIndex = signatures
+        .map((signature) => source.indexOf(signature))
+        .filter((index) => index >= 0)
+        .sort((a, b) => a - b)[0] ?? -1;
     if (signatureIndex === -1) return '';
     const bodyStart = source.indexOf('{', signatureIndex);
     if (bodyStart === -1) return '';
@@ -329,6 +333,200 @@ function validateMonitoringIncidentControls() {
     );
 }
 
+function validateMonitoringRiskConsole() {
+    const monitoringRoot = path.join(repoRoot, 'monitoring');
+    const html = fs.readFileSync(path.join(monitoringRoot, 'index.html'), 'utf8');
+    const js = fs.readFileSync(path.join(monitoringRoot, 'js', 'monitoring.js'), 'utf8');
+    const css = fs.readFileSync(path.join(monitoringRoot, 'css', 'monitoring.css'), 'utf8');
+
+    const requiredHtmlTokens = [
+        'id="riskConsoleForm"',
+        'id="riskActionForm"',
+        'id="riskTargetType"',
+        'id="riskAuthorityType"',
+        'id="riskReasonCode"',
+        'id="riskRestrictionMode"',
+        'id="riskEvidenceHash"',
+        'id="riskEvidenceUriHash"',
+        'id="riskTtlPolicy"',
+        'id="riskCustomTtlSlots"',
+        'id="riskSignerForm"',
+        'id="riskProposerValue"',
+        'id="riskGovernanceAuthorityValue"',
+        'id="riskConnectSignerBtn"',
+        'id="riskBuildPreviewBtn"',
+        'id="riskSignPreviewBtn"',
+        'id="riskPreviewPanel"',
+        'id="riskSignerNote"',
+        'shared/wallet-connect.js',
+        'value="account_asset"',
+        'value="code_hash"',
+        'value="bridge_route"',
+        'value="protocol_module"',
+        'value="incident_guardian"',
+        'value="testnet_drill"',
+        'value="guardian_72h"',
+        'value="outgoing_only"',
+        'value="bidirectional"',
+        'id="riskStatusGrid"',
+        'id="riskValidationGrid"',
+        'id="riskRestrictionList"',
+        'id="riskConsoleBadge"',
+        'id="riskActionNote"',
+    ];
+    assert(
+        requiredHtmlTokens.every((token) => html.includes(token)),
+        'monitoring Risk Console renders target search and status panel controls'
+    );
+
+    const riskBody = extractFunctionBody(js, 'fetchRiskConsoleStatus');
+    const requiredReadMethods = [
+        'listActiveRestrictions',
+        'getAccountRestrictionStatus',
+        'getAccountAssetRestrictionStatus',
+        'getAssetRestrictionStatus',
+        'getContractLifecycleStatus',
+        'getCodeHashRestrictionStatus',
+        'getBridgeRouteRestrictionStatus',
+        'getRestrictionStatus',
+        'canSend',
+        'canReceive',
+    ];
+    assert(
+        requiredReadMethods.every((method) => riskBody.includes(method)),
+        'monitoring Risk Console queries shipped read-only restriction RPC methods'
+    );
+
+    const forbiddenMutationTokens = [
+        'buildRestrict',
+        'buildUnrestrict',
+        'buildSuspend',
+        'buildResume',
+        'buildQuarantine',
+        'buildTerminate',
+        'buildBanCodeHash',
+        'buildUnbanCodeHash',
+        'buildPauseBridgeRoute',
+        'buildResumeBridgeRoute',
+        'buildLiftRestriction',
+        'buildExtendRestriction',
+        'admin_token',
+        'LICHEN_ADMIN_TOKEN',
+    ];
+    assert(
+        forbiddenMutationTokens.every((token) => !riskBody.includes(token)),
+        'monitoring Risk Console has no unsigned-builder or admin-token mutation path'
+    );
+
+    assert(
+        js.includes("document.getElementById('riskConsoleForm')?.addEventListener('submit'") &&
+            js.includes("document.getElementById('riskTargetType')?.addEventListener('change'") &&
+            js.includes("document.getElementById('riskActionForm')?.addEventListener('submit'") &&
+            js.includes("document.getElementById('riskConnectSignerBtn')?.addEventListener('click'") &&
+            js.includes("document.getElementById('riskBuildPreviewBtn')?.addEventListener('click'") &&
+            js.includes("document.getElementById('riskSignPreviewBtn')?.addEventListener('click'") &&
+            js.includes("document.getElementById('riskSubmitSignedTxBtn')?.addEventListener('click'") &&
+            js.includes("document.getElementById('riskApproveProposalBtn')?.addEventListener('click'") &&
+            js.includes("document.getElementById('riskExecuteProposalBtn')?.addEventListener('click'"),
+        'monitoring Risk Console binds controls without inline handlers'
+    );
+
+    const requiredValidationTokens = [
+        'RISK_GUARDIAN_MAX_TTL_SLOTS = 648_000',
+        'function riskAuthorityPolicy(',
+        'function riskEvidenceStatus(',
+        'function riskTtlStatus(',
+        'function riskModePolicy(',
+        'function riskBuilderInputStatus(',
+        'function validateRiskActionContext(',
+        'riskAuthorityCheck',
+        'riskEvidenceCheck',
+        'riskExpiryPreview',
+        'riskPolicyCheck',
+    ];
+    assert(
+        requiredValidationTokens.every((token) => js.includes(token)),
+        'monitoring Risk Console validates authority, evidence, TTL, and policy context'
+    );
+
+    const validationBody = extractFunctionBody(js, 'validateRiskActionContext');
+    assert(
+        !/rpc\(|fetch\(|build[A-Z]|admin_token|LICHEN_ADMIN_TOKEN/.test(validationBody),
+        'monitoring Risk Console validation remains local and non-mutating'
+    );
+
+    const previewBody = extractFunctionBody(js, 'riskBuilderPreviewRequest');
+    const requiredBuilderMethods = [
+        'buildRestrictAccountTx',
+        'buildRestrictAccountAssetTx',
+        'buildSetFrozenAssetAmountTx',
+        'buildSuspendContractTx',
+        'buildQuarantineContractTx',
+        'buildTerminateContractTx',
+        'buildBanCodeHashTx',
+        'buildPauseBridgeRouteTx',
+        'buildUnrestrictAccountTx',
+        'buildUnrestrictAccountAssetTx',
+        'buildResumeContractTx',
+        'buildUnbanCodeHashTx',
+        'buildResumeBridgeRouteTx',
+        'buildLiftRestrictionTx',
+        'buildExtendRestrictionTx',
+    ];
+    assert(
+        requiredBuilderMethods.every((method) => previewBody.includes(method)),
+        'monitoring Risk Console preview routes every shipped create-style restriction builder'
+    );
+
+    const buildPreviewBody = extractFunctionBody(js, 'buildRiskTransactionPreview');
+    assert(
+        buildPreviewBody.includes('rpc(request.method, [request.params])') &&
+            !/sendTransaction|sendRawTransaction|licn_sendTransaction|admin_token|LICHEN_ADMIN_TOKEN/.test(buildPreviewBody),
+        'monitoring Risk Console builds unsigned previews without submission or admin-token paths'
+    );
+
+    const signPreviewBody = extractFunctionBody(js, 'signRiskTransactionPreview');
+    assert(
+        signPreviewBody.includes('provider.signTransaction(lastRiskPreviewTx.transaction_base64)') &&
+            !/sendTransaction|sendRawTransaction|licn_sendTransaction|admin_token|LICHEN_ADMIN_TOKEN/.test(signPreviewBody),
+        'monitoring Risk Console signs builder wire previews locally without submitting them'
+    );
+
+    const submitPreviewBody = extractFunctionBody(js, 'submitRiskSignedPreview');
+    const submitTxBody = extractFunctionBody(js, 'submitRiskSignedTransaction');
+    assert(
+        submitPreviewBody.includes('lastRiskSignedPreview?.signedTransactionBase64') &&
+            submitTxBody.includes("rpc('sendTransaction', [signedBase64])") &&
+            !/admin_token|LICHEN_ADMIN_TOKEN/.test(submitPreviewBody + submitTxBody),
+        'monitoring Risk Console submits only signed transaction payloads through public RPC'
+    );
+
+    const controlBody = extractFunctionBody(js, 'buildRiskGovernanceControlTransaction');
+    const runControlBody = extractFunctionBody(js, 'runRiskGovernanceControlAction');
+    assert(
+        js.includes('const RISK_PROPOSAL_APPROVE_IX = 35') &&
+            js.includes('const RISK_PROPOSAL_EXECUTE_IX = 36') &&
+            controlBody.includes('data: [instructionType, ...riskU64LeBytes(proposalId)]') &&
+            runControlBody.includes('provider.signTransaction(controlTx)') &&
+            runControlBody.includes('submitRiskSignedTransaction'),
+        'monitoring Risk Console builds signed approval and execution lifecycle transactions'
+    );
+
+    assert(
+        css.includes('.risk-console-form') &&
+            css.includes('.risk-action-form') &&
+            css.includes('.risk-status-grid') &&
+            css.includes('.risk-validation-grid') &&
+            css.includes('.risk-signer-form') &&
+            css.includes('.risk-lifecycle-form') &&
+            css.includes('.risk-action-button') &&
+            css.includes('.risk-preview-panel') &&
+            css.includes('.risk-lifecycle-panel') &&
+            css.includes('.risk-restriction-card'),
+        'monitoring Risk Console has deployable status-panel styling'
+    );
+}
+
 console.log('\n── Frontend Asset Integrity ──');
 
 for (const portal of portals) {
@@ -344,6 +542,7 @@ for (const portal of portals) {
 }
 
 validateMonitoringIncidentControls();
+validateMonitoringRiskConsole();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

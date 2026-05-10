@@ -95,6 +95,8 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 const GENESIS_SYNC_INCOMPLETE_MARKER: &str = "genesis_sync_incomplete";
+const ACTIVATE_RESTRICTION_SCHEMA_FLAG: &str = "--activate-restriction-schema";
+const SHOW_RESTRICTION_SCHEMA_FLAG: &str = "--show-restriction-schema";
 
 fn should_preserve_partial_genesis_entry(path: &Path) -> bool {
     matches!(
@@ -5664,6 +5666,185 @@ fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| a == name || a.starts_with(&format!("{}=", name)))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RestrictionSchemaReport {
+    before_schema: Option<bool>,
+    after_schema: Option<bool>,
+    before_root: Hash,
+    after_root: Hash,
+    legacy_root: Hash,
+    restriction_root: Hash,
+    last_slot: u64,
+    has_genesis_block: bool,
+    changed: bool,
+}
+
+fn restriction_schema_label(schema: Option<bool>) -> &'static str {
+    match schema {
+        Some(true) => "active",
+        Some(false) => "legacy",
+        None => "legacy_unset",
+    }
+}
+
+fn restriction_schema_data_dir(args: &[String]) -> PathBuf {
+    let p2p_port = get_flag_value(args, &["--p2p-port"])
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(7001);
+    let network_arg = get_flag_value(args, &["--network"]).map(|s| s.to_lowercase());
+    let data_dir = get_flag_value(args, &["--db-path", "--db", "--data-dir"])
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            if let Some(net) = network_arg {
+                format!("./data/state-{}", net)
+            } else {
+                format!("./data/state-{}", p2p_port)
+            }
+        });
+
+    let path = PathBuf::from(data_dir);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn build_restriction_schema_report(
+    state: &StateStore,
+    before_schema: Option<bool>,
+    before_root: Hash,
+    changed: bool,
+) -> RestrictionSchemaReport {
+    RestrictionSchemaReport {
+        before_schema,
+        after_schema: state.get_state_root_schema(),
+        before_root,
+        after_root: state.compute_state_root_cold_start(),
+        legacy_root: state.compute_state_root_without_restrictions_cold_start(),
+        restriction_root: state.compute_state_root_with_restrictions_cold_start(),
+        last_slot: state.get_last_slot().unwrap_or(0),
+        has_genesis_block: state.get_block_by_slot(0).unwrap_or(None).is_some(),
+        changed,
+    }
+}
+
+fn activate_restriction_schema_for_state(
+    state: &StateStore,
+    network: &str,
+) -> Result<RestrictionSchemaReport, String> {
+    if network != "testnet" {
+        return Err(format!(
+            "Refusing restriction state-root schema activation on '{}'; RG-804 allows testnet only",
+            network
+        ));
+    }
+
+    let before_schema = state.get_state_root_schema();
+    let before_root = state.compute_state_root_cold_start();
+    if state.get_block_by_slot(0)?.is_none() {
+        return Err(
+            "Refusing restriction state-root schema activation: local state has no stored slot-0 genesis block"
+                .to_string(),
+        );
+    }
+
+    let changed = before_schema != Some(true);
+    if changed {
+        state.set_state_root_schema(true)?;
+    }
+
+    let report = build_restriction_schema_report(state, before_schema, before_root, changed);
+    if report.after_schema != Some(true) {
+        return Err("Restriction state-root schema activation did not persist".to_string());
+    }
+    if report.after_root != report.restriction_root {
+        return Err(format!(
+            "Restriction state-root schema activation verification failed: after_root={} restricted_root={}",
+            report.after_root.to_hex(),
+            report.restriction_root.to_hex()
+        ));
+    }
+
+    Ok(report)
+}
+
+fn print_restriction_schema_report(data_dir: &Path, report: &RestrictionSchemaReport) {
+    println!("data_dir={}", data_dir.display());
+    println!(
+        "before_schema={}",
+        restriction_schema_label(report.before_schema)
+    );
+    println!(
+        "after_schema={}",
+        restriction_schema_label(report.after_schema)
+    );
+    println!("changed={}", report.changed);
+    println!("last_slot={}", report.last_slot);
+    println!("has_genesis_block={}", report.has_genesis_block);
+    println!("before_state_root={}", report.before_root.to_hex());
+    println!("after_state_root={}", report.after_root.to_hex());
+    println!("legacy_state_root={}", report.legacy_root.to_hex());
+    println!(
+        "restriction_state_root={}",
+        report.restriction_root.to_hex()
+    );
+}
+
+fn maybe_run_restriction_schema_admin(args: &[String]) -> Option<i32> {
+    let activate = has_flag(args, ACTIVATE_RESTRICTION_SCHEMA_FLAG);
+    let show = has_flag(args, SHOW_RESTRICTION_SCHEMA_FLAG);
+    if !activate && !show {
+        return None;
+    }
+    if activate && show {
+        eprintln!(
+            "{} and {} are mutually exclusive",
+            ACTIVATE_RESTRICTION_SCHEMA_FLAG, SHOW_RESTRICTION_SCHEMA_FLAG
+        );
+        return Some(2);
+    }
+
+    let network = get_flag_value(args, &["--network"])
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "testnet".to_string());
+    let data_dir = restriction_schema_data_dir(args);
+    let cache_size_mb = get_flag_value(args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
+    let state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("Failed to open state DB at {}: {}", data_dir.display(), err);
+            return Some(1);
+        }
+    };
+
+    let result = if activate {
+        activate_restriction_schema_for_state(&state, &network)
+    } else {
+        let before_schema = state.get_state_root_schema();
+        let before_root = state.compute_state_root_cold_start();
+        Ok(build_restriction_schema_report(
+            &state,
+            before_schema,
+            before_root,
+            false,
+        ))
+    };
+
+    match result {
+        Ok(report) => {
+            print_restriction_schema_report(&data_dir, &report);
+            Some(0)
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            Some(1)
+        }
+    }
+}
+
 fn load_genesis_config_from_disk(genesis_path: &Path) -> Result<GenesisConfig, String> {
     info!("📜 Loading genesis from: {}", genesis_path.display());
     let config = GenesisConfig::from_file(genesis_path)
@@ -6079,6 +6260,10 @@ fn configure_archive_mode(state: &StateStore, args: &[String], cold_store_attach
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if let Some(exit_code) = maybe_run_restriction_schema_admin(&args) {
+        std::process::exit(exit_code);
+    }
 
     // If we're the child (worker) process, go straight to the async validator.
     if has_flag(&args, "--supervised") {
@@ -18090,5 +18275,56 @@ mod tests {
 
         assert_eq!(state.get_state_root_schema(), Some(false));
         assert_eq!(state.compute_state_root_cached(), legacy_root);
+    }
+
+    #[test]
+    fn rg804_restriction_schema_activation_is_testnet_only_and_requires_genesis() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        let mainnet_err =
+            activate_restriction_schema_for_state(&state, "mainnet").expect_err("mainnet blocked");
+        assert!(mainnet_err.contains("testnet only"));
+
+        let no_genesis_err =
+            activate_restriction_schema_for_state(&state, "testnet").expect_err("genesis required");
+        assert!(no_genesis_err.contains("no stored slot-0 genesis block"));
+    }
+
+    #[test]
+    fn rg804_restriction_schema_activation_sets_prefixed_root_without_state_copy() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator = Pubkey([5u8; 32]);
+        let account = Pubkey([6u8; 32]);
+        state
+            .put_account(&account, &Account::new(100, account))
+            .expect("seed account");
+
+        let legacy_root = state.compute_state_root_without_restrictions_cold_start();
+        let restriction_root = state.compute_state_root_with_restrictions_cold_start();
+        assert_ne!(legacy_root, restriction_root);
+
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), legacy_root, validator.0, Vec::new(), 0);
+        state.put_block(&genesis).expect("store genesis block");
+        state.set_last_slot(0).expect("set last slot");
+
+        assert_eq!(state.get_state_root_schema(), None);
+        let report = activate_restriction_schema_for_state(&state, "testnet")
+            .expect("activate restriction schema");
+        assert!(report.changed);
+        assert_eq!(report.before_schema, None);
+        assert_eq!(report.after_schema, Some(true));
+        assert_eq!(report.before_root, legacy_root);
+        assert_eq!(report.after_root, restriction_root);
+        assert!(report.has_genesis_block);
+        assert!(state.get_block_by_slot(0).unwrap().is_some());
+
+        let second_report = activate_restriction_schema_for_state(&state, "testnet")
+            .expect("idempotent activation");
+        assert!(!second_report.changed);
+        assert_eq!(second_report.before_schema, Some(true));
+        assert_eq!(second_report.after_root, restriction_root);
     }
 }

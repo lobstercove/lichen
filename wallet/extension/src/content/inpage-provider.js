@@ -135,6 +135,9 @@
     getAccount: (address) => sendRequest({ method: 'licn_getAccount', params: [{ address }] }),
     getLatestBlock: () => sendRequest({ method: 'licn_getLatestBlock' }),
     getTransactions: (address, limit = 20) => sendRequest({ method: 'licn_getTransactions', params: [{ address, limit }] }),
+    getRestrictionStatus: (target) => sendRequest({ method: 'lichen_getRestrictionStatus', params: [target] }),
+    canTransfer: (transfer) => sendRequest({ method: 'lichen_canTransfer', params: [transfer] }),
+    getContractLifecycleStatus: (contract) => sendRequest({ method: 'lichen_getContractLifecycleStatus', params: [contract] }),
     signMessage: (message) => sendRequest({ method: 'licn_signMessage', params: [{ message }] }),
     signTransaction: (transaction) => sendRequest({ method: 'licn_signTransaction', params: [{ transaction }] }),
     sendTransaction: (transaction) => sendRequest({ method: 'licn_sendTransaction', params: [{ transaction }] })

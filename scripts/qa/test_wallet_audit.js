@@ -53,7 +53,9 @@ const cryptoSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js
 const walletSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'wallet.js'), 'utf8');
 const walletBridgeSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'dapp-bridge.js'), 'utf8');
 const walletBootstrapSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'wallet-bootstrap.js'), 'utf8');
+const walletSharedConfigSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'shared-config.js'), 'utf8');
 const walletSharedUtilsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'shared', 'utils.js'), 'utf8');
+const walletCssSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'wallet.css'), 'utf8');
 const shieldedSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'shielded.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'identity.js'), 'utf8');
 const lichenidAbi = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'contracts', 'lichenid', 'abi.json'), 'utf8'));
@@ -920,6 +922,99 @@ test('wallet settings explain that critical metadata stays pinned to trusted end
         'wallet.js should gate custom RPC overrides behind explicit unsafe mode');
     assert(walletSrc.includes('settings.allowUnsafeRpc'),
         'wallet.js should persist explicit unsafe RPC mode state');
+});
+
+console.log('\nW-24: Restriction status banners, asset badges, and wallet send preflight');
+
+test('shared-config exposes canonical restriction RPC method names', () => {
+    assert(walletSharedConfigSrc.includes('const restrictionStatus = Object.freeze({'),
+        'shared config should define a restriction status config object');
+    assert(walletSharedConfigSrc.includes("nativeAsset: 'native'"),
+        'shared config should publish the native restriction asset alias');
+    for (const method of [
+        'getAccountRestrictionStatus',
+        'getAssetRestrictionStatus',
+        'getAccountAssetRestrictionStatus',
+        'canSend',
+        'canReceive',
+        'canTransfer',
+    ]) {
+        assert(walletSharedConfigSrc.includes(`'${method}'`),
+            `shared config should expose ${method}`);
+    }
+    assert(walletSharedConfigSrc.includes('restrictions: restrictionStatus'),
+        'LICHEN_CONFIG should export restriction status config');
+});
+
+test('wallet HTML and CSS include restriction banner and badge surfaces', () => {
+    assert(walletHtml.includes('id="walletRestrictionStatus"'),
+        'wallet dashboard should include an account/native restriction status banner');
+    assert(walletHtml.includes('id="sendRestrictionStatus"'),
+        'send modal should include a restriction warning surface');
+    assert(walletCssSrc.includes('.wallet-restriction-status'),
+        'wallet CSS should style the restriction status banner');
+    assert(walletCssSrc.includes('.asset-restriction-badge'),
+        'wallet CSS should style per-asset restriction badges');
+    assert(walletCssSrc.includes('.send-restriction-status'),
+        'wallet CSS should style send-modal restriction warnings');
+});
+
+test('wallet.js loads restriction status through trusted consensus RPC reads', () => {
+    for (const method of [
+        'getAccountRestrictionStatus',
+        'getAssetRestrictionStatus',
+        'getAccountAssetRestrictionStatus',
+        'canSend',
+        'canReceive',
+    ]) {
+        assert(walletSrc.includes(`'${method}'`),
+            `wallet.js should reference ${method}`);
+        assert(!walletSrc.includes(`rpc.call('${method}'`),
+            `${method} should not use the untrusted user-overridable RPC path`);
+    }
+    assert(walletSrc.includes('async function refreshWalletRestrictionStatus'),
+        'wallet should centralize restriction status refresh and caching');
+    assert(walletSrc.includes('await trustedRpcCall(methodName, params)'),
+        'restriction reads should use trustedRpcCall');
+});
+
+test('wallet.js renders restriction data as account banners and per-asset badges', () => {
+    assert(walletSrc.includes('function renderWalletRestrictionStatus(status)'),
+        'wallet should render restriction status banner');
+    assert(walletSrc.includes('function renderAssetRestrictionBadges(assetState)'),
+        'wallet should render per-asset restriction badges');
+    assert(walletSrc.includes('data-asset-restriction-badges="LICN"'),
+        'LICN asset row should expose a badge mount point');
+    assert(walletSrc.includes('data-asset-symbol="LICN"'),
+        'LICN asset row should expose a stable asset symbol data attribute');
+    assert(walletSrc.includes("class=\"asset-restriction-badge ${escapeHtml(badge.kind)}\""),
+        'asset badge rendering should escape dynamic badge class labels');
+});
+
+test('wallet send flow checks canTransfer before signing or submitting', () => {
+    assert(walletSrc.includes('async function preflightWalletTransferRestrictions'),
+        'wallet should define send preflight helper');
+    assert(walletSrc.includes("trustedRpcCall(walletRestrictionMethod('canTransfer', 'canTransfer')"),
+        'send preflight should use trusted canTransfer RPC');
+    assert(!walletSrc.includes("rpc.call('canTransfer'"),
+        'send preflight must not use user-overridable RPC');
+
+    const preflightIndex = walletSrc.indexOf('await preflightWalletTransferRestrictions(wallet, to, selectedToken, amount);');
+    const buildIndex = walletSrc.indexOf("showToast('Building transaction...');");
+    assert(preflightIndex !== -1, 'confirmSend should call restriction preflight');
+    assert(buildIndex !== -1, 'confirmSend should still build transactions after preflight');
+    assert(preflightIndex < buildIndex, 'restriction preflight should run before transaction building/signing');
+});
+
+test('wallet restriction UI escapes server-provided status and token metadata', () => {
+    assert(walletSrc.includes('escapeHtml(details)'),
+        'banner details should be escaped before rendering');
+    assert(walletSrc.includes('escapeHtml(badge.label)'),
+        'asset badge labels should be escaped before rendering');
+    assert(walletSrc.includes('safeHttpImageUrl(token.logoUrl)'),
+        'token logo metadata should reject non-http(s) URLs before rendering');
+    assert(walletSrc.includes('safeCssColor(token.color)'),
+        'token color metadata should be sanitized before style rendering');
 });
 
 // ============================================================================

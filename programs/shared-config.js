@@ -58,6 +58,18 @@ const LICHEN_CONFIG = (() => {
 
     const INCIDENT_STATUS_RPC_METHOD = 'getIncidentStatus';
     const INCIDENT_BANNER_ID = 'lichen-incident-banner';
+    const restrictionStatus = Object.freeze({
+        nativeAsset: 'native',
+        refreshMs: 30000,
+        methods: Object.freeze({
+            accountStatus: 'getAccountRestrictionStatus',
+            assetStatus: 'getAssetRestrictionStatus',
+            accountAssetStatus: 'getAccountAssetRestrictionStatus',
+            canSend: 'canSend',
+            canReceive: 'canReceive',
+            canTransfer: 'canTransfer',
+        }),
+    });
     const INCIDENT_NETWORK_STORAGE_KEYS = [
         'lichen_wallet_network',
         'lichen_mon_network',
@@ -476,6 +488,7 @@ const LICHEN_CONFIG = (() => {
         initNetworkSelector,
         refreshIncidentStatusBanner,
         shouldAutoRefreshIncidentStatusBanner,
+        restrictions: restrictionStatus,
 
         // Cross-app URLs
         ...apps,

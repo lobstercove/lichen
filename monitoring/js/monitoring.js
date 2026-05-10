@@ -763,6 +763,14 @@ function resetMonitoringCaches() {
     controlPlaneMonitorLoadedAt = 0;
     incidentAuthorityLoaded = false;
     incidentAuthorityLoadedAt = 0;
+    riskConsoleSelection = null;
+    lastRiskConsoleData = null;
+    riskConsoleLoaded = false;
+    riskConsoleLoadedAt = 0;
+    lastRiskPreviewTx = null;
+    lastRiskSignedPreview = null;
+    lastRiskSubmittedTx = null;
+    lastRiskLifecycleEvents = [];
     missionControlExpansionLoaded = false;
     missionControlExpansionLoadedAt = 0;
     lastRpcLatencyMs = null;
@@ -805,6 +813,7 @@ function switchNetwork(network) {
     const normalized = normalizeMonitoringNetwork(network);
     localStorage.setItem('lichen_mon_network', normalized);
     rpcUrl = resolveRpcUrl(normalized);
+    if (riskSignerWallet) riskSignerWallet.rpcUrl = rpcUrl;
     resetMonitoringCaches();
     connectWsProbe();
     void LICHEN_CONFIG.refreshIncidentStatusBanner(normalized);
@@ -1089,6 +1098,11 @@ async function refresh() {
             await updateIncidentAuthorityBoard();
         }
 
+        // ─ Risk Console ─
+        if (riskConsoleSelection && (!riskConsoleLoaded || Date.now() - riskConsoleLoadedAt >= CONTRACT_REFRESH_MS)) {
+            await updateRiskConsoleStatus(false);
+        }
+
         // ─ Recent Blocks ─
         await updateRecentBlocks(slot);
 
@@ -1310,6 +1324,83 @@ function bindStaticControls() {
     document.getElementById('alertDismissBtn')?.addEventListener('click', dismissAlert);
     document.getElementById('clearEventsBtn')?.addEventListener('click', clearEvents);
     document.getElementById('clearThreatsBtn')?.addEventListener('click', clearThreats);
+    document.getElementById('riskTargetType')?.addEventListener('change', () => {
+        updateRiskConsoleInputs();
+        updateRiskAuthorityOptions();
+        validateRiskActionContext();
+        clearRiskTransactionPreview('Target changed. Build a fresh transaction preview.');
+        riskConsoleSelection = null;
+        lastRiskConsoleData = null;
+        renderRiskConsoleEmpty('No target selected');
+    });
+    ['riskPrimaryValue', 'riskSecondaryValue', 'riskAmountValue'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('input', () => {
+            riskConsoleSelection = null;
+            lastRiskConsoleData = null;
+            updateRiskAuthorityOptions();
+            renderRiskConsoleEmpty('Target input changed. Query the target again.');
+        });
+    });
+    ['riskProposerValue', 'riskGovernanceAuthorityValue'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('input', () => {
+            validateRiskActionContext();
+            clearRiskTransactionPreview('Signer input changed. Build a fresh transaction preview.');
+        });
+    });
+    ['riskWorkflowMode', 'riskRestrictionIdValue', 'riskLiftReasonCode'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', () => {
+            updateRiskWorkflowUi();
+            validateRiskActionContext();
+            clearRiskTransactionPreview('Lifecycle workflow changed. Build a fresh transaction preview.');
+        });
+    });
+    document.getElementById('riskRestrictionIdValue')?.addEventListener('input', () => {
+        validateRiskActionContext();
+        clearRiskTransactionPreview('Restriction ID changed. Build a fresh transaction preview.');
+    });
+    document.getElementById('riskProposalIdValue')?.addEventListener('input', updateRiskLifecycleButtons);
+    document.getElementById('riskConsoleForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void updateRiskConsoleStatus(true);
+    });
+    document.getElementById('riskActionForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        validateRiskActionContext();
+    });
+    document.getElementById('riskActionForm')?.addEventListener('input', validateRiskActionContext);
+    document.getElementById('riskActionForm')?.addEventListener('change', () => {
+        updateRiskTtlInputs();
+        validateRiskActionContext();
+        clearRiskTransactionPreview('Action context changed. Build a fresh transaction preview.');
+    });
+    document.getElementById('riskConnectSignerBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void connectRiskSigner();
+    });
+    document.getElementById('riskBuildPreviewBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void buildRiskTransactionPreview();
+    });
+    document.getElementById('riskSignPreviewBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void signRiskTransactionPreview();
+    });
+    document.getElementById('riskSubmitSignedTxBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void submitRiskSignedPreview();
+    });
+    document.getElementById('riskApproveProposalBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void runRiskGovernanceControlAction('approve');
+    });
+    document.getElementById('riskExecuteProposalBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void runRiskGovernanceControlAction('execute');
+    });
+    document.getElementById('riskRefreshLifecycleBtn')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        void refreshRiskGovernanceLifecycle();
+    });
 
     document.querySelectorAll('[data-tps-range]').forEach((button) => {
         button.addEventListener('click', (event) => {
@@ -1519,6 +1610,1281 @@ async function updateIncidentAuthorityBoard() {
     setText('incidentAuthorityNote', note);
     incidentAuthorityLoaded = true;
     incidentAuthorityLoadedAt = Date.now();
+}
+
+const RISK_CONSOLE_TARGETS = {
+    account: {
+        primaryLabel: 'Account',
+        primaryPlaceholder: 'Base58 address',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native',
+        showSecondary: false,
+        showAmount: true,
+    },
+    account_asset: {
+        primaryLabel: 'Account',
+        primaryPlaceholder: 'Base58 address',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native or asset address',
+        showSecondary: true,
+        showAmount: true,
+    },
+    asset: {
+        primaryLabel: 'Asset',
+        primaryPlaceholder: 'native or asset address',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native',
+        showSecondary: false,
+        showAmount: false,
+    },
+    contract: {
+        primaryLabel: 'Contract',
+        primaryPlaceholder: 'Contract address',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native',
+        showSecondary: false,
+        showAmount: false,
+    },
+    code_hash: {
+        primaryLabel: 'Code Hash',
+        primaryPlaceholder: '32-byte hex hash',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native',
+        showSecondary: false,
+        showAmount: false,
+    },
+    bridge_route: {
+        primaryLabel: 'Chain',
+        primaryPlaceholder: 'solana',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'sol',
+        showSecondary: true,
+        showAmount: false,
+    },
+    protocol_module: {
+        primaryLabel: 'Module',
+        primaryPlaceholder: 'staking, oracle, shielded',
+        secondaryLabel: 'Asset',
+        secondaryPlaceholder: 'native',
+        showSecondary: false,
+        showAmount: false,
+    },
+};
+
+const RISK_GUARDIAN_MAX_TTL_SLOTS = 648_000;
+const RISK_GUARDIAN_24H_SLOTS = 216_000;
+const RISK_HASH_PATTERN = /^(?:0x)?[0-9a-fA-F]{64}$/;
+const RISK_INCIDENT_GUARDIAN_TARGETS = new Set(['account', 'contract', 'code_hash', 'bridge_route', 'protocol_module']);
+const RISK_GUARDIAN_PROTOCOL_MODULES = new Set([
+    'bridge',
+    'contracts',
+    'custody',
+    'dex',
+    'lending',
+    'marketplace',
+    'nft',
+    'oracle',
+    'shielded',
+    'tokens',
+]);
+const RISK_RESTRICTION_MODES = {
+    account: [
+        ['outgoing_only', 'Outgoing Only'],
+        ['incoming_only', 'Incoming Only'],
+        ['bidirectional', 'Bidirectional'],
+    ],
+    account_asset: [
+        ['outgoing_only', 'Outgoing Only'],
+        ['incoming_only', 'Incoming Only'],
+        ['bidirectional', 'Bidirectional'],
+        ['frozen_amount', 'Frozen Amount'],
+    ],
+    asset: [['asset_paused', 'Asset Paused']],
+    contract: [
+        ['state_changing_blocked', 'State Changing Blocked'],
+        ['quarantined', 'Quarantined'],
+        ['terminated', 'Terminated'],
+    ],
+    code_hash: [['deploy_blocked', 'Deploy Blocked']],
+    bridge_route: [['route_paused', 'Route Paused']],
+    protocol_module: [['protocol_paused', 'Protocol Paused']],
+};
+const RISK_BUILDER_UNSUPPORTED_TARGETS = new Set(['asset', 'protocol_module']);
+const RISK_PROPOSAL_APPROVE_IX = 35;
+const RISK_PROPOSAL_EXECUTE_IX = 36;
+const RISK_SYSTEM_PROGRAM_ID_BYTES = Array(32).fill(0);
+const RISK_LIFECYCLE_WORKFLOWS = new Set([
+    'create_restriction',
+    'lift_target',
+    'lift_restriction_id',
+    'extend_restriction_id',
+]);
+const RISK_LIFT_REASONS = new Set([
+    'incident_resolved',
+    'false_positive',
+    'evidence_rejected',
+    'governance_override',
+    'expired_cleanup',
+    'testnet_drill_complete',
+]);
+
+function riskConsoleElement(id) {
+    return document.getElementById(id);
+}
+
+function readRiskTargetDraft() {
+    const type = riskConsoleElement('riskTargetType')?.value || 'account';
+    const primary = riskConsoleTrim(riskConsoleElement('riskPrimaryValue')?.value);
+    const secondary = riskConsoleTrim(riskConsoleElement('riskSecondaryValue')?.value);
+    return {
+        type,
+        primary,
+        secondary,
+        asset: type === 'account' ? 'native' : secondary,
+        amount: parseRiskConsoleAmount().value,
+    };
+}
+
+function updateRiskConsoleInputs() {
+    const type = riskConsoleElement('riskTargetType')?.value || 'account';
+    const config = RISK_CONSOLE_TARGETS[type] || RISK_CONSOLE_TARGETS.account;
+    const primary = riskConsoleElement('riskPrimaryValue');
+    const secondary = riskConsoleElement('riskSecondaryValue');
+    const secondaryField = riskConsoleElement('riskSecondaryField');
+    const amountField = riskConsoleElement('riskAmountField');
+
+    setText('riskPrimaryLabel', config.primaryLabel);
+    setText('riskSecondaryLabel', config.secondaryLabel);
+    if (primary) primary.placeholder = config.primaryPlaceholder;
+    if (secondary) secondary.placeholder = config.secondaryPlaceholder;
+    secondaryField?.classList.toggle('is-hidden', !config.showSecondary);
+    amountField?.classList.toggle('is-hidden', !config.showAmount);
+    updateRiskRestrictionModeOptions({ type });
+    updateRiskAuthorityOptions();
+}
+
+function updateRiskRestrictionModeOptions(selection = readRiskTargetDraft()) {
+    const select = riskConsoleElement('riskRestrictionMode');
+    if (!select) return;
+    const modes = RISK_RESTRICTION_MODES[selection.type] || RISK_RESTRICTION_MODES.account;
+    const current = select.value;
+    select.innerHTML = modes
+        .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`)
+        .join('');
+    select.value = modes.some(([value]) => value === current) ? current : modes[0][0];
+}
+
+function riskConsoleTrim(value) {
+    return String(value || '').trim();
+}
+
+function parseRiskConsoleAmount() {
+    const raw = riskConsoleTrim(riskConsoleElement('riskAmountValue')?.value);
+    if (!raw) return { value: undefined };
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+        return { error: 'Amount must be a non-negative integer.' };
+    }
+    return { value: Math.trunc(numeric) };
+}
+
+function readRiskConsoleSelection() {
+    const type = riskConsoleElement('riskTargetType')?.value || 'account';
+    const config = RISK_CONSOLE_TARGETS[type] || RISK_CONSOLE_TARGETS.account;
+    const primary = riskConsoleTrim(riskConsoleElement('riskPrimaryValue')?.value);
+    const secondary = riskConsoleTrim(riskConsoleElement('riskSecondaryValue')?.value);
+
+    if (!primary) {
+        return { error: `${config.primaryLabel} is required.` };
+    }
+    if (config.showSecondary && !secondary) {
+        return { error: `${config.secondaryLabel} is required.` };
+    }
+    const amount = parseRiskConsoleAmount();
+    if (amount.error) {
+        return { error: amount.error };
+    }
+
+    return {
+        type,
+        primary,
+        secondary,
+        asset: type === 'account' ? 'native' : secondary,
+        amount: amount.value,
+    };
+}
+
+function setRiskConsoleBusy(isBusy) {
+    const button = riskConsoleElement('riskSearchBtn');
+    if (button) button.disabled = Boolean(isBusy);
+}
+
+function renderRiskConsoleEmpty(note) {
+    setText('riskTargetState', '--');
+    setText('riskActiveIds', '--');
+    setText('riskSendFlag', '--');
+    setText('riskReceiveFlag', '--');
+    setText('riskExecuteFlag', '--');
+    setText('riskStatusSlot', '--');
+    setText('riskConsoleNote', note || 'Risk target status has not been queried.');
+    const badge = riskConsoleElement('riskConsoleBadge');
+    if (badge) {
+        badge.textContent = 'READ ONLY';
+        badge.className = 'panel-badge info';
+    }
+    const list = riskConsoleElement('riskRestrictionList');
+    if (list) list.innerHTML = '<div class="ir-empty">No target selected</div>';
+    lastRiskConsoleData = null;
+    riskConsoleLoaded = false;
+    riskConsoleLoadedAt = Date.now();
+    clearRiskTransactionPreview(note || 'No target selected');
+    validateRiskActionContext();
+}
+
+function riskIdsFromStatus(status) {
+    const ids = status?.active_restriction_ids;
+    return Array.isArray(ids) ? ids : [];
+}
+
+function riskRestrictionsFromStatus(status) {
+    const restrictions = status?.active_restrictions;
+    return Array.isArray(restrictions) ? restrictions : [];
+}
+
+function formatRiskIds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return 'None';
+    return ids.map((id) => `#${id}`).join(', ');
+}
+
+function riskTargetLabel(selection) {
+    switch (selection.type) {
+        case 'account_asset':
+            return `${truncAddr(selection.primary)} · ${selection.asset}`;
+        case 'bridge_route':
+            return `${selection.primary}:${selection.secondary}`;
+        case 'code_hash':
+            return truncAddr(selection.primary);
+        default:
+            return truncAddr(selection.primary);
+    }
+}
+
+function riskStatusSlot(status, send, receive, activePage) {
+    const candidates = [status?.slot, send?.slot, receive?.slot, activePage?.slot]
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value >= 0);
+    return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+function riskSelectedSlot() {
+    const data = lastRiskConsoleData || {};
+    const slot = riskStatusSlot(data.status, data.send, data.receive, data.activePage);
+    if (slot !== null) return slot;
+    const latestSlot = Number(lastSlot);
+    return Number.isFinite(latestSlot) && latestSlot > 0 ? latestSlot : null;
+}
+
+function normalizedRiskModule(selection) {
+    return String(selection?.primary || '').trim().toLowerCase().replace(/[^a-z0-9_ -]/g, '').replace(/[\s-]+/g, '_');
+}
+
+function riskAuthorityPolicy(authority, selection, status, context = riskActionContext()) {
+    const targetType = selection?.type || 'account';
+    const activeIds = riskIdsFromStatus(status || lastRiskConsoleData?.status);
+    const moduleName = normalizedRiskModule(selection);
+    const mode = context.mode || 'outgoing_only';
+
+    if (authority === 'main_governance') {
+        return { allowed: true, label: 'Main governance authority can route restriction actions through normal policy.' };
+    }
+
+    if (authority === 'incident_guardian') {
+        if (!RISK_INCIDENT_GUARDIAN_TARGETS.has(targetType)) {
+            return { allowed: false, label: 'Incident guardian is limited to temporary risk-reduction targets.' };
+        }
+        const guardianModeAllowed = (targetType === 'account' && mode === 'outgoing_only')
+            || (targetType === 'contract' && (mode === 'state_changing_blocked' || mode === 'quarantined'))
+            || (targetType === 'code_hash' && mode === 'deploy_blocked')
+            || (targetType === 'bridge_route' && mode === 'route_paused')
+            || (targetType === 'protocol_module' && mode === 'protocol_paused');
+        if (!guardianModeAllowed) {
+            return { allowed: false, label: 'Incident guardian can only build temporary risk-reduction modes.' };
+        }
+        if (targetType === 'protocol_module' && moduleName && !RISK_GUARDIAN_PROTOCOL_MODULES.has(moduleName)) {
+            return { allowed: false, label: 'Incident guardian cannot pause this protocol module.' };
+        }
+        return { allowed: true, label: 'Incident guardian requires a bounded expiry and risk-reduction mode.' };
+    }
+
+    if (authority === 'bridge_committee_admin') {
+        const allowed = targetType === 'bridge_route' || (targetType === 'protocol_module' && moduleName === 'bridge');
+        return {
+            allowed,
+            label: allowed
+                ? 'Bridge committee authority is scoped to bridge routes and bridge protocol module actions.'
+                : 'Bridge committee authority is not valid for this target type.',
+        };
+    }
+
+    if (authority === 'oracle_committee_admin') {
+        const allowed = targetType === 'protocol_module' && moduleName === 'oracle';
+        return {
+            allowed,
+            label: allowed
+                ? 'Oracle committee authority is scoped to oracle protocol module actions.'
+                : 'Oracle committee authority is not valid for this target type.',
+        };
+    }
+
+    if (authority === 'stored_restriction_authority') {
+        const liftOrExtend = context.workflow === 'lift_target'
+            || context.workflow === 'lift_restriction_id'
+            || context.workflow === 'extend_restriction_id';
+        const hasRestrictionContext = activeIds.length > 0 || Boolean(context.restrictionId);
+        return {
+            allowed: liftOrExtend && hasRestrictionContext,
+            label: liftOrExtend && hasRestrictionContext
+                ? 'Stored restriction authority can route lift or extend proposals for an existing restriction.'
+                : 'Stored authority requires a lift or extend workflow and an active or explicit restriction ID.',
+        };
+    }
+
+    return { allowed: false, label: 'Unknown authority policy.' };
+}
+
+function updateRiskAuthorityOptions(selection = readRiskTargetDraft(), status = lastRiskConsoleData?.status) {
+    const select = riskConsoleElement('riskAuthorityType');
+    if (!select) return;
+    Array.from(select.options).forEach((option) => {
+        option.disabled = !riskAuthorityPolicy(option.value, selection, status).allowed;
+    });
+    if (select.selectedOptions[0]?.disabled) {
+        select.value = 'main_governance';
+    }
+}
+
+function riskActionContext() {
+    return {
+        workflow: riskConsoleElement('riskWorkflowMode')?.value || 'create_restriction',
+        authority: riskConsoleElement('riskAuthorityType')?.value || 'main_governance',
+        mode: riskConsoleElement('riskRestrictionMode')?.value || 'outgoing_only',
+        reason: riskConsoleElement('riskReasonCode')?.value || 'exploit_active',
+        evidenceHash: riskConsoleTrim(riskConsoleElement('riskEvidenceHash')?.value),
+        evidenceUriHash: riskConsoleTrim(riskConsoleElement('riskEvidenceUriHash')?.value),
+        ttlPolicy: riskConsoleElement('riskTtlPolicy')?.value || 'no_expiry',
+        customTtlSlots: riskConsoleTrim(riskConsoleElement('riskCustomTtlSlots')?.value),
+        proposer: riskConsoleTrim(riskConsoleElement('riskProposerValue')?.value),
+        governanceAuthority: riskConsoleTrim(riskConsoleElement('riskGovernanceAuthorityValue')?.value),
+        restrictionId: riskConsoleTrim(riskConsoleElement('riskRestrictionIdValue')?.value),
+        proposalId: riskConsoleTrim(riskConsoleElement('riskProposalIdValue')?.value),
+        liftReason: riskConsoleElement('riskLiftReasonCode')?.value || 'incident_resolved',
+    };
+}
+
+function riskWorkflow() {
+    const value = riskActionContext().workflow;
+    return RISK_LIFECYCLE_WORKFLOWS.has(value) ? value : 'create_restriction';
+}
+
+function riskWorkflowNeedsTarget(workflow = riskWorkflow()) {
+    return workflow === 'create_restriction' || workflow === 'lift_target';
+}
+
+function riskWorkflowNeedsRestrictionId(workflow = riskWorkflow()) {
+    return workflow === 'lift_restriction_id' || workflow === 'extend_restriction_id';
+}
+
+function riskWorkflowUsesLiftReason(workflow = riskWorkflow()) {
+    return workflow === 'lift_target' || workflow === 'lift_restriction_id';
+}
+
+function updateRiskWorkflowUi() {
+    const workflow = riskWorkflow();
+    riskConsoleElement('riskRestrictionIdField')?.classList.toggle(
+        'is-hidden',
+        workflow === 'create_restriction'
+    );
+    riskConsoleElement('riskLiftReasonField')?.classList.toggle(
+        'is-hidden',
+        !riskWorkflowUsesLiftReason(workflow)
+    );
+    updateRiskAuthorityOptions();
+    updateRiskLifecycleButtons();
+}
+
+function parseRiskPositiveU64(value, label) {
+    const text = riskConsoleTrim(value);
+    if (!/^[0-9]+$/.test(text)) {
+        return { valid: false, value: null, label: 'BAD ID', note: `${label} must be a positive integer.` };
+    }
+    const numeric = Number(text);
+    if (!Number.isSafeInteger(numeric) || numeric <= 0) {
+        return { valid: false, value: null, label: 'BAD ID', note: `${label} must fit in a positive safe integer.` };
+    }
+    return { valid: true, value: numeric, label: 'READY', note: `${label} is ready.` };
+}
+
+function hashFieldStatus(value) {
+    if (!value) return { valid: true, present: false };
+    return { valid: RISK_HASH_PATTERN.test(value), present: true };
+}
+
+function riskEvidenceStatus(context) {
+    const evidence = hashFieldStatus(context.evidenceHash);
+    const uriEvidence = hashFieldStatus(context.evidenceUriHash);
+    if (!evidence.valid || !uriEvidence.valid) {
+        return { valid: false, label: 'BAD HASH', note: 'Evidence hashes must be 32-byte hex strings with optional 0x prefix.' };
+    }
+    if (context.workflow === 'lift_target' || context.workflow === 'lift_restriction_id') {
+        return { valid: true, label: 'LIFT', note: 'Lift proposals use a bounded lift reason; evidence hashes are optional context.' };
+    }
+    if (context.workflow === 'extend_restriction_id') {
+        const hasTtl = riskTtlSlots(context).valid && riskTtlSlots(context).slots !== null;
+        if (!hasTtl && !evidence.present) {
+            return { valid: false, label: 'REQUIRED', note: 'Extend proposals require a new expiry slot or evidence_hash.' };
+        }
+        return { valid: true, label: evidence.present ? 'READY' : 'TTL ONLY', note: 'Extend proposal evidence is bounded to fixed 32-byte hashes.' };
+    }
+    if (context.reason !== 'testnet_drill' && !evidence.present && !uriEvidence.present) {
+        return { valid: false, label: 'REQUIRED', note: 'This reason requires evidence_hash or evidence_uri_hash.' };
+    }
+    if (!evidence.present && !uriEvidence.present) {
+        return { valid: true, label: 'DRILL', note: 'Testnet drill can proceed without an evidence hash.' };
+    }
+    return { valid: true, label: 'READY', note: 'Evidence hash input is bounded to fixed 32-byte hashes.' };
+}
+
+function riskTtlSlots(context) {
+    switch (context.ttlPolicy) {
+        case 'guardian_24h':
+            return { valid: true, slots: RISK_GUARDIAN_24H_SLOTS, label: '24H' };
+        case 'guardian_72h':
+            return { valid: true, slots: RISK_GUARDIAN_MAX_TTL_SLOTS, label: '72H' };
+        case 'custom_slots': {
+            const numeric = Number(context.customTtlSlots);
+            if (!Number.isSafeInteger(numeric) || numeric <= 0) {
+                return { valid: false, slots: null, label: 'BAD TTL', note: 'Custom TTL must be a positive slot count.' };
+            }
+            return { valid: true, slots: numeric, label: `${formatNum(numeric)} slots` };
+        }
+        default:
+            return { valid: true, slots: null, label: 'NONE' };
+    }
+}
+
+function riskTtlStatus(context) {
+    const slot = riskSelectedSlot();
+    const ttl = riskTtlSlots(context);
+    if (!ttl.valid) return ttl;
+    if (context.workflow === 'lift_target' || context.workflow === 'lift_restriction_id') {
+        return { valid: true, slots: null, expirySlot: null, label: 'N/A', note: 'Lift proposals do not carry expires_at_slot.' };
+    }
+    if (context.authority === 'incident_guardian' && ttl.slots === null) {
+        return { valid: false, slots: null, expirySlot: null, label: 'REQUIRED', note: 'Incident guardian actions must include expires_at_slot.' };
+    }
+    if (context.authority === 'incident_guardian' && ttl.slots > RISK_GUARDIAN_MAX_TTL_SLOTS) {
+        return { valid: false, slots: ttl.slots, expirySlot: null, label: 'TOO LONG', note: `Guardian TTL is capped at ${formatNum(RISK_GUARDIAN_MAX_TTL_SLOTS)} slots.` };
+    }
+    if (ttl.slots !== null && slot === null) {
+        return { valid: false, slots: ttl.slots, expirySlot: null, label: 'NO SLOT', note: 'Query a target first so the expiry slot can be computed.' };
+    }
+    const expirySlot = ttl.slots === null ? null : slot + ttl.slots;
+    return {
+        valid: true,
+        slots: ttl.slots,
+        expirySlot,
+        label: expirySlot === null ? 'NO EXPIRY' : formatNum(expirySlot),
+        note: expirySlot === null ? 'Main governance action is indefinite unless a TTL is selected.' : `Expiry preview uses current slot ${formatNum(slot)} plus ${ttl.label}.`,
+    };
+}
+
+function updateRiskTtlInputs() {
+    const context = riskActionContext();
+    riskConsoleElement('riskCustomTtlField')?.classList.toggle('is-hidden', context.ttlPolicy !== 'custom_slots');
+}
+
+function riskModePolicy(context, selection) {
+    if (context.workflow === 'lift_restriction_id' || context.workflow === 'extend_restriction_id') {
+        return { valid: true, label: 'READY', note: 'Generic restriction ID workflow does not depend on target mode.' };
+    }
+    if (context.workflow === 'lift_target') {
+        if (RISK_BUILDER_UNSUPPORTED_TARGETS.has(selection?.type)) {
+            return { valid: false, label: 'NO BUILDER', note: 'The shipped RG-602 builder RPC set has no target lift builder for this target type yet.' };
+        }
+        return { valid: true, label: 'READY', note: 'Target lift uses the shipped target-specific unsigned builder RPC set.' };
+    }
+    const modes = RISK_RESTRICTION_MODES[selection?.type || 'account'] || [];
+    const modeAllowed = modes.some(([value]) => value === context.mode);
+    if (!modeAllowed) {
+        return { valid: false, label: 'BAD MODE', note: 'Selected restriction mode is not valid for this target type.' };
+    }
+    if (RISK_BUILDER_UNSUPPORTED_TARGETS.has(selection?.type)) {
+        return { valid: false, label: 'NO BUILDER', note: 'The shipped RG-602 builder RPC set has no unsigned builder for this target type yet.' };
+    }
+    if (context.mode === 'terminated' && context.ttlPolicy !== 'no_expiry') {
+        return { valid: false, label: 'BAD TTL', note: 'Contract termination is permanent and cannot carry an expiry slot.' };
+    }
+    if (context.mode === 'frozen_amount') {
+        const amount = parseRiskConsoleAmount();
+        if (amount.error || !Number.isSafeInteger(amount.value) || amount.value <= 0) {
+            return { valid: false, label: 'BAD AMOUNT', note: 'Frozen-amount preview requires a positive integer amount.' };
+        }
+    }
+    return { valid: true, label: 'READY', note: 'Mode is supported by the shipped unsigned builder RPC set.' };
+}
+
+function riskBuilderInputStatus(context) {
+    if (!context.proposer) {
+        return { valid: false, label: 'NO PROPOSER', note: 'Connect the signer or paste a proposer address.' };
+    }
+    if (!context.governanceAuthority) {
+        return { valid: false, label: 'NO AUTHORITY', note: 'Paste the governed authority address for the proposal.' };
+    }
+    if (riskWorkflowNeedsRestrictionId(context.workflow) || (context.workflow === 'lift_target' && context.restrictionId)) {
+        const id = parseRiskPositiveU64(context.restrictionId, 'Restriction ID');
+        if (!id.valid) return id;
+    }
+    if (riskWorkflowUsesLiftReason(context.workflow) && !RISK_LIFT_REASONS.has(context.liftReason)) {
+        return { valid: false, label: 'BAD REASON', note: 'Select a supported restriction lift reason.' };
+    }
+    return { valid: true, label: 'READY', note: 'Builder signer fields are present.' };
+}
+
+function validateRiskActionContext() {
+    const selection = riskConsoleSelection || readRiskTargetDraft();
+    const context = riskActionContext();
+    const authority = riskAuthorityPolicy(context.authority, selection, lastRiskConsoleData?.status, context);
+    const evidence = riskEvidenceStatus(context);
+    const ttl = riskTtlStatus(context);
+    const mode = riskModePolicy(context, selection);
+    const builderInputs = riskBuilderInputStatus(context);
+    const policyValid = authority.allowed && evidence.valid && ttl.valid && mode.valid && builderInputs.valid;
+
+    updateRiskTtlInputs();
+    setText('riskAuthorityCheck', authority.allowed ? 'ALLOWED' : 'BLOCKED');
+    setText('riskEvidenceCheck', evidence.label);
+    setText('riskExpiryPreview', ttl.label);
+    setText('riskPolicyCheck', policyValid ? 'VALID' : mode.valid ? builderInputs.label : mode.label);
+    setText(
+        'riskActionNote',
+        `${authority.label} ${mode.note} ${evidence.note} ${ttl.note || ''} ${builderInputs.note} RG-704 submits only signed consensus transactions through public sendTransaction.`
+    );
+    const previewButton = riskConsoleElement('riskBuildPreviewBtn');
+    if (previewButton) previewButton.disabled = !policyValid;
+    updateRiskSignPreviewButton();
+    return { valid: policyValid, selection, context, authority, evidence, ttl, mode, builderInputs };
+}
+
+function clearRiskTransactionPreview(note) {
+    lastRiskPreviewTx = null;
+    lastRiskSignedPreview = null;
+    lastRiskSubmittedTx = null;
+    const panel = riskConsoleElement('riskPreviewPanel');
+    if (panel) panel.innerHTML = `<div class="ir-empty">${escapeHtml(note || 'No transaction preview built')}</div>`;
+    updateRiskSignPreviewButton();
+}
+
+function updateRiskSignPreviewButton() {
+    const button = riskConsoleElement('riskSignPreviewBtn');
+    if (button) button.disabled = !lastRiskPreviewTx || !riskSignerProvider || !riskSignerAddress;
+    const submitButton = riskConsoleElement('riskSubmitSignedTxBtn');
+    if (submitButton) submitButton.disabled = !lastRiskSignedPreview?.signedTransactionBase64;
+    updateRiskLifecycleButtons();
+}
+
+function riskPreviewValue(label, value) {
+    return `<div class="risk-preview-item">
+        <span class="risk-preview-label">${escapeHtml(label)}</span>
+        <span class="risk-preview-value">${escapeHtml(value ?? '--')}</span>
+    </div>`;
+}
+
+function riskPreviewShort(value, prefix = 18, suffix = 12) {
+    const text = String(value || '');
+    if (text.length <= prefix + suffix + 3) return text || '--';
+    return `${text.slice(0, prefix)}...${text.slice(-suffix)}`;
+}
+
+function renderRiskTransactionPreview(tx, signedResult = lastRiskSignedPreview) {
+    const panel = riskConsoleElement('riskPreviewPanel');
+    if (!panel) return;
+    const signedSignature = signedResult?.signature || signedResult?.pqSignature?.sig || null;
+    const signedTx = signedResult?.signedTransactionBase64 || null;
+    const submittedSignature = lastRiskSubmittedTx?.signature || null;
+    panel.innerHTML = `
+        <div class="risk-preview-title">
+            <span><i class="fas fa-file-signature"></i> Governance Transaction Preview</span>
+            <span class="panel-badge ${submittedSignature ? 'success' : signedSignature ? 'success' : 'info'}">${submittedSignature ? 'SUBMITTED' : signedSignature ? 'SIGNED LOCAL' : 'UNSIGNED'}</span>
+        </div>
+        <div class="risk-preview-grid">
+            ${riskPreviewValue('Method', tx.method)}
+            ${riskPreviewValue('Action', tx.action_label)}
+            ${riskPreviewValue('Wire', `${tx.wire_format || 'unknown'} · ${formatNum(tx.wire_size || 0)} bytes`)}
+            ${riskPreviewValue('Signatures', String(tx.signature_count ?? 0))}
+            ${riskPreviewValue('Message Hash', riskPreviewShort(tx.message_hash))}
+            ${riskPreviewValue('Blockhash', riskPreviewShort(tx.recent_blockhash))}
+            ${riskPreviewValue('Proposer', riskPreviewShort(tx.proposer))}
+            ${riskPreviewValue('Authority', riskPreviewShort(tx.governance_authority))}
+            ${riskPreviewValue('Instruction', `type ${tx.instruction?.instruction_type ?? '--'} / action ${tx.instruction?.governance_action_type ?? '--'}`)}
+            ${riskPreviewValue('Program', riskPreviewShort(tx.instruction?.program_id))}
+            ${riskPreviewValue('Slot', tx.slot === null || tx.slot === undefined ? '--' : formatNum(tx.slot))}
+            ${riskPreviewValue('Signed Format', signedResult?.signedTransactionFormat || '--')}
+            ${riskPreviewValue('Submitted Tx', riskPreviewShort(submittedSignature))}
+        </div>
+        <div class="risk-preview-code">unsigned=${escapeHtml(riskPreviewShort(tx.transaction_base64 || tx.transaction, 64, 32))}</div>
+        ${signedSignature ? `<div class="risk-preview-code">signature=${escapeHtml(riskPreviewShort(signedSignature, 64, 32))}<br>signed=${escapeHtml(riskPreviewShort(signedTx, 64, 32))}</div>` : ''}
+        ${submittedSignature ? `<div class="risk-preview-code">submitted=${escapeHtml(submittedSignature)}${lastRiskSubmittedTx?.confirmation ? `<br>confirmation=${escapeHtml(lastRiskSubmittedTx.confirmation)}` : ''}</div>` : ''}
+    `;
+}
+
+function riskBuilderCommonParams(context, ttl) {
+    const params = {
+        proposer: context.proposer,
+        governance_authority: context.governanceAuthority,
+    };
+    if (context.workflow === 'create_restriction') params.reason = context.reason;
+    if (context.evidenceHash) params.evidence_hash = context.evidenceHash;
+    if (context.evidenceUriHash) params.evidence_uri_hash = context.evidenceUriHash;
+    if (ttl.expirySlot !== null && ttl.expirySlot !== undefined && context.workflow === 'create_restriction') {
+        params.expires_at_slot = ttl.expirySlot;
+    }
+    return params;
+}
+
+function riskBuilderPreviewRequest(selection, context, ttl) {
+    const params = riskBuilderCommonParams(context, ttl);
+    if (context.workflow === 'lift_restriction_id') {
+        return {
+            method: 'buildLiftRestrictionTx',
+            params: {
+                proposer: context.proposer,
+                governance_authority: context.governanceAuthority,
+                restriction_id: parseRiskPositiveU64(context.restrictionId, 'Restriction ID').value,
+                lift_reason: context.liftReason,
+            },
+        };
+    }
+    if (context.workflow === 'extend_restriction_id') {
+        const extendParams = {
+            proposer: context.proposer,
+            governance_authority: context.governanceAuthority,
+            restriction_id: parseRiskPositiveU64(context.restrictionId, 'Restriction ID').value,
+        };
+        if (ttl.expirySlot !== null && ttl.expirySlot !== undefined) {
+            extendParams.new_expires_at_slot = ttl.expirySlot;
+        }
+        if (context.evidenceHash) extendParams.evidence_hash = context.evidenceHash;
+        return { method: 'buildExtendRestrictionTx', params: extendParams };
+    }
+
+    const liftParams = context.workflow === 'lift_target'
+        ? {
+            proposer: context.proposer,
+            governance_authority: context.governanceAuthority,
+            lift_reason: context.liftReason,
+            ...(context.restrictionId ? { restriction_id: parseRiskPositiveU64(context.restrictionId, 'Restriction ID').value } : {}),
+        }
+        : null;
+
+    switch (selection.type) {
+        case 'account':
+            if (liftParams) return { method: 'buildUnrestrictAccountTx', params: { ...liftParams, account: selection.primary } };
+            return {
+                method: 'buildRestrictAccountTx',
+                params: { ...params, account: selection.primary, mode: context.mode },
+            };
+        case 'account_asset':
+            if (liftParams) return { method: 'buildUnrestrictAccountAssetTx', params: { ...liftParams, account: selection.primary, asset: selection.asset } };
+            if (context.mode === 'frozen_amount') {
+                return {
+                    method: 'buildSetFrozenAssetAmountTx',
+                    params: { ...params, account: selection.primary, asset: selection.asset, amount: parseRiskConsoleAmount().value },
+                };
+            }
+            return {
+                method: 'buildRestrictAccountAssetTx',
+                params: { ...params, account: selection.primary, asset: selection.asset, mode: context.mode },
+            };
+        case 'contract': {
+            if (liftParams) return { method: 'buildResumeContractTx', params: { ...liftParams, contract: selection.primary } };
+            const method = context.mode === 'terminated'
+                ? 'buildTerminateContractTx'
+                : context.mode === 'quarantined'
+                    ? 'buildQuarantineContractTx'
+                    : 'buildSuspendContractTx';
+            return { method, params: { ...params, contract: selection.primary } };
+        }
+        case 'code_hash':
+            if (liftParams) return { method: 'buildUnbanCodeHashTx', params: { ...liftParams, code_hash: selection.primary } };
+            return { method: 'buildBanCodeHashTx', params: { ...params, code_hash: selection.primary } };
+        case 'bridge_route':
+            if (liftParams) return { method: 'buildResumeBridgeRouteTx', params: { ...liftParams, chain: selection.primary, asset: selection.secondary } };
+            return { method: 'buildPauseBridgeRouteTx', params: { ...params, chain: selection.primary, asset: selection.secondary } };
+        default:
+            return { error: 'No unsigned builder RPC exists for this target type in the shipped RG-602 builder set.' };
+    }
+}
+
+async function buildRiskTransactionPreview() {
+    const contextDraft = riskActionContext();
+    const needsTarget = riskWorkflowNeedsTarget(contextDraft.workflow);
+    const selection = needsTarget ? (riskConsoleSelection || readRiskConsoleSelection()) : (riskConsoleSelection || readRiskTargetDraft());
+    if (needsTarget && (!selection || selection.error)) {
+        clearRiskTransactionPreview(selection?.error || 'Select a valid target before building a preview.');
+        return;
+    }
+    riskConsoleSelection = selection;
+    const validation = validateRiskActionContext();
+    if (!validation.valid) {
+        clearRiskTransactionPreview('Resolve the local policy checks before building a transaction preview.');
+        return;
+    }
+    const request = riskBuilderPreviewRequest(selection, validation.context, validation.ttl);
+    if (request.error) {
+        clearRiskTransactionPreview(request.error);
+        return;
+    }
+
+    const button = riskConsoleElement('riskBuildPreviewBtn');
+    if (button) button.disabled = true;
+    try {
+        const tx = await rpc(request.method, [request.params]);
+        lastRiskPreviewTx = tx;
+        lastRiskSignedPreview = null;
+        lastRiskSubmittedTx = null;
+        renderRiskTransactionPreview(tx, null);
+        setText('riskSignerNote', `Built unsigned ${request.method} preview. Sign it with the proposer wallet before submitting.`);
+        addEvent('info', 'file-signature', `Risk Console preview built ${request.method}`);
+    } catch (error) {
+        console.warn('Risk Console preview failed:', error);
+        clearRiskTransactionPreview(error?.message || 'Transaction preview failed.');
+    } finally {
+        validateRiskActionContext();
+    }
+}
+
+function initRiskSignerConnection() {
+    if (riskSignerWallet || typeof LichenWallet !== 'function') {
+        updateRiskSignerUi();
+        return;
+    }
+    try {
+        riskSignerWallet = new LichenWallet({ rpcUrl, storageKey: 'lichen_monitoring_risk_signer' });
+        riskSignerWallet.onConnect((info) => {
+            riskSignerAddress = info?.address || riskSignerWallet.address || null;
+            riskSignerProvider = riskSignerWallet._provider || riskResolveInjectedProvider();
+            const proposer = riskConsoleElement('riskProposerValue');
+            if (proposer && !riskConsoleTrim(proposer.value) && riskSignerAddress) proposer.value = riskSignerAddress;
+            updateRiskSignerUi();
+            validateRiskActionContext();
+        });
+        riskSignerWallet.onDisconnect(() => {
+            riskSignerAddress = null;
+            riskSignerProvider = null;
+            updateRiskSignerUi();
+            validateRiskActionContext();
+        });
+    } catch (error) {
+        setText('riskSignerNote', error?.message || 'Wallet connector is unavailable.');
+    }
+    updateRiskSignerUi();
+}
+
+function riskResolveInjectedProvider() {
+    if (riskSignerWallet?._provider) return riskSignerWallet._provider;
+    if (typeof getInjectedLichenProvider === 'function') return getInjectedLichenProvider();
+    if (window.licnwallet && window.licnwallet.isLichenWallet) return window.licnwallet;
+    return null;
+}
+
+async function connectRiskSigner() {
+    initRiskSignerConnection();
+    const button = riskConsoleElement('riskConnectSignerBtn');
+    if (!riskSignerWallet) {
+        setText('riskSignerNote', 'Lichen wallet connector is not loaded.');
+        return;
+    }
+    if (button) button.disabled = true;
+    try {
+        const info = await riskSignerWallet.connect();
+        riskSignerAddress = info?.address || riskSignerWallet.address || null;
+        riskSignerProvider = riskSignerWallet._provider || riskResolveInjectedProvider();
+        const proposer = riskConsoleElement('riskProposerValue');
+        if (proposer && riskSignerAddress) proposer.value = riskSignerAddress;
+        updateRiskSignerUi();
+        validateRiskActionContext();
+        addEvent('info', 'wallet', `Risk Console signer connected ${truncAddr(riskSignerAddress)}`);
+    } catch (error) {
+        console.warn('Risk signer connection failed:', error);
+        setText('riskSignerNote', error?.message || 'Signer connection failed.');
+    } finally {
+        if (button) button.disabled = false;
+        updateRiskSignerUi();
+    }
+}
+
+function updateRiskSignerUi() {
+    const button = riskConsoleElement('riskConnectSignerBtn');
+    if (riskSignerWallet?.address) {
+        riskSignerAddress = riskSignerWallet.address;
+        riskSignerProvider = riskSignerWallet._provider || riskResolveInjectedProvider();
+    }
+    if (button) {
+        if (riskSignerAddress) {
+            button.innerHTML = `<i class="fas fa-wallet"></i><span>${escapeHtml(truncAddr(riskSignerAddress))}</span>`;
+            button.classList.add('wallet-connected');
+            button.classList.remove('wallet-disconnected');
+            button.title = riskSignerAddress;
+        } else {
+            button.innerHTML = '<i class="fas fa-wallet"></i><span>Connect Signer</span>';
+            button.classList.remove('wallet-connected');
+            button.classList.add('wallet-disconnected');
+            button.title = 'Connect Lichen wallet extension signer';
+        }
+    }
+    setText(
+        'riskSignerNote',
+        riskSignerAddress
+            ? `Signer connected: ${riskSignerAddress}. Signed governance transactions can be submitted through public RPC.`
+            : 'Connect the Lichen wallet extension to prepare the proposer signer. Signing is separate from submission.'
+    );
+    updateRiskSignPreviewButton();
+}
+
+async function signRiskTransactionPreview() {
+    if (!lastRiskPreviewTx?.transaction_base64) {
+        clearRiskTransactionPreview('Build a transaction preview before signing.');
+        return;
+    }
+    const expectedSigner = String(lastRiskPreviewTx.proposer || riskActionContext().proposer || '').trim();
+    if (expectedSigner && riskSignerAddress && expectedSigner !== riskSignerAddress) {
+        setText('riskSignerNote', `Connected signer ${riskSignerAddress} does not match required proposer ${expectedSigner}.`);
+        updateRiskSignPreviewButton();
+        return;
+    }
+    let provider = riskResolveInjectedProvider();
+    if (!provider && typeof waitForInjectedLichenProvider === 'function') {
+        provider = await waitForInjectedLichenProvider(600);
+    }
+    if (!provider || typeof provider.signTransaction !== 'function') {
+        setText('riskSignerNote', 'Lichen wallet extension signer is not available.');
+        updateRiskSignPreviewButton();
+        return;
+    }
+    riskSignerProvider = provider;
+
+    const button = riskConsoleElement('riskSignPreviewBtn');
+    if (button) button.disabled = true;
+    try {
+        const signed = await provider.signTransaction(lastRiskPreviewTx.transaction_base64);
+        lastRiskSignedPreview = signed;
+        lastRiskSubmittedTx = null;
+        renderRiskTransactionPreview(lastRiskPreviewTx, signed);
+        setText('riskSignerNote', 'Preview transaction signed locally by the wallet extension. Submit Signed sends it through public RPC.');
+        addEvent('info', 'signature', 'Risk Console preview signed locally');
+    } catch (error) {
+        console.warn('Risk preview signing failed:', error);
+        setText('riskSignerNote', error?.message || 'Preview signing failed.');
+    } finally {
+        updateRiskSignPreviewButton();
+    }
+}
+
+function riskSubmittedSignature(result) {
+    if (typeof result === 'string') return result;
+    return result?.signature || result?.txHash || result?.transaction_hash || null;
+}
+
+async function submitRiskSignedTransaction(signedBase64, label) {
+    if (!signedBase64) throw new Error('Missing signed transaction payload.');
+    const result = await rpc('sendTransaction', [signedBase64]);
+    const signature = riskSubmittedSignature(result);
+    if (!signature) throw new Error(`${label || 'Transaction'} submission returned no signature.`);
+    const confirmation = await rpc('confirmTransaction', [signature]).catch(() => null);
+    return {
+        signature,
+        confirmation: confirmation?.value?.confirmation_status || (confirmation?.confirmed ? 'confirmed' : 'pending'),
+        slot: confirmation?.value?.slot || confirmation?.slot || null,
+    };
+}
+
+async function submitRiskSignedPreview() {
+    const signedBase64 = lastRiskSignedPreview?.signedTransactionBase64;
+    if (!signedBase64 || !lastRiskPreviewTx) {
+        setText('riskSignerNote', 'Sign a governance transaction preview before submitting.');
+        updateRiskSignPreviewButton();
+        return;
+    }
+    const button = riskConsoleElement('riskSubmitSignedTxBtn');
+    if (button) button.disabled = true;
+    try {
+        const submitted = await submitRiskSignedTransaction(signedBase64, lastRiskPreviewTx.method);
+        lastRiskSubmittedTx = {
+            ...submitted,
+            method: lastRiskPreviewTx.method,
+            action: lastRiskPreviewTx.action_label,
+            submittedAt: Date.now(),
+        };
+        renderRiskTransactionPreview(lastRiskPreviewTx, lastRiskSignedPreview);
+        setText('riskSignerNote', `Submitted signed proposal transaction ${submitted.signature}. Refresh events after it lands to view proposal lifecycle state.`);
+        addEvent('info', 'paper-plane', `Risk Console submitted ${lastRiskPreviewTx.method}`);
+        await refreshRiskGovernanceLifecycle();
+    } catch (error) {
+        console.warn('Risk proposal submission failed:', error);
+        setText('riskSignerNote', error?.message || 'Signed transaction submission failed.');
+    } finally {
+        updateRiskSignPreviewButton();
+    }
+}
+
+function riskU64LeBytes(value) {
+    let numeric = BigInt(value);
+    const bytes = [];
+    for (let i = 0; i < 8; i++) {
+        bytes.push(Number(numeric & 0xffn));
+        numeric >>= 8n;
+    }
+    return bytes;
+}
+
+async function buildRiskGovernanceControlTransaction(instructionType, signer, proposalId) {
+    const blockhashEnvelope = await rpc('getRecentBlockhash');
+    const blockhash = blockhashEnvelope?.blockhash || blockhashEnvelope?.recent_blockhash || blockhashEnvelope;
+    if (typeof blockhash !== 'string' || !RISK_HASH_PATTERN.test(blockhash)) {
+        throw new Error('Recent blockhash unavailable for governance control transaction.');
+    }
+    return {
+        signatures: [],
+        message: {
+            instructions: [{
+                program_id: RISK_SYSTEM_PROGRAM_ID_BYTES,
+                accounts: [signer],
+                data: [instructionType, ...riskU64LeBytes(proposalId)],
+            }],
+            blockhash,
+        },
+        tx_type: 'native',
+    };
+}
+
+function riskProposalIdStatus() {
+    return parseRiskPositiveU64(riskActionContext().proposalId, 'Proposal ID');
+}
+
+function updateRiskLifecycleButtons() {
+    const proposalStatus = riskProposalIdStatus();
+    const canControl = proposalStatus.valid && Boolean(riskSignerAddress);
+    const approve = riskConsoleElement('riskApproveProposalBtn');
+    const execute = riskConsoleElement('riskExecuteProposalBtn');
+    if (approve) approve.disabled = !canControl;
+    if (execute) execute.disabled = !canControl;
+}
+
+async function runRiskGovernanceControlAction(action) {
+    const proposal = riskProposalIdStatus();
+    if (!proposal.valid) {
+        setText('riskSignerNote', proposal.note);
+        updateRiskLifecycleButtons();
+        return;
+    }
+    let provider = riskResolveInjectedProvider();
+    if (!provider && typeof waitForInjectedLichenProvider === 'function') {
+        provider = await waitForInjectedLichenProvider(600);
+    }
+    if (!provider || typeof provider.signTransaction !== 'function') {
+        setText('riskSignerNote', 'Lichen wallet extension signer is not available.');
+        updateRiskLifecycleButtons();
+        return;
+    }
+    riskSignerProvider = provider;
+    if (!riskSignerAddress && riskSignerWallet?.address) riskSignerAddress = riskSignerWallet.address;
+    if (!riskSignerAddress) {
+        setText('riskSignerNote', 'Connect the signer before approving or executing a proposal.');
+        updateRiskLifecycleButtons();
+        return;
+    }
+
+    const instructionType = action === 'execute' ? RISK_PROPOSAL_EXECUTE_IX : RISK_PROPOSAL_APPROVE_IX;
+    const button = riskConsoleElement(action === 'execute' ? 'riskExecuteProposalBtn' : 'riskApproveProposalBtn');
+    if (button) button.disabled = true;
+    try {
+        const controlTx = await buildRiskGovernanceControlTransaction(instructionType, riskSignerAddress, proposal.value);
+        const signed = await provider.signTransaction(controlTx);
+        const submitted = await submitRiskSignedTransaction(signed?.signedTransactionBase64, `${action} proposal #${proposal.value}`);
+        lastRiskSubmittedTx = {
+            ...submitted,
+            method: action === 'execute' ? 'executeGovernanceAction' : 'approveGovernanceAction',
+            proposalId: proposal.value,
+            submittedAt: Date.now(),
+        };
+        renderRiskLifecyclePanel(lastRiskLifecycleEvents, `Submitted ${action} transaction ${submitted.signature}.`);
+        setText('riskSignerNote', `${action === 'execute' ? 'Execute' : 'Approve'} transaction submitted for proposal #${proposal.value}: ${submitted.signature}`);
+        addEvent('info', action === 'execute' ? 'bolt' : 'check-double', `Risk Console ${action} submitted for proposal #${proposal.value}`);
+        await refreshRiskGovernanceLifecycle();
+    } catch (error) {
+        console.warn(`Risk proposal ${action} failed:`, error);
+        setText('riskSignerNote', error?.message || `Proposal ${action} failed.`);
+    } finally {
+        updateRiskLifecycleButtons();
+    }
+}
+
+function renderRiskLifecyclePanel(events = lastRiskLifecycleEvents, note = null) {
+    const panel = riskConsoleElement('riskLifecyclePanel');
+    if (!panel) return;
+    const proposalId = riskActionContext().proposalId;
+    const heading = proposalId ? `Proposal #${proposalId}` : 'Recent Restriction Governance Events';
+    const rows = Array.isArray(events) ? events.slice(0, 8) : [];
+    if (!rows.length) {
+        panel.innerHTML = `<div class="risk-preview-title"><span><i class="fas fa-timeline"></i> ${escapeHtml(heading)}</span><span class="panel-badge info">NO EVENTS</span></div><div class="ir-empty">${escapeHtml(note || 'No proposal lifecycle events loaded')}</div>`;
+        return;
+    }
+    panel.innerHTML = `
+        <div class="risk-preview-title">
+            <span><i class="fas fa-timeline"></i> ${escapeHtml(heading)}</span>
+            <span class="panel-badge success">${formatNum(rows.length)} EVENTS</span>
+        </div>
+        ${note ? `<div class="risk-preview-code">${escapeHtml(note)}</div>` : ''}
+        <div class="risk-lifecycle-list">
+            ${rows.map((event) => `
+                <div class="risk-lifecycle-event">
+                    <span class="risk-lifecycle-kind">${escapeHtml(String(event.kind || 'unknown'))}</span>
+                    <span class="risk-lifecycle-value">proposal ${escapeHtml(String(event.proposal_id || '--'))}</span>
+                    <span class="risk-lifecycle-value">${escapeHtml(String(event.action || '--'))} · approvals ${escapeHtml(String(event.approvals ?? '--'))}/${escapeHtml(String(event.threshold ?? '--'))}</span>
+                    <span class="risk-lifecycle-meta">slot ${escapeHtml(String(event.slot ?? '--'))}</span>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+async function refreshRiskGovernanceLifecycle() {
+    const envelope = await rpc('getGovernanceEvents', [100]).catch(() => null);
+    const events = Array.isArray(envelope?.events) ? envelope.events : [];
+    const proposal = riskProposalIdStatus();
+    const filtered = proposal.valid
+        ? events.filter((event) => Number(event.proposal_id) === proposal.value)
+        : events.filter((event) => String(event.action || '').includes('restriction') || String(event.kind || '').includes('restriction'));
+    lastRiskLifecycleEvents = filtered;
+    renderRiskLifecyclePanel(filtered, proposal.valid ? null : 'Showing recent restriction governance lifecycle events. Enter a proposal ID to focus approval and execution state.');
+}
+
+function riskTargetIsRestricted(selection, status) {
+    if (!status) return null;
+    const ids = riskIdsFromStatus(status);
+    switch (selection.type) {
+        case 'contract': {
+            const lifecycle = String(status.lifecycle_status || '').toLowerCase();
+            return lifecycle && lifecycle !== 'active' ? true : ids.length > 0;
+        }
+        case 'code_hash':
+            return Boolean(status.blocked || status.deploy_blocked || ids.length > 0);
+        case 'bridge_route':
+            return Boolean(status.paused || status.route_paused || ids.length > 0);
+        default:
+            return Boolean(status.restricted || status.active || ids.length > 0);
+    }
+}
+
+function riskTargetStateText(selection, status) {
+    if (!status) return 'UNAVAILABLE';
+    if (selection.type === 'contract' && status.found === false) return 'NOT FOUND';
+    if (riskTargetIsRestricted(selection, status)) {
+        if (selection.type === 'bridge_route') return 'PAUSED';
+        if (selection.type === 'code_hash') return 'BLOCKED';
+        if (selection.type === 'contract') return String(status.lifecycle_status || 'RESTRICTED').toUpperCase();
+        return 'RESTRICTED';
+    }
+    return 'CLEAR';
+}
+
+function riskMovementFlag(preflight, fallbackRestricted = null) {
+    if (preflight && typeof preflight.allowed === 'boolean') {
+        return preflight.allowed ? 'ALLOWED' : 'BLOCKED';
+    }
+    if (fallbackRestricted === null) return 'N/A';
+    return fallbackRestricted ? 'BLOCKED' : 'ALLOWED';
+}
+
+function riskExecuteFlag(selection, status) {
+    if (!status) return '--';
+    const restricted = riskTargetIsRestricted(selection, status);
+    switch (selection.type) {
+        case 'contract':
+            if (status.found === false) return 'NOT FOUND';
+            return String(status.lifecycle_status || '').toLowerCase() === 'active' && !restricted ? 'ALLOWED' : 'BLOCKED';
+        case 'code_hash':
+            return restricted ? 'DEPLOY BLOCKED' : 'DEPLOY OPEN';
+        case 'bridge_route':
+            return restricted ? 'ROUTE PAUSED' : 'ROUTE OPEN';
+        case 'protocol_module':
+            return restricted ? 'PAUSED' : 'OPEN';
+        default:
+            return 'N/A';
+    }
+}
+
+function riskRestrictionCard(record) {
+    const id = record?.id ?? '--';
+    const mode = record?.mode || record?.mode_details?.kind || 'unknown';
+    const reason = record?.reason || 'unknown';
+    const expiry = record?.expires_at_slot ? `expires slot ${record.expires_at_slot}` : 'no expiry';
+    const authority = record?.authority ? truncAddr(record.authority) : '--';
+    const evidence = record?.evidence_hash ? ` · evidence ${truncAddr(record.evidence_hash)}` : '';
+    return `<div class="risk-restriction-card">
+        <div class="risk-restriction-title">
+            <span>#${escapeHtml(id)}</span>
+            <span>${escapeHtml(String(mode).toUpperCase())}</span>
+        </div>
+        <div class="risk-restriction-meta">${escapeHtml(reason)} · ${escapeHtml(expiry)} · ${escapeHtml(authority)}${escapeHtml(evidence)}</div>
+    </div>`;
+}
+
+function renderRiskRestrictionList(status) {
+    const list = riskConsoleElement('riskRestrictionList');
+    if (!list) return;
+    if (!status) {
+        list.innerHTML = '<div class="ir-empty">Restriction status unavailable</div>';
+        return;
+    }
+    const restrictions = riskRestrictionsFromStatus(status);
+    if (restrictions.length === 0) {
+        list.innerHTML = '<div class="ir-empty">No active restrictions for target</div>';
+        return;
+    }
+    list.innerHTML = restrictions.map(riskRestrictionCard).join('');
+}
+
+async function fetchRiskConsoleStatus(selection) {
+    const activePagePromise = rpc('listActiveRestrictions', [{ limit: 8 }]).catch(() => null);
+
+    switch (selection.type) {
+        case 'account': {
+            const movement = {
+                account: selection.primary,
+                asset: selection.asset || 'native',
+                amount: selection.amount,
+            };
+            const [status, send, receive, activePage] = await Promise.all([
+                rpc('getAccountRestrictionStatus', [selection.primary]).catch(() => null),
+                rpc('canSend', [movement]).catch(() => null),
+                rpc('canReceive', [movement]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, send, receive, activePage };
+        }
+        case 'account_asset': {
+            const movement = {
+                account: selection.primary,
+                asset: selection.asset,
+                amount: selection.amount,
+            };
+            const [status, send, receive, activePage] = await Promise.all([
+                rpc('getAccountAssetRestrictionStatus', [selection.primary, selection.asset]).catch(() => null),
+                rpc('canSend', [movement]).catch(() => null),
+                rpc('canReceive', [movement]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, send, receive, activePage };
+        }
+        case 'asset': {
+            const [status, activePage] = await Promise.all([
+                rpc('getAssetRestrictionStatus', [selection.primary]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, activePage };
+        }
+        case 'contract': {
+            const [status, activePage] = await Promise.all([
+                rpc('getContractLifecycleStatus', [selection.primary]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, activePage };
+        }
+        case 'code_hash': {
+            const [status, activePage] = await Promise.all([
+                rpc('getCodeHashRestrictionStatus', [selection.primary]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, activePage };
+        }
+        case 'bridge_route': {
+            const [status, activePage] = await Promise.all([
+                rpc('getBridgeRouteRestrictionStatus', [selection.primary, selection.secondary]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, activePage };
+        }
+        case 'protocol_module': {
+            const [status, activePage] = await Promise.all([
+                rpc('getRestrictionStatus', [{ type: 'protocol_module', module: selection.primary }]).catch(() => null),
+                activePagePromise,
+            ]);
+            return { status, activePage };
+        }
+        default:
+            return { status: null, activePage: await activePagePromise };
+    }
+}
+
+function renderRiskConsoleStatus(selection, data) {
+    const status = data.status;
+    const restricted = riskTargetIsRestricted(selection, status);
+    const ids = riskIdsFromStatus(status);
+    const activeCount = Number(data.activePage?.count ?? data.activePage?.restrictions?.length ?? 0);
+    const slot = riskStatusSlot(status, data.send, data.receive, data.activePage);
+
+    setText('riskTargetState', riskTargetStateText(selection, status));
+    setText('riskActiveIds', formatRiskIds(ids));
+    setText('riskSendFlag', riskMovementFlag(data.send, selection.type === 'asset' ? restricted : null));
+    setText('riskReceiveFlag', riskMovementFlag(data.receive, selection.type === 'asset' ? restricted : null));
+    setText('riskExecuteFlag', riskExecuteFlag(selection, status));
+    setText('riskStatusSlot', slot === null ? '--' : formatNum(slot));
+    setText(
+        'riskConsoleNote',
+        status
+            ? `${riskTargetLabel(selection)} checked at slot ${slot === null ? '--' : formatNum(slot)}. Network active restrictions: ${formatNum(activeCount)}.`
+            : `${riskTargetLabel(selection)} status is unavailable from RPC.`
+    );
+    renderRiskRestrictionList(status);
+    lastRiskConsoleData = data;
+    updateRiskAuthorityOptions(selection, status);
+    validateRiskActionContext();
+
+    const badge = riskConsoleElement('riskConsoleBadge');
+    if (badge) {
+        const targetMissing = selection.type === 'contract' && status?.found === false;
+        badge.textContent = !status ? 'UNAVAILABLE' : targetMissing ? 'NOT FOUND' : restricted ? 'RESTRICTED' : 'CLEAR';
+        badge.className = `panel-badge ${!status || targetMissing ? 'warning' : restricted ? 'danger' : 'success'}`;
+    }
+}
+
+async function updateRiskConsoleStatus(fromUserAction = false) {
+    const nextSelection = fromUserAction ? readRiskConsoleSelection() : riskConsoleSelection;
+    if (!nextSelection) return;
+    if (nextSelection.error) {
+        riskConsoleSelection = null;
+        renderRiskConsoleEmpty(nextSelection.error);
+        return;
+    }
+
+    riskConsoleSelection = nextSelection;
+    setRiskConsoleBusy(true);
+    try {
+        const data = await fetchRiskConsoleStatus(riskConsoleSelection);
+        renderRiskConsoleStatus(riskConsoleSelection, data);
+        riskConsoleLoaded = true;
+        riskConsoleLoadedAt = Date.now();
+        if (fromUserAction) {
+            addEvent('info', 'magnifying-glass-chart', `Risk Console checked ${riskTargetLabel(riskConsoleSelection)}`);
+        }
+    } catch (error) {
+        console.warn('Risk Console status failed:', error);
+        lastRiskConsoleData = null;
+        renderRiskConsoleEmpty('Risk target status is unavailable.');
+    } finally {
+        setRiskConsoleBusy(false);
+    }
 }
 
 function purgeLegacyAdminToken() {
@@ -2402,6 +3768,17 @@ let controlPlaneMonitorLoaded = false;
 let controlPlaneMonitorLoadedAt = 0;
 let incidentAuthorityLoaded = false;
 let incidentAuthorityLoadedAt = 0;
+let riskConsoleSelection = null;
+let lastRiskConsoleData = null;
+let riskConsoleLoaded = false;
+let riskConsoleLoadedAt = 0;
+let riskSignerWallet = null;
+let riskSignerProvider = null;
+let riskSignerAddress = null;
+let lastRiskPreviewTx = null;
+let lastRiskSignedPreview = null;
+let lastRiskSubmittedTx = null;
+let lastRiskLifecycleEvents = [];
 
 async function updateControlPlaneMonitor() {
     const badge = document.getElementById('controlPlaneBadge');
@@ -3313,6 +4690,11 @@ function updateClock() {
 async function init() {
     purgeLegacyAdminToken();
     bindStaticControls();
+    initRiskSignerConnection();
+    updateRiskConsoleInputs();
+    updateRiskRestrictionModeOptions();
+    updateRiskWorkflowUi();
+    renderRiskConsoleEmpty('No target selected');
     addEvent('info', 'power-off', 'Mission Control initializing...');
 
     // Set network selector — rebuild options, hide local-* in production

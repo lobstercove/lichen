@@ -365,6 +365,8 @@
                     <div class="balance-amount" id="totalBalance">0.00 LICN</div>
                     <div class="balance-usd" id="balanceUsd">$0.00 USD</div>
                     <div id="balanceBreakdown" class="balance-breakdown"></div>
+                    <div id="walletRestrictionStatus" class="wallet-restriction-status" role="status"
+                        aria-live="polite" hidden></div>
 
                     <div class="balance-actions">
                         <button class="action-btn" data-wallet-action="showSend">
@@ -614,6 +616,8 @@
                         <span class="amount-max" data-wallet-action="setMaxAmount">MAX</span>
                     </div>
                     <div id="sendAvailableBalance" class="send-available-balance"></div>
+                    <div id="sendRestrictionStatus" class="send-restriction-status" role="status"
+                        aria-live="polite" hidden></div>
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>

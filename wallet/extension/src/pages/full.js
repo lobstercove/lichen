@@ -37,6 +37,13 @@ import {
 } from '../core/identity-service.js';
 import { stakeLicn, unstakeStLicn, claimMossStake, loadStakingSnapshot } from '../core/staking-service.js';
 import { loadNftDetails } from '../core/nft-service.js';
+import {
+  assertRestrictionPreflightAllowed,
+  extensionRestrictionStatusItems,
+  loadExtensionRestrictionStatus,
+  preflightNativeTransferRestrictions,
+  restrictionPreflightSummary
+} from '../core/restriction-service.js';
 
 const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
 
@@ -47,6 +54,13 @@ let state = null;
 let createdMnemonic = '';
 let createdKeypair = null;
 let _licnUsdPriceCache = { value: 0.10, ts: 0 };
+let extensionRestrictionStatusCache = {
+  address: null,
+  network: null,
+  updatedAt: 0,
+  status: null,
+  inFlight: null
+};
 
 /* Confirm-challenge state for seed phrase verification */
 let confirmWords = [];   // expected order
@@ -175,6 +189,158 @@ function showToast(msg, type = '') {
   t.textContent = msg;
   t.className = 'toast show' + (type ? ` ${type}` : '');
   setTimeout(() => { t.classList.remove('show'); }, 3000);
+}
+
+function activeNetworkKey() {
+  return state?.network?.selected || 'local-testnet';
+}
+
+function setRestrictionElement(el, { kind = '', text = '' } = {}) {
+  if (!el) return;
+  if (!text) {
+    el.hidden = true;
+    el.className = 'extension-restriction-status';
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.className = `extension-restriction-status ${kind}`.trim();
+  el.textContent = text;
+}
+
+function renderExtensionRestrictionStatus(status) {
+  const el = $('extensionRestrictionStatus');
+  const items = extensionRestrictionStatusItems(status);
+  if (items.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'blocked',
+      text: `Consensus restriction active: ${items.join(' | ')}`
+    });
+    return;
+  }
+  if (Array.isArray(status?.criticalErrors) && status.criticalErrors.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'warning',
+      text: 'Restriction status unavailable from trusted RPC. Sending is blocked until preflight succeeds.'
+    });
+    return;
+  }
+  setRestrictionElement(el);
+}
+
+function renderSendRestrictionStatus(preflight = null) {
+  const el = $('sendRestrictionStatus');
+  if (preflight) {
+    const summary = restrictionPreflightSummary(preflight);
+    if (preflight.allowed === false) {
+      setRestrictionElement(el, { kind: 'blocked', text: summary });
+      return;
+    }
+    if (Array.isArray(preflight.warnings) && preflight.warnings.length > 0) {
+      setRestrictionElement(el, { kind: 'warning', text: summary });
+      return;
+    }
+    setRestrictionElement(el, { kind: 'passed', text: summary });
+    return;
+  }
+
+  const status = extensionRestrictionStatusCache.status;
+  const items = extensionRestrictionStatusItems(status)
+    .filter((item) => !String(item).toLowerCase().includes('receive blocked'));
+  if (items.length > 0) {
+    setRestrictionElement(el, { kind: 'blocked', text: items.join(' | ') });
+    return;
+  }
+  if (Array.isArray(status?.criticalErrors) && status.criticalErrors.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'warning',
+      text: 'Restriction status unavailable. Transfer preflight will verify before signing.'
+    });
+    return;
+  }
+  setRestrictionElement(el);
+}
+
+function renderExtensionAssetRestrictionBadges(status = extensionRestrictionStatusCache.status) {
+  const badgeEl = document.querySelector('[data-asset-restriction-badges="LICN"]');
+  if (!badgeEl) return;
+  const items = extensionRestrictionStatusItems(status);
+  if (!items.length) {
+    badgeEl.innerHTML = '';
+    return;
+  }
+  badgeEl.innerHTML = items.slice(0, 3).map((item) => (
+    `<span class="extension-asset-restriction-badge">${escapeHtmlExt(item)}</span>`
+  )).join('');
+}
+
+async function refreshExtensionRestrictionStatus({ force = false, updateSend = false, updateAssets = false } = {}) {
+  const wallet = getActiveWallet();
+  if (!wallet) {
+    renderExtensionRestrictionStatus(null);
+    renderSendRestrictionStatus(null);
+    renderExtensionAssetRestrictionBadges(null);
+    return null;
+  }
+
+  const network = activeNetworkKey();
+  const now = Date.now();
+  const fresh = extensionRestrictionStatusCache.address === wallet.address
+    && extensionRestrictionStatusCache.network === network
+    && extensionRestrictionStatusCache.status
+    && now - extensionRestrictionStatusCache.updatedAt < 30_000;
+
+  if (!force && fresh) {
+    renderExtensionRestrictionStatus(extensionRestrictionStatusCache.status);
+    if (updateSend) renderSendRestrictionStatus();
+    if (updateAssets) renderExtensionAssetRestrictionBadges(extensionRestrictionStatusCache.status);
+    return extensionRestrictionStatusCache.status;
+  }
+
+  if (extensionRestrictionStatusCache.inFlight
+    && extensionRestrictionStatusCache.address === wallet.address
+    && extensionRestrictionStatusCache.network === network) {
+    return extensionRestrictionStatusCache.inFlight;
+  }
+
+  extensionRestrictionStatusCache.address = wallet.address;
+  extensionRestrictionStatusCache.network = network;
+  extensionRestrictionStatusCache.inFlight = loadExtensionRestrictionStatus({
+    account: wallet.address,
+    network
+  }).then((status) => {
+    extensionRestrictionStatusCache = {
+      address: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      status,
+      inFlight: null
+    };
+    renderExtensionRestrictionStatus(status);
+    if (updateSend) renderSendRestrictionStatus();
+    if (updateAssets) renderExtensionAssetRestrictionBadges(status);
+    return status;
+  }).catch((error) => {
+    const status = {
+      account: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      unavailable: true,
+      criticalErrors: [error?.message || String(error)]
+    };
+    extensionRestrictionStatusCache = {
+      address: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      status,
+      inFlight: null
+    };
+    renderExtensionRestrictionStatus(status);
+    if (updateSend) renderSendRestrictionStatus();
+    if (updateAssets) renderExtensionAssetRestrictionBadges(status);
+    return status;
+  });
+  return extensionRestrictionStatusCache.inFlight;
 }
 
 async function persist(next) {
@@ -739,6 +905,7 @@ async function refreshBalance() {
         breakdownEl.style.display = 'none';
       }
     }
+    void refreshExtensionRestrictionStatus({ updateSend: true, updateAssets: true });
   } catch {
     $('totalBalance').textContent = '0.00 LICN';
     $('balanceUsd').textContent = '$0.00 USD';
@@ -1993,6 +2160,7 @@ async function loadAssets() {
         <div class="asset-info">
           <div class="asset-name">LICN</div>
           <div class="asset-symbol">Lichen Native Token</div>
+          <div class="extension-asset-restriction-badges" data-asset-restriction-badges="LICN"></div>
         </div>
         <div class="asset-balance">
           <div class="asset-amount">${licn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })}</div>
@@ -2000,6 +2168,7 @@ async function loadAssets() {
         </div>
       </div>
     `;
+    renderExtensionAssetRestrictionBadges();
   } catch {
     list.innerHTML = '<div class="empty-state"><p>Failed to load assets</p></div>';
   }
@@ -2159,10 +2328,12 @@ async function handleSend() {
   const to = $('sendTo').value.trim();
   const amount = Number($('sendAmount').value || 0);
   const pw = $('sendPassword').value;
+  const selectedToken = $('sendToken')?.value || 'LICN';
 
   if (!isValidAddress(to)) { showToast('Invalid recipient address', 'error'); return; }
   if (!amount || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
   if (!pw) { showToast('Password required to sign', 'error'); return; }
+  if (selectedToken !== 'LICN') { showToast('Extension send supports LICN transfers only', 'error'); return; }
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
@@ -2177,6 +2348,15 @@ async function handleSend() {
       showToast(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} LICN`, 'error');
       return;
     }
+
+    const restrictionPreflight = await preflightNativeTransferRestrictions({
+      fromAddress: wallet.address,
+      toAddress: to,
+      amountLicn: amount,
+      network: activeNetworkKey()
+    });
+    renderSendRestrictionStatus(restrictionPreflight);
+    assertRestrictionPreflightAllowed(restrictionPreflight);
 
     const privKey = await decryptPrivateKey(wallet.encryptedKey, pw);
     const block = await rpc().getLatestBlock();
@@ -2198,6 +2378,7 @@ async function handleSend() {
     $('sendTo').value = '';
     $('sendAmount').value = '';
     $('sendPassword').value = '';
+    renderSendRestrictionStatus(null);
     await refreshBalance();
     await loadActivity();
   } catch (e) {
@@ -2507,15 +2688,23 @@ async function populateSendTokenDropdown() {
   if (!select) return;
   const wallet = getActiveWallet();
   if (!wallet) return;
-  select.innerHTML = '<option value="LICN">LICN</option>';
+  const seen = new Set(['LICN']);
+  const createOption = (value, label = value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  };
+  select.replaceChildren(createOption('LICN'));
   try {
     const accounts = await rpc().call('getTokenAccounts', [wallet.address]);
     if (Array.isArray(accounts)) {
       for (const acct of accounts) {
-        const sym = acct.symbol || acct.token_symbol || '';
+        const sym = String(acct.symbol || acct.token_symbol || '').trim();
         const bal = Number(acct.balance || acct.amount || 0);
-        if (sym && bal > 0) {
-          select.innerHTML += `<option value="${sym}">${sym}</option>`;
+        if (/^[A-Za-z0-9._-]{1,24}$/.test(sym) && bal > 0 && !seen.has(sym)) {
+          seen.add(sym);
+          select.appendChild(createOption(sym));
         }
       }
     }
@@ -2523,8 +2712,9 @@ async function populateSendTokenDropdown() {
   // Add stLICN if user has a staking position
   try {
     const pos = await rpc().call('getStakingPosition', [wallet.address]);
-    if (pos && pos.st_licn_amount > 0) {
-      select.innerHTML += '<option value="stLICN">stLICN</option>';
+    if (pos && pos.st_licn_amount > 0 && !seen.has('stLICN')) {
+      seen.add('stLICN');
+      select.appendChild(createOption('stLICN'));
     }
   } catch { /* no staking position */ }
 }
@@ -2705,6 +2895,8 @@ function wireEvents() {
     openModal('sendModal');
     await populateSendTokenDropdown();
     updateSendAvailableBalance();
+    renderSendRestrictionStatus();
+    void refreshExtensionRestrictionStatus({ updateSend: true });
   });
   $('closeSendModal')?.addEventListener('click', () => closeModal('sendModal'));
   $('cancelSendBtn')?.addEventListener('click', () => closeModal('sendModal'));

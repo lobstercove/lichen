@@ -1274,6 +1274,11 @@
     background: rgba(0, 201, 219, 0.05);
 }
 
+.asset-item.asset-restricted {
+    border-color: rgba(239, 68, 68, 0.38);
+    background: rgba(239, 68, 68, 0.06);
+}
+
 .asset-icon {
     width: 42px;
     height: 42px;
@@ -1672,12 +1677,119 @@
     margin-top: 0.25rem;
 }
 
+.send-restriction-status {
+    margin-top: 0.55rem;
+    padding: 0.62rem 0.72rem;
+    border: 1px solid rgba(239, 68, 68, 0.28);
+    border-radius: 10px;
+    background: rgba(239, 68, 68, 0.08);
+    color: #fecaca;
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+
+.send-restriction-status[hidden] {
+    display: none;
+}
+
 .balance-breakdown {
     display: none;
     margin-top: 0.5rem;
     font-size: 0.78rem;
     color: var(--text-muted);
     line-height: 1.6;
+}
+
+.wallet-restriction-status {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin: 1rem 0 1.15rem;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid rgba(239, 68, 68, 0.32);
+    border-radius: 12px;
+    background: rgba(239, 68, 68, 0.08);
+    color: #fee2e2;
+}
+
+.wallet-restriction-status[hidden] {
+    display: none;
+}
+
+.wallet-restriction-status.warning {
+    border-color: rgba(245, 158, 11, 0.34);
+    background: rgba(245, 158, 11, 0.08);
+    color: #fde68a;
+}
+
+.wallet-restriction-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: rgba(239, 68, 68, 0.18);
+}
+
+.wallet-restriction-status.warning .wallet-restriction-icon {
+    background: rgba(245, 158, 11, 0.18);
+}
+
+.wallet-restriction-copy {
+    min-width: 0;
+}
+
+.wallet-restriction-title {
+    font-size: 0.86rem;
+    font-weight: 700;
+    margin-bottom: 0.28rem;
+}
+
+.wallet-restriction-detail {
+    font-size: 0.78rem;
+    color: rgba(255, 255, 255, 0.76);
+    line-height: 1.45;
+}
+
+.asset-restriction-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.35rem;
+}
+
+.asset-restriction-badges:empty {
+    display: none;
+}
+
+.asset-restriction-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-height: 22px;
+    padding: 0.18rem 0.48rem;
+    border-radius: 999px;
+    border: 1px solid rgba(239, 68, 68, 0.32);
+    background: rgba(239, 68, 68, 0.1);
+    color: #fecaca;
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.asset-restriction-badge.paused {
+    border-color: rgba(245, 158, 11, 0.36);
+    background: rgba(245, 158, 11, 0.11);
+    color: #fde68a;
+}
+
+.asset-restriction-badge.frozen {
+    border-color: rgba(96, 165, 250, 0.36);
+    background: rgba(96, 165, 250, 0.1);
+    color: #bfdbfe;
 }
 
 /* ────────────────────────────────────────────────────────────

@@ -1315,6 +1315,239 @@
                     <div class="incident-authority-note" id="incidentAuthorityNote">Loading incident authority state...
                     </div>
                 </div>
+
+                <div class="ir-section risk-console-section">
+                    <div class="ir-section-header">
+                        <h4 class="ir-section-title"><i class="fas fa-magnifying-glass-chart"></i> Risk Console</h4>
+                        <span class="panel-badge info" id="riskConsoleBadge">READ ONLY</span>
+                    </div>
+                    <form class="risk-console-form" id="riskConsoleForm">
+                        <label class="risk-console-field">
+                            <span>Target</span>
+                            <select id="riskTargetType">
+                                <option value="account">Account</option>
+                                <option value="account_asset">Account + Asset</option>
+                                <option value="asset">Asset</option>
+                                <option value="contract">Contract</option>
+                                <option value="code_hash">Code Hash</option>
+                                <option value="bridge_route">Bridge Route</option>
+                                <option value="protocol_module">Protocol Module</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span id="riskPrimaryLabel">Account</span>
+                            <input id="riskPrimaryValue" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="Base58 address">
+                        </label>
+                        <label class="risk-console-field" id="riskSecondaryField">
+                            <span id="riskSecondaryLabel">Asset</span>
+                            <input id="riskSecondaryValue" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="native">
+                        </label>
+                        <label class="risk-console-field compact" id="riskAmountField">
+                            <span>Amount</span>
+                            <input id="riskAmountValue" type="number" min="0" step="1" value="1">
+                        </label>
+                        <button class="risk-console-submit" id="riskSearchBtn" type="submit"
+                            aria-label="Query risk target" title="Query risk target">
+                            <i class="fas fa-magnifying-glass"></i>
+                        </button>
+                    </form>
+                    <div class="risk-status-grid" id="riskStatusGrid">
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Target State</span>
+                            <span class="incident-authority-value" id="riskTargetState">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Active IDs</span>
+                            <span class="incident-authority-value" id="riskActiveIds">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Send</span>
+                            <span class="incident-authority-value" id="riskSendFlag">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Receive</span>
+                            <span class="incident-authority-value" id="riskReceiveFlag">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Execute</span>
+                            <span class="incident-authority-value" id="riskExecuteFlag">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Slot</span>
+                            <span class="incident-authority-value" id="riskStatusSlot">--</span>
+                        </div>
+                    </div>
+                    <form class="risk-action-form" id="riskActionForm">
+                        <label class="risk-console-field">
+                            <span>Authority</span>
+                            <select id="riskAuthorityType">
+                                <option value="main_governance">Main Governance</option>
+                                <option value="incident_guardian">Incident Guardian</option>
+                                <option value="bridge_committee_admin">Bridge Committee</option>
+                                <option value="oracle_committee_admin">Oracle Committee</option>
+                                <option value="stored_restriction_authority">Stored Authority</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Reason</span>
+                            <select id="riskReasonCode">
+                                <option value="exploit_active">Exploit Active</option>
+                                <option value="stolen_funds">Stolen Funds</option>
+                                <option value="bridge_compromise">Bridge Compromise</option>
+                                <option value="oracle_compromise">Oracle Compromise</option>
+                                <option value="scam_contract">Scam Contract</option>
+                                <option value="malicious_code_hash">Malicious Code Hash</option>
+                                <option value="sanctions_or_legal_order">Sanctions / Legal Order</option>
+                                <option value="phishing_or_impersonation">Phishing / Impersonation</option>
+                                <option value="custody_incident">Custody Incident</option>
+                                <option value="protocol_bug">Protocol Bug</option>
+                                <option value="governance_error_correction">Governance Error Correction</option>
+                                <option value="false_positive_lift">False Positive Lift</option>
+                                <option value="testnet_drill">Testnet Drill</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Mode</span>
+                            <select id="riskRestrictionMode">
+                                <option value="outgoing_only">Outgoing Only</option>
+                                <option value="incoming_only">Incoming Only</option>
+                                <option value="bidirectional">Bidirectional</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Evidence Hash</span>
+                            <input id="riskEvidenceHash" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="64 hex chars">
+                        </label>
+                        <label class="risk-console-field">
+                            <span>URI Hash</span>
+                            <input id="riskEvidenceUriHash" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="optional 64 hex chars">
+                        </label>
+                        <label class="risk-console-field">
+                            <span>TTL</span>
+                            <select id="riskTtlPolicy">
+                                <option value="no_expiry">No Expiry</option>
+                                <option value="guardian_24h">24h Guardian</option>
+                                <option value="guardian_72h">72h Guardian Max</option>
+                                <option value="custom_slots">Custom Slots</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field is-hidden" id="riskCustomTtlField">
+                            <span>Custom Slots</span>
+                            <input id="riskCustomTtlSlots" type="number" min="1" step="1" placeholder="1..648000">
+                        </label>
+                    </form>
+                    <div class="risk-validation-grid" id="riskValidationGrid">
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Authority Check</span>
+                            <span class="incident-authority-value" id="riskAuthorityCheck">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Evidence Check</span>
+                            <span class="incident-authority-value" id="riskEvidenceCheck">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Expiry Slot</span>
+                            <span class="incident-authority-value" id="riskExpiryPreview">--</span>
+                        </div>
+                        <div class="incident-authority-card">
+                            <span class="incident-authority-label">Policy Check</span>
+                            <span class="incident-authority-value" id="riskPolicyCheck">--</span>
+                        </div>
+                    </div>
+                    <div class="risk-signer-form" id="riskSignerForm">
+                        <label class="risk-console-field">
+                            <span>Workflow</span>
+                            <select id="riskWorkflowMode">
+                                <option value="create_restriction">Create Restriction</option>
+                                <option value="lift_target">Lift Selected Target</option>
+                                <option value="lift_restriction_id">Lift Restriction ID</option>
+                                <option value="extend_restriction_id">Extend Restriction ID</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Proposer</span>
+                            <input id="riskProposerValue" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="Connect signer or paste proposer">
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Governance Authority</span>
+                            <input id="riskGovernanceAuthorityValue" type="text" autocomplete="off" spellcheck="false"
+                                placeholder="Base58 authority">
+                        </label>
+                        <button class="risk-action-button wallet-disconnected" id="riskConnectSignerBtn" type="button">
+                            <i class="fas fa-wallet"></i>
+                            <span>Connect Signer</span>
+                        </button>
+                        <button class="risk-action-button" id="riskBuildPreviewBtn" type="button">
+                            <i class="fas fa-file-signature"></i>
+                            <span>Build Preview</span>
+                        </button>
+                        <button class="risk-action-button" id="riskSignPreviewBtn" type="button" disabled>
+                            <i class="fas fa-signature"></i>
+                            <span>Sign Preview</span>
+                        </button>
+                        <button class="risk-action-button" id="riskSubmitSignedTxBtn" type="button" disabled>
+                            <i class="fas fa-paper-plane"></i>
+                            <span>Submit Signed</span>
+                        </button>
+                    </div>
+                    <div class="risk-lifecycle-form" id="riskLifecycleForm">
+                        <label class="risk-console-field" id="riskRestrictionIdField">
+                            <span>Restriction ID</span>
+                            <input id="riskRestrictionIdValue" type="number" min="1" step="1"
+                                placeholder="Required for ID workflows">
+                        </label>
+                        <label class="risk-console-field" id="riskLiftReasonField">
+                            <span>Lift Reason</span>
+                            <select id="riskLiftReasonCode">
+                                <option value="incident_resolved">Incident Resolved</option>
+                                <option value="false_positive">False Positive</option>
+                                <option value="evidence_rejected">Evidence Rejected</option>
+                                <option value="governance_override">Governance Override</option>
+                                <option value="expired_cleanup">Expired Cleanup</option>
+                                <option value="testnet_drill_complete">Testnet Drill Complete</option>
+                            </select>
+                        </label>
+                        <label class="risk-console-field">
+                            <span>Proposal ID</span>
+                            <input id="riskProposalIdValue" type="number" min="1" step="1"
+                                placeholder="Existing proposal">
+                        </label>
+                        <button class="risk-action-button" id="riskApproveProposalBtn" type="button" disabled>
+                            <i class="fas fa-check-double"></i>
+                            <span>Approve Proposal</span>
+                        </button>
+                        <button class="risk-action-button" id="riskExecuteProposalBtn" type="button" disabled>
+                            <i class="fas fa-bolt"></i>
+                            <span>Execute Proposal</span>
+                        </button>
+                        <button class="risk-action-button" id="riskRefreshLifecycleBtn" type="button">
+                            <i class="fas fa-rotate"></i>
+                            <span>Refresh Events</span>
+                        </button>
+                    </div>
+                    <div class="risk-preview-panel" id="riskPreviewPanel">
+                        <div class="ir-empty">No transaction preview built</div>
+                    </div>
+                    <div class="risk-lifecycle-panel" id="riskLifecyclePanel">
+                        <div class="ir-empty">No proposal lifecycle activity loaded</div>
+                    </div>
+                    <div class="incident-authority-note" id="riskSignerNote">Connect the Lichen wallet extension to
+                        prepare the proposer signer. Signing is separate from submission.
+                    </div>
+                    <div class="incident-authority-note" id="riskActionNote">Action context is read-only until the
+                        transaction preview step.
+                    </div>
+                    <div class="risk-restriction-list" id="riskRestrictionList">
+                        <div class="ir-empty">No target selected</div>
+                    </div>
+                    <div class="incident-authority-note" id="riskConsoleNote">Risk target status has not been queried.
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1332,6 +1565,7 @@
     <script src="shared/utils.js"></script>
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
+    <script src="shared/wallet-connect.js"></script>
     <script src="js/monitoring.js"></script>
 </body>
 

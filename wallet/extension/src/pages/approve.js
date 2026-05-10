@@ -42,6 +42,27 @@ function setDecisionEnabled(enabled) {
   if (rejectBtn) rejectBtn.disabled = !enabled;
 }
 
+function setApproveEnabled(enabled) {
+  const approveBtn = document.getElementById('approveBtn');
+  if (approveBtn) approveBtn.disabled = !enabled;
+}
+
+function restrictionSummary(preflight) {
+  if (!preflight || typeof preflight !== 'object') return '';
+  if (Array.isArray(preflight.blocks) && preflight.blocks.length) {
+    return preflight.blocks.join(' | ');
+  }
+  if (Array.isArray(preflight.warnings) && preflight.warnings.length) {
+    return preflight.warnings.join(' | ');
+  }
+  if (preflight.skipped) return '';
+  return 'Restriction preflight passed';
+}
+
+function requestHasBlockingRestriction(request) {
+  return request?.restrictionPreflight?.allowed === false;
+}
+
 async function loadRequest(requestId) {
   const response = await chrome.runtime.sendMessage({
     type: 'LICHEN_PROVIDER_PENDING_GET',
@@ -76,7 +97,7 @@ function renderPendingRequests(items) {
     <div>Pending</div>
     <div>
       <button class="btn btn-secondary btn-small" data-action="pickPending" data-request-id="${item.requestId}">
-        ${escapeHtml(item.method || 'unknown')} • ${escapeHtml(item.origin || 'unknown')}
+        ${escapeHtml(item.method || 'unknown')} • ${escapeHtml(item.origin || 'unknown')}${item.restrictionBlocked ? ' • blocked' : ''}
       </button>
     </div>
   `).join('');
@@ -86,14 +107,16 @@ async function bindRequest(request) {
   renderRequest(request);
   document.getElementById('approveBtn').onclick = () => decide(request.requestId, true, request);
   document.getElementById('rejectBtn').onclick = () => decide(request.requestId, false, request);
+  return requestHasBlockingRestriction(request);
 }
 
 async function pickAndLoadRequest(requestId) {
   const status = document.getElementById('approveStatus');
   try {
     const request = await loadRequest(requestId);
-    await bindRequest(request);
+    const blocked = await bindRequest(request);
     setDecisionEnabled(true);
+    setApproveEnabled(!blocked);
     status.textContent = 'Loaded selected pending request';
   } catch (error) {
     status.textContent = error?.message || String(error);
@@ -140,11 +163,37 @@ function renderRequest(request) {
 
   const needsPassword = isSigningMethod(request.method);
   document.getElementById('passwordRow').style.display = needsPassword ? 'block' : 'none';
+
+  const restrictionEl = document.getElementById('approveRestrictionStatus');
+  const preflight = request.restrictionPreflight || null;
+  const summary = restrictionSummary(preflight);
+  if (!restrictionEl) return;
+  if (!summary) {
+    restrictionEl.className = 'approve-restriction-status';
+    restrictionEl.textContent = '';
+    return;
+  }
+  if (preflight?.allowed === false) {
+    restrictionEl.className = 'approve-restriction-status blocked';
+    restrictionEl.textContent = `Blocked by consensus restriction preflight: ${summary}`;
+  } else if (Array.isArray(preflight?.warnings) && preflight.warnings.length) {
+    restrictionEl.className = 'approve-restriction-status warning';
+    restrictionEl.textContent = `Restriction preflight warning: ${summary}`;
+  } else {
+    restrictionEl.className = 'approve-restriction-status passed';
+    restrictionEl.textContent = summary;
+  }
 }
 
 async function decide(requestId, approved, request) {
   const status = document.getElementById('approveStatus');
   status.textContent = approved ? 'Approving...' : 'Rejecting...';
+
+  if (approved && requestHasBlockingRestriction(request)) {
+    status.textContent = restrictionSummary(request.restrictionPreflight) || 'Blocked by consensus restriction preflight';
+    setApproveEnabled(false);
+    return;
+  }
 
   const approvalInput = {};
   if (approved && isSigningMethod(request.method)) {
@@ -205,7 +254,8 @@ async function boot() {
   try {
     const request = await loadRequest(requestId);
     await refreshPendingList();
-    await bindRequest(request);
+    const blocked = await bindRequest(request);
+    setApproveEnabled(!blocked);
   } catch (error) {
     status.textContent = error?.message || String(error);
     setDecisionEnabled(false);

@@ -2,6 +2,12 @@ import { decryptPrivateKey, signTransaction, bytesToHex } from './crypto-service
 import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { patchState } from './state-store.js';
 import { serializeMessageForSigning } from './tx-service.js';
+import {
+  getTrustedRestrictionRpc,
+  preflightTransactionRestrictions,
+  RESTRICTION_METHODS,
+  restrictionPreflightSummary
+} from './restriction-service.js';
 
 const APPROVED_ORIGINS_KEY = 'lichenApprovedOrigins';
 const APPROVED_ORIGINS_META_KEY = 'lichenApprovedOriginsMeta';
@@ -172,7 +178,8 @@ export function listPendingRequests(limit = 20) {
       requestId: entry.requestId,
       method: normalizeMethod(entry.payload?.method || null),
       origin: entry.origin || null,
-      createdAt: entry.createdAt || Date.now()
+      createdAt: entry.createdAt || Date.now(),
+      restrictionBlocked: entry.restrictionPreflight?.allowed === false
     }));
 
   return items;
@@ -193,7 +200,7 @@ function consumeFinalizedResult(requestId) {
   return request.finalized;
 }
 
-function createPendingRequest(payload, context) {
+function createPendingRequest(payload, context, extra = {}) {
   prunePendingRequests();
 
   if (pendingRequests.size >= MAX_PENDING_REQUESTS) {
@@ -210,7 +217,8 @@ function createPendingRequest(payload, context) {
     payload,
     origin: context.origin || null,
     createdAt: Date.now(),
-    finalized: null
+    finalized: null,
+    restrictionPreflight: extra.restrictionPreflight || null
   });
   return requestId;
 }
@@ -254,6 +262,9 @@ function normalizeMethod(rawMethod) {
     licn_latest_block: 'licn_getLatestBlock',
     licn_get_provider_state: 'licn_getProviderState',
     licn_is_connected: 'licn_isConnected',
+    lichen_getRestrictionStatus: 'licn_getRestrictionStatus',
+    lichen_canTransfer: 'licn_canTransfer',
+    lichen_getContractLifecycleStatus: 'licn_getContractLifecycleStatus',
     eth_accounts: 'licn_accounts',
     eth_requestAccounts: 'licn_requestAccounts',
     personal_sign: 'licn_signMessage',
@@ -281,6 +292,120 @@ function normalizeMethod(rawMethod) {
     net_listening: 'licn_netListening'
   };
   return aliasMap[method] || method;
+}
+
+function singleProviderParam(payload, expectedMessage) {
+  const params = payload?.params;
+  if (Array.isArray(params)) {
+    if (params.length !== 1) {
+      throw new Error(expectedMessage);
+    }
+    return params[0];
+  }
+  if (params === undefined || params === null) {
+    throw new Error(expectedMessage);
+  }
+  return params;
+}
+
+function stringFieldFromObject(object, fieldNames) {
+  if (!object || typeof object !== 'object') return null;
+  for (const fieldName of fieldNames) {
+    const value = object[fieldName];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function toJsonRpcSafe(value, fieldName = 'value') {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new Error(`${fieldName} must be non-negative`);
+    return value.toString();
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => toJsonRpcSafe(entry, `${fieldName}[${index}]`));
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (entry === undefined) continue;
+      if (typeof entry === 'function' || typeof entry === 'symbol') {
+        throw new Error(`${fieldName}.${key} is not JSON-RPC serializable`);
+      }
+      out[key] = toJsonRpcSafe(entry, `${fieldName}.${key}`);
+    }
+    return out;
+  }
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    throw new Error(`${fieldName} is not JSON-RPC serializable`);
+  }
+  return value;
+}
+
+function normalizeRestrictionAmount(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new Error('lichen_canTransfer amount must be a non-negative integer');
+    return value.toString();
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('lichen_canTransfer amount must be a non-negative integer');
+    }
+    return value;
+  }
+  if (typeof value === 'string') {
+    const amount = value.trim();
+    if (!/^\d+$/.test(amount)) {
+      throw new Error('lichen_canTransfer amount must be a non-negative integer');
+    }
+    return amount;
+  }
+  throw new Error('lichen_canTransfer amount must be a non-negative integer');
+}
+
+function normalizeRestrictionStatusParams(payload) {
+  const target = singleProviderParam(payload, 'lichen_getRestrictionStatus expects one restriction target object');
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    throw new Error('lichen_getRestrictionStatus expects one restriction target object');
+  }
+  return [toJsonRpcSafe(target, 'restriction target')];
+}
+
+function normalizeContractLifecycleParams(payload) {
+  const raw = singleProviderParam(payload, 'lichen_getContractLifecycleStatus expects one contract address');
+  const contract = typeof raw === 'string'
+    ? raw.trim()
+    : stringFieldFromObject(raw, ['contract', 'contract_id', 'contractId', 'account', 'address']);
+  if (!contract) {
+    throw new Error('lichen_getContractLifecycleStatus expects one contract address');
+  }
+  return [contract];
+}
+
+function normalizeCanTransferParams(payload) {
+  const raw = singleProviderParam(payload, 'lichen_canTransfer expects one transfer object');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('lichen_canTransfer expects one transfer object');
+  }
+
+  const from = stringFieldFromObject(raw, ['from', 'source']);
+  const to = stringFieldFromObject(raw, ['to', 'recipient']);
+  const asset = typeof raw.asset === 'string' && raw.asset.trim() ? raw.asset.trim() : null;
+  if (!from || !to || !asset) {
+    throw new Error('lichen_canTransfer requires from, to, and asset');
+  }
+
+  const transfer = { from, to, asset };
+  const amount = normalizeRestrictionAmount(raw.amount);
+  if (amount !== undefined) transfer.amount = amount;
+  return [transfer];
+}
+
+async function callProviderRestrictionMethod(payload, context, rpcMethod, normalizeParamsFn) {
+  const rpc = getTrustedRestrictionRpc(context.network || 'local-testnet');
+  return rpc.call(rpcMethod, normalizeParamsFn(payload));
 }
 
 function getAddressFromParams(params, connectedAddress) {
@@ -335,10 +460,178 @@ function encodeBase64Object(value) {
   return btoa(String.fromCharCode(...bytes));
 }
 
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  if (typeof btoa === 'function') return btoa(binary);
+  return Buffer.from(bytes).toString('base64');
+}
+
+function base64ToBytes(value) {
+  const encoded = String(value || '').trim();
+  if (!encoded) throw new Error('Missing base64 transaction payload');
+  if (typeof atob === 'function') {
+    const raw = atob(encoded);
+    return Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+  }
+  return new Uint8Array(Buffer.from(encoded, 'base64'));
+}
+
 function decodeBase64Object(base64String) {
-  const raw = atob(base64String);
-  const bytes = Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+  const bytes = base64ToBytes(base64String);
   return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+class LichenWireReader {
+  constructor(bytes, offset = 0) {
+    this.bytes = bytes;
+    this.offset = offset;
+  }
+
+  remaining() {
+    return this.bytes.length - this.offset;
+  }
+
+  readU8(fieldName) {
+    if (this.remaining() < 1) throw new Error(`Truncated ${fieldName}`);
+    return this.bytes[this.offset++];
+  }
+
+  readU32LE(fieldName) {
+    if (this.remaining() < 4) throw new Error(`Truncated ${fieldName}`);
+    const value = this.bytes[this.offset]
+      | (this.bytes[this.offset + 1] << 8)
+      | (this.bytes[this.offset + 2] << 16)
+      | (this.bytes[this.offset + 3] << 24);
+    this.offset += 4;
+    return value >>> 0;
+  }
+
+  readU64Number(fieldName) {
+    if (this.remaining() < 8) throw new Error(`Truncated ${fieldName}`);
+    let value = 0n;
+    for (let i = 0; i < 8; i++) {
+      value |= BigInt(this.bytes[this.offset + i]) << BigInt(i * 8);
+    }
+    this.offset += 8;
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`${fieldName} exceeds JavaScript safe integer range`);
+    }
+    return Number(value);
+  }
+
+  readBytes(length, fieldName) {
+    if (!Number.isSafeInteger(length) || length < 0) throw new Error(`Invalid ${fieldName} length`);
+    if (this.remaining() < length) throw new Error(`Truncated ${fieldName}`);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  readVecBytes(fieldName) {
+    return this.readBytes(this.readU64Number(`${fieldName} length`), fieldName);
+  }
+
+  readPubkey(fieldName) {
+    return Array.from(this.readBytes(32, fieldName));
+  }
+}
+
+function decodeLichenWirePqSignature(reader) {
+  const schemeVersion = reader.readU8('signature scheme_version');
+  const publicKeySchemeVersion = reader.readU8('signature public_key scheme_version');
+  const publicKeyBytes = reader.readVecBytes('signature public_key bytes');
+  const signatureBytes = reader.readVecBytes('signature bytes');
+  return {
+    scheme_version: schemeVersion,
+    public_key: {
+      scheme_version: publicKeySchemeVersion,
+      bytes: bytesToHex(publicKeyBytes)
+    },
+    sig: bytesToHex(signatureBytes)
+  };
+}
+
+function decodeLichenWireOptionU64(reader, fieldName) {
+  const tag = reader.readU8(`${fieldName} option`);
+  if (tag === 0) return undefined;
+  if (tag !== 1) throw new Error(`Invalid ${fieldName} option tag`);
+  return reader.readU64Number(fieldName);
+}
+
+function decodeLichenWireMessage(reader) {
+  const instructionCount = reader.readU64Number('instruction count');
+  const instructions = [];
+  for (let i = 0; i < instructionCount; i++) {
+    const programId = reader.readPubkey(`instruction ${i} program_id`);
+    const accountCount = reader.readU64Number(`instruction ${i} account count`);
+    const accounts = [];
+    for (let accountIndex = 0; accountIndex < accountCount; accountIndex++) {
+      accounts.push(reader.readPubkey(`instruction ${i} account ${accountIndex}`));
+    }
+    const data = Array.from(reader.readVecBytes(`instruction ${i} data`));
+    instructions.push({ program_id: programId, accounts, data });
+  }
+
+  const blockhash = bytesToHex(reader.readBytes(32, 'recent_blockhash'));
+  const computeBudget = decodeLichenWireOptionU64(reader, 'compute_budget');
+  const computeUnitPrice = decodeLichenWireOptionU64(reader, 'compute_unit_price');
+  const message = { instructions, blockhash };
+  if (computeBudget !== undefined) message.compute_budget = computeBudget;
+  if (computeUnitPrice !== undefined) message.compute_unit_price = computeUnitPrice;
+  return message;
+}
+
+function decodeLichenWireTransactionBase64(encodedTransaction) {
+  const bytes = base64ToBytes(encodedTransaction);
+  if (bytes.length < 4 || bytes[0] !== 0x4d || bytes[1] !== 0x54) {
+    throw new Error('Transaction is not a lichen_tx_v1 wire envelope');
+  }
+  if (bytes[2] !== 1) throw new Error(`Unsupported Lichen transaction wire version: ${bytes[2]}`);
+
+  const envelopeTxType = bytes[3];
+  if (envelopeTxType !== 0 && envelopeTxType !== 1) {
+    throw new Error(`Unknown Lichen transaction type byte: ${envelopeTxType}`);
+  }
+
+  const reader = new LichenWireReader(bytes, 4);
+  const signatureCount = reader.readU64Number('signature count');
+  const signatures = [];
+  for (let i = 0; i < signatureCount; i++) {
+    signatures.push(decodeLichenWirePqSignature(reader));
+  }
+  const message = decodeLichenWireMessage(reader);
+
+  let payloadTxType = envelopeTxType;
+  if (reader.remaining() >= 4) {
+    payloadTxType = reader.readU32LE('transaction type');
+  }
+
+  return {
+    signatures,
+    message,
+    tx_type: payloadTxType === 1 ? 'evm' : 'native'
+  };
+}
+
+function decodeTransactionInputForSigning(incomingTx) {
+  if (incomingTx && typeof incomingTx === 'object') {
+    return { txObject: incomingTx, sourceFormat: 'object' };
+  }
+
+  if (typeof incomingTx !== 'string') {
+    throw new Error('Unsupported transaction payload');
+  }
+
+  try {
+    return { txObject: decodeBase64Object(incomingTx), sourceFormat: 'wallet_json_base64' };
+  } catch (jsonError) {
+    try {
+      return { txObject: decodeLichenWireTransactionBase64(incomingTx), sourceFormat: 'lichen_tx_v1' };
+    } catch (wireError) {
+      throw new Error(`Unsupported transaction payload: ${wireError.message || jsonError.message}`);
+    }
+  }
 }
 
 const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -420,6 +713,47 @@ function messageBytesForSigning(txObject) {
   return serializeMessageForSigning(normalizedMessage);
 }
 
+async function previewRestrictionPreflightForPayload(payload, context = {}) {
+  const params = normalizeParams(payload);
+  const incomingTx = getTransactionFromParams(params);
+  if (!incomingTx) return null;
+
+  try {
+    const { txObject } = decodeTransactionInputForSigning(incomingTx);
+    return await preflightTransactionRestrictions({
+      transaction: txObject,
+      fromAddress: context.activeAddress || null,
+      network: context.network || 'local-testnet'
+    });
+  } catch (error) {
+    return {
+      allowed: false,
+      skipped: false,
+      network: context.network || 'local-testnet',
+      targets: null,
+      checks: [],
+      warnings: [],
+      blocks: [`Restriction preflight failed: ${error?.message || error}`]
+    };
+  }
+}
+
+async function enforceRestrictionPreflight(txObject, activeWallet, context = {}) {
+  const preflight = await preflightTransactionRestrictions({
+    transaction: txObject,
+    fromAddress: activeWallet?.address || null,
+    network: context.network || 'local-testnet'
+  });
+  if (preflight.allowed === false) {
+    return {
+      ok: false,
+      error: restrictionPreflightSummary(preflight) || 'Transaction blocked by consensus restriction',
+      restrictionPreflight: preflight
+    };
+  }
+  return null;
+}
+
 async function getRpcForContext(context = {}) {
   const endpoint = await getConfiguredRpcEndpoint(context.network || 'local-testnet');
   return new LichenRPC(endpoint);
@@ -492,7 +826,9 @@ async function finalizeSignTransaction(request, context, approvalInput) {
     return { ok: false, error: 'Missing transaction payload' };
   }
 
-  const txObject = typeof incomingTx === 'string' ? decodeBase64Object(incomingTx) : incomingTx;
+  const { txObject, sourceFormat } = decodeTransactionInputForSigning(incomingTx);
+  const preflightError = await enforceRestrictionPreflight(txObject, activeWallet, context);
+  if (preflightError) return preflightError;
 
   let privateKeyHex;
   try {
@@ -512,6 +848,8 @@ async function finalizeSignTransaction(request, context, approvalInput) {
       result: {
         signedTransaction: signedTx,
         signedTransactionBase64: encodeBase64Object(signedTx),
+        signedTransactionFormat: 'wallet_json_base64',
+        sourceTransactionFormat: sourceFormat,
         signature: signature.sig,
         pqSignature: signature
       }
@@ -538,7 +876,9 @@ async function finalizeSendTransaction(request, context, approvalInput) {
     return { ok: false, error: 'Missing transaction payload' };
   }
 
-  const txObject = typeof incomingTx === 'string' ? decodeBase64Object(incomingTx) : incomingTx;
+  const { txObject, sourceFormat } = decodeTransactionInputForSigning(incomingTx);
+  const preflightError = await enforceRestrictionPreflight(txObject, activeWallet, context);
+  if (preflightError) return preflightError;
 
   let privateKeyHex;
   try {
@@ -564,7 +904,9 @@ async function finalizeSendTransaction(request, context, approvalInput) {
         signature: signature.sig,
         pqSignature: signature,
         signedTransaction: signedTx,
-        signedTransactionBase64: txBase64
+        signedTransactionBase64: txBase64,
+        signedTransactionFormat: 'wallet_json_base64',
+        sourceTransactionFormat: sourceFormat
       }
     };
   } finally {
@@ -899,6 +1241,36 @@ export async function handleProviderRequest(payload, context = {}) {
       return { ok: true, result };
     }
 
+    case 'licn_getRestrictionStatus': {
+      const result = await callProviderRestrictionMethod(
+        payload,
+        context,
+        RESTRICTION_METHODS.targetStatus,
+        normalizeRestrictionStatusParams
+      );
+      return { ok: true, result };
+    }
+
+    case 'licn_canTransfer': {
+      const result = await callProviderRestrictionMethod(
+        payload,
+        context,
+        RESTRICTION_METHODS.canTransfer,
+        normalizeCanTransferParams
+      );
+      return { ok: true, result };
+    }
+
+    case 'licn_getContractLifecycleStatus': {
+      const result = await callProviderRestrictionMethod(
+        payload,
+        context,
+        RESTRICTION_METHODS.contractLifecycleStatus,
+        normalizeContractLifecycleParams
+      );
+      return { ok: true, result };
+    }
+
     case 'licn_requestAccounts': {
       if (!hasWallet) {
         return { ok: false, error: 'No wallet is configured in the extension' };
@@ -933,7 +1305,8 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_signTransaction': {
-      const requestId = createPendingRequest(payload, context);
+      const restrictionPreflight = await previewRestrictionPreflightForPayload(payload, context);
+      const requestId = createPendingRequest(payload, context, { restrictionPreflight });
       return {
         ok: true,
         pending: true,
@@ -942,7 +1315,8 @@ export async function handleProviderRequest(payload, context = {}) {
     }
 
     case 'licn_sendTransaction': {
-      const requestId = createPendingRequest(payload, context);
+      const restrictionPreflight = await previewRestrictionPreflightForPayload(payload, context);
+      const requestId = createPendingRequest(payload, context, { restrictionPreflight });
       return {
         ok: true,
         pending: true,

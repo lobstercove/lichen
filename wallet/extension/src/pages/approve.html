@@ -12,6 +12,10 @@
     .approve-shell { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
     .approve-grid { display: grid; grid-template-columns: 120px 1fr; gap: 0.6rem; font-size: 0.9rem; }
     .approve-actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+    .approve-restriction-status { display: none; margin-top: 1rem; padding: 0.75rem; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.35); color: #bbf7d0; background: rgba(16, 185, 129, 0.1); font-size: 0.85rem; line-height: 1.45; }
+    .approve-restriction-status.warning { display: block; border-color: rgba(245, 158, 11, 0.45); color: #fde68a; background: rgba(245, 158, 11, 0.1); }
+    .approve-restriction-status.blocked { display: block; border-color: rgba(239, 68, 68, 0.45); color: #fecaca; background: rgba(239, 68, 68, 0.1); }
+    .approve-restriction-status.passed { display: block; }
     .mono { font-family: 'JetBrains Mono', monospace; word-break: break-all; }
   </style>
 </head>
@@ -25,6 +29,7 @@
       </div>
       <div id="pendingRequests" class="approve-grid" style="margin-bottom: 1rem;"></div>
       <div id="approveContent" class="approve-grid"></div>
+      <div id="approveRestrictionStatus" class="approve-restriction-status" aria-live="polite"></div>
       <div id="passwordRow" class="form-group" style="margin-top: 1rem; display: none;">
         <label>Password (required for signing)</label>
         <input id="approvePassword" type="password" class="form-input" placeholder="Enter wallet password" />

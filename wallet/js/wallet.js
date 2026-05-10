@@ -243,6 +243,7 @@ function connectBalanceWebSocket() {
                 if (subId === balanceWsSubId) {
                     refreshBalance();
                     loadAssets();
+                    void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
                     loadActivity();
                     // Refresh staking tab if visible — catches MossStake deposit/unstake
                     refreshStakingIfVisible();
@@ -322,6 +323,7 @@ function handleBridgeMintEvent(data) {
     // Refresh balance to show new tokens
     refreshBalance();
     loadAssets();
+    void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
 }
 
 function disconnectBalanceWebSocket(manual = true) {
@@ -406,7 +408,11 @@ function startBalancePolling() {
     _balancePollTimer = setInterval(async () => {
         const dashboard = document.getElementById('walletDashboard');
         if (!dashboard || dashboard.style.display === 'none') return;
-        try { await refreshBalance(); await loadActivity(); } catch (_) { /* ignore */ }
+        try {
+            await refreshBalance();
+            await loadActivity();
+            void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
+        } catch (_) { /* ignore */ }
     }, 8000); // Poll every 8 seconds as supplement
 }
 
@@ -633,6 +639,491 @@ async function getAllTokenBalances(walletAddress) {
     return balances;
 }
 
+// ── Restriction Status Surface ──
+const WALLET_RESTRICTION_CONFIG = LICHEN_CONFIG.restrictions || {};
+const WALLET_RESTRICTION_METHODS = WALLET_RESTRICTION_CONFIG.methods || {};
+const WALLET_RESTRICTION_REFRESH_MS = Number(WALLET_RESTRICTION_CONFIG.refreshMs) || 30000;
+let walletRestrictionCache = {
+    address: null,
+    network: null,
+    updatedAt: 0,
+    status: null,
+    inFlight: null
+};
+
+function walletRestrictionMethod(name, fallback) {
+    return WALLET_RESTRICTION_METHODS[name] || fallback;
+}
+
+function walletNativeRestrictionAsset() {
+    return WALLET_RESTRICTION_CONFIG.nativeAsset || 'native';
+}
+
+function clearWalletRestrictionStatusCache() {
+    walletRestrictionCache = {
+        address: null,
+        network: null,
+        updatedAt: 0,
+        status: null,
+        inFlight: null
+    };
+    renderWalletRestrictionStatus(null);
+    renderSendRestrictionStatus();
+}
+
+function restrictionStatusIsActive(status) {
+    if (!status || typeof status !== 'object') return false;
+    if (status.active === true || status.restricted === true || status.blocked === true || status.allowed === false) {
+        return true;
+    }
+    const activeIds = status.active_restriction_ids;
+    return Array.isArray(activeIds) && activeIds.length > 0;
+}
+
+function restrictionStatusRecords(status) {
+    if (!status || typeof status !== 'object') return [];
+    const records = Array.isArray(status.active_restrictions) ? status.active_restrictions : [];
+    return records.filter((record) => record && typeof record === 'object');
+}
+
+function restrictionStatusIds(status) {
+    if (!status || typeof status !== 'object' || !Array.isArray(status.active_restriction_ids)) {
+        return [];
+    }
+    return status.active_restriction_ids
+        .map((id) => String(id))
+        .filter(Boolean);
+}
+
+function uniqueStrings(values) {
+    const seen = new Set();
+    const out = [];
+    for (const value of values) {
+        const text = String(value || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push(text);
+    }
+    return out;
+}
+
+function titleCaseRestriction(value) {
+    const text = String(value || '').replace(/_/g, ' ').trim();
+    if (!text) return 'restricted';
+    return text.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatRestrictionIds(status) {
+    const ids = restrictionStatusIds(status);
+    if (ids.length === 0) return '';
+    const head = ids.slice(0, 3).map((id) => `#${id}`).join(', ');
+    return ids.length > 3 ? `${head} +${ids.length - 3}` : head;
+}
+
+function formatFrozenAmount(rawAmount, token) {
+    const amount = Number(rawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return '';
+    const decimals = Number.isFinite(Number(token?.decimals)) ? Number(token.decimals) : 9;
+    const symbol = token?.symbol || 'asset';
+    return `${fmtToken(amount / Math.pow(10, decimals))} ${symbol}`;
+}
+
+function restrictionRecordBadge(record, token) {
+    const mode = String(record?.mode || record?.mode_details?.kind || '').toLowerCase();
+    const frozenAmount = record?.frozen_amount ?? record?.mode_details?.frozen_amount;
+
+    if (mode === 'asset_paused') {
+        return { label: 'Asset paused', icon: 'fas fa-pause-circle', kind: 'paused' };
+    }
+    if (mode === 'frozen_amount') {
+        const amountLabel = formatFrozenAmount(frozenAmount, token);
+        return {
+            label: amountLabel ? `Frozen ${amountLabel}` : 'Frozen amount',
+            icon: 'fas fa-lock',
+            kind: 'frozen'
+        };
+    }
+    if (mode === 'outgoing_only') {
+        return { label: 'Send blocked', icon: 'fas fa-ban', kind: 'blocked' };
+    }
+    if (mode === 'incoming_only') {
+        return { label: 'Receive blocked', icon: 'fas fa-ban', kind: 'blocked' };
+    }
+    if (mode === 'bidirectional') {
+        return { label: 'Transfers blocked', icon: 'fas fa-ban', kind: 'blocked' };
+    }
+    if (mode) {
+        return { label: titleCaseRestriction(mode), icon: 'fas fa-triangle-exclamation', kind: 'blocked' };
+    }
+    return { label: 'Restricted', icon: 'fas fa-triangle-exclamation', kind: 'blocked' };
+}
+
+function addRestrictionStatusBadges(status, token, badges) {
+    if (!restrictionStatusIsActive(status)) return;
+    const records = restrictionStatusRecords(status);
+    if (records.length > 0) {
+        for (const record of records) {
+            badges.push(restrictionRecordBadge(record, token));
+        }
+        return;
+    }
+    badges.push({ label: 'Restricted', icon: 'fas fa-triangle-exclamation', kind: 'blocked' });
+}
+
+function assetRestrictionBadges(assetState) {
+    if (!assetState) return [];
+    const token = assetState.token || { symbol: assetState.symbol, decimals: 9 };
+    const badges = [];
+
+    addRestrictionStatusBadges(assetState.assetStatus, token, badges);
+    addRestrictionStatusBadges(assetState.accountAssetStatus, token, badges);
+
+    if (restrictionStatusIsActive(assetState.canSend) && assetState.canSend?.allowed === false) {
+        badges.push({ label: 'Send blocked', icon: 'fas fa-ban', kind: 'blocked' });
+    }
+    if (restrictionStatusIsActive(assetState.canReceive) && assetState.canReceive?.allowed === false) {
+        badges.push({ label: 'Receive blocked', icon: 'fas fa-ban', kind: 'blocked' });
+    }
+
+    const seen = new Set();
+    return badges.filter((badge) => {
+        const key = `${badge.kind}:${badge.label}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function renderAssetRestrictionBadges(assetState) {
+    const badges = assetRestrictionBadges(assetState);
+    if (badges.length === 0) return '';
+    const ids = uniqueStrings([
+        ...restrictionStatusIds(assetState.assetStatus),
+        ...restrictionStatusIds(assetState.accountAssetStatus),
+        ...restrictionStatusIds(assetState.canSend),
+        ...restrictionStatusIds(assetState.canReceive),
+    ]);
+    const title = ids.length > 0
+        ? `Consensus restriction ${ids.map((id) => `#${id}`).join(', ')}`
+        : 'Consensus restriction active';
+    return badges.slice(0, 4).map((badge) => `
+        <span class="asset-restriction-badge ${escapeHtml(badge.kind)}" title="${escapeHtml(title)}">
+            <i class="${escapeHtml(badge.icon)}"></i>${escapeHtml(badge.label)}
+        </span>
+    `).join('');
+}
+
+function walletRestrictionBannerItems(status) {
+    if (!status) return [];
+    const items = [];
+    const accountIds = formatRestrictionIds(status.accountStatus);
+    if (restrictionStatusIsActive(status.accountStatus)) {
+        items.push(accountIds ? `Account restriction ${accountIds}` : 'Account restriction active');
+    }
+
+    const nativeAsset = status.assets?.LICN;
+    if (nativeAsset) {
+        if (restrictionStatusIsActive(nativeAsset.assetStatus)) {
+            const ids = formatRestrictionIds(nativeAsset.assetStatus);
+            items.push(ids ? `LICN asset restriction ${ids}` : 'LICN asset restriction active');
+        }
+        if (restrictionStatusIsActive(nativeAsset.accountAssetStatus)) {
+            const ids = formatRestrictionIds(nativeAsset.accountAssetStatus);
+            items.push(ids ? `LICN account-asset restriction ${ids}` : 'LICN account-asset restriction active');
+        }
+        if (nativeAsset.canSend?.allowed === false) items.push('LICN send blocked');
+        if (nativeAsset.canReceive?.allowed === false) items.push('LICN receive blocked');
+    }
+
+    return uniqueStrings(items).slice(0, 5);
+}
+
+function renderWalletRestrictionStatus(status) {
+    const el = document.getElementById('walletRestrictionStatus');
+    if (!el) return;
+
+    const activeItems = walletRestrictionBannerItems(status);
+    const criticalErrors = Array.isArray(status?.criticalErrors) ? status.criticalErrors : [];
+    if (activeItems.length === 0 && criticalErrors.length === 0) {
+        el.hidden = true;
+        el.className = 'wallet-restriction-status';
+        el.innerHTML = '';
+        return;
+    }
+
+    const isWarning = activeItems.length === 0 && criticalErrors.length > 0;
+    el.hidden = false;
+    el.className = `wallet-restriction-status${isWarning ? ' warning' : ''}`;
+    const icon = isWarning ? 'fas fa-triangle-exclamation' : 'fas fa-ban';
+    const title = isWarning ? 'Restriction status unavailable' : 'Consensus restriction active';
+    const details = isWarning
+        ? 'The trusted RPC restriction status check failed. Do not rely on this wallet view until it refreshes.'
+        : activeItems.join(' | ');
+    el.innerHTML = `
+        <div class="wallet-restriction-icon"><i class="${icon}"></i></div>
+        <div class="wallet-restriction-copy">
+            <div class="wallet-restriction-title">${escapeHtml(title)}</div>
+            <div class="wallet-restriction-detail">${escapeHtml(details)}</div>
+        </div>
+    `;
+}
+
+function peekWalletRestrictionStatus(address = getActiveWallet()?.address) {
+    const network = getSelectedNetwork();
+    if (!address || walletRestrictionCache.address !== address || walletRestrictionCache.network !== network) {
+        return null;
+    }
+    return walletRestrictionCache.status;
+}
+
+async function safeTrustedRestrictionCall(methodName, params, criticalErrors, optionalErrors) {
+    try {
+        return await trustedRpcCall(methodName, params);
+    } catch (error) {
+        const errors = criticalErrors || optionalErrors;
+        if (Array.isArray(errors)) errors.push(error?.message || String(error));
+        return null;
+    }
+}
+
+async function fetchSingleAssetRestrictionState(address, symbol, asset, token, criticalErrors, optionalErrors) {
+    const isCritical = symbol === 'LICN';
+    const errors = isCritical ? criticalErrors : optionalErrors;
+    const [
+        assetStatus,
+        accountAssetStatus,
+        canSend,
+        canReceive
+    ] = await Promise.all([
+        safeTrustedRestrictionCall(
+            walletRestrictionMethod('assetStatus', 'getAssetRestrictionStatus'),
+            [{ asset }],
+            isCritical ? criticalErrors : null,
+            errors
+        ),
+        safeTrustedRestrictionCall(
+            walletRestrictionMethod('accountAssetStatus', 'getAccountAssetRestrictionStatus'),
+            [{ account: address, asset }],
+            isCritical ? criticalErrors : null,
+            errors
+        ),
+        safeTrustedRestrictionCall(
+            walletRestrictionMethod('canSend', 'canSend'),
+            [{ account: address, asset, amount: 0 }],
+            isCritical ? criticalErrors : null,
+            errors
+        ),
+        safeTrustedRestrictionCall(
+            walletRestrictionMethod('canReceive', 'canReceive'),
+            [{ account: address, asset, amount: 0 }],
+            isCritical ? criticalErrors : null,
+            errors
+        ),
+    ]);
+
+    return {
+        symbol,
+        asset,
+        token,
+        assetStatus,
+        accountAssetStatus,
+        canSend,
+        canReceive,
+        errors
+    };
+}
+
+async function loadWalletRestrictionStatus(address, network) {
+    const criticalErrors = [];
+    const optionalErrors = [];
+    const assets = {};
+
+    const accountStatus = await safeTrustedRestrictionCall(
+        walletRestrictionMethod('accountStatus', 'getAccountRestrictionStatus'),
+        [address],
+        criticalErrors
+    );
+
+    assets.LICN = await fetchSingleAssetRestrictionState(
+        address,
+        'LICN',
+        walletNativeRestrictionAsset(),
+        { symbol: 'LICN', decimals: 9 },
+        criticalErrors,
+        optionalErrors
+    );
+
+    await Promise.all(Object.entries(TOKEN_REGISTRY).map(async ([symbol, token]) => {
+        if (!token?.address) return;
+        assets[symbol] = await fetchSingleAssetRestrictionState(
+            address,
+            symbol,
+            token.address,
+            token,
+            criticalErrors,
+            optionalErrors
+        );
+    }));
+
+    return {
+        address,
+        network,
+        updatedAt: Date.now(),
+        accountStatus,
+        assets,
+        criticalErrors,
+        optionalErrors
+    };
+}
+
+async function refreshWalletRestrictionStatus({ force = false, updateAssets = false, updateSend = false } = {}) {
+    const wallet = getActiveWallet();
+    if (!wallet) {
+        renderWalletRestrictionStatus(null);
+        return null;
+    }
+
+    const network = getSelectedNetwork();
+    const now = Date.now();
+    const cacheFresh = walletRestrictionCache.address === wallet.address
+        && walletRestrictionCache.network === network
+        && walletRestrictionCache.status
+        && (now - walletRestrictionCache.updatedAt) < WALLET_RESTRICTION_REFRESH_MS;
+
+    if (!force && cacheFresh) {
+        renderWalletRestrictionStatus(walletRestrictionCache.status);
+        if (updateAssets) updateAssetRestrictionBadges(walletRestrictionCache.status);
+        if (updateSend) renderSendRestrictionStatus();
+        return walletRestrictionCache.status;
+    }
+
+    if (walletRestrictionCache.inFlight
+        && walletRestrictionCache.address === wallet.address
+        && walletRestrictionCache.network === network) {
+        return walletRestrictionCache.inFlight;
+    }
+
+    walletRestrictionCache.address = wallet.address;
+    walletRestrictionCache.network = network;
+    walletRestrictionCache.inFlight = loadWalletRestrictionStatus(wallet.address, network)
+        .then((status) => {
+            walletRestrictionCache = {
+                address: wallet.address,
+                network,
+                updatedAt: Date.now(),
+                status,
+                inFlight: null
+            };
+            renderWalletRestrictionStatus(status);
+            if (updateAssets) updateAssetRestrictionBadges(status);
+            if (updateSend) renderSendRestrictionStatus();
+            return status;
+        })
+        .catch((error) => {
+            const status = {
+                address: wallet.address,
+                network,
+                updatedAt: Date.now(),
+                accountStatus: null,
+                assets: {},
+                criticalErrors: [error?.message || String(error)],
+                optionalErrors: []
+            };
+            walletRestrictionCache = {
+                address: wallet.address,
+                network,
+                updatedAt: Date.now(),
+                status,
+                inFlight: null
+            };
+            renderWalletRestrictionStatus(status);
+            if (updateSend) renderSendRestrictionStatus();
+            return status;
+        });
+
+    return walletRestrictionCache.inFlight;
+}
+
+function updateAssetRestrictionBadges(status) {
+    for (const [symbol, assetState] of Object.entries(status?.assets || {})) {
+        const container = Array.from(document.querySelectorAll('[data-asset-restriction-badges]'))
+            .find((node) => node.dataset.assetRestrictionBadges === symbol);
+        const row = Array.from(document.querySelectorAll('[data-asset-symbol]'))
+            .find((node) => node.dataset.assetSymbol === symbol);
+        if (!container) continue;
+        const badgesHtml = renderAssetRestrictionBadges(assetState);
+        container.innerHTML = badgesHtml;
+        if (row) row.classList.toggle('asset-restricted', badgesHtml.length > 0);
+    }
+}
+
+function assetRestrictionStateForSendToken(selectedToken, status = peekWalletRestrictionStatus()) {
+    if (!status) return null;
+    if (selectedToken === 'LICN') return status.assets?.LICN || null;
+    return status.assets?.[selectedToken] || null;
+}
+
+function renderSendRestrictionStatus(selectedToken = document.getElementById('sendToken')?.value || 'LICN') {
+    const el = document.getElementById('sendRestrictionStatus');
+    if (!el) return;
+    const assetState = assetRestrictionStateForSendToken(selectedToken);
+    const badges = assetRestrictionBadges(assetState)
+        .filter((badge) => badge.label !== 'Receive blocked');
+
+    if (badges.length === 0) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+
+    el.hidden = false;
+    el.textContent = badges.map((badge) => badge.label).join(' | ');
+}
+
+function restrictionAssetForSendToken(selectedToken) {
+    if (selectedToken === 'LICN') return walletNativeRestrictionAsset();
+    if (selectedToken === 'stLICN') return null;
+    return TOKEN_REGISTRY[selectedToken]?.address || null;
+}
+
+function sendAmountToBaseUnits(selectedToken, amount) {
+    if (selectedToken === 'LICN') return Math.floor(amount * SPORES_PER_LICN);
+    const token = TOKEN_REGISTRY[selectedToken];
+    if (!token) return Math.floor(amount);
+    return Math.floor(amount * Math.pow(10, token.decimals));
+}
+
+async function preflightWalletTransferRestrictions(wallet, to, selectedToken, amount) {
+    const asset = restrictionAssetForSendToken(selectedToken);
+    if (!asset) return null;
+
+    const status = await trustedRpcCall(walletRestrictionMethod('canTransfer', 'canTransfer'), [{
+        from: wallet.address,
+        to,
+        asset,
+        amount: sendAmountToBaseUnits(selectedToken, amount)
+    }]);
+
+    if (status?.allowed === false || status?.blocked === true) {
+        const ids = formatRestrictionIds(status);
+        const label = ids
+            ? `Transfer blocked by consensus restriction ${ids}`
+            : 'Transfer blocked by consensus restriction';
+        throw new Error(label);
+    }
+    return status;
+}
+
+function safeCssColor(value, fallback = 'var(--primary)') {
+    const color = String(value || '').trim();
+    return /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : fallback;
+}
+
+function safeHttpImageUrl(value) {
+    const url = String(value || '').trim();
+    return /^https?:\/\//i.test(url) ? url : '';
+}
+
 // Wallet State — declared at top of file (before helpers that reference it)
 
 // Initialize
@@ -646,7 +1137,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     bindStaticControls();
     loadWalletState();
-    loadTokenRegistry();
+    loadTokenRegistry()
+        .then(() => {
+            const dashboard = document.getElementById('walletDashboard');
+            if (!dashboard || dashboard.style.display === 'none') return;
+            loadAssets();
+            void refreshWalletRestrictionStatus({ force: true, updateAssets: true, updateSend: true });
+        })
+        .catch((error) => {
+            console.warn('Failed to load trusted wallet metadata:', error);
+        });
     checkWalletStatus();
     setupEventListeners();
     initNetworkSelector();
@@ -1580,6 +2080,7 @@ async function showDashboard() {
     await fetchLivePrices();
     await refreshBalance();
     await loadAssets();
+    void refreshWalletRestrictionStatus({ updateAssets: true, updateSend: true });
     await loadActivity();
     await loadStaking();
     refreshNFTs();
@@ -1740,6 +2241,7 @@ function switchWallet(walletId) {
     if (typeof clearIdentityCache === 'function') {
         clearIdentityCache();
     }
+    clearWalletRestrictionStatusCache();
     // Close dropdown before refreshing dashboard
     document.getElementById('walletDropdown').classList.remove('show');
     // Reconnect WS + polling for new wallet address
@@ -1829,18 +2331,24 @@ async function loadAssets() {
     const currency = settings.currency || 'USD';
     const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
     const sym = currencySymbols[currency] || '$';
+    const restrictionStatus = peekWalletRestrictionStatus(wallet.address);
+    if (restrictionStatus) {
+        renderWalletRestrictionStatus(restrictionStatus);
+    }
 
     // Build asset list HTML
     let html = '';
 
     // LICN (always first, always shown)
     const licnUsd = licn * getPrice('LICN');
+    const licnBadges = renderAssetRestrictionBadges(restrictionStatus?.assets?.LICN);
     html += `
-        <div class="asset-item" style="cursor: default;">
-            <div class="asset-icon asset-icon-lichen"><img src="${LICN_LOGO_URL}" alt="LICN" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
+        <div class="asset-item${licnBadges ? ' asset-restricted' : ''}" data-asset-symbol="LICN" style="cursor: default;">
+            <div class="asset-icon asset-icon-lichen"><img src="${escapeHtml(LICN_LOGO_URL)}" alt="LICN" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
             <div class="asset-info">
                 <div class="asset-name">Lichen</div>
                 <div class="asset-symbol">LICN</div>
+                <div class="asset-restriction-badges" data-asset-restriction-badges="LICN">${licnBadges}</div>
             </div>
             <div class="asset-balance">
                 <div class="asset-amount">${fmtToken(licn)}</div>
@@ -1855,15 +2363,21 @@ async function loadAssets() {
         const usdVal = bal * getPrice(symbol);
 
         if (bal > 0) {
-            const tokenIcon = token.logoUrl
-                ? `<img src="${token.logoUrl}" alt="${token.symbol}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">`
-                : `<i class="${token.icon}"></i>`;
+            const tokenSymbol = token.symbol || symbol;
+            const safeSymbol = escapeHtml(tokenSymbol);
+            const safeName = escapeHtml(token.name || tokenSymbol);
+            const safeLogoUrl = safeHttpImageUrl(token.logoUrl);
+            const tokenIcon = safeLogoUrl
+                ? `<img src="${escapeHtml(safeLogoUrl)}" alt="${safeSymbol}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">`
+                : `<i class="${escapeHtml(token.icon || 'fas fa-coins')}"></i>`;
+            const badges = renderAssetRestrictionBadges(restrictionStatus?.assets?.[symbol]);
             html += `
-                <div class="asset-item" style="cursor: default;">
-                    <div class="asset-icon" style="color: ${token.color};">${tokenIcon}</div>
+                <div class="asset-item${badges ? ' asset-restricted' : ''}" data-asset-symbol="${escapeHtml(symbol)}" style="cursor: default;">
+                    <div class="asset-icon" style="color: ${safeCssColor(token.color)};">${tokenIcon}</div>
                     <div class="asset-info">
-                        <div class="asset-name">${token.name}</div>
-                        <div class="asset-symbol">${token.symbol}</div>
+                        <div class="asset-name">${safeName}</div>
+                        <div class="asset-symbol">${safeSymbol}</div>
+                        <div class="asset-restriction-badges" data-asset-restriction-badges="${escapeHtml(symbol)}">${badges}</div>
                     </div>
                     <div class="asset-balance">
                         <div class="asset-amount">${fmtToken(bal)}</div>
@@ -2779,7 +3293,7 @@ async function showSend() {
     // Dynamically populate token dropdown from on-chain data — only show tokens with balance
     const select = document.getElementById('sendToken');
     if (select) {
-        select.innerHTML = '<option value="LICN">LICN</option>';
+        select.replaceChildren(new Option('LICN', 'LICN'));
 
         try {
             // Fetch all token accounts for this address from the chain
@@ -2791,7 +3305,7 @@ async function showSend() {
                     const bal = Number(acct.balance || acct.amount || 0);
                     if (sym && bal > 0 && !seen.has(sym)) {
                         seen.add(sym);
-                        select.innerHTML += `<option value="${sym}">${sym}</option>`;
+                        select.appendChild(new Option(sym, sym));
                     }
                 }
             }
@@ -2802,7 +3316,8 @@ async function showSend() {
                 for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
                     const bal = tokenBalances[symbol] || 0;
                     if (bal > 0) {
-                        select.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+                        const tokenSymbol = token.symbol || symbol;
+                        select.appendChild(new Option(tokenSymbol, symbol));
                     }
                 }
             } catch (e2) { /* still show LICN */ }
@@ -2812,7 +3327,7 @@ async function showSend() {
         try {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
             if (position && position.st_licn_amount > 0) {
-                select.innerHTML += `<option value="stLICN">stLICN</option>`;
+                select.appendChild(new Option('stLICN', 'stLICN'));
             }
         } catch (e) {
             // No staking position
@@ -3363,9 +3878,14 @@ function closeModal(modalId) {
             const sendTo = document.getElementById('sendTo');
             const sendAmount = document.getElementById('sendAmount');
             const sendToken = document.getElementById('sendToken');
+            const sendRestrictionStatus = document.getElementById('sendRestrictionStatus');
             if (sendTo) sendTo.value = '';
             if (sendAmount) sendAmount.value = '';
             if (sendToken) sendToken.value = 'LICN';
+            if (sendRestrictionStatus) {
+                sendRestrictionStatus.hidden = true;
+                sendRestrictionStatus.textContent = '';
+            }
         }
     }
 }
@@ -3562,6 +4082,8 @@ async function updateSendTokenUI() {
 
     const selectedToken = document.getElementById('sendToken')?.value || 'LICN';
     const balanceHint = document.getElementById('sendAvailableBalance');
+    renderSendRestrictionStatus(selectedToken);
+    void refreshWalletRestrictionStatus({ updateSend: true });
     if (!balanceHint) return;
 
     try {
@@ -3643,6 +4165,14 @@ async function confirmSend() {
         }
     } catch (e) {
         // Non-blocking: let the RPC reject it if balance is insufficient
+    }
+
+    try {
+        await preflightWalletTransferRestrictions(wallet, to, selectedToken, amount);
+    } catch (error) {
+        renderSendRestrictionStatus(selectedToken);
+        showToast(error.message || 'Transfer blocked by consensus restriction', 'error');
+        return;
     }
 
     try {
@@ -4500,6 +5030,7 @@ async function switchNetwork(network) {
     localStorage.setItem('lichen_wallet_network', network);
     walletState.network = network;
     saveWalletState();
+    clearWalletRestrictionStatusCache();
 
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
@@ -4568,6 +5099,7 @@ function saveNetworkSettings() {
     loadSettingsValues();
 
     rpc.url = getRpcEndpoint();
+    clearWalletRestrictionStatusCache();
 
     if (walletState.settings.allowUnsafeRpc) {
         showToast('⚠️ Unsafe custom RPC mode saved. Untrusted RPC reads can spoof balances and confirmations; bridge routing and signed metadata remain pinned to trusted endpoints.');
