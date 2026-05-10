@@ -95,17 +95,22 @@ test('drill doc requires real transaction IDs and post-condition evidence', () =
       'create_proposal_tx',
       'create_approval_tx',
       'create_execute_tx',
+      'create_execute_auto_executed_by_approval',
       'lift_proposal_tx',
       'lift_approval_tx',
       'lift_execute_tx',
+      'lift_execute_auto_executed_by_approval',
       'restriction_id',
       'blocked_can_transfer',
       'restored_can_transfer',
       'wallet_preflight_blocked',
       'extension_preflight_blocked',
+      'wallet_preflight_restored',
+      'extension_preflight_restored',
       'watchtower_created_alert',
       'watchtower_lifted_alert',
       'all six transaction hash fields are populated with real transaction IDs',
+      'the approval and execute fields may intentionally contain the same transaction ID',
     ],
     'STOLEN_FUNDS_WALLET_FREEZE_UNFREEZE_DRILL.md'
   );
@@ -138,12 +143,16 @@ test('incident response playbook links the RG-805 drill record', () => {
   );
 });
 
-test('tracker keeps RG-805 gated on real tx IDs', () => {
+test('tracker records completed RG-805 live drill and next task', () => {
   assertAllIncluded(
     sources.tracker,
     [
-      '| RG-805 | Blocked | Drill stolen-funds wallet freeze/unfreeze |',
-      'live testnet execution still must record create/approval/execute/lift transaction IDs',
+      '| RG-805 | Done | Drill stolen-funds wallet freeze/unfreeze |',
+      'next strict-order task is RG-807',
+      '3c695aaf0144b1f88bd72ef9e22021bf916234b3bc664df3d196e51d85606db8',
+      'b1be0e836d9874750de5e5926bbf8211ae232400ae08c9eb14d2a577aaec2e92',
+      '3991ab7fcf503b5df8f4c56cbbd7c89c724154308ccebb542f1e4679f21b8b0d',
+      'ba43ff7a28d5fd18d5f8d0752e1802af9c008cd3a2d54a8671b411ce1bab4702',
     ],
     'RESTRICTION_GOVERNANCE_TRACKER.md'
   );

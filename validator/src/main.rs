@@ -4345,6 +4345,44 @@ async fn apply_block_effects(
     // record_block_activity is called in emit_program_and_nft_events, not here
 }
 
+async fn apply_post_block_effects_after_store(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    block: &Block,
+    min_validator_stake: u64,
+    slot_duration_ms: u64,
+) {
+    apply_block_effects(
+        state,
+        validator_set,
+        stake_pool,
+        block,
+        false,
+        min_validator_stake,
+    )
+    .await;
+    apply_oracle_from_block(state, block);
+
+    // Height-boundary validator activation is deterministic post-block state.
+    // Keep it after the canonical block write, matching BFT commit ordering.
+    {
+        let pool = stake_pool.read().await.clone();
+        activate_pending_validators_for_height(
+            state,
+            validator_set,
+            &pool,
+            block.header.slot,
+            min_validator_stake,
+        )
+        .await;
+    }
+
+    run_analytics_bridge_from_state(state, block.header.slot, slot_duration_ms);
+    run_sltp_triggers_from_state(state);
+    reset_24h_stats_if_expired(state, block.header.timestamp);
+}
+
 async fn activate_pending_validators_for_height(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -9531,21 +9569,6 @@ async fn run_validator() {
                                     std::process::exit(1);
                                 }
                             }
-                            run_analytics_bridge_from_state(
-                                &state_for_blocks,
-                                pending_block.header.slot,
-                                runtime_genesis_config_for_blocks
-                                    .read()
-                                    .await
-                                    .consensus
-                                    .slot_duration_ms
-                                    .max(1),
-                            );
-                            run_sltp_triggers_from_state(&state_for_blocks);
-                            reset_24h_stats_if_expired(
-                                &state_for_blocks,
-                                pending_block.header.timestamp,
-                            );
                             if state_for_blocks
                                 .put_block_atomic(&pending_block, None, None)
                                 .is_ok()
@@ -9557,33 +9580,21 @@ async fn run_validator() {
                                 if sync_mgr.is_caught_up(pending_slot).await {
                                     sync_mgr.transition_to_live().await;
                                 }
-                                apply_block_effects(
+                                let slot_duration_ms = runtime_genesis_config_for_blocks
+                                    .read()
+                                    .await
+                                    .consensus
+                                    .slot_duration_ms
+                                    .max(1);
+                                apply_post_block_effects_after_store(
                                     &state_for_blocks,
                                     &validator_set_for_blocks,
                                     &stake_pool_for_blocks,
                                     &pending_block,
-                                    false,
                                     min_validator_stake,
+                                    slot_duration_ms,
                                 )
                                 .await;
-                                // SYNC-ACTIVATION: Activate pending validators after
-                                // applying block effects so the in-memory validator set
-                                // stays in sync with on-chain state during catch-up.
-                                // Without this, validators discovered from replayed
-                                // RegisterValidator TXs stay "pending" forever and the
-                                // local validators_hash diverges from block headers.
-                                {
-                                    let pool = stake_pool_for_blocks.read().await;
-                                    activate_pending_validators_for_height(
-                                        &state_for_blocks,
-                                        &validator_set_for_blocks,
-                                        &pool,
-                                        pending_slot,
-                                        min_validator_stake,
-                                    )
-                                    .await;
-                                }
-                                apply_oracle_from_block(&state_for_blocks, &pending_block);
                                 maybe_create_checkpoint(
                                     &state_for_blocks,
                                     pending_slot,
@@ -9887,51 +9898,6 @@ async fn run_validator() {
                                 std::process::exit(1);
                             }
                         }
-                        // SYNC-FIX: Apply block effects (rewards, staking) during sync
-                        // so that the joining node's CF_ACCOUNTS state matches the
-                        // genesis node's. Without this, block rewards accumulate only
-                        // on the genesis node, causing state_root divergence when BFT
-                        // starts. The reward guard (per-slot idempotency) prevents
-                        // double-application if the block also goes through CommitBlock.
-                        apply_block_effects(
-                            &state_for_blocks,
-                            &validator_set_for_blocks,
-                            &stake_pool_for_blocks,
-                            &block,
-                            false,
-                            min_validator_stake,
-                        )
-                        .await;
-                        // SYNC-ACTIVATION: Activate pending validators after each
-                        // synced block so the in-memory validator set tracks the
-                        // on-chain state deterministically.  Without this, joining
-                        // nodes never promote pending validators during catch-up
-                        // and reject blocks once they enter the full-validation
-                        // window due to validators_hash mismatch.
-                        {
-                            let pool = stake_pool_for_blocks.read().await.clone();
-                            activate_pending_validators_for_height(
-                                &state_for_blocks,
-                                &validator_set_for_blocks,
-                                &pool,
-                                block_slot,
-                                min_validator_stake,
-                            )
-                            .await;
-                        }
-                        apply_oracle_from_block(&state_for_blocks, &block);
-                        run_analytics_bridge_from_state(
-                            &state_for_blocks,
-                            block.header.slot,
-                            runtime_genesis_config_for_blocks
-                                .read()
-                                .await
-                                .consensus
-                                .slot_duration_ms
-                                .max(1),
-                        );
-                        run_sltp_triggers_from_state(&state_for_blocks);
-                        reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
                         if state_for_blocks
                             .put_block_atomic(&block, None, None)
                             .is_ok()
@@ -10058,18 +10024,24 @@ async fn run_validator() {
                                 );
                             }
 
-                            // Now apply block effects (rewards, fees) — safe to run
-                            // after vote since effects don't affect block validity.
-                            apply_block_effects(
+                            // Now apply deterministic post-block effects after the
+                            // canonical block write. This matches BFT commit ordering
+                            // and keeps the block-receiver duplicate guard effective.
+                            let slot_duration_ms = runtime_genesis_config_for_blocks
+                                .read()
+                                .await
+                                .consensus
+                                .slot_duration_ms
+                                .max(1);
+                            apply_post_block_effects_after_store(
                                 &state_for_blocks,
                                 &validator_set_for_blocks,
                                 &stake_pool_for_blocks,
                                 &block,
-                                false,
                                 min_validator_stake,
+                                slot_duration_ms,
                             )
                             .await;
-                            apply_oracle_from_block(&state_for_blocks, &block);
                             maybe_create_checkpoint(
                                 &state_for_blocks,
                                 block_slot,
@@ -10112,21 +10084,6 @@ async fn run_validator() {
                                         &pending_block,
                                     );
                                 }
-                                run_analytics_bridge_from_state(
-                                    &state_for_blocks,
-                                    pending_block.header.slot,
-                                    runtime_genesis_config_for_blocks
-                                        .read()
-                                        .await
-                                        .consensus
-                                        .slot_duration_ms
-                                        .max(1),
-                                );
-                                run_sltp_triggers_from_state(&state_for_blocks);
-                                reset_24h_stats_if_expired(
-                                    &state_for_blocks,
-                                    pending_block.header.timestamp,
-                                );
                                 if state_for_blocks
                                     .put_block_atomic(&pending_block, None, None)
                                     .is_ok()
@@ -10135,16 +10092,21 @@ async fn run_validator() {
                                         std::time::Instant::now();
                                     info!("✅ Applied pending block {}", pending_slot);
                                     sync_mgr.record_progress(pending_slot).await;
-                                    apply_block_effects(
+                                    let slot_duration_ms = runtime_genesis_config_for_blocks
+                                        .read()
+                                        .await
+                                        .consensus
+                                        .slot_duration_ms
+                                        .max(1);
+                                    apply_post_block_effects_after_store(
                                         &state_for_blocks,
                                         &validator_set_for_blocks,
                                         &stake_pool_for_blocks,
                                         &pending_block,
-                                        false,
                                         min_validator_stake,
+                                        slot_duration_ms,
                                     )
                                     .await;
-                                    apply_oracle_from_block(&state_for_blocks, &pending_block);
                                     maybe_create_checkpoint(
                                         &state_for_blocks,
                                         pending_slot,
@@ -10547,25 +10509,10 @@ async fn run_validator() {
                                     .put_block_atomic(&block, None, None)
                                     .is_ok()
                                 {
-                                    // Replay TXs + analytics AFTER commit — crash here is recoverable
+                                    // Replay TXs AFTER commit — crash here is recoverable
                                     if sync_mgr.should_full_validate(block.header.slot).await {
                                         replay_block_transactions(&processor_for_blocks, &block);
                                     }
-                                    run_analytics_bridge_from_state(
-                                        &state_for_blocks,
-                                        block.header.slot,
-                                        runtime_genesis_config_for_blocks
-                                            .read()
-                                            .await
-                                            .consensus
-                                            .slot_duration_ms
-                                            .max(1),
-                                    );
-                                    run_sltp_triggers_from_state(&state_for_blocks);
-                                    reset_24h_stats_if_expired(
-                                        &state_for_blocks,
-                                        block.header.timestamp,
-                                    );
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     // FIX-FORK-1: Record after fork adoption
@@ -10594,16 +10541,21 @@ async fn run_validator() {
                                             block_slot, existing_weight, incoming_weight
                                         );
                                     }
-                                    apply_block_effects(
+                                    let slot_duration_ms = runtime_genesis_config_for_blocks
+                                        .read()
+                                        .await
+                                        .consensus
+                                        .slot_duration_ms
+                                        .max(1);
+                                    apply_post_block_effects_after_store(
                                         &state_for_blocks,
                                         &validator_set_for_blocks,
                                         &stake_pool_for_blocks,
                                         &block,
-                                        false,
                                         min_validator_stake,
+                                        slot_duration_ms,
                                     )
                                     .await;
-                                    apply_oracle_from_block(&state_for_blocks, &block);
                                     maybe_create_checkpoint(
                                         &state_for_blocks,
                                         block_slot,
@@ -10644,19 +10596,6 @@ async fn run_validator() {
                                                 &pending_block,
                                             );
                                         }
-                                        run_analytics_bridge_from_state(
-                                            &state_for_blocks,
-                                            pending_block.header.slot,
-                                            genesis_config_for_blocks
-                                                .consensus
-                                                .slot_duration_ms
-                                                .max(1),
-                                        );
-                                        run_sltp_triggers_from_state(&state_for_blocks);
-                                        reset_24h_stats_if_expired(
-                                            &state_for_blocks,
-                                            pending_block.header.timestamp,
-                                        );
                                         if state_for_blocks
                                             .put_block_atomic(&pending_block, None, None)
                                             .is_ok()
@@ -10671,19 +10610,18 @@ async fn run_validator() {
                                             if sync_mgr.is_caught_up(pending_slot).await {
                                                 sync_mgr.transition_to_live().await;
                                             }
-                                            apply_block_effects(
+                                            apply_post_block_effects_after_store(
                                                 &state_for_blocks,
                                                 &validator_set_for_blocks,
                                                 &stake_pool_for_blocks,
                                                 &pending_block,
-                                                false,
                                                 min_validator_stake,
+                                                genesis_config_for_blocks
+                                                    .consensus
+                                                    .slot_duration_ms
+                                                    .max(1),
                                             )
                                             .await;
-                                            apply_oracle_from_block(
-                                                &state_for_blocks,
-                                                &pending_block,
-                                            );
                                             maybe_create_checkpoint(
                                                 &state_for_blocks,
                                                 pending_slot,
@@ -16082,6 +16020,64 @@ mod tests {
         assert_eq!(alice_after.spendable, alice_before.spendable);
         assert!(state.get_account(&bob).expect("read bob").is_none());
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
+    fn block_receiver_chainable_sync_path_applies_post_hooks_once_after_store() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("// Valid next block in chain - replay transactions then store")
+            .expect("chainable sync path marker");
+        let relative_end = source[start..]
+            .find("// Try to apply any pending blocks (gap-aware).")
+            .expect("pending-block marker");
+        let section = &source[start..start + relative_end];
+
+        let validate_pos = section
+            .find("validate_state_root_with_schema(")
+            .expect("state-root validation call");
+        let store_pos = section
+            .find(".put_block_atomic(&block, None, None)")
+            .expect("canonical block store");
+        let hook_pos = section
+            .find("apply_post_block_effects_after_store(")
+            .expect("post-store effects call");
+
+        assert!(
+            validate_pos < store_pos,
+            "chainable sync must validate the pre-effects state root before storing the block"
+        );
+        assert!(
+            store_pos < hook_pos,
+            "chainable sync must store the block before deterministic post-block hooks"
+        );
+        assert_eq!(
+            section
+                .matches("apply_post_block_effects_after_store(")
+                .count(),
+            1,
+            "chainable sync must apply post-block hooks exactly once"
+        );
+        assert_eq!(
+            section.matches("apply_block_effects(").count(),
+            0,
+            "chainable sync must not bypass the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("run_analytics_bridge_from_state(").count(),
+            0,
+            "analytics bridge belongs inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("run_sltp_triggers_from_state(").count(),
+            0,
+            "SL/TP triggers belong inside the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("reset_24h_stats_if_expired(").count(),
+            0,
+            "24h stats reset belongs inside the post-store hook wrapper"
+        );
     }
 
     fn make_genesis_state_chunk_tx(state_root: Hash, bundle: &GenesisStateBundle) -> Transaction {
