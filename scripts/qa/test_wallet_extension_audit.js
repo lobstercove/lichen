@@ -25,7 +25,13 @@ function test(name, fn) {
 
 // ── Load source files ──
 const extRoot = path.join(__dirname, '..', '..', 'wallet', 'extension', 'src');
+const extensionRoot = path.join(__dirname, '..', '..', 'wallet', 'extension');
+const repoRoot = path.join(__dirname, '..', '..');
 
+const extensionReadmeSrc = fs.readFileSync(path.join(extensionRoot, 'README.md'), 'utf8');
+const permissionsJustificationSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'permissions-justification.md'), 'utf8');
+const submissionChecklistSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'submission-checklist.md'), 'utf8');
+const packageScriptSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'package-wallet-extension.mjs'), 'utf8');
 const nftsSrc = fs.readFileSync(path.join(extRoot, 'pages', 'nfts.js'), 'utf8');
 const fullSrc = fs.readFileSync(path.join(extRoot, 'pages', 'full.js'), 'utf8');
 const popupSrc = fs.readFileSync(path.join(extRoot, 'popup', 'popup.js'), 'utf8');
@@ -36,12 +42,19 @@ const homeHtmlSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.html'), 'u
 const txServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'tx-service.js'), 'utf8');
 const bridgeServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'bridge-service.js'), 'utf8');
 const identityServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'identity-service.js'), 'utf8');
+const restrictionServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'restriction-service.js'), 'utf8');
 const rpcServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'rpc-service.js'), 'utf8');
 const providerRouterSrc = fs.readFileSync(path.join(extRoot, 'core', 'provider-router.js'), 'utf8');
 const wsServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'ws-service.js'), 'utf8');
 const serviceWorkerSrc = fs.readFileSync(path.join(extRoot, 'background', 'service-worker.js'), 'utf8');
 const contentScriptSrc = fs.readFileSync(path.join(extRoot, 'content', 'content-script.js'), 'utf8');
 const inpageProviderSrc = fs.readFileSync(path.join(extRoot, 'content', 'inpage-provider.js'), 'utf8');
+const approveSrc = fs.readFileSync(path.join(extRoot, 'pages', 'approve.js'), 'utf8');
+const approveHtmlSrc = fs.readFileSync(path.join(extRoot, 'pages', 'approve.html'), 'utf8');
+const popupHtmlSrc = fs.readFileSync(path.join(extRoot, 'popup', 'popup.html'), 'utf8');
+const popupCssSrc = fs.readFileSync(path.join(extRoot, 'popup', 'popup.css'), 'utf8');
+const fullHtmlSrc = fs.readFileSync(path.join(extRoot, 'pages', 'full.html'), 'utf8');
+const fullCssSrc = fs.readFileSync(path.join(extRoot, 'pages', 'full.css'), 'utf8');
 
 // ── Extract escapeHtml / escapeHtmlExt from source files ──
 function extractEscapeHtml(src, fnName) {
@@ -337,6 +350,29 @@ test('E-7.4 all three finalize functions declare privateKeyHex with let', () => 
   assert.ok(sendTxFn[0].includes('let privateKeyHex'), 'finalizeSendTransaction uses const instead of let');
 });
 
+// ── E-7A: Restriction governance builder wire signing ──
+console.log('\n── E-7A: Lichen Wire Transaction Signing ──');
+
+test('E-7A.1 provider-router decodes lichen_tx_v1 wire envelopes', () => {
+  assert.ok(providerRouterSrc.includes('function decodeLichenWireTransactionBase64('), 'lichen_tx_v1 decoder not found');
+  assert.ok(providerRouterSrc.includes('bytes[0] !== 0x4d') && providerRouterSrc.includes('bytes[1] !== 0x54'), 'wire magic validation not found');
+  assert.ok(providerRouterSrc.includes('Unsupported Lichen transaction wire version'), 'wire version validation not found');
+});
+
+test('E-7A.2 provider-router reconstructs message bytes from wire payload', () => {
+  assert.ok(providerRouterSrc.includes('class LichenWireReader'), 'wire reader not found');
+  assert.ok(providerRouterSrc.includes('decodeLichenWireMessage(reader)'), 'wire message decoder not used');
+  assert.ok(providerRouterSrc.includes('readU64Number') && providerRouterSrc.includes('readPubkey'), 'bincode primitive readers not found');
+});
+
+test('E-7A.3 signTransaction accepts builder transaction_base64 without submission', () => {
+  const fnMatch = providerRouterSrc.match(/async function finalizeSignTransaction[\s\S]*?\n\}/m);
+  assert.ok(fnMatch, 'finalizeSignTransaction not found');
+  assert.ok(fnMatch[0].includes('decodeTransactionInputForSigning(incomingTx)'), 'sign flow does not use unified transaction decoder');
+  assert.ok(fnMatch[0].includes("signedTransactionFormat: 'wallet_json_base64'"), 'signed transaction format marker missing');
+  assert.ok(fnMatch[0].includes('sourceTransactionFormat: sourceFormat'), 'source transaction format marker missing');
+});
+
 // ── E-8: Missing hex format validation for private key import ──
 console.log('\n── E-8: Private Key Import Hex Validation ──');
 
@@ -418,6 +454,197 @@ test('E-10.5 extension settings surfaces explain the trusted RPC split', () => {
   assert.ok(popupSrc.includes('trusted endpoints'), 'popup settings save should mention trusted endpoints');
 });
 
+// ── E-11: Restriction status and signing preflight ──
+console.log('\n── E-11: Restriction Status And Signing Preflight ──');
+
+test('E-11.1 restriction-service pins all restriction checks to trusted RPC endpoints', () => {
+  assert.ok(restrictionServiceSrc.includes("getTrustedRpcEndpoint(network || 'local-testnet')"),
+    'restriction-service should build RPC clients from trusted endpoints');
+  assert.ok(!restrictionServiceSrc.includes('getConfiguredRpcEndpoint'),
+    'restriction-service must not use custom configured RPC endpoints');
+});
+
+test('E-11.2 restriction-service covers account, asset, transfer, contract lifecycle, and incident RPCs', () => {
+  for (const method of [
+    'getAccountRestrictionStatus',
+    'getAssetRestrictionStatus',
+    'getAccountAssetRestrictionStatus',
+    'canSend',
+    'canReceive',
+    'canTransfer',
+    'getContractLifecycleStatus',
+    'getIncidentStatus'
+  ]) {
+    assert.ok(restrictionServiceSrc.includes(method), `${method} missing from restriction-service`);
+  }
+});
+
+test('E-11.3 provider-router preflights signTransaction before key decryption', () => {
+  const signIndex = providerRouterSrc.indexOf('async function finalizeSignTransaction');
+  const preflightIndex = providerRouterSrc.indexOf('enforceRestrictionPreflight(txObject, activeWallet, context)', signIndex);
+  const decryptIndex = providerRouterSrc.indexOf('decryptPrivateKey(activeWallet.encryptedKey, password)', signIndex);
+  assert.ok(signIndex >= 0 && preflightIndex > signIndex, 'signTransaction preflight not found');
+  assert.ok(preflightIndex < decryptIndex, 'signTransaction preflight must run before decryptPrivateKey');
+});
+
+test('E-11.4 provider-router preflights sendTransaction before key decryption and broadcast', () => {
+  const sendIndex = providerRouterSrc.indexOf('async function finalizeSendTransaction');
+  const preflightIndex = providerRouterSrc.indexOf('enforceRestrictionPreflight(txObject, activeWallet, context)', sendIndex);
+  const decryptIndex = providerRouterSrc.indexOf('decryptPrivateKey(activeWallet.encryptedKey, password)', sendIndex);
+  const sendRpcIndex = providerRouterSrc.indexOf('rpc.sendTransaction(txBase64)', sendIndex);
+  assert.ok(sendIndex >= 0 && preflightIndex > sendIndex, 'sendTransaction preflight not found');
+  assert.ok(preflightIndex < decryptIndex, 'sendTransaction preflight must run before decryptPrivateKey');
+  assert.ok(preflightIndex < sendRpcIndex, 'sendTransaction preflight must run before broadcast');
+});
+
+test('E-11.5 pending approval requests carry restriction preflight status to approve UI', () => {
+  assert.ok(providerRouterSrc.includes('restrictionPreflight: extra.restrictionPreflight || null'),
+    'provider-router should store pending restriction preflight status');
+  assert.ok(serviceWorkerSrc.includes('restrictionPreflight: request.restrictionPreflight || null'),
+    'service-worker should expose pending restriction preflight status');
+  assert.ok(approveHtmlSrc.includes('approveRestrictionStatus'), 'approve.html missing restriction status element');
+  assert.ok(approveSrc.includes('requestHasBlockingRestriction'), 'approve.js missing blocking preflight guard');
+  assert.ok(approveSrc.includes('setApproveEnabled(!blocked)'), 'approve.js should disable approve on blocked preflight');
+});
+
+test('E-11.6 popup and full-page sends preflight native transfers before key decryption', () => {
+  for (const [name, src] of [['popup', popupSrc], ['full', fullSrc]]) {
+    const handlerIndex = src.indexOf(name === 'popup' ? 'async function handleSendNow' : 'async function handleSend');
+    const preflightIndex = src.indexOf('preflightNativeTransferRestrictions({', handlerIndex);
+    const decryptIndex = src.indexOf('decryptPrivateKey(wallet.encryptedKey', handlerIndex);
+    assert.ok(handlerIndex >= 0 && preflightIndex > handlerIndex, `${name} send preflight not found`);
+    assert.ok(preflightIndex < decryptIndex, `${name} send preflight must run before decryptPrivateKey`);
+  }
+});
+
+test('E-11.7 popup and full-page surfaces render restriction status and asset badges', () => {
+  assert.ok(popupHtmlSrc.includes('extensionRestrictionStatus') && popupHtmlSrc.includes('sendRestrictionStatus'),
+    'popup HTML missing restriction status surfaces');
+  assert.ok(fullHtmlSrc.includes('extensionRestrictionStatus') && fullHtmlSrc.includes('sendRestrictionStatus'),
+    'full HTML missing restriction status surfaces');
+  assert.ok(popupCssSrc.includes('.extension-restriction-status') && popupCssSrc.includes('.extension-asset-restriction-badge'),
+    'popup CSS missing restriction styles');
+  assert.ok(fullCssSrc.includes('.extension-restriction-status') && fullCssSrc.includes('.extension-asset-restriction-badge'),
+    'full CSS missing restriction styles');
+  assert.ok(popupSrc.includes('renderPopupAssetRestrictionBadges') && fullSrc.includes('renderExtensionAssetRestrictionBadges'),
+    'extension views should render LICN asset restriction badges');
+});
+
+// ── E-12: Dapp provider restriction preflight methods ──
+console.log('\n── E-12: Dapp Provider Restriction Methods ──');
+
+test('E-12.1 inpage provider exposes the planned read-only restriction helpers', () => {
+  for (const method of [
+    'lichen_getRestrictionStatus',
+    'lichen_canTransfer',
+    'lichen_getContractLifecycleStatus'
+  ]) {
+    assert.ok(inpageProviderSrc.includes(`method: '${method}'`), `${method} helper missing from inpage provider`);
+  }
+  assert.ok(inpageProviderSrc.includes('getRestrictionStatus: (target)'), 'getRestrictionStatus helper missing');
+  assert.ok(inpageProviderSrc.includes('canTransfer: (transfer)'), 'canTransfer helper missing');
+  assert.ok(inpageProviderSrc.includes('getContractLifecycleStatus: (contract)'), 'getContractLifecycleStatus helper missing');
+});
+
+test('E-12.2 provider router routes restriction helper aliases to trusted restriction RPC', () => {
+  assert.ok(providerRouterSrc.includes("getTrustedRestrictionRpc,"), 'provider router should import getTrustedRestrictionRpc');
+  assert.ok(providerRouterSrc.includes("RESTRICTION_METHODS,"), 'provider router should import RESTRICTION_METHODS');
+  assert.ok(providerRouterSrc.includes("lichen_getRestrictionStatus: 'licn_getRestrictionStatus'"), 'getRestrictionStatus alias missing');
+  assert.ok(providerRouterSrc.includes("lichen_canTransfer: 'licn_canTransfer'"), 'canTransfer alias missing');
+  assert.ok(providerRouterSrc.includes("lichen_getContractLifecycleStatus: 'licn_getContractLifecycleStatus'"), 'contract lifecycle alias missing');
+  assert.ok(providerRouterSrc.includes('function callProviderRestrictionMethod('), 'trusted provider restriction call helper missing');
+  assert.ok(providerRouterSrc.includes("getTrustedRestrictionRpc(context.network || 'local-testnet')"),
+    'provider restriction calls should use trusted endpoints');
+});
+
+test('E-12.3 provider restriction surface does not expose governance mutation builders', () => {
+  for (const mutation of [
+    'buildRestrictAccountTx',
+    'buildUnrestrictAccountTx',
+    'buildRestrictAssetTx',
+    'buildSetContractLifecycleTx',
+    'buildEmergencyRestrictionTx'
+  ]) {
+    assert.ok(!inpageProviderSrc.includes(mutation), `${mutation} should not be exposed to dapps`);
+    assert.ok(!providerRouterSrc.includes(`case '${mutation}'`), `${mutation} should not be routed through provider`);
+  }
+});
+
+test('E-12.4 provider validates dapp restriction preflight payload shape before RPC', () => {
+  assert.ok(providerRouterSrc.includes('function normalizeRestrictionStatusParams('), 'getRestrictionStatus params validator missing');
+  assert.ok(providerRouterSrc.includes('function normalizeCanTransferParams('), 'canTransfer params validator missing');
+  assert.ok(providerRouterSrc.includes('function normalizeContractLifecycleParams('), 'contract lifecycle params validator missing');
+  assert.ok(providerRouterSrc.includes('lichen_canTransfer requires from, to, and asset'),
+    'canTransfer should require source, recipient, and asset');
+  assert.ok(providerRouterSrc.includes('function toJsonRpcSafe('), 'provider restriction params should be normalized to JSON-RPC safe values');
+  assert.ok(providerRouterSrc.includes('function normalizeRestrictionAmount('), 'canTransfer amount validator missing');
+});
+
+// ── E-13: Extension store docs and release QA ──
+console.log('\n── E-13: Extension Store Docs And QA ──');
+
+test('E-13.1 permissions justification documents trusted restriction preflight RPC use', () => {
+  assert.ok(permissionsJustificationSrc.includes('Restriction-governance safety checks'),
+    'permissions justification should explain restriction-governance safety checks');
+  for (const method of [
+    'getRestrictionStatus',
+    'canTransfer',
+    'getContractLifecycleStatus'
+  ]) {
+    assert.ok(permissionsJustificationSrc.includes(method), `${method} missing from permissions justification`);
+  }
+  assert.ok(permissionsJustificationSrc.includes('trusted Lichen RPC endpoints'),
+    'permissions justification should identify trusted Lichen RPC endpoints');
+});
+
+test('E-13.2 content-script store rationale documents read-only dapp methods and warning protection', () => {
+  for (const method of [
+    'lichen_getRestrictionStatus',
+    'lichen_canTransfer',
+    'lichen_getContractLifecycleStatus'
+  ]) {
+    assert.ok(permissionsJustificationSrc.includes(method), `${method} missing from content-script rationale`);
+  }
+  assert.ok(permissionsJustificationSrc.includes('query-only'), 'content-script rationale should say restriction methods are query-only');
+  assert.ok(permissionsJustificationSrc.includes('cannot suppress or replace wallet-side restriction warnings'),
+    'content-script rationale should document that dapps cannot suppress wallet warnings');
+});
+
+test('E-13.3 extension README lists restriction safety and provider methods', () => {
+  assert.ok(extensionReadmeSrc.includes('Restriction-governance safety'),
+    'README should summarize extension restriction safety status');
+  assert.ok(extensionReadmeSrc.includes('Dapp restriction preflight'),
+    'README should summarize dapp restriction preflight status');
+  for (const method of [
+    'lichen_getRestrictionStatus',
+    'lichen_canTransfer',
+    'lichen_getContractLifecycleStatus'
+  ]) {
+    assert.ok(extensionReadmeSrc.includes(`\`${method}\``), `${method} missing from README provider status`);
+  }
+  assert.ok(extensionReadmeSrc.includes('cannot suppress extension warnings'),
+    'README should state that dapps cannot suppress extension warnings');
+});
+
+test('E-13.4 submission checklist requires package audit and restriction-warning smoke coverage', () => {
+  assert.ok(submissionChecklistSrc.includes('npm run validate-wallet-extension-release'),
+    'submission checklist should require release validation');
+  assert.ok(submissionChecklistSrc.includes('npm run package-wallet-extension'),
+    'submission checklist should require packaging');
+  assert.ok(submissionChecklistSrc.includes('wallet restriction-governance audit coverage'),
+    'submission checklist should require restriction-governance audit coverage');
+  assert.ok(submissionChecklistSrc.includes('restriction-warning smoke'),
+    'submission checklist should require restriction-warning smoke testing');
+});
+
+test('E-13.5 package script includes README and store docs in the submission bundle', () => {
+  assert.ok(packageScriptSrc.includes("['README.md', 'README.md']"), 'store bundle should include README.md');
+  assert.ok(packageScriptSrc.includes("['manifest.json', 'manifest.json']"), 'store bundle should include manifest.json');
+  assert.ok(packageScriptSrc.includes("['store', 'store']"), 'store bundle should include store docs');
+  assert.ok(submissionChecklistSrc.includes('store/permissions-justification.md'), 'checklist should name permissions justification in generated bundle');
+  assert.ok(submissionChecklistSrc.includes('store/submission-checklist.md'), 'checklist should name submission checklist in generated bundle');
+});
+
 // ── Additional cross-cutting tests ──
 console.log('\n── Cross-Cutting Verification ──');
 
@@ -437,7 +664,6 @@ test('CC-2 popup.js normalizePrivateKeyHex validates hex format', () => {
 });
 
 test('CC-3 approve.js uses escapeHtml for all rendered fields', () => {
-  const approveSrc = fs.readFileSync(path.join(extRoot, 'pages', 'approve.js'), 'utf8');
   assert.ok(approveSrc.includes('escapeHtml(request.origin'), 'approve.js not escaping origin');
   assert.ok(approveSrc.includes('escapeHtml(normalizedMethod'), 'approve.js not escaping method');
 });

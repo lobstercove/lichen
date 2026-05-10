@@ -226,6 +226,45 @@ struct WsError {
     message: String,
 }
 
+/// Governance event payload carried by the boxed WebSocket event variant.
+#[derive(Debug, Clone)]
+pub struct GovernanceEventPayload {
+    pub proposal_id: u64,
+    pub event_kind: String,
+    pub action: String,
+    pub authority: Pubkey,
+    pub approval_authority: Option<Pubkey>,
+    pub proposer: Pubkey,
+    pub actor: Pubkey,
+    pub approvals: u64,
+    pub threshold: u8,
+    pub execute_after_epoch: u64,
+    pub executed: bool,
+    pub cancelled: bool,
+    pub metadata: String,
+    pub target_contract: Option<Pubkey>,
+    pub target_function: Option<String>,
+    pub call_args_len: Option<u64>,
+    pub call_value_spores: Option<u64>,
+    pub restriction_id: Option<u64>,
+    pub restriction_status: Option<String>,
+    pub restriction_target_type: Option<String>,
+    pub restriction_target: Option<String>,
+    pub restriction_mode: Option<String>,
+    pub restriction_amount: Option<u64>,
+    pub restriction_reason: Option<String>,
+    pub restriction_created_slot: Option<u64>,
+    pub restriction_created_epoch: Option<u64>,
+    pub restriction_expires_at_slot: Option<u64>,
+    pub restriction_evidence_hash: Option<String>,
+    pub restriction_evidence_uri_hash: Option<String>,
+    pub restriction_supersedes: Option<u64>,
+    pub restriction_lifted_by: Option<Pubkey>,
+    pub restriction_lifted_slot: Option<u64>,
+    pub restriction_lift_reason: Option<String>,
+    pub slot: u64,
+}
+
 /// Event types that can be subscribed to
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -299,25 +338,7 @@ pub enum Event {
         total_stake: u64,
         validator_count: u32,
     },
-    GovernanceEvent {
-        proposal_id: u64,
-        event_kind: String, // "created" | "approved" | "executed" | "cancelled"
-        action: String,
-        authority: Pubkey,
-        proposer: Pubkey,
-        actor: Pubkey,
-        approvals: u64,
-        threshold: u8,
-        execute_after_epoch: u64,
-        executed: bool,
-        cancelled: bool,
-        metadata: String,
-        target_contract: Option<Pubkey>,
-        target_function: Option<String>,
-        call_args_len: Option<u64>,
-        call_value_spores: Option<u64>,
-        slot: u64,
-    },
+    GovernanceEvent(Box<GovernanceEventPayload>),
 }
 
 /// Subscription manager
@@ -796,7 +817,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                         },
                     ) => owner == sub_owner && sub_mint.as_ref().is_none_or(|m| m == mint),
                     (Event::EpochChange { .. }, SubscriptionType::Epochs) => true,
-                    (Event::GovernanceEvent { .. }, SubscriptionType::Governance) => true,
+                    (Event::GovernanceEvent(_), SubscriptionType::Governance) => true,
                     _ => false,
                 };
 
@@ -951,11 +972,12 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                         }
                     }
 
-                    let ws_event = Event::GovernanceEvent {
+                    let ws_event = Event::GovernanceEvent(Box::new(GovernanceEventPayload {
                         proposal_id: event.proposal_id,
                         event_kind: event.event_kind,
                         action: event.action,
                         authority: event.authority,
+                        approval_authority: event.approval_authority,
                         proposer: event.proposer,
                         actor: event.actor,
                         approvals: event.approvals,
@@ -968,8 +990,24 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                         target_function: event.target_function,
                         call_args_len: event.call_args_len,
                         call_value_spores: event.call_value_spores,
+                        restriction_id: event.restriction_id,
+                        restriction_status: event.restriction_status,
+                        restriction_target_type: event.restriction_target_type,
+                        restriction_target: event.restriction_target,
+                        restriction_mode: event.restriction_mode,
+                        restriction_amount: event.restriction_amount,
+                        restriction_reason: event.restriction_reason,
+                        restriction_created_slot: event.restriction_created_slot,
+                        restriction_created_epoch: event.restriction_created_epoch,
+                        restriction_expires_at_slot: event.restriction_expires_at_slot,
+                        restriction_evidence_hash: event.restriction_evidence_hash,
+                        restriction_evidence_uri_hash: event.restriction_evidence_uri_hash,
+                        restriction_supersedes: event.restriction_supersedes,
+                        restriction_lifted_by: event.restriction_lifted_by,
+                        restriction_lifted_slot: event.restriction_lifted_slot,
+                        restriction_lift_reason: event.restriction_lift_reason,
                         slot: event.slot,
-                    };
+                    }));
 
                     for sub_id in &sub_ids {
                         let notification = create_notification(*sub_id, &ws_event);
@@ -1979,43 +2017,42 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "total_stake_display": *total_stake as f64 / 1_000_000_000.0,
             "validator_count": validator_count,
         }),
-        Event::GovernanceEvent {
-            proposal_id,
-            event_kind,
-            action,
-            authority,
-            proposer,
-            actor,
-            approvals,
-            threshold,
-            execute_after_epoch,
-            executed,
-            cancelled,
-            metadata,
-            target_contract,
-            target_function,
-            call_args_len,
-            call_value_spores,
-            slot,
-        } => serde_json::json!({
+        Event::GovernanceEvent(event) => serde_json::json!({
             "event": "GovernanceEvent",
-            "proposal_id": proposal_id,
-            "kind": event_kind,
-            "action": action,
-            "authority": authority.to_base58(),
-            "proposer": proposer.to_base58(),
-            "actor": actor.to_base58(),
-            "approvals": approvals,
-            "threshold": threshold,
-            "execute_after_epoch": execute_after_epoch,
-            "executed": executed,
-            "cancelled": cancelled,
-            "metadata": metadata,
-            "target_contract": target_contract.as_ref().map(Pubkey::to_base58),
-            "target_function": target_function,
-            "call_args_len": call_args_len,
-            "call_value_spores": call_value_spores,
-            "slot": slot,
+            "proposal_id": event.proposal_id,
+            "kind": &event.event_kind,
+            "action": &event.action,
+            "authority": event.authority.to_base58(),
+            "approval_authority": event.approval_authority.as_ref().map(Pubkey::to_base58),
+            "proposer": event.proposer.to_base58(),
+            "actor": event.actor.to_base58(),
+            "approvals": event.approvals,
+            "threshold": event.threshold,
+            "execute_after_epoch": event.execute_after_epoch,
+            "executed": event.executed,
+            "cancelled": event.cancelled,
+            "metadata": &event.metadata,
+            "target_contract": event.target_contract.as_ref().map(Pubkey::to_base58),
+            "target_function": event.target_function.as_ref(),
+            "call_args_len": event.call_args_len,
+            "call_value_spores": event.call_value_spores,
+            "restriction_id": event.restriction_id,
+            "restriction_status": event.restriction_status.as_ref(),
+            "restriction_target_type": event.restriction_target_type.as_ref(),
+            "restriction_target": event.restriction_target.as_ref(),
+            "restriction_mode": event.restriction_mode.as_ref(),
+            "restriction_amount": event.restriction_amount,
+            "restriction_reason": event.restriction_reason.as_ref(),
+            "restriction_created_slot": event.restriction_created_slot,
+            "restriction_created_epoch": event.restriction_created_epoch,
+            "restriction_expires_at_slot": event.restriction_expires_at_slot,
+            "restriction_evidence_hash": event.restriction_evidence_hash.as_ref(),
+            "restriction_evidence_uri_hash": event.restriction_evidence_uri_hash.as_ref(),
+            "restriction_supersedes": event.restriction_supersedes,
+            "restriction_lifted_by": event.restriction_lifted_by.as_ref().map(Pubkey::to_base58),
+            "restriction_lifted_slot": event.restriction_lifted_slot,
+            "restriction_lift_reason": event.restriction_lift_reason.as_ref(),
+            "slot": event.slot,
         }),
     };
 
@@ -2494,11 +2531,12 @@ mod tests {
     fn create_notification_governance_event() {
         let notif = create_notification(
             4,
-            &Event::GovernanceEvent {
+            &Event::GovernanceEvent(Box::new(GovernanceEventPayload {
                 proposal_id: 7,
                 event_kind: "approved".to_string(),
                 action: "contract_call".to_string(),
                 authority: Pubkey([0xAAu8; 32]),
+                approval_authority: None,
                 proposer: Pubkey([0xBBu8; 32]),
                 actor: Pubkey([0xDDu8; 32]),
                 approvals: 2,
@@ -2511,8 +2549,24 @@ mod tests {
                 target_function: Some("pause".to_string()),
                 call_args_len: Some(0),
                 call_value_spores: Some(0),
+                restriction_id: None,
+                restriction_status: None,
+                restriction_target_type: None,
+                restriction_target: None,
+                restriction_mode: None,
+                restriction_amount: None,
+                restriction_reason: None,
+                restriction_created_slot: None,
+                restriction_created_epoch: None,
+                restriction_expires_at_slot: None,
+                restriction_evidence_hash: None,
+                restriction_evidence_uri_hash: None,
+                restriction_supersedes: None,
+                restriction_lifted_by: None,
+                restriction_lifted_slot: None,
+                restriction_lift_reason: None,
                 slot: 100,
-            },
+            })),
         );
         let result = &notif.params.result;
         assert_eq!(result["event"], "GovernanceEvent");
@@ -2523,6 +2577,60 @@ mod tests {
         assert_eq!(result["target_function"], "pause");
         assert_eq!(result["call_args_len"], 0);
         assert_eq!(result["call_value_spores"], 0);
+    }
+
+    #[test]
+    fn create_notification_governance_event_includes_restriction_lifecycle_fields() {
+        let approval_authority = Pubkey([0xCCu8; 32]);
+        let lifted_by = Pubkey([0xDDu8; 32]);
+        let notif = create_notification(
+            4,
+            &Event::GovernanceEvent(Box::new(GovernanceEventPayload {
+                proposal_id: 9,
+                event_kind: "restriction_lifted".to_string(),
+                action: "lift_restriction".to_string(),
+                authority: Pubkey([0xAAu8; 32]),
+                approval_authority: Some(approval_authority),
+                proposer: Pubkey([0xBBu8; 32]),
+                actor: lifted_by,
+                approvals: 2,
+                threshold: 2,
+                execute_after_epoch: 0,
+                executed: true,
+                cancelled: false,
+                metadata: "restriction_id=44 reason=incident_resolved".to_string(),
+                target_contract: None,
+                target_function: None,
+                call_args_len: None,
+                call_value_spores: None,
+                restriction_id: Some(44),
+                restriction_status: Some("lifted".to_string()),
+                restriction_target_type: Some("contract".to_string()),
+                restriction_target: Some(Pubkey([0x11u8; 32]).to_base58()),
+                restriction_mode: Some("quarantined".to_string()),
+                restriction_amount: None,
+                restriction_reason: Some("scam_contract".to_string()),
+                restriction_created_slot: Some(20),
+                restriction_created_epoch: Some(1),
+                restriction_expires_at_slot: Some(200),
+                restriction_evidence_hash: Some("aa".repeat(32)),
+                restriction_evidence_uri_hash: None,
+                restriction_supersedes: None,
+                restriction_lifted_by: Some(lifted_by),
+                restriction_lifted_slot: Some(99),
+                restriction_lift_reason: Some("incident_resolved".to_string()),
+                slot: 100,
+            })),
+        );
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "GovernanceEvent");
+        assert_eq!(result["kind"], "restriction_lifted");
+        assert_eq!(result["approval_authority"], approval_authority.to_base58());
+        assert_eq!(result["restriction_id"], 44);
+        assert_eq!(result["restriction_target_type"], "contract");
+        assert_eq!(result["restriction_mode"], "quarantined");
+        assert_eq!(result["restriction_lifted_by"], lifted_by.to_base58());
+        assert_eq!(result["restriction_lift_reason"], "incident_resolved");
     }
 
     #[test]

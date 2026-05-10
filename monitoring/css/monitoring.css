@@ -1401,6 +1401,14 @@ body {
     border-top: 1px solid var(--border);
 }
 
+.ir-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
 .ir-section-title {
     font-size: 0.85rem;
     font-weight: 700;
@@ -1413,6 +1421,10 @@ body {
 
 .ir-section-title i {
     color: var(--danger);
+}
+
+.ir-section-header .ir-section-title {
+    margin-bottom: 0;
 }
 
 .ir-empty {
@@ -1465,6 +1477,304 @@ body {
     color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.5;
+}
+
+.risk-console-form {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.35fr) minmax(180px, 1fr) minmax(110px, 0.55fr) 44px;
+    gap: 0.75rem;
+    align-items: end;
+    margin-bottom: 0.9rem;
+}
+
+.risk-action-form {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.75rem;
+    align-items: end;
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--border);
+}
+
+.risk-console-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.risk-console-field.is-hidden {
+    display: none;
+}
+
+.risk-console-field span {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.risk-console-field input,
+.risk-console-field select {
+    width: 100%;
+    min-width: 0;
+    height: 42px;
+    padding: 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-darker);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+}
+
+.risk-console-field select {
+    font-family: inherit;
+    font-weight: 700;
+}
+
+.risk-console-field input:focus,
+.risk-console-field select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.risk-console-submit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 42px;
+    border: 1px solid rgba(0, 229, 255, 0.32);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 229, 255, 0.08);
+    color: var(--accent);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.risk-console-submit:hover {
+    border-color: var(--accent);
+    background: rgba(0, 229, 255, 0.14);
+}
+
+.risk-console-submit:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
+.risk-status-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.risk-validation-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+}
+
+.risk-signer-form {
+    display: grid;
+    grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1.15fr) minmax(220px, 1.15fr) repeat(4, minmax(132px, 0.7fr));
+    gap: 0.75rem;
+    align-items: end;
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--border);
+}
+
+.risk-lifecycle-form {
+    display: grid;
+    grid-template-columns: minmax(160px, 0.8fr) minmax(180px, 0.9fr) minmax(180px, 0.9fr) repeat(3, minmax(132px, 0.7fr));
+    gap: 0.75rem;
+    align-items: end;
+    margin-top: 0.75rem;
+}
+
+.risk-action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-width: 0;
+    height: 42px;
+    padding: 0 0.8rem;
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 229, 255, 0.07);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+
+.risk-action-button:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: rgba(0, 229, 255, 0.14);
+}
+
+.risk-action-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.risk-action-button.wallet-connected {
+    border-color: rgba(6, 255, 165, 0.34);
+    background: rgba(6, 255, 165, 0.08);
+    color: var(--success);
+}
+
+.risk-action-button.wallet-disconnected {
+    border-color: rgba(255, 209, 102, 0.28);
+    background: rgba(255, 209, 102, 0.07);
+    color: var(--warning);
+}
+
+.risk-preview-panel {
+    margin-top: 0.9rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-darker);
+    min-width: 0;
+}
+
+.risk-lifecycle-panel {
+    margin-top: 0.9rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid rgba(6, 255, 165, 0.2);
+    border-radius: var(--radius-sm);
+    background: rgba(6, 255, 165, 0.035);
+    min-width: 0;
+}
+
+.risk-lifecycle-list {
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.75rem;
+}
+
+.risk-lifecycle-event {
+    display: grid;
+    grid-template-columns: minmax(88px, 0.45fr) minmax(130px, 0.7fr) minmax(0, 1.4fr) minmax(92px, 0.5fr);
+    gap: 0.65rem;
+    align-items: center;
+    min-width: 0;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+}
+
+.risk-lifecycle-kind {
+    color: var(--accent-green);
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.risk-lifecycle-value,
+.risk-lifecycle-meta {
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
+}
+
+.risk-lifecycle-meta {
+    color: var(--text-muted);
+}
+
+.risk-preview-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.risk-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.risk-preview-item {
+    min-width: 0;
+}
+
+.risk-preview-label {
+    display: block;
+    margin-bottom: 0.22rem;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.risk-preview-value {
+    display: block;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+.risk-preview-code {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid rgba(0, 229, 255, 0.18);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 229, 255, 0.04);
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.risk-restriction-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+}
+
+.risk-restriction-card {
+    min-width: 0;
+    padding: 0.85rem 1rem;
+    background: var(--bg-darker);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.risk-restriction-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.risk-restriction-meta {
+    margin-top: 0.45rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
 }
 
 .panel-badge.pulse {
@@ -2121,8 +2431,23 @@ body {
 
     .metric-card-grid--6,
     .control-plane-grid,
-    .incident-authority-grid {
+    .incident-authority-grid,
+    .risk-status-grid,
+    .risk-action-form,
+    .risk-validation-grid,
+    .risk-signer-form,
+    .risk-lifecycle-form,
+    .risk-lifecycle-event,
+    .risk-preview-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .risk-console-form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .risk-console-submit {
+        width: 100%;
     }
 
     .panel-scroll-region,
@@ -2150,7 +2475,15 @@ body {
     .inline-mission-card-grid,
     .metric-card-grid--6,
     .control-plane-grid,
-    .incident-authority-grid {
+    .incident-authority-grid,
+    .risk-status-grid,
+    .risk-console-form,
+    .risk-action-form,
+    .risk-validation-grid,
+    .risk-signer-form,
+    .risk-lifecycle-form,
+    .risk-lifecycle-event,
+    .risk-preview-grid {
         grid-template-columns: 1fr;
     }
 }

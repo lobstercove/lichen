@@ -151,6 +151,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           origin: request.origin,
           params: request.payload?.params || null,
           createdAt: request.createdAt,
+          restrictionPreflight: request.restrictionPreflight || null,
           providerState
         };
       })

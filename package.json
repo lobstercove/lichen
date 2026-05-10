@@ -1,12 +1,18 @@
 {
   "scripts": {
     "build-wallet-pq": "node scripts/build-wallet-pq-bundle.mjs",
-    "test-frontend-assets": "node scripts/qa/test_frontend_asset_integrity.js && node scripts/qa/test_frontend_shared_helper_drift.js",
+    "test-frontend-assets": "node scripts/qa/test_frontend_asset_integrity.js && node scripts/qa/test_frontend_shared_helper_drift.js && node scripts/qa/test_monitoring_risk_lifecycle.js",
     "test-frontend-shared-helpers": "node scripts/qa/test_frontend_shared_helper_drift.js",
+    "test-deployment-docs": "node scripts/qa/test_incident_response_restriction_playbooks.js && node scripts/qa/test_governance_watchtower_docs.js && node scripts/qa/test_key_hierarchy_docs.js && node scripts/qa/test_restriction_schema_activation_docs.js && node scripts/qa/test_stolen_funds_wallet_drill_docs.js",
+    "test-watchtower-docs": "node scripts/qa/test_governance_watchtower_docs.js",
+    "test-key-hierarchy-docs": "node scripts/qa/test_key_hierarchy_docs.js",
+    "test-restriction-schema-activation-docs": "node scripts/qa/test_restriction_schema_activation_docs.js",
+    "test-stolen-funds-wallet-drill-docs": "node scripts/qa/test_stolen_funds_wallet_drill_docs.js",
     "audit-frontend-rpc-parity": "node scripts/qa/audit_frontend_rpc_parity.js",
+    "test-wallet-docs": "node scripts/qa/test_wallet_release_docs.js",
     "test-wallet": "node scripts/qa/test_wallet_audit.js",
-    "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js",
-    "validate-wallet-extension-release": "npm run test-wallet-extension && npm run test-wallet",
+    "test-wallet-extension": "node scripts/qa/test_wallet_extension_audit.js && node scripts/qa/test_wallet_extension_signing_e2e.js",
+    "validate-wallet-extension-release": "npm run test-wallet-docs && npm run test-wallet-extension && npm run test-wallet",
     "package-wallet-extension": "node scripts/package-wallet-extension.mjs",
     "prepare-wallet-extension-release": "npm run validate-wallet-extension-release && npm run package-wallet-extension"
   },

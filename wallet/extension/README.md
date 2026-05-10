@@ -1,129 +1,158 @@
-# LichenWallet Extension Scaffold
+# LichenWallet Extension
 
-This directory is the implementation workspace for the Brave/Chrome extension build.
+This directory contains the Brave/Chrome MV3 extension build for LichenWallet. The extension shares wallet behavior with the web wallet while adding popup, full-page, background service worker, content script, in-page provider, approval, and store-submission surfaces.
 
-## Initial Structure
-- `src/popup` — extension popup UI
-- `src/pages` — full-page extension routes (advanced views, approvals)
-- `src/background` — MV3 service worker
-- `src/content` — content script and in-page provider bridge
-- `src/core` — shared wallet/crypto/rpc/state services
-- `src/styles` — copied/adapted style system
-- `src/assets` — extension icons and static assets
+## Directory Structure
 
-## Next Step
-Begin Phase 0 by adding:
-1. `manifest.json`
-2. popup entry files
-3. background service worker entry
+- `manifest.json` - MV3 extension manifest
+- `src/popup` - extension popup UI
+- `src/pages` - full-page wallet, approval, settings, identity, NFT, and home routes
+- `src/background` - MV3 service worker
+- `src/content` - content script and in-page provider bridge
+- `src/core` - shared wallet, crypto, RPC, restriction, provider, and state services
+- `src/styles` - extension style system
+- `store` - Chrome Web Store / Edge Add-ons submission docs
+- `shared` - bundled shared browser dependencies
 
-## Load in Brave/Chrome
-1. Open `chrome://extensions` (or `brave://extensions`)
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `wallet/extension` directory
+## Load In Brave Or Chrome
 
-## Package For Release
-1. Run `npm run validate-wallet-extension-release`
-2. Run `npm run package-wallet-extension`
-3. Collect the generated files from `dist/wallet-extension/`
+1. Open `chrome://extensions` or `brave://extensions`.
+2. Enable **Developer mode**.
+3. Click **Load unpacked**.
+4. Select the `wallet/extension` directory.
 
-Release output:
-- `LichenWallet-extension-v<version>.zip` — runtime extension ZIP for browser-store review
-- `LichenWallet-extension-store-submission-v<version>.zip` — listing copy, permissions rationale, and submission checklist
-- `latest.json` — release metadata for install pages and automation
-- `SHA256SUMS` — checksums for release verification
+## Release Validation
+
+Run the release gate before packaging:
+
+```bash
+npm run test-wallet-docs
+npm run test-wallet
+npm run test-wallet-extension
+npm run test-frontend-assets
+node tests/test_frontend_trust_boundaries.js
+npm run validate-wallet-extension-release
+```
+
+Then package the reviewed artifact:
+
+```bash
+npm run package-wallet-extension
+```
+
+Release output is written to `dist/wallet-extension/`:
+
+- `LichenWallet-extension-v<version>.zip` - runtime extension ZIP for browser-store review
+- `LichenWallet-extension-store-submission-v<version>.zip` - README, manifest snapshot, store listing, permissions rationale, and submission checklist
+- `latest.json` - release metadata for install pages and automation
+- `SHA256SUMS` - checksums for release verification
 
 ## Auto Update Model
+
 - Chrome Web Store and Edge Add-ons provide automatic updates after publication.
 - Unpacked or direct ZIP installs are manual-update only.
 - `latest.json` is generated so the wallet site can advertise the current release consistently.
 
-## Current Scaffold Status
+## Restriction-Governance Safety
+
+Restriction-governance safety is part of the release gate:
+
+- Restriction reads use trusted Lichen RPC endpoints through `restriction-service.js`, not user-configured custom RPC endpoints.
+- Popup and full-page views render account/native consensus restriction banners and LICN restriction badges.
+- Direct extension sends call trusted `canTransfer` before signing and before private key decryption.
+- Provider `licn_signTransaction` and `licn_sendTransaction` requests run restriction preflight before approval and enforce the same preflight before private key decryption.
+- The approval page renders passed, warning, and blocked restriction states; blocked preflight cannot be approved.
+- `getIncidentStatus` can surface incident warnings, but incident state is not mutable from the provider.
+- dapps cannot suppress extension warnings or bypass wallet-side restriction decisions.
+
+## Dapp Restriction Preflight
+
+Dapp restriction preflight is read-only. The in-page provider exposes:
+
+- `lichen_getRestrictionStatus`
+- `lichen_canTransfer`
+- `lichen_getContractLifecycleStatus`
+
+These helpers let dapps preflight user experience, but they do not create, lift, extend, approve, or execute restrictions. The provider does not expose restriction mutation builders, admin-token paths, or raw-submit governance paths.
+
+## Current Status
+
 - MV3 manifest: ready
-- Popup wallet flow: create/import/unlock/dashboard + assets/receive/activity ready
-- Popup import parity: seed phrase, private key (hex), and JSON keystore import paths
-- Popup send flow: password-gated build/sign/broadcast attempt wired
-- Popup settings/security panel: auto-lock timeout, password-gated private key export, password-gated seed phrase view, JSON keystore export, and secure copy output
-- Popup export parity: password-gated private key and seed phrase download actions (txt) in addition to secure copy and JSON keystore export
-- Popup network settings parity: custom RPC endpoints for mainnet/testnet/local networks (used by popup RPC actions)
-- Bridge endpoint parity: configurable custody endpoints (mainnet/testnet/local) now used by bridge deposit/status flows
-- Popup display settings parity: currency + decimal precision controls affecting popup balance rendering
-- Popup password management parity: change-password flow with encrypted key/mnemonic re-encryption
-- Auto-lock scheduling: wired in popup runtime
-- Options/full-page advanced dashboard: identity/staking/bridge/NFT snapshots wired
-- Full-page bridge deposit: request address + live status polling wired
-- Full-page staking actions: stake/unstake transaction flows wired
-- Full-page identity actions: register identity + add skill flows wired
-- Full-page detail routes: dedicated identity details page and NFT details page
-- Full-page settings route: wallet management, network/RPC settings, display/security controls, password change, and export controls
-- Full-page export parity: password-gated private key and seed phrase download actions (txt)
-- dApp permission management: list/revoke approved provider origins from settings route
-- Identity detail actions: register, add skill, agent type, vouch, endpoint/availability/rate updates
-- Identity name lifecycle actions: register/renew/transfer/release `.lichen` names
-- Identity safety parity: core service validation hardening for names/addresses/endpoints/rates/password and transaction preflight spendability checks
-- Route-level UX validation hardening: stricter input checks, address/url validation, and action status feedback on home/identity pages
-- Bridge UX parity upgrades: mapped deposit status lifecycle text, adaptive polling cadence, and copy-address action in full-page dashboard
-- NFT detail UX upgrades: per-item copy mint action, marketplace launch actions, and explicit load/status feedback
-- Background WebSocket runtime manager: connect/reconnect/status + sync message endpoints wired
-- Core endpoint parity: identity/staking/bridge/NFT/provider/ws modules now resolve user-configured RPC (and derived WS) endpoints from extension state
+- Popup wallet flow: create/import/unlock/dashboard, assets, receive, activity, send, settings, bridge, staking, shield, identity, and NFT surfaces wired
+- Popup import parity: seed phrase, private key hex, and JSON keystore paths
+- Popup send flow: password-gated build/sign/broadcast wired with restriction preflight
+- Popup settings/security panel: auto-lock timeout, password-gated export, JSON keystore export, custom RPC settings, and secure copy output
+- Full-page dashboard: identity, staking, bridge, NFT, send, receive, settings, and detail routes wired
 - Background service worker: ready
-- Background provider origin hardening: falls back to parsing `sender.url` when `sender.origin` is unavailable
-- Content/in-page provider bridge: request + approval queue wired
-- Core state + lock services: ready
+- Background WebSocket runtime manager: connect/reconnect/status and sync message endpoints wired
+- Content/in-page provider bridge: request, approval queue, origin permission, pending-request TTL, and finalized result flow wired
+- Core endpoint parity: identity/staking/bridge/NFT/provider/ws modules resolve user-configured RPC where allowed
+- Trusted-control split: bridge routing, signed metadata, LichenID resolution, and restriction checks stay pinned to trusted endpoints
+- Restriction-governance safety: trusted restriction status reads, popup/full-page restriction banners, direct-send `canTransfer` preflight, provider sign/send preflight before key decryption, and approval-page blocking warnings wired
+- Dapp restriction preflight: read-only `lichen_getRestrictionStatus`, `lichen_canTransfer`, and `lichen_getContractLifecycleStatus` provider methods wired without exposing restriction mutation builders
+- Core state and lock services: ready
 
 ## Provider Status
-- `licn_getProviderState`: supported
-- `licn_isConnected`: supported
-- `licn_chainId`: supported
-- `licn_network`: supported
-- `licn_version`: supported
-- `licn_accounts`: supported
-- `licn_requestAccounts`: supported with approval page flow
-- `licn_connect`: supported (alias to account request flow)
-- `licn_disconnect`: supported (origin-scoped)
-- `licn_getPermissions`: supported (origin-scoped permission view)
-- `wallet_getPermissions`: supported (compat alias)
-- `wallet_revokePermissions`: supported (compat alias)
-- `licn_getBalance`: supported
-- `licn_getAccount`: supported
-- `licn_getLatestBlock`: supported
-- `licn_getTransactions`: supported
-- `licn_signMessage`: supported with approval + password flow
-- `licn_signTransaction`: supported with approval + password flow
-- `licn_sendTransaction`: supported with approval + password + broadcast flow
-- `eth_chainId`: supported (compat alias)
-- `net_version`: supported (compat alias)
-- `eth_coinbase`: supported (compat alias)
-- `eth_accounts`: supported (compat alias)
-- `eth_requestAccounts`: supported (compat alias)
-- `personal_sign`: supported (compat alias)
-- `eth_sign`: supported (compat alias)
-- `eth_signTransaction`: supported (compat alias)
-- `eth_sendTransaction`: supported (compat alias)
-- `eth_getBalance`: supported (compat alias, hex quantity response)
-- `eth_getTransactionCount`: supported (compat alias, hex quantity response)
-- `eth_blockNumber`: supported (compat alias)
-- `eth_getCode`: supported (compat alias)
-- `eth_estimateGas`: supported (compat alias)
-- `eth_gasPrice`: supported (compat alias)
-- `web3_clientVersion`: supported (compat alias)
-- `net_listening`: supported (compat alias)
-- `wallet_switchEthereumChain`: supported (compat alias mapped to extension network selection)
-- `wallet_addEthereumChain`: supported (compat alias mapped to extension RPC settings)
-- `wallet_watchAsset`: supported (compat alias)
-- Provider events: `connect`, `disconnect`, `accountsChanged`, `chainChanged` emitted from content/inpage bridge
-- Approval page metadata: network/chain/account/lock-state context now shown
-- Provider compatibility hardening: method alias normalization and flexible request input forms (`request({method, params})` or `request(method, params)`)
-- Provider approval parity fix: pending approval finalization now resolves normalized method aliases correctly
-- Provider compatibility expansion: common Ethereum-style aliases (`eth_accounts`, `eth_requestAccounts`, `personal_sign`, `eth_sign`, `eth_signTransaction`, `eth_sendTransaction`) mapped to Lichen flows
-- Provider permissions/connect compatibility: `licn_connect`, `licn_getPermissions`, `wallet_getPermissions`, and `wallet_revokePermissions` bridged to extension origin permissions model
-- Provider network compatibility: `eth_chainId`, `net_version`, and `eth_coinbase` compatibility paths added
-- Approval queue UX: pending requests list + picker when approval page opens directly
-- Approval UX hardening: alias-aware signing password requirement, stale-request button disablement, and escaped request rendering
-- Provider pending lifecycle hardening: pending approval TTL timeout + bounded queue size protection
-- Provider lock awareness: `licn_accounts` hides accounts while locked and `licn_requestAccounts` returns explicit locked error
-- In-page EVM bridge compatibility: `window.ethereum` mirror (non-MetaMask) backed by Lichen provider methods/events
 
-## Current Limitations
-- No known parity blockers remain for wallet web-surface feature coverage in this release.
+Supported Lichen provider methods:
+
+- `licn_getProviderState`
+- `licn_isConnected`
+- `licn_chainId`
+- `licn_network`
+- `licn_version`
+- `licn_accounts`
+- `licn_requestAccounts`
+- `licn_connect`
+- `licn_disconnect`
+- `licn_getPermissions`
+- `licn_getBalance`
+- `licn_getAccount`
+- `licn_getLatestBlock`
+- `licn_getTransactions`
+- `lichen_getRestrictionStatus`
+- `lichen_canTransfer`
+- `lichen_getContractLifecycleStatus`
+- `licn_signMessage`
+- `licn_signTransaction`
+- `licn_sendTransaction`
+
+Supported compatibility aliases:
+
+- `wallet_getPermissions`
+- `wallet_revokePermissions`
+- `eth_chainId`
+- `net_version`
+- `eth_coinbase`
+- `eth_accounts`
+- `eth_requestAccounts`
+- `personal_sign`
+- `eth_sign`
+- `eth_signTransaction`
+- `eth_sendTransaction`
+- `eth_getBalance`
+- `eth_getTransactionCount`
+- `eth_blockNumber`
+- `eth_getCode`
+- `eth_estimateGas`
+- `eth_gasPrice`
+- `web3_clientVersion`
+- `net_listening`
+- `wallet_switchEthereumChain`
+- `wallet_addEthereumChain`
+- `wallet_watchAsset`
+
+Provider events:
+
+- `connect`
+- `disconnect`
+- `accountsChanged`
+- `chainChanged`
+
+## Release Notes For Reviewers
+
+- Permission explanations live in `store/permissions-justification.md`.
+- Store submission checks live in `store/submission-checklist.md`.
+- Internal release and production-readiness gates live in `docs/internal/wallet/`.
+- The provider restriction surface is query-only; dapps cannot suppress extension warnings.
+- Every restriction mutation remains a signed governed transaction outside the extension provider.

@@ -28,3 +28,50 @@ img.logo-icon {
   font-weight: 400;
   src: local('Inter');
 }
+
+.extension-restriction-status {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+  color: #bbf7d0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.extension-restriction-status[hidden],
+.extension-restriction-status:empty {
+  display: none;
+}
+
+.extension-restriction-status.warning {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde68a;
+}
+
+.extension-restriction-status.blocked {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+}
+
+.extension-asset-restriction-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.extension-asset-restriction-badge {
+  display: inline-flex;
+  max-width: 240px;
+  padding: 0.12rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}

@@ -16,11 +16,25 @@ import {
 } from '../core/crypto-service.js';
 import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
+import {
+  assertRestrictionPreflightAllowed,
+  extensionRestrictionStatusItems,
+  loadExtensionRestrictionStatus,
+  preflightNativeTransferRestrictions,
+  restrictionPreflightSummary
+} from '../core/restriction-service.js';
 
 let state = null;
 let pendingGeneratedMnemonic = '';
 let fullCarouselTimer = null;
 let _licnUsdPriceCache = { value: 0.10, ts: 0 };
+let extensionRestrictionStatusCache = {
+  address: null,
+  network: null,
+  updatedAt: 0,
+  status: null,
+  inFlight: null
+};
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -315,6 +329,158 @@ function setStatus(message) {
   if (statusField) {
     statusField.textContent = String(message || '');
   }
+}
+
+function activeNetworkKey() {
+  return state?.network?.selected || 'local-testnet';
+}
+
+function setRestrictionElement(el, { kind = '', text = '' } = {}) {
+  if (!el) return;
+  if (!text) {
+    el.hidden = true;
+    el.className = 'extension-restriction-status';
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.className = `extension-restriction-status ${kind}`.trim();
+  el.textContent = text;
+}
+
+function renderExtensionRestrictionStatus(status) {
+  const el = document.getElementById('extensionRestrictionStatus');
+  const items = extensionRestrictionStatusItems(status);
+  if (items.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'blocked',
+      text: `Consensus restriction active: ${items.join(' | ')}`
+    });
+    return;
+  }
+  if (Array.isArray(status?.criticalErrors) && status.criticalErrors.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'warning',
+      text: 'Restriction status unavailable from trusted RPC. Sending is blocked until preflight succeeds.'
+    });
+    return;
+  }
+  setRestrictionElement(el);
+}
+
+function renderPopupSendRestrictionStatus(preflight = null) {
+  const el = document.getElementById('sendRestrictionStatus');
+  if (preflight) {
+    const summary = restrictionPreflightSummary(preflight);
+    if (preflight.allowed === false) {
+      setRestrictionElement(el, { kind: 'blocked', text: summary });
+      return;
+    }
+    if (Array.isArray(preflight.warnings) && preflight.warnings.length > 0) {
+      setRestrictionElement(el, { kind: 'warning', text: summary });
+      return;
+    }
+    setRestrictionElement(el, { kind: 'passed', text: summary });
+    return;
+  }
+
+  const status = extensionRestrictionStatusCache.status;
+  const items = extensionRestrictionStatusItems(status)
+    .filter((item) => !String(item).toLowerCase().includes('receive blocked'));
+  if (items.length > 0) {
+    setRestrictionElement(el, { kind: 'blocked', text: items.join(' | ') });
+    return;
+  }
+  if (Array.isArray(status?.criticalErrors) && status.criticalErrors.length > 0) {
+    setRestrictionElement(el, {
+      kind: 'warning',
+      text: 'Restriction status unavailable. Transfer preflight will verify before signing.'
+    });
+    return;
+  }
+  setRestrictionElement(el);
+}
+
+function renderPopupAssetRestrictionBadges(status = extensionRestrictionStatusCache.status) {
+  const badgeEl = document.querySelector('[data-asset-restriction-badges="LICN"]');
+  if (!badgeEl) return;
+  const items = extensionRestrictionStatusItems(status);
+  if (!items.length) {
+    badgeEl.innerHTML = '';
+    return;
+  }
+  badgeEl.innerHTML = items.slice(0, 3).map((item) => (
+    `<span class="extension-asset-restriction-badge">${escapeHtml(item)}</span>`
+  )).join('');
+}
+
+async function refreshExtensionRestrictionStatus({ force = false, updateSend = false, updateAssets = false } = {}) {
+  const wallet = getActiveWallet();
+  if (!wallet) {
+    renderExtensionRestrictionStatus(null);
+    renderPopupSendRestrictionStatus(null);
+    renderPopupAssetRestrictionBadges(null);
+    return null;
+  }
+
+  const network = activeNetworkKey();
+  const now = Date.now();
+  const fresh = extensionRestrictionStatusCache.address === wallet.address
+    && extensionRestrictionStatusCache.network === network
+    && extensionRestrictionStatusCache.status
+    && now - extensionRestrictionStatusCache.updatedAt < 30_000;
+
+  if (!force && fresh) {
+    renderExtensionRestrictionStatus(extensionRestrictionStatusCache.status);
+    if (updateSend) renderPopupSendRestrictionStatus();
+    if (updateAssets) renderPopupAssetRestrictionBadges(extensionRestrictionStatusCache.status);
+    return extensionRestrictionStatusCache.status;
+  }
+
+  if (extensionRestrictionStatusCache.inFlight
+    && extensionRestrictionStatusCache.address === wallet.address
+    && extensionRestrictionStatusCache.network === network) {
+    return extensionRestrictionStatusCache.inFlight;
+  }
+
+  extensionRestrictionStatusCache.address = wallet.address;
+  extensionRestrictionStatusCache.network = network;
+  extensionRestrictionStatusCache.inFlight = loadExtensionRestrictionStatus({
+    account: wallet.address,
+    network
+  }).then((status) => {
+    extensionRestrictionStatusCache = {
+      address: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      status,
+      inFlight: null
+    };
+    renderExtensionRestrictionStatus(status);
+    if (updateSend) renderPopupSendRestrictionStatus();
+    if (updateAssets) renderPopupAssetRestrictionBadges(status);
+    return status;
+  }).catch((error) => {
+    const status = {
+      account: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      unavailable: true,
+      criticalErrors: [error?.message || String(error)]
+    };
+    extensionRestrictionStatusCache = {
+      address: wallet.address,
+      network,
+      updatedAt: Date.now(),
+      status,
+      inFlight: null
+    };
+    renderExtensionRestrictionStatus(status);
+    if (updateSend) renderPopupSendRestrictionStatus();
+    if (updateAssets) renderPopupAssetRestrictionBadges(status);
+    return status;
+  });
+  return extensionRestrictionStatusCache.inFlight;
 }
 
 function rpcEndpointToApiBase(endpoint) {
@@ -676,6 +842,7 @@ async function loadAssets() {
         <div class="popup-asset-info">
           <strong>LICN</strong>
           <span>Native token</span>
+          <div class="extension-asset-restriction-badges" data-asset-restriction-badges="LICN"></div>
         </div>
         <div class="popup-asset-amount" style="display:flex;flex-direction:column;align-items:flex-end">
           <strong>${fmt(totalRaw / div)}</strong>
@@ -684,6 +851,7 @@ async function loadAssets() {
         </div>
       </div>
     `;
+    renderPopupAssetRestrictionBadges();
   } catch (error) {
     assetsList.innerHTML = '<div class="popup-status">Failed to load assets</div>';
   }
@@ -1042,6 +1210,7 @@ async function refreshBalance() {
       }
     }
 
+    void refreshExtensionRestrictionStatus({ updateSend: true, updateAssets: true });
     setStatus('');
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 LICN';
@@ -1089,6 +1258,16 @@ async function handleSendNow() {
       return;
     }
 
+    setStatus('Running restriction preflight...');
+    const restrictionPreflight = await preflightNativeTransferRestrictions({
+      fromAddress: wallet.address,
+      toAddress: to,
+      amountLicn: amount,
+      network: activeNetworkKey()
+    });
+    renderPopupSendRestrictionStatus(restrictionPreflight);
+    assertRestrictionPreflightAllowed(restrictionPreflight);
+
     setStatus('Decrypting key...');
     const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
 
@@ -1112,6 +1291,7 @@ async function handleSendNow() {
     document.getElementById('sendTo').value = '';
     document.getElementById('sendAmount').value = '';
     document.getElementById('sendPassword').value = '';
+    renderPopupSendRestrictionStatus(null);
     await refreshBalance();
     await loadAssets();
     await loadActivity();
@@ -2176,7 +2356,11 @@ function wireEvents() {
   });
 
   // Balance card action buttons
-  document.getElementById('showSendPanel').addEventListener('click', () => setDashboardPanel('send'));
+  document.getElementById('showSendPanel').addEventListener('click', () => {
+    setDashboardPanel('send');
+    renderPopupSendRestrictionStatus();
+    void refreshExtensionRestrictionStatus({ updateSend: true });
+  });
   document.getElementById('showReceivePanel').addEventListener('click', () => setDashboardPanel('receive'));
   document.getElementById('showDepositPanel').addEventListener('click', () => setDashboardPanel('deposit'));
 
