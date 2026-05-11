@@ -155,8 +155,11 @@ pub struct ConsensusEngine {
     last_committed_block_timestamp: Option<u64>,
 
     // ── Future message buffers (G-10 fix) ───────────────────────────
-    /// Proposals for heights > self.height, replayed when we advance.
-    future_proposals: BTreeMap<u64, Vec<Proposal>>,
+    // Future proposals are intentionally not buffered here. A proposal must be
+    // replayed against application state before this pure consensus state
+    // machine can safely prevote for it, so the validator loop owns the
+    // future-proposal buffer and validates each proposal before calling
+    // `on_proposal`.
     /// Prevotes for heights > self.height.
     future_prevotes: BTreeMap<u64, Vec<Prevote>>,
     /// Precommits for heights > self.height.
@@ -213,7 +216,6 @@ impl ConsensusEngine {
             signed_prevote_rounds: HashMap::new(),
             signed_precommit_rounds: HashMap::new(),
             last_committed_block_timestamp: None,
-            future_proposals: BTreeMap::new(),
             future_prevotes: BTreeMap::new(),
             future_precommits: BTreeMap::new(),
         }
@@ -238,7 +240,6 @@ impl ConsensusEngine {
         self.signed_prevote_rounds.clear();
         self.signed_precommit_rounds.clear();
         // Prune future message buffers: discard entries below the new height
-        self.future_proposals.retain(|h, _| *h >= height);
         self.future_prevotes.retain(|h, _| *h >= height);
         self.future_precommits.retain(|h, _| *h >= height);
         info!("🔷 BFT: Starting height {} round 0", height);
@@ -375,18 +376,11 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        // Buffer proposals for future heights (G-10 fix)
         if proposal.height > self.height {
-            if proposal.height <= self.height + FUTURE_MSG_BUFFER_HEIGHTS {
-                debug!(
-                    "📥 BFT: Buffering future proposal h={} (current h={})",
-                    proposal.height, self.height
-                );
-                self.future_proposals
-                    .entry(proposal.height)
-                    .or_default()
-                    .push(proposal);
-            }
+            debug!(
+                "📥 BFT: Ignoring future proposal h={} in pure engine; caller must buffer and validate before replay (current h={})",
+                proposal.height, self.height
+            );
             return ConsensusAction::None;
         }
         // Ignore proposals for past heights
@@ -820,11 +814,11 @@ impl ConsensusEngine {
     //  FUTURE MESSAGE REPLAY (G-10 fix)
     // ═══════════════════════════════════════════════════════════════
 
-    /// Replay any buffered proposals, prevotes, and precommits for the current
-    /// height. Called after `start_height()` to process messages that arrived
+    /// Replay any buffered prevotes and precommits for the current height.
+    /// Called after `start_height()` to process messages that arrived
     /// while we were still at a previous height. This is critical for fast
-    /// catch-up: without it, a validator that falls one height behind would
-    /// miss the proposal and all votes, forcing a full round timeout.
+    /// catch-up. Future proposals are buffered in the validator loop instead,
+    /// because they require application-state validation before prevote.
     pub fn drain_future_messages(
         &mut self,
         validator_set: &ValidatorSet,
@@ -832,21 +826,6 @@ impl ConsensusEngine {
     ) -> ConsensusAction {
         let height = self.height;
         let mut actions = Vec::new();
-
-        // Proposals first (so the block is registered before votes reference it)
-        if let Some(proposals) = self.future_proposals.remove(&height) {
-            info!(
-                "📥 BFT: Replaying {} buffered proposals for height {}",
-                proposals.len(),
-                height
-            );
-            for p in proposals {
-                let a = self.on_proposal(p, validator_set, stake_pool);
-                if !matches!(a, ConsensusAction::None) {
-                    actions.push(a);
-                }
-            }
-        }
 
         // Prevotes
         if let Some(prevotes) = self.future_prevotes.remove(&height) {
