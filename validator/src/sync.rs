@@ -311,9 +311,17 @@ impl SyncManager {
         // few applied blocks causes the node to re-request largely identical
         // ranges, which saturates the sync queues and slows catch-up.
         if is_syncing {
-            let (_, batch_end) = current_batch?;
+            let (batch_start, batch_end) = current_batch?;
+            if current_slot < batch_start {
+                return None;
+            }
+
+            if phase == SyncPhase::InitialSync {
+                return None;
+            }
+
             let remaining_in_batch = batch_end.saturating_sub(current_slot);
-            if remaining_in_batch > P2P_BLOCK_RANGE_LIMIT {
+            if remaining_in_batch >= P2P_BLOCK_RANGE_LIMIT {
                 return None;
             }
             let gap = highest.saturating_sub(current_slot);
@@ -361,12 +369,14 @@ impl SyncManager {
                 current_slot // Include overlap for fork resolution
             };
 
-            // Calculate batch end.
-            // P2-5: When far behind, use pipelined prefetch — request up
-            // to PIPELINE_DEPTH batches ahead so the next batch is already
-            // downloading while we apply the current one.
+            // Calculate batch end. InitialSync only asks for the contiguous
+            // forward window the receiver will accept. LiveSync can still use
+            // pipelined prefetch because live fork recovery buffers farther
+            // ahead.
             let gap = highest.saturating_sub(start_slot);
-            let effective_batch = if gap > SYNC_BATCH_SIZE {
+            let effective_batch = if phase == SyncPhase::InitialSync {
+                INITIAL_SYNC_FORWARD_WINDOW
+            } else if gap > SYNC_BATCH_SIZE {
                 SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH
             } else {
                 SYNC_BATCH_SIZE
@@ -411,6 +421,27 @@ impl SyncManager {
         *batch = None;
 
         info!("✅ Sync batch completed");
+    }
+
+    /// Complete the batch only if it is still the active batch.
+    /// Timeout tasks run asynchronously; an older timeout must not clear a
+    /// newer catch-up range that was started after progress advanced.
+    pub async fn complete_sync_if_current(&self, start: u64, end: u64) -> bool {
+        let mut is_syncing = self.is_syncing.lock().await;
+        let mut batch = self.current_sync_batch.lock().await;
+
+        if *batch == Some((start, end)) {
+            *is_syncing = false;
+            *batch = None;
+            info!("✅ Sync batch completed");
+            true
+        } else {
+            debug!(
+                "Skipping stale sync completion for {}-{}; active batch is {:?}",
+                start, end, *batch
+            );
+            false
+        }
     }
 
     /// Record a sync failure — increases cooldown via exponential backoff.
@@ -738,6 +769,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_stale_completion_does_not_clear_new_batch() {
+        let sm = SyncManager::new();
+        sm.start_sync(1, 500).await;
+        sm.start_sync(501, 1000).await;
+
+        assert!(
+            !sm.complete_sync_if_current(1, 500).await,
+            "stale timeout must not complete a newer active batch"
+        );
+        assert!(*sm.is_syncing.lock().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, Some((501, 1000)));
+
+        assert!(sm.complete_sync_if_current(501, 1000).await);
+        assert!(!*sm.is_syncing.lock().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, None);
+    }
+
+    #[tokio::test]
     async fn test_mark_requested() {
         let sm = SyncManager::new();
         assert!(!sm.is_requested(42).await);
@@ -802,6 +851,36 @@ mod tests {
         assert!(
             batch.is_none(),
             "should not overlap while the current batch still has substantial coverage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initial_sync_does_not_retrigger_active_batch_before_start() {
+        let sm = SyncManager::new();
+        sm.note_seen(5_000).await;
+        sm.start_sync(1, 500).await;
+        *sm.last_sync_triggered_at.lock().await =
+            Instant::now() - std::time::Duration::from_secs(1);
+
+        let batch = sm.should_sync(0).await;
+        assert!(
+            batch.is_none(),
+            "post-genesis batch 1..500 must not be replaced by an overlapping 0-based batch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initial_sync_does_not_overlap_active_batch() {
+        let sm = SyncManager::new();
+        sm.note_seen(5_000).await;
+        sm.start_sync(1, 500).await;
+        *sm.last_sync_triggered_at.lock().await =
+            Instant::now() - std::time::Duration::from_secs(1);
+
+        let batch = sm.should_sync(250).await;
+        assert!(
+            batch.is_none(),
+            "InitialSync retries are driven by batch timeout/progress, not overlapping range replacement"
         );
     }
 
@@ -1206,18 +1285,31 @@ mod tests {
         assert_eq!(MAX_PENDING_BLOCKS, 6000);
     }
 
-    /// P2-5: should_sync returns larger batch when far behind
+    /// P2-5: InitialSync requests only the receiver's contiguous forward window.
     #[tokio::test]
-    async fn test_pipeline_prefetch_batch() {
+    async fn test_initial_sync_batch_respects_forward_window() {
         let sm = SyncManager::new();
-        // 10000 blocks behind → gap > SYNC_BATCH_SIZE → pipeline depth applies
         sm.note_seen(10000).await;
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
         // current_slot == 0, no checkpoint: starts from slot 0
         assert_eq!(start, 0);
-        // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH blocks
+        let batch_size = end - start + 1;
+        assert_eq!(batch_size, INITIAL_SYNC_FORWARD_WINDOW);
+    }
+
+    /// P2-5: LiveSync can still pipeline because the receiver accepts far-future
+    /// blocks in live fork-recovery mode.
+    #[tokio::test]
+    async fn test_live_sync_pipeline_prefetch_batch() {
+        let sm = SyncManager::new();
+        sm.transition_to_live().await;
+        sm.note_seen(10000).await;
+        let batch = sm.should_sync(0).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 0);
         let batch_size = end - start + 1;
         assert_eq!(batch_size, SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH);
     }
