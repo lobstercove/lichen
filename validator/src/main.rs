@@ -2960,6 +2960,12 @@ fn block_total_fees_paid(state: &StateStore, block: &Block, fee_config: &FeeConf
         .sum()
 }
 
+fn deterministic_fee_recipient_validators(stake_pool: &StakePool) -> Vec<Pubkey> {
+    let mut validators = stake_pool.active_validators();
+    validators.sort_by_key(|pk| pk.0);
+    validators
+}
+
 // =========================================================================
 //  CONSENSUS ORACLE MIRROR — Deterministic derived state from finalized prices
 //
@@ -4303,37 +4309,15 @@ async fn apply_block_effects(
     }
 
     if voters_share > 0 {
-        // RC7-FIX: Derive voters from the block's commit_signatures instead
-        // of the ephemeral VoteAggregator.  commit_signatures are consensus
-        // data persisted in every block, so syncing nodes that replay effects
-        // from stored blocks produce identical fee distributions as nodes
-        // that processed blocks live through BFT.  The VoteAggregator is
-        // only populated for live BFT rounds and is empty during sync,
-        // which caused voter fees to stay in treasury on joining nodes —
-        // producing a cumulative accounts_root divergence.
-        let mut voter_pubkeys: Vec<Pubkey> = block
-            .commit_signatures
-            .iter()
-            .map(|cs| Pubkey(cs.validator))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        // Deterministic ordering is consensus-critical: the last voter
-        // receives the integer-rounding remainder, so all validators
-        // must iterate in the same order.
-        voter_pubkeys.sort_by_key(|pk| pk.0);
+        let pool = stake_pool.read().await;
+        let voter_pubkeys = deterministic_fee_recipient_validators(&pool);
 
         if !voter_pubkeys.is_empty() {
-            let pool = stake_pool.read().await;
-            // AUDIT-FIX A7-02: Exclude slashed validators from fee distribution
-            // Only count stake from non-slashed validators for proportional sharing
+            // Commit signatures are finality evidence, not canonical state input:
+            // different validators can commit after seeing different supermajority
+            // subsets. Fee state must derive only from block data and active stake.
             let total_voter_stake: u64 = voter_pubkeys
                 .iter()
-                .filter(|validator| {
-                    pool.get_stake(validator)
-                        .map(|s| s.is_active)
-                        .unwrap_or(false)
-                })
                 .filter_map(|validator| pool.get_stake(validator))
                 .map(|stake_info| stake_info.total_stake())
                 .sum();
@@ -4387,8 +4371,8 @@ async fn apply_block_effects(
                 remaining = remaining.saturating_sub(share);
                 voters_paid = voters_paid.saturating_add(share);
             }
-            drop(pool);
         }
+        drop(pool);
     }
 
     let treasury_share =
@@ -17953,6 +17937,122 @@ mod tests {
             .get_reward_distribution_hash(7)
             .expect("read reward marker")
             .is_some());
+    }
+
+    fn test_validator_info(pubkey: Pubkey) -> ValidatorInfo {
+        ValidatorInfo {
+            pubkey,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: MIN_VALIDATOR_STAKE,
+            joined_slot: 0,
+            last_active_slot: 0,
+            last_observed_at_ms: 0,
+            last_observed_block_at_ms: 0,
+            last_observed_block_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        }
+    }
+
+    fn commit_signature_for_test(
+        validator: Pubkey,
+        seed: u8,
+        height: u64,
+    ) -> lichen_core::CommitSignature {
+        lichen_core::CommitSignature {
+            validator: validator.0,
+            signature: make_test_signature(seed, &height.to_le_bytes()),
+            timestamp: 1_778_494_000 + u64::from(seed),
+        }
+    }
+
+    #[test]
+    fn fee_distribution_is_independent_of_local_commit_signature_subset() {
+        let validators = [
+            Keypair::generate().pubkey(),
+            Keypair::generate().pubkey(),
+            Keypair::generate().pubkey(),
+        ];
+        let producer = validators[0];
+        let treasury = Keypair::generate().pubkey();
+        let mut block = make_block_with_txs(vec![make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0)]);
+        block.header.slot = 11;
+        block.header.validator = producer.0;
+        block.tx_fees_paid = vec![TxProcessor::compute_transaction_fee(
+            &block.transactions[0],
+            &FeeConfig::default_from_constants(),
+        )];
+
+        let apply_with_commit_subset = |commit_signers: &[Pubkey]| {
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let state = StateStore::open(temp_dir.path()).expect("open state");
+            state.set_treasury_pubkey(&treasury).expect("set treasury");
+            state
+                .put_account(
+                    &treasury,
+                    &Account::new(10_000_000_000, SYSTEM_ACCOUNT_OWNER),
+                )
+                .expect("fund treasury");
+
+            let mut validator_set = ValidatorSet::new();
+            let mut pool = StakePool::new();
+            for validator in validators {
+                validator_set.add_validator(test_validator_info(validator));
+                state
+                    .put_account(&validator, &Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                    .expect("put validator account");
+                pool.stake(validator, MIN_VALIDATOR_STAKE, 0)
+                    .expect("stake validator");
+            }
+            state.put_stake_pool(&pool).expect("put stake pool");
+            let validator_set = Arc::new(RwLock::new(validator_set));
+            let stake_pool = Arc::new(RwLock::new(pool));
+
+            let mut local_block = block.clone();
+            local_block.commit_signatures = commit_signers
+                .iter()
+                .enumerate()
+                .map(|(idx, validator)| commit_signature_for_test(*validator, idx as u8 + 1, 11))
+                .collect();
+
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(apply_block_effects(
+                &state,
+                &validator_set,
+                &stake_pool,
+                &local_block,
+                false,
+                MIN_VALIDATOR_STAKE,
+            ));
+
+            let balances = validators
+                .iter()
+                .map(|validator| {
+                    state
+                        .get_account(validator)
+                        .expect("get validator account")
+                        .expect("validator account exists")
+                        .spores
+                })
+                .collect::<Vec<_>>();
+
+            (state.compute_state_root_cold_start(), balances)
+        };
+
+        let (two_signature_root, two_signature_balances) =
+            apply_with_commit_subset(&validators[..2]);
+        let (three_signature_root, three_signature_balances) =
+            apply_with_commit_subset(&validators);
+        assert_eq!(two_signature_root, three_signature_root);
+        assert_eq!(two_signature_balances, three_signature_balances);
+        assert!(
+            three_signature_balances.iter().all(|balance| *balance > 0),
+            "all active validators must receive deterministic fee credit"
+        );
     }
 
     #[test]
