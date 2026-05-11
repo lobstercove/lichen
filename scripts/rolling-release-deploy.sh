@@ -4,8 +4,8 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.31 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.31 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.32 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.32 bash scripts/rolling-release-deploy.sh mainnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -34,6 +34,7 @@ SSH_USER="${LICHEN_SSH_USER:-ubuntu}"
 SSH_PORT="${LICHEN_SSH_PORT:-2222}"
 HOSTS="${LICHEN_VPS_HOSTS:-$DEFAULT_HOSTS}"
 DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-85}"
+MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 
 if [ -z "$RELEASE_TAG" ]; then
@@ -72,7 +73,7 @@ scp_to() {
   local src="$1"
   local host="$2"
   local dst="$3"
-  scp -P "$SSH_PORT" \
+  scp -O -P "$SSH_PORT" \
     -o BatchMode=yes \
     -o ConnectTimeout=10 \
     -o StrictHostKeyChecking=no \
@@ -181,7 +182,7 @@ REMOTE
 wait_healthy() {
   local host="$1"
   echo "Wait healthy ${host}"
-  ssh_run "$host" "RPC_PORT='$RPC_PORT' bash -s" <<'REMOTE'
+  ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' bash -s" <<'REMOTE'
 set -euo pipefail
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
@@ -193,10 +194,11 @@ payload = json.load(sys.stdin)
 result = payload.get("result") or {}
 disk = result.get("disk") or {}
 age = int(result.get("block_age_secs") or 0)
+max_age = int(__import__("os").environ.get("MAX_BLOCK_AGE_SECS", "15"))
 status = result.get("status")
 slot = result.get("slot")
-print("status={} slot={} age={}s disk_critical={}".format(status, slot, age, disk.get("critical")))
-sys.exit(0 if status == "ok" and age <= 5 and not disk.get("critical") else 1)
+print("status={} slot={} age={}s max_age={}s disk_critical={}".format(status, slot, age, max_age, disk.get("critical")))
+sys.exit(0 if status == "ok" and age <= max_age and not disk.get("critical") else 1)
 '; then
     exit 0
   fi

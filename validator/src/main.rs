@@ -63,7 +63,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -291,6 +291,7 @@ const SYNC_REQUEST_FANOUT: usize = 3;
 /// the peer tip is several heights ahead this node must let sync catch up
 /// instead of proposing or committing from stale canonical state.
 const LIVE_BFT_CATCH_UP_GAP: u64 = 3;
+const FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS: u64 = 10;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
 const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
@@ -3274,6 +3275,16 @@ fn validate_then_replay_block_transactions(
     context: &str,
     allow_schema_detection: bool,
 ) -> Result<(), String> {
+    validate_block_transactions_against_state(state, block, context, allow_schema_detection, true)
+}
+
+fn validate_block_transactions_against_state(
+    state: &StateStore,
+    block: &Block,
+    context: &str,
+    allow_schema_detection: bool,
+    commit: bool,
+) -> Result<(), String> {
     if block.header.slot == 0 || block.transactions.is_empty() {
         return validate_state_root_with_schema(
             state,
@@ -3332,7 +3343,67 @@ fn validate_then_replay_block_transactions(
         }
     }
 
-    state.commit_batch(speculative.batch)
+    if commit {
+        state.commit_batch(speculative.batch)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_consensus_proposal_before_prevote(
+    state: &StateStore,
+    proposal: &Proposal,
+    expected_parent_hash: Hash,
+    expected_validators_hash: Hash,
+) -> Result<(), String> {
+    let block = &proposal.block;
+    if block.header.slot != proposal.height {
+        return Err(format!(
+            "proposal h={} r={} rejected: block slot {} does not match proposal height",
+            proposal.height, proposal.round, block.header.slot
+        ));
+    }
+    if block.header.parent_hash != expected_parent_hash {
+        return Err(format!(
+            "proposal h={} r={} rejected: parent hash {} does not match local tip {}",
+            proposal.height,
+            proposal.round,
+            block.header.parent_hash.to_hex(),
+            expected_parent_hash.to_hex(),
+        ));
+    }
+    if block.header.validators_hash != expected_validators_hash {
+        return Err(format!(
+            "proposal h={} r={} rejected: validators_hash {} does not match frozen height set {}",
+            proposal.height,
+            proposal.round,
+            block.header.validators_hash.to_hex(),
+            expected_validators_hash.to_hex(),
+        ));
+    }
+    if Pubkey(block.header.validator) != proposal.proposer {
+        return Err(format!(
+            "proposal h={} r={} rejected: block signer {} does not match proposal signer {}",
+            proposal.height,
+            proposal.round,
+            Pubkey(block.header.validator).to_base58(),
+            proposal.proposer.to_base58(),
+        ));
+    }
+
+    let tx_hashes: Vec<Hash> = block.transactions.iter().map(|tx| tx.hash()).collect();
+    let tx_root = lichen_core::merkle_tx_root_from_hashes(&tx_hashes);
+    if block.header.tx_root != tx_root {
+        return Err(format!(
+            "proposal h={} r={} rejected: tx_root {} does not match reconstructed {}",
+            proposal.height,
+            proposal.round,
+            block.header.tx_root.to_hex(),
+            tx_root.to_hex(),
+        ));
+    }
+
+    validate_block_transactions_against_state(state, block, "consensus proposal", false, false)
 }
 
 /// Reverse the financial effects of a replaced block during fork choice.
@@ -14542,6 +14613,7 @@ async fn run_validator() {
         min_validator_stake,
     )
     .await;
+    let mut pending_consensus_proposals: BTreeMap<u64, Vec<Proposal>> = BTreeMap::new();
 
     // If we're the proposer for round 0, arm the slot-cadence timer.
     {
@@ -14617,6 +14689,53 @@ async fn run_validator() {
                 min_validator_stake,
             )
             .await;
+
+            if let Some(proposals) = pending_consensus_proposals.remove(&new_height) {
+                for proposal in proposals {
+                    let expected_validators_hash =
+                        compute_validators_hash(&height_vs, &height_pool);
+                    let action = match validate_consensus_proposal_before_prevote(
+                        &state,
+                        &proposal,
+                        parent_hash,
+                        expected_validators_hash,
+                    ) {
+                        Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                        Err(err) => {
+                            warn!("{}", err);
+                            ConsensusAction::None
+                        }
+                    };
+                    execute_consensus_actions(
+                        action,
+                        &bft,
+                        &mut consensus_wal,
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        &vote_aggregator,
+                        &mempool,
+                        &processor,
+                        &finality_tracker,
+                        &p2p_peer_manager,
+                        &p2p_config,
+                        &ws_event_tx,
+                        &ws_dex_broadcaster,
+                        &shared_oracle_prices,
+                        &last_block_time_for_local,
+                        &mut last_dex_trade_count,
+                        &data_dir,
+                        &sync_manager,
+                        &mut parent_hash,
+                        slot_duration_ms,
+                        &validator_keypair,
+                        min_validator_stake,
+                        &block_apply_lock,
+                        &bft_committing_slot,
+                    )
+                    .await;
+                }
+            }
 
             // G-10 fix: Replay any buffered future messages for this height.
             // This is critical for fast catch-up — proposals and votes that
@@ -14706,7 +14825,31 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
-                let action = bft.on_proposal(proposal, &height_vs, &height_pool);
+                let action = if proposal.height > bft.height {
+                    if proposal.height <= bft.height + FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS {
+                        pending_consensus_proposals
+                            .entry(proposal.height)
+                            .or_default()
+                            .push(proposal);
+                    }
+                    ConsensusAction::None
+                } else if proposal.height < bft.height {
+                    ConsensusAction::None
+                } else {
+                    let expected_validators_hash = compute_validators_hash(&height_vs, &height_pool);
+                    match validate_consensus_proposal_before_prevote(
+                        &state,
+                        &proposal,
+                        parent_hash,
+                        expected_validators_hash,
+                    ) {
+                        Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                        Err(err) => {
+                            warn!("{}", err);
+                            ConsensusAction::None
+                        }
+                    }
+                };
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -15146,6 +15289,53 @@ async fn run_validator() {
                         min_validator_stake,
                     )
                     .await;
+
+                    if let Some(proposals) = pending_consensus_proposals.remove(&new_height) {
+                        for proposal in proposals {
+                            let expected_validators_hash =
+                                compute_validators_hash(&height_vs, &height_pool);
+                            let action = match validate_consensus_proposal_before_prevote(
+                                &state,
+                                &proposal,
+                                parent_hash,
+                                expected_validators_hash,
+                            ) {
+                                Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                                Err(err) => {
+                                    warn!("{}", err);
+                                    ConsensusAction::None
+                                }
+                            };
+                            execute_consensus_actions(
+                                action,
+                                &bft,
+                                &mut consensus_wal,
+                                &state,
+                                &validator_set,
+                                &stake_pool,
+                                &vote_aggregator,
+                                &mempool,
+                                &processor,
+                                &finality_tracker,
+                                &p2p_peer_manager,
+                                &p2p_config,
+                                &ws_event_tx,
+                                &ws_dex_broadcaster,
+                                &shared_oracle_prices,
+                                &last_block_time_for_local,
+                                &mut last_dex_trade_count,
+                                &data_dir,
+                                &sync_manager,
+                                &mut parent_hash,
+                                slot_duration_ms,
+                                &validator_keypair,
+                                min_validator_stake,
+                                &block_apply_lock,
+                                &bft_committing_slot,
+                            )
+                            .await;
+                        }
+                    }
 
                     // G-10 fix: Replay buffered future messages
                     let replay_action = bft.drain_future_messages(&height_vs, &height_pool);
@@ -16096,6 +16286,131 @@ mod tests {
                 > 0
         );
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_some());
+    }
+
+    #[test]
+    fn consensus_proposal_validation_rejects_bad_state_root_before_prevote() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let tx_hash = tx.hash();
+        let mut block =
+            Block::new_with_timestamp(1, genesis_hash, Hash([9u8; 32]), validator.0, vec![tx], 1);
+        block.header.validators_hash = validators_hash;
+        block.sign(&validator_kp);
+        let block_hash = block.hash();
+        let proposal = Proposal {
+            height: 1,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(1, 0, &block_hash, -1)),
+        };
+
+        let root_before = state.compute_state_root_cold_start();
+        let err = validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect_err("bad proposal root must be rejected before voting");
+
+        assert!(err.contains("state-root mismatch"));
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+        assert!(state.get_account(&bob).expect("read bob").is_none());
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
+    fn consensus_proposal_validation_accepts_valid_proposal_without_committing() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(10, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let tx_hash = tx.hash();
+        let speculative = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(std::slice::from_ref(&tx), &validator);
+        assert!(speculative.results[0].success);
+        let state_root = state.compute_state_root_for_batch(&speculative.batch);
+
+        let mut block =
+            Block::new_with_timestamp(1, genesis_hash, state_root, validator.0, vec![tx], 1);
+        block.header.validators_hash = validators_hash;
+        block.tx_fees_paid = speculative
+            .results
+            .iter()
+            .map(|result| result.fee_paid)
+            .collect();
+        block.sign(&validator_kp);
+        let block_hash = block.hash();
+        let proposal = Proposal {
+            height: 1,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(1, 0, &block_hash, -1)),
+        };
+
+        let root_before = state.compute_state_root_cold_start();
+        validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect("valid proposal should pass before prevote");
+
+        assert_eq!(state.compute_state_root_cold_start(), root_before);
+        assert!(state.get_account(&bob).expect("read bob").is_none());
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
     }
 
     #[test]

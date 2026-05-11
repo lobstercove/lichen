@@ -47,6 +47,7 @@ Rolling-release rules:
 - A rolling release must use a published or draft GitHub Release with `SHA256SUMS` and `SHA256SUMS.sig` attached.
 - `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
+- If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
 
 ## TLS termination model
@@ -1738,7 +1739,17 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Re-run `deploy/setup.sh` on every VPS before a reset or launch, then complete the "VPS disk and log guardrails" preflight. Do not route public traffic to a node whose readiness endpoint reports `stale_tip` or critical disk.
 
-### Pitfall 10: TOFU identity prevents rejoining after state wipe
+### Pitfall 10: Rolling release leaves validators on different committed tips
+
+**Symptom**: Validators report different latest slots, BFT repeatedly logs `Syncing to exact network tip`, and a node rejects a peer block with `state-root mismatch`.
+
+**Root cause**: A validator signed consensus votes for a block before locally replaying the full proposal against its canonical pre-state. That is not a valid production BFT flow: validators must process the proposal and verify parent hash, validator-set hash, transaction root, fee metadata, and state root before prevoting.
+
+**Fix**: Stop every validator immediately and keep `/var/lib/lichen/state-<net>` plus journals for evidence. Ship a new signed release with the proposal-validation gate fixed. For testnet, recover with the owner-approved clean-slate redeploy so the seed creates genesis and joiners sync from peers. For mainnet, do not reset without a separate governance/incident decision; first evaluate whether a finalized-height rollback procedure exists.
+
+**Prevention**: Treat proposal execution before prevote as a release-blocking invariant. A rolling deploy health gate must fail on stale block age, split tips, or state-root mismatch, and operators must not heal by copying another validator's RocksDB directory.
+
+### Pitfall 11: TOFU identity prevents rejoining after state wipe
 
 **Symptom**: Wiped validator responds on RPC but stays at slot 0. P2P connections from other validators close immediately: `Failed to accept stream: closed by peer: 0`.
 
