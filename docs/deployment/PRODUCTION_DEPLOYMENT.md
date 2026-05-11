@@ -47,6 +47,7 @@ Rolling-release rules:
 - A rolling release must use a published or draft GitHub Release with `SHA256SUMS` and `SHA256SUMS.sig` attached.
 - `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
+- Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
 - If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
 
@@ -1367,7 +1368,7 @@ Last exercised successfully on 2026-04-27 with signed release `v0.5.20`: the Git
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
-export LICHEN_RELEASE_TAG=v0.5.20
+export LICHEN_RELEASE_TAG=v0.5.34
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
@@ -1828,7 +1829,17 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Treat proposal execution before prevote as a release-blocking invariant. A rolling deploy health gate must fail on stale block age, split tips, or state-root mismatch, and operators must not heal by copying another validator's RocksDB directory.
 
-### Pitfall 11: Stale Caddy ingress breaks WebSocket intermittently
+### Pitfall 11: Commit-certificate subsets must not affect state
+
+**Symptom**: A validator accepts a fee-bearing block, then rejects the next block with `state-root mismatch`. The rejected next block may be an empty liveness block because it only exposes the state divergence from the previous committed block.
+
+**Root cause**: Post-block fee distribution used the locally observed `commit_signatures` subset as an input to account balances. That subset is finality evidence, not canonical block state: validators are allowed to commit as soon as they observe any valid two-thirds supermajority, so different validators can persist different signature subsets for the same block.
+
+**Fix**: Ship a validator release that derives all fee-recipient state from canonical block data plus the active stake pool, with deterministic ordering. Do not copy RocksDB state between validators to hide the divergence.
+
+**Prevention**: No state-root-affecting path may depend on local vote aggregators, locally collected prevotes/precommits, commit-certificate subset size/order, wall-clock arrival order, RPC routing, or other observer-local evidence. Release tests must include "same block, different commit-signature subsets, same state root" coverage for any post-block accounting path.
+
+### Pitfall 12: Stale Caddy ingress breaks WebSocket intermittently
 
 **Symptom**: HTTPS JSON-RPC is healthy, but `wss://testnet-rpc.lichen.network/ws` intermittently hangs or fails to subscribe.
 
@@ -1838,7 +1849,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Treat Caddy as deployment state, not hand-edited host state. After every reset or launch, compare `/etc/caddy/Caddyfile` against `deploy/Caddyfile.common` plus the network fragment and run the public `subscribeSlots` WebSocket smoke test 10/10.
 
-### Pitfall 12: Dedicated WS hostname bypasses edge TLS
+### Pitfall 13: Dedicated WS hostname bypasses edge TLS
 
 **Symptom**: `wss://testnet-rpc.lichen.network/ws` works, but `wss://testnet-ws.lichen.network` or `wss://ws.lichen.network` fails with an untrusted certificate.
 
@@ -1848,7 +1859,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: DNS and TLS are part of the release gate. For every advertised WSS hostname, `dig +short` must show the intended edge path when `tls internal` is used, and `websocat -n1 <url>` must pass from outside the VPS network.
 
-### Pitfall 13: Native oracle consensus remains at genesis while ticker moves
+### Pitfall 14: Native oracle consensus remains at genesis while ticker moves
 
 **Symptom**: DEX pair prices move through `ticker:<pair_id>` WebSocket updates, but `/api/v1/oracle/prices` shows wrapped assets at `slot:0` with `stale:true`, and `/api/v1/pairs/<id>/candles?interval=60` keeps returning flat genesis-price candles after a reset.
 
@@ -1858,7 +1869,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: After every reset, launch, or rolling release, run the Step 8 DEX oracle/candle smoke. The gate must prove that wrapped-asset native consensus oracle slots advance past genesis and that 1m candles are present through the same public RPC path used by browsers.
 
-### Pitfall 14: TOFU identity prevents rejoining after state wipe
+### Pitfall 15: TOFU identity prevents rejoining after state wipe
 
 **Symptom**: Wiped validator responds on RPC but stays at slot 0. P2P connections from other validators close immediately: `Failed to accept stream: closed by peer: 0`.
 
