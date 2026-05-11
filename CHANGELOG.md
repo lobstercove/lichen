@@ -5,6 +5,14 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.30] - 2026-05-11
+
+### Fixed
+- Validator sync now validates replay on a staging checkpoint before mutating canonical RocksDB, preventing bad or locally divergent synced blocks from corrupting live state.
+- Post-genesis initial sync retries start at slot 1 instead of re-requesting genesis after block 0 is already imported.
+- Sync timeouts keep partially advancing batches active until their requested target is reached, reducing overlapping retry storms during catch-up.
+- Genesis import refreshes in-memory stake and validator views authoritatively, and historical sync no longer runs pre-chainability validator activation or direct genesis-bootstrap state writes outside block replay.
+
 ## [0.5.14] - 2026-04-26
 
 ### Fixed

@@ -3410,6 +3410,25 @@ fn validate_block_replay_on_staging(
     result
 }
 
+fn validate_then_replay_block_transactions(
+    state: &StateStore,
+    processor: &TxProcessor,
+    staging_root: &Path,
+    block: &Block,
+    context: &str,
+    allow_schema_detection: bool,
+) -> Result<(), String> {
+    validate_block_replay_on_staging(state, staging_root, block, context, allow_schema_detection)?;
+    replay_block_transactions(processor, block);
+    validate_state_root_with_schema(
+        state,
+        block.header.slot,
+        block.header.state_root,
+        context,
+        allow_schema_detection,
+    )
+}
+
 /// Reverse the financial effects of a replaced block during fork choice.
 /// Attempts to debit the old producer's reward and credit treasury back.
 /// Fee distribution reversal is approximate — voter shares remain (small
@@ -8263,6 +8282,7 @@ async fn run_validator() {
         let bft_committing_for_blocks = bft_committing_slot.clone();
         let block_apply_lock_for_blocks = block_apply_lock.clone();
         let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
+        let replay_staging_root_for_blocks = replay_staging_root.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -8409,7 +8429,12 @@ async fn run_validator() {
                             tokio::spawn(async move {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                                 let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                                if current > sync_start_slot {
+                                if current >= sync_end {
+                                    sync_mgr_complete.record_sync_success().await;
+                                    sync_mgr_complete
+                                        .complete_sync_if_current(sync_start, sync_end)
+                                        .await;
+                                } else if current > sync_start_slot {
                                     sync_mgr_complete.record_sync_success().await;
                                     if current < sync_end {
                                         info!(
@@ -8419,10 +8444,10 @@ async fn run_validator() {
                                     }
                                 } else {
                                     sync_mgr_complete.record_sync_failure().await;
+                                    sync_mgr_complete
+                                        .complete_sync_if_current(sync_start, sync_end)
+                                        .await;
                                 }
-                                sync_mgr_complete
-                                    .complete_sync_if_current(sync_start, sync_end)
-                                    .await;
                             });
                         }
                         continue;
@@ -8483,37 +8508,12 @@ async fn run_validator() {
                     continue;
                 }
 
-                // AUDIT-FIX C5: Reject blocks from non-member validators BEFORE
-                // note_seen / fork-choice to prevent outsiders from influencing
-                // sync target or fork selection.
-                // Genesis block (slot 0) uses SYSTEM_ACCOUNT_OWNER as validator,
-                // which is not in the active set — allow it through.
-                //
-                // With full TX replay during sync, the in-memory validator set
-                // PRE-VERIFICATION ACTIVATION: The producing network freezes
-                // the consensus set for height H, activating any validators
-                // whose warmup completes at H.  The verifier must do the same
-                // before checking the commit certificate, otherwise a validator
-                // that activated at H is missing from verify_commit's
-                // denominator and the 2/3 check can spuriously fail.
-                if block_slot > 0 {
-                    let pool = stake_pool_for_blocks.read().await.clone();
-                    activate_pending_validators_for_height(
-                        &state_for_blocks,
-                        &validator_set_for_blocks,
-                        &pool,
-                        block_slot,
-                        min_validator_stake,
-                    )
-                    .await;
-                }
-
-                // Active-set membership check: reject blocks from validators
-                // not in our set.  During sync (catching up), skip this check
-                // because RegisterValidator TXs may not have been replayed yet
-                // and the in-memory set only has genesis validators.  The
-                // parent-hash chain provides integrity during catch-up.
-                if block_slot > 0 && sync_mgr.should_full_validate(block_slot).await {
+                // Active-set membership check for live, non-sync blocks. During
+                // historical sync, the parent hash chain plus deterministic
+                // replay/state-root validation are authoritative; mutating the
+                // local validator set before a block is chainable can corrupt
+                // the pre-block state used to validate slot roots.
+                if block_slot > 0 && !is_sync_block {
                     let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
                         warn!(
@@ -8778,14 +8778,10 @@ async fn run_validator() {
                                 }
 
                                 if let Ok(pool) = state_for_blocks.get_stake_pool() {
-                                    if let Ok(mut live_pool) = stake_pool_for_blocks.try_write() {
-                                        *live_pool = pool;
-                                    }
+                                    *stake_pool_for_blocks.write().await = pool;
                                 }
                                 if let Ok(set) = state_for_blocks.load_validator_set() {
-                                    if let Ok(mut live_vs) = validator_set_for_blocks.try_write() {
-                                        *live_vs = set;
-                                    }
+                                    *validator_set_for_blocks.write().await = set;
                                 }
 
                                 if let Err(e) = state_for_blocks.put_block(&block) {
@@ -9329,15 +9325,9 @@ async fn run_validator() {
                                             .ok();
                                         state_for_blocks.put_stake_pool(&pool).ok();
 
-                                        // Update in-memory pool/validator-set.
-                                        // Use try_write to avoid deadlocking with
-                                        // the joining-network loop that reads these
-                                        // locks. The joined loop also checks RocksDB
-                                        // directly if in-memory is empty.
-                                        if let Ok(mut live_pool) = stake_pool_for_blocks.try_write()
-                                        {
-                                            *live_pool = pool.clone();
-                                        }
+                                        // Update in-memory pool/validator-set from
+                                        // the reconstructed canonical genesis state.
+                                        *stake_pool_for_blocks.write().await = pool.clone();
 
                                         {
                                             // Build the validator set from pool data
@@ -9379,11 +9369,8 @@ async fn run_validator() {
                                             );
                                             }
 
-                                            if let Ok(mut live_vs) =
-                                                validator_set_for_blocks.try_write()
-                                            {
-                                                *live_vs = reconstructed_vs;
-                                            }
+                                            *validator_set_for_blocks.write().await =
+                                                reconstructed_vs;
                                         }
                                     }
                                 }
@@ -9617,11 +9604,11 @@ async fn run_validator() {
                             let did_full_validate =
                                 sync_mgr.should_full_validate(pending_slot).await;
                             if did_full_validate {
-                                replay_block_transactions(&processor_for_blocks, &pending_block);
-                                if let Err(err) = validate_state_root_with_schema(
+                                if let Err(err) = validate_then_replay_block_transactions(
                                     &state_for_blocks,
-                                    pending_slot,
-                                    pending_block.header.state_root,
+                                    &processor_for_blocks,
+                                    &replay_staging_root_for_blocks,
+                                    &pending_block,
                                     "pending block",
                                     false,
                                 ) {
@@ -9801,7 +9788,12 @@ async fn run_validator() {
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            if current > sync_start_slot {
+                            if current >= sync_end {
+                                sync_mgr_complete.record_sync_success().await;
+                                sync_mgr_complete
+                                    .complete_sync_if_current(sync_start, sync_end)
+                                    .await;
+                            } else if current > sync_start_slot {
                                 sync_mgr_complete.record_sync_success().await;
                                 if current < sync_end {
                                     info!(
@@ -9811,10 +9803,10 @@ async fn run_validator() {
                                 }
                             } else {
                                 sync_mgr_complete.record_sync_failure().await;
+                                sync_mgr_complete
+                                    .complete_sync_if_current(sync_start, sync_end)
+                                    .await;
                             }
-                            sync_mgr_complete
-                                .complete_sync_if_current(sync_start, sync_end)
-                                .await;
                         });
                     }
                     info!(
@@ -9889,82 +9881,15 @@ async fn run_validator() {
                             continue;
                         }
 
-                        // Replicate genesis producer bootstrap on early blocks.
-                        // The genesis node bootstraps its own validator via direct
-                        // state write at startup; joiners must replicate this when
-                        // they see the REAL producer in block 1-5 headers.
-                        if block_slot > 0 && block_slot <= 5 {
-                            let producer = Pubkey(block.header.validator);
-                            let pool_missing = state_for_blocks
-                                .get_stake_pool()
-                                .map(|p| p.get_stake(&producer).is_none())
-                                .unwrap_or(true);
-                            if pool_missing {
-                                // Replicate genesis bootstrap
-                                let treasury_pk =
-                                    state_for_blocks.get_treasury_pubkey().ok().flatten();
-                                if let Some(tpk) = treasury_pk {
-                                    if let Ok(Some(mut treasury)) =
-                                        state_for_blocks.get_account(&tpk)
-                                    {
-                                        if treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).is_ok()
-                                        {
-                                            state_for_blocks.put_account(&tpk, &treasury).ok();
-                                            let mut acct = state_for_blocks
-                                                .get_account(&producer)
-                                                .unwrap_or(None)
-                                                .unwrap_or_else(|| {
-                                                    Account::new(0, SYSTEM_ACCOUNT_OWNER)
-                                                });
-                                            acct.spores =
-                                                acct.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                            acct.staked =
-                                                acct.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
-                                            state_for_blocks.put_account(&producer, &acct).ok();
-                                            let mut pool = state_for_blocks
-                                                .get_stake_pool()
-                                                .unwrap_or_else(|_| StakePool::new());
-                                            // Must use try_bootstrap_with_fingerprint (not upsert_stake)
-                                            // to create byte-identical StakeInfo as the genesis node:
-                                            // bootstrap_index=0, bootstrap_debt=amount, status=Bootstrapping.
-                                            // upsert_stake creates bootstrap_index=u64::MAX, debt=0, FullyVested.
-                                            if let Err(e) = pool.try_bootstrap_with_fingerprint(
-                                                producer,
-                                                BOOTSTRAP_GRANT_AMOUNT,
-                                                0,
-                                                [0u8; 32],
-                                            ) {
-                                                warn!(
-                                                    "⚠️  Genesis bootstrap pool entry failed: {}",
-                                                    e
-                                                );
-                                            }
-                                            state_for_blocks.put_stake_pool(&pool).ok();
-                                            {
-                                                let mut mem_pool =
-                                                    stake_pool_for_blocks.write().await;
-                                                *mem_pool = pool;
-                                            }
-                                            info!(
-                                                "🩹 Genesis bootstrap replicated: {} staked {} LICN",
-                                                producer.to_base58(),
-                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         // Valid next block in chain - replay transactions then store
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
                         let did_full_validate = sync_mgr.should_full_validate(block_slot).await;
                         if did_full_validate {
-                            replay_block_transactions(&processor_for_blocks, &block);
-                            if let Err(err) = validate_state_root_with_schema(
+                            if let Err(err) = validate_then_replay_block_transactions(
                                 &state_for_blocks,
-                                block_slot,
-                                block.header.state_root,
+                                &processor_for_blocks,
+                                &replay_staging_root_for_blocks,
+                                &block,
                                 "sync block",
                                 false,
                             ) {
@@ -10157,10 +10082,21 @@ async fn run_validator() {
                                     .should_full_validate(pending_block.header.slot)
                                     .await
                                 {
-                                    replay_block_transactions(
+                                    if let Err(err) = validate_then_replay_block_transactions(
+                                        &state_for_blocks,
                                         &processor_for_blocks,
+                                        &replay_staging_root_for_blocks,
                                         &pending_block,
-                                    );
+                                        "pending block",
+                                        false,
+                                    ) {
+                                        warn!("{}", err);
+                                        error!(
+                                            "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                            pending_slot
+                                        );
+                                        std::process::exit(1);
+                                    }
                                 }
                                 if state_for_blocks
                                     .put_block_atomic(&pending_block, None, None)
@@ -10439,7 +10375,12 @@ async fn run_validator() {
                             };
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            if current > sync_start_slot {
+                            if current >= sync_end {
+                                sync_mgr_complete.record_sync_success().await;
+                                sync_mgr_complete
+                                    .complete_sync_if_current(sync_start, sync_end)
+                                    .await;
+                            } else if current > sync_start_slot {
                                 // Made progress — reset backoff even if not at target
                                 sync_mgr_complete.record_sync_success().await;
                                 if current < sync_end {
@@ -10455,10 +10396,10 @@ async fn run_validator() {
                                     current, sync_end
                                 );
                                 sync_mgr_complete.record_sync_failure().await;
+                                sync_mgr_complete
+                                    .complete_sync_if_current(sync_start, sync_end)
+                                    .await;
                             }
-                            sync_mgr_complete
-                                .complete_sync_if_current(sync_start, sync_end)
-                                .await;
                         });
                     }
                 } else if block_slot <= current_slot {
@@ -10600,19 +10541,32 @@ async fn run_validator() {
                                     &data_dir_for_blocks,
                                 );
 
-                                // F-10 audit fix: Write new block IMMEDIATELY after revert.
-                                // This minimizes the crash window between "old effects reverted"
-                                // and "new block committed". On crash recovery, F-03's
-                                // idempotency guard (reward_distribution_hash check) ensures
-                                // apply_block_effects runs for the block on disk.
+                                if sync_mgr.should_full_validate(block.header.slot).await {
+                                    if let Err(err) = validate_then_replay_block_transactions(
+                                        &state_for_blocks,
+                                        &processor_for_blocks,
+                                        &replay_staging_root_for_blocks,
+                                        &block,
+                                        "fork replacement block",
+                                        false,
+                                    ) {
+                                        warn!("{}", err);
+                                        error!(
+                                            "FATAL: refusing to replay replacement block {} into canonical state after staging state-root mismatch",
+                                            block_slot
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+
+                                // Store the replacement only after deterministic
+                                // replay has matched the block's committed state
+                                // root. Crash recovery can re-apply post-store
+                                // effects idempotently from the stored block.
                                 if state_for_blocks
                                     .put_block_atomic(&block, None, None)
                                     .is_ok()
                                 {
-                                    // Replay TXs AFTER commit — crash here is recoverable
-                                    if sync_mgr.should_full_validate(block.header.slot).await {
-                                        replay_block_transactions(&processor_for_blocks, &block);
-                                    }
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     // FIX-FORK-1: Record after fork adoption
@@ -10691,10 +10645,23 @@ async fn run_validator() {
                                             .should_full_validate(pending_block.header.slot)
                                             .await
                                         {
-                                            replay_block_transactions(
-                                                &processor_for_blocks,
-                                                &pending_block,
-                                            );
+                                            if let Err(err) =
+                                                validate_then_replay_block_transactions(
+                                                    &state_for_blocks,
+                                                    &processor_for_blocks,
+                                                    &replay_staging_root_for_blocks,
+                                                    &pending_block,
+                                                    "pending block",
+                                                    false,
+                                                )
+                                            {
+                                                warn!("{}", err);
+                                                error!(
+                                                    "FATAL: refusing to replay pending block {} into canonical state after staging state-root mismatch",
+                                                    pending_slot
+                                                );
+                                                std::process::exit(1);
+                                            }
                                         }
                                         if state_for_blocks
                                             .put_block_atomic(&pending_block, None, None)
@@ -15680,10 +15647,11 @@ async fn execute_consensus_actions(
             // Proposal execution is speculative. Every validator, including the
             // proposer, replays the committed block into canonical state exactly
             // once at the BFT commit boundary.
-            if env_flag_enabled("LICHEN_VALIDATE_LIVE_BFT_REPLAY") {
+            {
                 let consensus_replay_staging_root = state_staging_root(data_dir, "replay-staging");
-                if let Err(err) = validate_block_replay_on_staging(
+                if let Err(err) = validate_then_replay_block_transactions(
                     state,
+                    processor,
                     &consensus_replay_staging_root,
                     &block,
                     "committed block",
@@ -15697,7 +15665,6 @@ async fn execute_consensus_actions(
                     std::process::exit(1);
                 }
             }
-            replay_block_transactions(processor, &block);
 
             // Apply block effects (rewards, staking, oracle) — these
             // mutations are deterministic and applied identically on all
@@ -16190,6 +16157,65 @@ mod tests {
     }
 
     #[test]
+    fn validate_then_replay_mismatch_does_not_mutate_canonical_state() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let processor = TxProcessor::new(state.clone());
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(1000, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let tx_hash = tx.hash();
+        let block =
+            Block::new_with_timestamp(1, genesis_hash, Hash([9u8; 32]), validator.0, vec![tx], 1);
+        let canonical_root_before = state.compute_state_root_cold_start();
+        let alice_before = state
+            .get_account(&alice)
+            .expect("read alice")
+            .expect("alice exists");
+
+        let staging_root = temp_dir.path().join("replay-staging");
+        let err = validate_then_replay_block_transactions(
+            &state,
+            &processor,
+            &staging_root,
+            &block,
+            "test replay",
+            false,
+        )
+        .expect_err("wrong state root should fail before canonical replay");
+
+        assert!(err.contains("state-root mismatch"));
+        assert_eq!(state.compute_state_root_cold_start(), canonical_root_before);
+        let alice_after = state
+            .get_account(&alice)
+            .expect("read alice after")
+            .expect("alice remains");
+        assert_eq!(alice_after.spores, alice_before.spores);
+        assert_eq!(alice_after.spendable, alice_before.spendable);
+        assert!(state.get_account(&bob).expect("read bob").is_none());
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
     fn block_receiver_chainable_sync_path_applies_post_hooks_once_after_store() {
         let source = include_str!("main.rs");
         let start = source
@@ -16201,8 +16227,8 @@ mod tests {
         let section = &source[start..start + relative_end];
 
         let validate_pos = section
-            .find("validate_state_root_with_schema(")
-            .expect("state-root validation call");
+            .find("validate_then_replay_block_transactions(")
+            .expect("staged state-root validation call");
         let store_pos = section
             .find(".put_block_atomic(&block, None, None)")
             .expect("canonical block store");
@@ -16229,6 +16255,11 @@ mod tests {
             section.matches("apply_block_effects(").count(),
             0,
             "chainable sync must not bypass the post-store hook wrapper"
+        );
+        assert_eq!(
+            section.matches("Genesis bootstrap replicated").count(),
+            0,
+            "chainable sync must not mutate genesis bootstrap state outside block replay"
         );
         assert_eq!(
             section.matches("run_analytics_bridge_from_state(").count(),
