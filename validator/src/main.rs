@@ -36,15 +36,16 @@ use lichen_core::multisig::{
 };
 use lichen_core::nft::decode_token_state;
 use lichen_core::{
-    compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
-    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisPrices,
-    GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair, MarketActivity,
-    MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature, Precommit, Prevote,
-    ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence, SlashingOffense, StakePool,
-    StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
-    VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION, GENESIS_STATE_CHUNK_OPCODE,
-    GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    compute_bft_timestamp, compute_stake_weighted_median, compute_validators_hash, evm_tx_hash,
+    Account, Block, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig,
+    GenesisPrices, GenesisStateBundle, GenesisStateChunk, GenesisWallet, Hash, Keypair,
+    MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind, PqSignature,
+    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
+    SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
+    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_DISTRIBUTION, GENESIS_STATE_BUNDLE_VERSION,
+    GENESIS_STATE_CHUNK_OPCODE, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
     SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
@@ -3179,6 +3180,135 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     }
 }
 
+struct CommittedOracleAttestation {
+    signer: Pubkey,
+    asset: String,
+    price: u64,
+    decimals: u8,
+}
+
+fn parse_committed_oracle_attestation(
+    ix: &lichen_core::Instruction,
+) -> Result<Option<CommittedOracleAttestation>, String> {
+    if ix.program_id != CORE_SYSTEM_PROGRAM_ID || ix.data.first().copied() != Some(30) {
+        return Ok(None);
+    }
+    if ix.data.len() < 4 {
+        return Err(
+            "OracleAttestation: data too short (need opcode + asset_len + asset + price + decimals)"
+                .to_string(),
+        );
+    }
+    let asset_len = ix.data[1] as usize;
+    if !(ORACLE_ASSET_MIN_LEN..=ORACLE_ASSET_MAX_LEN).contains(&asset_len) {
+        return Err(format!(
+            "OracleAttestation: asset name length {} out of range {}..={}",
+            asset_len, ORACLE_ASSET_MIN_LEN, ORACLE_ASSET_MAX_LEN
+        ));
+    }
+    let expected_len = 2 + asset_len + 9;
+    if ix.data.len() < expected_len {
+        return Err(format!(
+            "OracleAttestation: data too short (need {} bytes, got {})",
+            expected_len,
+            ix.data.len()
+        ));
+    }
+    let asset = std::str::from_utf8(&ix.data[2..2 + asset_len])
+        .map_err(|_| "OracleAttestation: asset name is not valid UTF-8".to_string())?
+        .to_string();
+    let price_offset = 2 + asset_len;
+    let price = u64::from_le_bytes(
+        ix.data[price_offset..price_offset + 8]
+            .try_into()
+            .map_err(|_| "OracleAttestation: invalid price bytes".to_string())?,
+    );
+    let decimals = ix.data[price_offset + 8];
+    if price == 0 {
+        return Err("OracleAttestation: price must be > 0".to_string());
+    }
+    if decimals > 18 {
+        return Err("OracleAttestation: decimals must be 0..=18".to_string());
+    }
+    let signer = ix
+        .accounts
+        .first()
+        .copied()
+        .ok_or_else(|| "OracleAttestation: requires validator account".to_string())?;
+
+    Ok(Some(CommittedOracleAttestation {
+        signer,
+        asset,
+        price,
+        decimals,
+    }))
+}
+
+fn apply_committed_oracle_attestation_effects(
+    state: &StateStore,
+    block: &Block,
+    height_start_stake_pool: &StakePool,
+) -> Result<(), String> {
+    // Speculative replay validates opcode 30 without writing oracle records,
+    // because those records are post-root derived state. Persist them exactly
+    // once after the canonical transaction batch has committed, using the
+    // active stake at height start rather than later same-block stake changes.
+    if block.header.slot == 0 || block.transactions.is_empty() {
+        return Ok(());
+    }
+
+    let total_active_stake = height_start_stake_pool.active_stake();
+    if total_active_stake == 0 {
+        return Ok(());
+    }
+    let active_validators = height_start_stake_pool.active_validators().len();
+    let min_attestors = if active_validators <= 1 { 1 } else { 2 };
+    let threshold = (total_active_stake as u128) * 2 / 3;
+
+    for tx in &block.transactions {
+        for ix in &tx.message.instructions {
+            let Some(attestation) = parse_committed_oracle_attestation(ix)? else {
+                continue;
+            };
+
+            let stake_info = height_start_stake_pool
+                .get_stake(&attestation.signer)
+                .ok_or_else(|| "OracleAttestation: signer has no stake".to_string())?;
+            if !stake_info.is_active || !stake_info.meets_minimum() {
+                return Err("OracleAttestation: signer is not an active validator".to_string());
+            }
+
+            state.put_oracle_attestation(
+                &attestation.asset,
+                &attestation.signer,
+                attestation.price,
+                attestation.decimals,
+                stake_info.total_stake(),
+                block.header.slot,
+            )?;
+
+            let attestations = state.get_oracle_attestations(
+                &attestation.asset,
+                block.header.slot,
+                ORACLE_STALENESS_SLOTS,
+            )?;
+            let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
+            if attested_stake >= threshold && attestations.len() >= min_attestors {
+                let consensus_price = compute_stake_weighted_median(&attestations);
+                state.put_oracle_consensus_price(
+                    &attestation.asset,
+                    consensus_price,
+                    attestation.decimals,
+                    block.header.slot,
+                    attestations.len() as u32,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Compute BFT timestamp for a new block proposal.
 ///
 /// Looks up the parent block from state and computes the stake-weighted
@@ -3344,7 +3474,16 @@ fn validate_block_transactions_against_state(
     }
 
     if commit {
-        state.commit_batch(speculative.batch)
+        let height_start_stake_pool = state.get_stake_pool()?;
+        state.commit_batch(speculative.batch)?;
+        apply_committed_oracle_attestation_effects(state, block, &height_start_stake_pool).map_err(
+            |err| {
+                format!(
+                    "slot {} {} committed oracle side effects failed: {}",
+                    block.header.slot, context, err
+                )
+            },
+        )
     } else {
         Ok(())
     }
@@ -16097,6 +16236,42 @@ mod tests {
         tx
     }
 
+    fn make_oracle_replay_block(
+        state: &StateStore,
+        parent: &Block,
+        producer: &Keypair,
+        txs: Vec<Transaction>,
+        slot: u64,
+        timestamp: u64,
+    ) -> Block {
+        let producer_pubkey = producer.pubkey();
+        let speculative = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(&txs, &producer_pubkey);
+        for result in &speculative.results {
+            assert!(
+                result.success,
+                "oracle replay test tx should be valid: {:?}",
+                result.error
+            );
+        }
+        let state_root = state.compute_state_root_for_batch(&speculative.batch);
+        let mut block = Block::new_with_timestamp(
+            slot,
+            parent.hash(),
+            state_root,
+            producer_pubkey.0,
+            txs,
+            timestamp,
+        );
+        block.tx_fees_paid = speculative
+            .results
+            .iter()
+            .map(|result| result.fee_paid)
+            .collect();
+        block.sign(producer);
+        block
+    }
+
     fn register_test_symbol(state: &StateStore, symbol: &str, program: Pubkey) {
         state
             .register_symbol(
@@ -17521,6 +17696,91 @@ mod tests {
         assert_eq!(ix.data[14], 8);
         assert_eq!(tx.message.recent_blockhash, tip.hash());
         assert_eq!(tx.signatures.len(), 1);
+    }
+
+    #[test]
+    fn committed_replay_persists_oracle_attestations_and_updates_dex_candles() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        register_test_symbol(&state, "ORACLE", Pubkey([11u8; 32]));
+        register_test_symbol(&state, "ANALYTICS", Pubkey([12u8; 32]));
+        register_test_symbol(&state, "DEX", Pubkey([13u8; 32]));
+        let genesis_key = Keypair::generate();
+        state
+            .set_genesis_pubkey(&genesis_key.pubkey())
+            .expect("put genesis pubkey");
+
+        let producer_kp = Keypair::generate();
+        let validators = [
+            Keypair::generate(),
+            Keypair::generate(),
+            Keypair::generate(),
+        ];
+        let mut stake_pool = StakePool::new();
+        for kp in &validators {
+            let pubkey = kp.pubkey();
+            state
+                .put_account(&pubkey, &Account::new(1_000_000_000_000, pubkey))
+                .expect("fund validator");
+            stake_pool
+                .stake(pubkey, MIN_VALIDATOR_STAKE, 0)
+                .expect("stake validator");
+        }
+        state.put_stake_pool(&stake_pool).expect("put stake pool");
+
+        let mut parent = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"oracle-parent-root"),
+            producer_kp.pubkey().0,
+            Vec::new(),
+            1_778_494_020,
+        );
+        parent.sign(&producer_kp);
+        state.put_block(&parent).expect("put parent block");
+        state.set_last_slot(1).expect("set parent tip");
+
+        let mut txs = Vec::new();
+        for (kp, price) in validators
+            .iter()
+            .zip([9_500_000_000, 9_520_000_000, 9_540_000_000])
+        {
+            txs.push(
+                build_oracle_attestation_tx(&state, &kp.to_seed(), kp.pubkey(), "wSOL", price, 8)
+                    .expect("build oracle attestation"),
+            );
+        }
+        let block = make_oracle_replay_block(&state, &parent, &producer_kp, txs, 2, 1_778_494_080);
+
+        validate_then_replay_block_transactions(&state, &block, "oracle replay test", false)
+            .expect("committed replay should persist oracle side effects");
+        let consensus = state
+            .get_oracle_consensus_price("wSOL")
+            .expect("read oracle consensus")
+            .expect("consensus price should be written");
+        assert_eq!(consensus.price, 9_520_000_000);
+        assert_eq!(consensus.slot, 2);
+        assert_eq!(consensus.attestation_count, 3);
+
+        state
+            .put_block_atomic(&block, Some(2), Some(2))
+            .expect("store committed block");
+        apply_oracle_from_block(&state, &block);
+
+        let analytics_program = state
+            .get_symbol_registry("ANALYTICS")
+            .expect("read analytics registry")
+            .expect("analytics registered")
+            .program;
+        let candle = state
+            .get_contract_storage(&analytics_program, b"ana_c_2_60_0")
+            .expect("read wSOL 1m candle")
+            .expect("wSOL 1m candle present");
+        assert_eq!(
+            u64::from_le_bytes(candle[24..32].try_into().expect("candle close")),
+            95_200_000_000
+        );
     }
 
     #[test]
