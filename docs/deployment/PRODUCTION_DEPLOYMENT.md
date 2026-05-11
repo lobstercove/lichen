@@ -60,12 +60,18 @@ The supported production shape is:
 - local origin proxying from Caddy to the raw app listeners on `127.0.0.1`
 - firewall rules that keep raw RPC and WS ports off the public internet
 
-Current checked-in origin mappings are:
+Primary public endpoints are:
 
-- mainnet: `rpc.lichen.network -> 127.0.0.1:9899`, `ws.lichen.network -> 127.0.0.1:9900`
-- testnet: `testnet-rpc.lichen.network -> 127.0.0.1:8899`, `testnet-ws.lichen.network -> 127.0.0.1:8900`
+- mainnet: JSON-RPC `https://rpc.lichen.network`, WebSocket `wss://rpc.lichen.network/ws`
+- testnet: JSON-RPC `https://testnet-rpc.lichen.network`, WebSocket `wss://testnet-rpc.lichen.network/ws`
+
+Current checked-in origin mappings also include dedicated WebSocket aliases:
+
+- mainnet: `rpc.lichen.network -> 127.0.0.1:9899`, `/ws -> 127.0.0.1:9900`, `ws.lichen.network -> 127.0.0.1:9900`
+- testnet: `testnet-rpc.lichen.network -> 127.0.0.1:8899`, `/ws -> 127.0.0.1:8900`, `testnet-ws.lichen.network -> 127.0.0.1:8900`
 
 Operational rule: direct exposure of the raw RPC or WebSocket listeners is unsupported for production. If Caddy or the firewall posture is missing, the node is not in a production-ready network shape even if the Rust services are running.
+When the checked-in Caddy configs use `tls internal`, every advertised HTTPS/WSS hostname must be proxied through the trusted edge. Do not publish DNS-only `A` records for `ws.lichen.network` or `testnet-ws.lichen.network` unless Caddy is configured with a public CA certificate for those hostnames and the public WSS smoke test passes.
 
 ## Supporting scripts
 
@@ -799,9 +805,35 @@ curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' 
 
 curl -s https://testnet-rpc.lichen.network/ -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSignedMetadataManifest","params":[]}'
+
+python3 - <<'PY'
+import subprocess
+payload = '{"jsonrpc":"2.0","id":1,"method":"subscribeSlots","params":null}\n'
+for i in range(1, 11):
+    result = subprocess.run(
+        ["websocat", "-n1", "wss://testnet-rpc.lichen.network/ws"],
+        input=payload,
+        text=True,
+        capture_output=True,
+        timeout=6,
+    )
+    if result.returncode != 0 or '"result"' not in result.stdout:
+        raise SystemExit(f"WebSocket attempt {i} failed: {result.stderr or result.stdout}")
+print("WebSocket subscribeSlots: 10/10")
+PY
 ```
 
-If production portals are expected to stay usable, run the same checks against `https://rpc.lichen.network` too. Production portals default to `mainnet`, so a dead mainnet origin will surface as frontend CORS, incident-status, signed-metadata, and missing-contract-address errors even while `testnet-rpc.lichen.network` is healthy.
+Also confirm any advertised dedicated WS aliases are on the same trusted edge path. With `tls internal`, DNS must resolve to the edge, not directly to validator VPS IPs:
+
+```bash
+dig +short testnet-rpc.lichen.network
+dig +short testnet-ws.lichen.network
+websocat -n1 wss://testnet-ws.lichen.network
+```
+
+If `testnet-ws.lichen.network` or `ws.lichen.network` resolves directly to validator IPs and presents an untrusted origin certificate, do not advertise it to clients. Use the RPC-hosted `/ws` endpoint until DNS is proxied through the edge or the origin has a public CA certificate.
+
+If production portals are expected to stay usable, run the same checks against `https://rpc.lichen.network` and `wss://rpc.lichen.network/ws` too. Production portals default to `mainnet`, so a dead mainnet origin will surface as frontend CORS, incident-status, signed-metadata, and missing-contract-address errors even while `testnet-rpc.lichen.network` is healthy.
 
 ### Step 9: day-2 operations
 
@@ -1749,7 +1781,27 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Treat proposal execution before prevote as a release-blocking invariant. A rolling deploy health gate must fail on stale block age, split tips, or state-root mismatch, and operators must not heal by copying another validator's RocksDB directory.
 
-### Pitfall 11: TOFU identity prevents rejoining after state wipe
+### Pitfall 11: Stale Caddy ingress breaks WebSocket intermittently
+
+**Symptom**: HTTPS JSON-RPC is healthy, but `wss://testnet-rpc.lichen.network/ws` intermittently hangs or fails to subscribe.
+
+**Root cause**: The origin Caddyfile drifted from the checked-in repo-managed ingress and still proxied `/ws` to another validator's raw `:8900` listener. Raw RPC/WS ports are intentionally not public ingress, so cross-origin proxy attempts can hang even while each validator is locally healthy.
+
+**Fix**: Reinstall the checked-in Caddy fragments with `deploy/setup.sh <net>` or rerun the clean-slate redeploy script version that installs repo-managed Caddy ingress after syncing code, then restart Caddy.
+
+**Prevention**: Treat Caddy as deployment state, not hand-edited host state. After every reset or launch, compare `/etc/caddy/Caddyfile` against `deploy/Caddyfile.common` plus the network fragment and run the public `subscribeSlots` WebSocket smoke test 10/10.
+
+### Pitfall 12: Dedicated WS hostname bypasses edge TLS
+
+**Symptom**: `wss://testnet-rpc.lichen.network/ws` works, but `wss://testnet-ws.lichen.network` or `wss://ws.lichen.network` fails with an untrusted certificate.
+
+**Root cause**: The dedicated WS hostname resolves directly to validator VPS IPs while the checked-in Caddy config uses `tls internal` for Cloudflare-origin traffic. Public clients then see the origin-only certificate instead of the trusted edge certificate.
+
+**Fix**: Prefer the RPC-hosted WS endpoint (`wss://testnet-rpc.lichen.network/ws` or `wss://rpc.lichen.network/ws`) in clients. If the dedicated hostname is still advertised, proxy it through the trusted edge or switch that origin hostname to a public CA certificate, then rerun the WSS smoke test.
+
+**Prevention**: DNS and TLS are part of the release gate. For every advertised WSS hostname, `dig +short` must show the intended edge path when `tls internal` is used, and `websocat -n1 <url>` must pass from outside the VPS network.
+
+### Pitfall 13: TOFU identity prevents rejoining after state wipe
 
 **Symptom**: Wiped validator responds on RPC but stays at slot 0. P2P connections from other validators close immediately: `Failed to accept stream: closed by peer: 0`.
 
