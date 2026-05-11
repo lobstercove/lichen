@@ -468,13 +468,14 @@ pub fn genesis_harden_contract_controls(
 pub static GENESIS_ACTIVITY_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
-pub fn genesis_exec_contract(
+fn genesis_exec_contract_accepting_return_codes(
     state: &StateStore,
     program_pubkey: &Pubkey,
     deployer_pubkey: &Pubkey,
     function_name: &str,
     args: &[u8],
     label: &str,
+    accepted_return_codes: &[i64],
 ) -> bool {
     let account = match state.get_account(program_pubkey) {
         Ok(Some(a)) => a,
@@ -509,8 +510,9 @@ pub fn genesis_exec_contract(
             // rejected") do NOT trap, so success may be true while the operation
             // actually failed without modifying storage.
             let rc = result.return_code.unwrap_or(0);
+            let accepted_rc = accepted_return_codes.contains(&rc);
             if !result.success {
-                if rc != 0 {
+                if !accepted_rc {
                     warn!(
                         "  FAIL {}: contract returned error code {} — {:?}",
                         label, rc, result.error
@@ -523,12 +525,13 @@ pub fn genesis_exec_contract(
                     "  WARN {}: contract returned !success with rc=0: {:?}",
                     label, result.error
                 );
-            } else if rc != 0 {
-                // success == true but non-zero return code: the WASM function
-                // returned an error without trapping. Storage changes (if any)
-                // are typically empty since the function exited early.
+            } else if !accepted_rc {
+                // success == true but unexpected return code: the WASM function
+                // may have returned an error without trapping. Storage changes
+                // are not persisted unless this call explicitly declares the
+                // code as a success code.
                 warn!(
-                    "  FAIL {}: success=true but return_code={} (operation rejected by contract)",
+                    "  FAIL {}: success=true but return_code={} (unexpected for genesis call)",
                     label, rc
                 );
                 return false;
@@ -617,6 +620,32 @@ pub fn genesis_exec_contract(
             false
         }
     }
+}
+
+pub fn genesis_exec_contract(
+    state: &StateStore,
+    program_pubkey: &Pubkey,
+    deployer_pubkey: &Pubkey,
+    function_name: &str,
+    args: &[u8],
+    label: &str,
+) -> bool {
+    genesis_exec_contract_accepting_return_codes(
+        state,
+        program_pubkey,
+        deployer_pubkey,
+        function_name,
+        args,
+        label,
+        &[0],
+    )
+}
+
+fn prediction_dependency_setter_success_return_codes() -> &'static [i64] {
+    // prediction_market's one-shot dependency setters return 1 on success and
+    // 0 on rejection. Keep this narrow so genesis does not treat arbitrary
+    // non-zero contract return codes as successful initialization.
+    &[1]
 }
 
 pub fn genesis_initialize_contracts(
@@ -1012,7 +1041,15 @@ pub fn genesis_initialize_contracts(
             args.push(opcode);
             args.extend_from_slice(&admin);
             args.extend_from_slice(addr);
-            if exec_as_governance(predict_pk, "call", &args, label) {
+            if genesis_exec_contract_accepting_return_codes(
+                state,
+                predict_pk,
+                &governance_authority,
+                "call",
+                &args,
+                label,
+                prediction_dependency_setter_success_return_codes(),
+            ) {
                 info!("  SET {}", label);
             } else {
                 warn!("  WARN: Failed to set {}", label);
@@ -3294,6 +3331,24 @@ mod tests {
         state.put_account(&pubkey, &account).unwrap();
     }
 
+    fn assert_contract_storage_pubkey(
+        state: &StateStore,
+        program: &Pubkey,
+        key: &[u8],
+        expected: &Pubkey,
+    ) {
+        let value = state
+            .get_contract_storage(program, key)
+            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing contract storage key {}",
+                    String::from_utf8_lossy(key)
+                )
+            });
+        assert_eq!(value, expected.0);
+    }
+
     #[test]
     fn test_genesis_pair_prices_are_deterministic() {
         let prices = GenesisPrices::default();
@@ -3405,5 +3460,58 @@ mod tests {
         assert!(uses_operational_token_admin("wbnb_token"));
         assert!(!uses_operational_token_admin("dex_core"));
         assert!(!uses_operational_token_admin("lichenbridge"));
+    }
+
+    #[test]
+    fn test_prediction_dependency_setters_use_explicit_success_code() {
+        assert_eq!(prediction_dependency_setter_success_return_codes(), &[1]);
+        assert!(!prediction_dependency_setter_success_return_codes().contains(&0));
+    }
+
+    #[test]
+    fn test_genesis_initialization_persists_prediction_market_dependencies() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+        let deployer = Pubkey([1u8; 32]);
+        let community_treasury = Pubkey([2u8; 32]);
+
+        state
+            .set_genesis_accounts(&[(
+                "community_treasury".to_string(),
+                community_treasury,
+                125_000_000,
+                25,
+            )])
+            .unwrap();
+
+        genesis_auto_deploy(&state, &deployer, "TEST:");
+        assert_eq!(
+            genesis_harden_contract_controls(&state, &deployer, "TEST:").unwrap(),
+            community_treasury
+        );
+        genesis_initialize_contracts(&state, &deployer, "TEST:", 1_700_000_000).unwrap();
+
+        let predict = state
+            .get_symbol_registry("PREDICT")
+            .unwrap()
+            .unwrap()
+            .program;
+        let yid = state.get_symbol_registry("YID").unwrap().unwrap().program;
+        let oracle = state
+            .get_symbol_registry("ORACLE")
+            .unwrap()
+            .unwrap()
+            .program;
+        let lusd = state.get_symbol_registry("LUSD").unwrap().unwrap().program;
+        let dex_gov = state
+            .get_symbol_registry("DEXGOV")
+            .unwrap()
+            .unwrap()
+            .program;
+
+        assert_contract_storage_pubkey(&state, &predict, b"pm_lichenid_addr", &yid);
+        assert_contract_storage_pubkey(&state, &predict, b"pm_oracle_addr", &oracle);
+        assert_contract_storage_pubkey(&state, &predict, b"pm_lusd_addr", &lusd);
+        assert_contract_storage_pubkey(&state, &predict, b"pm_dex_gov_addr", &dex_gov);
     }
 }
