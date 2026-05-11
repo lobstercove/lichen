@@ -300,6 +300,22 @@ const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
 const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
 const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncCatchUpActions {
+    request_checkpoint_metadata: bool,
+    request_block_ranges: bool,
+}
+
+fn sync_catch_up_actions(mode: sync::SyncMode) -> SyncCatchUpActions {
+    SyncCatchUpActions {
+        request_checkpoint_metadata: mode == sync::SyncMode::Warp,
+        // Block replay is the authoritative baseline. Warp snapshots are only
+        // an optimization and may be unavailable until peer validator identity
+        // and checkpoint corroboration are established.
+        request_block_ranges: true,
+    }
+}
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
@@ -4866,14 +4882,21 @@ fn should_add_local_validator_as_pending(is_joining_network: bool, current_tip: 
 }
 
 fn checkpoint_anchor_support(
-    anchors: &HashMap<Pubkey, (u64, [u8; 32])>,
+    anchors: &HashMap<Pubkey, VerifiedCheckpointAnchor>,
     slot: u64,
     state_root: [u8; 32],
 ) -> usize {
     anchors
         .values()
-        .filter(|(anchor_slot, anchor_root)| *anchor_slot == slot && *anchor_root == state_root)
+        .filter(|anchor| anchor.slot == slot && anchor.state_root == state_root)
         .count()
+}
+
+#[derive(Clone)]
+struct VerifiedCheckpointAnchor {
+    slot: u64,
+    state_root: [u8; 32],
+    block: Block,
 }
 
 /// Default Binance REST fallback URL.
@@ -8281,9 +8304,10 @@ async fn run_validator() {
                             info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
                             sync_mgr.start_sync(start, end).await;
                             let current_mode = sync_mgr.get_sync_mode().await;
-                            if current_mode == sync::SyncMode::Warp {
+                            let actions = sync_catch_up_actions(current_mode);
+                            if actions.request_checkpoint_metadata {
                                 info!(
-                                    "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                    "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
                                     gap
                                 );
                                 let peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -8301,6 +8325,8 @@ async fn run_validator() {
                                         );
                                     }
                                 }
+                            }
+                            if !actions.request_block_ranges {
                                 continue;
                             }
                             let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -9658,9 +9684,10 @@ async fn run_validator() {
                         info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
                         sync_mgr.start_sync(start, end).await;
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        if current_mode == sync::SyncMode::Warp {
+                        let actions = sync_catch_up_actions(current_mode);
+                        if actions.request_checkpoint_metadata {
                             info!(
-                                "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
                                 gap
                             );
                             let peer_infos = peer_mgr_for_sync.get_peer_infos();
@@ -9677,6 +9704,8 @@ async fn run_validator() {
                                     );
                                 }
                             }
+                        }
+                        if !actions.request_block_ranges {
                             continue;
                         }
 
@@ -10227,12 +10256,11 @@ async fn run_validator() {
                         // Mark that we're starting sync
                         sync_mgr.start_sync(start, end).await;
 
-                        // P3-1: If warp sync mode, request a state snapshot
-                        // instead of downloading individual blocks.
                         let current_mode = sync_mgr.get_sync_mode().await;
-                        if current_mode == sync::SyncMode::Warp {
+                        let actions = sync_catch_up_actions(current_mode);
+                        if actions.request_checkpoint_metadata {
                             info!(
-                                "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                "⚡ Warp sync: gap is {} blocks — probing state snapshot metadata; block replay remains active",
                                 gap
                             );
                             // Send CheckpointMetaRequest to all known peers
@@ -10252,6 +10280,8 @@ async fn run_validator() {
                             // are received the state root is verified and the
                             // node fast-forwards, then switches to Full mode
                             // for the remaining tip blocks.
+                        }
+                        if !actions.request_block_ranges {
                             continue;
                         }
 
@@ -11811,15 +11841,16 @@ async fn run_validator() {
         let peer_mgr_for_snapshot_apply = p2p_pm.clone();
         let local_addr_for_snap_apply = local_addr;
         let sync_mgr_for_snapshot = sync_manager.clone();
+        let block_apply_lock_for_snapshot_apply = block_apply_lock.clone();
         tokio::spawn(async move {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
                 std::collections::HashMap::new(); // category -> (received_chunks, total_chunks)
             let mut verified_checkpoint_anchors: std::collections::HashMap<
                 Pubkey,
-                (u64, [u8; 32]),
+                VerifiedCheckpointAnchor,
             > = std::collections::HashMap::new();
-            let mut active_snapshot_anchor: Option<(u64, [u8; 32])> = None;
+            let mut active_snapshot_anchor: Option<VerifiedCheckpointAnchor> = None;
             // Staged snapshot buffer: accumulate entries in memory instead of
             // writing directly to the live DB.  Only commit after the state root
             // has been verified on a staging StateStore.
@@ -11881,7 +11912,27 @@ async fn run_validator() {
                             peer_mgr_for_snapshot_apply.record_violation(&response.requester);
                             continue;
                         }
-                        verified_checkpoint_anchors.insert(anchor_validator, (slot, state_root));
+                        let Some(header) = checkpoint_header.clone() else {
+                            warn!(
+                                "⚠️  Rejecting checkpoint metadata from {}: missing checkpoint header",
+                                response.requester
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        };
+                        let anchor = VerifiedCheckpointAnchor {
+                            slot,
+                            state_root,
+                            block: Block {
+                                header,
+                                transactions: Vec::new(),
+                                tx_fees_paid: Vec::new(),
+                                oracle_prices: Vec::new(),
+                                commit_round,
+                                commit_signatures: commit_signatures.clone(),
+                            },
+                        };
+                        verified_checkpoint_anchors.insert(anchor_validator, anchor.clone());
                         let support = checkpoint_anchor_support(
                             &verified_checkpoint_anchors,
                             slot,
@@ -11907,12 +11958,14 @@ async fn run_validator() {
                                 continue;
                             }
 
-                            if let Some((active_slot, active_root)) = active_snapshot_anchor {
-                                if active_slot != slot || active_root != state_root {
+                            if let Some(active_anchor) = active_snapshot_anchor.as_ref() {
+                                if active_anchor.slot != slot
+                                    || active_anchor.state_root != state_root
+                                {
                                     info!(
                                         "⏳ Ignoring alternate checkpoint anchor from {} while snapshot sync is already pinned to slot {}",
                                         response.requester,
-                                        active_slot,
+                                        active_anchor.slot,
                                     );
                                     continue;
                                 }
@@ -11922,7 +11975,7 @@ async fn run_validator() {
                                 continue;
                             }
 
-                            active_snapshot_anchor = Some((slot, state_root));
+                            active_snapshot_anchor = Some(anchor);
                             // Peer is significantly ahead — request state snapshot
                             info!(
                                 "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
@@ -12007,15 +12060,15 @@ async fn run_validator() {
                         continue;
                     };
                     match verified_checkpoint_anchors.get(&anchor_validator) {
-                        Some((expected_slot, expected_root))
-                            if *expected_slot == snapshot_slot && *expected_root == state_root => {}
-                        Some((expected_slot, expected_root)) => {
+                        Some(anchor)
+                            if anchor.slot == snapshot_slot && anchor.state_root == state_root => {}
+                        Some(anchor) => {
                             warn!(
                                 "⚠️  Rejecting {} snapshot chunk from {}: anchor mismatch (expected slot {} root {}, got slot {} root {})",
                                 category,
                                 response.requester,
-                                expected_slot,
-                                hex::encode(&expected_root[..8]),
+                                anchor.slot,
+                                hex::encode(&anchor.state_root[..8]),
                                 snapshot_slot,
                                 hex::encode(&state_root[..8]),
                             );
@@ -12236,6 +12289,43 @@ async fn run_validator() {
                             continue;
                         }
 
+                        let Some(snapshot_anchor) = active_snapshot_anchor.clone() else {
+                            warn!("⚠️  Snapshot verified without an active checkpoint anchor");
+                            staged_snapshot_entries.clear();
+                            state_snap_progress.clear();
+                            continue;
+                        };
+                        if snapshot_anchor.slot != snapshot_slot
+                            || snapshot_anchor.state_root != state_root
+                        {
+                            warn!(
+                                "⚠️  Snapshot anchor mismatch at commit time (anchor slot {} root {}, snapshot slot {} root {})",
+                                snapshot_anchor.slot,
+                                hex::encode(&snapshot_anchor.state_root[..8]),
+                                snapshot_slot,
+                                hex::encode(&state_root[..8]),
+                            );
+                            staged_snapshot_entries.clear();
+                            state_snap_progress.clear();
+                            active_snapshot_anchor = None;
+                            continue;
+                        }
+
+                        let _snapshot_apply_guard =
+                            block_apply_lock_for_snapshot_apply.lock().await;
+                        let local_slot_before_commit =
+                            state_for_snapshot_apply.get_last_slot().unwrap_or(0);
+                        if local_slot_before_commit >= snapshot_slot {
+                            info!(
+                                "Skipping stale snapshot at slot {} because local replay is already at {}",
+                                snapshot_slot, local_slot_before_commit
+                            );
+                            staged_snapshot_entries.clear();
+                            state_snap_progress.clear();
+                            active_snapshot_anchor = None;
+                            continue;
+                        }
+
                         // ── Commit verified entries to live DB ──────────────
                         for (cat, entries) in staged_snapshot_entries.drain() {
                             let res = match cat.as_str() {
@@ -12348,12 +12438,19 @@ async fn run_validator() {
                         }
                         state_for_snapshot_apply.invalidate_merkle_cache();
 
-                        // Update last_slot to the checkpoint slot
-                        if let Err(e) = state_for_snapshot_apply.set_last_slot(snapshot_slot) {
-                            warn!(
-                                "⚠️  Failed to set last_slot to snapshot slot {}: {}",
+                        // Store the authenticated checkpoint header so the next
+                        // canonical block can verify its parent hash, then move
+                        // the local tip/commit cursors to the verified snapshot.
+                        if let Err(e) = state_for_snapshot_apply.put_block_atomic(
+                            &snapshot_anchor.block,
+                            Some(snapshot_slot),
+                            Some(snapshot_slot),
+                        ) {
+                            error!(
+                                "FATAL: failed to store checkpoint anchor block at slot {} after snapshot import: {}",
                                 snapshot_slot, e
                             );
+                            std::process::exit(1);
                         }
                         {
                             let pool = stake_pool_for_snapshot_apply.read().await.clone();
@@ -16830,15 +16927,46 @@ mod tests {
     fn checkpoint_anchor_support_counts_matching_validators() {
         let root_a = [1u8; 32];
         let root_b = [2u8; 32];
+        let anchor = |slot: u64, state_root: [u8; 32]| VerifiedCheckpointAnchor {
+            slot,
+            state_root,
+            block: Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                Hash(state_root),
+                [7u8; 32],
+                Vec::new(),
+                slot,
+            ),
+        };
         let anchors = HashMap::from([
-            (Pubkey([1u8; 32]), (42u64, root_a)),
-            (Pubkey([2u8; 32]), (42u64, root_a)),
-            (Pubkey([3u8; 32]), (42u64, root_b)),
+            (Pubkey([1u8; 32]), anchor(42, root_a)),
+            (Pubkey([2u8; 32]), anchor(42, root_a)),
+            (Pubkey([3u8; 32]), anchor(42, root_b)),
         ]);
 
         assert_eq!(checkpoint_anchor_support(&anchors, 42, root_a), 2);
         assert_eq!(checkpoint_anchor_support(&anchors, 42, root_b), 1);
         assert_eq!(checkpoint_anchor_support(&anchors, 43, root_a), 0);
+    }
+
+    #[test]
+    fn warp_sync_still_requests_block_range_replay() {
+        let actions = sync_catch_up_actions(sync::SyncMode::Warp);
+
+        assert!(actions.request_checkpoint_metadata);
+        assert!(
+            actions.request_block_ranges,
+            "checkpoint warp is an optimization; full block replay must remain active"
+        );
+    }
+
+    #[test]
+    fn full_sync_requests_block_range_replay_without_checkpoint_probe() {
+        let actions = sync_catch_up_actions(sync::SyncMode::Full);
+
+        assert!(!actions.request_checkpoint_metadata);
+        assert!(actions.request_block_ranges);
     }
 
     #[test]
