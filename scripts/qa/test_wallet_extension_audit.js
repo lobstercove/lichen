@@ -29,6 +29,7 @@ const extensionRoot = path.join(__dirname, '..', '..', 'wallet', 'extension');
 const repoRoot = path.join(__dirname, '..', '..');
 
 const extensionReadmeSrc = fs.readFileSync(path.join(extensionRoot, 'README.md'), 'utf8');
+const extensionManifestSrc = fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8');
 const permissionsJustificationSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'permissions-justification.md'), 'utf8');
 const submissionChecklistSrc = fs.readFileSync(path.join(extensionRoot, 'store', 'submission-checklist.md'), 'utf8');
 const packageScriptSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'package-wallet-extension.mjs'), 'utf8');
@@ -452,6 +453,15 @@ test('E-10.5 extension settings surfaces explain the trusted RPC split', () => {
   assert.ok(settingsSrc.includes('trusted endpoints'), 'settings page status should mention trusted endpoints');
   assert.ok(fullSrc.includes('trusted endpoints'), 'full-page settings save should mention trusted endpoints');
   assert.ok(popupSrc.includes('trusted endpoints'), 'popup settings save should mention trusted endpoints');
+});
+
+test('E-10.6 wallet extension uses RPC-hosted production WebSocket ingress', () => {
+  assert.ok(rpcServiceSrc.includes("mainnet: 'wss://rpc.lichen.network/ws'"), 'mainnet WS should use rpc-hosted ingress');
+  assert.ok(rpcServiceSrc.includes("testnet: 'wss://testnet-rpc.lichen.network/ws'"), 'testnet WS should use rpc-hosted ingress');
+  assert.ok(extensionManifestSrc.includes('wss://rpc.lichen.network'), 'manifest should allow mainnet rpc-hosted WSS');
+  assert.ok(extensionManifestSrc.includes('wss://testnet-rpc.lichen.network'), 'manifest should allow testnet rpc-hosted WSS');
+  assert.ok(!rpcServiceSrc.includes('wss://ws.lichen.network'), 'mainnet legacy WS hostname should not be a default');
+  assert.ok(!rpcServiceSrc.includes('wss://testnet-ws.lichen.network'), 'testnet legacy WS hostname should not be a default');
 });
 
 // ── E-11: Restriction status and signing preflight ──
