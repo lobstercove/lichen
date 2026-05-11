@@ -25,7 +25,7 @@
     "type": "module"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' data: https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data: blob: http: https:; connect-src https://rpc.lichen.network https://testnet-rpc.lichen.network http://localhost:8899 https://custody.lichen.network https://testnet-custody.lichen.network http://localhost:9105 wss://ws.lichen.network wss://testnet-ws.lichen.network ws://localhost:8900 ws://localhost:9900"
+    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src 'self' data: https://cdnjs.cloudflare.com https://fonts.gstatic.com; img-src 'self' data: blob: http: https:; connect-src https://rpc.lichen.network https://testnet-rpc.lichen.network http://localhost:8899 https://custody.lichen.network https://testnet-custody.lichen.network http://localhost:9105 wss://rpc.lichen.network wss://testnet-rpc.lichen.network ws://localhost:8900 ws://localhost:9900"
   },
   "options_page": "src/pages/full.html",
   "permissions": [
@@ -41,8 +41,8 @@
     "https://custody.lichen.network/*",
     "https://testnet-custody.lichen.network/*",
     "http://localhost:9105/*",
-    "wss://ws.lichen.network/*",
-    "wss://testnet-ws.lichen.network/*",
+    "wss://rpc.lichen.network/*",
+    "wss://testnet-rpc.lichen.network/*",
     "ws://localhost:8900/*",
     "ws://localhost:9900/*"
   ],

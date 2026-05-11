@@ -8,8 +8,8 @@ const NETWORKS = {
 };
 
 const WS_ENDPOINTS = {
-  mainnet: 'wss://ws.lichen.network',
-  testnet: 'wss://testnet-ws.lichen.network',
+  mainnet: 'wss://rpc.lichen.network/ws',
+  testnet: 'wss://testnet-rpc.lichen.network/ws',
   'local-testnet': 'ws://localhost:8900',
   'local-mainnet': 'ws://localhost:9900'
 };
