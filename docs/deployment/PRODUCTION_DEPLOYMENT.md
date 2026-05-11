@@ -1368,7 +1368,7 @@ Last exercised successfully on 2026-04-27 with signed release `v0.5.20`: the Git
 ```bash
 export LICHEN_OWNER_APPROVED_RESET='owner-approved:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
 export LICHEN_CLEAN_SLATE_REDEPLOY_CONFIRM='clean-slate:testnet:15.204.229.189,37.59.97.61,15.235.142.253'
-export LICHEN_RELEASE_TAG=v0.5.34
+export LICHEN_RELEASE_TAG=v0.5.35
 bash scripts/clean-slate-redeploy.sh testnet
 ```
 
