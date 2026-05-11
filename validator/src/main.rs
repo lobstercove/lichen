@@ -8293,6 +8293,26 @@ async fn run_validator() {
                     // when the chain is stalled and no blocks are arriving.
                     _ = sync_check_interval.tick() => {
                         let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
+                        let genesis_ready = current_slot > 0
+                            || state_for_blocks
+                                .get_block_by_slot(0)
+                                .ok()
+                                .flatten()
+                                .is_some();
+                        if !genesis_ready {
+                            if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
+                                info!("📡 Periodic sync: requesting genesis block (slot 0)");
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: 0,
+                                        end_slot: 0,
+                                    },
+                                    local_addr,
+                                );
+                                peer_mgr_for_sync.broadcast(request_msg).await;
+                            }
+                            continue;
+                        }
                         if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
                             let highest_seen = sync_mgr.get_highest_seen().await;
                             let gap = highest_seen.saturating_sub(current_slot);
@@ -8384,6 +8404,7 @@ async fn run_validator() {
                             let sync_mgr_complete = sync_mgr.clone();
                             let state_for_sync_check = state_for_blocks.clone();
                             let sync_start_slot = current_slot;
+                            let sync_start = start;
                             let sync_end = end;
                             tokio::spawn(async move {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -8395,12 +8416,13 @@ async fn run_validator() {
                                             "🔄 Periodic sync progress: {} → {} (target {})",
                                             sync_start_slot, current, sync_end
                                         );
-                                        return;
                                     }
                                 } else {
                                     sync_mgr_complete.record_sync_failure().await;
                                 }
-                                sync_mgr_complete.complete_sync().await;
+                                sync_mgr_complete
+                                    .complete_sync_if_current(sync_start, sync_end)
+                                    .await;
                             });
                         }
                         continue;
@@ -9658,7 +9680,16 @@ async fn run_validator() {
                     // should_sync check on subsequent blocks will continue from
                     // there once highest_seen_slot is updated.
                     let post_genesis_slot = state_for_blocks.get_last_slot().unwrap_or(0);
-                    let sync_range = sync_mgr.should_sync(post_genesis_slot).await;
+                    let sync_range = if post_genesis_slot == 0 {
+                        let highest_seen = sync_mgr.get_highest_seen().await;
+                        if highest_seen > 0 {
+                            Some((1, std::cmp::min(sync::P2P_BLOCK_RANGE_LIMIT, highest_seen)))
+                        } else {
+                            None
+                        }
+                    } else {
+                        sync_mgr.should_sync(post_genesis_slot).await
+                    };
 
                     // Determine the range to request.
                     let (start, end) = if let Some(range) = sync_range {
@@ -9765,6 +9796,7 @@ async fn run_validator() {
                         let sync_mgr_complete = sync_mgr.clone();
                         let state_for_sync_check = state_for_blocks.clone();
                         let sync_start_slot = post_genesis_slot;
+                        let sync_start = start;
                         let sync_end = end;
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -9776,12 +9808,13 @@ async fn run_validator() {
                                         "🔄 Post-genesis sync progress: {} → {} (target {})",
                                         sync_start_slot, current, sync_end
                                     );
-                                    return;
                                 }
                             } else {
                                 sync_mgr_complete.record_sync_failure().await;
                             }
-                            sync_mgr_complete.complete_sync().await;
+                            sync_mgr_complete
+                                .complete_sync_if_current(sync_start, sync_end)
+                                .await;
                         });
                     }
                     info!(
@@ -10236,8 +10269,28 @@ async fn run_validator() {
                         }
                     }
 
-                    // Check if we should start sync
-                    if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
+                    // Check if we should start sync. Before genesis is stored,
+                    // only slot 0 is actionable; bulk ranges would be dropped by
+                    // the InitialSync forward-window guard and leave false
+                    // "requested" coverage.
+                    let genesis_ready_for_sync = current_slot > 0
+                        || state_for_blocks
+                            .get_block_by_slot(0)
+                            .ok()
+                            .flatten()
+                            .is_some();
+                    if !genesis_ready_for_sync {
+                        if !genesis_sync_in_progress_for_blocks.load(Ordering::Acquire) {
+                            let request_msg = P2PMessage::new(
+                                MessageType::BlockRangeRequest {
+                                    start_slot: 0,
+                                    end_slot: 0,
+                                },
+                                local_addr,
+                            );
+                            peer_mgr_for_sync.broadcast(request_msg).await;
+                        }
+                    } else if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
                         // P1-1 / P3-1: Auto-detect sync mode based on gap size.
                         // If enormously far behind (> warp threshold), use warp sync
                         // to download state snapshot instead of replaying blocks.
@@ -10375,6 +10428,7 @@ async fn run_validator() {
                         let sync_mgr_complete = sync_mgr.clone();
                         let state_for_sync_check = state_for_blocks.clone();
                         let sync_start_slot = current_slot;
+                        let sync_start = start;
                         let sync_end = end;
                         tokio::spawn(async move {
                             let phase = sync_mgr_complete.get_sync_phase().await;
@@ -10393,7 +10447,6 @@ async fn run_validator() {
                                         "🔄 Sync progress: {} → {} (target {}), continuing",
                                         sync_start_slot, current, sync_end
                                     );
-                                    return;
                                 }
                             } else {
                                 // Zero progress — something is wrong, backoff
@@ -10403,8 +10456,9 @@ async fn run_validator() {
                                 );
                                 sync_mgr_complete.record_sync_failure().await;
                             }
-                            // Always complete to allow re-trigger
-                            sync_mgr_complete.complete_sync().await;
+                            sync_mgr_complete
+                                .complete_sync_if_current(sync_start, sync_end)
+                                .await;
                         });
                     }
                 } else if block_slot <= current_slot {
