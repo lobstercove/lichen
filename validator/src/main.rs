@@ -3178,10 +3178,6 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     }
 }
 
-/// Replay transactions from a received P2P block to update local state.
-/// The producing validator already executed these transactions; receivers
-/// must replay them so that fee charges and balance mutations are applied
-/// identically, preventing state divergence across the network.
 /// Compute BFT timestamp for a new block proposal.
 ///
 /// Looks up the parent block from state and computes the stake-weighted
@@ -3269,101 +3265,16 @@ fn proposal_slot_delay_ms(
     block_producer::wall_clock_safe_delay(state, parent_hash, cadence_delay)
 }
 
-/// Genesis-block transactions (slot 0) are created with special
-/// signatures and a zero blockhash, so they cannot pass the normal
-/// validation pipeline — the genesis state was applied directly.
-///
-/// Uses parallel processing (rayon) for non-conflicting TXs to speed up
-/// block replay during chain sync (FIX-2).
-fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
-    replay_block_transactions_with_logging(processor, block, true);
-}
-
-fn replay_block_transactions_for_validation(processor: &TxProcessor, block: &Block) {
-    replay_block_transactions_with_logging(processor, block, false);
-}
-
-fn replay_block_transactions_with_logging(
-    processor: &TxProcessor,
-    block: &Block,
-    log_details: bool,
-) {
-    if block.header.slot == 0 {
-        return; // genesis txs use zero blockhash + dummy signatures
-    }
-    let producer_pubkey = Pubkey(block.header.validator);
-    let tx_count = block.transactions.len();
-    if log_details && tx_count > 0 {
-        info!(
-            "🔄 Replaying {} tx(s) for slot {} (producer={})",
-            tx_count,
-            block.header.slot,
-            producer_pubkey.to_base58()
-        );
-    }
-    let results = processor.process_transactions_parallel(&block.transactions, &producer_pubkey);
-    let exact_fees_present = block.tx_fees_paid.len() == block.transactions.len();
-    if log_details {
-        for (tx, result) in block.transactions.iter().zip(results.iter()) {
-            if result.success {
-                info!(
-                    "✅ Tx replay OK in slot {}: {}",
-                    block.header.slot,
-                    tx.signature().to_hex()
-                );
-            } else {
-                warn!(
-                    "⚠️  Tx replay failed in slot {}: {} ({})",
-                    block.header.slot,
-                    tx.signature().to_hex(),
-                    result.error.as_deref().unwrap_or_default()
-                );
-            }
-        }
-    }
-
-    if exact_fees_present {
-        for (tx_index, result) in results.iter().enumerate() {
-            if let Some(block_fee) = block.tx_fees_paid.get(tx_index) {
-                if *block_fee != result.fee_paid {
-                    warn!(
-                        "⚠️  Slot {} tx {} fee metadata mismatch: block={} local={}",
-                        block.header.slot, tx_index, block_fee, result.fee_paid,
-                    );
-                }
-            }
-        }
-    } else if log_details && !block.tx_fees_paid.is_empty() {
-        warn!(
-            "⚠️  Slot {} fee metadata length mismatch: block has {} entries for {} transactions",
-            block.header.slot,
-            block.tx_fees_paid.len(),
-            block.transactions.len(),
-        );
-    }
-}
-
-fn replay_staging_dir(staging_root: &Path, slot: u64) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    staging_root.join(format!(
-        "lichen-replay-stage-{}-{}-{}",
-        std::process::id(),
-        slot,
-        nonce
-    ))
-}
-
-fn validate_block_replay_on_staging(
+/// Validate a received or committed block by deterministically executing its
+/// transactions into an in-memory batch, checking the advertised pre-effects
+/// state root, then committing that batch exactly once to canonical state.
+fn validate_then_replay_block_transactions(
     state: &StateStore,
-    staging_root: &Path,
     block: &Block,
     context: &str,
     allow_schema_detection: bool,
 ) -> Result<(), String> {
-    if block.header.slot == 0 {
+    if block.header.slot == 0 || block.transactions.is_empty() {
         return validate_state_root_with_schema(
             state,
             block.header.slot,
@@ -3373,60 +3284,55 @@ fn validate_block_replay_on_staging(
         );
     }
 
-    fs::create_dir_all(staging_root).map_err(|e| {
-        format!(
-            "failed to create replay staging root {:?}: {e}",
-            staging_root
-        )
-    })?;
-    let staging_dir = replay_staging_dir(staging_root, block.header.slot);
-    let staging_path = staging_dir
-        .to_str()
-        .ok_or_else(|| "replay staging path is not valid UTF-8".to_string())?;
-    let checkpoint_slot = state
-        .get_last_slot()
-        .unwrap_or(block.header.slot.saturating_sub(1));
-    state.create_checkpoint(staging_path, checkpoint_slot)?;
-    let staging_state = StateStore::open_checkpoint(staging_path)?;
-    let staging_processor = TxProcessor::new(staging_state.clone());
+    let producer = Pubkey(block.header.validator);
+    let speculative_processor = TxProcessor::new_speculative(state.clone());
+    let speculative =
+        speculative_processor.process_transactions_speculative(&block.transactions, &producer);
 
-    replay_block_transactions_for_validation(&staging_processor, block);
-    let result = validate_state_root_with_schema(
-        &staging_state,
-        block.header.slot,
-        block.header.state_root,
-        context,
-        allow_schema_detection,
-    );
-
-    drop(staging_processor);
-    drop(staging_state);
-    if let Err(e) = fs::remove_dir_all(&staging_dir) {
-        warn!(
-            "⚠️  Failed to remove replay staging dir {:?}: {}",
-            staging_dir, e
-        );
+    let computed_root = state.compute_state_root_for_batch(&speculative.batch);
+    if block.header.state_root != Hash::default() && computed_root != block.header.state_root {
+        return Err(format!(
+            "slot {} {} state-root mismatch: local={} expected={}",
+            block.header.slot,
+            context,
+            computed_root.to_hex(),
+            block.header.state_root.to_hex(),
+        ));
     }
-    result
-}
 
-fn validate_then_replay_block_transactions(
-    state: &StateStore,
-    processor: &TxProcessor,
-    staging_root: &Path,
-    block: &Block,
-    context: &str,
-    allow_schema_detection: bool,
-) -> Result<(), String> {
-    validate_block_replay_on_staging(state, staging_root, block, context, allow_schema_detection)?;
-    replay_block_transactions(processor, block);
-    validate_state_root_with_schema(
-        state,
-        block.header.slot,
-        block.header.state_root,
-        context,
-        allow_schema_detection,
-    )
+    for (tx_index, result) in speculative.results.iter().enumerate() {
+        if !result.success {
+            return Err(format!(
+                "slot {} {} tx {} replay failed before canonical commit: {}",
+                block.header.slot,
+                context,
+                tx_index,
+                result.error.as_deref().unwrap_or("unknown error"),
+            ));
+        }
+    }
+
+    if !block.tx_fees_paid.is_empty() && block.tx_fees_paid.len() != block.transactions.len() {
+        return Err(format!(
+            "slot {} {} fee metadata length mismatch: block has {} entries for {} transactions",
+            block.header.slot,
+            context,
+            block.tx_fees_paid.len(),
+            block.transactions.len(),
+        ));
+    }
+    for (tx_index, result) in speculative.results.iter().enumerate() {
+        if let Some(block_fee) = block.tx_fees_paid.get(tx_index) {
+            if *block_fee != result.fee_paid {
+                return Err(format!(
+                    "slot {} {} tx {} fee metadata mismatch: block={} local={}",
+                    block.header.slot, context, tx_index, block_fee, result.fee_paid,
+                ));
+            }
+        }
+    }
+
+    state.commit_batch(speculative.batch)
 }
 
 /// Reverse the financial effects of a replaced block during fork choice.
@@ -8055,8 +7961,7 @@ async fn run_validator() {
     let tip_notify_for_producer = tip_notify.clone();
 
     let slot_duration_ms = genesis_config.consensus.slot_duration_ms.max(1);
-    let replay_staging_root = state_staging_root(&data_dir, "replay-staging");
-    reset_staging_root(&replay_staging_root, "Replay");
+    reset_staging_root(&state_staging_root(&data_dir, "replay-staging"), "Replay");
 
     // AUDIT-FIX A2-01: Derive genesis_time as Unix seconds for deterministic
     // block timestamp derivation: timestamp = genesis_time + slot * slot_duration / 1000.
@@ -8250,7 +8155,6 @@ async fn run_validator() {
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
-        let processor_for_blocks = processor.clone();
         let validator_pubkey_for_blocks = validator_pubkey;
         // VOTE-AUTHORITY: Signing key is now owned by VoteAuthority — no need
         // for validator_seed in the block receiver task.
@@ -8282,7 +8186,6 @@ async fn run_validator() {
         let bft_committing_for_blocks = bft_committing_slot.clone();
         let block_apply_lock_for_blocks = block_apply_lock.clone();
         let genesis_sync_in_progress_for_blocks = genesis_sync_in_progress.clone();
-        let replay_staging_root_for_blocks = replay_staging_root.clone();
         let block_receiver_handle = tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -9606,8 +9509,6 @@ async fn run_validator() {
                             if did_full_validate {
                                 if let Err(err) = validate_then_replay_block_transactions(
                                     &state_for_blocks,
-                                    &processor_for_blocks,
-                                    &replay_staging_root_for_blocks,
                                     &pending_block,
                                     "pending block",
                                     false,
@@ -9887,8 +9788,6 @@ async fn run_validator() {
                         if did_full_validate {
                             if let Err(err) = validate_then_replay_block_transactions(
                                 &state_for_blocks,
-                                &processor_for_blocks,
-                                &replay_staging_root_for_blocks,
                                 &block,
                                 "sync block",
                                 false,
@@ -10084,8 +9983,6 @@ async fn run_validator() {
                                 {
                                     if let Err(err) = validate_then_replay_block_transactions(
                                         &state_for_blocks,
-                                        &processor_for_blocks,
-                                        &replay_staging_root_for_blocks,
                                         &pending_block,
                                         "pending block",
                                         false,
@@ -10544,8 +10441,6 @@ async fn run_validator() {
                                 if sync_mgr.should_full_validate(block.header.slot).await {
                                     if let Err(err) = validate_then_replay_block_transactions(
                                         &state_for_blocks,
-                                        &processor_for_blocks,
-                                        &replay_staging_root_for_blocks,
                                         &block,
                                         "fork replacement block",
                                         false,
@@ -10648,8 +10543,6 @@ async fn run_validator() {
                                             if let Err(err) =
                                                 validate_then_replay_block_transactions(
                                                     &state_for_blocks,
-                                                    &processor_for_blocks,
-                                                    &replay_staging_root_for_blocks,
                                                     &pending_block,
                                                     "pending block",
                                                     false,
@@ -15647,23 +15540,15 @@ async fn execute_consensus_actions(
             // Proposal execution is speculative. Every validator, including the
             // proposer, replays the committed block into canonical state exactly
             // once at the BFT commit boundary.
+            if let Err(err) =
+                validate_then_replay_block_transactions(state, &block, "committed block", false)
             {
-                let consensus_replay_staging_root = state_staging_root(data_dir, "replay-staging");
-                if let Err(err) = validate_then_replay_block_transactions(
-                    state,
-                    processor,
-                    &consensus_replay_staging_root,
-                    &block,
-                    "committed block",
-                    false,
-                ) {
-                    warn!("{}", err);
-                    error!(
-                        "FATAL: refusing to replay committed block {} into canonical state after staging state-root mismatch",
-                        height
-                    );
-                    std::process::exit(1);
-                }
+                warn!("{}", err);
+                error!(
+                    "FATAL: refusing to replay committed block {} into canonical state after state-root mismatch",
+                    height
+                );
+                std::process::exit(1);
             }
 
             // Apply block effects (rewards, staking, oracle) — these
@@ -16105,7 +15990,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_replay_mismatch_does_not_mutate_canonical_state() {
+    fn validate_then_replay_mismatch_does_not_mutate_canonical_state() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
         let alice_kp = Keypair::generate();
@@ -16139,10 +16024,8 @@ mod tests {
             .expect("read alice")
             .expect("alice exists");
 
-        let staging_root = temp_dir.path().join("replay-staging");
-        let err =
-            validate_block_replay_on_staging(&state, &staging_root, &block, "test replay", false)
-                .expect_err("wrong state root should fail staging validation");
+        let err = validate_then_replay_block_transactions(&state, &block, "test replay", false)
+            .expect_err("wrong state root should fail before canonical replay");
 
         assert!(err.contains("state-root mismatch"));
         assert_eq!(state.compute_state_root_cold_start(), canonical_root_before);
@@ -16157,10 +16040,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_then_replay_mismatch_does_not_mutate_canonical_state() {
+    fn validate_then_replay_commits_speculative_batch_without_checkpoint_copy() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
-        let processor = TxProcessor::new(state.clone());
         let alice_kp = Keypair::generate();
         let alice = alice_kp.pubkey();
         let bob = Pubkey([2u8; 32]);
@@ -16172,7 +16054,7 @@ mod tests {
             .put_account(&treasury, &Account::new(0, treasury))
             .expect("put treasury");
         state
-            .put_account(&alice, &Account::new(1000, alice))
+            .put_account(&alice, &Account::new(10, alice))
             .expect("fund alice");
 
         let genesis_root = state.compute_state_root_cold_start();
@@ -16184,35 +16066,36 @@ mod tests {
 
         let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
         let tx_hash = tx.hash();
-        let block =
-            Block::new_with_timestamp(1, genesis_hash, Hash([9u8; 32]), validator.0, vec![tx], 1);
-        let canonical_root_before = state.compute_state_root_cold_start();
-        let alice_before = state
-            .get_account(&alice)
-            .expect("read alice")
-            .expect("alice exists");
+        let speculative = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(std::slice::from_ref(&tx), &validator);
+        assert!(speculative.results[0].success);
+        let state_root = state.compute_state_root_for_batch(&speculative.batch);
+
+        let mut block =
+            Block::new_with_timestamp(1, genesis_hash, state_root, validator.0, vec![tx], 1);
+        block.tx_fees_paid = speculative
+            .results
+            .iter()
+            .map(|result| result.fee_paid)
+            .collect();
 
         let staging_root = temp_dir.path().join("replay-staging");
-        let err = validate_then_replay_block_transactions(
-            &state,
-            &processor,
-            &staging_root,
-            &block,
-            "test replay",
-            false,
-        )
-        .expect_err("wrong state root should fail before canonical replay");
+        validate_then_replay_block_transactions(&state, &block, "test replay", false)
+            .expect("valid block should commit through speculative batch");
 
-        assert!(err.contains("state-root mismatch"));
-        assert_eq!(state.compute_state_root_cold_start(), canonical_root_before);
-        let alice_after = state
-            .get_account(&alice)
-            .expect("read alice after")
-            .expect("alice remains");
-        assert_eq!(alice_after.spores, alice_before.spores);
-        assert_eq!(alice_after.spendable, alice_before.spendable);
-        assert!(state.get_account(&bob).expect("read bob").is_none());
-        assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+        assert!(
+            !staging_root.exists(),
+            "live BFT replay must not create a RocksDB checkpoint per block"
+        );
+        assert!(
+            state
+                .get_account(&bob)
+                .expect("read bob")
+                .expect("bob created")
+                .spores
+                > 0
+        );
+        assert!(state.get_transaction(&tx_hash).expect("read tx").is_some());
     }
 
     #[test]
