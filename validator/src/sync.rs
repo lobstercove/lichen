@@ -347,23 +347,25 @@ impl SyncManager {
             // LiveSync: include current_slot (overlap) for fork resolution —
             //   the peer's version of our tip may replace ours if theirs has
             //   more weight.
-            let start_slot = if current_slot == 0 {
+            let start_slot = if phase == SyncPhase::InitialSync {
+                if current_slot == 0 {
+                    // Pre-genesis callers request slot 0 explicitly. Once slot
+                    // 0 is stored, InitialSync must advance from the first real
+                    // post-genesis block and must not re-request genesis on
+                    // retry.
+                    1
+                } else if has_pending {
+                    current_slot
+                } else {
+                    current_slot.saturating_add(1)
+                }
+            } else if current_slot == 0 {
                 let checkpoint = *self.last_checkpoint.lock().await;
                 if checkpoint > 0 && CHECKPOINT_INTERVAL > 0 {
                     info!("🚀 Fast sync from checkpoint {}", checkpoint);
                     checkpoint
                 } else {
-                    // Start from slot 0 — joining nodes need the genesis
-                    // block before they can build the chain.  The genesis
-                    // node already has it, so the block receiver will
-                    // skip the duplicate harmlessly.
-                    0
-                }
-            } else if phase == SyncPhase::InitialSync {
-                if has_pending {
                     current_slot
-                } else {
-                    current_slot + 1
                 }
             } else {
                 current_slot // Include overlap for fork resolution
@@ -715,13 +717,13 @@ mod tests {
     async fn test_should_sync_when_behind() {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
-        // Current slot 0, behind by 100 → should sync
-        // current_slot == 0, no checkpoint: starts from slot 0 (joining
-        // nodes need the genesis block from peers).
+        // Slot 0 is requested explicitly before genesis is stored. Once the
+        // caller uses should_sync(), InitialSync advances from post-genesis
+        // slot 1.
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 0);
+        assert_eq!(start, 1);
         assert!(end <= 100);
     }
 
@@ -866,6 +868,23 @@ mod tests {
         assert!(
             batch.is_none(),
             "post-genesis batch 1..500 must not be replaced by an overlapping 0-based batch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_initial_sync_retry_after_genesis_starts_at_slot_one() {
+        let sm = SyncManager::new();
+        sm.note_seen(5_000).await;
+        sm.start_sync(1, 500).await;
+        assert!(sm.complete_sync_if_current(1, 500).await);
+        *sm.last_sync_triggered_at.lock().await =
+            Instant::now() - std::time::Duration::from_secs(1);
+
+        let batch = sm.should_sync(0).await;
+        assert_eq!(
+            batch,
+            Some((1, INITIAL_SYNC_FORWARD_WINDOW)),
+            "post-genesis retry must not include slot 0"
         );
     }
 
@@ -1293,8 +1312,9 @@ mod tests {
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        // current_slot == 0, no checkpoint: starts from slot 0
-        assert_eq!(start, 0);
+        // Pre-genesis sync requests slot 0 directly; batched InitialSync starts
+        // at the first post-genesis slot.
+        assert_eq!(start, 1);
         let batch_size = end - start + 1;
         assert_eq!(batch_size, INITIAL_SYNC_FORWARD_WINDOW);
     }
