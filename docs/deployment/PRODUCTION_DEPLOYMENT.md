@@ -821,6 +821,53 @@ for i in range(1, 11):
         raise SystemExit(f"WebSocket attempt {i} failed: {result.stderr or result.stdout}")
 print("WebSocket subscribeSlots: 10/10")
 PY
+
+python3 - <<'PY'
+import json
+import time
+import urllib.request
+
+base = "https://testnet-rpc.lichen.network"
+deadline = time.time() + 90
+last_error = None
+
+def get_json(path):
+    request = urllib.request.Request(
+        base + path,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "lichen-deploy-smoke/1.0",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.loads(response.read().decode())
+
+while time.time() < deadline:
+    try:
+        oracle = get_json("/api/v1/oracle/prices")
+        feeds = {feed.get("asset"): feed for feed in oracle.get("data", {}).get("feeds", [])}
+        bad = []
+        for asset in ("wSOL", "wETH", "wBNB"):
+            feed = feeds.get(asset) or {}
+            if int(feed.get("slot") or 0) <= 0 or feed.get("stale") is True:
+                bad.append(f"{asset}:slot={feed.get('slot')} stale={feed.get('stale')}")
+        candles = get_json("/api/v1/pairs/2/candles?interval=60&limit=4")
+        candle_rows = candles.get("data") or []
+        if not bad and candle_rows:
+            print(
+                "DEX oracle/candle smoke: "
+                f"wSOL slot={feeds['wSOL'].get('slot')} "
+                f"wSOL price={feeds['wSOL'].get('price')} "
+                f"latest 1m close={candle_rows[-1].get('close')}"
+            )
+            break
+        last_error = "; ".join(bad) or "missing wSOL 1m candles"
+    except Exception as exc:
+        last_error = str(exc)
+    time.sleep(3)
+else:
+    raise SystemExit(f"DEX oracle/candle smoke failed: {last_error}")
+PY
 ```
 
 Also confirm any advertised dedicated WS aliases are on the same trusted edge path. With `tls internal`, DNS must resolve to the edge, not directly to validator VPS IPs:
@@ -1801,7 +1848,17 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: DNS and TLS are part of the release gate. For every advertised WSS hostname, `dig +short` must show the intended edge path when `tls internal` is used, and `websocat -n1 <url>` must pass from outside the VPS network.
 
-### Pitfall 13: TOFU identity prevents rejoining after state wipe
+### Pitfall 13: Native oracle consensus remains at genesis while ticker moves
+
+**Symptom**: DEX pair prices move through `ticker:<pair_id>` WebSocket updates, but `/api/v1/oracle/prices` shows wrapped assets at `slot:0` with `stale:true`, and `/api/v1/pairs/<id>/candles?interval=60` keeps returning flat genesis-price candles after a reset.
+
+**Root cause**: Oracle attestation transactions are included in blocks, but committed replay failed to persist opcode-30 oracle attestation side effects. The live ticker path can still move because it broadcasts from the validator's local market feed, while DEX candles are written from committed native consensus oracle prices.
+
+**Fix**: Ship a validator release that persists oracle attestation and consensus-price side effects exactly once after the canonical committed transaction batch, then restart through the runbook. Do not patch the DEX frontend, synthesize candles, or seed fake history.
+
+**Prevention**: After every reset, launch, or rolling release, run the Step 8 DEX oracle/candle smoke. The gate must prove that wrapped-asset native consensus oracle slots advance past genesis and that 1m candles are present through the same public RPC path used by browsers.
+
+### Pitfall 14: TOFU identity prevents rejoining after state wipe
 
 **Symptom**: Wiped validator responds on RPC but stays at slot 0. P2P connections from other validators close immediately: `Failed to accept stream: closed by peer: 0`.
 

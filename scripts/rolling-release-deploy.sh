@@ -4,8 +4,8 @@ set -euo pipefail
 # Non-destructive VPS release rollout.
 #
 # Usage:
-#   LICHEN_RELEASE_TAG=v0.5.32 bash scripts/rolling-release-deploy.sh testnet
-#   LICHEN_RELEASE_TAG=v0.5.32 bash scripts/rolling-release-deploy.sh mainnet
+#   LICHEN_RELEASE_TAG=v0.5.33 bash scripts/rolling-release-deploy.sh testnet
+#   LICHEN_RELEASE_TAG=v0.5.33 bash scripts/rolling-release-deploy.sh mainnet
 #
 # This script installs an exact GitHub Release archive on each validator and
 # restarts one validator at a time. It never deletes chain state.
@@ -35,6 +35,7 @@ SSH_PORT="${LICHEN_SSH_PORT:-2222}"
 HOSTS="${LICHEN_VPS_HOSTS:-$DEFAULT_HOSTS}"
 DISK_CRITICAL_PCT="${LICHEN_DISK_CRITICAL_PCT:-85}"
 MAX_BLOCK_AGE_SECS="${LICHEN_MAX_BLOCK_AGE_SECS:-15}"
+DEX_SMOKE_TIMEOUT_SECS="${LICHEN_DEX_SMOKE_TIMEOUT_SECS:-90}"
 ARTIFACT_DIR="${LICHEN_RELEASE_ARTIFACT_DIR:-/tmp/lichen-rolling-${NETWORK}-${RELEASE_TAG:-unset}}"
 
 if [ -z "$RELEASE_TAG" ]; then
@@ -227,6 +228,61 @@ sys.exit(0 if result.get("status") == "ok" else 1)
 '
 }
 
+public_dex_oracle_smoke() {
+  local public_url
+  case "$NETWORK" in
+    testnet) public_url="https://testnet-rpc.lichen.network" ;;
+    mainnet) public_url="https://rpc.lichen.network" ;;
+  esac
+  echo "Public DEX oracle/candle smoke ${public_url}"
+  PUBLIC_URL="$public_url" DEX_SMOKE_TIMEOUT_SECS="$DEX_SMOKE_TIMEOUT_SECS" python3 - <<'PY'
+import json
+import os
+import time
+import urllib.request
+
+base = os.environ["PUBLIC_URL"].rstrip("/")
+deadline = time.time() + int(os.environ.get("DEX_SMOKE_TIMEOUT_SECS", "90"))
+last_error = None
+
+def get_json(path):
+    request = urllib.request.Request(
+        base + path,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "lichen-rolling-release-deploy/1.0",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.loads(response.read().decode())
+
+while time.time() < deadline:
+    try:
+        oracle = get_json("/api/v1/oracle/prices")
+        feeds = {feed.get("asset"): feed for feed in oracle.get("data", {}).get("feeds", [])}
+        bad = []
+        for asset in ("wSOL", "wETH", "wBNB"):
+            feed = feeds.get(asset) or {}
+            if int(feed.get("slot") or 0) <= 0 or feed.get("stale") is True:
+                bad.append(f"{asset}:slot={feed.get('slot')} stale={feed.get('stale')}")
+        candles = get_json("/api/v1/pairs/2/candles?interval=60&limit=4")
+        candle_rows = candles.get("data") or []
+        if not bad and candle_rows:
+            print(json.dumps({
+                "wsol_slot": feeds["wSOL"].get("slot"),
+                "wsol_price": feeds["wSOL"].get("price"),
+                "latest_wsol_1m_close": candle_rows[-1].get("close"),
+            }, sort_keys=True))
+            raise SystemExit(0)
+        last_error = "; ".join(bad) or "missing wSOL 1m candles"
+    except Exception as exc:
+        last_error = str(exc)
+    time.sleep(3)
+
+raise SystemExit(f"DEX oracle/candle smoke failed: {last_error}")
+PY
+}
+
 echo "Lichen rolling release deploy (${NETWORK}) ${RELEASE_TAG}"
 echo "Hosts: ${HOSTS}"
 
@@ -242,4 +298,5 @@ for host in $HOSTS; do
 done
 
 public_smoke
+public_dex_oracle_smoke
 echo "ROLLING RELEASE DEPLOY COMPLETE"
