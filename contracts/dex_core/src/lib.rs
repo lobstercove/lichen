@@ -2290,6 +2290,9 @@ fn fill_at_price_level(
                         let old_escrow = decode_order_escrow_locked(&sod);
                         update_order_escrow(&mut sod, old_escrow.saturating_sub(fill_qty));
                         storage_set(&order_key(seller_order_id), &sod);
+                        if seller_order_id == maker_order_id {
+                            maker_data = sod;
+                        }
                     }
 
                     // Buyer's escrow (quote tokens): deduct notional + fee (if buyer is taker)
@@ -2307,6 +2310,9 @@ fn fill_at_price_level(
                         let old_escrow = decode_order_escrow_locked(&bod);
                         update_order_escrow(&mut bod, old_escrow.saturating_sub(buyer_escrow_used));
                         storage_set(&order_key(buyer_order_id), &bod);
+                        if buyer_order_id == maker_order_id {
+                            maker_data = bod;
+                        }
                     }
                 }
             }
@@ -4046,6 +4052,51 @@ mod tests {
         let sell_data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&sell_data), STATUS_PARTIAL);
         assert_eq!(decode_order_filled(&sell_data), 1000);
+    }
+
+    #[test]
+    fn test_partial_fill_preserves_resting_maker_escrow_debit() {
+        let (_admin, pair_id) = setup_with_pair();
+        let buyer = [4u8; 32];
+        let seller = [3u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(buyer);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                2000,
+                0,
+                0
+            ),
+            0
+        );
+        let initial_buy = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_escrow_locked(&initial_buy), 2001);
+
+        test_mock::set_caller(seller);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0
+            ),
+            0
+        );
+
+        let buy_data = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&buy_data), STATUS_PARTIAL);
+        assert_eq!(decode_order_filled(&buy_data), 1000);
+        assert_eq!(decode_order_escrow_locked(&buy_data), 1001);
     }
 
     #[test]
