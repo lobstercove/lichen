@@ -19,6 +19,19 @@ impl TxProcessor {
         }
     }
 
+    pub(super) fn b_add_burned(&self, amount: u64) -> Result<(), String> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.add_burned(amount);
+            Ok(())
+        } else {
+            self.state.add_burned(amount)
+        }
+    }
+
     pub(super) fn b_transfer(&self, from: &Pubkey, to: &Pubkey, amount: u64) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {

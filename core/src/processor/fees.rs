@@ -276,6 +276,8 @@ impl TxProcessor {
             self.b_put_account(&treasury_pubkey, &treasury)?;
         }
 
+        self.b_add_burned(burn_amount)?;
+
         Ok(())
     }
 

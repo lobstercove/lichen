@@ -1762,6 +1762,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_simulate_code_hash_deploy_block_rejects_contract_program_deploy() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        let code = valid_wasm_code(0x42);
+        let code_hash = Hash::hash(&code);
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(code_hash),
+            RestrictionMode::DeployBlocked,
+        );
+        let contract_addr = Pubkey([0x42; 32]);
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: crate::ContractInstruction::Deploy {
+                code,
+                init_data: Vec::new(),
+            }
+            .serialize()
+            .unwrap(),
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+
+        let sim = processor.simulate_transaction(&tx);
+        assert!(
+            !sim.success,
+            "simulation must reject deploys for banned code hashes"
+        );
+        let error = sim.error.as_deref().unwrap_or_default();
+        assert!(error.contains("Deploy rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&restriction_id.to_string()));
+        assert!(
+            state.get_account(&contract_addr).unwrap().is_none(),
+            "blocked simulation must not create a contract account"
+        );
+    }
+
+    #[test]
+    fn test_simulate_code_hash_deploy_block_rejects_system_deploy_contract() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+
+        let code = valid_wasm_code(0x43);
+        let code_hash = Hash::hash(&code);
+        let restriction_id = put_active_processor_test_restriction(
+            &state,
+            RestrictionTarget::CodeHash(code_hash),
+            RestrictionMode::DeployBlocked,
+        );
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+
+        let sim = processor.simulate_transaction(&tx);
+        assert!(
+            !sim.success,
+            "simulation must reject system deploys for banned code hashes"
+        );
+        let error = sim.error.as_deref().unwrap_or_default();
+        assert!(error.contains("DeployContract rejected"));
+        assert!(error.contains("DeployBlocked"));
+        assert!(error.contains(&restriction_id.to_string()));
+        assert!(
+            state.get_programs(10).unwrap().is_empty(),
+            "blocked simulation must not index a program"
+        );
+    }
+
     /// Test: ContractInstruction::Deploy via CONTRACT_PROGRAM_ID with init_data
     /// populates the symbol registry atomically.
     #[test]
@@ -14511,6 +14586,33 @@ mod tests {
             final_balance,
             initial_balance - transfer_amount - expected_total
         );
+    }
+
+    #[test]
+    fn test_speculative_fee_commit_updates_burned_counter() {
+        let (_processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let speculative_processor = TxProcessor::new_speculative(state.clone());
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let fee_config = state.get_fee_config().unwrap();
+        let expected_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let expected_burn =
+            (expected_fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+
+        let execution = speculative_processor.process_transactions_speculative(&[tx], &validator);
+        assert_eq!(execution.results.len(), 1);
+        assert!(
+            execution.results[0].success,
+            "speculative transfer should succeed: {:?}",
+            execution.results[0].error
+        );
+        assert_eq!(state.get_total_burned().unwrap(), 0);
+
+        state.commit_batch(execution.batch).unwrap();
+
+        assert_eq!(state.get_total_burned().unwrap(), expected_burn);
     }
 
     #[test]
