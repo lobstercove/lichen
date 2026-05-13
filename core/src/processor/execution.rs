@@ -1,6 +1,96 @@
 use super::*;
 
 impl TxProcessor {
+    fn simulate_contract_program_deploy(
+        &self,
+        ix: &Instruction,
+        code: &[u8],
+    ) -> Result<Hash, String> {
+        if ix.accounts.len() < 2 {
+            return Err("Deploy requires deployer and contract accounts".to_string());
+        }
+        if code.is_empty() {
+            return Err("Deploy: code cannot be empty".to_string());
+        }
+        if code.len() > MAX_CONTRACT_CODE {
+            return Err(format!(
+                "Deploy: code size {} exceeds maximum {} bytes",
+                code.len(),
+                MAX_CONTRACT_CODE
+            ));
+        }
+        if code.len() < 8 || code[..4] != [0x00, 0x61, 0x73, 0x6D] {
+            return Err("Deploy: invalid WASM module (bad magic number)".to_string());
+        }
+
+        let contract_address = &ix.accounts[1];
+        if self.b_get_account(contract_address)?.is_some() {
+            return Err(format!(
+                "Contract account {} already exists",
+                contract_address.to_base58()
+            ));
+        }
+
+        let mut runtime = ContractRuntime::get_pooled();
+        let deploy_result = runtime.deploy(code);
+        runtime.return_to_pool();
+        let code_hash = deploy_result?;
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_code_hash_not_deploy_blocked(&code_hash, current_slot, "Deploy")?;
+        Ok(code_hash)
+    }
+
+    fn simulate_system_deploy_contract(&self, ix: &Instruction) -> Result<Hash, String> {
+        if ix.accounts.len() < 2 {
+            return Err("DeployContract requires [deployer, treasury] accounts".to_string());
+        }
+        if ix.data.len() < 6 {
+            return Err("DeployContract instruction data too short".to_string());
+        }
+
+        let treasury = ix.accounts[1];
+        let code_len = u32::from_le_bytes(
+            ix.data[1..5]
+                .try_into()
+                .map_err(|_| "Invalid code length encoding".to_string())?,
+        ) as usize;
+        if ix.data.len() < 5 + code_len {
+            return Err(
+                "DeployContract: instruction data shorter than declared code_length".to_string(),
+            );
+        }
+        let code = &ix.data[5..5 + code_len];
+        if code.is_empty() {
+            return Err("DeployContract: code cannot be empty".to_string());
+        }
+        if code.len() > MAX_CONTRACT_CODE {
+            return Err(format!(
+                "DeployContract: code size {} exceeds maximum {} bytes",
+                code.len(),
+                MAX_CONTRACT_CODE
+            ));
+        }
+        if code.len() < 8 {
+            return Err("DeployContract: code too small to be valid WASM".to_string());
+        }
+        if code[..4] != [0x00, 0x61, 0x73, 0x6D] {
+            return Err("DeployContract: invalid WASM module (bad magic number)".to_string());
+        }
+
+        let actual_treasury = self
+            .state
+            .get_treasury_pubkey()?
+            .ok_or_else(|| "Treasury pubkey not set".to_string())?;
+        if treasury != actual_treasury {
+            return Err("DeployContract: incorrect treasury account".to_string());
+        }
+
+        let code_hash = Hash::hash(code);
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        self.ensure_code_hash_not_deploy_blocked(&code_hash, current_slot, "DeployContract")?;
+        Ok(code_hash)
+    }
+
     /// Start an atomic batch for the current transaction.
     fn begin_batch(&self) {
         *self.batch.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.state.begin_batch());
@@ -891,11 +981,28 @@ impl TxProcessor {
                                 }
                             }
                         }
-                        ContractInstruction::Deploy { .. } => {
-                            logs.push(format!(
-                                "[ix{}] Deploy instruction (would deploy contract)",
-                                idx
-                            ));
+                        ContractInstruction::Deploy { code, .. } => {
+                            match self.simulate_contract_program_deploy(instruction, &code) {
+                                Ok(code_hash) => {
+                                    logs.push(format!(
+                                        "[ix{}] Deploy instruction OK (would deploy contract, code_hash={})",
+                                        idx,
+                                        code_hash.to_hex()
+                                    ));
+                                }
+                                Err(error) => {
+                                    return SimulationResult {
+                                        success: false,
+                                        fee: total_fee,
+                                        logs,
+                                        error: Some(error),
+                                        compute_used: total_compute,
+                                        return_data: last_return_data,
+                                        return_code: last_return_code,
+                                        state_changes: total_state_changes,
+                                    };
+                                }
+                            }
                         }
                         ContractInstruction::Upgrade { .. } => {
                             logs.push(format!(
@@ -936,7 +1043,32 @@ impl TxProcessor {
                     .map(|&t| compute_units_for_system_ix(t))
                     .unwrap_or(0);
                 total_compute += cu;
-                logs.push(format!("[ix{}] System instruction ({} CU)", idx, cu));
+                if matches!(instruction.data.first().copied(), Some(17)) {
+                    match self.simulate_system_deploy_contract(instruction) {
+                        Ok(code_hash) => {
+                            logs.push(format!(
+                                "[ix{}] DeployContract instruction OK (would deploy contract, code_hash={}, {} CU)",
+                                idx,
+                                code_hash.to_hex(),
+                                cu
+                            ));
+                        }
+                        Err(error) => {
+                            return SimulationResult {
+                                success: false,
+                                fee: total_fee,
+                                logs,
+                                error: Some(error),
+                                compute_used: total_compute,
+                                return_data: last_return_data,
+                                return_code: last_return_code,
+                                state_changes: total_state_changes,
+                            };
+                        }
+                    }
+                } else {
+                    logs.push(format!("[ix{}] System instruction ({} CU)", idx, cu));
+                }
                 if total_compute > compute_budget {
                     return SimulationResult {
                         success: false,

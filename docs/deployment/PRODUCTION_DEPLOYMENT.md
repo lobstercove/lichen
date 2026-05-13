@@ -48,6 +48,7 @@ Rolling-release rules:
 - `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
+- Any release that changes fee charging or block commit batching must prove the public `getTotalBurned` value increases after a finalized fee-bearing transaction or drill. Do not accept explorer fee display alone as proof; it can be derived from the transaction while the consensus burned counter remains stale.
 - If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
 
@@ -785,6 +786,24 @@ sudo systemctl start lichen-custody-mainnet
 ```
 
 Mainnet uses `lichen-custody-mainnet` and has no faucet.
+
+When a VPS is expected to serve public bridge intake through RPC, the validator
+service env for that network must also include:
+
+- `CUSTODY_URL=http://127.0.0.1:9105` when custody runs locally on the same VPS,
+- `CUSTODY_API_AUTH_TOKEN` matching the local custody service token.
+
+The custody env must resolve wrapped-token route contracts to the current
+on-chain symbol registry after every reset, genesis rebuild, or mainnet launch.
+Pinned `CUSTODY_LUSD_TOKEN_ADDR`, `CUSTODY_WSOL_TOKEN_ADDR`,
+`CUSTODY_WETH_TOKEN_ADDR`, and `CUSTODY_WBNB_TOKEN_ADDR` values must be updated
+or removed before custody starts; stale addresses from a previous chain will
+make `createBridgeDeposit` fail after route restrictions are lifted. Validate
+the bridge route through the public RPC and each direct VPS RPC:
+
+```bash
+lichen --rpc-url https://testnet-rpc.lichen.network restriction status bridge-route solana sol
+```
 
 ### Step 8: external ingress and browser smoke tests
 

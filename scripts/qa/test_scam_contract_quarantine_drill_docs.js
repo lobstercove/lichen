@@ -174,7 +174,7 @@ test('tracker records completed RG-806 live drill and next task', () => {
     sources.tracker,
     [
       '| RG-806 | Done | Drill scam contract quarantine/resume |',
-      'next strict-order task is RG-807',
+      'no remaining strict-order RG task',
       '3f3f0d74c2b48b476fd28b9a10988c6a89a2d2f5575b9b1eded2e45a4aaf7c06',
       '47dc5753d46428d5b34efa691b8bf717daed7f3c2c9657bfa05d9e6e36877d17',
       '9f3780a22180466745c3172bc5e64e35885c81895a3368e3a646a6d68a918761',

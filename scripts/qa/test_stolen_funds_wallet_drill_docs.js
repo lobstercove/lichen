@@ -148,7 +148,7 @@ test('tracker records completed RG-805 live drill and next task', () => {
     sources.tracker,
     [
       '| RG-805 | Done | Drill stolen-funds wallet freeze/unfreeze |',
-      'next strict-order task is RG-807',
+      'no remaining strict-order RG task',
       '3c695aaf0144b1f88bd72ef9e22021bf916234b3bc664df3d196e51d85606db8',
       'b1be0e836d9874750de5e5926bbf8211ae232400ae08c9eb14d2a577aaec2e92',
       '3991ab7fcf503b5df8f4c56cbbd7c89c724154308ccebb542f1e4679f21b8b0d',
