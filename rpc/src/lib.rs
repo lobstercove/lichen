@@ -18747,6 +18747,14 @@ async fn handle_get_compute_market_stats(state: &RpcState) -> Result<serde_json:
         "completed_count": cf_stats_u64(state, "COMPUTE", b"cm_completed_count"),
         "payment_volume": cf_stats_u64(state, "COMPUTE", b"cm_payment_volume"),
         "dispute_count": cf_stats_u64(state, "COMPUTE", b"cm_dispute_count"),
+        "agent_payments_enabled": cf_stats_bool(state, "COMPUTE", b"cm_agent_pay_enabled"),
+        "agent_route_paused": cf_stats_bool(state, "COMPUTE", b"cm_agent_route_paused"),
+        "agent_max_daily_cap": cf_stats_u64(state, "COMPUTE", b"cm_agent_max_daily"),
+        "agent_max_per_task_cap": cf_stats_u64(state, "COMPUTE", b"cm_agent_max_task"),
+        "agent_policy_count": cf_stats_u64(state, "COMPUTE", b"cm_agent_policy_count"),
+        "agent_payment_count": cf_stats_u64(state, "COMPUTE", b"cm_agent_pay_count"),
+        "agent_payment_volume": cf_stats_u64(state, "COMPUTE", b"cm_agent_pay_volume"),
+        "agent_blocked_payment_count": cf_stats_u64(state, "COMPUTE", b"cm_agent_block_count"),
     }))
 }
 
