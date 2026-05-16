@@ -33,6 +33,8 @@ pub const SHIELD_STARK_PUBLIC_INPUT_WORDS: usize = U64_GOLDILOCKS_WORDS + BYTES3
 pub const UNSHIELD_STARK_PUBLIC_INPUT_WORDS: usize =
     (BYTES32_GOLDILOCKS_WORDS * 3) + U64_GOLDILOCKS_WORDS;
 pub const TRANSFER_STARK_PUBLIC_INPUT_WORDS: usize = BYTES32_GOLDILOCKS_WORDS * 5;
+pub const RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS: usize =
+    (BYTES32_GOLDILOCKS_WORDS * 3) + (U64_GOLDILOCKS_WORDS * 4);
 pub const SHIELD_AIR_TRACE_WIDTH: usize = (U64_GOLDILOCKS_WORDS * 2) + BYTES32_GOLDILOCKS_WORDS;
 
 const COL_AMOUNT_START: usize = 0;
@@ -121,6 +123,20 @@ pub fn u64_to_goldilocks_words(value: u64) -> [u64; U64_GOLDILOCKS_WORDS] {
     [value & 0xFFFF_FFFF, (value >> 32) & 0xFFFF_FFFF]
 }
 
+pub fn goldilocks_words_to_u64(
+    words: [u64; U64_GOLDILOCKS_WORDS],
+    label: &str,
+) -> Result<u64, String> {
+    if words.iter().any(|word| *word > u32::MAX as u64) {
+        return Err(format!(
+            "{} public input contains a non-canonical 32-bit limb",
+            label
+        ));
+    }
+
+    Ok(words[0] | (words[1] << 32))
+}
+
 pub fn bytes32_to_goldilocks_words(bytes: [u8; 32]) -> [u64; BYTES32_GOLDILOCKS_WORDS] {
     let mut words = [0u64; BYTES32_GOLDILOCKS_WORDS];
     for (index, chunk) in bytes.chunks_exact(GOLDILOCKS_WORD_BYTES).enumerate() {
@@ -128,6 +144,24 @@ pub fn bytes32_to_goldilocks_words(bytes: [u8; 32]) -> [u64; BYTES32_GOLDILOCKS_
         words[index] = u64::from(limb);
     }
     words
+}
+
+pub fn goldilocks_words_to_bytes32(
+    words: [u64; BYTES32_GOLDILOCKS_WORDS],
+    label: &str,
+) -> Result<[u8; 32], String> {
+    let mut bytes = [0u8; 32];
+    for (index, word) in words.into_iter().enumerate() {
+        if word > u32::MAX as u64 {
+            return Err(format!(
+                "{} public input contains a non-canonical 32-bit limb",
+                label
+            ));
+        }
+        let start = index * GOLDILOCKS_WORD_BYTES;
+        bytes[start..start + GOLDILOCKS_WORD_BYTES].copy_from_slice(&(word as u32).to_le_bytes());
+    }
+    Ok(bytes)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +429,182 @@ impl TransferAirPublicValues {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReserveLiabilityAirPublicValues {
+    pub domain_hash_words: [u64; BYTES32_GOLDILOCKS_WORDS],
+    pub statement_hash_words: [u64; BYTES32_GOLDILOCKS_WORDS],
+    pub witness_commitment_words: [u64; BYTES32_GOLDILOCKS_WORDS],
+    pub reserve_amount_words: [u64; U64_GOLDILOCKS_WORDS],
+    pub liability_amount_words: [u64; U64_GOLDILOCKS_WORDS],
+    pub epoch_words: [u64; U64_GOLDILOCKS_WORDS],
+    pub verifier_version_words: [u64; U64_GOLDILOCKS_WORDS],
+}
+
+impl ReserveLiabilityAirPublicValues {
+    pub fn new(
+        domain_hash: [u8; 32],
+        statement_hash: [u8; 32],
+        witness_commitment: [u8; 32],
+        reserve_amount: u64,
+        liability_amount: u64,
+        epoch: u64,
+        verifier_version: u64,
+    ) -> Self {
+        Self {
+            domain_hash_words: bytes32_to_goldilocks_words(domain_hash),
+            statement_hash_words: bytes32_to_goldilocks_words(statement_hash),
+            witness_commitment_words: bytes32_to_goldilocks_words(witness_commitment),
+            reserve_amount_words: u64_to_goldilocks_words(reserve_amount),
+            liability_amount_words: u64_to_goldilocks_words(liability_amount),
+            epoch_words: u64_to_goldilocks_words(epoch),
+            verifier_version_words: u64_to_goldilocks_words(verifier_version),
+        }
+    }
+
+    pub fn to_stark_public_inputs(self) -> [u64; RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS] {
+        let mut public_inputs = [0u64; RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS];
+        let mut cursor = 0;
+
+        public_inputs[cursor..cursor + BYTES32_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.domain_hash_words);
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + BYTES32_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.statement_hash_words);
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + BYTES32_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.witness_commitment_words);
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + U64_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.reserve_amount_words);
+        cursor += U64_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + U64_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.liability_amount_words);
+        cursor += U64_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + U64_GOLDILOCKS_WORDS].copy_from_slice(&self.epoch_words);
+        cursor += U64_GOLDILOCKS_WORDS;
+        public_inputs[cursor..cursor + U64_GOLDILOCKS_WORDS]
+            .copy_from_slice(&self.verifier_version_words);
+
+        public_inputs
+    }
+
+    pub fn as_fields(self) -> [StarkField; RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS] {
+        self.to_stark_public_inputs().map(StarkField::new)
+    }
+
+    pub fn from_stark_public_inputs(inputs: &[u64]) -> Result<Self, String> {
+        expect_public_input_len(
+            inputs,
+            RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS,
+            "reserve/liability",
+        )?;
+
+        let mut cursor = 0;
+        let domain_hash_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability domain hash")?;
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        let statement_hash_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability statement hash")?;
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        let witness_commitment_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability witness commitment")?;
+        cursor += BYTES32_GOLDILOCKS_WORDS;
+        let reserve_amount_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability reserve amount")?;
+        cursor += U64_GOLDILOCKS_WORDS;
+        let liability_amount_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability liability amount")?;
+        cursor += U64_GOLDILOCKS_WORDS;
+        let epoch_words = copy_public_input_words(inputs, cursor, "reserve/liability epoch")?;
+        cursor += U64_GOLDILOCKS_WORDS;
+        let verifier_version_words =
+            copy_public_input_words(inputs, cursor, "reserve/liability verifier version")?;
+
+        let public_values = Self {
+            domain_hash_words,
+            statement_hash_words,
+            witness_commitment_words,
+            reserve_amount_words,
+            liability_amount_words,
+            epoch_words,
+            verifier_version_words,
+        };
+        public_values.validate()?;
+        Ok(public_values)
+    }
+
+    pub fn domain_hash(self) -> Result<[u8; 32], String> {
+        goldilocks_words_to_bytes32(self.domain_hash_words, "reserve/liability domain hash")
+    }
+
+    pub fn statement_hash(self) -> Result<[u8; 32], String> {
+        goldilocks_words_to_bytes32(
+            self.statement_hash_words,
+            "reserve/liability statement hash",
+        )
+    }
+
+    pub fn witness_commitment(self) -> Result<[u8; 32], String> {
+        goldilocks_words_to_bytes32(
+            self.witness_commitment_words,
+            "reserve/liability witness commitment",
+        )
+    }
+
+    pub fn reserve_amount(self) -> Result<u64, String> {
+        goldilocks_words_to_u64(
+            self.reserve_amount_words,
+            "reserve/liability reserve amount",
+        )
+    }
+
+    pub fn liability_amount(self) -> Result<u64, String> {
+        goldilocks_words_to_u64(
+            self.liability_amount_words,
+            "reserve/liability liability amount",
+        )
+    }
+
+    pub fn epoch(self) -> Result<u64, String> {
+        goldilocks_words_to_u64(self.epoch_words, "reserve/liability epoch")
+    }
+
+    pub fn verifier_version(self) -> Result<u64, String> {
+        goldilocks_words_to_u64(
+            self.verifier_version_words,
+            "reserve/liability verifier version",
+        )
+    }
+
+    pub fn solvency_margin(self) -> Result<u64, String> {
+        let reserve = self.reserve_amount()?;
+        let liability = self.liability_amount()?;
+        reserve
+            .checked_sub(liability)
+            .ok_or_else(|| "reserve/liability statement is undercollateralized".to_string())
+    }
+
+    pub fn validate(self) -> Result<(), String> {
+        let domain_hash = self.domain_hash()?;
+        let statement_hash = self.statement_hash()?;
+        let witness_commitment = self.witness_commitment()?;
+        if domain_hash == [0u8; 32] {
+            return Err("reserve/liability domain hash must be non-zero".to_string());
+        }
+        if statement_hash == [0u8; 32] {
+            return Err("reserve/liability statement hash must be non-zero".to_string());
+        }
+        if witness_commitment == [0u8; 32] {
+            return Err("reserve/liability witness commitment must be non-zero".to_string());
+        }
+        if self.verifier_version()? == 0 {
+            return Err("reserve/liability verifier version must be positive".to_string());
+        }
+        self.solvency_margin()?;
+        Ok(())
+    }
+}
+
 pub fn build_shield_trace(public_values: ShieldAirPublicValues) -> RowMajorMatrix<StarkField> {
     let mut row = Vec::with_capacity(SHIELD_AIR_TRACE_WIDTH);
     row.extend(public_values.amount_words.map(StarkField::new));
@@ -483,5 +693,36 @@ mod tests {
                 .expect("transfer roundtrip"),
             transfer
         );
+
+        let reserve_liability = ReserveLiabilityAirPublicValues::new(
+            [10u8; 32], [11u8; 32], [12u8; 32], 9_000, 8_999, 123, 1,
+        );
+        assert_eq!(
+            ReserveLiabilityAirPublicValues::from_stark_public_inputs(
+                &reserve_liability.to_stark_public_inputs()
+            )
+            .expect("reserve/liability roundtrip"),
+            reserve_liability
+        );
+        assert_eq!(
+            reserve_liability
+                .solvency_margin()
+                .expect("reserve/liability margin"),
+            1
+        );
+    }
+
+    #[test]
+    fn test_reserve_liability_public_inputs_reject_undercollateralized_statement() {
+        let public_values = ReserveLiabilityAirPublicValues::new(
+            [10u8; 32], [11u8; 32], [12u8; 32], 100, 101, 123, 1,
+        );
+
+        let error = ReserveLiabilityAirPublicValues::from_stark_public_inputs(
+            &public_values.to_stark_public_inputs(),
+        )
+        .expect_err("undercollateralized reserve/liability statement should fail");
+
+        assert!(error.contains("undercollateralized"), "{error}");
     }
 }

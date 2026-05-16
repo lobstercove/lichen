@@ -568,6 +568,17 @@ impl Client {
             .await
     }
 
+    /// Get Neo reserve/liability proof-service verifier metadata.
+    pub async fn get_neo_zk_proof_service_status(&self) -> Result<Value> {
+        self.rpc_call("getNeoZkProofServiceStatus", json!([])).await
+    }
+
+    /// Verify a CLI-produced Neo reserve/liability proof envelope.
+    pub async fn verify_neo_reserve_liability_proof(&self, proof_envelope: Value) -> Result<Value> {
+        self.rpc_call("verifyNeoReserveLiabilityProof", json!([proof_envelope]))
+            .await
+    }
+
     /// Get aggregated BountyBoard marketplace statistics.
     pub async fn get_bountyboard_stats(&self) -> Result<Value> {
         self.rpc_call("getBountyBoardStats", json!([])).await
