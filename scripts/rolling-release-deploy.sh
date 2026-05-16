@@ -148,16 +148,24 @@ REMOTE
 
 install_host() {
   local host="$1"
-  local arch archive
+  local arch archive root expected_validator_sha
   arch="$(ssh_run "$host" "uname -m")"
   archive="$(archive_for_arch "$arch")"
+  root="$(tar tzf "$ARTIFACT_DIR/$archive" | awk -F/ 'NR==1 { print $1 }')"
+  expected_validator_sha="$(
+    tar xOf "$ARTIFACT_DIR/$archive" "$root/lichen-validator" |
+      sha256sum |
+      awk '{print $1}'
+  )"
 
   echo "Install ${RELEASE_TAG} on ${host} (${archive})"
   scp_to "$ARTIFACT_DIR/$archive" "$host" "/tmp/$archive"
-  ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' bash -s" <<'REMOTE'
+  ssh_run "$host" "NETWORK='$NETWORK' SERVICE='$SERVICE' ARCHIVE='/tmp/$archive' EXPECTED_VALIDATOR_SHA='$expected_validator_sha' bash -s" <<'REMOTE'
 set -euo pipefail
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp" "$ARCHIVE"' EXIT
+before_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
+before_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
 tar xzf "$ARCHIVE" -C "$tmp"
 root="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
 if [ -z "$root" ]; then
@@ -176,7 +184,52 @@ if [ -f "$root/seeds.json" ]; then
   sudo install -m 644 -o lichen -g lichen "$root/seeds.json" "/var/lib/lichen/state-${NETWORK}/seeds.json"
 fi
 
-sudo systemctl restart "$SERVICE"
+installed_sha="$(sha256sum /usr/local/bin/lichen-validator | awk '{print $1}')"
+if [ "$installed_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
+  echo "Installed validator hash mismatch: got ${installed_sha}, expected ${EXPECTED_VALIDATOR_SHA}"
+  exit 1
+fi
+
+sudo systemctl stop "$SERVICE" || true
+sleep 2
+if systemctl is-active --quiet "$SERVICE"; then
+  echo "Service still active after stop; killing service control group before restart."
+  sudo systemctl kill --kill-who=control-group -s SIGKILL "$SERVICE" || true
+  sleep 2
+fi
+sudo systemctl start "$SERVICE"
+
+for _ in $(seq 1 60); do
+  after_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
+  after_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
+  active="$(systemctl show "$SERVICE" -p ActiveState --value || true)"
+  if [ "$active" = "active" ] && [ -n "$after_pid" ] && [ "$after_pid" != "0" ] && [ "$after_pid" != "$before_pid" ] && [ "$after_start" != "$before_start" ]; then
+    break
+  fi
+  sleep 1
+done
+
+after_pid="$(systemctl show "$SERVICE" -p MainPID --value || true)"
+after_start="$(systemctl show "$SERVICE" -p ExecMainStartTimestampMonotonic --value || true)"
+active="$(systemctl show "$SERVICE" -p ActiveState --value || true)"
+if [ "$active" != "active" ] || [ -z "$after_pid" ] || [ "$after_pid" = "0" ]; then
+  echo "Service did not become active after restart."
+  exit 1
+fi
+if [ "$after_pid" = "$before_pid" ] || [ "$after_start" = "$before_start" ]; then
+  echo "Service restart did not replace the running process: before_pid=${before_pid} after_pid=${after_pid}."
+  exit 1
+fi
+
+service_pids="$after_pid $(pgrep -P "$after_pid" || true)"
+for pid in $service_pids; do
+  exe_sha="$(sudo sha256sum "/proc/${pid}/exe" 2>/dev/null | awk '{print $1}')"
+  if [ "$exe_sha" != "$EXPECTED_VALIDATOR_SHA" ]; then
+    exe_target="$(sudo readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    echo "Running validator process ${pid} hash mismatch: exe=${exe_target} got=${exe_sha:-unreadable} expected=${EXPECTED_VALIDATOR_SHA}"
+    exit 1
+  fi
+done
 REMOTE
 }
 

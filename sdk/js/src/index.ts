@@ -15,7 +15,11 @@ export { LichenSwapClient } from './lichenswap.js';
 export { SporePayClient } from './sporepay.js';
 export { SporeVaultClient } from './sporevault.js';
 export { BountyBoardClient } from './bountyboard.js';
-export { RestrictionGovernanceClient } from './restrictions.js';
+export {
+  BRIDGE_ASSETS,
+  BRIDGE_CHAINS,
+  RestrictionGovernanceClient,
+} from './restrictions.js';
 export {
   ML_DSA_65_PUBLIC_KEY_BYTES,
   ML_DSA_65_SIGNATURE_BYTES,
@@ -129,6 +133,8 @@ export type {
   AccountRestrictionTarget,
   AddressInput,
   AssetRestrictionTarget,
+  BridgeAsset,
+  BridgeChain,
   BridgeRouteRestrictionParams,
   BridgeRouteRestrictionStatus,
   BridgeRouteRestrictionTarget,

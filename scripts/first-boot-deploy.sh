@@ -158,6 +158,8 @@ expected = {
     "wsol_token": "WSOL",
     "weth_token": "WETH",
     "wbnb_token": "WBNB",
+    "wgas_token": "WGAS",
+    "wneo_token": "WNEO",
     "lichenbridge": "BRIDGE",
     "lichenmarket": "MARKET",
     "lichenoracle": "ORACLE",
@@ -182,6 +184,7 @@ expected = {
     "dex_governance": "DEXGOV",
     "dex_analytics": "ANALYTICS",
     "prediction_market": "PREDICT",
+    "neo_gas_rewards": "NEOGASRWD",
 }
 
 contracts = manifest.get("contracts")
@@ -290,6 +293,8 @@ expected = {
     "wsol_token": "WSOL",
     "weth_token": "WETH",
     "wbnb_token": "WBNB",
+    "wgas_token": "WGAS",
+    "wneo_token": "WNEO",
     "lichenbridge": "BRIDGE",
     "lichenmarket": "MARKET",
     "lichenoracle": "ORACLE",
@@ -314,6 +319,7 @@ expected = {
     "dex_governance": "DEXGOV",
     "dex_analytics": "ANALYTICS",
     "prediction_market": "PREDICT",
+    "neo_gas_rewards": "NEOGASRWD",
 }
 
 contracts = manifest.get("contracts")
@@ -370,10 +376,10 @@ if bridge.get("operational") is False:
 
 contract_feeds = int(oracle.get("contract_feeds", oracle.get("feeds") or 0) or 0)
 consensus_feeds = int(oracle.get("consensus_feeds") or 0)
-if contract_feeds < 4:
-    errors.append(f"oracle contract_feeds={contract_feeds} < 4")
-if consensus_feeds < 4:
-    errors.append(f"oracle consensus_feeds={consensus_feeds} < 4")
+if contract_feeds < 6:
+    errors.append(f"oracle contract_feeds={contract_feeds} < 6")
+if consensus_feeds < 6:
+    errors.append(f"oracle consensus_feeds={consensus_feeds} < 6")
 if oracle.get("paused") is True:
     errors.append("oracle is paused")
 if oracle.get("operational") is False:
@@ -423,6 +429,8 @@ symbol_to_contract = {
     "WSOL": "wsol_token",
     "WETH": "weth_token",
     "WBNB": "wbnb_token",
+    "WGAS": "wgas_token",
+    "WNEO": "wneo_token",
     "DEX": "dex_core",
     "DEXAMM": "dex_amm",
     "DEXROUTER": "dex_router",
@@ -447,6 +455,7 @@ symbol_to_contract = {
     "MOSS": "moss_storage",
     "SHIELDED": "shielded_pool",
     "PREDICT": "prediction_market",
+    "NEOGASRWD": "neo_gas_rewards",
 }
 
 contracts = {}
@@ -479,6 +488,8 @@ manifest = {
         "wSOL": sorted_contracts.get("wsol_token"),
         "wETH": sorted_contracts.get("weth_token"),
         "wBNB": sorted_contracts.get("wbnb_token"),
+        "wGAS": sorted_contracts.get("wgas_token"),
+        "wNEO": sorted_contracts.get("wneo_token"),
     },
     "dex_contracts": {
         name: sorted_contracts[name]
@@ -493,6 +504,9 @@ manifest = {
             "prediction_market",
         ]
     },
+    "product_contracts": {
+        "neo_gas_rewards": sorted_contracts.get("neo_gas_rewards"),
+    },
     "trading_pairs": [
         "LICN/lUSD",
         "wSOL/lUSD",
@@ -501,6 +515,10 @@ manifest = {
         "wSOL/LICN",
         "wETH/LICN",
         "wBNB/LICN",
+        "wNEO/lUSD",
+        "wNEO/LICN",
+        "wGAS/lUSD",
+        "wGAS/LICN",
     ],
 }
 
@@ -749,6 +767,8 @@ for name, addr in m.get('contracts', {}).items():
         tag = 'TOKEN'
     elif name == 'prediction_market':
         tag = 'PRED '
+    elif name == 'neo_gas_rewards':
+        tag = 'NEO  '
     else:
         tag = 'DEX  '
     print(f'  [{tag}] {name:20s} → {addr}')

@@ -86,6 +86,53 @@ function sporesToLicn(value) {
   return Number.isFinite(raw) ? raw / 1_000_000_000 : 0;
 }
 
+function formatNeoGasBaseUnits(value) {
+  const raw = Number(value || 0);
+  if (!Number.isFinite(raw) || raw <= 0) return '0';
+  return (raw / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
+}
+
+async function loadNeoGasRewardsSnapshot(address) {
+  try {
+    const client = rpc();
+    const [stats, position] = await Promise.all([
+      client.call('getNeoGasRewardsStats', []),
+      client.call('getNeoGasRewardsPosition', [address])
+    ]);
+    return { stats, position };
+  } catch {
+    return null;
+  }
+}
+
+function renderNeoGasRewardsAsset(snapshot) {
+  const stats = snapshot?.stats;
+  const position = snapshot?.position;
+  if (!stats || !position) return '';
+
+  const principal = Number(position.principal || 0);
+  const claimable = Number(position.claimable || 0);
+  const configured = stats.configured === true;
+  if (!configured && principal <= 0 && claimable <= 0) return '';
+
+  const status = stats.paused ? 'Paused' : (configured ? 'Active' : 'Pending');
+  const disclosure = position.disclosure_current_accepted ? 'Accepted' : 'Required';
+  return `
+      <div class="asset-item">
+        <div class="asset-icon" style="background:rgba(88,191,0,0.12);color:#58BF00;"><i class="fas fa-gift"></i></div>
+        <div class="asset-info">
+          <div class="asset-name">Neo GAS Rewards</div>
+          <div class="asset-symbol">NEOGASRWD · ${escapeHtmlExt(status)}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.15rem;">wNEO ${formatNeoGasBaseUnits(principal)} · Disclosure ${escapeHtmlExt(disclosure)}</div>
+        </div>
+        <div class="asset-balance">
+          <div class="asset-amount">${formatNeoGasBaseUnits(claimable)}</div>
+          <div class="asset-value">Claimable wGAS</div>
+        </div>
+      </div>
+    `;
+}
+
 function getFullBalanceSnapshot(result) {
   return {
     totalLicn: sporesToLicn(result?.spores ?? result?.balance ?? result?.total ?? result?.spendable ?? 0),
@@ -2149,7 +2196,10 @@ async function loadAssets() {
   list.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
 
   try {
-    const result = await rpc().getBalance(wallet.address);
+    const [result, neoGasRewards] = await Promise.all([
+      rpc().getBalance(wallet.address),
+      loadNeoGasRewardsSnapshot(wallet.address)
+    ]);
     const raw = Number(result?.spores || result?.spendable || 0);
     const licn = raw / 1_000_000_000;
     const d = decimals();
@@ -2167,6 +2217,7 @@ async function loadAssets() {
           <div class="asset-value">$${(licn * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
         </div>
       </div>
+      ${renderNeoGasRewardsAsset(neoGasRewards)}
     `;
     renderExtensionAssetRestrictionBadges();
   } catch {
@@ -2485,7 +2536,8 @@ function switchReceiveTab(tab) {
 const BRIDGE_CHAINS_EXT = {
   solana: { label: 'Solana', assets: ['sol', 'usdc', 'usdt'] },
   ethereum: { label: 'Ethereum', assets: ['eth', 'usdc', 'usdt'] },
-  bsc: { label: 'BNB Chain', assets: ['bnb', 'usdc', 'usdt'] }
+  bsc: { label: 'BNB Chain', assets: ['bnb', 'usdc', 'usdt'] },
+  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS', assets: ['gas'] }
 };
 let extDepositPollTimer = null;
 let extActiveDepositId = null;
@@ -2508,9 +2560,10 @@ async function startExtensionDeposit(chain) {
   if (!wallet) { showToast('No active wallet', 'error'); return; }
   if (!isValidAddress(wallet.address)) { showToast('Invalid wallet address', 'error'); return; }
 
-  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain' };
+  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain', neox: 'Neo X' };
   const chainLabel = chainLabels[chain] || chain;
   const chainAssets = (BRIDGE_CHAINS_EXT[chain] || { assets: ['usdc', 'usdt'] }).assets;
+  const chainDetail = BRIDGE_CHAINS_EXT[chain]?.detail || '';
 
   // Show asset picker inline in depositTabContent
   const container = $('depositTabContent');
@@ -2524,6 +2577,7 @@ async function startExtensionDeposit(chain) {
     <p style="text-align:center;color:var(--text-secondary);margin-bottom:0.75rem;font-size:0.95rem;">
       Select a token to deposit from <strong>${escapeHtmlExt(chainLabel)}</strong>:
     </p>
+    ${chainDetail ? `<p style="text-align:center;color:var(--text-muted);margin-top:-0.45rem;margin-bottom:0.75rem;font-size:0.82rem;">${escapeHtmlExt(chainDetail)}</p>` : ''}
     <div style="display:flex;gap:0.5rem;justify-content:center;margin-bottom:1rem;">${tokenButtons}</div>
     <div id="extDepositResult" style="display:none;"></div>
     <button class="btn btn-secondary btn-small" id="extDepositBack" style="margin-top:0.75rem;">← Back</button>
@@ -2664,6 +2718,11 @@ function restoreDepositTab(container) {
         <div class="deposit-card-info"><strong>Bridge from BNB Chain</strong><span>BNB, USDC, USDT</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
+      <div class="deposit-card" id="depositNEOX">
+        <div class="deposit-card-icon" style="background:rgba(0,229,153,0.12);color:#00E599;"><i class="fas fa-cubes"></i></div>
+        <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · Chain ID 47763</span></div>
+        <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
+      </div>
       <div class="deposit-card disabled">
         <div class="deposit-card-icon" style="background:rgba(0, 201, 219,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
         <div class="deposit-card-info"><strong>Buy with Fiat</strong><span>Coming with mainnet launch</span></div>
@@ -2678,6 +2737,7 @@ function restoreDepositTab(container) {
   container.querySelector('#depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
   container.querySelector('#depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
   container.querySelector('#depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
+  container.querySelector('#depositNEOX')?.addEventListener('click', () => startExtensionDeposit('neox'));
 }
 
 /* ──────────────────────────────────────────
@@ -2928,6 +2988,7 @@ function wireEvents() {
   $('depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
   $('depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
   $('depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
+  $('depositNEOX')?.addEventListener('click', () => startExtensionDeposit('neox'));
 
   // Settings modal
   $('navSettingsBtn')?.addEventListener('click', () => { loadSettingsValues(); openModal('settingsModal'); });

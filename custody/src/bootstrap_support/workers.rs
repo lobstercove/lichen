@@ -16,25 +16,22 @@ pub(crate) fn spawn_background_workers(state: &CustodyState) {
         });
     }
 
-    // Per-chain EVM watchers: spawn separate watchers for ETH and BNB
-    // so each chain polls its own RPC endpoint
-    if let Some(url) = state
-        .config
-        .eth_rpc_url
-        .clone()
-        .or_else(|| state.config.evm_rpc_url.clone())
-    {
+    // Per-chain EVM watchers: each configured route polls its own RPC endpoint.
+    for route in configured_evm_routes(&state.config) {
+        let Some(url) = route.rpc_url.clone() else {
+            continue;
+        };
         let watcher_state = state.clone();
+        let chains = route.aliases;
         tokio::spawn(async move {
-            evm_watcher_loop_for_chains(watcher_state, url, &["ethereum", "eth"]).await;
+            evm_watcher_loop_for_chains(watcher_state, url, chains).await;
         });
     }
-    if let Some(url) = state.config.bnb_rpc_url.clone() {
-        let watcher_state = state.clone();
-        tokio::spawn(async move {
-            evm_watcher_loop_for_chains(watcher_state, url, &["bsc", "bnb"]).await;
-        });
-    } else if state.config.evm_rpc_url.is_some() && state.config.eth_rpc_url.is_none() {
+    if state.config.evm_rpc_url.is_some()
+        && state.config.eth_rpc_url.is_none()
+        && state.config.bnb_rpc_url.is_none()
+        && state.config.neox_rpc_url.is_none()
+    {
         // Legacy fallback: single EVM watcher for all chains
         let url = state.config.evm_rpc_url.clone().unwrap();
         let watcher_state = state.clone();

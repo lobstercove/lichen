@@ -118,6 +118,25 @@
                         </ul>
                     </div>
                 </div>
+
+                <div class="info-box">
+                    <i class="fas fa-route"></i>
+                    <div>
+                        <strong>Genesis-Deployed Neo Contracts</strong>
+                        <p>The Neo X integration uses the same contract/runtime path as the rest of Lichen: wrapped
+                            assets are normal WASM contracts and rewards/liquidity controls are governed contracts, not
+                            frontend-only labels.</p>
+                        <ul>
+                            <li><code>wneo_token</code> (<code>wNEO</code>) and <code>wgas_token</code>
+                                (<code>wGAS</code>) are reserve-backed wrapped assets registered as <code>WNEO</code>
+                                and <code>WGAS</code>.</li>
+                            <li><code>neo_gas_rewards</code> is registered as <code>NEOGASRWD</code> and remains
+                                fail-closed until the public beta gate is approved.</li>
+                            <li><code>dex_rewards.configure_lp_campaign</code> controls Neo Liquidity Corridor campaigns
+                                only after a governed manifest approval.</li>
+                        </ul>
+                    </div>
+                </div>
             </section>
 
             <!-- ============================================================ -->

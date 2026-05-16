@@ -468,7 +468,8 @@ fn normalize_delegate_permissions(permissions: u8) -> Result<u8> {
         | LICHENID_DELEGATE_PERM_NAMING;
     if permissions == 0 || permissions & !allowed_mask != 0 {
         return Err(Error::BuildError(
-            "Delegate permissions must be a non-zero PROFILE/AGENT_TYPE/SKILLS/NAMING bitmask".into(),
+            "Delegate permissions must be a non-zero PROFILE/AGENT_TYPE/SKILLS/NAMING bitmask"
+                .into(),
         ));
     }
     Ok(permissions)
@@ -498,7 +499,9 @@ fn pad_bytes(data: &[u8], size: usize) -> Vec<u8> {
 }
 
 fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+    );
     out.push(0xAB);
     out.extend_from_slice(layout);
     for chunk in chunks {
@@ -509,62 +512,77 @@ fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
 
 fn encode_register_identity_args(owner: &Pubkey, params: &RegisterIdentityParams) -> Vec<u8> {
     let name_bytes = params.name.as_bytes();
-    build_layout_args(&[0x20, 0x01, 0x40, 0x04], &[
-        owner.as_ref().to_vec(),
-        vec![params.agent_type],
-        pad_bytes(name_bytes, 64),
-        (name_bytes.len() as u32).to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x01, 0x40, 0x04],
+        &[
+            owner.as_ref().to_vec(),
+            vec![params.agent_type],
+            pad_bytes(name_bytes, 64),
+            (name_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    )
 }
 
 fn encode_name_duration_args(owner: &Pubkey, name: &str, duration_years: u8) -> Vec<u8> {
     let name_bytes = name.as_bytes();
-    build_layout_args(&[0x20, 0x20, 0x04, 0x01], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(name_bytes, 32),
-        (name_bytes.len() as u32).to_le_bytes().to_vec(),
-        vec![duration_years],
-    ])
+    build_layout_args(
+        &[0x20, 0x20, 0x04, 0x01],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(name_bytes, 32),
+            (name_bytes.len() as u32).to_le_bytes().to_vec(),
+            vec![duration_years],
+        ],
+    )
 }
 
 fn encode_add_skill_args(owner: &Pubkey, params: &AddSkillParams) -> Result<Vec<u8>> {
     let skill_name = validate_skill_name(&params.name)?;
     let skill_bytes = skill_name.as_bytes();
-    Ok(build_layout_args(&[0x20, 0x20, 0x04, 0x01], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(skill_bytes, 32),
-        (skill_bytes.len() as u32).to_le_bytes().to_vec(),
-        vec![params.proficiency.min(100)],
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x04, 0x01],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(skill_bytes, 32),
+            (skill_bytes.len() as u32).to_le_bytes().to_vec(),
+            vec![params.proficiency.min(100)],
+        ],
+    ))
 }
 
 fn encode_vouch_args(owner: &Pubkey, vouchee: &Pubkey) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20], &[
-        owner.as_ref().to_vec(),
-        vouchee.as_ref().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20],
+        &[owner.as_ref().to_vec(), vouchee.as_ref().to_vec()],
+    )
 }
 
 fn encode_endpoint_args(owner: &Pubkey, url: &str) -> Result<Vec<u8>> {
     let endpoint = normalize_endpoint_url(url)?;
     let endpoint_bytes = endpoint.as_bytes();
     let stride = endpoint_bytes.len().max(32);
-    Ok(build_layout_args(&[0x20, stride as u8, 0x04], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(endpoint_bytes, stride),
-        (endpoint_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, stride as u8, 0x04],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(endpoint_bytes, stride),
+            (endpoint_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
 fn encode_metadata_args(owner: &Pubkey, metadata_json: &str) -> Result<Vec<u8>> {
     let metadata = normalize_metadata_json(metadata_json)?;
     let metadata_bytes = metadata.as_bytes();
     let stride = metadata_bytes.len().max(32);
-    Ok(build_layout_args(&[0x20, stride as u8, 0x04], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(metadata_bytes, stride),
-        (metadata_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, stride as u8, 0x04],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(metadata_bytes, stride),
+            (metadata_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
 fn encode_rate_args(owner: &Pubkey, rate_spores: u64) -> Vec<u8> {
@@ -575,77 +593,110 @@ fn encode_rate_args(owner: &Pubkey, rate_spores: u64) -> Vec<u8> {
 }
 
 fn encode_availability_args(owner: &Pubkey, status: LichenIdAvailability) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x01], &[
-        owner.as_ref().to_vec(),
-        vec![status.into()],
-    ])
+    build_layout_args(
+        &[0x20, 0x01],
+        &[owner.as_ref().to_vec(), vec![status.into()]],
+    )
 }
 
 fn encode_set_delegate_args(owner: &Pubkey, params: &SetDelegateParams) -> Result<Vec<u8>> {
-    Ok(build_layout_args(&[0x20, 0x20, 0x01, 0x08], &[
-        owner.as_ref().to_vec(),
-        params.delegate.as_ref().to_vec(),
-        vec![normalize_delegate_permissions(params.permissions)?],
-        params.expires_at_ms.to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x01, 0x08],
+        &[
+            owner.as_ref().to_vec(),
+            params.delegate.as_ref().to_vec(),
+            vec![normalize_delegate_permissions(params.permissions)?],
+            params.expires_at_ms.to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
 fn encode_delegate_lookup_args(owner: &Pubkey, delegate: &Pubkey) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20], &[
-        owner.as_ref().to_vec(),
-        delegate.as_ref().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20],
+        &[owner.as_ref().to_vec(), delegate.as_ref().to_vec()],
+    )
 }
 
-fn encode_delegated_endpoint_args(delegate: &Pubkey, params: &SetEndpointAsParams) -> Result<Vec<u8>> {
+fn encode_delegated_endpoint_args(
+    delegate: &Pubkey,
+    params: &SetEndpointAsParams,
+) -> Result<Vec<u8>> {
     let endpoint = normalize_endpoint_url(&params.url)?;
     let endpoint_bytes = endpoint.as_bytes();
     let stride = endpoint_bytes.len().max(32);
-    Ok(build_layout_args(&[0x20, 0x20, stride as u8, 0x04], &[
-        delegate.as_ref().to_vec(),
-        params.owner.as_ref().to_vec(),
-        pad_bytes(endpoint_bytes, stride),
-        (endpoint_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, stride as u8, 0x04],
+        &[
+            delegate.as_ref().to_vec(),
+            params.owner.as_ref().to_vec(),
+            pad_bytes(endpoint_bytes, stride),
+            (endpoint_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
-fn encode_delegated_metadata_args(delegate: &Pubkey, params: &SetMetadataAsParams) -> Result<Vec<u8>> {
+fn encode_delegated_metadata_args(
+    delegate: &Pubkey,
+    params: &SetMetadataAsParams,
+) -> Result<Vec<u8>> {
     let metadata = normalize_metadata_json(&params.metadata_json)?;
     let metadata_bytes = metadata.as_bytes();
     let stride = metadata_bytes.len().max(32);
-    Ok(build_layout_args(&[0x20, 0x20, stride as u8, 0x04], &[
-        delegate.as_ref().to_vec(),
-        params.owner.as_ref().to_vec(),
-        pad_bytes(metadata_bytes, stride),
-        (metadata_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, stride as u8, 0x04],
+        &[
+            delegate.as_ref().to_vec(),
+            params.owner.as_ref().to_vec(),
+            pad_bytes(metadata_bytes, stride),
+            (metadata_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
-fn encode_delegated_availability_args(delegate: &Pubkey, params: &SetAvailabilityAsParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x01], &[
-        delegate.as_ref().to_vec(),
-        params.owner.as_ref().to_vec(),
-        vec![params.status.into()],
-    ])
+fn encode_delegated_availability_args(
+    delegate: &Pubkey,
+    params: &SetAvailabilityAsParams,
+) -> Vec<u8> {
+    build_layout_args(
+        &[0x20, 0x20, 0x01],
+        &[
+            delegate.as_ref().to_vec(),
+            params.owner.as_ref().to_vec(),
+            vec![params.status.into()],
+        ],
+    )
 }
 
 fn encode_delegated_rate_args(delegate: &Pubkey, params: &SetRateAsParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x08], &[
-        delegate.as_ref().to_vec(),
-        params.owner.as_ref().to_vec(),
-        params.rate_spores.to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20, 0x08],
+        &[
+            delegate.as_ref().to_vec(),
+            params.owner.as_ref().to_vec(),
+            params.rate_spores.to_le_bytes().to_vec(),
+        ],
+    )
 }
 
-fn encode_update_agent_type_as_args(delegate: &Pubkey, params: &UpdateAgentTypeAsParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x01], &[
-        delegate.as_ref().to_vec(),
-        params.owner.as_ref().to_vec(),
-        vec![params.agent_type],
-    ])
+fn encode_update_agent_type_as_args(
+    delegate: &Pubkey,
+    params: &UpdateAgentTypeAsParams,
+) -> Vec<u8> {
+    build_layout_args(
+        &[0x20, 0x20, 0x01],
+        &[
+            delegate.as_ref().to_vec(),
+            params.owner.as_ref().to_vec(),
+            vec![params.agent_type],
+        ],
+    )
 }
 
-fn encode_recovery_guardians_args(owner: &Pubkey, params: &SetRecoveryGuardiansParams) -> Result<Vec<u8>> {
+fn encode_recovery_guardians_args(
+    owner: &Pubkey,
+    params: &SetRecoveryGuardiansParams,
+) -> Result<Vec<u8>> {
     if params.guardians.len() != 5 {
         return Err(Error::BuildError(
             "Recovery helpers require exactly 5 guardian addresses".into(),
@@ -654,7 +705,9 @@ fn encode_recovery_guardians_args(owner: &Pubkey, params: &SetRecoveryGuardiansP
 
     let unique: std::collections::BTreeSet<Pubkey> = params.guardians.iter().copied().collect();
     if unique.len() != 5 {
-        return Err(Error::BuildError("Recovery guardians must be unique".into()));
+        return Err(Error::BuildError(
+            "Recovery guardians must be unique".into(),
+        ));
     }
     if params.guardians.iter().any(|guardian| guardian == owner) {
         return Err(Error::BuildError(
@@ -662,80 +715,107 @@ fn encode_recovery_guardians_args(owner: &Pubkey, params: &SetRecoveryGuardiansP
         ));
     }
 
-    Ok(build_layout_args(&[0x20, 0x20, 0x20, 0x20, 0x20, 0x20], &[
-        owner.as_ref().to_vec(),
-        params.guardians[0].as_ref().to_vec(),
-        params.guardians[1].as_ref().to_vec(),
-        params.guardians[2].as_ref().to_vec(),
-        params.guardians[3].as_ref().to_vec(),
-        params.guardians[4].as_ref().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x20, 0x20, 0x20, 0x20],
+        &[
+            owner.as_ref().to_vec(),
+            params.guardians[0].as_ref().to_vec(),
+            params.guardians[1].as_ref().to_vec(),
+            params.guardians[2].as_ref().to_vec(),
+            params.guardians[3].as_ref().to_vec(),
+            params.guardians[4].as_ref().to_vec(),
+        ],
+    ))
 }
 
 fn encode_recovery_action_args(caller: &Pubkey, target: &Pubkey, new_owner: &Pubkey) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x20], &[
-        caller.as_ref().to_vec(),
-        target.as_ref().to_vec(),
-        new_owner.as_ref().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20, 0x20],
+        &[
+            caller.as_ref().to_vec(),
+            target.as_ref().to_vec(),
+            new_owner.as_ref().to_vec(),
+        ],
+    )
 }
 
 fn encode_attest_skill_args(attester: &Pubkey, params: &AttestSkillParams) -> Result<Vec<u8>> {
     let skill_name = validate_skill_name(&params.name)?;
     let level = normalize_attestation_level(params.level)?;
     let skill_bytes = skill_name.as_bytes();
-    Ok(build_layout_args(&[0x20, 0x20, 0x20, 0x04, 0x01], &[
-        attester.as_ref().to_vec(),
-        params.identity.as_ref().to_vec(),
-        pad_bytes(skill_bytes, 32),
-        (skill_bytes.len() as u32).to_le_bytes().to_vec(),
-        vec![level],
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x20, 0x04, 0x01],
+        &[
+            attester.as_ref().to_vec(),
+            params.identity.as_ref().to_vec(),
+            pad_bytes(skill_bytes, 32),
+            (skill_bytes.len() as u32).to_le_bytes().to_vec(),
+            vec![level],
+        ],
+    ))
 }
 
 fn encode_get_attestations_args(identity: &Pubkey, name: &str) -> Result<Vec<u8>> {
     let skill_name = validate_skill_name(name)?;
     let skill_bytes = skill_name.as_bytes();
-    Ok(build_layout_args(&[0x20, 0x20, 0x04], &[
-        identity.as_ref().to_vec(),
-        pad_bytes(skill_bytes, 32),
-        (skill_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x04],
+        &[
+            identity.as_ref().to_vec(),
+            pad_bytes(skill_bytes, 32),
+            (skill_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
-fn encode_revoke_attestation_args(attester: &Pubkey, params: &RevokeAttestationParams) -> Result<Vec<u8>> {
+fn encode_revoke_attestation_args(
+    attester: &Pubkey,
+    params: &RevokeAttestationParams,
+) -> Result<Vec<u8>> {
     let skill_name = validate_skill_name(&params.name)?;
     let skill_bytes = skill_name.as_bytes();
-    Ok(build_layout_args(&[0x20, 0x20, 0x20, 0x04], &[
-        attester.as_ref().to_vec(),
-        params.identity.as_ref().to_vec(),
-        pad_bytes(skill_bytes, 32),
-        (skill_bytes.len() as u32).to_le_bytes().to_vec(),
-    ]))
+    Ok(build_layout_args(
+        &[0x20, 0x20, 0x20, 0x04],
+        &[
+            attester.as_ref().to_vec(),
+            params.identity.as_ref().to_vec(),
+            pad_bytes(skill_bytes, 32),
+            (skill_bytes.len() as u32).to_le_bytes().to_vec(),
+        ],
+    ))
 }
 
-fn encode_create_name_auction_args(owner: &Pubkey, params: &CreateNameAuctionParams) -> Result<Vec<u8>> {
+fn encode_create_name_auction_args(
+    owner: &Pubkey,
+    params: &CreateNameAuctionParams,
+) -> Result<Vec<u8>> {
     let label = validate_auction_name(&params.name)?;
     let name_bytes = label.as_bytes();
-    let out = build_layout_args(&[0x20, 0x20, 0x04, 0x08, 0x08], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(name_bytes, 32),
-        (name_bytes.len() as u32).to_le_bytes().to_vec(),
-        params.reserve_bid_spores.to_le_bytes().to_vec(),
-        params.end_slot.to_le_bytes().to_vec(),
-    ]);
+    let out = build_layout_args(
+        &[0x20, 0x20, 0x04, 0x08, 0x08],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(name_bytes, 32),
+            (name_bytes.len() as u32).to_le_bytes().to_vec(),
+            params.reserve_bid_spores.to_le_bytes().to_vec(),
+            params.end_slot.to_le_bytes().to_vec(),
+        ],
+    );
     Ok(out)
 }
 
 fn encode_bid_name_auction_args(owner: &Pubkey, params: &BidNameAuctionParams) -> Result<Vec<u8>> {
     let label = validate_auction_name(&params.name)?;
     let name_bytes = label.as_bytes();
-    let out = build_layout_args(&[0x20, 0x20, 0x04, 0x08], &[
-        owner.as_ref().to_vec(),
-        pad_bytes(name_bytes, 32),
-        (name_bytes.len() as u32).to_le_bytes().to_vec(),
-        params.bid_amount_spores.to_le_bytes().to_vec(),
-    ]);
+    let out = build_layout_args(
+        &[0x20, 0x20, 0x04, 0x08],
+        &[
+            owner.as_ref().to_vec(),
+            pad_bytes(name_bytes, 32),
+            (name_bytes.len() as u32).to_le_bytes().to_vec(),
+            params.bid_amount_spores.to_le_bytes().to_vec(),
+        ],
+    );
     Ok(out)
 }
 
@@ -762,12 +842,9 @@ fn ensure_readonly_success(
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if code != 0 {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("LichenID {} returned code {}", function_name, code)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("LichenID {} returned code {}", function_name, code)
+        })));
     }
     if !result.success {
         return Err(Error::RpcError(
@@ -780,7 +857,10 @@ fn ensure_readonly_success(
     Ok(())
 }
 
-fn decode_return_data(result: &crate::client::ReadonlyContractResult, function_name: &str) -> Result<Vec<u8>> {
+fn decode_return_data(
+    result: &crate::client::ReadonlyContractResult,
+    function_name: &str,
+) -> Result<Vec<u8>> {
     let Some(return_data) = &result.return_data else {
         return Err(Error::ParseError(format!(
             "LichenID {} did not return payload data",
@@ -792,7 +872,11 @@ fn decode_return_data(result: &crate::client::ReadonlyContractResult, function_n
         .map_err(|err| Error::ParseError(err.to_string()))
 }
 
-fn decode_delegate_record(owner: &Pubkey, delegate: &Pubkey, bytes: &[u8]) -> Result<LichenIdDelegateRecord> {
+fn decode_delegate_record(
+    owner: &Pubkey,
+    delegate: &Pubkey,
+    bytes: &[u8],
+) -> Result<LichenIdDelegateRecord> {
     if bytes.len() < 17 {
         return Err(Error::ParseError(
             "Delegate record payload was shorter than expected".into(),
@@ -851,10 +935,9 @@ impl LichenIdClient {
                 continue;
             };
             let program_id = Pubkey::from_base58(program).map_err(Error::ParseError)?;
-            *self
-                .program_id
-                .lock()
-                .map_err(|_| Error::ConfigError("LichenIdClient program cache lock poisoned".into()))? = Some(program_id);
+            *self.program_id.lock().map_err(|_| {
+                Error::ConfigError("LichenIdClient program cache lock poisoned".into())
+            })? = Some(program_id);
             return Ok(program_id);
         }
 
@@ -868,7 +951,9 @@ impl LichenIdClient {
         if value.is_null() {
             return Ok(None);
         }
-        serde_json::from_value(value).map(Some).map_err(|err| Error::ParseError(err.to_string()))
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|err| Error::ParseError(err.to_string()))
     }
 
     pub async fn get_reputation(&self, address: &Pubkey) -> Result<LichenIdReputation> {
@@ -893,7 +978,11 @@ impl LichenIdClient {
             .and_then(|profile| profile.agent.metadata))
     }
 
-    pub async fn get_delegate(&self, owner: &Pubkey, delegate: &Pubkey) -> Result<Option<LichenIdDelegateRecord>> {
+    pub async fn get_delegate(
+        &self,
+        owner: &Pubkey,
+        delegate: &Pubkey,
+    ) -> Result<Option<LichenIdDelegateRecord>> {
         let result = self
             .client
             .call_readonly_contract(
@@ -936,26 +1025,40 @@ impl LichenIdClient {
 
     pub async fn resolve_name(&self, name: &str) -> Result<Option<LichenIdNameResolution>> {
         let label = validate_lookup_name(name)?;
-        let value = self.client.resolve_lichen_name(&format!("{}.lichen", label)).await?;
+        let value = self
+            .client
+            .resolve_lichen_name(&format!("{}.lichen", label))
+            .await?;
         if value.is_null() {
             return Ok(None);
         }
-        serde_json::from_value(value).map(Some).map_err(|err| Error::ParseError(err.to_string()))
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|err| Error::ParseError(err.to_string()))
     }
 
     pub async fn get_name_auction(&self, name: &str) -> Result<Option<LichenIdNameAuction>> {
-        let value = self.client.get_name_auction(&validate_lookup_name(name)?).await?;
+        let value = self
+            .client
+            .get_name_auction(&validate_lookup_name(name)?)
+            .await?;
         if value.is_null() {
             return Ok(None);
         }
-        serde_json::from_value(value).map(Some).map_err(|err| Error::ParseError(err.to_string()))
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|err| Error::ParseError(err.to_string()))
     }
 
     pub async fn get_agent_directory(&self) -> Result<LichenIdAgentDirectory> {
-        self.search_agents(LichenIdAgentDirectoryOptions::default()).await
+        self.search_agents(LichenIdAgentDirectoryOptions::default())
+            .await
     }
 
-    pub async fn search_agents(&self, options: LichenIdAgentDirectoryOptions) -> Result<LichenIdAgentDirectory> {
+    pub async fn search_agents(
+        &self,
+        options: LichenIdAgentDirectoryOptions,
+    ) -> Result<LichenIdAgentDirectory> {
         let has_filters = options.agent_type.is_some()
             || options.available.is_some()
             || options.min_reputation.is_some()
@@ -964,7 +1067,9 @@ impl LichenIdClient {
         let value = if has_filters {
             let options_value = serde_json::to_value(options)
                 .map_err(|err| Error::SerializationError(err.to_string()))?;
-            self.client.get_lichenid_agent_directory(Some(options_value)).await?
+            self.client
+                .get_lichenid_agent_directory(Some(options_value))
+                .await?
         } else {
             self.client.get_lichenid_agent_directory(None).await?
         };
@@ -976,7 +1081,11 @@ impl LichenIdClient {
         serde_json::from_value(value).map_err(|err| Error::ParseError(err.to_string()))
     }
 
-    pub async fn register_identity(&self, owner: &Keypair, params: RegisterIdentityParams) -> Result<String> {
+    pub async fn register_identity(
+        &self,
+        owner: &Keypair,
+        params: RegisterIdentityParams,
+    ) -> Result<String> {
         let name = params.name.trim().to_string();
         if name.is_empty() {
             return Err(Error::BuildError("Identity name cannot be empty".into()));
@@ -994,7 +1103,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn register_name(&self, owner: &Keypair, params: RegisterNameParams) -> Result<String> {
+    pub async fn register_name(
+        &self,
+        owner: &Keypair,
+        params: RegisterNameParams,
+    ) -> Result<String> {
         let duration_years = normalize_duration_years(params.duration_years);
         let label = validate_direct_registration_name(&params.name)?;
         let value = match params.value_spores {
@@ -1048,7 +1161,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn set_availability(&self, owner: &Keypair, params: SetAvailabilityParams) -> Result<String> {
+    pub async fn set_availability(
+        &self,
+        owner: &Keypair,
+        params: SetAvailabilityParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_availability_args(&owner.pubkey(), params.status);
         self.client
@@ -1072,7 +1189,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn set_endpoint_as(&self, delegate: &Keypair, params: SetEndpointAsParams) -> Result<String> {
+    pub async fn set_endpoint_as(
+        &self,
+        delegate: &Keypair,
+        params: SetEndpointAsParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_delegated_endpoint_args(&delegate.pubkey(), &params)?;
         self.client
@@ -1080,7 +1201,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn set_metadata_as(&self, delegate: &Keypair, params: SetMetadataAsParams) -> Result<String> {
+    pub async fn set_metadata_as(
+        &self,
+        delegate: &Keypair,
+        params: SetMetadataAsParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_delegated_metadata_args(&delegate.pubkey(), &params)?;
         self.client
@@ -1088,7 +1213,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn set_availability_as(&self, delegate: &Keypair, params: SetAvailabilityAsParams) -> Result<String> {
+    pub async fn set_availability_as(
+        &self,
+        delegate: &Keypair,
+        params: SetAvailabilityAsParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_delegated_availability_args(&delegate.pubkey(), &params);
         self.client
@@ -1104,7 +1233,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn update_agent_type_as(&self, delegate: &Keypair, params: UpdateAgentTypeAsParams) -> Result<String> {
+    pub async fn update_agent_type_as(
+        &self,
+        delegate: &Keypair,
+        params: UpdateAgentTypeAsParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_update_agent_type_as_args(&delegate.pubkey(), &params);
         self.client
@@ -1112,7 +1245,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn set_recovery_guardians(&self, owner: &Keypair, params: SetRecoveryGuardiansParams) -> Result<String> {
+    pub async fn set_recovery_guardians(
+        &self,
+        owner: &Keypair,
+        params: SetRecoveryGuardiansParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_recovery_guardians_args(&owner.pubkey(), &params)?;
         self.client
@@ -1120,23 +1257,37 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn approve_recovery(&self, guardian: &Keypair, params: ApproveRecoveryParams) -> Result<String> {
+    pub async fn approve_recovery(
+        &self,
+        guardian: &Keypair,
+        params: ApproveRecoveryParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
-        let args = encode_recovery_action_args(&guardian.pubkey(), &params.target, &params.new_owner);
+        let args =
+            encode_recovery_action_args(&guardian.pubkey(), &params.target, &params.new_owner);
         self.client
             .call_contract(guardian, &program_id, "approve_recovery", args, 0)
             .await
     }
 
-    pub async fn execute_recovery(&self, guardian: &Keypair, params: ExecuteRecoveryParams) -> Result<String> {
+    pub async fn execute_recovery(
+        &self,
+        guardian: &Keypair,
+        params: ExecuteRecoveryParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
-        let args = encode_recovery_action_args(&guardian.pubkey(), &params.target, &params.new_owner);
+        let args =
+            encode_recovery_action_args(&guardian.pubkey(), &params.target, &params.new_owner);
         self.client
             .call_contract(guardian, &program_id, "execute_recovery", args, 0)
             .await
     }
 
-    pub async fn attest_skill(&self, attester: &Keypair, params: AttestSkillParams) -> Result<String> {
+    pub async fn attest_skill(
+        &self,
+        attester: &Keypair,
+        params: AttestSkillParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_attest_skill_args(&attester.pubkey(), &params)?;
         self.client
@@ -1144,7 +1295,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn revoke_attestation(&self, attester: &Keypair, params: RevokeAttestationParams) -> Result<String> {
+    pub async fn revoke_attestation(
+        &self,
+        attester: &Keypair,
+        params: RevokeAttestationParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_revoke_attestation_args(&attester.pubkey(), &params)?;
         self.client
@@ -1152,7 +1307,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn create_name_auction(&self, owner: &Keypair, params: CreateNameAuctionParams) -> Result<String> {
+    pub async fn create_name_auction(
+        &self,
+        owner: &Keypair,
+        params: CreateNameAuctionParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_create_name_auction_args(&owner.pubkey(), &params)?;
         self.client
@@ -1160,7 +1319,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn bid_name_auction(&self, owner: &Keypair, params: BidNameAuctionParams) -> Result<String> {
+    pub async fn bid_name_auction(
+        &self,
+        owner: &Keypair,
+        params: BidNameAuctionParams,
+    ) -> Result<String> {
         let value = params.bid_amount_spores;
         let program_id = self.get_program_id().await?;
         let args = encode_bid_name_auction_args(&owner.pubkey(), &params)?;
@@ -1169,7 +1332,11 @@ impl LichenIdClient {
             .await
     }
 
-    pub async fn finalize_name_auction(&self, owner: &Keypair, params: FinalizeNameAuctionParams) -> Result<String> {
+    pub async fn finalize_name_auction(
+        &self,
+        owner: &Keypair,
+        params: FinalizeNameAuctionParams,
+    ) -> Result<String> {
         let duration_years = normalize_duration_years(params.duration_years);
         let label = validate_auction_name(&params.name)?;
         let program_id = self.get_program_id().await?;
@@ -1186,9 +1353,18 @@ mod tests {
 
     #[test]
     fn estimate_cost_handles_common_lengths() {
-        assert_eq!(estimate_lichenid_name_registration_cost("agentfive", 2).unwrap(), 40_000_000_000);
-        assert_eq!(estimate_lichenid_name_registration_cost("defi", 1).unwrap(), 100_000_000_000);
-        assert_eq!(estimate_lichenid_name_registration_cost("ai", 1).unwrap(), 500_000_000_000);
+        assert_eq!(
+            estimate_lichenid_name_registration_cost("agentfive", 2).unwrap(),
+            40_000_000_000
+        );
+        assert_eq!(
+            estimate_lichenid_name_registration_cost("defi", 1).unwrap(),
+            100_000_000_000
+        );
+        assert_eq!(
+            estimate_lichenid_name_registration_cost("ai", 1).unwrap(),
+            500_000_000_000
+        );
     }
 
     #[test]
@@ -1228,7 +1404,10 @@ mod tests {
 
     #[test]
     fn availability_enum_rejects_invalid_values() {
-        assert_eq!(LichenIdAvailability::try_from(1).unwrap(), LichenIdAvailability::Available);
+        assert_eq!(
+            LichenIdAvailability::try_from(1).unwrap(),
+            LichenIdAvailability::Available
+        );
         let err = LichenIdAvailability::try_from(3).unwrap_err();
         assert!(matches!(err, Error::BuildError(_)));
     }

@@ -8,7 +8,9 @@ pub(super) async fn process_evm_deposits_for_chains(
     let deposits = list_pending_deposits_for_chains(&state.db, chains)?;
     let block_number = evm_get_block_number(&state.http, url).await?;
 
-    if let Err(error) = process_evm_erc20_deposits(state, url, &deposits, block_number).await {
+    if let Err(error) =
+        process_evm_erc20_deposits(state, url, chains, &deposits, block_number).await
+    {
         tracing::warn!("erc20 log scan failed (non-fatal): {}", error);
     }
 
@@ -88,7 +90,15 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
     let deposits = list_pending_deposits_for_chains(&state.db, &["ethereum", "eth", "bsc", "bnb"])?;
     let block_number = evm_get_block_number(&state.http, url).await?;
 
-    if let Err(error) = process_evm_erc20_deposits(state, url, &deposits, block_number).await {
+    if let Err(error) = process_evm_erc20_deposits(
+        state,
+        url,
+        &["ethereum", "eth", "bsc", "bnb"],
+        &deposits,
+        block_number,
+    )
+    .await
+    {
         tracing::warn!("erc20 log scan failed (non-fatal): {}", error);
     }
 
@@ -167,6 +177,7 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
 async fn process_evm_erc20_deposits(
     state: &CustodyState,
     url: &str,
+    chains: &[&str],
     deposits: &[DepositRequest],
     block_number: u64,
 ) -> Result<(), String> {
@@ -183,9 +194,15 @@ async fn process_evm_erc20_deposits(
         address_map.insert(deposit.address.to_lowercase(), deposit);
     }
 
+    let cursor_scope = chains
+        .iter()
+        .filter_map(|chain| canonical_evm_chain(chain))
+        .next()
+        .unwrap_or("legacy");
+
     for asset in ["usdc", "usdt"] {
         let contract = evm_contract_for_asset(&state.config, asset)?;
-        let cursor_key = format!("evm_logs:{}", contract.to_lowercase());
+        let cursor_key = format!("evm_logs:{}:{}", cursor_scope, contract.to_lowercase());
         let from_block = get_last_u64_index(&state.db, &cursor_key)?
             .unwrap_or(block_number.saturating_sub(1000));
         let to_block = block_number.saturating_sub(state.config.evm_confirmations);
@@ -230,7 +247,7 @@ async fn process_evm_erc20_deposits(
                         })),
                     );
 
-                    if let Some(treasury) = state.config.treasury_evm_address.clone() {
+                    if let Some(treasury) = treasury_for_chain(&state.config, &deposit.chain) {
                         enqueue_sweep_job(
                             &state.db,
                             &SweepJob {

@@ -30,7 +30,10 @@ def discover_contracts() -> List[str]:
         return []
 
     discovered: List[str] = []
-    pattern = re.compile(r'\(\s*"([^"]+)"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*\)')
+    pattern = re.compile(
+        r'\(\s*"([^"]+)"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,?\s*\)',
+        re.DOTALL,
+    )
     for name in pattern.findall(catalog_match.group(1)):
         if name not in discovered:
             discovered.append(name)

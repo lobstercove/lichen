@@ -217,6 +217,7 @@ pub struct PositionJson {
     pub liquidity: u64,
     pub fee_a_owed: u64,
     pub fee_b_owed: u64,
+    pub lp_pending_rewards: u64,
     pub created_slot: u64,
 }
 
@@ -323,6 +324,9 @@ pub struct LeaderboardEntryJson {
 pub struct RewardInfoJson {
     pub pending: u64,
     pub claimed: u64,
+    pub lp_pending: u64,
+    pub lp_positions: u64,
+    pub lp_liquidity: u64,
     pub total_volume: u64,
     pub referral_count: u64,
     pub referral_earnings: u64,
@@ -770,6 +774,10 @@ fn rewards_referral_earnings_storage_key(account_hex: &str) -> String {
     core_dex::rewards_referral_earnings_key(account_hex)
 }
 
+fn rewards_lp_pending_storage_key(position_id: u64) -> String {
+    core_dex::rewards_lp_pending_key(position_id)
+}
+
 fn governance_proposal_storage_key(proposal_id: u64) -> String {
     core_dex::governance_proposal_key(proposal_id)
 }
@@ -866,6 +874,8 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
         ("WSOL", "wSOL"),
         ("WETH", "wETH"),
         ("WBNB", "wBNB"),
+        ("WGAS", "wGAS"),
+        ("WNEO", "wNEO"),
         ("MOSS", "MOSS"),
         ("PUNKS", "PUNKS"),
         ("BOUNTY", "BOUNTY"),
@@ -909,7 +919,11 @@ fn decode_pool(data: &[u8]) -> Option<PoolJson> {
 }
 
 /// Decode an LP position from 80-byte blob
-fn decode_lp_position(data: &[u8], position_id: u64) -> Option<PositionJson> {
+fn decode_lp_position(
+    data: &[u8],
+    position_id: u64,
+    lp_pending_rewards: u64,
+) -> Option<PositionJson> {
     core_dex::decode_lp_position(data).map(|value| PositionJson {
         position_id,
         owner: value.owner,
@@ -919,6 +933,7 @@ fn decode_lp_position(data: &[u8], position_id: u64) -> Option<PositionJson> {
         liquidity: value.liquidity,
         fee_a_owed: value.fee_a_owed,
         fee_b_owed: value.fee_b_owed,
+        lp_pending_rewards,
         created_slot: value.created_slot,
     })
 }
@@ -1648,7 +1663,12 @@ async fn get_lp_positions(
         let pos_id = read_u64(&state, DEX_AMM_PROGRAM, &idx_key);
         let key = amm_position_storage_key(pos_id);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
-            if let Some(pos) = decode_lp_position(&data, pos_id) {
+            let lp_pending = read_u64(
+                &state,
+                DEX_REWARDS_PROGRAM,
+                &rewards_lp_pending_storage_key(pos_id),
+            );
+            if let Some(pos) = decode_lp_position(&data, pos_id, lp_pending) {
                 positions.push(pos);
             }
         }
@@ -2331,6 +2351,28 @@ async fn get_leaderboard(
 async fn get_rewards(State(state): State<Arc<RpcState>>, Path(addr): Path<String>) -> Response {
     let slot = current_slot(&state);
     let addr_hex = normalize_account_lookup(&addr);
+    let lp_position_count = read_u64(
+        &state,
+        DEX_AMM_PROGRAM,
+        &amm_owner_position_count_storage_key(&addr_hex),
+    )
+    .min(100);
+    let mut lp_pending = 0u64;
+    let mut lp_liquidity = 0u64;
+    for i in 1..=lp_position_count {
+        let idx_key = amm_owner_position_storage_key(&addr_hex, i);
+        let pos_id = read_u64(&state, DEX_AMM_PROGRAM, &idx_key);
+        lp_pending = lp_pending.saturating_add(read_u64(
+            &state,
+            DEX_REWARDS_PROGRAM,
+            &rewards_lp_pending_storage_key(pos_id),
+        ));
+        if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &amm_position_storage_key(pos_id)) {
+            if let Some(pos) = core_dex::decode_lp_position(&data) {
+                lp_liquidity = lp_liquidity.saturating_add(pos.liquidity);
+            }
+        }
+    }
 
     let info = RewardInfoJson {
         pending: read_u64(
@@ -2343,6 +2385,9 @@ async fn get_rewards(State(state): State<Arc<RpcState>>, Path(addr): Path<String
             DEX_REWARDS_PROGRAM,
             &rewards_claimed_storage_key(&addr_hex),
         ),
+        lp_pending,
+        lp_positions: lp_position_count,
+        lp_liquidity,
         total_volume: read_u64(
             &state,
             DEX_REWARDS_PROGRAM,
@@ -2516,7 +2561,7 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 /// GET /api/v1/oracle/prices — All oracle price feeds
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let assets = ["LICN", "wSOL", "wETH", "wBNB"];
+    let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS"];
     let mut feeds = Vec::new();
 
     for asset in &assets {
@@ -2585,6 +2630,22 @@ fn oracle_price_for_pair(state: &lichen_core::StateStore, pair_id: u64) -> Optio
         7 => consensus_oracle_price_from_state(state, "wBNB").map(|wbnb| {
             if licn_usd > 0.0 {
                 wbnb / licn_usd
+            } else {
+                0.0
+            }
+        }),
+        8 => consensus_oracle_price_from_state(state, "wNEO"),
+        9 => consensus_oracle_price_from_state(state, "wNEO").map(|wneo| {
+            if licn_usd > 0.0 {
+                wneo / licn_usd
+            } else {
+                0.0
+            }
+        }),
+        10 => consensus_oracle_price_from_state(state, "wGAS"),
+        11 => consensus_oracle_price_from_state(state, "wGAS").map(|wgas| {
+            if licn_usd > 0.0 {
+                wgas / licn_usd
             } else {
                 0.0
             }
@@ -3106,7 +3167,7 @@ mod tests {
 
     #[test]
     fn decode_lp_position_too_short() {
-        assert!(decode_lp_position(&[0u8; 79], 1).is_none());
+        assert!(decode_lp_position(&[0u8; 79], 1, 0).is_none());
     }
 
     #[test]
@@ -3121,7 +3182,7 @@ mod tests {
         buf[64..72].copy_from_slice(&75u64.to_le_bytes());
         buf[72..80].copy_from_slice(&999u64.to_le_bytes());
 
-        let pos = decode_lp_position(&buf, 42).unwrap();
+        let pos = decode_lp_position(&buf, 42, 123).unwrap();
         assert_eq!(pos.position_id, 42);
         assert_eq!(pos.pool_id, 3);
         assert_eq!(pos.lower_tick, -200);
@@ -3129,6 +3190,7 @@ mod tests {
         assert_eq!(pos.liquidity, 1_000_000);
         assert_eq!(pos.fee_a_owed, 50);
         assert_eq!(pos.fee_b_owed, 75);
+        assert_eq!(pos.lp_pending_rewards, 123);
         assert_eq!(pos.created_slot, 999);
     }
 

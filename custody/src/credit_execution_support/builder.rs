@@ -45,9 +45,14 @@ pub(crate) fn build_credit_job(
         return Ok(None);
     }
 
-    let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset);
+    let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset)?;
     let amount_spores: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
+        if raw_amount % divisor != 0 {
+            return Err(format!(
+                "non-exact deposit decimal conversion rejected (raw={raw_amount}, div={divisor}, chain={source_chain}, asset={source_asset})"
+            ));
+        }
         u64::try_from(raw_amount / divisor).map_err(|_| {
             format!(
                 "credit amount overflow after decimal conversion (raw={raw_amount}, div={divisor})"

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { PublicKey } from './publickey.js';
 import {
+  BRIDGE_ASSETS,
+  BRIDGE_CHAINS,
   RestrictionGovernanceClient,
   type UnsignedRestrictionGovernanceTx,
 } from './restrictions.js';
@@ -122,8 +124,8 @@ async function main(): Promise<void> {
   await client.buildResumeBridgeRouteTx({
     proposer,
     governanceAuthority: authority,
-    chain: 'ethereum',
-    asset: 'eth',
+    chain: BRIDGE_CHAINS.NEOX,
+    asset: BRIDGE_ASSETS.GAS,
     restrictionId: 12,
     liftReason: 'testnet_drill_complete',
   });
@@ -132,8 +134,8 @@ async function main(): Promise<void> {
     params: [{
       proposer: proposer.toBase58(),
       governance_authority: authority.toBase58(),
-      chain: 'ethereum',
-      asset: 'eth',
+      chain: 'neox',
+      asset: 'gas',
       restriction_id: 12,
       lift_reason: 'testnet_drill_complete',
     }],

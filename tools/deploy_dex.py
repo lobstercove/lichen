@@ -8,7 +8,8 @@ on a running Lichen validator. Run once after genesis to bring the full
 DEX trading infrastructure online.
 
 Deployment order matters:
-  Phase 1 — Wrapped tokens (lusd_token, wsol_token, weth_token)
+  Phase 1 — Wrapped tokens (lusd_token, wsol_token, weth_token, wbnb_token,
+            wgas_token, wneo_token)
             These are the quote/base assets the DEX trades.
   Phase 2 — DEX core    (dex_core, dex_amm, dex_router)
             Core trading engine. dex_core gets the token addresses.
@@ -59,6 +60,8 @@ PHASE_1_TOKENS = [
     {"name": "wsol_token",  "wasm": "wsol_token.wasm"},
     {"name": "weth_token",  "wasm": "weth_token.wasm"},
     {"name": "wbnb_token",  "wasm": "wbnb_token.wasm"},
+    {"name": "wgas_token",  "wasm": "wgas_token.wasm"},
+    {"name": "wneo_token",  "wasm": "wneo_token.wasm"},
 ]
 
 PHASE_2_DEX_CORE = [
@@ -78,7 +81,17 @@ PHASE_4_PREDICTION = [
     {"name": "prediction_market", "wasm": "prediction_market.wasm"},
 ]
 
-ALL_CONTRACTS = PHASE_1_TOKENS + PHASE_2_DEX_CORE + PHASE_3_DEX_MODULES + PHASE_4_PREDICTION
+PHASE_5_NEO_PRODUCTS = [
+    {"name": "neo_gas_rewards", "wasm": "neo_gas_rewards.wasm"},
+]
+
+ALL_CONTRACTS = (
+    PHASE_1_TOKENS
+    + PHASE_2_DEX_CORE
+    + PHASE_3_DEX_MODULES
+    + PHASE_4_PREDICTION
+    + PHASE_5_NEO_PRODUCTS
+)
 
 WASM_SEARCH_DIRS = [
     REPO_ROOT / "contracts" / "target" / "wasm32-unknown-unknown" / "release",
@@ -157,6 +170,8 @@ SYMBOL_TO_CONTRACT = {
     "WSOL": "wsol_token",
     "WETH": "weth_token",
     "WBNB": "wbnb_token",
+    "WGAS": "wgas_token",
+    "WNEO": "wneo_token",
     "DEX": "dex_core",
     "DEXAMM": "dex_amm",
     "DEXROUTER": "dex_router",
@@ -165,6 +180,7 @@ SYMBOL_TO_CONTRACT = {
     "DEXGOV": "dex_governance",
     "ANALYTICS": "dex_analytics",
     "PREDICT": "prediction_market",
+    "NEOGASRWD": "neo_gas_rewards",
 }
 
 # DEX contracts that use opcode dispatch (match args[0]) instead of named exports.
@@ -364,7 +380,7 @@ async def phase_initialize_tokens(
     print(f"  Admin: {admin_pubkey}")
     admin_bytes = list(admin_pubkey.to_bytes())  # 32-byte admin address
 
-    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token"]:
+    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token", "wgas_token", "wneo_token"]:
         if name not in addrs:
             print(f"  ⚠️  {name} not deployed, skipping init")
             continue
@@ -375,6 +391,33 @@ async def phase_initialize_tokens(
             print(f"  ✅ {name}.initialize() — sig={sig}")
         except Exception as e:
             print(f"  ⚠️  {name}.initialize() failed: {e}")
+
+
+async def phase_initialize_neo_products(
+    conn: Connection, deployer: Keypair, addrs: Dict[str, PublicKey],
+    admin_pubkey: PublicKey
+) -> None:
+    """Initialize Neo product contracts in a fail-closed state.
+
+    The GAS rewards vault is deployed and owned by the configured admin, but
+    reward caps, disclosure, policy, and token addresses are intentionally not
+    configured here. Product activation remains a separate governed step.
+    """
+    print(f"\n{'═' * 60}")
+    print(f"  INITIALIZING NEO PRODUCT CONTRACTS")
+    print(f"{'═' * 60}")
+    admin_bytes = list(admin_pubkey.to_bytes())
+
+    if "neo_gas_rewards" not in addrs:
+        print("  ⚠️  neo_gas_rewards not deployed, skipping init")
+        return
+    try:
+        sig = await call_contract_raw(
+            conn, deployer, addrs["neo_gas_rewards"], "initialize", admin_bytes
+        )
+        print(f"  ✅ neo_gas_rewards.initialize() — sig={sig}")
+    except Exception as e:
+        print(f"  ⚠️  neo_gas_rewards.initialize() failed: {e}")
 
 
 async def phase_initialize_dex(
@@ -419,6 +462,7 @@ async def phase_initialize_dex(
     # ── Create trading pairs on dex_core (opcode 1) ──────────
     # Opcode 1: create_pair(caller[32], base[32], quote[32],
     #                        tick_size(u64), lot_size(u64), min_order(u64))
+    created_route_specs = []
     if "dex_core" in addrs:
         print(f"\n  --- Creating trading pairs on dex_core ---")
 
@@ -428,6 +472,8 @@ async def phase_initialize_dex(
             "wSOL":  addrs.get("wsol_token"),
             "wETH":  addrs.get("weth_token"),
             "wBNB":  addrs.get("wbnb_token"),
+            "wGAS":  addrs.get("wgas_token"),
+            "wNEO":  addrs.get("wneo_token"),
             "LICN":  NATIVE_LICN,
         }
 
@@ -437,16 +483,20 @@ async def phase_initialize_dex(
         DEFAULT_MIN    = 1_000_000_000   # 1 LICN minimum order
 
         pairs = [
-            ("LICN", "lUSD"),
-            ("wSOL", "lUSD"),
-            ("wETH", "lUSD"),
-            ("wBNB", "lUSD"),
-            ("wSOL", "LICN"),
-            ("wETH", "LICN"),
-            ("wBNB", "LICN"),
+            ("LICN", "lUSD", DEFAULT_LOT),
+            ("wSOL", "lUSD", DEFAULT_LOT),
+            ("wETH", "lUSD", DEFAULT_LOT),
+            ("wBNB", "lUSD", DEFAULT_LOT),
+            ("wSOL", "LICN", DEFAULT_LOT),
+            ("wETH", "LICN", DEFAULT_LOT),
+            ("wBNB", "LICN", DEFAULT_LOT),
+            ("wNEO", "lUSD", DEFAULT_LOT),
+            ("wNEO", "LICN", DEFAULT_LOT),
+            ("wGAS", "lUSD", DEFAULT_LOT),
+            ("wGAS", "LICN", DEFAULT_LOT),
         ]
 
-        for base_sym, quote_sym in pairs:
+        for expected_pair_id, (base_sym, quote_sym, pair_lot) in enumerate(pairs, start=1):
             base_pk = symbol_addrs.get(base_sym)
             quote_pk = symbol_addrs.get(quote_sym)
             if not base_pk or not quote_pk:
@@ -457,12 +507,13 @@ async def phase_initialize_dex(
                     + bytes(base_pk.to_bytes())
                     + bytes(quote_pk.to_bytes())
                     + struct.pack('<Q', DEFAULT_TICK)
-                    + struct.pack('<Q', DEFAULT_LOT)
+                    + struct.pack('<Q', pair_lot)
                     + struct.pack('<Q', DEFAULT_MIN))
             try:
                 sig = await call_contract_raw(
                     conn, deployer, addrs["dex_core"], "call", list(data))
                 print(f"  ✅ create_pair({base_sym}/{quote_sym}) — sig={sig}")
+                created_route_specs.append((base_sym, quote_sym, expected_pair_id, base_pk, quote_pk))
             except Exception as e:
                 print(f"  ⚠️  create_pair({base_sym}/{quote_sym}) failed: {e}")
 
@@ -495,6 +546,72 @@ async def phase_initialize_dex(
             print(f"  ✅ dex_router.set_addresses(core, amm) — sig={sig}")
         except Exception as e:
             print(f"  ⚠️  dex_router.set_addresses() failed: {e}")
+
+        if created_route_specs:
+            print(f"\n  --- Registering CLOB routes for newly-created pairs ---")
+        for base_sym, quote_sym, pair_id, base_pk, quote_pk in created_route_specs:
+            data = (bytes([2])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(base_pk.to_bytes())
+                    + bytes(quote_pk.to_bytes())
+                    + bytes([0])
+                    + struct.pack('<Q', pair_id)
+                    + struct.pack('<Q', 0)
+                    + bytes([0]))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_router"], "call", list(data))
+                print(f"  ✅ register_route({base_sym}/{quote_sym}, CLOB pair {pair_id}) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  register_route({base_sym}/{quote_sym}) failed: {e}")
+
+    # ── Wire rewards for CLOB fee mining and AMM LP campaign accrual ─────
+    if "dex_rewards" in addrs:
+        if "dex_core" in addrs:
+            print(f"\n  --- Wiring dex_core → dex_rewards ---")
+            data = (bytes([34])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_rewards"].to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_core"], "call", list(data))
+                print(f"  ✅ dex_core.set_rewards_address() — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_core.set_rewards_address() failed: {e}")
+
+            data = (bytes([20])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_core"].to_bytes())
+                    + bytes([1]))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_rewards"], "call", list(data))
+                print(f"  ✅ dex_rewards.authorize(dex_core) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_rewards.authorize(dex_core) failed: {e}")
+
+        if "dex_amm" in addrs:
+            print(f"\n  --- Wiring dex_amm → dex_rewards ---")
+            data = (bytes([22])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_rewards"].to_bytes()))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_amm"], "call", list(data))
+                print(f"  ✅ dex_amm.set_rewards_address() — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_amm.set_rewards_address() failed: {e}")
+
+            data = (bytes([20])
+                    + bytes(deployer.address().to_bytes())
+                    + bytes(addrs["dex_amm"].to_bytes())
+                    + bytes([1]))
+            try:
+                sig = await call_contract_raw(
+                    conn, deployer, addrs["dex_rewards"], "call", list(data))
+                print(f"  ✅ dex_rewards.authorize(dex_amm) — sig={sig}")
+            except Exception as e:
+                print(f"  ⚠️  dex_rewards.authorize(dex_amm) failed: {e}")
 
 
 async def phase_initialize_prediction_market(
@@ -592,6 +709,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             "wSOL": str(addrs["wsol_token"]) if "wsol_token" in addrs else None,
             "wETH": str(addrs["weth_token"]) if "weth_token" in addrs else None,
             "wBNB": str(addrs["wbnb_token"]) if "wbnb_token" in addrs else None,
+            "wGAS": str(addrs["wgas_token"]) if "wgas_token" in addrs else None,
+            "wNEO": str(addrs["wneo_token"]) if "wneo_token" in addrs else None,
         },
         "dex_contracts": {
             name: str(addrs[name])
@@ -600,9 +719,13 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
                          "prediction_market"]
             if name in addrs
         },
+        "product_contracts": {
+            "neo_gas_rewards": str(addrs["neo_gas_rewards"]) if "neo_gas_rewards" in addrs else None,
+        },
         "trading_pairs": [
             "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD", "wBNB/lUSD",
             "wSOL/LICN", "wETH/LICN", "wBNB/LICN",
+            "wNEO/lUSD", "wNEO/LICN", "wGAS/lUSD", "wGAS/LICN",
         ],
     }
     OUTPUT_PATH.write_text(json.dumps(manifest, indent=2))
@@ -723,6 +846,13 @@ async def main():
     # Initialize prediction market + wire cross-references
     await phase_initialize_prediction_market(conn, deployer, all_addrs, admin_pubkey)
 
+    # ── Phase 5: Neo Product Contracts ──
+    addrs = await phase_deploy(conn, deployer, PHASE_5_NEO_PRODUCTS, "PHASE 5 — NEO PRODUCT CONTRACTS", treasury_pubkey, existing)
+    all_addrs.update(addrs)
+
+    # Initialize products fail-closed; activation/configuration is a later gate.
+    await phase_initialize_neo_products(conn, deployer, all_addrs, admin_pubkey)
+
     # Verify
     await phase_verify(conn, all_addrs)
 
@@ -742,6 +872,8 @@ async def main():
             tag = "TOKEN"
         elif name == "prediction_market":
             tag = "PRED "
+        elif name == "neo_gas_rewards":
+            tag = "NEO  "
         else:
             tag = "DEX  "
         print(f"  [{tag}] {name:20s} → {pubkey}")
@@ -758,7 +890,7 @@ async def main():
     print(f"  1. Copy deployer keypair to custody treasury (CRITICAL — admin must match):")
     print(f"     sudo cp {DEPLOYER_PATH} {custody_keypair_path}")
     print(f"  2. Copy token addresses to custody config:")
-    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token"]:
+    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token", "wgas_token", "wneo_token"]:
         if name in all_addrs:
             env_key = f"CUSTODY_{name.upper()}_ADDR"
             print(f"     export {env_key}={all_addrs[name]}")

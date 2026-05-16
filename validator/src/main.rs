@@ -89,6 +89,82 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 /// that the validator should be restarted (deadlock/stall detected).
 const EXIT_CODE_RESTART: i32 = 75;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BftStartupDrainStats {
+    dropped_stale: u64,
+    preserved_proposals: u64,
+    preserved_prevotes: u64,
+    preserved_precommits: u64,
+    requeue_failed: u64,
+}
+
+fn drain_bft_startup_queues(
+    proposal_rx: &mut mpsc::Receiver<Proposal>,
+    proposal_tx: &mpsc::Sender<Proposal>,
+    prevote_rx: &mut mpsc::Receiver<Prevote>,
+    prevote_tx: &mpsc::Sender<Prevote>,
+    precommit_rx: &mut mpsc::Receiver<Precommit>,
+    precommit_tx: &mpsc::Sender<Precommit>,
+    start_height: u64,
+) -> BftStartupDrainStats {
+    let mut stats = BftStartupDrainStats::default();
+    let mut proposals = Vec::new();
+    let mut prevotes = Vec::new();
+    let mut precommits = Vec::new();
+
+    while let Ok(proposal) = proposal_rx.try_recv() {
+        if proposal.height < start_height {
+            stats.dropped_stale = stats.dropped_stale.saturating_add(1);
+        } else {
+            proposals.push(proposal);
+        }
+    }
+    while let Ok(prevote) = prevote_rx.try_recv() {
+        if prevote.height < start_height {
+            stats.dropped_stale = stats.dropped_stale.saturating_add(1);
+        } else {
+            prevotes.push(prevote);
+        }
+    }
+    while let Ok(precommit) = precommit_rx.try_recv() {
+        if precommit.height < start_height {
+            stats.dropped_stale = stats.dropped_stale.saturating_add(1);
+        } else {
+            precommits.push(precommit);
+        }
+    }
+
+    for proposal in proposals {
+        match proposal_tx.try_send(proposal) {
+            Ok(()) => stats.preserved_proposals = stats.preserved_proposals.saturating_add(1),
+            Err(err) => {
+                stats.requeue_failed = stats.requeue_failed.saturating_add(1);
+                warn!("⚠️  Failed to preserve startup BFT proposal: {}", err);
+            }
+        }
+    }
+    for prevote in prevotes {
+        match prevote_tx.try_send(prevote) {
+            Ok(()) => stats.preserved_prevotes = stats.preserved_prevotes.saturating_add(1),
+            Err(err) => {
+                stats.requeue_failed = stats.requeue_failed.saturating_add(1);
+                warn!("⚠️  Failed to preserve startup BFT prevote: {}", err);
+            }
+        }
+    }
+    for precommit in precommits {
+        match precommit_tx.try_send(precommit) {
+            Ok(()) => stats.preserved_precommits = stats.preserved_precommits.saturating_add(1),
+            Err(err) => {
+                stats.requeue_failed = stats.requeue_failed.saturating_add(1);
+                warn!("⚠️  Failed to preserve startup BFT precommit: {}", err);
+            }
+        }
+    }
+
+    stats
+}
+
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
 /// Set to 120s to allow sufficient time for sync recovery under load.
@@ -267,6 +343,8 @@ struct SharedOraclePrices {
     wsol_micro: Arc<AtomicU64>,
     weth_micro: Arc<AtomicU64>,
     wbnb_micro: Arc<AtomicU64>,
+    wneo_micro: Arc<AtomicU64>,
+    wgas_micro: Arc<AtomicU64>,
     ws_healthy: Arc<AtomicBool>,
     /// Epoch-millis of the last WS message received (for staleness detection)
     last_ws_update_ms: Arc<AtomicU64>,
@@ -278,6 +356,8 @@ impl SharedOraclePrices {
             wsol_micro: Arc::new(AtomicU64::new(0)),
             weth_micro: Arc::new(AtomicU64::new(0)),
             wbnb_micro: Arc::new(AtomicU64::new(0)),
+            wneo_micro: Arc::new(AtomicU64::new(0)),
+            wgas_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
             last_ws_update_ms: Arc::new(AtomicU64::new(0)),
         }
@@ -3015,15 +3095,19 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
     let wbnb_usd =
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
+    let wneo_usd =
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wNEO").unwrap_or(0.0);
+    let wgas_usd =
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wGAS").unwrap_or(0.0);
 
-    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
+    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 && wneo_usd <= 0.0 && wgas_usd <= 0.0 {
         return;
     }
 
     let licn_usd = lichen_core::consensus::licn_price_from_state(state);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
-    for asset in ["LICN", "wSOL", "wETH", "wBNB"] {
+    for asset in ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS"] {
         let consensus_feed =
             lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
                 .map(|(price_raw, decimals, _)| (price_raw, decimals));
@@ -3054,7 +3138,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
-    let pair_prices: [(u64, f64); 7] = [
+    let pair_prices: [(u64, f64); 11] = [
         (1, licn_usd),
         (2, wsol_usd),
         (3, weth_usd),
@@ -3079,6 +3163,24 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
             7,
             if licn_usd > 0.0 {
                 wbnb_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (8, wneo_usd),
+        (
+            9,
+            if licn_usd > 0.0 {
+                wneo_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (10, wgas_usd),
+        (
+            11,
+            if licn_usd > 0.0 {
+                wgas_usd / licn_usd
             } else {
                 0.0
             },
@@ -5022,9 +5124,9 @@ struct VerifiedCheckpointAnchor {
 /// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
 const MICRO_SCALE: f64 = 1_000_000.0;
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade";
 const DEFAULT_BINANCE_REST_URL: &str =
-    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22]";
 
 fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
     let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
@@ -5277,6 +5379,8 @@ fn spawn_oracle_price_feeder(
         let wsol_micro = shared_prices.wsol_micro.clone();
         let weth_micro = shared_prices.weth_micro.clone();
         let wbnb_micro = shared_prices.wbnb_micro.clone();
+        let wneo_micro = shared_prices.wneo_micro.clone();
+        let wgas_micro = shared_prices.wgas_micro.clone();
         let ws_healthy = shared_prices.ws_healthy.clone();
 
         // Spawn WebSocket reader task FIRST so prices start flowing immediately
@@ -5286,11 +5390,16 @@ fn spawn_oracle_price_feeder(
             let ws_wsol = wsol_micro.clone();
             let ws_weth = weth_micro.clone();
             let ws_wbnb = wbnb_micro.clone();
+            let ws_wneo = wneo_micro.clone();
+            let ws_wgas = wgas_micro.clone();
             let ws_flag = ws_healthy.clone();
             let ws_last = last_ws_update_ms.clone();
             let ws_url = oracle_ws_url.clone();
             tokio::spawn(async move {
-                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_last, ws_url).await;
+                binance_ws_loop(
+                    ws_wsol, ws_weth, ws_wbnb, ws_wneo, ws_wgas, ws_flag, ws_last, ws_url,
+                )
+                .await;
             });
         }
 
@@ -5360,6 +5469,8 @@ fn spawn_oracle_price_feeder(
             let mut cur_wsol = wsol_micro.load(Ordering::Relaxed);
             let mut cur_weth = weth_micro.load(Ordering::Relaxed);
             let mut cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
+            let mut cur_wneo = wneo_micro.load(Ordering::Relaxed);
+            let mut cur_wgas = wgas_micro.load(Ordering::Relaxed);
 
             // REST fallback if WebSocket is not healthy, no prices yet,
             // or WS data is stale (no message received within 15 seconds).
@@ -5377,7 +5488,11 @@ fn spawn_oracle_price_feeder(
             };
             if !ws_healthy.load(Ordering::Relaxed)
                 || ws_stale
-                || (cur_wsol == 0 && cur_weth == 0 && cur_wbnb == 0)
+                || (cur_wsol == 0
+                    && cur_weth == 0
+                    && cur_wbnb == 0
+                    && cur_wneo == 0
+                    && cur_wgas == 0)
             {
                 if let Ok(resp) = http.get(&rest_url).send().await {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
@@ -5400,6 +5515,14 @@ fn spawn_oracle_price_feeder(
                                     wbnb_micro.store(micro, Ordering::Relaxed);
                                     cur_wbnb = micro;
                                 }
+                                "NEOUSDT" => {
+                                    wneo_micro.store(micro, Ordering::Relaxed);
+                                    cur_wneo = micro;
+                                }
+                                "GASUSDT" => {
+                                    wgas_micro.store(micro, Ordering::Relaxed);
+                                    cur_wgas = micro;
+                                }
                                 _ => {}
                             }
                         }
@@ -5418,6 +5541,8 @@ fn spawn_oracle_price_feeder(
                 ("wSOL", cur_wsol.saturating_mul(100)),
                 ("wETH", cur_weth.saturating_mul(100)),
                 ("wBNB", cur_wbnb.saturating_mul(100)),
+                ("wNEO", cur_wneo.saturating_mul(100)),
+                ("wGAS", cur_wgas.saturating_mul(100)),
             ] {
                 if price_raw == 0 {
                     continue;
@@ -5440,8 +5565,15 @@ fn spawn_oracle_price_feeder(
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
             let wbnb_usd = cur_wbnb as f64 / MICRO_SCALE;
+            let wneo_usd = cur_wneo as f64 / MICRO_SCALE;
+            let wgas_usd = cur_wgas as f64 / MICRO_SCALE;
 
-            if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
+            if wsol_usd <= 0.0
+                && weth_usd <= 0.0
+                && wbnb_usd <= 0.0
+                && wneo_usd <= 0.0
+                && wgas_usd <= 0.0
+            {
                 continue;
             }
 
@@ -5449,7 +5581,7 @@ fn spawn_oracle_price_feeder(
             let current_slot = state.get_last_slot().unwrap_or(0);
 
             let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
-            let pair_prices: [(u64, f64); 7] = [
+            let pair_prices: [(u64, f64); 11] = [
                 (1, licn_usd),
                 (2, wsol_usd),
                 (3, weth_usd),
@@ -5474,6 +5606,24 @@ fn spawn_oracle_price_feeder(
                     7,
                     if licn_usd > 0.0 {
                         wbnb_usd / licn_usd
+                    } else {
+                        0.0
+                    },
+                ),
+                (8, wneo_usd),
+                (
+                    9,
+                    if licn_usd > 0.0 {
+                        wneo_usd / licn_usd
+                    } else {
+                        0.0
+                    },
+                ),
+                (10, wgas_usd),
+                (
+                    11,
+                    if licn_usd > 0.0 {
+                        wgas_usd / licn_usd
                     } else {
                         0.0
                     },
@@ -5558,8 +5708,8 @@ fn spawn_oracle_price_feeder(
             }
 
             debug!(
-                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2}",
-                wsol_usd, weth_usd, wbnb_usd
+                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2} wNEO=${:.2} wGAS=${:.2}",
+                wsol_usd, weth_usd, wbnb_usd, wneo_usd, wgas_usd
             );
         }
     });
@@ -5572,6 +5722,8 @@ async fn binance_ws_loop(
     wsol: Arc<AtomicU64>,
     weth: Arc<AtomicU64>,
     wbnb: Arc<AtomicU64>,
+    wneo: Arc<AtomicU64>,
+    wgas: Arc<AtomicU64>,
     healthy: Arc<AtomicBool>,
     last_ws_update_ms: Arc<AtomicU64>,
     ws_url: String,
@@ -5580,7 +5732,7 @@ async fn binance_ws_loop(
 
     // Read timeout: if no WS message arrives within this window,
     // treat the connection as dead and reconnect.  Binance aggTrade
-    // streams for SOL/ETH/BNB produce messages every ~100ms during
+    // streams for SOL/ETH/BNB/NEO/GAS produce messages during
     // active trading.  30s silence is a clear signal of a stale
     // connection (TCP half-open, silent Binance-side close, etc.).
     const WS_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -5631,6 +5783,8 @@ async fn binance_ws_loop(
                                             "SOLUSDT" => wsol.store(micro, Ordering::Relaxed),
                                             "ETHUSDT" => weth.store(micro, Ordering::Relaxed),
                                             "BNBUSDT" => wbnb.store(micro, Ordering::Relaxed),
+                                            "NEOUSDT" => wneo.store(micro, Ordering::Relaxed),
+                                            "GASUSDT" => wgas.store(micro, Ordering::Relaxed),
                                             _ => {}
                                         }
                                     }
@@ -7998,6 +8152,9 @@ async fn run_validator() {
     let (proposal_tx, mut proposal_rx) = mpsc::channel::<Proposal>(2_000);
     let (prevote_tx, mut prevote_rx) = mpsc::channel::<Prevote>(5_000);
     let (precommit_tx, mut precommit_rx) = mpsc::channel::<Precommit>(5_000);
+    let proposal_tx_for_startup_drain = proposal_tx.clone();
+    let prevote_tx_for_startup_drain = prevote_tx.clone();
+    let precommit_tx_for_startup_drain = precommit_tx.clone();
     let (consensus_activity_tx, mut consensus_activity_rx) =
         mpsc::channel::<lichen_p2p::ConsensusActivityMsg>(5_000);
 
@@ -13100,7 +13257,7 @@ async fn run_validator() {
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
 
     // Start the oracle price feeder background task
-    // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
+    // Connects to Binance WebSocket (aggTrade) for real-time wrapped-asset prices
     // and submits signed native oracle-attestation transactions.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
     // Can be disabled via LICHEN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
@@ -14652,31 +14809,38 @@ async fn run_validator() {
         }
     };
 
-    // Drain stale BFT messages that accumulated during sync.
-    // Without this, the proposal channel stays full of old-height proposals
-    // and new proposals from the leader get dropped → joining node misses
-    // current rounds and proposes its own blocks (fork).
-    {
-        let mut drained = 0u64;
-        while proposal_rx.try_recv().is_ok() {
-            drained += 1;
-        }
-        while prevote_rx.try_recv().is_ok() {
-            drained += 1;
-        }
-        while precommit_rx.try_recv().is_ok() {
-            drained += 1;
-        }
-        if drained > 0 {
-            info!(
-                "🔄 Drained {} stale BFT messages before entering consensus",
-                drained
-            );
-        }
-    }
-
     // Start the first height
     let start_height = state.get_last_slot().unwrap_or(0) + 1;
+    // Drain BFT messages that accumulated while the node was syncing, but keep
+    // current/future height messages. A joining validator can receive the first
+    // live proposal in the small window before its consensus loop starts; losing
+    // that proposal leaves only votes and can strand the node at the join height.
+    let startup_bft_drain = drain_bft_startup_queues(
+        &mut proposal_rx,
+        &proposal_tx_for_startup_drain,
+        &mut prevote_rx,
+        &prevote_tx_for_startup_drain,
+        &mut precommit_rx,
+        &precommit_tx_for_startup_drain,
+        start_height,
+    );
+    let preserved = startup_bft_drain.preserved_proposals
+        + startup_bft_drain.preserved_prevotes
+        + startup_bft_drain.preserved_precommits;
+    if startup_bft_drain.dropped_stale > 0 || preserved > 0 || startup_bft_drain.requeue_failed > 0
+    {
+        info!(
+            "🔄 Startup BFT queue cleanup at height {}: dropped_stale={}, preserved={} (proposals={}, prevotes={}, precommits={}), requeue_failed={}",
+            start_height,
+            startup_bft_drain.dropped_stale,
+            preserved,
+            startup_bft_drain.preserved_proposals,
+            startup_bft_drain.preserved_prevotes,
+            startup_bft_drain.preserved_precommits,
+            startup_bft_drain.requeue_failed,
+        );
+    }
+
     let recovered_bft_round =
         wal_recovery.max_recovered_round_for_height(start_height, &validator_pubkey);
     bft.start_height(start_height);
@@ -16078,6 +16242,21 @@ async fn execute_consensus_actions(
                     p2p_config.listen_addr,
                 );
                 pm.broadcast(msg).await;
+                let retry_pm = pm.clone();
+                let retry_listen_addr = p2p_config.listen_addr;
+                tokio::spawn(async move {
+                    for delay_ms in [50_u64, 200, 500] {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        let retry_msg = P2PMessage::new(
+                            MessageType::BlockRangeRequest {
+                                start_slot,
+                                end_slot,
+                            },
+                            retry_listen_addr,
+                        );
+                        retry_pm.broadcast(retry_msg).await;
+                    }
+                });
             } else {
                 warn!("📡 BFT: missing-block request skipped — no P2P peer manager");
             }
@@ -16198,6 +16377,120 @@ mod tests {
             commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    fn make_bft_proposal_for_height(height: u64) -> Proposal {
+        let keypair = Keypair::generate();
+        let proposer = keypair.pubkey();
+        let mut block = Block::new_with_timestamp(
+            height,
+            Hash::default(),
+            Hash([height as u8; 32]),
+            proposer.0,
+            Vec::new(),
+            height,
+        );
+        block.sign(&keypair);
+        let block_hash = block.hash();
+        Proposal {
+            height,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer,
+            signature: keypair.sign(&Proposal::signable_bytes_static(height, 0, &block_hash, -1)),
+        }
+    }
+
+    fn make_bft_prevote_for_height(height: u64) -> Prevote {
+        let keypair = Keypair::generate();
+        let block_hash = Some(Hash([height as u8; 32]));
+        Prevote {
+            height,
+            round: 0,
+            block_hash,
+            validator: keypair.pubkey(),
+            signature: keypair.sign(&Prevote::signable_bytes(height, 0, &block_hash)),
+        }
+    }
+
+    fn make_bft_precommit_for_height(height: u64) -> Precommit {
+        let keypair = Keypair::generate();
+        let block_hash = Some(Hash([height as u8; 32]));
+        let timestamp = 1_778_494_000 + height;
+        Precommit {
+            height,
+            round: 0,
+            block_hash,
+            validator: keypair.pubkey(),
+            signature: keypair.sign(&Precommit::signable_bytes(
+                height,
+                0,
+                &block_hash,
+                timestamp,
+            )),
+            timestamp,
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_bft_drain_preserves_current_and_future_height_messages() {
+        let (proposal_tx, mut proposal_rx) = mpsc::channel(10);
+        let (prevote_tx, mut prevote_rx) = mpsc::channel(10);
+        let (precommit_tx, mut precommit_rx) = mpsc::channel(10);
+
+        for height in [9, 10, 11] {
+            proposal_tx
+                .send(make_bft_proposal_for_height(height))
+                .await
+                .expect("send proposal");
+            prevote_tx
+                .send(make_bft_prevote_for_height(height))
+                .await
+                .expect("send prevote");
+            precommit_tx
+                .send(make_bft_precommit_for_height(height))
+                .await
+                .expect("send precommit");
+        }
+
+        let stats = drain_bft_startup_queues(
+            &mut proposal_rx,
+            &proposal_tx,
+            &mut prevote_rx,
+            &prevote_tx,
+            &mut precommit_rx,
+            &precommit_tx,
+            10,
+        );
+
+        assert_eq!(
+            stats,
+            BftStartupDrainStats {
+                dropped_stale: 3,
+                preserved_proposals: 2,
+                preserved_prevotes: 2,
+                preserved_precommits: 2,
+                requeue_failed: 0,
+            }
+        );
+
+        let mut proposal_heights = Vec::new();
+        while let Ok(proposal) = proposal_rx.try_recv() {
+            proposal_heights.push(proposal.height);
+        }
+        let mut prevote_heights = Vec::new();
+        while let Ok(prevote) = prevote_rx.try_recv() {
+            prevote_heights.push(prevote.height);
+        }
+        let mut precommit_heights = Vec::new();
+        while let Ok(precommit) = precommit_rx.try_recv() {
+            precommit_heights.push(precommit.height);
+        }
+
+        assert_eq!(proposal_heights, vec![10, 11]);
+        assert_eq!(prevote_heights, vec![10, 11]);
+        assert_eq!(precommit_heights, vec![10, 11]);
     }
 
     fn make_signed_transfer_tx(

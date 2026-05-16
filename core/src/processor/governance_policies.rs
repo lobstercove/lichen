@@ -47,7 +47,8 @@ fn is_bridge_committee_admin_contract_call(symbol: &str, function: &str) -> bool
 fn is_oracle_committee_admin_contract_call(symbol: &str, function: &str, args: &[u8]) -> bool {
     if ((symbol.eq_ignore_ascii_case("ORACLE") || symbol.eq_ignore_ascii_case("LICHENORACLE"))
         && matches!(function, "add_price_feeder" | "set_authorized_attester"))
-        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB") && function == "set_attester")
+        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB" | "WGAS" | "WNEO")
+            && function == "set_attester")
     {
         return true;
     }
@@ -80,7 +81,8 @@ fn is_treasury_executor_contract_call(symbol: &str, function: &str, args: &[u8])
         || ((symbol.eq_ignore_ascii_case("SPOREVAULT") || symbol.eq_ignore_ascii_case("VAULT"))
             && function == "withdraw_protocol_fees")
         || (symbol.eq_ignore_ascii_case("SPOREPUMP") && function == "withdraw_fees")
-        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB") && function == "set_minter")
+        || (matches!(symbol, "LUSD" | "WSOL" | "WETH" | "WBNB" | "WGAS" | "WNEO")
+            && function == "set_minter")
 }
 
 fn guardian_protocol_module_allowed(module: ProtocolModuleId) -> bool {

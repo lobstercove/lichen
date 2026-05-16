@@ -272,6 +272,8 @@ async function runTests() {
     section('C13: Bridge & Infra Stats RPCs');
 
     await tryRpc('getSporeVaultStats', [], 'getSporeVaultStats');
+    await tryRpc('getNeoGasRewardsStats', [], 'getNeoGasRewardsStats');
+    await tryRpc('getNeoGasRewardsPosition', [testAddr], 'getNeoGasRewardsPosition');
     await tryRpc('getLichenBridgeStats', [], 'getLichenBridgeStats');
     await tryRpc('getLichenDaoStats', [], 'getLichenDaoStats');
     await tryRpc('getLichenOracleStats', [], 'getLichenOracleStats');

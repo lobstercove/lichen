@@ -29,6 +29,7 @@ RPC_WAIT_SECS="${LICN_LOCAL_RPC_WAIT_SECS:-900}"
 STATE1_DIR=""
 STATE2_DIR=""
 STATE3_DIR=""
+STARTED_VALIDATOR_PID=""
 
 export LICHEN_LOCAL_DEV=1
 
@@ -249,7 +250,34 @@ start_validator() {
   local signer_bind="$2"
   local log_file="$3"
   local append_mode="${4:-0}"
-  local pid
+
+  if command -v python3 >/dev/null 2>&1; then
+    # Start in a detached session so automation shells can exit without
+    # reaping the validator supervisor process group.
+    STARTED_VALIDATOR_PID="$(
+      LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn \
+        python3 - "$append_mode" "$log_file" "$RUNNER" "$NETWORK" "$validator_num" <<'PY'
+import os
+import subprocess
+import sys
+
+append_mode, log_file, runner, network, validator_num = sys.argv[1:6]
+mode = "ab" if append_mode == "1" else "wb"
+with open(log_file, mode) as out:
+    proc = subprocess.Popen(
+        [runner, network, validator_num, "--dev-mode"],
+        stdin=subprocess.DEVNULL,
+        stdout=out,
+        stderr=subprocess.STDOUT,
+        env=os.environ.copy(),
+        start_new_session=True,
+        close_fds=True,
+    )
+print(proc.pid)
+PY
+    )"
+    return 0
+  fi
 
   if [[ "$append_mode" == "1" ]]; then
     nohup env LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn \
@@ -258,8 +286,7 @@ start_validator() {
     nohup env LICHEN_SIGNER_BIND="$signer_bind" RUST_LOG=warn \
       "$RUNNER" "$NETWORK" "$validator_num" --dev-mode >"$log_file" 2>&1 &
   fi
-  pid=$!
-  echo "$pid"
+  STARTED_VALIDATOR_PID=$!
 }
 
 stop_pid() {
@@ -428,15 +455,18 @@ start_cluster() {
   clear_local_peer_trust_state
 
   echo "[local-3validators] starting V1 via run-validator.sh ($NETWORK)"
-  V1PID="$(start_validator 1 127.0.0.1:9301 "$LOG1")"
+  start_validator 1 127.0.0.1:9301 "$LOG1"
+  V1PID="$STARTED_VALIDATOR_PID"
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V2 via run-validator.sh ($NETWORK)"
-  V2PID="$(start_validator 2 127.0.0.1:9302 "$LOG2")"
+  start_validator 2 127.0.0.1:9302 "$LOG2"
+  V2PID="$STARTED_VALIDATOR_PID"
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V3 via run-validator.sh ($NETWORK)"
-  V3PID="$(start_validator 3 127.0.0.1:9303 "$LOG3")"
+  start_validator 3 127.0.0.1:9303 "$LOG3"
+  V3PID="$STARTED_VALIDATOR_PID"
 
   if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
     echo "[local-3validators] ERROR: cluster did not become healthy"
@@ -477,7 +507,8 @@ start_seed_only() {
   clear_local_peer_trust_state
 
   echo "[local-3validators] starting seed validator V1 via run-validator.sh ($NETWORK)"
-  v1pid="$(start_validator 1 127.0.0.1:9301 "$LOG1")"
+  start_validator 1 127.0.0.1:9301 "$LOG1"
+  v1pid="$STARTED_VALIDATOR_PID"
 
   if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1; then
     echo "[local-3validators] ERROR: seed validator did not become healthy"
@@ -510,11 +541,13 @@ promote_joiners_from_seed_sync() {
   assert_joiner_state_has_no_copied_chain_artifacts
 
   echo "[local-3validators] starting V2 as an independent joining validator"
-  v2pid="$(start_validator 2 127.0.0.1:9302 "$LOG2")"
+  start_validator 2 127.0.0.1:9302 "$LOG2"
+  v2pid="$STARTED_VALIDATOR_PID"
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V3 as an independent joining validator"
-  v3pid="$(start_validator 3 127.0.0.1:9303 "$LOG3")"
+  start_validator 3 127.0.0.1:9303 "$LOG3"
+  v3pid="$STARTED_VALIDATOR_PID"
 
   if ! wait_rpc "$RPC1" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC2" "$RPC_WAIT_SECS" 1 || ! wait_rpc "$RPC3" "$RPC_WAIT_SECS" 1; then
     echo "[local-3validators] ERROR: independently syncing cluster did not become healthy"

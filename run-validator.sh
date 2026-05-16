@@ -100,6 +100,7 @@ LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
 CLI_BIN="${REPO_ROOT}/target/release/lichen"
 GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
 VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
+GENESIS_WRAPPER="${REPO_ROOT}/scripts/generate-genesis.sh"
 SIGNED_METADATA_MANIFEST_FILE_DEFAULT="${REPO_ROOT}/signed-metadata-manifest-${NETWORK}.json"
 SERVICE_FLEET_CONFIG_FILE_DEFAULT="${REPO_ROOT}/service-fleet-${NETWORK}.json"
 SERVICE_FLEET_STATUS_FILE_DEFAULT="${REPO_ROOT}/service-fleet-status-${NETWORK}.json"
@@ -158,31 +159,59 @@ ensure_local_genesis() {
 		return
 	fi
 
-	if [[ -f "$DB_PATH/CURRENT" || -f "$GENESIS_WALLET_FILE" ]]; then
+	if [[ -f "$DB_PATH/CURRENT" && -f "$DB_PATH/genesis.json" ]]; then
 		return
+	fi
+
+	if [[ -f "$DB_PATH/CURRENT" && ! -f "$DB_PATH/genesis.json" ]]; then
+		echo "Detected partial local genesis state without genesis.json; clearing chain DB files before regenerating"
+		find "$DB_PATH" -mindepth 1 -maxdepth 1 \
+			! -name 'genesis-keys' \
+			! -name 'genesis-wallet.json' \
+			! -name 'home' \
+			! -name 'seeds.json' \
+			! -name 'signer-keypair.json' \
+			! -name 'validator-keypair.json' \
+			-exec rm -rf {} +
+		mkdir -p "$VALIDATOR_HOME"
 	fi
 
 	echo "Preparing local genesis state for $NAME"
 
 	# Fetch real-time prices from Binance for genesis pool pricing
 	PRICE_JSON=$(curl -gsf --max-time 10 \
-		'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+		'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT"]' 2>/dev/null \
 		|| curl -gsf --max-time 10 \
-		'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+		'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT","NEOUSDT","GASUSDT"]' 2>/dev/null \
 		|| echo '[]')
 	if [ "$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
-		eval "$(python3 -c "
-import json, sys
+		if PRICE_EXPORTS=$(PRICE_JSON="$PRICE_JSON" python3 -c "
+import json, os, sys
 try:
-    data = json.loads('''$PRICE_JSON''')
+    data = json.loads(os.environ['PRICE_JSON'])
     m = {d['symbol']: float(d['price']) for d in data}
+    for symbol in ['SOLUSDT', 'ETHUSDT', 'BNBUSDT', 'NEOUSDT', 'GASUSDT']:
+        if symbol not in m:
+            raise KeyError(symbol)
     print(f'export GENESIS_SOL_USD={m[\"SOLUSDT\"]:.2f}')
     print(f'export GENESIS_ETH_USD={m[\"ETHUSDT\"]:.2f}')
     print(f'export GENESIS_BNB_USD={m[\"BNBUSDT\"]:.2f}')
-except: pass
-" 2>/dev/null)"
-		export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
-		echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} LICN=\$${GENESIS_LICN_USD}"
+    print(f'export GENESIS_NEO_USD={m[\"NEOUSDT\"]:.2f}')
+    print(f'export GENESIS_GAS_USD={m[\"GASUSDT\"]:.2f}')
+except Exception:
+    sys.exit(1)
+" 2>/dev/null); then
+			:
+		else
+			PRICE_EXPORTS=""
+		fi
+		if [[ -n "$PRICE_EXPORTS" ]]; then
+			eval "$PRICE_EXPORTS"
+			export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
+			echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD} ETH=\$${GENESIS_ETH_USD} BNB=\$${GENESIS_BNB_USD} NEO=\$${GENESIS_NEO_USD} GAS=\$${GENESIS_GAS_USD} LICN=\$${GENESIS_LICN_USD}"
+		else
+			echo "  Could not prefetch complete SOL/ETH/BNB/NEO/GAS prices; lichen-genesis will try live sources"
+		fi
 	else
 		echo "  Could not prefetch prices; lichen-genesis will try live sources"
 	fi
@@ -210,7 +239,8 @@ except: pass
 	done
 
 	if [[ ! -f "$GENESIS_WALLET_FILE" ]]; then
-		"$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$DB_PATH" || exit 1
+		LICHEN_GENESIS_BIN="$GENESIS_BIN" "$GENESIS_WRAPPER" \
+			--prepare-wallet --network "$NETWORK" --output-dir "$DB_PATH" || exit 1
 	fi
 
 	VALIDATOR_PUBKEY="${LOCAL_VALIDATOR_PUBKEYS[0]}"
@@ -227,7 +257,7 @@ except: pass
 		)
 	done
 
-	"$GENESIS_BIN" "${GENESIS_ARGS[@]}" || exit 1
+	LICHEN_GENESIS_BIN="$GENESIS_BIN" "$GENESIS_WRAPPER" "${GENESIS_ARGS[@]}" || exit 1
 }
 
 case $VALIDATOR_NUM in

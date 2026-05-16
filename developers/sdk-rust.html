@@ -531,6 +531,35 @@ let sig = client.stake(
                 <p class="method-desc">Get accumulated staking rewards.</p>
             </div>
 
+            <h3 id="client-neo">Neo X Route &amp; Rewards</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_neo_gas_rewards_stats(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Read Neo GAS rewards vault configuration, caps, evidence/import/claim counters,
+                    and outstanding claim liability.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_neo_gas_rewards_position(&amp;self, address: &amp;Pubkey) -&gt;
+                    Result&lt;Value&gt;</h3>
+                <p class="method-desc">Read one wallet's Neo GAS rewards principal, claimable amount, claimed amount,
+                    reward index, and disclosure acceptance state.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>use lichen_client_sdk::{BridgeAsset, BridgeChain, RestrictionGovernanceClient};
+
+let restrictions = RestrictionGovernanceClient::new(client.clone());
+let route = restrictions
+    .get_bridge_route_restriction_status(BridgeChain::NeoX, BridgeAsset::Gas)
+    .await?;
+let rewards = client.get_neo_gas_rewards_stats().await?;
+let position = client.get_neo_gas_rewards_position(&kp.pubkey()).await?;
+
+println!("{} {:?} {:?}", route.paused, rewards, position);</code></pre>
+                </div>
+            </div>
+
             <!-- Contract Methods -->
             <h3 id="client-contract">Contract Methods</h3>
 

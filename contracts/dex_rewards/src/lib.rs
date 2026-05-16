@@ -61,6 +61,11 @@ const TRADE_COUNT_KEY: &[u8] = b"rew_trade_count";
 const TRADER_COUNT_KEY: &[u8] = b"rew_trader_count";
 const EPOCH_DISTRIBUTED_KEY: &[u8] = b"rew_epoch_dist"; // rewards distributed this epoch
 const EPOCH_START_SLOT_KEY: &[u8] = b"rew_epoch_start"; // slot when current epoch started
+const LP_PAIR_BUDGET_PREFIX: &[u8] = b"rew_lpb_";
+const LP_PAIR_DISTRIBUTED_PREFIX: &[u8] = b"rew_lpd_";
+const LP_PAIR_START_SLOT_PREFIX: &[u8] = b"rew_lps_";
+const LP_LAST_SLOT_PREFIX: &[u8] = b"rew_lplast_";
+const LP_OWNER_PREFIX: &[u8] = b"rew_lpown_";
 
 // ============================================================================
 // HELPERS
@@ -161,6 +166,31 @@ fn pair_reward_rate_key(pair_id: u64) -> Vec<u8> {
     k.extend_from_slice(&u64_to_decimal(pair_id));
     k
 }
+fn lp_pair_budget_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(LP_PAIR_BUDGET_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
+}
+fn lp_pair_distributed_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(LP_PAIR_DISTRIBUTED_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
+}
+fn lp_pair_start_slot_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(LP_PAIR_START_SLOT_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
+}
+fn lp_last_slot_key(pos_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(LP_LAST_SLOT_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(pos_id));
+    k
+}
+fn lp_owner_key(pos_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(LP_OWNER_PREFIX);
+    k.extend_from_slice(&u64_to_decimal(pos_id));
+    k
+}
 fn lp_pending_key(pos_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_lp_"[..]);
     k.extend_from_slice(&u64_to_decimal(pos_id));
@@ -210,6 +240,16 @@ fn checked_mul_div_u64(amount: u64, multiplier: u64, divisor: u64) -> Option<u64
     } else {
         Some(value as u64)
     }
+}
+
+fn checked_mul_mul_div_u128(a: u64, b: u64, c: u64, divisor: u128) -> Option<u128> {
+    if divisor == 0 {
+        return None;
+    }
+    (a as u128)
+        .checked_mul(b as u128)?
+        .checked_mul(c as u128)?
+        .checked_div(divisor)
 }
 
 fn capped_reward(amount: u64, multiplier_bps: u64, cap: u64) -> u64 {
@@ -474,7 +514,7 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
 }
 
 /// Claim LP rewards for a position — transfers LICN from contract's own balance to provider.
-/// Returns: 0=success, 1=nothing to claim, 3=reentrancy,
+/// Returns: 0=success, 1=nothing to claim, 2=not position owner, 3=reentrancy,
 ///          4=transfer failed, 5=lichencoin address not configured,
 ///          6=paused, 7=rewards pool misconfigured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
@@ -496,6 +536,12 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !require_not_paused() {
         reentrancy_exit();
         return 6;
+    }
+
+    let owner = load_addr(&lp_owner_key(position_id));
+    if !is_zero(&owner) && owner != p {
+        reentrancy_exit();
+        return 2;
     }
 
     let lp_k = lp_pending_key(position_id);
@@ -663,10 +709,103 @@ pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u
     0
 }
 
-/// Accrue LP rewards for a position (called by dex_amm)
-/// Returns: 0=success, 1=zero rate, 2=invalid input, 5=unauthorized caller,
-///          6=paused, 7=accounting overflow
-pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 {
+/// Configure an LP liquidity campaign for a pair (admin only).
+/// Returns: 0=success, 1=not admin, 2=invalid campaign, 200=caller mismatch.
+pub fn configure_lp_campaign(
+    caller: *const u8,
+    pair_id: u64,
+    rate_per_slot: u64,
+    budget: u64,
+) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if pair_id == 0 || (rate_per_slot > 0 && budget == 0) {
+        return 2;
+    }
+
+    let previous_rate = load_u64(&pair_reward_rate_key(pair_id));
+    save_u64(&pair_reward_rate_key(pair_id), rate_per_slot);
+    save_u64(&lp_pair_budget_key(pair_id), budget);
+    if rate_per_slot > 0 && previous_rate == 0 {
+        save_u64(&lp_pair_start_slot_key(pair_id), get_slot());
+    }
+    0
+}
+
+fn lp_campaign_remaining(pair_id: u64) -> u64 {
+    let budget = load_u64(&lp_pair_budget_key(pair_id));
+    if budget == 0 {
+        u64::MAX
+    } else {
+        budget.saturating_sub(load_u64(&lp_pair_distributed_key(pair_id)))
+    }
+}
+
+fn cap_lp_reward_to_budgets(pair_id: u64, raw_reward: u128, current_slot: u64) -> u64 {
+    let epoch_start = load_u64(EPOCH_START_SLOT_KEY);
+    let reset_epoch =
+        epoch_start == 0 || current_slot.saturating_sub(epoch_start) >= SLOTS_PER_MONTH;
+    let epoch_dist = if reset_epoch {
+        0
+    } else {
+        load_u64(EPOCH_DISTRIBUTED_KEY)
+    };
+    let epoch_remaining = REWARD_POOL_PER_MONTH.saturating_sub(epoch_dist);
+    let pair_remaining = lp_campaign_remaining(pair_id);
+    raw_reward
+        .min(epoch_remaining as u128)
+        .min(pair_remaining as u128)
+        .min(u64::MAX as u128) as u64
+}
+
+fn record_lp_budget_spend(pair_id: u64, reward: u64, current_slot: u64) -> bool {
+    if reward == 0 {
+        return true;
+    }
+
+    let pair_dist = load_u64(&lp_pair_distributed_key(pair_id));
+    let new_pair_dist = match pair_dist.checked_add(reward) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    let epoch_start = load_u64(EPOCH_START_SLOT_KEY);
+    let reset_epoch =
+        epoch_start == 0 || current_slot.saturating_sub(epoch_start) >= SLOTS_PER_MONTH;
+    let epoch_dist = if reset_epoch {
+        0
+    } else {
+        load_u64(EPOCH_DISTRIBUTED_KEY)
+    };
+    let new_epoch_dist = match epoch_dist.checked_add(reward) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    save_u64(&lp_pair_distributed_key(pair_id), new_pair_dist);
+    if reset_epoch {
+        save_u64(EPOCH_START_SLOT_KEY, current_slot);
+    }
+    save_u64(EPOCH_DISTRIBUTED_KEY, new_epoch_dist);
+    true
+}
+
+fn accrue_lp_rewards_internal(
+    provider: Option<&[u8; 32]>,
+    position_id: u64,
+    liquidity: u64,
+    pair_id: u64,
+    from_slot: u64,
+) -> u32 {
     if !require_not_paused() {
         log_info("accrue_lp_rewards: paused");
         return 6;
@@ -675,25 +814,122 @@ pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 
         log_info("accrue_lp_rewards: unauthorized caller");
         return 5;
     }
-    if liquidity == 0 {
+    if position_id == 0 || liquidity == 0 || pair_id == 0 {
         return 2;
     }
+
+    if let Some(owner) = provider {
+        if is_zero(owner) {
+            return 2;
+        }
+        let owner_key = lp_owner_key(position_id);
+        let existing_owner = load_addr(&owner_key);
+        if !is_zero(&existing_owner) && existing_owner != *owner {
+            return 8;
+        }
+        if is_zero(&existing_owner) {
+            storage_set(&owner_key, owner);
+        }
+    }
+
+    let current_slot = get_slot();
+    let last_key = lp_last_slot_key(position_id);
     let rate = load_u64(&pair_reward_rate_key(pair_id));
     if rate == 0 {
+        save_u64(&last_key, current_slot);
         return 1;
     }
-    let reward = match checked_mul_div_u64(liquidity, rate, 1_000_000_000) {
+
+    let last_slot = load_u64(&last_key);
+    let campaign_start = load_u64(&lp_pair_start_slot_key(pair_id));
+    let mut reward_start = if last_slot > 0 { last_slot } else { from_slot };
+    if campaign_start > reward_start {
+        reward_start = campaign_start;
+    }
+    if current_slot <= reward_start {
+        save_u64(&last_key, current_slot);
+        return 1;
+    }
+
+    let elapsed = current_slot - reward_start;
+    let raw_reward = match checked_mul_mul_div_u128(liquidity, rate, elapsed, 1_000_000_000u128) {
         Some(value) => value,
         None => return 7,
     };
+    if raw_reward == 0 {
+        save_u64(&last_key, current_slot);
+        return 1;
+    }
+
+    let reward = cap_lp_reward_to_budgets(pair_id, raw_reward, current_slot);
+    if reward == 0 {
+        save_u64(&last_key, current_slot);
+        return 1;
+    }
+
     let lp_k = lp_pending_key(position_id);
     let current = load_u64(&lp_k);
     let new_pending = match current.checked_add(reward) {
         Some(value) => value,
         None => return 7,
     };
+    if !record_lp_budget_spend(pair_id, reward, current_slot) {
+        return 7;
+    }
     save_u64(&lp_k, new_pending);
+    save_u64(&last_key, current_slot);
     0
+}
+
+/// Accrue LP rewards for a position (called by dex_amm)
+/// Returns: 0=success, 1=zero rate, 2=invalid input, 5=unauthorized caller,
+///          6=paused, 7=accounting overflow
+pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 {
+    accrue_lp_rewards_internal(
+        None,
+        position_id,
+        liquidity,
+        pair_id,
+        get_slot().saturating_sub(1),
+    )
+}
+
+/// Accrue LP rewards with owner binding and position-age semantics.
+/// Returns: 0=success, 1=no reward accrued, 2=invalid input, 5=unauthorized caller,
+///          6=paused, 7=accounting overflow, 8=position owner mismatch.
+pub fn accrue_lp_rewards_for(
+    provider: *const u8,
+    position_id: u64,
+    liquidity: u64,
+    pair_id: u64,
+    from_slot: u64,
+) -> u32 {
+    let mut p = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32);
+    }
+    accrue_lp_rewards_internal(Some(&p), position_id, liquidity, pair_id, from_slot)
+}
+
+pub fn get_lp_pending_rewards(position_id: u64) -> u64 {
+    load_u64(&lp_pending_key(position_id))
+}
+
+pub fn get_lp_campaign_stats(pair_id: u64) -> Vec<u8> {
+    let budget = load_u64(&lp_pair_budget_key(pair_id));
+    let distributed = load_u64(&lp_pair_distributed_key(pair_id));
+    let remaining = if budget == 0 {
+        u64::MAX
+    } else {
+        budget.saturating_sub(distributed)
+    };
+    let mut buf = Vec::with_capacity(40);
+    buf.extend_from_slice(&u64_to_bytes(load_u64(&pair_reward_rate_key(pair_id))));
+    buf.extend_from_slice(&u64_to_bytes(budget));
+    buf.extend_from_slice(&u64_to_bytes(distributed));
+    buf.extend_from_slice(&u64_to_bytes(remaining));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(&lp_pair_start_slot_key(pair_id))));
+    buf
 }
 
 // Queries
@@ -1066,6 +1302,45 @@ pub extern "C" fn call() -> u32 {
                 _rc = r as u32;
             }
         }
+        // 21: configure_lp_campaign(caller[32], pair_id[8], rate[8], budget[8])
+        21 => {
+            if args.len() >= 57 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let rate = bytes_to_u64(&args[41..49]);
+                let budget = bytes_to_u64(&args[49..57]);
+                let r = configure_lp_campaign(args[1..33].as_ptr(), pair_id, rate, budget);
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        // 22: accrue_lp_rewards_for(provider[32], position_id[8], liquidity[8], pair_id[8], from_slot[8])
+        22 => {
+            if args.len() >= 65 {
+                let pos_id = bytes_to_u64(&args[33..41]);
+                let liq = bytes_to_u64(&args[41..49]);
+                let pair_id = bytes_to_u64(&args[49..57]);
+                let from_slot = bytes_to_u64(&args[57..65]);
+                let r =
+                    accrue_lp_rewards_for(args[1..33].as_ptr(), pos_id, liq, pair_id, from_slot);
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        // 23: get_lp_campaign_stats(pair_id[8])
+        23 => {
+            if args.len() >= 9 {
+                let data = get_lp_campaign_stats(bytes_to_u64(&args[1..9]));
+                lichen_sdk::set_return_data(&data);
+            }
+        }
+        // 24: get_lp_pending_rewards(position_id[8])
+        24 => {
+            if args.len() >= 9 {
+                lichen_sdk::set_return_data(&u64_to_bytes(get_lp_pending_rewards(bytes_to_u64(
+                    &args[1..9],
+                ))));
+            }
+        }
         _ => {
             lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
             _rc = 255;
@@ -1336,6 +1611,120 @@ mod tests {
     }
 
     #[test]
+    fn test_configure_lp_campaign_sets_budget_rate_and_start_slot() {
+        let admin = setup();
+        test_mock::set_slot(100);
+        test_mock::set_caller(admin);
+
+        assert_eq!(
+            configure_lp_campaign(admin.as_ptr(), 8, 1_000_000_000, 10_000),
+            0
+        );
+        assert_eq!(load_u64(&pair_reward_rate_key(8)), 1_000_000_000);
+        assert_eq!(load_u64(&lp_pair_budget_key(8)), 10_000);
+        assert_eq!(load_u64(&lp_pair_start_slot_key(8)), 100);
+    }
+
+    #[test]
+    fn test_configure_lp_campaign_requires_budget_for_active_rate() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+
+        assert_eq!(
+            configure_lp_campaign(admin.as_ptr(), 8, 1_000_000_000, 0),
+            2
+        );
+        assert_eq!(load_u64(&pair_reward_rate_key(8)), 0);
+        assert_eq!(configure_lp_campaign(admin.as_ptr(), 8, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_lp_campaign_budget_exhaustion_caps_rewards() {
+        let admin = setup();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            configure_lp_campaign(admin.as_ptr(), 8, 1_000_000_000, 1_000),
+            0
+        );
+
+        test_mock::set_slot(105);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(accrue_lp_rewards_for(provider.as_ptr(), 1, 500, 8, 100), 0);
+        assert_eq!(load_u64(&lp_pending_key(1)), 1_000);
+        assert_eq!(load_u64(&lp_pair_distributed_key(8)), 1_000);
+
+        test_mock::set_slot(110);
+        assert_eq!(accrue_lp_rewards_for(provider.as_ptr(), 1, 500, 8, 105), 1);
+        assert_eq!(load_u64(&lp_pending_key(1)), 1_000);
+        assert_eq!(load_u64(&lp_pair_distributed_key(8)), 1_000);
+    }
+
+    #[test]
+    fn test_lp_campaign_pause_stops_new_accrual_without_blocking_claim() {
+        let admin = setup();
+        let provider = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            configure_lp_campaign(admin.as_ptr(), 8, 1_000_000_000, 10_000),
+            0
+        );
+
+        test_mock::set_slot(101);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(
+            accrue_lp_rewards_for(provider.as_ptr(), 1, 1_000, 8, 100),
+            0
+        );
+        let pending = load_u64(&lp_pending_key(1));
+        assert!(pending > 0);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_reward_rate(admin.as_ptr(), 8, 0), 0);
+        test_mock::set_slot(110);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(
+            accrue_lp_rewards_for(provider.as_ptr(), 1, 1_000, 8, 101),
+            1
+        );
+        assert_eq!(load_u64(&lp_pending_key(1)), pending);
+
+        test_mock::set_caller(provider);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
+        assert_eq!(load_u64(&lp_pending_key(1)), 0);
+    }
+
+    #[test]
+    fn test_lp_owner_binding_prevents_position_reward_theft() {
+        let admin = setup();
+        let provider = [2u8; 32];
+        let attacker = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(admin);
+        assert_eq!(
+            configure_lp_campaign(admin.as_ptr(), 8, 1_000_000_000, 10_000),
+            0
+        );
+
+        test_mock::set_slot(101);
+        test_mock::set_caller([0xFFu8; 32]);
+        assert_eq!(
+            accrue_lp_rewards_for(provider.as_ptr(), 1, 1_000, 8, 100),
+            0
+        );
+        assert!(load_u64(&lp_pending_key(1)) > 0);
+
+        test_mock::set_caller(attacker);
+        assert_eq!(claim_lp_rewards(attacker.as_ptr(), 1), 2);
+        assert!(load_u64(&lp_pending_key(1)) > 0);
+
+        test_mock::set_caller(provider);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
+    }
+
+    #[test]
     fn test_claim_lp_rewards() {
         let admin = setup();
         let provider = [2u8; 32];
@@ -1555,7 +1944,7 @@ mod tests {
 
         test_mock::set_caller([0xFFu8; 32]);
         assert_eq!(accrue_lp_rewards(1, 1_000_000_000, 1), 0);
-        assert_eq!(load_u64(&lp_pending_key(1)), u64::MAX);
+        assert_eq!(load_u64(&lp_pending_key(1)), REWARD_POOL_PER_MONTH);
     }
 
     #[test]
@@ -1564,8 +1953,12 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_reward_rate(admin.as_ptr(), 1, u64::MAX), 0);
 
+        test_mock::set_slot(u64::MAX);
         test_mock::set_caller([0xFFu8; 32]);
-        assert_eq!(accrue_lp_rewards(1, u64::MAX, 1), 7);
+        assert_eq!(
+            accrue_lp_rewards_for([2u8; 32].as_ptr(), 1, u64::MAX, 1, 0),
+            7
+        );
         assert_eq!(load_u64(&lp_pending_key(1)), 0);
     }
 

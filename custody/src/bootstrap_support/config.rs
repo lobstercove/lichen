@@ -52,6 +52,7 @@ fn log_chain_configuration(config: &CustodyConfig) {
         "  BNB RPC:         {:?}",
         config.bnb_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
     );
+    info!("  Neo X RPC:       {:?}", config.neox_rpc_url);
     info!("  SOL Treasury:    {:?}", config.treasury_solana_address);
     info!(
         "  ETH Treasury:    {:?}",
@@ -67,6 +68,7 @@ fn log_chain_configuration(config: &CustodyConfig) {
             .as_ref()
             .or(config.treasury_evm_address.as_ref())
     );
+    info!("  Neo X Treasury:  {:?}", config.treasury_neox_address);
 
     if config.solana_rpc_url.is_some() {
         if let Some(path) = config.solana_fee_payer_keypair_path.as_ref() {

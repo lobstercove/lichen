@@ -70,7 +70,9 @@ pub struct SporePayClient {
 }
 
 fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+    );
     out.push(0xAB);
     out.extend_from_slice(layout);
     for chunk in chunks {
@@ -80,47 +82,62 @@ fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn encode_create_stream_args(sender: &Pubkey, params: &CreateStreamParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x08, 0x08, 0x08], &[
-        sender.as_ref().to_vec(),
-        params.recipient.as_ref().to_vec(),
-        params.total_amount.to_le_bytes().to_vec(),
-        params.start_slot.to_le_bytes().to_vec(),
-        params.end_slot.to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20, 0x08, 0x08, 0x08],
+        &[
+            sender.as_ref().to_vec(),
+            params.recipient.as_ref().to_vec(),
+            params.total_amount.to_le_bytes().to_vec(),
+            params.start_slot.to_le_bytes().to_vec(),
+            params.end_slot.to_le_bytes().to_vec(),
+        ],
+    )
 }
 
-fn encode_create_stream_with_cliff_args(sender: &Pubkey, params: &CreateStreamWithCliffParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x08, 0x08, 0x08, 0x08], &[
-        sender.as_ref().to_vec(),
-        params.recipient.as_ref().to_vec(),
-        params.total_amount.to_le_bytes().to_vec(),
-        params.start_slot.to_le_bytes().to_vec(),
-        params.end_slot.to_le_bytes().to_vec(),
-        params.cliff_slot.to_le_bytes().to_vec(),
-    ])
+fn encode_create_stream_with_cliff_args(
+    sender: &Pubkey,
+    params: &CreateStreamWithCliffParams,
+) -> Vec<u8> {
+    build_layout_args(
+        &[0x20, 0x20, 0x08, 0x08, 0x08, 0x08],
+        &[
+            sender.as_ref().to_vec(),
+            params.recipient.as_ref().to_vec(),
+            params.total_amount.to_le_bytes().to_vec(),
+            params.start_slot.to_le_bytes().to_vec(),
+            params.end_slot.to_le_bytes().to_vec(),
+            params.cliff_slot.to_le_bytes().to_vec(),
+        ],
+    )
 }
 
 fn encode_withdraw_args(caller: &Pubkey, params: &WithdrawFromStreamParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x08, 0x08], &[
-        caller.as_ref().to_vec(),
-        params.stream_id.to_le_bytes().to_vec(),
-        params.amount.to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x08, 0x08],
+        &[
+            caller.as_ref().to_vec(),
+            params.stream_id.to_le_bytes().to_vec(),
+            params.amount.to_le_bytes().to_vec(),
+        ],
+    )
 }
 
 fn encode_cancel_args(caller: &Pubkey, stream_id: u64) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x08], &[
-        caller.as_ref().to_vec(),
-        stream_id.to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x08],
+        &[caller.as_ref().to_vec(), stream_id.to_le_bytes().to_vec()],
+    )
 }
 
 fn encode_transfer_args(caller: &Pubkey, params: &TransferStreamParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20, 0x08], &[
-        caller.as_ref().to_vec(),
-        params.new_recipient.as_ref().to_vec(),
-        params.stream_id.to_le_bytes().to_vec(),
-    ])
+    build_layout_args(
+        &[0x20, 0x20, 0x08],
+        &[
+            caller.as_ref().to_vec(),
+            params.new_recipient.as_ref().to_vec(),
+            params.stream_id.to_le_bytes().to_vec(),
+        ],
+    )
 }
 
 fn encode_stream_lookup_args(stream_id: u64) -> Vec<u8> {
@@ -133,12 +150,9 @@ fn ensure_readonly_success(
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if code != 0 {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("SporePay {} returned code {}", function_name, code)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("SporePay {} returned code {}", function_name, code)
+        })));
     }
     if !result.success {
         return Err(Error::RpcError(
@@ -151,7 +165,10 @@ fn ensure_readonly_success(
     Ok(())
 }
 
-fn decode_return_data(result: &crate::client::ReadonlyContractResult, function_name: &str) -> Result<Vec<u8>> {
+fn decode_return_data(
+    result: &crate::client::ReadonlyContractResult,
+    function_name: &str,
+) -> Result<Vec<u8>> {
     let Some(return_data) = &result.return_data else {
         return Err(Error::ParseError(format!(
             "SporePay {} did not return payload data",
@@ -230,10 +247,9 @@ impl SporePayClient {
                 continue;
             };
             let program_id = Pubkey::from_base58(program).map_err(Error::ParseError)?;
-            *self
-                .program_id
-                .lock()
-                .map_err(|_| Error::ConfigError("SporePayClient program cache lock poisoned".into()))? = Some(program_id);
+            *self.program_id.lock().map_err(|_| {
+                Error::ConfigError("SporePayClient program cache lock poisoned".into())
+            })? = Some(program_id);
             return Ok(program_id);
         }
 
@@ -308,7 +324,11 @@ impl SporePayClient {
         serde_json::from_value(value).map_err(|err| Error::ParseError(err.to_string()))
     }
 
-    pub async fn create_stream(&self, sender: &Keypair, params: CreateStreamParams) -> Result<String> {
+    pub async fn create_stream(
+        &self,
+        sender: &Keypair,
+        params: CreateStreamParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_create_stream_args(&sender.pubkey(), &params);
         self.client
@@ -316,7 +336,11 @@ impl SporePayClient {
             .await
     }
 
-    pub async fn create_stream_with_cliff(&self, sender: &Keypair, params: CreateStreamWithCliffParams) -> Result<String> {
+    pub async fn create_stream_with_cliff(
+        &self,
+        sender: &Keypair,
+        params: CreateStreamWithCliffParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_create_stream_with_cliff_args(&sender.pubkey(), &params);
         self.client
@@ -324,7 +348,11 @@ impl SporePayClient {
             .await
     }
 
-    pub async fn withdraw_from_stream(&self, recipient: &Keypair, params: WithdrawFromStreamParams) -> Result<String> {
+    pub async fn withdraw_from_stream(
+        &self,
+        recipient: &Keypair,
+        params: WithdrawFromStreamParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_withdraw_args(&recipient.pubkey(), &params);
         self.client
@@ -340,7 +368,11 @@ impl SporePayClient {
             .await
     }
 
-    pub async fn transfer_stream(&self, recipient: &Keypair, params: TransferStreamParams) -> Result<String> {
+    pub async fn transfer_stream(
+        &self,
+        recipient: &Keypair,
+        params: TransferStreamParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let args = encode_transfer_args(&recipient.pubkey(), &params);
         self.client

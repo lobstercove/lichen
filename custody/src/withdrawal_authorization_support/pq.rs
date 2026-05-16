@@ -57,7 +57,7 @@ fn build_withdrawal_approval_message(
         }
         (job.amount - SOLANA_SWEEP_FEE_LAMPORTS).to_string()
     } else {
-        spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset).to_string()
+        spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset)?.to_string()
     };
 
     let mut token_contract = None;

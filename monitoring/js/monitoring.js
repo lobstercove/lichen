@@ -15,8 +15,8 @@ const NETWORKS = {
 // and validator rendering all use live cluster data, never a hardcoded list.
 
 const SYMBOLS = [
-    'LUSD', 'WETH', 'WSOL', 'WBNB', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
-    'DEXREWARDS', 'DEXROUTER', 'BRIDGE', 'DAO', 'SPOREVAULT', 'SPOREPAY',
+    'LUSD', 'WETH', 'WSOL', 'WBNB', 'WNEO', 'WGAS', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
+    'DEXREWARDS', 'DEXROUTER', 'BRIDGE', 'DAO', 'SPOREVAULT', 'NEOGASRWD', 'SPOREPAY',
     'SPOREPUMP', 'ORACLE', 'LEND', 'MARKET', 'AUCTION', 'BOUNTY', 'ANALYTICS',
     'COMPUTE', 'LICHENSWAP', 'PUNKS', 'MOSS', 'SHIELDED', 'PREDICT', 'YID'
 ];
@@ -91,6 +91,7 @@ const wsProbe = {
     lastSlot: null,
     url: '',
 };
+const LEGACY_ADMIN_TOKEN_STORAGE_KEY = 'lichen_admin_token';
 
 // ── RPC Client ──────────────────────────────────────────────
 
@@ -2889,7 +2890,7 @@ async function updateRiskConsoleStatus(fromUserAction = false) {
 
 function purgeLegacyAdminToken() {
     try {
-        sessionStorage.removeItem('lichen_admin_token');
+        sessionStorage.removeItem(LEGACY_ADMIN_TOKEN_STORAGE_KEY);
     } catch (e) {
         // Ignore storage access failures.
     }
@@ -3256,6 +3257,7 @@ const ALL_CONTRACTS = [
     { symbol: 'BRIDGE', name: 'LichenBridge', cat: 'infra', icon: 'fas fa-bridge', color: '#38bdf8' },
     { symbol: 'DAO', name: 'LichenDAO', cat: 'infra', icon: 'fas fa-users-cog', color: '#a78bfa' },
     { symbol: 'SPOREVAULT', name: 'SporeVault', cat: 'defi', icon: 'fas fa-vault', color: '#f472b6' },
+    { symbol: 'NEOGASRWD', name: 'Neo GAS Rewards', cat: 'defi', icon: 'fas fa-gift', color: '#58BF00' },
     { symbol: 'SPOREPAY', name: 'SporePay', cat: 'defi', icon: 'fas fa-credit-card', color: '#34d399' },
     { symbol: 'SPOREPUMP', name: 'SporePump', cat: 'defi', icon: 'fas fa-rocket', color: '#fb923c' },
     { symbol: 'ORACLE', name: 'LichenOracle', cat: 'infra', icon: 'fas fa-eye', color: '#c084fc' },
@@ -3590,15 +3592,17 @@ let ecosystemMonitorLoaded = false;
 async function updateEcosystemMonitor() {
     const badge = document.getElementById('ecosystemBadge');
     const el = id => document.getElementById(id);
-    const totalFeeds = 18;
+    const totalFeeds = 20;
 
     // Fetch all platform contract stats in parallel
-    const [lusd, weth, wsol, wbnb, lend, sporepay, vault, pump, bridge, dao, oracle,
+    const [lusd, weth, wsol, wbnb, wneo, wgas, lend, sporepay, vault, pump, bridge, dao, oracle,
         mossStorage, market, auction, punks, bounty, compute, shieldedState] = await Promise.all([
             rpc('getLusdStats').catch(() => null),
             rpc('getWethStats').catch(() => null),
             rpc('getWsolStats').catch(() => null),
             rpc('getWbnbStats').catch(() => null),
+            rpc('getWneoStats').catch(() => null),
+            rpc('getWgasStats').catch(() => null),
             rpc('getThallLendStats').catch(() => null),
             rpc('getSporePayStats').catch(() => null),
             rpc('getSporeVaultStats').catch(() => null),
@@ -3635,6 +3639,14 @@ async function updateEcosystemMonitor() {
     if (wbnb) {
         activeFeeds++;
         if (el('ecoWbnbSupply')) el('ecoWbnbSupply').textContent = formatLicn(wbnb.total_supply || wbnb.supply || 0);
+    }
+    if (wneo) {
+        activeFeeds++;
+        if (el('ecoWneoSupply')) el('ecoWneoSupply').textContent = formatLicn(wneo.total_supply || wneo.supply || 0);
+    }
+    if (wgas) {
+        activeFeeds++;
+        if (el('ecoWgasSupply')) el('ecoWgasSupply').textContent = formatLicn(wgas.total_supply || wgas.supply || 0);
     }
 
     // Platform services
@@ -4295,9 +4307,14 @@ async function updateOracleBridgeHealthBoard() {
     const badge = document.getElementById('oracleBridgeBadge');
     const grid = document.getElementById('oracleBridgeDetailGrid');
 
-    const [bridge, oracle] = await Promise.all([
+    const [bridge, oracle, neoGasRoute, neoRoute, wgas, wneo, neoGasRewards] = await Promise.all([
         rpc('getLichenBridgeStats').catch(() => null),
         rpc('getLichenOracleStats').catch(() => null),
+        rpc('getBridgeRouteRestrictionStatus', ['neox', 'gas']).catch(() => null),
+        rpc('getBridgeRouteRestrictionStatus', ['neox', 'neo']).catch(() => null),
+        rpc('getWgasStats').catch(() => null),
+        rpc('getWneoStats').catch(() => null),
+        rpc('getNeoGasRewardsStats').catch(() => null),
     ]);
 
     setText('oracleFeedCount', oracle ? formatNum(Number(oracle.feeds || 0)) : '--');
@@ -4307,12 +4324,35 @@ async function updateOracleBridgeHealthBoard() {
     setText('bridgeRequiredConfirms', bridge ? formatNum(Number(bridge.required_confirms || 0)) : '--');
     setText('bridgeLockedAmount', bridge ? `${formatLicn(Number(bridge.locked_amount || 0))} LICN` : '--');
 
+    const neoGasPaused = Boolean(neoGasRoute?.route_paused || neoGasRoute?.paused);
+    const neoPaused = Boolean(neoRoute?.route_paused || neoRoute?.paused);
+    const neoPauseCount = [neoGasPaused, neoPaused].filter(Boolean).length;
+    const neoRoutesAvailable = Boolean(neoGasRoute) || Boolean(neoRoute);
+    const wgasReserveDeficit = Math.max(0, Number(wgas?.supply || 0) - Number(wgas?.reserve_attested || 0));
+    const wneoReserveDeficit = Math.max(0, Number(wneo?.supply || 0) - Number(wneo?.reserve_attested || 0));
+    const neoReserveDeficit = wgasReserveDeficit + wneoReserveDeficit;
+    const rewardsOutstanding = Number(neoGasRewards?.outstanding_rewards || 0);
+    const rewardsPrincipal = Number(neoGasRewards?.total_principal || 0);
+    const rewardsPaused = Boolean(neoGasRewards?.paused);
+    const rewardsConfigured = neoGasRewards?.configured === true;
+    setText('neoGasRouteStatus', !neoGasRoute ? '--' : neoGasPaused ? 'PAUSED' : 'ACTIVE');
+    setText('neoRoutePauseCount', neoRoutesAvailable ? `${neoPauseCount}/2` : '--');
+    setText('neoReserveMatch', (wgas || wneo)
+        ? (neoReserveDeficit > 0 ? `DEFICIT ${formatLicnPrecise(neoReserveDeficit)}` : 'MATCHED')
+        : '--');
+
     const oraclePaused = Boolean(oracle?.paused);
     const bridgePaused = Boolean(bridge?.paused);
     const requestTimeout = Number(bridge?.request_timeout || 0);
+    const neoRouteNote = neoRoutesAvailable
+        ? ` Neo X GAS route is ${neoGasPaused ? 'paused' : 'live'}; wNEO route status remains governed by route restrictions and source-route configuration.`
+        : '';
+    const rewardsNote = neoGasRewards
+        ? ` Neo GAS rewards are ${rewardsPaused ? 'paused' : rewardsConfigured ? 'configured' : 'not configured'} with ${formatLicnPrecise(rewardsOutstanding)} wGAS outstanding.`
+        : '';
     setText(
         'oracleBridgeNote',
-        `Oracle is ${oraclePaused ? 'paused' : 'live'} and bridge is ${bridgePaused ? 'paused' : 'live'}. Bridge request timeout is ${formatNum(requestTimeout)} seconds.`
+        `Oracle is ${oraclePaused ? 'paused' : 'live'} and bridge is ${bridgePaused ? 'paused' : 'live'}. Bridge request timeout is ${formatNum(requestTimeout)} seconds.${neoRouteNote}${rewardsNote}`
     );
 
     if (grid) {
@@ -4370,12 +4410,57 @@ async function updateOracleBridgeHealthBoard() {
             ));
         }
 
+        if (neoRoutesAvailable) {
+            const neoRouteColor = neoPauseCount > 0 ? 'var(--warning)' : 'var(--success)';
+            cards.push(renderOperatorTierCard(
+                'Neo X Route Status',
+                neoGasPaused ? 'GAS paused' : 'GAS active',
+                `${neoPauseCount} paused route${neoPauseCount === 1 ? '' : 's'} · GAS ids ${(neoGasRoute?.active_restriction_ids || []).join(',') || 'none'}`,
+                'route',
+                neoRouteColor,
+                neoPauseCount > 0 ? 50 : 100
+            ));
+        }
+
+        if (wgas || wneo) {
+            const reserveColor = neoReserveDeficit > 0 ? 'var(--danger)' : 'var(--success)';
+            cards.push(renderOperatorTierCard(
+                'Neo Reserve Coverage',
+                neoReserveDeficit > 0 ? `${formatLicnPrecise(neoReserveDeficit)} deficit` : 'matched',
+                `wGAS reserve ${formatLicnPrecise(wgas?.reserve_attested || 0)} · wNEO reserve ${formatLicnPrecise(wneo?.reserve_attested || 0)}`,
+                'shield-alt',
+                reserveColor,
+                neoReserveDeficit > 0 ? 25 : 100
+            ));
+        }
+
+        if (neoGasRewards) {
+            const rewardsColor = rewardsPaused
+                ? 'var(--warning)'
+                : rewardsConfigured
+                    ? 'var(--success)'
+                    : 'var(--text-muted)';
+            const imported = Number(neoGasRewards.total_imported || 0);
+            const claimed = Number(neoGasRewards.total_claimed || 0);
+            const budget = Number(neoGasRewards.campaign_budget || 0);
+            const budgetPct = budget > 0 ? clampPercentage((imported / budget) * 100) : 0;
+            cards.push(renderOperatorTierCard(
+                'Neo GAS Rewards',
+                rewardsPaused ? 'paused' : rewardsConfigured ? 'configured' : 'pending config',
+                `principal ${formatLicnPrecise(rewardsPrincipal)} wNEO · outstanding ${formatLicnPrecise(rewardsOutstanding)} wGAS · claimed ${formatLicnPrecise(claimed)}`,
+                'gift',
+                rewardsColor,
+                rewardsConfigured ? budgetPct : 0
+            ));
+        }
+
         grid.innerHTML = cards.join('');
     }
 
     if (badge) {
         const allAvailable = Boolean(bridge) && Boolean(oracle);
-        const healthy = allAvailable && !bridgePaused && !oraclePaused;
+        const rewardsHealthy = !neoGasRewards || (!rewardsPaused && (rewardsConfigured || rewardsPrincipal === 0));
+        const healthy = allAvailable && !bridgePaused && !oraclePaused && neoPauseCount === 0 && neoReserveDeficit === 0 && rewardsHealthy;
         badge.textContent = !allAvailable
             ? 'PARTIAL'
             : healthy

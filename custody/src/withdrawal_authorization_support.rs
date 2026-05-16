@@ -51,13 +51,12 @@ pub(super) fn determine_withdrawal_signing_mode(
             }
             Ok(Some(WithdrawalSigningMode::PqApprovalQuorum))
         }
-        "ethereum" | "eth" | "bsc" | "bnb" => {
+        chain if is_evm_chain(chain) => {
             if state.config.signer_threshold > 1 && state.config.signer_endpoints.len() > 1 {
-                if state.config.evm_multisig_address.is_none() {
-                    return Err(
-                        "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)"
-                            .to_string(),
-                    );
+                let route = evm_route_for_chain(&state.config, chain)
+                    .ok_or_else(|| format!("unsupported destination chain: {}", chain))?;
+                if route.multisig_address.is_none() {
+                    return Err("EVM multisig address not configured for route".to_string());
                 }
                 Ok(Some(WithdrawalSigningMode::EvmThresholdSafe))
             } else {

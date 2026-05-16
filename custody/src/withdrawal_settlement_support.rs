@@ -142,7 +142,8 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
                         &state.http,
                         &url,
                         tx_hash,
-                        state.config.evm_confirmations,
+                        evm_route_confirmations(&state.config, chain)
+                            .unwrap_or(state.config.evm_confirmations),
                     )
                     .await
                     {
@@ -171,7 +172,7 @@ pub(super) async fn process_broadcasting_withdrawals(state: &CustodyState) -> Re
             let asset_lower = job.asset.to_lowercase();
             if asset_lower == "musd" {
                 let stablecoin = &job.preferred_stablecoin;
-                let chain_debit = spores_to_chain_amount(job.amount, &job.dest_chain, stablecoin);
+                let chain_debit = spores_to_chain_amount(job.amount, &job.dest_chain, stablecoin)?;
                 let chain_debit_u64 = u64::try_from(chain_debit).unwrap_or(u64::MAX);
                 if let Err(error) = adjust_reserve_balance_once(
                     &state.db,

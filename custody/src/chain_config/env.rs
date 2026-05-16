@@ -22,6 +22,16 @@ pub(crate) fn load_config() -> CustodyConfig {
     let treasury_bnb_address = std::env::var("CUSTODY_TREASURY_BNB").ok();
     let eth_rpc_url = std::env::var("CUSTODY_ETH_RPC_URL").ok();
     let bnb_rpc_url = std::env::var("CUSTODY_BNB_RPC_URL").ok();
+    let neox_rpc_url = std::env::var("CUSTODY_NEOX_RPC_URL").ok();
+    let neox_chain_id = std::env::var("CUSTODY_NEOX_CHAIN_ID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(NEOX_TESTNET_T4_CHAIN_ID);
+    let neox_confirmations = std::env::var("CUSTODY_NEOX_CONFIRMATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(evm_confirmations);
+    let treasury_neox_address = std::env::var("CUSTODY_TREASURY_NEOX").ok();
     let solana_fee_payer_keypair_path = std::env::var("CUSTODY_SOLANA_FEE_PAYER").ok();
     let solana_treasury_owner = std::env::var("CUSTODY_SOLANA_TREASURY_OWNER")
         .ok()
@@ -40,6 +50,9 @@ pub(crate) fn load_config() -> CustodyConfig {
     let wsol_contract_addr = std::env::var("CUSTODY_WSOL_TOKEN_ADDR").ok();
     let weth_contract_addr = std::env::var("CUSTODY_WETH_TOKEN_ADDR").ok();
     let wbnb_contract_addr = std::env::var("CUSTODY_WBNB_TOKEN_ADDR").ok();
+    let wgas_contract_addr = std::env::var("CUSTODY_WGAS_TOKEN_ADDR").ok();
+    let wneo_contract_addr = std::env::var("CUSTODY_WNEO_TOKEN_ADDR").ok();
+    let neox_neo_token_contract = std::env::var("CUSTODY_NEOX_NEO_TOKEN_ADDR").ok();
     let rebalance_threshold_bps = std::env::var("CUSTODY_REBALANCE_THRESHOLD_BPS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -123,13 +136,17 @@ pub(crate) fn load_config() -> CustodyConfig {
         evm_rpc_url,
         eth_rpc_url,
         bnb_rpc_url,
+        neox_rpc_url,
+        neox_chain_id,
         solana_confirmations,
         evm_confirmations,
+        neox_confirmations,
         poll_interval_secs,
         treasury_solana_address,
         treasury_evm_address,
         treasury_eth_address,
         treasury_bnb_address,
+        treasury_neox_address,
         solana_fee_payer_keypair_path,
         solana_treasury_owner,
         solana_usdc_mint,
@@ -144,6 +161,9 @@ pub(crate) fn load_config() -> CustodyConfig {
         wsol_contract_addr,
         weth_contract_addr,
         wbnb_contract_addr,
+        wgas_contract_addr,
+        wneo_contract_addr,
+        neox_neo_token_contract,
         rebalance_threshold_bps,
         rebalance_target_bps,
         rebalance_max_slippage_bps,
@@ -201,6 +221,7 @@ pub(crate) fn load_config() -> CustodyConfig {
         },
         withdrawal_velocity_policy,
         evm_multisig_address: std::env::var("CUSTODY_EVM_MULTISIG_ADDRESS").ok(),
+        neox_multisig_address: std::env::var("CUSTODY_NEOX_MULTISIG_ADDRESS").ok(),
         webhook_allowed_hosts,
     }
 }

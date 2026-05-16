@@ -296,6 +296,22 @@ pub fn rewards_referral_earnings_key(account_hex: &str) -> String {
     key_with_string("rew_refr_", account_hex)
 }
 
+pub fn rewards_lp_pending_key(position_id: u64) -> String {
+    key_with_u64("rew_lp_", position_id)
+}
+
+pub fn rewards_lp_pair_rate_key(pair_id: u64) -> String {
+    key_with_u64("rew_rate_", pair_id)
+}
+
+pub fn rewards_lp_pair_budget_key(pair_id: u64) -> String {
+    key_with_u64("rew_lpb_", pair_id)
+}
+
+pub fn rewards_lp_pair_distributed_key(pair_id: u64) -> String {
+    key_with_u64("rew_lpd_", pair_id)
+}
+
 pub fn governance_proposal_key(proposal_id: u64) -> String {
     key_with_u64("gov_prop_", proposal_id)
 }

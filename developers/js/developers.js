@@ -368,6 +368,12 @@ const SEARCH_INDEX = [
     { title: 'WebSocket Subscriptions', desc: 'Subscribe to real-time events via WebSocket', url: 'ws-reference.html#subscribeSlots', category: 'API' },
     { title: 'getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
     { title: 'getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
+    { title: 'Neo X Integration', desc: 'Route status, wNEO/wGAS reserves, rewards reads, and DEX pairs', url: 'rpc-reference.html#neo-x-route-rewards', category: 'Neo' },
+    { title: 'getNeoGasRewardsStats', desc: 'Read Neo GAS rewards vault accounting', url: 'rpc-reference.html#getNeoGasRewardsStats', category: 'Neo' },
+    { title: 'getNeoGasRewardsPosition', desc: 'Read wallet-level Neo GAS rewards position', url: 'rpc-reference.html#getNeoGasRewardsPosition', category: 'Neo' },
+    { title: 'getWneoStats', desc: 'Read wrapped NEO reserve and supply stats', url: 'rpc-reference.html#getWneoStats', category: 'Neo' },
+    { title: 'getWgasStats', desc: 'Read wrapped GAS reserve and supply stats', url: 'rpc-reference.html#getWgasStats', category: 'Neo' },
+    { title: 'Wrapped Assets', desc: 'wBNB, wNEO, and wGAS wrapped asset custody and reserve model', url: 'contract-reference.html#wneo-token', category: 'Neo' },
 
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },
@@ -382,7 +388,8 @@ const SEARCH_INDEX = [
     { title: 'Contract Setup', desc: 'Tools and patterns for contract development', url: 'contracts.html#setup', category: 'Contracts' },
     { title: 'Deploying Contracts', desc: 'Deploy smart contracts to Lichen networks', url: 'contracts.html#deploy', category: 'Contracts' },
     { title: 'Cross-Contract Calls', desc: 'Call between contracts on-chain', url: 'contracts.html#crosscall', category: 'Contracts' },
-    { title: 'Contract Reference', desc: 'Full reference for all 28 on-chain contracts', url: 'contract-reference.html', category: 'Contracts' },
+    { title: 'Contract Reference', desc: 'Full reference for the genesis contract catalog', url: 'contract-reference.html', category: 'Contracts' },
+    { title: 'Neo GAS Rewards Contract', desc: 'NEOGASRWD vault exports and public-gate boundaries', url: 'contract-reference.html#neo-gas-rewards', category: 'Contracts' },
     { title: 'LichenID Identity', desc: 'On-chain identity, naming, and reputation', url: 'lichenid.html', category: 'Contracts' },
 
     // CLI
@@ -392,6 +399,7 @@ const SEARCH_INDEX = [
     { title: 'lichen transfer', desc: 'Send LICN between addresses', url: 'cli-reference.html#transfer', category: 'CLI' },
     { title: 'lichen wallet create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
     { title: 'lichen balance', desc: 'Check address balance', url: 'cli-reference.html#balance', category: 'CLI' },
+    { title: 'Neo route status CLI', desc: 'Check neox gas and neox neo route pause state', url: 'cli-reference.html#restriction-route-status', category: 'CLI' },
 
     // Tokens
     { title: 'Token Standard (MRC-20)', desc: 'Fungible token standard specification', url: 'contract-reference.html#lusd-token', category: 'Tokens' },
@@ -432,6 +440,7 @@ const SEARCH_INDEX = [
     { title: 'Contract Reference', desc: 'Production contract catalog and interfaces', url: 'contract-reference.html', category: 'Contracts' },
     { title: 'LichenBridge Contract', desc: 'Bridge lock/mint program reference', url: 'contract-reference.html#lichenbridge', category: 'Contracts' },
     { title: 'DEX Contracts', desc: 'Core DEX programs, governance and rewards', url: 'contract-reference.html#dex-core', category: 'Contracts' },
+    { title: 'Wrapped NEO and GAS', desc: 'wNEO/wGAS wrapped asset contracts', url: 'contract-reference.html#wneo-token', category: 'Contracts' },
 
     // Tools
     { title: 'Wallet App', desc: 'Browser wallet with popup bridge and extension-backed signing flows', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.wallet) || '../wallet/index.html', category: 'Tools' },

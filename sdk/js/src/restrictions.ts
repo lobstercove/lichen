@@ -58,6 +58,28 @@ export type RestrictionReasonInput = RestrictionReason | number;
 export type RestrictionLiftReasonInput = RestrictionLiftReason | number;
 export type RestrictionModeInput = RestrictionMode | number;
 
+export const BRIDGE_CHAINS = Object.freeze({
+  SOLANA: 'solana',
+  ETHEREUM: 'ethereum',
+  BSC: 'bsc',
+  BNB: 'bnb',
+  NEOX: 'neox',
+} as const);
+
+export type BridgeChain = typeof BRIDGE_CHAINS[keyof typeof BRIDGE_CHAINS];
+
+export const BRIDGE_ASSETS = Object.freeze({
+  SOL: 'sol',
+  ETH: 'eth',
+  BNB: 'bnb',
+  GAS: 'gas',
+  NEO: 'neo',
+  USDC: 'usdc',
+  USDT: 'usdt',
+} as const);
+
+export type BridgeAsset = typeof BRIDGE_ASSETS[keyof typeof BRIDGE_ASSETS];
+
 export interface AccountRestrictionTarget {
   type: 'account';
   account: AddressInput;
@@ -87,8 +109,8 @@ export interface CodeHashRestrictionTarget {
 
 export interface BridgeRouteRestrictionTarget {
   type: 'bridge_route';
-  chain: string;
-  asset: string;
+  chain: BridgeChain | string;
+  asset: BridgeAsset | string;
 }
 
 export interface ProtocolModuleRestrictionTarget {
@@ -348,13 +370,13 @@ export interface UnbanCodeHashParams extends RestrictionBuilderBaseParams {
 }
 
 export interface BridgeRouteRestrictionParams extends RestrictCommonParams {
-  chain: string;
-  asset: string;
+  chain: BridgeChain | string;
+  asset: BridgeAsset | string;
 }
 
 export interface ResumeBridgeRouteParams extends RestrictionBuilderBaseParams {
-  chain: string;
-  asset: string;
+  chain: BridgeChain | string;
+  asset: BridgeAsset | string;
   restrictionId?: number | bigint;
   liftReason: RestrictionLiftReasonInput;
 }
@@ -520,7 +542,7 @@ export class RestrictionGovernanceClient {
     return this.rpc('getCodeHashRestrictionStatus', [codeHash]);
   }
 
-  async getBridgeRouteRestrictionStatus(chain: string, asset: string): Promise<BridgeRouteRestrictionStatus> {
+  async getBridgeRouteRestrictionStatus(chain: BridgeChain | string, asset: BridgeAsset | string): Promise<BridgeRouteRestrictionStatus> {
     return this.rpc('getBridgeRouteRestrictionStatus', [chain, asset]);
   }
 

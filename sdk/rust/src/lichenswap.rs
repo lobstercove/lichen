@@ -88,7 +88,9 @@ pub struct LichenSwapClient {
 }
 
 fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+    );
     out.push(0xAB);
     out.extend_from_slice(layout);
     for chunk in chunks {
@@ -98,7 +100,13 @@ fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn encode_create_pool_args(params: &CreatePoolParams) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x20], &[params.token_a.as_ref().to_vec(), params.token_b.as_ref().to_vec()])
+    build_layout_args(
+        &[0x20, 0x20],
+        &[
+            params.token_a.as_ref().to_vec(),
+            params.token_b.as_ref().to_vec(),
+        ],
+    )
 }
 
 fn encode_add_liquidity_args(provider: &Pubkey, params: &AddLiquidityParams) -> Vec<u8> {
@@ -170,12 +178,9 @@ fn ensure_readonly_success(
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if !allowed_codes.contains(&code) {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("LichenSwap {} returned code {}", function_name, code)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("LichenSwap {} returned code {}", function_name, code)
+        })));
     }
     if !result.success {
         return Err(Error::RpcError(
@@ -208,9 +213,12 @@ fn decode_u64(bytes: &[u8], start: usize, function_name: &str) -> Result<u64> {
             function_name,
         )));
     }
-    let slice: [u8; 8] = bytes[start..end]
-        .try_into()
-        .map_err(|_| Error::ParseError(format!("LichenSwap {} payload was malformed", function_name)))?;
+    let slice: [u8; 8] = bytes[start..end].try_into().map_err(|_| {
+        Error::ParseError(format!(
+            "LichenSwap {} payload was malformed",
+            function_name
+        ))
+    })?;
     Ok(u64::from_le_bytes(slice))
 }
 
@@ -267,7 +275,10 @@ fn decode_protocol_fees(result: &ReadonlyContractResult) -> Result<LichenSwapPro
     })
 }
 
-fn decode_volume_totals(result: &ReadonlyContractResult, function_name: &str) -> Result<LichenSwapVolumeTotals> {
+fn decode_volume_totals(
+    result: &ReadonlyContractResult,
+    function_name: &str,
+) -> Result<LichenSwapVolumeTotals> {
     ensure_readonly_success(result, function_name, &[0])?;
     let bytes = decode_return_data(result, function_name)?;
     if bytes.len() < VOLUME_TOTALS_SIZE {
@@ -335,10 +346,9 @@ impl LichenSwapClient {
                 continue;
             };
             let program_id = Pubkey::from_base58(program).map_err(Error::ParseError)?;
-            *self
-                .program_id
-                .lock()
-                .map_err(|_| Error::ConfigError("LichenSwapClient program cache lock poisoned".into()))? = Some(program_id);
+            *self.program_id.lock().map_err(|_| {
+                Error::ConfigError("LichenSwapClient program cache lock poisoned".into())
+            })? = Some(program_id);
             return Ok(program_id);
         }
 
@@ -350,7 +360,12 @@ impl LichenSwapClient {
     pub async fn get_pool_info(&self) -> Result<LichenSwapPoolInfo> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_pool_info", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_pool_info",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_pool_info(&result)
     }
@@ -384,7 +399,12 @@ impl LichenSwapClient {
     pub async fn get_total_liquidity(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_total_liquidity", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_total_liquidity",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_total_liquidity")
     }
@@ -405,7 +425,12 @@ impl LichenSwapClient {
     pub async fn get_twap_cumulatives(&self) -> Result<LichenSwapTwapCumulatives> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_twap_cumulatives", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_twap_cumulatives",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_twap_cumulatives(&result)
     }
@@ -413,7 +438,12 @@ impl LichenSwapClient {
     pub async fn get_twap_snapshot_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_twap_snapshot_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_twap_snapshot_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_twap_snapshot_count")
     }
@@ -421,7 +451,12 @@ impl LichenSwapClient {
     pub async fn get_protocol_fees(&self) -> Result<LichenSwapProtocolFees> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_protocol_fees", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_protocol_fees",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_protocol_fees(&result)
     }
@@ -429,7 +464,12 @@ impl LichenSwapClient {
     pub async fn get_pool_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_pool_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_pool_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_pool_count")
     }
@@ -437,7 +477,12 @@ impl LichenSwapClient {
     pub async fn get_swap_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_swap_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_swap_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_swap_count")
     }
@@ -445,7 +490,12 @@ impl LichenSwapClient {
     pub async fn get_total_volume(&self) -> Result<LichenSwapVolumeTotals> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_total_volume", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_total_volume",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_volume_totals(&result, "get_total_volume")
     }
@@ -453,7 +503,12 @@ impl LichenSwapClient {
     pub async fn get_swap_stats(&self) -> Result<LichenSwapSwapStats> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_swap_stats", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_swap_stats",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_swap_stats(&result)
     }
@@ -466,17 +521,32 @@ impl LichenSwapClient {
     pub async fn create_pool(&self, owner: &Keypair, params: CreatePoolParams) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
-            .call_contract(owner, &program_id, "create_pool", encode_create_pool_args(&params), 0)
+            .call_contract(
+                owner,
+                &program_id,
+                "create_pool",
+                encode_create_pool_args(&params),
+                0,
+            )
             .await
     }
 
-    pub async fn add_liquidity(&self, provider: &Keypair, params: AddLiquidityParams) -> Result<String> {
+    pub async fn add_liquidity(
+        &self,
+        provider: &Keypair,
+        params: AddLiquidityParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         let value = match params.value_spores {
             Some(value) => value,
-            None => params.amount_a.checked_add(params.amount_b).ok_or_else(|| {
-                Error::BuildError("LichenSwap add_liquidity default value overflowed u64".into())
-            })?,
+            None => params
+                .amount_a
+                .checked_add(params.amount_b)
+                .ok_or_else(|| {
+                    Error::BuildError(
+                        "LichenSwap add_liquidity default value overflowed u64".into(),
+                    )
+                })?,
         };
         self.client
             .call_contract(
@@ -493,7 +563,13 @@ impl LichenSwapClient {
         let program_id = self.get_program_id().await?;
         let value = params.value_spores.unwrap_or(params.amount_in);
         self.client
-            .call_contract(trader, &program_id, "swap", encode_swap_args(&params, a_to_b), value)
+            .call_contract(
+                trader,
+                &program_id,
+                "swap",
+                encode_swap_args(&params, a_to_b),
+                value,
+            )
             .await
     }
 

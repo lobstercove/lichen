@@ -10,6 +10,7 @@
 # Usage:
 #   ./scripts/build-all-contracts.sh           # build all
 #   ./scripts/build-all-contracts.sh --dex     # build only DEX + wrapped tokens
+#   ./scripts/build-all-contracts.sh --neo     # build Neo product contracts only
 #   ./scripts/build-all-contracts.sh --test    # build + run tests
 #
 # Requirements:
@@ -65,7 +66,13 @@ WRAPPED_TOKEN_CONTRACTS=(
     lusd_token
     wsol_token
     weth_token
-        wbnb_token
+    wbnb_token
+    wgas_token
+    wneo_token
+)
+
+NEO_PRODUCT_CONTRACTS=(
+    neo_gas_rewards
 )
 
 # Parse args
@@ -76,12 +83,14 @@ for arg in "$@"; do
         --dex)     BUILD_SCOPE="dex" ;;
         --tokens)  BUILD_SCOPE="tokens" ;;
         --core)    BUILD_SCOPE="core" ;;
+        --neo|--products) BUILD_SCOPE="neo" ;;
         --test)    RUN_TESTS=true ;;
         --help|-h)
-            echo "Usage: $0 [--dex|--tokens|--core] [--test]"
+            echo "Usage: $0 [--dex|--tokens|--core|--neo] [--test]"
             echo "  --dex     Build DEX + wrapped token contracts only"
             echo "  --tokens  Build wrapped token contracts only"
             echo "  --core    Build core contracts only"
+            echo "  --neo     Build Neo product contracts only"
             echo "  --test    Run cargo test after building"
             exit 0
             ;;
@@ -90,10 +99,11 @@ done
 
 # Select contracts to build
 case "$BUILD_SCOPE" in
-    all)     CONTRACTS=("${CORE_CONTRACTS[@]}" "${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}") ;;
+    all)     CONTRACTS=("${CORE_CONTRACTS[@]}" "${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}" "${NEO_PRODUCT_CONTRACTS[@]}") ;;
     dex)     CONTRACTS=("${DEX_CONTRACTS[@]}" "${WRAPPED_TOKEN_CONTRACTS[@]}") ;;
     tokens)  CONTRACTS=("${WRAPPED_TOKEN_CONTRACTS[@]}") ;;
     core)    CONTRACTS=("${CORE_CONTRACTS[@]}") ;;
+    neo)     CONTRACTS=("${NEO_PRODUCT_CONTRACTS[@]}") ;;
 esac
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
