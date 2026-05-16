@@ -88,6 +88,17 @@ const CM_PAYMENT_VOLUME_KEY: &[u8] = b"cm_payment_volume";
 const CM_DISPUTE_COUNT_KEY: &[u8] = b"cm_dispute_count";
 const CM_TOKEN_ADDRESS_KEY: &[u8] = b"cm_token_address";
 
+const CM_AGENT_PAYMENTS_ENABLED_KEY: &[u8] = b"cm_agent_pay_enabled";
+const CM_AGENT_ROUTE_PAUSED_KEY: &[u8] = b"cm_agent_route_paused";
+const CM_AGENT_MAX_DAILY_CAP_KEY: &[u8] = b"cm_agent_max_daily";
+const CM_AGENT_MAX_PER_TASK_CAP_KEY: &[u8] = b"cm_agent_max_task";
+const CM_AGENT_POLICY_COUNT_KEY: &[u8] = b"cm_agent_policy_count";
+const CM_AGENT_PAYMENT_COUNT_KEY: &[u8] = b"cm_agent_pay_count";
+const CM_AGENT_PAYMENT_VOLUME_KEY: &[u8] = b"cm_agent_pay_volume";
+const CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY: &[u8] = b"cm_agent_block_count";
+const AGENT_SPEND_WINDOW_SLOTS: u64 = 216_000;
+const AGENT_POLICY_SIZE: usize = 73;
+
 // ============================================================================
 // STORAGE KEY HELPERS
 // ============================================================================
@@ -247,6 +258,153 @@ fn signer_matches(addr: &[u8; 32]) -> bool {
     get_caller().0 == *addr
 }
 
+fn stored_bool(key: &[u8]) -> bool {
+    storage_get(key)
+        .map(|data| data.first().copied().unwrap_or(0) != 0)
+        .unwrap_or(false)
+}
+
+fn cm_paused() -> bool {
+    stored_bool(b"cm_paused")
+}
+
+fn nonzero_hash(hash: &[u8; 32]) -> bool {
+    hash.iter().any(|&byte| byte != 0)
+}
+
+fn increment_counter(key: &[u8]) {
+    increment_counter_saturating(key);
+}
+
+fn agent_policy_key(agent: &[u8; 32]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(13 + 64);
+    key.extend_from_slice(b"agent_policy:");
+    key.extend_from_slice(&hex_encode(agent));
+    key
+}
+
+fn agent_spend_key(agent: &[u8; 32], window: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(13 + 64 + 20);
+    key.extend_from_slice(b"agent_spent:");
+    key.extend_from_slice(&hex_encode(agent));
+    key.push(b':');
+    key.extend_from_slice(&u64_to_decimal(window));
+    key
+}
+
+fn agent_job_action_key(job_id: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(17 + 20);
+    key.extend_from_slice(b"agent_job_action:");
+    key.extend_from_slice(&u64_to_decimal(job_id));
+    key
+}
+
+fn current_agent_spend_window() -> u64 {
+    get_slot() / AGENT_SPEND_WINDOW_SLOTS
+}
+
+fn encode_agent_policy(
+    policy_version: u64,
+    daily_cap: u64,
+    per_task_cap: u64,
+    policy_hash: &[u8; 32],
+    created_slot: u64,
+    updated_slot: u64,
+    active: bool,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(AGENT_POLICY_SIZE);
+    data.extend_from_slice(&u64_to_bytes(policy_version));
+    data.extend_from_slice(&u64_to_bytes(daily_cap));
+    data.extend_from_slice(&u64_to_bytes(per_task_cap));
+    data.extend_from_slice(policy_hash);
+    data.extend_from_slice(&u64_to_bytes(created_slot));
+    data.extend_from_slice(&u64_to_bytes(updated_slot));
+    data.push(if active { 1 } else { 0 });
+    data
+}
+
+fn read_agent_policy(agent: &[u8; 32]) -> Option<Vec<u8>> {
+    storage_get(&agent_policy_key(agent)).filter(|data| data.len() >= AGENT_POLICY_SIZE)
+}
+
+fn create_escrowed_job(
+    req_arr: &[u8; 32],
+    compute_units_needed: u64,
+    max_price: u64,
+    hash_arr: &[u8; 32],
+) -> Result<u64, u32> {
+    if compute_units_needed == 0 {
+        log_info("Compute units must be > 0");
+        return Err(1);
+    }
+    if max_price == 0 {
+        log_info("Max price must be > 0");
+        return Err(11);
+    }
+
+    if !check_identity_gate(req_arr) {
+        log_info("Insufficient LichenID reputation for job submission");
+        return Err(10);
+    }
+
+    let job_id = stored_u64(b"job_count");
+    let next_job_id = match job_id.checked_add(1) {
+        Some(next) => next,
+        None => {
+            log_info("Job count overflow");
+            return Err(14);
+        }
+    };
+
+    let token_addr = match load_token_address() {
+        Some(a) => a,
+        None => {
+            log_info("Payment token not configured — admin must call set_token_address");
+            return Err(12);
+        }
+    };
+    let contract_addr = get_contract_address();
+    match receive_token_or_native(
+        Address(token_addr),
+        Address(*req_arr),
+        contract_addr,
+        max_price,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            log_info("Token transfer returned false — requester escrow not collected");
+            return Err(13);
+        }
+        Err(_) => {
+            log_info("Token transfer failed — requester has insufficient balance");
+            return Err(13);
+        }
+    }
+
+    storage_set(b"job_count", &u64_to_bytes(next_job_id));
+
+    let current_slot = get_slot();
+    let data = encode_job(
+        req_arr,
+        compute_units_needed,
+        max_price,
+        hash_arr,
+        JOB_PENDING,
+        &[0u8; 32],
+        &[0u8; 32],
+        current_slot,
+        0,
+    );
+
+    let jk = job_key(job_id);
+    storage_set(&jk, &data);
+
+    let ek = escrow_key(job_id);
+    storage_set(&ek, &u64_to_bytes(max_price));
+
+    Ok(job_id)
+}
+
 // ============================================================================
 // PROVIDER LAYOUT
 // ============================================================================
@@ -337,8 +495,7 @@ pub extern "C" fn register_provider(
     log_info("Registering compute provider...");
 
     // SECURITY FIX: Check if contract is paused
-    let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 {
+    if cm_paused() {
         return 99;
     }
 
@@ -441,81 +598,14 @@ pub extern "C" fn submit_job(
         return 200;
     }
 
-    if compute_units_needed == 0 {
-        log_info("Compute units must be > 0");
-        return 1;
-    }
-    if max_price == 0 {
-        log_info("Max price must be > 0");
-        return 11;
-    }
-
-    // LichenID reputation gate
-    if !check_identity_gate(&req_arr) {
-        log_info("Insufficient LichenID reputation for job submission");
-        return 10;
-    }
-
-    let job_id = stored_u64(b"job_count");
-    let next_job_id = match job_id.checked_add(1) {
-        Some(next) => next,
-        None => {
-            log_info("Job count overflow");
-            return 14;
+    match create_escrowed_job(&req_arr, compute_units_needed, max_price, &hash_arr) {
+        Ok(job_id) => {
+            lichen_sdk::set_return_data(&u64_to_bytes(job_id));
+            log_info("Compute job submitted, payment escrowed");
+            0
         }
-    };
-
-    // AUDIT-FIX H-1: Actually collect tokens from requester for escrow
-    let token_addr = match load_token_address() {
-        Some(a) => a,
-        None => {
-            log_info("Payment token not configured — admin must call set_token_address");
-            return 12;
-        }
-    };
-    let contract_addr = get_contract_address();
-    match receive_token_or_native(
-        Address(token_addr),
-        Address(req_arr),
-        contract_addr,
-        max_price,
-    ) {
-        Ok(true) => {}
-        Ok(false) => {
-            log_info("Token transfer returned false — requester escrow not collected");
-            return 13;
-        }
-        Err(_) => {
-            log_info("Token transfer failed — requester has insufficient balance");
-            return 13;
-        }
+        Err(code) => code,
     }
-
-    storage_set(b"job_count", &u64_to_bytes(next_job_id));
-
-    let current_slot = get_slot();
-    let data = encode_job(
-        &req_arr,
-        compute_units_needed,
-        max_price,
-        &hash_arr,
-        JOB_PENDING,
-        &[0u8; 32],
-        &[0u8; 32],
-        current_slot,
-        0,
-    );
-
-    let jk = job_key(job_id);
-    storage_set(&jk, &data);
-
-    // v2: escrow max_price
-    let ek = escrow_key(job_id);
-    storage_set(&ek, &u64_to_bytes(max_price));
-
-    lichen_sdk::set_return_data(&u64_to_bytes(job_id));
-    log_info("Compute job submitted, payment escrowed");
-    0
 }
 
 // ============================================================================
@@ -983,6 +1073,308 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8)
     storage_set(CM_TOKEN_ADDRESS_KEY, &token);
     log_info("Payment token address set");
     0
+}
+
+// ============================================================================
+// NX-980: AGENT COMPUTE SPENDING POLICY
+// ============================================================================
+
+/// Admin configures the global agent-compute payment controls.
+///
+/// `enabled` and `route_paused` are 0/1 flags. When disabled or paused, only
+/// existing normal compute-market flows remain available; the agent-specific
+/// submit path rejects new payments before escrow is collected.
+#[no_mangle]
+pub extern "C" fn set_agent_compute_controls(
+    caller_ptr: *const u8,
+    enabled: u64,
+    route_paused: u64,
+    max_daily_cap: u64,
+    max_per_task_cap: u64,
+) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !signer_matches(&caller) {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if enabled > 1 || route_paused > 1 {
+        return 2;
+    }
+    if enabled == 1 {
+        if max_daily_cap == 0 || max_per_task_cap == 0 {
+            return 3;
+        }
+        if max_per_task_cap > max_daily_cap {
+            return 4;
+        }
+    }
+
+    storage_set(CM_AGENT_PAYMENTS_ENABLED_KEY, &[enabled as u8]);
+    storage_set(CM_AGENT_ROUTE_PAUSED_KEY, &[route_paused as u8]);
+    storage_set(CM_AGENT_MAX_DAILY_CAP_KEY, &u64_to_bytes(max_daily_cap));
+    storage_set(
+        CM_AGENT_MAX_PER_TASK_CAP_KEY,
+        &u64_to_bytes(max_per_task_cap),
+    );
+    log_info("Agent compute controls configured");
+    0
+}
+
+/// Agent wallet opts into a bounded spending policy.
+///
+/// The policy hash must be a non-zero 32-byte hash of the off-chain disclosure,
+/// PQ signer set, task-accounting rules, and allowed asset/route statement.
+#[no_mangle]
+pub extern "C" fn set_agent_spending_policy(
+    agent_ptr: *const u8,
+    daily_cap: u64,
+    per_task_cap: u64,
+    policy_hash_ptr: *const u8,
+    policy_version: u64,
+) -> u32 {
+    let agent = match read_address32(agent_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    let policy_hash = match read_address32(policy_hash_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !signer_matches(&agent) {
+        return 200;
+    }
+    if policy_version == 0 || daily_cap == 0 || per_task_cap == 0 {
+        return 1;
+    }
+    if per_task_cap > daily_cap {
+        return 2;
+    }
+    if !nonzero_hash(&policy_hash) {
+        return 3;
+    }
+
+    let key = agent_policy_key(&agent);
+    let existed = storage_get(&key).is_some();
+    let created_slot = storage_get(&key)
+        .filter(|data| data.len() >= AGENT_POLICY_SIZE)
+        .map(|data| bytes_to_u64(&data[56..64]))
+        .unwrap_or_else(get_slot);
+    let current_slot = get_slot();
+    storage_set(
+        &key,
+        &encode_agent_policy(
+            policy_version,
+            daily_cap,
+            per_task_cap,
+            &policy_hash,
+            created_slot,
+            current_slot,
+            true,
+        ),
+    );
+    if !existed {
+        increment_counter(CM_AGENT_POLICY_COUNT_KEY);
+    }
+    log_info("Agent spending policy configured");
+    0
+}
+
+/// Agent wallet disables its spending policy. This remains available while the
+/// market or Neo agent route is paused because it only narrows permissions.
+#[no_mangle]
+pub extern "C" fn disable_agent_spending_policy(agent_ptr: *const u8) -> u32 {
+    let agent = match read_address32(agent_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !signer_matches(&agent) {
+        return 200;
+    }
+    let key = agent_policy_key(&agent);
+    let mut data = match storage_get(&key) {
+        Some(data) if data.len() >= AGENT_POLICY_SIZE => data,
+        _ => return 1,
+    };
+    data[72] = 0;
+    data[64..72].copy_from_slice(&u64_to_bytes(get_slot()));
+    storage_set(&key, &data);
+    log_info("Agent spending policy disabled");
+    0
+}
+
+/// Submit a compute job through the agent-specific NX-980 policy path.
+///
+/// This records a non-zero action hash for the PQ-attested agent action and
+/// enforces per-task plus per-window spend limits before escrow collection.
+#[no_mangle]
+pub extern "C" fn submit_agent_job(
+    agent_ptr: *const u8,
+    compute_units_needed: u64,
+    max_price: u64,
+    code_hash_ptr: *const u8,
+    action_hash_ptr: *const u8,
+) -> u32 {
+    log_info("Submitting agent compute job...");
+
+    if cm_paused() {
+        return 99;
+    }
+    if !stored_bool(CM_AGENT_PAYMENTS_ENABLED_KEY) {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 40;
+    }
+    if stored_bool(CM_AGENT_ROUTE_PAUSED_KEY) {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 41;
+    }
+
+    let agent = match read_address32(agent_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    let code_hash = match read_address32(code_hash_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    let action_hash = match read_address32(action_hash_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !signer_matches(&agent) {
+        return 200;
+    }
+    if !nonzero_hash(&action_hash) {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 42;
+    }
+
+    let policy = match read_agent_policy(&agent) {
+        Some(data) if data[72] == 1 => data,
+        _ => {
+            increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+            return 43;
+        }
+    };
+    let daily_cap = bytes_to_u64(&policy[8..16]);
+    let per_task_cap = bytes_to_u64(&policy[16..24]);
+    if max_price > per_task_cap {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 44;
+    }
+
+    let global_daily_cap = stored_u64(CM_AGENT_MAX_DAILY_CAP_KEY);
+    let global_per_task_cap = stored_u64(CM_AGENT_MAX_PER_TASK_CAP_KEY);
+    if global_per_task_cap > 0 && max_price > global_per_task_cap {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 45;
+    }
+
+    let window = current_agent_spend_window();
+    let spend_key = agent_spend_key(&agent, window);
+    let spent = stored_u64(&spend_key);
+    let next_spent = match spent.checked_add(max_price) {
+        Some(value) => value,
+        None => {
+            increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+            return 46;
+        }
+    };
+    if next_spent > daily_cap {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 47;
+    }
+    if global_daily_cap > 0 && next_spent > global_daily_cap {
+        increment_counter(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY);
+        return 48;
+    }
+
+    match create_escrowed_job(&agent, compute_units_needed, max_price, &code_hash) {
+        Ok(job_id) => {
+            storage_set(&spend_key, &u64_to_bytes(next_spent));
+            storage_set(&agent_job_action_key(job_id), &action_hash);
+            increment_counter(CM_AGENT_PAYMENT_COUNT_KEY);
+            let volume = stored_u64(CM_AGENT_PAYMENT_VOLUME_KEY);
+            storage_set(
+                CM_AGENT_PAYMENT_VOLUME_KEY,
+                &u64_to_bytes(volume.saturating_add(max_price)),
+            );
+            lichen_sdk::set_return_data(&u64_to_bytes(job_id));
+            log_info("Agent compute job submitted, policy spend recorded");
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Return global agent-compute controls and counters.
+///
+/// Layout: enabled(1), route_paused(1), max_daily_cap(u64),
+/// max_per_task_cap(u64), policy_count(u64), payment_count(u64),
+/// payment_volume(u64), blocked_payment_count(u64).
+#[no_mangle]
+pub extern "C" fn get_agent_compute_controls() -> u32 {
+    let mut buf = Vec::with_capacity(50);
+    buf.push(if stored_bool(CM_AGENT_PAYMENTS_ENABLED_KEY) {
+        1
+    } else {
+        0
+    });
+    buf.push(if stored_bool(CM_AGENT_ROUTE_PAUSED_KEY) {
+        1
+    } else {
+        0
+    });
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CM_AGENT_MAX_DAILY_CAP_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CM_AGENT_MAX_PER_TASK_CAP_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CM_AGENT_POLICY_COUNT_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CM_AGENT_PAYMENT_COUNT_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(CM_AGENT_PAYMENT_VOLUME_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(stored_u64(
+        CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY,
+    )));
+    lichen_sdk::set_return_data(&buf);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn get_agent_spending_policy(agent_ptr: *const u8) -> u32 {
+    let agent = match read_address32(agent_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    match read_agent_policy(&agent) {
+        Some(data) => {
+            lichen_sdk::set_return_data(&data);
+            0
+        }
+        None => 1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_agent_spend_window(agent_ptr: *const u8, window: u64) -> u32 {
+    let agent = match read_address32(agent_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    lichen_sdk::set_return_data(&u64_to_bytes(stored_u64(&agent_spend_key(&agent, window))));
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn get_agent_job_action(job_id: u64) -> u32 {
+    match storage_get(&agent_job_action_key(job_id)) {
+        Some(data) => {
+            lichen_sdk::set_return_data(&data);
+            0
+        }
+        None => 1,
+    }
 }
 
 // ============================================================================
@@ -1974,6 +2366,57 @@ mod tests {
     fn resolve_as(arb: &[u8; 32], job_id: u64, pct: u64) -> u32 {
         test_mock::set_caller(*arb);
         resolve_dispute(arb.as_ptr(), job_id, pct)
+    }
+
+    fn set_agent_controls_as(
+        admin: &[u8; 32],
+        enabled: u64,
+        route_paused: u64,
+        max_daily_cap: u64,
+        max_per_task_cap: u64,
+    ) -> u32 {
+        test_mock::set_caller(*admin);
+        set_agent_compute_controls(
+            admin.as_ptr(),
+            enabled,
+            route_paused,
+            max_daily_cap,
+            max_per_task_cap,
+        )
+    }
+
+    fn set_agent_policy_as(
+        agent: &[u8; 32],
+        daily_cap: u64,
+        per_task_cap: u64,
+        policy_hash: &[u8; 32],
+        policy_version: u64,
+    ) -> u32 {
+        test_mock::set_caller(*agent);
+        set_agent_spending_policy(
+            agent.as_ptr(),
+            daily_cap,
+            per_task_cap,
+            policy_hash.as_ptr(),
+            policy_version,
+        )
+    }
+
+    fn submit_agent_job_as(
+        agent: &[u8; 32],
+        cu: u64,
+        price: u64,
+        code_hash: &[u8; 32],
+        action_hash: &[u8; 32],
+    ) -> u32 {
+        test_mock::set_caller(*agent);
+        submit_agent_job(
+            agent.as_ptr(),
+            cu,
+            price,
+            code_hash.as_ptr(),
+            action_hash.as_ptr(),
+        )
     }
 
     fn unpaid_payout_key(token: &[u8; 32], recipient: &[u8; 32]) -> Vec<u8> {
@@ -3061,6 +3504,163 @@ mod tests {
 
         let completed_count = test_mock::get_storage(CM_COMPLETED_COUNT_KEY).unwrap();
         assert_eq!(bytes_to_u64(&completed_count), u64::MAX);
+    }
+
+    #[test]
+    fn test_agent_compute_policy_enforces_task_and_daily_caps() {
+        setup();
+        test_mock::set_slot(100);
+        let admin = [0xAD; 32];
+        let agent = [0xA9; 32];
+        let policy_hash = [0x44; 32];
+        let code_hash = [0x55; 32];
+        let action_hash = [0x66; 32];
+
+        assert_eq!(initialize_as(&admin), 0);
+        assert_eq!(set_agent_controls_as(&admin, 1, 0, 10_000, 5_000), 0);
+        assert_eq!(
+            set_agent_policy_as(&agent, 6_000, 4_000, &policy_hash, 1),
+            0
+        );
+
+        assert_eq!(
+            get_agent_spending_policy(agent.as_ptr()),
+            0,
+            "policy should be queryable"
+        );
+        let policy = test_mock::get_return_data();
+        assert_eq!(policy.len(), AGENT_POLICY_SIZE);
+        assert_eq!(bytes_to_u64(&policy[0..8]), 1);
+        assert_eq!(bytes_to_u64(&policy[8..16]), 6_000);
+        assert_eq!(bytes_to_u64(&policy[16..24]), 4_000);
+        assert_eq!(&policy[24..56], &policy_hash);
+        assert_eq!(policy[72], 1);
+
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 3_000, &code_hash, &action_hash),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 0);
+        assert_eq!(stored_u64(b"job_count"), 1);
+        assert_eq!(stored_u64(CM_AGENT_PAYMENT_COUNT_KEY), 1);
+        assert_eq!(stored_u64(CM_AGENT_PAYMENT_VOLUME_KEY), 3_000);
+
+        assert_eq!(get_agent_job_action(0), 0);
+        assert_eq!(test_mock::get_return_data(), action_hash.to_vec());
+        assert_eq!(get_agent_spend_window(agent.as_ptr(), 0), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 3_000);
+
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 4_001, &code_hash, &action_hash),
+            44,
+            "per-task cap blocks before escrow"
+        );
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 3_500, &code_hash, &action_hash),
+            47,
+            "daily cap blocks before escrow"
+        );
+        assert_eq!(stored_u64(b"job_count"), 1);
+        assert_eq!(stored_u64(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY), 2);
+    }
+
+    #[test]
+    fn test_agent_compute_route_pause_blocks_before_escrow() {
+        setup();
+        test_mock::set_slot(100);
+        let admin = [0xAD; 32];
+        let agent = [0xA9; 32];
+        let policy_hash = [0x44; 32];
+        let code_hash = [0x55; 32];
+        let action_hash = [0x66; 32];
+
+        assert_eq!(initialize_as(&admin), 0);
+        assert_eq!(set_agent_controls_as(&admin, 1, 1, 10_000, 5_000), 0);
+        assert_eq!(
+            set_agent_policy_as(&agent, 6_000, 4_000, &policy_hash, 1),
+            0
+        );
+
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 3_000, &code_hash, &action_hash),
+            41
+        );
+        assert!(test_mock::get_storage(b"job_count").is_none());
+        assert!(test_mock::get_last_cross_call().is_none());
+        assert_eq!(stored_u64(CM_AGENT_BLOCKED_PAYMENT_COUNT_KEY), 1);
+
+        assert_eq!(set_agent_controls_as(&admin, 1, 0, 10_000, 5_000), 0);
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 3_000, &code_hash, &action_hash),
+            0
+        );
+        assert_eq!(stored_u64(b"job_count"), 1);
+    }
+
+    #[test]
+    fn test_agent_compute_requires_enabled_policy_and_pq_action_hash() {
+        setup();
+        test_mock::set_slot(100);
+        let admin = [0xAD; 32];
+        let agent = [0xA9; 32];
+        let attacker = [0xFE; 32];
+        let policy_hash = [0x44; 32];
+        let code_hash = [0x55; 32];
+        let action_hash = [0x66; 32];
+
+        assert_eq!(initialize_as(&admin), 0);
+        assert_eq!(
+            set_agent_controls_as(&attacker, 1, 0, 10_000, 5_000),
+            1,
+            "only compute admin can enable agent payments"
+        );
+        assert_eq!(
+            set_agent_controls_as(&admin, 1, 0, 0, 5_000),
+            3,
+            "enabled controls require global caps"
+        );
+        assert_eq!(set_agent_controls_as(&admin, 0, 0, 0, 0), 0);
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 1_000, &code_hash, &action_hash),
+            40,
+            "disabled agent payments fail closed"
+        );
+
+        assert_eq!(set_agent_controls_as(&admin, 1, 0, 10_000, 5_000), 0);
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 1_000, &code_hash, &[0u8; 32]),
+            42,
+            "zero PQ action hash is rejected"
+        );
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 1_000, &code_hash, &action_hash),
+            43,
+            "agent must opt into spending policy"
+        );
+        assert_eq!(
+            set_agent_policy_as(&agent, 6_000, 4_000, &[0u8; 32], 1),
+            3,
+            "policy hash must be non-zero"
+        );
+        assert_eq!(
+            set_agent_policy_as(&agent, 6_000, 4_000, &policy_hash, 1),
+            0
+        );
+
+        test_mock::set_caller(attacker);
+        assert_eq!(
+            set_agent_spending_policy(agent.as_ptr(), 6_000, 4_000, policy_hash.as_ptr(), 2),
+            200,
+            "caller cannot spoof another agent policy"
+        );
+
+        test_mock::set_caller(agent);
+        assert_eq!(disable_agent_spending_policy(agent.as_ptr()), 0);
+        assert_eq!(
+            submit_agent_job_as(&agent, 10, 1_000, &code_hash, &action_hash),
+            43,
+            "disabled policy blocks new payments"
+        );
     }
 
     #[test]
