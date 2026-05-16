@@ -702,6 +702,21 @@ export class Connection {
   }
 
   /**
+   * Get aggregated Neo GAS rewards vault statistics.
+   */
+  async getNeoGasRewardsStats(): Promise<any> {
+    return this.rpc('getNeoGasRewardsStats');
+  }
+
+  /**
+   * Get per-wallet Neo GAS rewards vault accounting.
+   */
+  async getNeoGasRewardsPosition(address: PublicKey | string): Promise<any> {
+    const value = typeof address === 'string' ? address : address.toBase58();
+    return this.rpc('getNeoGasRewardsPosition', [value]);
+  }
+
+  /**
    * Get aggregated BountyBoard marketplace statistics.
    */
   async getBountyBoardStats(): Promise<any> {

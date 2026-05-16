@@ -41,7 +41,7 @@ pub(crate) struct WithdrawalVelocitySnapshot {
 
 const SPORES_PER_ASSET_UNIT: u64 = 1_000_000_000;
 
-fn build_asset_policy_map(entries: [(&str, u64); 4]) -> BTreeMap<String, u64> {
+fn build_asset_policy_map(entries: [(&str, u64); 6]) -> BTreeMap<String, u64> {
     entries
         .into_iter()
         .map(|(asset, amount)| (asset.to_string(), amount))
@@ -54,6 +54,8 @@ pub(crate) fn default_withdrawal_tx_caps() -> BTreeMap<String, u64> {
         ("wsol", 50_000 * SPORES_PER_ASSET_UNIT),
         ("weth", 5_000 * SPORES_PER_ASSET_UNIT),
         ("wbnb", 10_000 * SPORES_PER_ASSET_UNIT),
+        ("wgas", 50_000 * SPORES_PER_ASSET_UNIT),
+        ("wneo", 50_000 * SPORES_PER_ASSET_UNIT),
     ])
 }
 
@@ -63,6 +65,8 @@ pub(crate) fn default_withdrawal_daily_caps() -> BTreeMap<String, u64> {
         ("wsol", 250_000 * SPORES_PER_ASSET_UNIT),
         ("weth", 25_000 * SPORES_PER_ASSET_UNIT),
         ("wbnb", 50_000 * SPORES_PER_ASSET_UNIT),
+        ("wgas", 250_000 * SPORES_PER_ASSET_UNIT),
+        ("wneo", 250_000 * SPORES_PER_ASSET_UNIT),
     ])
 }
 
@@ -72,6 +76,8 @@ pub(crate) fn default_withdrawal_elevated_thresholds() -> BTreeMap<String, u64> 
         ("wsol", 10_000 * SPORES_PER_ASSET_UNIT),
         ("weth", 1_000 * SPORES_PER_ASSET_UNIT),
         ("wbnb", 2_500 * SPORES_PER_ASSET_UNIT),
+        ("wgas", 10_000 * SPORES_PER_ASSET_UNIT),
+        ("wneo", 10_000 * SPORES_PER_ASSET_UNIT),
     ])
 }
 
@@ -81,6 +87,8 @@ pub(crate) fn default_withdrawal_extraordinary_thresholds() -> BTreeMap<String, 
         ("wsol", 25_000 * SPORES_PER_ASSET_UNIT),
         ("weth", 2_500 * SPORES_PER_ASSET_UNIT),
         ("wbnb", 5_000 * SPORES_PER_ASSET_UNIT),
+        ("wgas", 25_000 * SPORES_PER_ASSET_UNIT),
+        ("wneo", 25_000 * SPORES_PER_ASSET_UNIT),
     ])
 }
 
@@ -124,7 +132,7 @@ fn load_asset_policy_from_env(
         let asset_key = asset.to_ascii_lowercase();
         if !policy.contains_key(&asset_key) {
             panic!(
-                "FATAL: {} contains unsupported withdrawal asset '{}'; expected musd, wsol, weth, or wbnb",
+                "FATAL: {} contains unsupported withdrawal asset '{}'; expected musd, wsol, weth, wbnb, wgas, or wneo",
                 env_name, asset
             );
         }

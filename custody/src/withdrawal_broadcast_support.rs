@@ -37,12 +37,13 @@ pub(super) async fn broadcast_outbound_withdrawal(
 
             solana::broadcast_self_custody_solana_withdrawal(state, url, job, &outbound_asset).await
         }
-        "ethereum" | "eth" | "bsc" | "bnb" => {
+        chain if is_evm_chain(chain) => {
             let url = rpc_url_for_chain(&state.config, &job.dest_chain)
                 .ok_or_else(|| format!("missing RPC URL for chain {}", job.dest_chain))?;
             let outbound_asset = match job.asset.to_lowercase().as_str() {
                 "weth" => "eth".to_string(),
                 "wbnb" => "bnb".to_string(),
+                "wgas" => "gas".to_string(),
                 "musd" => job.preferred_stablecoin.clone(),
                 _ => return Err(format!("unsupported EVM withdrawal: {}", job.asset)),
             };

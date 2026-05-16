@@ -1,4 +1,5 @@
 use super::*;
+use crate::chain_config::NEOX_TESTNET_T4_CHAIN_ID;
 
 pub(super) fn test_withdrawal_velocity_policy() -> WithdrawalVelocityPolicy {
     WithdrawalVelocityPolicy {
@@ -19,13 +20,17 @@ pub(super) fn test_config() -> CustodyConfig {
         evm_rpc_url: Some("http://localhost:8545".to_string()),
         eth_rpc_url: None,
         bnb_rpc_url: None,
+        neox_rpc_url: None,
+        neox_chain_id: NEOX_TESTNET_T4_CHAIN_ID,
         solana_confirmations: 1,
         evm_confirmations: 12,
+        neox_confirmations: 12,
         poll_interval_secs: 15,
         treasury_solana_address: Some("TEST_SOL_ADDR".to_string()),
         treasury_evm_address: Some("0xTEST".to_string()),
         treasury_eth_address: None,
         treasury_bnb_address: None,
+        treasury_neox_address: None,
         solana_fee_payer_keypair_path: Some("/tmp/fee.json".to_string()),
         solana_treasury_owner: Some("TEST_OWNER".to_string()),
         solana_usdc_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
@@ -40,6 +45,9 @@ pub(super) fn test_config() -> CustodyConfig {
         wsol_contract_addr: None,
         weth_contract_addr: None,
         wbnb_contract_addr: None,
+        wgas_contract_addr: None,
+        wneo_contract_addr: None,
+        neox_neo_token_contract: None,
         rebalance_threshold_bps: 7000,
         rebalance_target_bps: 5000,
         rebalance_max_slippage_bps: 50,
@@ -55,6 +63,7 @@ pub(super) fn test_config() -> CustodyConfig {
         signer_pq_addresses: vec![],
         api_auth_token: Some("test_api_token".to_string()),
         evm_multisig_address: None,
+        neox_multisig_address: None,
         webhook_allowed_hosts: vec![],
         withdrawal_velocity_policy: test_withdrawal_velocity_policy(),
     }

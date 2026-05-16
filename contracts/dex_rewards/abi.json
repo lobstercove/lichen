@@ -238,6 +238,74 @@
           "type": "u8"
         }
       ]
+    },
+    {
+      "name": "configure_lp_campaign",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "rate_per_slot",
+          "type": "u64"
+        },
+        {
+          "name": "budget",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "accrue_lp_rewards_for",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "provider",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "liquidity",
+          "type": "u64"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "from_slot",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "get_lp_campaign_stats",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "get_lp_pending_rewards",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
     }
   ]
 }

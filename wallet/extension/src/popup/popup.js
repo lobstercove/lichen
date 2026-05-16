@@ -558,6 +558,52 @@ function sporesToLicn(value) {
   return Number.isFinite(raw) ? raw / 1_000_000_000 : 0;
 }
 
+function formatNeoGasBaseUnits(value) {
+  const raw = Number(value || 0);
+  if (!Number.isFinite(raw) || raw <= 0) return '0';
+  return (raw / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
+}
+
+async function loadNeoGasRewardsSnapshot(client, address) {
+  try {
+    const [stats, position] = await Promise.all([
+      client.call('getNeoGasRewardsStats', []),
+      client.call('getNeoGasRewardsPosition', [address])
+    ]);
+    return { stats, position };
+  } catch {
+    return null;
+  }
+}
+
+function renderNeoGasRewardsPopupAsset(snapshot) {
+  const stats = snapshot?.stats;
+  const position = snapshot?.position;
+  if (!stats || !position) return '';
+
+  const principal = Number(position.principal || 0);
+  const claimable = Number(position.claimable || 0);
+  const configured = stats.configured === true;
+  if (!configured && principal <= 0 && claimable <= 0) return '';
+
+  const status = stats.paused ? 'Paused' : (configured ? 'Active' : 'Pending');
+  const disclosure = position.disclosure_current_accepted ? 'Accepted' : 'Required';
+  return `
+      <div class="popup-activity-item">
+        <div class="popup-asset-icon" style="color:#58BF00;"><i class="fas fa-gift"></i></div>
+        <div class="popup-asset-info">
+          <strong>Neo GAS Rewards</strong>
+          <span>NEOGASRWD · ${escapeHtml(status)}</span>
+          <span style="font-size:10px;color:#888;margin-top:2px">wNEO ${formatNeoGasBaseUnits(principal)} · Disclosure ${escapeHtml(disclosure)}</span>
+        </div>
+        <div class="popup-asset-amount" style="display:flex;flex-direction:column;align-items:flex-end">
+          <strong>${formatNeoGasBaseUnits(claimable)}</strong>
+          <span>Claimable wGAS</span>
+        </div>
+      </div>
+    `;
+}
+
 function getPopupBalanceSnapshot(result) {
   return {
     totalLicn: sporesToLicn(result?.spores ?? result?.balance ?? result?.total ?? result?.spendable ?? 0),
@@ -816,7 +862,10 @@ async function loadAssets() {
   assetsList.innerHTML = '<div class="popup-status">Loading assets...</div>';
 
   try {
-    const result = await rpc.getBalance(wallet.address);
+    const [result, neoGasRewards] = await Promise.all([
+      rpc.getBalance(wallet.address),
+      loadNeoGasRewardsSnapshot(rpc, wallet.address)
+    ]);
     const spendableRaw = Number(result?.spendable ?? result?.spores ?? 0);
     const totalRaw = Number(result?.spores ?? spendableRaw);
     const stakedRaw = Number(result?.staked ?? 0);
@@ -850,6 +899,7 @@ async function loadAssets() {
           ${breakdownHtml}
         </div>
       </div>
+      ${renderNeoGasRewardsPopupAsset(neoGasRewards)}
     `;
     renderPopupAssetRestrictionBadges();
   } catch (error) {
@@ -2089,6 +2139,7 @@ function showExtBridgeTokens(chain) {
     SOL: { name: 'Solana', chain: 'solana', tokens: ['SOL', 'USDC', 'USDT'] },
     ETH: { name: 'Ethereum', chain: 'ethereum', tokens: ['ETH', 'USDC', 'USDT'] },
     BNB: { name: 'BNB Chain', chain: 'bnb', tokens: ['BNB', 'USDC', 'USDT'] },
+    NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS' },
   };
   const info = chainInfo[chain];
   if (!info) return;
@@ -2097,6 +2148,7 @@ function showExtBridgeTokens(chain) {
   if (!selectEl) return;
   selectEl.style.display = 'block';
   selectEl.innerHTML = `<p style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.5rem;">Select token on ${escapeHtml(info.name)}:</p>
+    ${info.detail ? `<p style="font-size:0.76rem;color:var(--text-muted);margin-top:-0.25rem;margin-bottom:0.5rem;">${escapeHtml(info.detail)}</p>` : ''}
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">${info.tokens.map(t =>
     `<button class="btn btn-secondary btn-small ext-bridge-token-btn" data-chain="${escapeHtml(info.chain)}" data-asset="${escapeHtml(t.toLowerCase())}" data-chain-name="${escapeHtml(info.name)}">${escapeHtml(t)}</button>`
   ).join('')}</div>`;

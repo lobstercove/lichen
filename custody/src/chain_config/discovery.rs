@@ -79,6 +79,8 @@ pub(crate) async fn autodiscover_contract_addresses(
         ("WSOL", "wsol"),
         ("WETH", "weth"),
         ("WBNB", "wbnb"),
+        ("WGAS", "wgas"),
+        ("WNEO", "wneo"),
     ];
 
     for (symbol, field_name) in symbol_map {
@@ -100,6 +102,14 @@ pub(crate) async fn autodiscover_contract_addresses(
                     info!("auto-discovered {} contract: {}", symbol, addr);
                     config.wbnb_contract_addr = Some(addr.clone());
                 }
+                "wgas" if config.wgas_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.wgas_contract_addr = Some(addr.clone());
+                }
+                "wneo" if config.wneo_contract_addr.is_none() => {
+                    info!("auto-discovered {} contract: {}", symbol, addr);
+                    config.wneo_contract_addr = Some(addr.clone());
+                }
                 _ => {}
             }
         }
@@ -110,6 +120,8 @@ pub(crate) async fn autodiscover_contract_addresses(
         ("WSOL", &config.wsol_contract_addr),
         ("WETH", &config.weth_contract_addr),
         ("WBNB", &config.wbnb_contract_addr),
+        ("WGAS", &config.wgas_contract_addr),
+        ("WNEO", &config.wneo_contract_addr),
     ];
     for (name, addr) in &discovered {
         match addr {

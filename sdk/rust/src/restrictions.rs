@@ -101,6 +101,82 @@ impl From<&str> for RestrictionAsset {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeChain {
+    Solana,
+    Ethereum,
+    Bsc,
+    Bnb,
+    NeoX,
+}
+
+impl BridgeChain {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Solana => "solana",
+            Self::Ethereum => "ethereum",
+            Self::Bsc => "bsc",
+            Self::Bnb => "bnb",
+            Self::NeoX => "neox",
+        }
+    }
+}
+
+impl Serialize for BridgeChain {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl From<BridgeChain> for String {
+    fn from(value: BridgeChain) -> Self {
+        value.as_str().to_string()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeAsset {
+    Sol,
+    Eth,
+    Bnb,
+    Gas,
+    Neo,
+    Usdc,
+    Usdt,
+}
+
+impl BridgeAsset {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sol => "sol",
+            Self::Eth => "eth",
+            Self::Bnb => "bnb",
+            Self::Gas => "gas",
+            Self::Neo => "neo",
+            Self::Usdc => "usdc",
+            Self::Usdt => "usdt",
+        }
+    }
+}
+
+impl Serialize for BridgeAsset {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl From<BridgeAsset> for String {
+    fn from(value: BridgeAsset) -> Self {
+        value.as_str().to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestrictionStringOrU64 {
     String(String),
@@ -1187,8 +1263,8 @@ mod tests {
             RestrictionGovernanceClient::one_param(ResumeBridgeRouteParams {
                 proposer: proposer.into(),
                 governance_authority: authority.into(),
-                chain: "ethereum".into(),
-                asset: "eth".into(),
+                chain: BridgeChain::NeoX.into(),
+                asset: BridgeAsset::Gas.into(),
                 lift_reason: lichen_core::RestrictionLiftReason::TestnetDrillComplete.into(),
                 restriction_id: Some(12),
                 recent_blockhash: None,
@@ -1197,8 +1273,8 @@ mod tests {
             json!([{
                 "proposer": proposer.to_base58(),
                 "governance_authority": authority.to_base58(),
-                "chain": "ethereum",
-                "asset": "eth",
+                "chain": "neox",
+                "asset": "gas",
                 "lift_reason": "testnet_drill_complete",
                 "restriction_id": 12
             }])

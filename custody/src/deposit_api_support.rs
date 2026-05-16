@@ -104,6 +104,17 @@ pub(super) async fn create_deposit(
     if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
         ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
+    if is_evm_chain(&chain) && rpc_url_for_chain(&state.config, &chain).is_none() {
+        return Err(ErrorResponse::invalid(&format!(
+            "missing RPC URL for chain {}",
+            chain
+        )));
+    }
+    if canonical_evm_chain(&chain) == Some("neox") && asset != "gas" {
+        return Err(ErrorResponse::invalid(
+            "Neo X custody currently supports asset=gas only; NEO is gated until an official source route is configured",
+        ));
+    }
 
     let deposit_id = Uuid::new_v4().to_string();
     let _guard = state.next_index_lock.lock().await;
@@ -112,8 +123,9 @@ pub(super) async fn create_deposit(
     let index = next_deposit_index(&state.db, &user_id, &chain, &asset)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
 
-    let derivation_path = bip44_derivation_path(&chain, derivation_account, index)
-        .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+    let derivation_path =
+        bip44_derivation_path_for_config(&state.config, &chain, derivation_account, index)
+            .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     let deposit_seed_source = active_deposit_seed_source(&state.config).to_string();
     let deposit_seed = deposit_seed_for_source(&state.config, &deposit_seed_source);
     let address = if chain == "solana" || chain == "sol" {

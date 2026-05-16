@@ -210,7 +210,7 @@ cp target/release/lichen ~/.cargo/bin/</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$ lichen --version
-lichen 0.5.10</code></pre>
+	lichen 0.5.37</code></pre>
             </div>
 
             <h3>Make <code>lichen</code> discoverable in new spores</h3>
@@ -287,6 +287,16 @@ command -v lichen</code></pre>
                 <code>getSignedMetadataManifest</code> and verified against the pinned release signer before the UI
                 trusts them. Generic chain reads can still use your selected RPC, but high-trust metadata and bridge
                 control-plane reads do not downgrade to arbitrary endpoints.
+            </div>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-route"></i> Neo X Wallet Reads</div>
+                Wallet and extension surfaces read Neo X route status through
+                <code>getBridgeRouteRestrictionStatus</code>, wrapped reserve state through
+                <code>getWneoStats</code>/<code>getWgasStats</code>, and rewards accounting through
+                <code>getNeoGasRewardsStats</code>/<code>getNeoGasRewardsPosition</code>. Those reads are
+                display/preflight only; public rewards or liquidity controls stay hidden until the approved public beta
+                and liquidity corridor gates are active for the selected network.
             </div>
 
             <!-- ========== 4. GET TESTNET TOKENS ========== -->

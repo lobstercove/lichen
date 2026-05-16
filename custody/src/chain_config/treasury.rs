@@ -38,21 +38,23 @@ pub(crate) fn derive_treasury_addresses_from_seed(config: &mut CustodyConfig) {
             Err(e) => tracing::warn!("failed to derive BNB treasury: {}", e),
         }
     }
+
+    if config.treasury_neox_address.is_none() {
+        match derive_evm_address("custody/treasury/neox", seed) {
+            Ok(addr) => {
+                info!("derived Neo X treasury from master seed: {}", addr);
+                config.treasury_neox_address = Some(addr);
+            }
+            Err(e) => tracing::warn!("failed to derive Neo X treasury: {}", e),
+        }
+    }
 }
 
 /// Resolve the RPC URL for a given chain. Per-chain URLs override the generic EVM URL.
 pub(crate) fn rpc_url_for_chain(config: &CustodyConfig, chain: &str) -> Option<String> {
     match chain {
         "sol" | "solana" => config.solana_rpc_url.clone(),
-        "eth" | "ethereum" => config
-            .eth_rpc_url
-            .clone()
-            .or_else(|| config.evm_rpc_url.clone()),
-        "bsc" | "bnb" => config
-            .bnb_rpc_url
-            .clone()
-            .or_else(|| config.evm_rpc_url.clone()),
-        _ => config.evm_rpc_url.clone(),
+        _ => evm_route_for_chain(config, chain).and_then(|route| route.rpc_url),
     }
 }
 
@@ -60,14 +62,6 @@ pub(crate) fn rpc_url_for_chain(config: &CustodyConfig, chain: &str) -> Option<S
 pub(crate) fn treasury_for_chain(config: &CustodyConfig, chain: &str) -> Option<String> {
     match chain {
         "sol" | "solana" => config.treasury_solana_address.clone(),
-        "eth" | "ethereum" => config
-            .treasury_eth_address
-            .clone()
-            .or_else(|| config.treasury_evm_address.clone()),
-        "bsc" | "bnb" => config
-            .treasury_bnb_address
-            .clone()
-            .or_else(|| config.treasury_evm_address.clone()),
-        _ => config.treasury_evm_address.clone(),
+        _ => evm_route_for_chain(config, chain).and_then(|route| route.treasury_address),
     }
 }

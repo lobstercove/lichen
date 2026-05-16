@@ -68,19 +68,19 @@
         <!-- Header -->
         <div class="doc-header">
             <h1><i class="fas fa-file-contract"></i> Lichen Contracts Reference</h1>
-            <p>Complete documentation of all 29 production smart contracts</p>
+            <p>Complete documentation of 31 genesis-deployed smart contracts plus the native LICN asset</p>
             <div class="doc-stats">
                 <div class="doc-stat">
-                    <div class="num">29</div>
+                    <div class="num">31</div>
                     <div class="label">Contracts</div>
                 </div>
                 <div class="doc-stat">
-                    <div class="num">19,395</div>
+                    <div class="num">82,336</div>
                     <div class="label">Lines of Rust</div>
                 </div>
                 <div class="doc-stat">
-                    <div class="num">227</div>
-                    <div class="label">Public Functions (All Contracts)</div>
+                    <div class="num">570</div>
+                    <div class="label">Source Exports</div>
                 </div>
                 <div class="doc-stat">
                     <div class="num">6</div>
@@ -92,8 +92,9 @@
         <!-- Architecture -->
         <div class="cr-section">
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-            <p>Lichen's 28 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
-                Governance — all compiled to WASM and deployable on-chain. LICN is the native coin (no contract).</p>
+            <p>Lichen's genesis catalog currently deploys 31 contracts across DeFi, DEX, NFTs, Identity,
+                Infrastructure, Governance, Prediction, and Wrapped Assets. LICN is the native coin and is documented
+                here as a native asset, not a deployed WASM contract.</p>
             <div class="callout callout-info">
                 <p><strong>Integration tiers:</strong> when a contract has a first-class SDK helper, prefer that
                     surface over generic ABI packing. Today the JS, Python, and Rust SDKs ship
@@ -114,7 +115,7 @@
             <div class="arch-grid">
                 <div class="arch-box"><i class="fas fa-coins arch-icon-defi"></i>
                     <div class="arch-label">DeFi</div>
-                    <div class="arch-desc">LichenSwap, ThallLend, SporePump, SporePay, SporeVault</div>
+                    <div class="arch-desc">LichenSwap, ThallLend, SporePump, SporePay, SporeVault, Neo GAS Rewards</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-chart-line arch-icon-dex"></i>
                     <div class="arch-label">DEX</div>
@@ -134,6 +135,10 @@
                     <div class="arch-desc">LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage,
                         Shielded
                         Pool</div>
+                </div>
+                <div class="arch-box"><i class="fas fa-box arch-icon-defi"></i>
+                    <div class="arch-label">Wrapped Assets</div>
+                    <div class="arch-desc">lUSD, wETH, wSOL, wBNB, wNEO, wGAS</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-landmark arch-icon-gov"></i>
                     <div class="arch-label">Governance</div>
@@ -282,7 +287,7 @@
                         LichenPunks,
                         LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss
                         Storage,
-                        lUSD, wETH, wSOL</td>
+                        lUSD, wETH, wSOL, wBNB, wNEO, wGAS</td>
                     <td>Each function is a <code>#[no_mangle] pub extern "C" fn</code> — callable by name with JSON args
                     </td>
                 </tr>
@@ -495,7 +500,10 @@ lichen contract generate-client --address 3f7a...c9d1 --lang python --output ./s
                 <a href="#weth-token"><span class="toc-num">26</span> Wrapped ETH</a>
                 <a href="#wsol-token"><span class="toc-num">27</span> Wrapped SOL</a>
                 <a href="#wbnb-token"><span class="toc-num">28</span> Wrapped BNB</a>
-                <a href="#shielded-pool"><span class="toc-num">29</span> Shielded Pool</a>
+                <a href="#wneo-token"><span class="toc-num">29</span> Wrapped NEO</a>
+                <a href="#wgas-token"><span class="toc-num">30</span> Wrapped GAS</a>
+                <a href="#neo-gas-rewards"><span class="toc-num">31</span> Neo GAS Rewards</a>
+                <a href="#shielded-pool"><span class="toc-num">32</span> Shielded Pool</a>
                 <a href="#live-exports"><span class="toc-num">A1</span> Live Export Matrix (Authoritative)</a>
             </div>
         </div>
@@ -1833,7 +1841,7 @@ curl -X POST https://testnet-rpc.lichen.network \
                             <td>3x</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">Functions (19)</div>
+                    <div class="sub-heading">Functions (LP campaign opcodes included)</div>
                     <div class="fn-list"><span class="fn-chip">claim_trading_rewards</span><span
                             class="fn-chip">claim_lp_rewards</span><span class="fn-chip">get_pending_rewards</span><span
                             class="fn-chip">set_reward_rate</span><span class="fn-chip">register_referral</span><span
@@ -1843,8 +1851,17 @@ curl -X POST https://testnet-rpc.lichen.network \
                             class="fn-chip">set_core_address</span><span class="fn-chip">set_amm_address</span><span
                             class="fn-chip">set_lichenid_address</span><span class="fn-chip">dr_pause</span><span
                             class="fn-chip">dr_unpause</span><span class="fn-chip">get_referral_count</span><span
-                            class="fn-chip">get_trader_volume</span><span class="fn-chip">get_total_distributed</span>
+                            class="fn-chip">get_trader_volume</span><span
+                            class="fn-chip">get_total_distributed</span><span
+                            class="fn-chip">configure_lp_campaign</span><span
+                            class="fn-chip">accrue_lp_rewards_for</span><span
+                            class="fn-chip">get_lp_pending_rewards</span><span
+                            class="fn-chip">get_lp_campaign_stats</span>
                     </div>
+                    <p class="cr-note">Neo Liquidity Corridor campaigns use governed
+                        <code>dex_rewards.configure_lp_campaign</code> payloads for pair IDs 8 through 11. The contract
+                        pays LICN rewards from an approved campaign budget; AMM exits and fee collection must remain
+                        available even when incentives are paused or exhausted.</p>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span><span
                             class="badge badge-identity">LichenID</span></div>
                 </div>
@@ -2343,7 +2360,167 @@ curl -X POST https://testnet-rpc.lichen.network \
             </div>
         </div>
 
-        <!-- 42 SHIELDED POOL -->
+        <!-- 42 WRAPPED NEO -->
+        <div class="contract-section" id="wneo-token">
+            <div class="contract-card">
+                <div class="contract-header">
+                    <div class="contract-icon icon-defi"><i class="fas fa-cubes"></i></div>
+                    <div class="contract-header-text">
+                        <h3>Wrapped NEO</h3>
+                        <div class="subtitle">Wrapped NEO Bridge Token</div>
+                    </div>
+                    <div class="contract-meta"><span class="meta-chip">1,532 lines</span><span class="meta-chip">24
+                            fns</span><span class="meta-chip">45.3 KB</span></div>
+                </div>
+                <div class="contract-body">
+                    <p>Wrapped NEO bridge token with epoch rate-limited minting, reserve attestation, circuit breaker
+                        protection, and whole-NEO lot enforcement until official divisibility is enabled.</p>
+                    <div class="sub-heading">Configuration</div>
+                    <table class="const-table">
+                        <tr>
+                            <th>Constant</th>
+                            <th>Value</th>
+                        </tr>
+                        <tr>
+                            <td>MINT_CAP_PER_EPOCH</td>
+                            <td>100,000 NEO/epoch</td>
+                        </tr>
+                        <tr>
+                            <td>WHOLE_NEO_LOT</td>
+                            <td>1 NEO (1,000,000,000 base units)</td>
+                        </tr>
+                        <tr>
+                            <td>CIRCUIT_BREAKER_THRESHOLD</td>
+                            <td>Configurable</td>
+                        </tr>
+                    </table>
+                    <div class="sub-heading">Functions (24)</div>
+                    <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
+                            class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
+                            class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
+                            class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span
+                            class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span
+                            class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span
+                            class="fn-chip">get_reserve_ratio</span><span
+                            class="fn-chip">get_last_attestation_slot</span><span
+                            class="fn-chip">get_attestation_count</span><span
+                            class="fn-chip">get_epoch_remaining</span><span
+                            class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
+                    <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
+                            class="badge badge-defi">Token</span><span class="badge badge-defi">Neo</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 43 WRAPPED GAS -->
+        <div class="contract-section" id="wgas-token">
+            <div class="contract-card">
+                <div class="contract-header">
+                    <div class="contract-icon icon-defi"><i class="fas fa-fire-flame-simple"></i></div>
+                    <div class="contract-header-text">
+                        <h3>Wrapped GAS</h3>
+                        <div class="subtitle">Wrapped GAS Bridge Token</div>
+                    </div>
+                    <div class="contract-meta"><span class="meta-chip">1,458 lines</span><span class="meta-chip">24
+                            fns</span><span class="meta-chip">42.8 KB</span></div>
+                </div>
+                <div class="contract-body">
+                    <p>Wrapped GAS bridge token with epoch rate-limited minting, reserve attestation, and circuit
+                        breaker protection. Used as the canonical Neo X GAS representation on Lichen.</p>
+                    <div class="sub-heading">Configuration</div>
+                    <table class="const-table">
+                        <tr>
+                            <th>Constant</th>
+                            <th>Value</th>
+                        </tr>
+                        <tr>
+                            <td>MINT_CAP_PER_EPOCH</td>
+                            <td>100,000 GAS/epoch</td>
+                        </tr>
+                        <tr>
+                            <td>CIRCUIT_BREAKER_THRESHOLD</td>
+                            <td>Configurable</td>
+                        </tr>
+                    </table>
+                    <div class="sub-heading">Functions (24)</div>
+                    <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
+                            class="fn-chip">burn</span><span class="fn-chip">transfer</span><span
+                            class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span
+                            class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span
+                            class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span
+                            class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span
+                            class="fn-chip">get_reserve_ratio</span><span
+                            class="fn-chip">get_last_attestation_slot</span><span
+                            class="fn-chip">get_attestation_count</span><span
+                            class="fn-chip">get_epoch_remaining</span><span
+                            class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span><span
+                            class="fn-chip">accept_admin</span><span class="fn-chip">set_minter</span><span
+                            class="fn-chip">set_attester</span><span class="fn-chip">complete_bootstrap</span></div>
+                    <div class="badge-row"><span class="badge badge-defi">Bridge</span><span
+                            class="badge badge-defi">Token</span><span class="badge badge-defi">Neo X</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 31 NEO GAS REWARDS -->
+        <div class="contract-section" id="neo-gas-rewards">
+            <div class="contract-card">
+                <div class="contract-header">
+                    <div class="contract-icon icon-defi"><i class="fas fa-vault"></i></div>
+                    <div class="contract-header-text">
+                        <h3>Neo GAS Rewards Vault</h3>
+                        <div class="subtitle">Reserve-Backed GAS Rewards Distribution</div>
+                    </div>
+                    <div class="contract-meta"><span class="meta-chip">1,713 lines</span><span class="meta-chip">18
+                            exports</span><span class="meta-chip">NEOGASRWD</span></div>
+                </div>
+                <div class="contract-body">
+                    <p>Opt-in rewards vault for Neo users. It accepts whole-lot wNEO principal, imports reserve-backed
+                        wGAS rewards through a separate reward-importer role, enforces route/user/daily/campaign caps,
+                        stores disclosure and policy versions, and remains fail-closed until explicitly configured by
+                        approved genesis or governed post-genesis activation.</p>
+                    <div class="sub-heading">Operational Boundaries</div>
+                    <table class="const-table">
+                        <tr>
+                            <th>Boundary</th>
+                            <th>Rule</th>
+                        </tr>
+                        <tr>
+                            <td>Activation</td>
+                            <td>Requires public beta gate approval before any public network activation</td>
+                        </tr>
+                        <tr>
+                            <td>Importer</td>
+                            <td>Separate role for recurring wGAS reward imports; not the custody route itself</td>
+                        </tr>
+                        <tr>
+                            <td>Disclosure</td>
+                            <td>User disclosure version/hash must match the approved manifest</td>
+                        </tr>
+                    </table>
+                    <div class="sub-heading">Functions (18)</div>
+                    <div class="fn-list"><span class="fn-chip">initialize</span><span
+                            class="fn-chip">set_reward_importer</span><span
+                            class="fn-chip">set_token_addresses</span><span
+                            class="fn-chip">configure_caps</span><span class="fn-chip">set_disclosure</span><span
+                            class="fn-chip">configure_reward_policy</span><span
+                            class="fn-chip">accept_disclosure</span><span class="fn-chip">deposit</span><span
+                            class="fn-chip">exit</span><span class="fn-chip">import_rewards</span><span
+                            class="fn-chip">claim</span><span class="fn-chip">emergency_pause</span><span
+                            class="fn-chip">emergency_unpause</span><span class="fn-chip">get_claimable</span><span
+                            class="fn-chip">get_principal</span><span class="fn-chip">get_claimed</span><span
+                            class="fn-chip">get_vault_stats</span><span class="fn-chip">call</span></div>
+                    <div class="badge-row"><span class="badge badge-defi">Rewards</span><span
+                            class="badge badge-defi">Neo X</span><span class="badge badge-governance">Gated</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 32 SHIELDED POOL -->
         <div class="contract-section" id="shielded-pool">
             <div class="contract-card">
                 <div class="contract-header">
@@ -2573,17 +2750,41 @@ curl -X POST https://testnet-rpc.lichen.network \
                         set_attester, complete_bootstrap</td>
                 </tr>
                 <tr>
-                    <td>shielded_pool</td>
-                    <td>initialize, shield, unshield, transfer, pause, unpause, get_pool_stats, get_merkle_root,
-                        check_nullifier, get_commitments</td>
-                </tr>
-                <tr>
                     <td>wbnb_token</td>
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
                         emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
                         set_attester, complete_bootstrap</td>
+                </tr>
+                <tr>
+                    <td>wgas_token</td>
+                    <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
+                        allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
+                        get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap</td>
+                </tr>
+                <tr>
+                    <td>wneo_token</td>
+                    <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
+                        allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
+                        get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
+                        emergency_pause, emergency_unpause, transfer_admin, accept_admin, set_minter,
+                        set_attester, complete_bootstrap; whole-NEO lot enforcement is part of the wrapped NEO
+                        implementation</td>
+                </tr>
+                <tr>
+                    <td>neo_gas_rewards</td>
+                    <td>initialize, set_reward_importer, set_token_addresses, configure_caps, set_disclosure,
+                        configure_reward_policy, accept_disclosure, deposit, exit, import_rewards, claim,
+                        emergency_pause, emergency_unpause, get_claimable, get_principal, get_claimed,
+                        get_vault_stats, call</td>
+                </tr>
+                <tr>
+                    <td>shielded_pool</td>
+                    <td>initialize, shield, unshield, transfer, pause, unpause, get_pool_stats, get_merkle_root,
+                        check_nullifier, get_commitments</td>
                 </tr>
             </table>
         </div>
@@ -2675,7 +2876,7 @@ curl -X POST https://testnet-rpc.lichen.network \
                 </tr>
                 <tr>
                     <td>Admin-only initialization</td>
-                    <td>All 28 contracts</td>
+                    <td>Genesis-deployed contract catalog</td>
                 </tr>
                 <tr>
                     <td>Overflow-safe arithmetic</td>

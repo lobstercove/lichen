@@ -37,35 +37,53 @@ pub(super) fn evm_contract_for_asset(
 /// Native tokens:
 ///   ETH on Ethereum:             18 decimals (wei)
 ///   BNB on BSC:                  18 decimals (wei)
+///   GAS on Neo X:                18 decimals (read-only WGAS10 verification)
 ///   SOL on Solana:               9 decimals (lamports)
 ///
 /// ERC-20 / SPL tokens:
 ///   USDT/USDC on Ethereum:       6 decimals
 ///   USDT/USDC on BSC (BEP-20):  18 decimals
 ///   USDT/USDC on Solana (SPL):   6 decimals
-pub(super) fn source_chain_decimals(chain: &str, asset: &str) -> u32 {
-    match (chain, asset) {
-        ("eth" | "ethereum", "eth") => 18,
-        ("bsc" | "bnb", "bnb") => 18,
-        ("eth" | "ethereum", "usdt" | "usdc") => 6,
-        ("bsc" | "bnb", "usdt" | "usdc") => 18,
-        ("sol" | "solana", "sol") => 9,
-        ("sol" | "solana", "usdt" | "usdc") => 6,
-        _ => 18,
+pub(super) fn source_chain_decimals(chain: &str, asset: &str) -> Result<u32, String> {
+    let chain = chain.trim().to_ascii_lowercase();
+    let asset = asset.trim().to_ascii_lowercase();
+    match (chain.as_str(), asset.as_str()) {
+        ("eth" | "ethereum", "eth") => Ok(18),
+        ("bsc" | "bnb", "bnb") => Ok(18),
+        ("neox" | "neo-x" | "neo_x", "gas") => Ok(18),
+        ("eth" | "ethereum", "usdt" | "usdc") => Ok(6),
+        ("bsc" | "bnb", "usdt" | "usdc") => Ok(18),
+        ("sol" | "solana", "sol") => Ok(9),
+        ("sol" | "solana", "usdt" | "usdc") => Ok(6),
+        _ => Err(format!(
+            "unsupported source decimals for chain={} asset={}",
+            chain, asset
+        )),
     }
 }
 
 /// Convert Lichen spores (9 decimals) to the target chain's native amount.
 ///
 /// Inverse of the deposit conversion in `build_credit_job`.
-pub(super) fn spores_to_chain_amount(spores: u64, chain: &str, asset: &str) -> u128 {
-    let target_decimals = source_chain_decimals(chain, asset);
+pub(super) fn spores_to_chain_amount(
+    spores: u64,
+    chain: &str,
+    asset: &str,
+) -> Result<u128, String> {
+    let target_decimals = source_chain_decimals(chain, asset)?;
     if target_decimals > 9 {
-        (spores as u128).saturating_mul(10u128.pow(target_decimals - 9))
+        Ok((spores as u128).saturating_mul(10u128.pow(target_decimals - 9)))
     } else if target_decimals < 9 {
-        (spores as u128) / 10u128.pow(9 - target_decimals)
+        let divisor = 10u128.pow(9 - target_decimals);
+        let spores = spores as u128;
+        if spores % divisor != 0 {
+            return Err(format!(
+                "non-exact withdrawal decimal conversion rejected (spores={spores}, div={divisor}, chain={chain}, asset={asset})"
+            ));
+        }
+        Ok(spores / divisor)
     } else {
-        spores as u128
+        Ok(spores as u128)
     }
 }
 
@@ -75,16 +93,23 @@ pub(super) fn spores_to_chain_amount(spores: u64, chain: &str, asset: &str) -> u
 ///   sol (any chain)          → wSOL contract
 ///   eth (any chain)          → wETH contract
 ///   bnb (any chain)          → wBNB contract
+///   gas on Neo X             → wGAS contract
+///   neo on Neo X             → wNEO contract only when NEO source route is configured
 ///   usdt, usdc (any chain)   → lUSD contract (unified stablecoin)
 pub(super) fn resolve_token_contract(
     config: &CustodyConfig,
-    _chain: &str,
+    chain: &str,
     asset: &str,
 ) -> Option<String> {
+    let canonical_chain = canonical_evm_chain(chain);
     match asset {
-        "sol" => config.wsol_contract_addr.clone(),
-        "eth" => config.weth_contract_addr.clone(),
-        "bnb" => config.wbnb_contract_addr.clone(),
+        "sol" if matches!(chain, "sol" | "solana") => config.wsol_contract_addr.clone(),
+        "eth" if canonical_chain == Some("ethereum") => config.weth_contract_addr.clone(),
+        "bnb" if canonical_chain == Some("bsc") => config.wbnb_contract_addr.clone(),
+        "gas" if canonical_chain == Some("neox") => config.wgas_contract_addr.clone(),
+        "neo" if canonical_chain == Some("neox") && config.neox_neo_token_contract.is_some() => {
+            config.wneo_contract_addr.clone()
+        }
         "usdt" | "usdc" => config.musd_contract_addr.clone(),
         _ => None,
     }

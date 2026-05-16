@@ -1,8 +1,8 @@
 import { LichenRPC, getTrustedRpcEndpoint } from './rpc-service.js';
 import { decryptPrivateKey, isValidAddress, signTransaction } from './crypto-service.js';
 
-const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb'];
-const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb'];
+const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb', 'neox', 'neo-x', 'neo_x'];
+const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
 const BRIDGE_AUTH_TTL_SECS = 24 * 60 * 60;
 const BRIDGE_CACHE_KEY = 'lichenBridgeDeposits';
 
@@ -87,6 +87,47 @@ function normalizeBridgeRecord(record = {}, fallback = {}) {
   };
 }
 
+function canonicalBridgeChain(chain) {
+  const normalized = String(chain || '').trim().toLowerCase();
+  if (normalized === 'bnb') return 'bsc';
+  if (normalized === 'neo-x' || normalized === 'neo_x') return 'neox';
+  return normalized;
+}
+
+function bridgeRouteIsPaused(status) {
+  if (!status || typeof status !== 'object') return false;
+  if (status.paused === true || status.route_paused === true || status.active === true || status.blocked === true) {
+    return true;
+  }
+  return Array.isArray(status.active_restriction_ids) && status.active_restriction_ids.length > 0;
+}
+
+function routeRestrictionIds(status) {
+  if (!status || typeof status !== 'object' || !Array.isArray(status.active_restriction_ids)) return '';
+  return status.active_restriction_ids.map((id) => `#${id}`).join(', ');
+}
+
+export async function getBridgeRouteRestrictionStatus({ chain, asset, network }) {
+  const canonicalChain = canonicalBridgeChain(chain);
+  const normalizedAsset = String(asset || '').trim().toLowerCase();
+  const rpc = getTrustedBridgeRpc(network);
+  return rpc.call('getBridgeRouteRestrictionStatus', [{ chain: canonicalChain, asset: normalizedAsset }]);
+}
+
+async function assertBridgeRouteOpen({ chain, asset, network }) {
+  let status;
+  try {
+    status = await getBridgeRouteRestrictionStatus({ chain, asset, network });
+  } catch (error) {
+    throw new Error(`Bridge route status unavailable for ${String(asset || '').toUpperCase()} on ${canonicalBridgeChain(chain)}`);
+  }
+  if (bridgeRouteIsPaused(status)) {
+    const ids = routeRestrictionIds(status);
+    throw new Error(`Bridge route paused for ${String(asset || '').toUpperCase()} on ${canonicalBridgeChain(chain)}${ids ? ` (${ids})` : ''}`);
+  }
+  return status;
+}
+
 async function loadBridgeCacheRecords() {
   try {
     const raw = await chrome.storage.local.get(BRIDGE_CACHE_KEY);
@@ -147,7 +188,7 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
   }
 
   const normalizedChain = String(chain || '').trim().toLowerCase();
-  const canonicalChain = normalizedChain === 'bnb' ? 'bsc' : normalizedChain;
+  const canonicalChain = canonicalBridgeChain(normalizedChain);
   const normalizedAsset = String(asset || '').trim().toLowerCase();
   if (!SUPPORTED_CHAINS.includes(normalizedChain)) {
     throw new Error('Unsupported bridge chain');
@@ -155,6 +196,8 @@ export async function requestBridgeDepositAddress({ wallet, password, chain, ass
   if (!SUPPORTED_ASSETS.includes(normalizedAsset)) {
     throw new Error('Unsupported bridge asset');
   }
+
+  await assertBridgeRouteOpen({ chain: canonicalChain, asset: normalizedAsset, network });
 
   const auth = await ensureBridgeAccessAuth(wallet, password, { forceRefresh: true });
 

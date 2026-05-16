@@ -1,0 +1,251 @@
+{
+  "contract": "neo_gas_rewards",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        {
+          "name": "admin",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_token_addresses",
+      "opcode": 1,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "wneo",
+          "type": "Pubkey"
+        },
+        {
+          "name": "wgas",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_reward_importer",
+      "opcode": 16,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "importer",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "configure_caps",
+      "opcode": 2,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "route_cap",
+          "type": "u64"
+        },
+        {
+          "name": "per_user_cap",
+          "type": "u64"
+        },
+        {
+          "name": "daily_import_cap",
+          "type": "u64"
+        },
+        {
+          "name": "daily_claim_cap",
+          "type": "u64"
+        },
+        {
+          "name": "campaign_budget",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_disclosure",
+      "opcode": 3,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "version",
+          "type": "u64"
+        },
+        {
+          "name": "hash",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "configure_reward_policy",
+      "opcode": 4,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "version",
+          "type": "u64"
+        },
+        {
+          "name": "policy_hash",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "accept_disclosure",
+      "opcode": 5,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        },
+        {
+          "name": "version",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "opcode": 6,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "exit",
+      "opcode": 7,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "import_rewards",
+      "opcode": 8,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "reward_amount",
+          "type": "u64"
+        },
+        {
+          "name": "evidence_slot",
+          "type": "u64"
+        },
+        {
+          "name": "policy_version",
+          "type": "u64"
+        },
+        {
+          "name": "evidence_hash",
+          "type": "Pubkey"
+        },
+        {
+          "name": "route_evidence_hash",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "claim",
+      "opcode": 9,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "emergency_pause",
+      "opcode": 10,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "emergency_unpause",
+      "opcode": 11,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_claimable",
+      "opcode": 12,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_principal",
+      "opcode": 13,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_claimed",
+      "opcode": 14,
+      "params": [
+        {
+          "name": "user",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_vault_stats",
+      "opcode": 15,
+      "params": []
+    }
+  ]
+}

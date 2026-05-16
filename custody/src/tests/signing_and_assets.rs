@@ -74,6 +74,33 @@ fn test_determine_withdrawal_signing_mode_routes_threshold_evm_to_safe() {
 }
 
 #[test]
+fn test_determine_withdrawal_signing_mode_routes_neox_to_route_safe() {
+    let mut state = test_state();
+    state.config.signer_endpoints = vec![
+        "http://signer-1".to_string(),
+        "http://signer-2".to_string(),
+        "http://signer-3".to_string(),
+    ];
+    state.config.signer_threshold = 2;
+    state.config.signer_pq_addresses = vec![
+        test_pq_signer(10).0,
+        test_pq_signer(11).0,
+        test_pq_signer(12).0,
+    ];
+    state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
+    state.config.neox_multisig_address =
+        Some("0x3333333333333333333333333333333333333333".to_string());
+    let mut job = test_withdrawal_job();
+    job.dest_chain = "neox".to_string();
+    job.asset = "wGAS".to_string();
+    job.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+
+    let mode = determine_withdrawal_signing_mode(&state, &job, "gas").unwrap();
+
+    assert_eq!(mode, Some(WithdrawalSigningMode::EvmThresholdSafe));
+}
+
+#[test]
 fn test_normalize_evm_signature_promotes_recovery_id() {
     let mut signature = vec![0u8; 65];
     signature[64] = 1;
@@ -455,7 +482,7 @@ fn test_build_threshold_solana_withdrawal_message_supports_stablecoins() {
         &decode_solana_pubkey(&treasury_owner).unwrap(),
         &decode_solana_pubkey(&from_token_account).unwrap(),
         &decode_solana_pubkey(&to_token_account).unwrap(),
-        u64::try_from(spores_to_chain_amount(job.amount, "solana", "usdt")).unwrap(),
+        u64::try_from(spores_to_chain_amount(job.amount, "solana", "usdt").unwrap()).unwrap(),
         &recent_blockhash,
     )
     .unwrap();
@@ -509,6 +536,14 @@ fn test_derive_deposit_address_unsupported_chain() {
 #[test]
 fn test_derive_deposit_address_bnb_uses_evm_format() {
     let address = derive_deposit_address("bnb", "usdt", "m/44'/60'/0'/0/0", "test_seed").unwrap();
+    assert!(address.starts_with("0x"));
+    assert_eq!(address.len(), 42);
+}
+
+#[test]
+fn test_derive_deposit_address_neox_uses_evm_format() {
+    let address =
+        derive_deposit_address("neox", "gas", "m/44'/12227332'/0'/0/0", "test_seed").unwrap();
     assert!(address.starts_with("0x"));
     assert_eq!(address.len(), 42);
 }

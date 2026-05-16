@@ -18,19 +18,19 @@ impl TransactionBuilder {
             recent_blockhash: None,
         }
     }
-    
+
     /// Add an instruction
     pub fn add_instruction(mut self, instruction: Instruction) -> Self {
         self.instructions.push(instruction);
         self
     }
-    
+
     /// Set recent blockhash
     pub fn recent_blockhash(mut self, blockhash: Hash) -> Self {
         self.recent_blockhash = Some(blockhash);
         self
     }
-    
+
     /// Build and sign the transaction
     pub fn build_and_sign(self, keypair: &Keypair) -> Result<CoreTransaction> {
         let blockhash = self

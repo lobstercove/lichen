@@ -78,8 +78,14 @@ pub(super) struct CustodyConfig {
     pub(super) eth_rpc_url: Option<String>,
     /// Per-chain EVM RPC: BSC/BNB-specific (overrides evm_rpc_url for BNB deposits)
     pub(super) bnb_rpc_url: Option<String>,
+    /// Per-chain EVM RPC: Neo X-specific.
+    pub(super) neox_rpc_url: Option<String>,
+    /// Neo X chain ID used for derivation domain separation and RPC checks.
+    pub(super) neox_chain_id: u64,
     pub(super) solana_confirmations: u64,
     pub(super) evm_confirmations: u64,
+    /// Per-chain EVM confirmations: Neo X-specific.
+    pub(super) neox_confirmations: u64,
     pub(super) poll_interval_secs: u64,
     pub(super) treasury_solana_address: Option<String>,
     pub(super) treasury_evm_address: Option<String>,
@@ -87,6 +93,8 @@ pub(super) struct CustodyConfig {
     pub(super) treasury_eth_address: Option<String>,
     /// Per-chain EVM treasury: separate BNB treasury address (overrides treasury_evm_address)
     pub(super) treasury_bnb_address: Option<String>,
+    /// Per-chain EVM treasury: separate Neo X treasury address.
+    pub(super) treasury_neox_address: Option<String>,
     pub(super) solana_fee_payer_keypair_path: Option<String>,
     pub(super) solana_treasury_owner: Option<String>,
     pub(super) solana_usdc_mint: String,
@@ -102,6 +110,10 @@ pub(super) struct CustodyConfig {
     pub(super) wsol_contract_addr: Option<String>,
     pub(super) weth_contract_addr: Option<String>,
     pub(super) wbnb_contract_addr: Option<String>,
+    pub(super) wgas_contract_addr: Option<String>,
+    pub(super) wneo_contract_addr: Option<String>,
+    /// Optional Neo X NEO token contract. When absent, neox/neo custody remains gated.
+    pub(super) neox_neo_token_contract: Option<String>,
     // Reserve rebalance settings
     pub(super) rebalance_threshold_bps: u64,
     pub(super) rebalance_target_bps: u64,
@@ -136,6 +148,9 @@ pub(super) struct CustodyConfig {
     /// Required for multi-signer EVM withdrawals.
     /// Set via CUSTODY_EVM_MULTISIG_ADDRESS env var.
     pub(super) evm_multisig_address: Option<String>,
+    /// Neo X-specific EVM multisig contract address.
+    /// Falls back to evm_multisig_address only when this route-specific value is unset.
+    pub(super) neox_multisig_address: Option<String>,
     /// Optional outbound webhook host allowlist.
     /// When set, webhook URLs must resolve to one of these hosts.
     /// Set via CUSTODY_WEBHOOK_ALLOWED_HOSTS=hooks.example.com,events.example.com

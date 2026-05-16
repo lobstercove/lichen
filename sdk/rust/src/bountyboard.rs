@@ -3,7 +3,13 @@ use crate::{Client, Error, Keypair, Pubkey, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-const PROGRAM_SYMBOL_CANDIDATES: [&str; 5] = ["BOUNTY", "bounty", "BountyBoard", "BOUNTYBOARD", "bountyboard"];
+const PROGRAM_SYMBOL_CANDIDATES: [&str; 5] = [
+    "BOUNTY",
+    "bounty",
+    "BountyBoard",
+    "BOUNTYBOARD",
+    "bountyboard",
+];
 const BOUNTY_DATA_SIZE: usize = 91;
 const PLATFORM_STATS_SIZE: usize = 32;
 
@@ -66,7 +72,9 @@ pub struct BountyBoardClient {
 }
 
 fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+    );
     out.push(0xAB);
     out.extend_from_slice(layout);
     for chunk in chunks {
@@ -75,7 +83,12 @@ fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-fn encode_create_bounty_args(creator: &Pubkey, title_hash: &[u8; 32], reward_amount: u64, deadline_slot: u64) -> Vec<u8> {
+fn encode_create_bounty_args(
+    creator: &Pubkey,
+    title_hash: &[u8; 32],
+    reward_amount: u64,
+    deadline_slot: u64,
+) -> Vec<u8> {
     build_layout_args(
         &[0x20, 0x20, 0x08, 0x08],
         &[
@@ -112,10 +125,7 @@ fn encode_approve_work_args(caller: &Pubkey, bounty_id: u64, submission_idx: u8)
 fn encode_cancel_bounty_args(caller: &Pubkey, bounty_id: u64) -> Vec<u8> {
     build_layout_args(
         &[0x20, 0x08],
-        &[
-            caller.as_ref().to_vec(),
-            bounty_id.to_le_bytes().to_vec(),
-        ],
+        &[caller.as_ref().to_vec(), bounty_id.to_le_bytes().to_vec()],
     )
 }
 
@@ -130,20 +140,14 @@ fn ensure_readonly_success(
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if !allowed_codes.contains(&code) {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("BountyBoard {} returned code {}", function_name, code)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("BountyBoard {} returned code {}", function_name, code)
+        })));
     }
     if !result.success {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("BountyBoard {} failed", function_name)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("BountyBoard {} failed", function_name)
+        })));
     }
     Ok(())
 }
@@ -168,9 +172,12 @@ fn decode_u64(bytes: &[u8], start: usize, function_name: &str) -> Result<u64> {
             function_name,
         )));
     }
-    let slice: [u8; 8] = bytes[start..end]
-        .try_into()
-        .map_err(|_| Error::ParseError(format!("BountyBoard {} payload was malformed", function_name)))?;
+    let slice: [u8; 8] = bytes[start..end].try_into().map_err(|_| {
+        Error::ParseError(format!(
+            "BountyBoard {} payload was malformed",
+            function_name
+        ))
+    })?;
     Ok(u64::from_le_bytes(slice))
 }
 
@@ -237,7 +244,9 @@ impl BountyBoardClient {
         if let Some(program_id) = self
             .program_id
             .lock()
-            .map_err(|_| Error::ConfigError("BountyBoardClient program cache lock poisoned".into()))?
+            .map_err(|_| {
+                Error::ConfigError("BountyBoardClient program cache lock poisoned".into())
+            })?
             .clone()
         {
             return Ok(program_id);
@@ -252,10 +261,9 @@ impl BountyBoardClient {
                 continue;
             };
             let program_id = Pubkey::from_base58(program).map_err(Error::ParseError)?;
-            *self
-                .program_id
-                .lock()
-                .map_err(|_| Error::ConfigError("BountyBoardClient program cache lock poisoned".into()))? = Some(program_id);
+            *self.program_id.lock().map_err(|_| {
+                Error::ConfigError("BountyBoardClient program cache lock poisoned".into())
+            })? = Some(program_id);
             return Ok(program_id);
         }
 
@@ -328,14 +336,23 @@ impl BountyBoardClient {
 
     // --- Write methods ---
 
-    pub async fn create_bounty(&self, creator: &Keypair, params: CreateBountyParams) -> Result<String> {
+    pub async fn create_bounty(
+        &self,
+        creator: &Keypair,
+        params: CreateBountyParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
             .call_contract(
                 creator,
                 &program_id,
                 "create_bounty",
-                encode_create_bounty_args(&creator.pubkey(), &params.title_hash, params.reward_amount, params.deadline_slot),
+                encode_create_bounty_args(
+                    &creator.pubkey(),
+                    &params.title_hash,
+                    params.reward_amount,
+                    params.deadline_slot,
+                ),
                 params.reward_amount,
             )
             .await
@@ -354,14 +371,22 @@ impl BountyBoardClient {
             .await
     }
 
-    pub async fn approve_work(&self, creator: &Keypair, params: ApproveWorkParams) -> Result<String> {
+    pub async fn approve_work(
+        &self,
+        creator: &Keypair,
+        params: ApproveWorkParams,
+    ) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
             .call_contract(
                 creator,
                 &program_id,
                 "approve_work",
-                encode_approve_work_args(&creator.pubkey(), params.bounty_id, params.submission_idx),
+                encode_approve_work_args(
+                    &creator.pubkey(),
+                    params.bounty_id,
+                    params.submission_idx,
+                ),
                 0,
             )
             .await
@@ -408,8 +433,14 @@ mod tests {
         assert_eq!(&encoded[..5], &[0xAB, 0x20, 0x20, 0x08, 0x08]);
         assert_eq!(&encoded[5..37], &[7u8; 32]);
         assert_eq!(&encoded[37..69], &[0xAAu8; 32]);
-        assert_eq!(u64::from_le_bytes(encoded[69..77].try_into().unwrap()), 1_000);
-        assert_eq!(u64::from_le_bytes(encoded[77..85].try_into().unwrap()), 2_000);
+        assert_eq!(
+            u64::from_le_bytes(encoded[69..77].try_into().unwrap()),
+            1_000
+        );
+        assert_eq!(
+            u64::from_le_bytes(encoded[77..85].try_into().unwrap()),
+            2_000
+        );
     }
 
     #[test]
@@ -468,16 +499,19 @@ mod tests {
         let result = readonly_result(0, payload);
         let bounty = decode_bounty_info(&result).unwrap();
 
-        assert_eq!(bounty, BountyBoardBountyInfo {
-            creator: Pubkey([1u8; 32]),
-            title_hash: [0xAAu8; 32],
-            reward_amount: 5_000_000_000,
-            deadline_slot: 1000,
-            status: BOUNTY_STATUS_COMPLETED,
-            submission_count: 3,
-            created_slot: 500,
-            approved_idx: 1,
-        });
+        assert_eq!(
+            bounty,
+            BountyBoardBountyInfo {
+                creator: Pubkey([1u8; 32]),
+                title_hash: [0xAAu8; 32],
+                reward_amount: 5_000_000_000,
+                deadline_slot: 1000,
+                status: BOUNTY_STATUS_COMPLETED,
+                submission_count: 3,
+                created_slot: 500,
+                approved_idx: 1,
+            }
+        );
     }
 
     #[test]
