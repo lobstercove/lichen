@@ -57,6 +57,9 @@ use lichen_core::contract::{
 };
 use lichen_core::keypair_file::KeypairFile;
 use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
+use lichen_core::zk::{
+    ProofType, ReserveLiabilityAirPublicValues, Verifier as ZkVerifier, ZkProof, ZkSchemeVersion,
+};
 use lichen_core::{
     compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     EffectiveRestrictionRecord, FinalityTracker, Hash, Instruction, MarketActivityKind, Message,
@@ -2876,7 +2879,8 @@ fn classify_method(method: &str) -> MethodTier {
         | "createBridgeDeposit"
         | "generateShieldProof"
         | "generateUnshieldProof"
-        | "generateTransferProof" => MethodTier::Expensive,
+        | "generateTransferProof"
+        | "verifyNeoReserveLiabilityProof" => MethodTier::Expensive,
 
         // Moderate reads (iterate indexes, join data)
         "getTransactionsByAddress"
@@ -5058,6 +5062,10 @@ async fn handle_rpc(
         "getWgasStats" => handle_get_wgas_stats(&state).await,
         "getNeoGasRewardsStats" => handle_get_neo_gas_rewards_stats(&state).await,
         "getNeoGasRewardsPosition" => handle_get_neo_gas_rewards_position(&state, req.params).await,
+        "getNeoZkProofServiceStatus" => handle_get_neo_zk_proof_service_status().await,
+        "verifyNeoReserveLiabilityProof" => {
+            handle_verify_neo_reserve_liability_proof(req.params).await
+        }
         // Platform contract stats — previously missing RPC wiring
         "getSporeVaultStats" => handle_get_sporevault_stats(&state).await,
         "getLichenBridgeStats" => handle_get_lichenbridge_stats(&state).await,
@@ -18965,6 +18973,127 @@ async fn handle_get_neo_gas_rewards_position(
     }))
 }
 
+/// getNeoZkProofServiceStatus — Neo proof-service verifier metadata.
+async fn handle_get_neo_zk_proof_service_status() -> Result<serde_json::Value, RpcError> {
+    Ok(serde_json::json!({
+        "configured": true,
+        "lane": "NX-960",
+        "supported_proofs": ["reserve_liability"],
+        "zk_scheme": ZkSchemeVersion::Plonky3FriPoseidon2.as_str(),
+        "verifier_version": 1u64,
+        "privacy_model": "transparent_aggregate_totals_no_address_list_v1",
+        "public_inputs": [
+            "domain_hash",
+            "statement_hash",
+            "witness_commitment",
+            "reserve_amount",
+            "liability_amount",
+            "epoch",
+            "verifier_version"
+        ],
+        "domain_separation": [
+            "lichen_network",
+            "neo_network",
+            "neo_chain_id",
+            "route",
+            "asset",
+            "product",
+            "verifier_version"
+        ],
+        "assets": ["wNEO", "wGAS", "NEOGASRWD"],
+        "verifier_method": "verifyNeoReserveLiabilityProof",
+    }))
+}
+
+/// verifyNeoReserveLiabilityProof — Verify a CLI-produced NX-960 proof envelope.
+async fn handle_verify_neo_reserve_liability_proof(
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let payload = single_rpc_param(
+        params,
+        "Expected params: [{ proof, stark_public_inputs, proof_type? }]",
+    )?;
+    let object = payload
+        .as_object()
+        .ok_or_else(|| invalid_params("proof payload must be an object"))?;
+
+    if let Some(proof_type) = object.get("proof_type").and_then(|value| value.as_str()) {
+        if proof_type != ProofType::ReserveLiability.as_str() && proof_type != "reserve-liability" {
+            return Err(invalid_params(
+                "proof_type must be reserve_liability for Neo reserve/liability verification",
+            ));
+        }
+    }
+    if let Some(legacy_type) = object.get("type").and_then(|value| value.as_str()) {
+        if legacy_type != "reserve_liability" && legacy_type != "reserve-liability" {
+            return Err(invalid_params(
+                "type must be reserve_liability for Neo reserve/liability verification",
+            ));
+        }
+    }
+
+    let proof_hex = object
+        .get("proof")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| invalid_params("proof must be a hex string"))?;
+    let proof_bytes = hex::decode(proof_hex)
+        .map_err(|error| invalid_params(format!("proof must be valid hex: {}", error)))?;
+    let stark_public_inputs = object
+        .get("stark_public_inputs")
+        .ok_or_else(|| invalid_params("stark_public_inputs must be present"))
+        .and_then(parse_stark_public_inputs_value)?;
+
+    let public_values =
+        ReserveLiabilityAirPublicValues::from_stark_public_inputs(&stark_public_inputs)
+            .map_err(invalid_params)?;
+    let reserve_amount = public_values.reserve_amount().map_err(invalid_params)?;
+    let liability_amount = public_values.liability_amount().map_err(invalid_params)?;
+
+    let proof = ZkProof {
+        proof_bytes,
+        proof_type: ProofType::ReserveLiability,
+        public_inputs: Vec::new(),
+        stark_public_inputs,
+        zk_scheme_version: ZkSchemeVersion::Plonky3FriPoseidon2,
+    };
+    let verified = ZkVerifier::new()
+        .verify(&proof)
+        .map_err(|error| invalid_params(format!("proof verification failed: {}", error)))?;
+
+    Ok(serde_json::json!({
+        "verified": verified,
+        "proof_type": ProofType::ReserveLiability.as_str(),
+        "zk_scheme": ZkSchemeVersion::Plonky3FriPoseidon2.as_str(),
+        "privacy_model": "transparent_aggregate_totals_no_address_list_v1",
+        "reserve_amount": reserve_amount,
+        "liability_amount": liability_amount,
+        "solvency_margin": reserve_amount.saturating_sub(liability_amount),
+        "epoch": public_values.epoch().map_err(invalid_params)?,
+        "verifier_version": public_values.verifier_version().map_err(invalid_params)?,
+        "domain_hash": hex::encode(public_values.domain_hash().map_err(invalid_params)?),
+        "statement_hash": hex::encode(public_values.statement_hash().map_err(invalid_params)?),
+        "witness_commitment": hex::encode(public_values.witness_commitment().map_err(invalid_params)?),
+    }))
+}
+
+fn parse_stark_public_inputs_value(value: &serde_json::Value) -> Result<Vec<u64>, RpcError> {
+    let inputs = value
+        .as_array()
+        .ok_or_else(|| invalid_params("stark_public_inputs must be an array"))?;
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+                .ok_or_else(|| {
+                    invalid_params(format!("stark_public_inputs[{index}] must be a u64"))
+                })
+        })
+        .collect()
+}
+
 /// getSporeVaultStats — Yield vault stats
 async fn handle_get_sporevault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "SPOREVAULT")?;
@@ -19499,13 +19628,14 @@ mod tests {
         handle_get_code_hash_restriction_status, handle_get_contract_info,
         handle_get_contract_lifecycle_status, handle_get_governance_events,
         handle_get_incident_status, handle_get_lichenoracle_stats,
-        handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats, handle_get_program,
-        handle_get_program_stats, handle_get_recent_blocks, handle_get_restriction,
-        handle_get_restriction_status, handle_get_service_fleet_status,
-        handle_get_signed_metadata_manifest, handle_get_wgas_stats, handle_get_wneo_stats,
-        handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
-        handle_solana_get_account_info, handle_solana_get_token_account_balance,
-        handle_solana_get_token_accounts_by_owner, live_signed_metadata_source_rpc,
+        handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats,
+        handle_get_neo_zk_proof_service_status, handle_get_program, handle_get_program_stats,
+        handle_get_recent_blocks, handle_get_restriction, handle_get_restriction_status,
+        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
+        handle_get_wgas_stats, handle_get_wneo_stats, handle_list_active_restrictions,
+        handle_list_restrictions, handle_set_fee_config, handle_solana_get_account_info,
+        handle_solana_get_token_account_balance, handle_solana_get_token_accounts_by_owner,
+        handle_verify_neo_reserve_liability_proof, live_signed_metadata_source_rpc,
         method_allowed_when_rpc_unready, parse_bridge_access_auth, parse_get_block_slot_param,
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
         pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
@@ -24306,6 +24436,71 @@ mod tests {
         assert_eq!(
             position["disclosure_current_accepted"],
             serde_json::json!(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_neo_zk_proof_service_status_reports_reserve_liability_verifier() {
+        let status = handle_get_neo_zk_proof_service_status()
+            .await
+            .expect("Neo ZK proof service status should serialize");
+
+        assert_eq!(status["lane"], serde_json::json!("NX-960"));
+        assert_eq!(
+            status["supported_proofs"][0],
+            serde_json::json!("reserve_liability")
+        );
+        assert_eq!(
+            status["verifier_method"],
+            serde_json::json!("verifyNeoReserveLiabilityProof")
+        );
+        assert_eq!(
+            status["privacy_model"],
+            serde_json::json!("transparent_aggregate_totals_no_address_list_v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_neo_reserve_liability_proof_accepts_bound_public_inputs() {
+        let proof = lichen_core::zk::Prover::new()
+            .prove_reserve_liability(
+                lichen_core::zk::circuits::reserve_liability::ReserveLiabilityCircuit::new(
+                    [1u8; 32], [2u8; 32], [3u8; 32], 2_000, 1_500, 99, 1,
+                ),
+            )
+            .expect("prove reserve/liability");
+
+        let result = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
+            "type": "reserve_liability",
+            "proof_type": "reserve_liability",
+            "proof": hex::encode(&proof.proof_bytes),
+            "stark_public_inputs": proof.stark_public_inputs,
+        }])))
+        .await
+        .expect("verify reserve/liability proof through RPC handler");
+
+        assert_eq!(result["verified"], serde_json::json!(true));
+        assert_eq!(result["reserve_amount"], serde_json::json!(2_000u64));
+        assert_eq!(result["liability_amount"], serde_json::json!(1_500u64));
+        assert_eq!(result["solvency_margin"], serde_json::json!(500u64));
+        assert_eq!(result["epoch"], serde_json::json!(99u64));
+    }
+
+    #[tokio::test]
+    async fn test_verify_neo_reserve_liability_proof_rejects_wrong_type() {
+        let error = handle_verify_neo_reserve_liability_proof(Some(serde_json::json!([{
+            "type": "shield",
+            "proof": "",
+            "stark_public_inputs": [],
+        }])))
+        .await
+        .expect_err("wrong proof type should fail before proof decoding");
+
+        assert_eq!(error.code, -32602);
+        assert!(
+            error.message.contains("reserve_liability"),
+            "{}",
+            error.message
         );
     }
 

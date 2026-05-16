@@ -456,6 +456,14 @@ class Connection:
         """Get per-wallet Neo GAS rewards vault accounting."""
         return await self._rpc("getNeoGasRewardsPosition", [str(address)])
 
+    async def get_neo_zk_proof_service_status(self) -> Dict[str, Any]:
+        """Get Neo reserve/liability proof-service verifier metadata."""
+        return await self._rpc("getNeoZkProofServiceStatus")
+
+    async def verify_neo_reserve_liability_proof(self, proof_envelope: Dict[str, Any]) -> Dict[str, Any]:
+        """Verify a CLI-produced Neo reserve/liability proof envelope."""
+        return await self._rpc("verifyNeoReserveLiabilityProof", [proof_envelope])
+
     async def get_bountyboard_stats(self) -> Dict[str, Any]:
         """Get aggregated BountyBoard marketplace statistics."""
         return await self._rpc("getBountyBoardStats")

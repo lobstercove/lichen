@@ -161,6 +161,7 @@
                 <a href="#restriction-route-status" class="sidebar-link">restriction status bridge-route</a>
                 <a href="#restriction-route-build" class="sidebar-link">restriction build route</a>
                 <a href="#neo-symbols" class="sidebar-link">Neo symbols</a>
+                <a href="#neo-zk-proof-services" class="sidebar-link">zk-prove reserve-liability</a>
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
@@ -3070,6 +3071,29 @@ lichen symbol lookup WGAS
 lichen symbol lookup NEOGASRWD
 lichen token info WNEO
 lichen token info WGAS</code></pre>
+                </div>
+            </div>
+
+            <div class="cmd-section" id="neo-zk-proof-services">
+                <h3><code>zk-prove reserve-liability</code></h3>
+                <p>Generate and verify NX-960 Neo reserve/liability proof-service envelopes for transparent aggregate
+                    `wNEO`, `wGAS`, or `NEOGASRWD` totals.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>zk-prove reserve-liability \
+  --lichen-network testnet \
+  --neo-network neo-x-testnet \
+  --neo-chain-id 12227332 \
+  --route neox/gas \
+  --asset wGAS \
+  --product reserve-liability \
+  --epoch 1 \
+  --reserve 1000000000 \
+  --liability 900000000 \
+  --witness-json witness.json
+
+zk-prove verify-reserve-liability --proof-json neo-wgas-proof.json</code></pre>
                 </div>
             </div>
 

@@ -6,9 +6,9 @@
 //! STARK envelopes emitted by the prover.
 
 use super::{
-    build_stark_config, deserialize_stark_proof, ConstantTraceAir, ProofType, ShieldAir,
-    ShieldAirPublicValues, ShieldedError, TransferAirPublicValues, UnshieldAirPublicValues,
-    ZkProof, ZkSchemeVersion,
+    build_stark_config, deserialize_stark_proof, ConstantTraceAir, ProofType,
+    ReserveLiabilityAirPublicValues, ShieldAir, ShieldAirPublicValues, ShieldedError,
+    TransferAirPublicValues, UnshieldAirPublicValues, ZkProof, ZkSchemeVersion,
 };
 use p3_uni_stark::verify as verify_stark;
 
@@ -60,6 +60,13 @@ impl Verifier {
                 let air = ConstantTraceAir::new(public_values.as_fields());
                 verify_stark(&config, &air, &stark_proof, &[])
             }
+            ProofType::ReserveLiability => {
+                let public_values =
+                    ReserveLiabilityAirPublicValues::from_stark_public_inputs(stark_public_inputs)
+                        .map_err(ShieldedError::InvalidProof)?;
+                let air = ConstantTraceAir::new(public_values.as_fields());
+                verify_stark(&config, &air, &stark_proof, &[])
+            }
         };
 
         Ok(verification.is_ok())
@@ -69,5 +76,66 @@ impl Verifier {
 impl Default for Verifier {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zk::circuits::reserve_liability::ReserveLiabilityCircuit;
+    use crate::zk::Prover;
+
+    #[test]
+    fn test_reserve_liability_verifier_accepts_bound_statement() {
+        let proof = Prover::new()
+            .prove_reserve_liability(ReserveLiabilityCircuit::new(
+                [1u8; 32], [2u8; 32], [3u8; 32], 1_000, 999, 7, 1,
+            ))
+            .expect("prove reserve/liability");
+
+        assert!(
+            Verifier::new()
+                .verify(&proof)
+                .expect("verify reserve/liability"),
+            "reserve/liability proof should verify"
+        );
+    }
+
+    #[test]
+    fn test_reserve_liability_verifier_rejects_public_input_replay() {
+        let mut proof = Prover::new()
+            .prove_reserve_liability(ReserveLiabilityCircuit::new(
+                [1u8; 32], [2u8; 32], [3u8; 32], 1_000, 999, 7, 1,
+            ))
+            .expect("prove reserve/liability");
+
+        proof.stark_public_inputs[0] ^= 1;
+
+        assert!(
+            !Verifier::new()
+                .verify(&proof)
+                .expect("verify mutated reserve/liability"),
+            "mutating the domain-bound public inputs must invalidate the proof"
+        );
+    }
+
+    #[test]
+    fn test_reserve_liability_verifier_rejects_insolvent_public_inputs_before_stark() {
+        let mut proof = Prover::new()
+            .prove_reserve_liability(ReserveLiabilityCircuit::new(
+                [1u8; 32], [2u8; 32], [3u8; 32], 1_000, 999, 7, 1,
+            ))
+            .expect("prove reserve/liability");
+
+        let public_values =
+            ReserveLiabilityAirPublicValues::new([1u8; 32], [2u8; 32], [3u8; 32], 900, 999, 7, 1);
+        proof.stark_public_inputs = public_values.to_stark_public_inputs().into_iter().collect();
+
+        match Verifier::new().verify(&proof) {
+            Err(ShieldedError::InvalidProof(message)) => {
+                assert!(message.contains("undercollateralized"), "{message}");
+            }
+            other => panic!("expected invalid undercollateralized proof, got {other:?}"),
+        }
     }
 }

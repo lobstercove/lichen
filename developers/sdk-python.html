@@ -523,6 +523,17 @@ print(route["paused"], rewards["configured"], position["claimable"])</code></pre
                 </div>
             </div>
 
+            <div class="method-card">
+                <h3 class="method-name">await get_neo_zk_proof_service_status() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Read NX-960 Neo reserve/liability verifier metadata and public-input layout.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await verify_neo_reserve_liability_proof(proof_envelope: Dict[str, Any]) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Verify a <code>zk-prove reserve-liability</code> proof envelope. Consumers must
+                    still check the proof domain against the intended route and asset.</p>
+            </div>
+
             <!-- Contract Methods -->
             <h3 id="connection-contract">Contract Methods</h3>
 

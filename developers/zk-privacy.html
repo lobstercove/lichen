@@ -72,6 +72,7 @@
                 <a href="#cli-shield" class="sidebar-link">zk-prove shield</a>
                 <a href="#cli-unshield" class="sidebar-link">zk-prove unshield</a>
                 <a href="#cli-transfer" class="sidebar-link">zk-prove transfer</a>
+                <a href="#cli-reserve-liability" class="sidebar-link">zk-prove reserve-liability</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">SDK Integration</h3>
@@ -424,6 +425,35 @@
                     needs these values to spend the note later.</p>
             </section>
 
+            <!-- ── CLI Reserve/Liability ── -->
+            <section id="cli-reserve-liability">
+                <h2><code>zk-prove reserve-liability</code></h2>
+                <div class="code-block">
+                    <pre><code>./target/release/zk-prove reserve-liability \
+  --lichen-network testnet \
+  --neo-network neo-x-testnet \
+  --neo-chain-id 12227332 \
+  --route neox/gas \
+  --asset wGAS \
+  --product reserve-liability \
+  --epoch 1 \
+  --reserve 1000000000 \
+  --liability 900000000 \
+  --witness-json witness.json</code></pre>
+                </div>
+                <p>Generates the NX-960 Neo reserve/liability proof-service envelope for transparent aggregate totals.
+                    The v1 statement does not claim hidden-witness solvency and does not disclose address-level
+                    liabilities.</p>
+                <div class="code-block">
+                    <pre><code>./target/release/zk-prove verify-reserve-liability \
+  --proof-json neo-wgas-proof.json</code></pre>
+                </div>
+                <h3>Public Inputs</h3>
+                <p><code>domain_hash</code>, <code>statement_hash</code>, <code>witness_commitment</code>,
+                    <code>reserve_amount</code>, <code>liability_amount</code>, <code>epoch</code>, and
+                    <code>verifier_version</code>.</p>
+            </section>
+
             <!-- ── Python SDK ── -->
             <section id="python-sdk">
                 <h2>Python SDK</h2>
@@ -564,6 +594,21 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "from": 0,
   "limit": 100
 }</code></pre>
+                </div>
+
+                <h3><code>getNeoZkProofServiceStatus</code></h3>
+                <p>Returns NX-960 Neo reserve/liability verifier metadata, supported proof type, public-input layout,
+                    privacy model, verifier version, and supported assets.</p>
+                <div class="code-block">
+                    <pre><code>{"jsonrpc":"2.0","id":1,"method":"getNeoZkProofServiceStatus"}</code></pre>
+                </div>
+
+                <h3><code>verifyNeoReserveLiabilityProof</code></h3>
+                <p>Verifies a <code>zk-prove reserve-liability</code> proof envelope against its domain-bound public
+                    inputs. Applications must still compare the returned <code>domain_hash</code> or decoded domain
+                    metadata against the route and asset they intended to consume.</p>
+                <div class="code-block">
+                    <pre><code>{"jsonrpc":"2.0","id":1,"method":"verifyNeoReserveLiabilityProof","params":[proofEnvelope]}</code></pre>
                 </div>
             </section>
 
@@ -788,6 +833,9 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
                         transition, but the live verifier itself checks the scheme-versioned Plonky3 envelope.</li>
                     <li><strong>Proof non-malleability:</strong> Plonky3 proof envelopes are verified against canonical
                         public inputs reconstructed directly from the instruction fields.</li>
+                    <li><strong>Neo proof-service boundary:</strong> NX-960 reserve/liability proofs expose aggregate
+                        reserve and liability totals as public inputs. They are replay-protected by domain and
+                        statement hashes, but they are not hidden-witness solvency proofs.</li>
                 </ul>
             </section>
         </main>
