@@ -717,6 +717,20 @@ export class Connection {
   }
 
   /**
+   * Get Neo reserve/liability proof-service verifier metadata.
+   */
+  async getNeoZkProofServiceStatus(): Promise<any> {
+    return this.rpc('getNeoZkProofServiceStatus');
+  }
+
+  /**
+   * Verify a CLI-produced Neo reserve/liability proof envelope.
+   */
+  async verifyNeoReserveLiabilityProof(proofEnvelope: any): Promise<any> {
+    return this.rpc('verifyNeoReserveLiabilityProof', [proofEnvelope]);
+  }
+
+  /**
    * Get aggregated BountyBoard marketplace statistics.
    */
   async getBountyBoardStats(): Promise<any> {

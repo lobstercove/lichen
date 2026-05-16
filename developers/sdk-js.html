@@ -601,6 +601,17 @@ console.log(route.paused, rewards.configured, position.claimable);</code></pre>
                 </div>
             </div>
 
+            <div class="method-card">
+                <h3 class="method-name">getNeoZkProofServiceStatus(): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Read NX-960 Neo reserve/liability verifier metadata and public-input layout.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">verifyNeoReserveLiabilityProof(proofEnvelope: any): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Verify a <code>zk-prove reserve-liability</code> proof envelope. Consumers must
+                    still check the proof domain against the intended route and asset.</p>
+            </div>
+
             <!-- Contract Methods -->
             <h3 id="connection-contract">Contract Methods</h3>
 

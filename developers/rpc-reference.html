@@ -157,6 +157,8 @@
                 <a href="#getWgasStats" class="sidebar-link">getWgasStats</a>
                 <a href="#getNeoGasRewardsStats" class="sidebar-link">getNeoGasRewardsStats</a>
                 <a href="#getNeoGasRewardsPosition" class="sidebar-link">getNeoGasRewardsPosition</a>
+                <a href="#getNeoZkProofServiceStatus" class="sidebar-link">getNeoZkProofServiceStatus</a>
+                <a href="#verifyNeoReserveLiabilityProof" class="sidebar-link">verifyNeoReserveLiabilityProof</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Live Additions</h3>
@@ -2185,6 +2187,38 @@
                             <code>disclosure_version</code>.</p>
                     </div>
                 </div>
+
+                <div class="method-card" id="getNeoZkProofServiceStatus">
+                    <h3 class="method-name">getNeoZkProofServiceStatus</h3>
+                    <p class="method-desc">Returns NX-960 Neo reserve/liability proof-service verifier metadata for
+                        <code>wNEO</code>, <code>wGAS</code>, and <code>NEOGASRWD</code>.</p>
+                    <div class="method-section">
+                        <h4 class="method-section-title">Returns</h4>
+                        <p>Object containing <code>supported_proofs</code>, <code>zk_scheme</code>,
+                            <code>verifier_version</code>, <code>privacy_model</code>,
+                            <code>public_inputs</code>, <code>domain_separation</code>, and
+                            <code>verifier_method</code>.</p>
+                    </div>
+                </div>
+
+                <div class="method-card" id="verifyNeoReserveLiabilityProof">
+                    <h3 class="method-name">verifyNeoReserveLiabilityProof</h3>
+                    <p class="method-desc">Verifies a <code>zk-prove reserve-liability</code> proof envelope against its
+                        Plonky3 public inputs. Consumers must compare the proof domain to the route/asset they intended
+                        to consume.</p>
+                    <div class="method-section">
+                        <h4 class="method-section-title">Parameters</h4>
+                        <p><code>[proofEnvelope]</code> with <code>proof</code> hex and
+                            <code>stark_public_inputs</code>.</p>
+                    </div>
+                    <div class="method-section">
+                        <h4 class="method-section-title">Returns</h4>
+                        <p>Object containing <code>verified</code>, <code>reserve_amount</code>,
+                            <code>liability_amount</code>, <code>solvency_margin</code>,
+                            <code>domain_hash</code>, <code>statement_hash</code>, and
+                            <code>witness_commitment</code>.</p>
+                    </div>
+                </div>
             </section>
 
             <!-- ═══════════════════════════════════════════════════════════ -->
@@ -2280,7 +2314,9 @@
                         <code>getLichenBridgeStats</code>, <code>getLichenDaoStats</code>,
                         <code>getLichenOracleStats</code>
                     </li>
-                    <li><code>getNeoGasRewardsStats</code>, <code>getNeoGasRewardsPosition</code></li>
+                    <li><code>getNeoGasRewardsStats</code>, <code>getNeoGasRewardsPosition</code>,
+                        <code>getNeoZkProofServiceStatus</code>,
+                        <code>verifyNeoReserveLiabilityProof</code></li>
                     <li><code>requestAirdrop</code> (testnet utility)</li>
                 </ul>
 
