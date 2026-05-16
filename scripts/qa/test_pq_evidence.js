@@ -308,12 +308,71 @@ async function testWatchtowerRouteEvidence() {
     }
 }
 
+async function testAgentActionEvidence() {
+    console.log('\n── PQ5: agent action evidence for NX-980 ──');
+    const signers = [pq.generateKeypair(), pq.generateKeypair()];
+    const agentDomain = domain({ purpose: 'neo-x-agent-compute', asset: 'gas' });
+    const actionPayload = {
+        source: 'agent-wallet',
+        evidence_type: 'agent_action',
+        agent: signers[0].address,
+        action: 'submit_agent_job',
+        route: { chain: 'neox', asset: 'gas', symbol: 'wGAS', route_paused: false },
+        spending_policy: {
+            policy_version: 1,
+            daily_cap: '6000',
+            per_task_cap: '4000',
+            policy_hash: hashCanonical({ id: 'NX-980-agent-spending-policy', version: 1 }),
+        },
+        task: {
+            code_hash: '55'.repeat(32),
+            max_price: '3000',
+            compute_units_needed: '10',
+        },
+    };
+    const unsigned = createUnsignedEvidence({
+        kind: 'agent_action',
+        domain: agentDomain,
+        payload: actionPayload,
+        slot: 100,
+        issuedAtMs: 1_700_000_000_000,
+        expiresAtSlot: 250,
+        manifestHash: hashCanonical({ id: 'NX-980-neo-agent-compute', version: 1 }),
+        requiredSignatures: 2,
+    });
+    const signed = signEvidence(unsigned, signers);
+    const trusted = signers.map((signer) => signer.address);
+    const result = verifyEvidenceEnvelope(signed, {
+        expectedKind: 'agent_action',
+        expectedDomain: agentDomain,
+        currentSlot: 120,
+        trustedSigners: trusted,
+        requiredThreshold: 2,
+        verifySignature: (messageBytes, signature, publicKeyBytes) => pq.verify(messageBytes, signature, publicKeyBytes),
+    });
+    assertEqual(result.ok, true, 'PQ-signed agent action verifies with the expected Neo agent-compute domain');
+
+    assertThrows(
+        () => verifyEvidenceEnvelope(signed, {
+            expectedKind: 'agent_action',
+            expectedDomain: domain({ purpose: 'neo-x-agent-compute', asset: 'neo' }),
+            currentSlot: 120,
+            trustedSigners: trusted,
+            requiredThreshold: 2,
+            verifySignature: (messageBytes, signature, publicKeyBytes) => pq.verify(messageBytes, signature, publicKeyBytes),
+        }),
+        /domain/,
+        'agent action evidence rejects cross-asset replay',
+    );
+}
+
 async function main() {
     await pq.init();
     await testCanonicalization();
     await testQuorumVerification();
     await testReplayBoundaries();
     await testWatchtowerRouteEvidence();
+    await testAgentActionEvidence();
 
     process.stdout.write(`\n═══ PQ Evidence: ${passed} passed, ${failed} failed ═══\n`);
     if (failed > 0) {

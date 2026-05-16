@@ -542,6 +542,21 @@ The v1 proof statement is transparent aggregate reserve/liability only. It uses 
 
 Passing this checker does not deploy public proof services. It only proves the approval packet, privacy boundary, replay-rejection evidence, CLI/native/RPC/SDK verifier evidence, and local 3-validator exercise are complete enough for an owner decision.
 
+### Neo Agent Compute Gate
+
+Neo agent/compute cross-ecosystem flows are gated separately under `NX-980`:
+
+```bash
+node scripts/qa/check_neo_agent_compute_gate.js \
+  --manifest /etc/lichen/neo-agent-compute-gate-testnet.json
+```
+
+The `NX-980` gate is for autonomous agent jobs paid through Neo-facing policy. It requires an opt-in agent spending policy, per-agent daily and per-task caps, a non-zero PQ agent-action hash for each agent-submitted job, route-pause behavior that blocks only new agent payments, and evidence that existing compute-market escrow exit paths remain available.
+
+The compute-market contract exposes this through a separate policy path: `set_agent_compute_controls`, `set_agent_spending_policy`, `disable_agent_spending_policy`, `submit_agent_job`, and read-only policy/action helpers. Existing `submit_job`, provider registration, dispute, cancel, and release behavior are not changed by the Neo agent path.
+
+Passing this checker does not deploy or activate public agent-compute flows. It only proves the approval packet, policy caps, PQ evidence, task-accounting evidence, no-regression evidence, and local 3-validator exercise are complete enough for an owner decision.
+
 ## Contract deployment and post-genesis bootstrap
 
 Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set.

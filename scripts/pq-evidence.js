@@ -17,6 +17,7 @@ const SUPPORTED_EVIDENCE_KINDS = new Set([
     'deployment_manifest',
     'incident_hash',
     'custody_policy',
+    'agent_action',
 ]);
 
 const BS58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';

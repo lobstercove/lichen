@@ -217,13 +217,15 @@ function main() {
             '31 genesis-deployed smart contracts',
             '82,336',
             'Source Exports',
-            '570',
+            '578',
             'Neo GAS Rewards Vault',
             'NEOGASRWD',
             'neo_gas_rewards',
             'wgas_token',
             'wneo_token',
             'dex_rewards.configure_lp_campaign',
+            'submit_agent_job',
+            'get_agent_compute_controls',
         ], FILES.contractPortal);
         ['wbnb_token', 'wgas_token', 'wneo_token', 'neo_gas_rewards'].forEach((contractName) => {
             assert(
@@ -298,6 +300,7 @@ function main() {
             'NEO_PUBLIC_BETA_GATE_TEMPLATE.json',
             'NEO_LIQUIDITY_CORRIDOR_GATE_TEMPLATE.json',
             'NEO_ZK_PROOF_SERVICES_GATE_TEMPLATE.json',
+            'check_neo_agent_compute_gate.js',
         ], FILES.productionDeployment);
     });
 
