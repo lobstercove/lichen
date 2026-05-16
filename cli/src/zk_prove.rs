@@ -10,6 +10,12 @@
 //!                     --blinding <hex> --serial <hex> [--spending-key <hex>]
 //!                     [--merkle-path-json <file>] [--path-bits-json <file>]
 //!   zk-prove transfer --transfer-json <file>
+//!   zk-prove reserve-liability --lichen-network <name> --neo-network <name>
+//!                     --neo-chain-id <id> --route <route> --asset <asset>
+//!                     --product <product> --epoch <n> --reserve <amount>
+//!                     --liability <amount> [--verifier-version <n>]
+//!                     [--witness-json <file>]
+//!   zk-prove verify-reserve-liability --proof-json <file>
 //!
 //! The transfer subcommand reads a JSON file with the full witness:
 //!   {
@@ -30,13 +36,19 @@
 //! on-chain transaction.
 
 use lichen_core::zk::{
-    circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
-    circuits::unshield::UnshieldCircuit, commitment_hash, nullifier_hash, random_scalar_bytes,
-    recipient_hash, recipient_preimage_from_bytes, Prover, Verifier, TREE_DEPTH,
+    circuits::reserve_liability::ReserveLiabilityCircuit, circuits::shield::ShieldCircuit,
+    circuits::transfer::TransferCircuit, circuits::unshield::UnshieldCircuit, commitment_hash,
+    nullifier_hash, random_scalar_bytes, recipient_hash, recipient_preimage_from_bytes, ProofType,
+    Prover, ReserveLiabilityAirPublicValues, Verifier, ZkProof, ZkSchemeVersion, TREE_DEPTH,
 };
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{fs, process};
+
+const RESERVE_LIABILITY_DOMAIN_TAG: &str = "lichen:nx-960:neo-reserve-liability-domain:v1";
+const RESERVE_LIABILITY_STATEMENT_TAG: &str = "lichen:nx-960:neo-reserve-liability-statement:v1";
+const RESERVE_LIABILITY_WITNESS_TAG: &str = "lichen:nx-960:neo-reserve-liability-witness:v1";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,6 +61,8 @@ fn main() {
         "shield" => cmd_shield(&args),
         "unshield" => cmd_unshield(&args),
         "transfer" => cmd_transfer(&args),
+        "reserve-liability" => cmd_reserve_liability(&args),
+        "verify-reserve-liability" => cmd_verify_reserve_liability(&args),
         _ => usage(),
     }
 }
@@ -66,6 +80,52 @@ fn parse_hex_32_or_exit(value: &str, label: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
     out
+}
+
+fn parse_u64_arg_or_exit(args: &[String], flag: &str) -> u64 {
+    find_arg(args, flag)
+        .unwrap_or_else(|| {
+            eprintln!("error: {} is required", flag);
+            process::exit(1);
+        })
+        .parse()
+        .unwrap_or_else(|_| {
+            eprintln!("error: {} must be a u64", flag);
+            process::exit(1);
+        })
+}
+
+fn required_arg_or_exit(args: &[String], flag: &str) -> String {
+    find_arg(args, flag).unwrap_or_else(|| {
+        eprintln!("error: {} is required", flag);
+        process::exit(1);
+    })
+}
+
+fn sha256_tagged(tag: &str, fields: &[(&str, String)]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(tag.as_bytes());
+    for (key, value) in fields {
+        hasher.update([0]);
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        hasher.update([0xff]);
+    }
+    hasher.finalize().into()
+}
+
+fn sha256_tagged_bytes(tag: &str, fields: &[(&str, &[u8])]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(tag.as_bytes());
+    for (key, value) in fields {
+        hasher.update([0]);
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        hasher.update(value);
+        hasher.update([0xff]);
+    }
+    hasher.finalize().into()
 }
 
 fn cmd_shield(args: &[String]) {
@@ -250,7 +310,13 @@ fn usage() -> ! {
          zk-prove shield   --amount <spores>\n  \
          zk-prove unshield --amount <spores> --merkle-root <hex> \
                            --recipient <hex> --blinding <hex> --serial <hex>\n  \
-         zk-prove transfer --transfer-json <file>"
+         zk-prove transfer --transfer-json <file>\n  \
+         zk-prove reserve-liability --lichen-network <name> --neo-network <name> \
+                           --neo-chain-id <id> --route <route> --asset <asset> \
+                           --product <product> --epoch <n> --reserve <amount> \
+                           --liability <amount> [--verifier-version <n>] \
+                           [--witness-json <file>]\n  \
+         zk-prove verify-reserve-liability --proof-json <file>"
     );
     process::exit(1);
 }
@@ -446,4 +512,217 @@ fn cmd_transfer(args: &[String]) {
         ],
     });
     println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+// ───────────────────────────── Reserve/Liability ─────────────────────────────
+
+fn cmd_reserve_liability(args: &[String]) {
+    let lichen_network = required_arg_or_exit(args, "--lichen-network");
+    let neo_network = required_arg_or_exit(args, "--neo-network");
+    let neo_chain_id = required_arg_or_exit(args, "--neo-chain-id");
+    let route = required_arg_or_exit(args, "--route");
+    let asset = required_arg_or_exit(args, "--asset");
+    let product = required_arg_or_exit(args, "--product");
+    let epoch = parse_u64_arg_or_exit(args, "--epoch");
+    let reserve_amount = parse_u64_arg_or_exit(args, "--reserve");
+    let liability_amount = parse_u64_arg_or_exit(args, "--liability");
+    let verifier_version = find_arg(args, "--verifier-version")
+        .map(|value| {
+            value.parse().unwrap_or_else(|_| {
+                eprintln!("error: --verifier-version must be a u64");
+                process::exit(1);
+            })
+        })
+        .unwrap_or(1);
+
+    let domain_hash = sha256_tagged(
+        RESERVE_LIABILITY_DOMAIN_TAG,
+        &[
+            ("lichen_network", lichen_network.clone()),
+            ("neo_network", neo_network.clone()),
+            ("neo_chain_id", neo_chain_id.clone()),
+            ("route", route.clone()),
+            ("asset", asset.clone()),
+            ("product", product.clone()),
+            ("verifier_version", verifier_version.to_string()),
+        ],
+    );
+    let statement_hash = sha256_tagged(
+        RESERVE_LIABILITY_STATEMENT_TAG,
+        &[
+            ("domain_hash", hex::encode(domain_hash)),
+            ("epoch", epoch.to_string()),
+            ("reserve_amount", reserve_amount.to_string()),
+            ("liability_amount", liability_amount.to_string()),
+            ("verifier_version", verifier_version.to_string()),
+        ],
+    );
+
+    let witness_bytes = find_arg(args, "--witness-json")
+        .map(|witness_file| {
+            fs::read(&witness_file).unwrap_or_else(|e| {
+                eprintln!("error: failed to read {}: {}", witness_file, e);
+                process::exit(1);
+            })
+        })
+        .unwrap_or_else(|| b"no-private-witness-supplied".to_vec());
+    let witness_commitment = sha256_tagged_bytes(
+        RESERVE_LIABILITY_WITNESS_TAG,
+        &[
+            ("statement_hash", &statement_hash),
+            ("witness_json", witness_bytes.as_slice()),
+        ],
+    );
+
+    let circuit = ReserveLiabilityCircuit::new(
+        domain_hash,
+        statement_hash,
+        witness_commitment,
+        reserve_amount,
+        liability_amount,
+        epoch,
+        verifier_version,
+    );
+    let proof = Prover::new()
+        .prove_reserve_liability(circuit)
+        .unwrap_or_else(|e| {
+            eprintln!("error: proof generation failed: {}", e);
+            process::exit(1);
+        });
+
+    let verified = Verifier::new().verify(&proof).unwrap_or_else(|e| {
+        eprintln!("error: proof self-check failed: {}", e);
+        process::exit(1);
+    });
+    if !verified {
+        eprintln!("error: proof failed self-verification");
+        process::exit(1);
+    }
+
+    let out = json!({
+        "type": "reserve_liability",
+        "proof_type": proof.proof_type.as_str(),
+        "zk_scheme": proof.zk_scheme_version.as_str(),
+        "privacy_model": "transparent_aggregate_totals_no_address_list_v1",
+        "domain": {
+            "lichen_network": lichen_network,
+            "neo_network": neo_network,
+            "neo_chain_id": neo_chain_id,
+            "route": route,
+            "asset": asset,
+            "product": product,
+        },
+        "epoch": epoch,
+        "reserve_amount": reserve_amount,
+        "liability_amount": liability_amount,
+        "solvency_margin": reserve_amount.saturating_sub(liability_amount),
+        "verifier_version": verifier_version,
+        "domain_hash": hex::encode(domain_hash),
+        "statement_hash": hex::encode(statement_hash),
+        "witness_commitment": hex::encode(witness_commitment),
+        "stark_public_inputs": proof.stark_public_inputs,
+        "proof": hex::encode(&proof.proof_bytes),
+    });
+    println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+fn cmd_verify_reserve_liability(args: &[String]) {
+    let proof_json_file = required_arg_or_exit(args, "--proof-json");
+    let proof_json = fs::read_to_string(&proof_json_file).unwrap_or_else(|e| {
+        eprintln!("error: failed to read {}: {}", proof_json_file, e);
+        process::exit(1);
+    });
+    let value: serde_json::Value = serde_json::from_str(&proof_json).unwrap_or_else(|e| {
+        eprintln!("error: invalid proof JSON in {}: {}", proof_json_file, e);
+        process::exit(1);
+    });
+
+    let proof_hex = value
+        .get("proof")
+        .and_then(|value| value.as_str())
+        .unwrap_or_else(|| {
+            eprintln!("error: proof JSON must contain string field proof");
+            process::exit(1);
+        });
+    let proof_bytes = hex::decode(proof_hex).unwrap_or_else(|e| {
+        eprintln!("error: proof field is not valid hex: {}", e);
+        process::exit(1);
+    });
+    let stark_public_inputs: Vec<u64> = value
+        .get("stark_public_inputs")
+        .and_then(|value| value.as_array())
+        .unwrap_or_else(|| {
+            eprintln!("error: proof JSON must contain array field stark_public_inputs");
+            process::exit(1);
+        })
+        .iter()
+        .map(|value| {
+            value.as_u64().unwrap_or_else(|| {
+                eprintln!("error: stark_public_inputs must contain u64 numbers");
+                process::exit(1);
+            })
+        })
+        .collect();
+
+    let proof = ZkProof {
+        proof_bytes,
+        proof_type: ProofType::ReserveLiability,
+        public_inputs: Vec::new(),
+        stark_public_inputs,
+        zk_scheme_version: ZkSchemeVersion::Plonky3FriPoseidon2,
+    };
+    let public_values =
+        ReserveLiabilityAirPublicValues::from_stark_public_inputs(&proof.stark_public_inputs)
+            .unwrap_or_else(|e| {
+                eprintln!("error: invalid reserve/liability public inputs: {}", e);
+                process::exit(1);
+            });
+    let verified = Verifier::new().verify(&proof).unwrap_or_else(|e| {
+        eprintln!("error: proof verification failed: {}", e);
+        process::exit(1);
+    });
+    let reserve_amount = public_values.reserve_amount().expect("canonical reserve");
+    let liability_amount = public_values
+        .liability_amount()
+        .expect("canonical liability");
+    let out = json!({
+        "verified": verified,
+        "proof_type": ProofType::ReserveLiability.as_str(),
+        "zk_scheme": ZkSchemeVersion::Plonky3FriPoseidon2.as_str(),
+        "privacy_model": "transparent_aggregate_totals_no_address_list_v1",
+        "reserve_amount": reserve_amount,
+        "liability_amount": liability_amount,
+        "solvency_margin": reserve_amount.saturating_sub(liability_amount),
+        "epoch": public_values.epoch().expect("canonical epoch"),
+        "verifier_version": public_values.verifier_version().expect("canonical verifier version"),
+        "domain_hash": hex::encode(public_values.domain_hash().expect("canonical domain hash")),
+        "statement_hash": hex::encode(public_values.statement_hash().expect("canonical statement hash")),
+        "witness_commitment": hex::encode(public_values.witness_commitment().expect("canonical witness commitment")),
+    });
+    println!("{}", serde_json::to_string(&out).unwrap());
+}
+
+#[cfg(test)]
+mod reserve_liability_tests {
+    use super::*;
+
+    #[test]
+    fn test_tagged_hash_changes_across_route_domains() {
+        let base = [
+            ("lichen_network", "testnet".to_string()),
+            ("neo_network", "testnet".to_string()),
+            ("neo_chain_id", "12227332".to_string()),
+            ("route", "neox/gas".to_string()),
+            ("asset", "wGAS".to_string()),
+            ("product", "reserve-liability".to_string()),
+            ("verifier_version", "1".to_string()),
+        ];
+        let mut other = base.clone();
+        other[3] = ("route", "neox/neo".to_string());
+
+        assert_ne!(
+            sha256_tagged(RESERVE_LIABILITY_DOMAIN_TAG, &base),
+            sha256_tagged(RESERVE_LIABILITY_DOMAIN_TAG, &other)
+        );
+    }
 }

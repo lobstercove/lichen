@@ -527,6 +527,21 @@ Passing this checker does not deploy or activate the campaign. It only proves th
 
 Developers should treat the Neo Liquidity Corridor as an approved-manifest extension of the existing DEX rewards path. The public developer examples in `docs/guides/NEO_DEVELOPER_INTEGRATION.md` intentionally show pair IDs, LP pending surfaces, and `dex_rewards.configure_lp_campaign` without implying that a public incentive campaign is active.
 
+### Neo ZK Proof Services Gate
+
+Neo reserve/liability proof services are gated separately under `NX-960`:
+
+```bash
+node scripts/qa/check_neo_zk_proof_services_gate.js \
+  --manifest /etc/lichen/neo-zk-proof-services-gate-testnet.json
+```
+
+Start from `docs/deployment/NEO_ZK_PROOF_SERVICES_GATE_TEMPLATE.json`. The template intentionally does not pass validation until product, governance, security, custody, legal/compliance, privacy, and deployment approvals are real, all local proof evidence is present, and the public disclosure/benchmark fields are filled.
+
+The v1 proof statement is transparent aggregate reserve/liability only. It uses native Plonky3/FRI proof envelopes for `wNEO`, `wGAS`, and `NEOGASRWD` with public inputs for domain hash, statement hash, witness commitment, reserve amount, liability amount, epoch, and verifier version. Do not claim hidden-witness solvency or direct Neo X on-chain verification from this gate; those require a separate audited verifier lane.
+
+Passing this checker does not deploy public proof services. It only proves the approval packet, privacy boundary, replay-rejection evidence, CLI/native/RPC/SDK verifier evidence, and local 3-validator exercise are complete enough for an owner decision.
+
 ## Contract deployment and post-genesis bootstrap
 
 Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set.

@@ -29,10 +29,12 @@ use serde::{Deserialize, Serialize};
 // Re-exports
 pub use air::{
     build_constant_trace, build_shield_trace, build_stark_config, bytes32_to_goldilocks_words,
-    deserialize_stark_proof, u64_to_goldilocks_words, ConstantTraceAir, LichenStarkConfig,
-    LichenStarkProof, ShieldAir, ShieldAirPublicValues, StarkField, TransferAirPublicValues,
-    UnshieldAirPublicValues, SHIELD_AIR_TRACE_WIDTH, SHIELD_STARK_PUBLIC_INPUT_WORDS,
-    STARK_TRACE_ROWS, TRANSFER_STARK_PUBLIC_INPUT_WORDS, UNSHIELD_STARK_PUBLIC_INPUT_WORDS,
+    deserialize_stark_proof, goldilocks_words_to_bytes32, goldilocks_words_to_u64,
+    u64_to_goldilocks_words, ConstantTraceAir, LichenStarkConfig, LichenStarkProof,
+    ReserveLiabilityAirPublicValues, ShieldAir, ShieldAirPublicValues, StarkField,
+    TransferAirPublicValues, UnshieldAirPublicValues, RESERVE_LIABILITY_STARK_PUBLIC_INPUT_WORDS,
+    SHIELD_AIR_TRACE_WIDTH, SHIELD_STARK_PUBLIC_INPUT_WORDS, STARK_TRACE_ROWS,
+    TRANSFER_STARK_PUBLIC_INPUT_WORDS, UNSHIELD_STARK_PUBLIC_INPUT_WORDS,
 };
 pub use keys::{ShieldedKeypair, SpendingKey, ViewingKey};
 pub use merkle::{
@@ -80,6 +82,8 @@ pub enum ProofType {
     Unshield,
     /// Transfer: shielded -> shielded (private transfer)
     Transfer,
+    /// Reserve/liability: proof-service statement over public aggregate totals.
+    ReserveLiability,
 }
 
 impl ProofType {
@@ -88,6 +92,7 @@ impl ProofType {
             Self::Shield => "shield",
             Self::Unshield => "unshield",
             Self::Transfer => "transfer",
+            Self::ReserveLiability => "reserve_liability",
         }
     }
 }

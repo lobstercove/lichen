@@ -15,9 +15,10 @@
 use super::air::deserialize_stark_proof;
 use super::air::{
     build_constant_trace, build_shield_trace, build_stark_config, ConstantTraceAir,
-    LichenStarkProof, ShieldAir, ShieldAirPublicValues, TransferAirPublicValues,
-    UnshieldAirPublicValues,
+    LichenStarkProof, ReserveLiabilityAirPublicValues, ShieldAir, ShieldAirPublicValues,
+    TransferAirPublicValues, UnshieldAirPublicValues,
 };
+use super::circuits::reserve_liability::ReserveLiabilityCircuit;
 use super::circuits::shield::ShieldCircuit;
 use super::circuits::transfer::{TransferCircuit, TRANSFER_INPUTS, TRANSFER_OUTPUTS};
 use super::circuits::unshield::UnshieldCircuit;
@@ -80,6 +81,33 @@ impl Prover {
         serialize_stark_proof(
             &proof,
             ProofType::Transfer,
+            public_values.to_stark_public_inputs(),
+        )
+    }
+
+    /// Generate a reserve/liability proof-service statement proof.
+    pub fn prove_reserve_liability(
+        &self,
+        circuit: ReserveLiabilityCircuit,
+    ) -> Result<ZkProof, String> {
+        circuit.validate()?;
+        let public_values = ReserveLiabilityAirPublicValues::new(
+            circuit.domain_hash,
+            circuit.statement_hash,
+            circuit.witness_commitment,
+            circuit.reserve_amount,
+            circuit.liability_amount,
+            circuit.epoch,
+            circuit.verifier_version,
+        );
+        let air = ConstantTraceAir::new(public_values.as_fields());
+        let trace = build_constant_trace(air.public_values());
+        let config = build_stark_config();
+        let proof = prove_stark(&config, &air, trace, &[]);
+
+        serialize_stark_proof(
+            &proof,
+            ProofType::ReserveLiability,
             public_values.to_stark_public_inputs(),
         )
     }
@@ -742,6 +770,41 @@ mod tests {
     }
 
     #[test]
+    fn test_reserve_liability_prover_emits_plonky3_envelope() {
+        let public_values = ReserveLiabilityAirPublicValues::new(
+            [1u8; 32], [2u8; 32], [3u8; 32], 12_500, 10_000, 42, 1,
+        );
+        let circuit =
+            ReserveLiabilityCircuit::new([1u8; 32], [2u8; 32], [3u8; 32], 12_500, 10_000, 42, 1);
+
+        let proof = Prover::new()
+            .prove_reserve_liability(circuit)
+            .expect("prove reserve/liability");
+        let stark_proof = deserialize_stark_proof(&proof.proof_bytes)
+            .expect("deserialize reserve/liability stark proof");
+
+        assert_eq!(proof.proof_type, ProofType::ReserveLiability);
+        assert_eq!(
+            proof.zk_scheme_version,
+            ZkSchemeVersion::Plonky3FriPoseidon2
+        );
+        assert!(proof.public_inputs.is_empty());
+        assert_eq!(
+            proof.stark_public_inputs,
+            public_values
+                .to_stark_public_inputs()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        assert!(!proof.proof_bytes.is_empty());
+
+        let config = build_stark_config();
+        let air = ConstantTraceAir::new(public_values.as_fields());
+        verify_stark(&config, &air, &stark_proof, &[])
+            .expect("verify reserve/liability stark proof");
+    }
+
+    #[test]
     fn test_shield_prover_rejects_mismatched_value() {
         let amount = 42u64;
         let blinding = random_scalar_bytes();
@@ -804,5 +867,16 @@ mod tests {
             error.contains("output commitment 0 does not match") || error.contains("input sum"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn test_reserve_liability_prover_rejects_undercollateralized_statement() {
+        let circuit = ReserveLiabilityCircuit::new([1u8; 32], [2u8; 32], [3u8; 32], 99, 100, 1, 1);
+
+        let error = Prover::new()
+            .prove_reserve_liability(circuit)
+            .expect_err("reserve/liability proof should reject undercollateralization");
+
+        assert!(error.contains("undercollateralized"), "{error}");
     }
 }

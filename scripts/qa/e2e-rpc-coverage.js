@@ -274,6 +274,7 @@ async function runTests() {
     await tryRpc('getSporeVaultStats', [], 'getSporeVaultStats');
     await tryRpc('getNeoGasRewardsStats', [], 'getNeoGasRewardsStats');
     await tryRpc('getNeoGasRewardsPosition', [testAddr], 'getNeoGasRewardsPosition');
+    await tryRpc('getNeoZkProofServiceStatus', [], 'getNeoZkProofServiceStatus');
     await tryRpc('getLichenBridgeStats', [], 'getLichenBridgeStats');
     await tryRpc('getLichenDaoStats', [], 'getLichenDaoStats');
     await tryRpc('getLichenOracleStats', [], 'getLichenOracleStats');

@@ -134,8 +134,11 @@ function main() {
             'getWneoStats',
             'getNeoGasRewardsStats',
             'getNeoGasRewardsPosition',
+            'getNeoZkProofServiceStatus',
+            'verifyNeoReserveLiabilityProof',
             'scripts/pq-evidence.js',
             'collectRouteHealthEvidence',
+            'zk-prove reserve-liability',
             'dex_rewards.configure_lp_campaign',
             'neox/gas',
             'neox/neo',
@@ -158,6 +161,8 @@ function main() {
             'Neo X Integration',
             'getNeoGasRewardsStats',
             'getNeoGasRewardsPosition',
+            'getNeoZkProofServiceStatus',
+            'verifyNeoReserveLiabilityProof',
             'Neo GAS Rewards Contract',
             'Wrapped Assets',
         ], FILES.searchIndex);
@@ -174,6 +179,8 @@ function main() {
                 'getWgasStats',
                 'getNeoGasRewardsStats',
                 'getNeoGasRewardsPosition',
+                'getNeoZkProofServiceStatus',
+                'verifyNeoReserveLiabilityProof',
                 'neox/gas',
                 'neox/neo',
                 'wNEO/lUSD',
@@ -196,6 +203,8 @@ function main() {
             'lichen symbol lookup WNEO',
             'lichen symbol lookup WGAS',
             'lichen symbol lookup NEOGASRWD',
+            'zk-prove reserve-liability',
+            'zk-prove verify-reserve-liability',
         ], FILES.cliPortal);
     });
 
@@ -236,22 +245,28 @@ function main() {
             'getNeoGasRewardsPosition',
             'BRIDGE_CHAINS.NEOX',
             'BRIDGE_ASSETS.GAS',
+            'getNeoZkProofServiceStatus',
+            'verifyNeoReserveLiabilityProof',
         ], FILES.jsSdkMarkdown);
         assertAllIncludes(docs.pythonSdkMarkdown, [
             'get_neo_gas_rewards_stats',
             'get_neo_gas_rewards_position',
             'BRIDGE_CHAIN_NEOX',
             'BRIDGE_ASSET_GAS',
+            'get_neo_zk_proof_service_status',
+            'verify_neo_reserve_liability_proof',
         ], FILES.pythonSdkMarkdown);
         assertAllIncludes(docs.rustSdkMarkdown, [
             'get_neo_gas_rewards_stats',
             'get_neo_gas_rewards_position',
             'BridgeChain::NeoX',
             'BridgeAsset::Gas',
+            'get_neo_zk_proof_service_status',
+            'verify_neo_reserve_liability_proof',
         ], FILES.rustSdkMarkdown);
-        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX'], FILES.jsSdkPortal);
-        assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX'], FILES.pythonSdkPortal);
-        assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX'], FILES.rustSdkPortal);
+        assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof'], FILES.jsSdkPortal);
+        assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX', 'verify_neo_reserve_liability_proof'], FILES.pythonSdkPortal);
+        assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof'], FILES.rustSdkPortal);
     });
 
     test('wrapped asset and custody docs cover wBNB, wGAS, wNEO, route env, and 31-contract catalog', () => {
@@ -282,6 +297,7 @@ function main() {
             'NEO_DEVELOPER_INTEGRATION.md',
             'NEO_PUBLIC_BETA_GATE_TEMPLATE.json',
             'NEO_LIQUIDITY_CORRIDOR_GATE_TEMPLATE.json',
+            'NEO_ZK_PROOF_SERVICES_GATE_TEMPLATE.json',
         ], FILES.productionDeployment);
     });
 
