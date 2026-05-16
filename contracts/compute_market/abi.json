@@ -272,6 +272,73 @@
         { "name": "token_ptr", "type": "Pubkey" },
         { "name": "recipient_ptr", "type": "Pubkey" }
       ]
+    },
+    {
+      "name": "set_agent_compute_controls",
+      "opcode": 35,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "enabled", "type": "u64" },
+        { "name": "route_paused", "type": "u64" },
+        { "name": "max_daily_cap", "type": "u64" },
+        { "name": "max_per_task_cap", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_agent_spending_policy",
+      "opcode": 36,
+      "params": [
+        { "name": "agent_ptr", "type": "Pubkey" },
+        { "name": "daily_cap", "type": "u64" },
+        { "name": "per_task_cap", "type": "u64" },
+        { "name": "policy_hash_ptr", "type": "Pubkey" },
+        { "name": "policy_version", "type": "u64" }
+      ]
+    },
+    {
+      "name": "disable_agent_spending_policy",
+      "opcode": 37,
+      "params": [
+        { "name": "agent_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "submit_agent_job",
+      "opcode": 38,
+      "params": [
+        { "name": "agent_ptr", "type": "Pubkey" },
+        { "name": "compute_units_needed", "type": "u64" },
+        { "name": "max_price", "type": "u64" },
+        { "name": "code_hash_ptr", "type": "Pubkey" },
+        { "name": "action_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_agent_compute_controls",
+      "opcode": 39,
+      "params": []
+    },
+    {
+      "name": "get_agent_spending_policy",
+      "opcode": 40,
+      "params": [
+        { "name": "agent_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_agent_spend_window",
+      "opcode": 41,
+      "params": [
+        { "name": "agent_ptr", "type": "Pubkey" },
+        { "name": "window", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_agent_job_action",
+      "opcode": 42,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
     }
   ]
 }
