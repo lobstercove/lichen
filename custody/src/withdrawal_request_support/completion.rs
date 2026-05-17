@@ -185,7 +185,7 @@ pub(crate) fn validate_withdrawal_request_destination(
         })));
     }
     if asset_lower == "wneo" {
-        if req.amount % WNEO_WHOLE_LOT != 0 {
+        if !req.amount.is_multiple_of(WNEO_WHOLE_LOT) {
             return Err(Json(json!({
                 "error": "wNEO withdrawals must be exact whole NEO lots"
             })));

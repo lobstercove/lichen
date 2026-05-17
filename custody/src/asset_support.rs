@@ -76,7 +76,7 @@ pub(super) fn spores_to_chain_amount(
     } else if target_decimals < 9 {
         let divisor = 10u128.pow(9 - target_decimals);
         let spores = spores as u128;
-        if spores % divisor != 0 {
+        if !spores.is_multiple_of(divisor) {
             return Err(format!(
                 "non-exact withdrawal decimal conversion rejected (spores={spores}, div={divisor}, chain={chain}, asset={asset})"
             ));

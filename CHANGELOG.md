@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.44] - 2026-05-17
+
+### Fixed
+- Fixes the Rust stable Clippy release gate on the clean Neo/GAS release candidate by using Rust 1.95-compatible exact-multiple checks, portable disk stat conversions, and grouped Neo oracle helper inputs without changing oracle, DEX, WebSocket, or custody behavior.
+
 ## [0.5.43] - 2026-05-17
 
 ### Added

@@ -311,16 +311,29 @@ fn oracle_asset_symbols(state: &StateStore) -> Vec<&'static str> {
     assets
 }
 
-fn oracle_pair_prices(
+#[derive(Clone, Copy)]
+struct OraclePairPriceInputs {
     licn_usd: f64,
     wsol_usd: f64,
     weth_usd: f64,
     wbnb_usd: f64,
     wneo_usd: f64,
     wgas_usd: f64,
+}
+
+fn oracle_pair_prices(
+    inputs: OraclePairPriceInputs,
     wneo_enabled: bool,
     wgas_enabled: bool,
 ) -> Vec<(u64, f64)> {
+    let OraclePairPriceInputs {
+        licn_usd,
+        wsol_usd,
+        weth_usd,
+        wbnb_usd,
+        wneo_usd,
+        wgas_usd,
+    } = inputs;
     let mut pair_prices = vec![
         (1, licn_usd),
         (2, wsol_usd),
@@ -3159,12 +3172,14 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
     let pair_prices = oracle_pair_prices(
-        licn_usd,
-        wsol_usd,
-        weth_usd,
-        wbnb_usd,
-        wneo_usd,
-        wgas_usd,
+        OraclePairPriceInputs {
+            licn_usd,
+            wsol_usd,
+            weth_usd,
+            wbnb_usd,
+            wneo_usd,
+            wgas_usd,
+        },
         wneo_enabled,
         wgas_enabled,
     );
@@ -5369,19 +5384,10 @@ fn spawn_oracle_price_feeder(
         // even while we wait for ANALYTICS symbol registry (joining node sync).
         let last_ws_update_ms = shared_prices.last_ws_update_ms.clone();
         {
-            let ws_wsol = wsol_micro.clone();
-            let ws_weth = weth_micro.clone();
-            let ws_wbnb = wbnb_micro.clone();
-            let ws_wneo = wneo_micro.clone();
-            let ws_wgas = wgas_micro.clone();
-            let ws_flag = ws_healthy.clone();
-            let ws_last = last_ws_update_ms.clone();
+            let ws_prices = shared_prices.clone();
             let ws_url = oracle_ws_url.clone();
             tokio::spawn(async move {
-                binance_ws_loop(
-                    ws_wsol, ws_weth, ws_wbnb, ws_wneo, ws_wgas, ws_flag, ws_last, ws_url,
-                )
-                .await;
+                binance_ws_loop(ws_prices, ws_url).await;
             });
         }
 
@@ -5570,12 +5576,14 @@ fn spawn_oracle_price_feeder(
 
             let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
             let pair_prices = oracle_pair_prices(
-                licn_usd,
-                wsol_usd,
-                weth_usd,
-                wbnb_usd,
-                wneo_usd,
-                wgas_usd,
+                OraclePairPriceInputs {
+                    licn_usd,
+                    wsol_usd,
+                    weth_usd,
+                    wbnb_usd,
+                    wneo_usd,
+                    wgas_usd,
+                },
                 wneo_enabled,
                 wgas_enabled,
             );
@@ -5668,16 +5676,7 @@ fn spawn_oracle_price_feeder(
 /// Binance WebSocket reader loop with auto-reconnect.
 /// Connects to aggTrade streams, parses prices, stores in atomics.
 /// On disconnect, retries with exponential backoff (1s → 30s max).
-async fn binance_ws_loop(
-    wsol: Arc<AtomicU64>,
-    weth: Arc<AtomicU64>,
-    wbnb: Arc<AtomicU64>,
-    wneo: Arc<AtomicU64>,
-    wgas: Arc<AtomicU64>,
-    healthy: Arc<AtomicBool>,
-    last_ws_update_ms: Arc<AtomicU64>,
-    ws_url: String,
-) {
+async fn binance_ws_loop(prices: SharedOraclePrices, ws_url: String) {
     let mut backoff_secs: u64 = 1;
 
     // Read timeout: if no WS message arrives within this window,
@@ -5689,13 +5688,13 @@ async fn binance_ws_loop(
 
     loop {
         info!("🔮 Binance WebSocket connecting to {}...", ws_url);
-        healthy.store(false, Ordering::Relaxed);
+        prices.ws_healthy.store(false, Ordering::Relaxed);
 
         match tokio_tungstenite::connect_async(ws_url.as_str()).await {
             Ok((ws_stream, _)) => {
                 info!("🔮 Binance WebSocket connected (real-time aggTrade feed)");
                 backoff_secs = 1; // reset backoff on successful connect
-                healthy.store(true, Ordering::Relaxed);
+                prices.ws_healthy.store(true, Ordering::Relaxed);
 
                 let (mut write, mut read) = ws_stream.split();
 
@@ -5719,7 +5718,7 @@ async fn binance_ws_loop(
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis() as u64)
                                 .unwrap_or(0);
-                            last_ws_update_ms.store(now_ms, Ordering::Relaxed);
+                            prices.last_ws_update_ms.store(now_ms, Ordering::Relaxed);
 
                             // aggTrade format: {"e":"aggTrade","s":"SOLUSDT","p":"82.30",...}
                             if let Ok(trade) = serde_json::from_str::<serde_json::Value>(text) {
@@ -5730,11 +5729,21 @@ async fn binance_ws_loop(
                                     if price > 0.0 {
                                         let micro = (price * MICRO_SCALE) as u64;
                                         match sym {
-                                            "SOLUSDT" => wsol.store(micro, Ordering::Relaxed),
-                                            "ETHUSDT" => weth.store(micro, Ordering::Relaxed),
-                                            "BNBUSDT" => wbnb.store(micro, Ordering::Relaxed),
-                                            "NEOUSDT" => wneo.store(micro, Ordering::Relaxed),
-                                            "GASUSDT" => wgas.store(micro, Ordering::Relaxed),
+                                            "SOLUSDT" => {
+                                                prices.wsol_micro.store(micro, Ordering::Relaxed)
+                                            }
+                                            "ETHUSDT" => {
+                                                prices.weth_micro.store(micro, Ordering::Relaxed)
+                                            }
+                                            "BNBUSDT" => {
+                                                prices.wbnb_micro.store(micro, Ordering::Relaxed)
+                                            }
+                                            "NEOUSDT" => {
+                                                prices.wneo_micro.store(micro, Ordering::Relaxed)
+                                            }
+                                            "GASUSDT" => {
+                                                prices.wgas_micro.store(micro, Ordering::Relaxed)
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -5763,7 +5772,7 @@ async fn binance_ws_loop(
                     }
                 }
 
-                healthy.store(false, Ordering::Relaxed);
+                prices.ws_healthy.store(false, Ordering::Relaxed);
                 warn!("🔮 Binance WebSocket disconnected, reconnecting...");
             }
             Err(e) => {

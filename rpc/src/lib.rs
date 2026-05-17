@@ -1416,7 +1416,7 @@ fn disk_readiness_for_path(path: &Path) -> Option<DiskReadiness> {
         stat.f_bsize
     };
 
-    disk_readiness_from_counts(block_size, stat.f_blocks as u64, stat.f_bavail as u64)
+    disk_readiness_from_counts(block_size, stat.f_blocks.into(), stat.f_bavail.into())
 }
 
 #[cfg(not(unix))]
