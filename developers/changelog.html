@@ -79,6 +79,39 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.44 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.44</span>
+                    <span class="changelog-date">May 18, 2026</span>
+                </div>
+                <h3 class="changelog-title">Neo X Testnet Genesis, Wrapped Assets &amp; Production Gate Cleanup</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li><strong>Neo X route surface</strong> &mdash; Public testnet genesis now includes
+                            <code>wNEO</code>, <code>wGAS</code>, <code>NEOGASRWD</code>, and Neo DEX pairs
+                            <code>wNEO/lUSD</code>, <code>wNEO/LICN</code>, <code>wGAS/lUSD</code>, and
+                            <code>wGAS/LICN</code>.</li>
+                        <li><strong>Developer surfaces</strong> &mdash; RPC, CLI, SDK, contract, wallet, and ZK docs now
+                            cover Neo route status, reserve stats, GAS rewards, watchtower evidence, and
+                            reserve/liability proof verification.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-arrow-up" style="color: var(--info)"></i> Improvements</h4>
+                    <ul>
+                        <li><strong>Clean-slate deployment verifier</strong> &mdash; Manifest verification now follows
+                            the current 31-contract genesis catalog instead of stale pre-Neo counts.</li>
+                        <li><strong>Public production gate safety</strong> &mdash; Public RPC gates require explicit
+                            funded signers and direct validator evidence; they no longer fall back to local genesis
+                            fixtures or localhost validator probes.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.4.37 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
@@ -189,7 +222,8 @@
                             BFT timestamps, contract upgrade timelocks, EVM precompiles + eth_getLogs, archive mode,
                             wire envelope format, TOFU rotation, eclipse defense, IBC exploration, and more.</li>
                         <li><strong>3-Validator BFT Testnet Deployed</strong> &mdash; US, EU, and SEA validators running
-                            Tendermint BFT consensus with round 0 commits, 28 contracts at genesis.</li>
+                            Tendermint BFT consensus with round 0 commits and the then-current pre-Neo genesis catalog.
+                        </li>
                         <li><strong>1,551 Tests Passing</strong> &mdash; Zero warnings, clean clippy across workspace.
                         </li>
                         <li><strong>New System Instructions 26&ndash;30</strong> &mdash; RegisterValidator (26),

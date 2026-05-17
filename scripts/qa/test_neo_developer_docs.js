@@ -28,6 +28,8 @@ const FILES = {
     wsPortal: 'developers/ws-reference.html',
     searchIndex: 'developers/js/developers.js',
     expectedContracts: 'scripts/qa/expected-contracts.json',
+    productionExpectedContracts: 'tests/expected-contracts.json',
+    testsReadme: 'tests/README.md',
 };
 
 const STALE_ACTIVE_PATTERNS = [
@@ -37,6 +39,10 @@ const STALE_ACTIVE_PATTERNS = [
     'Full reference for all 28',
     'All four wrapped',
     'Genesis catalog total** | | **32**',
+    '28 for genesis',
+    '28 manifest symbols',
+    'all 28 contracts',
+    'All 28 contracts',
 ];
 
 let passed = 0;
@@ -121,6 +127,7 @@ function main() {
             FILES.rustSdkPortal,
             FILES.wsPortal,
             FILES.searchIndex,
+            FILES.testsReadme,
         ].forEach((relativePath) => {
             const source = read(relativePath);
             STALE_ACTIVE_PATTERNS.forEach((needle) => assertNotIncludes(source, needle, relativePath));
@@ -210,8 +217,11 @@ function main() {
 
     test('contract docs and expected-contracts include Neo contracts with current counts', () => {
         assert(expectedContracts.length === 31, 'expected-contracts.json must list 31 genesis contracts');
+        const productionExpectedContracts = readJson(FILES.productionExpectedContracts).contracts;
+        assert(productionExpectedContracts.length === 31, 'tests/expected-contracts.json must list 31 genesis contracts');
         ['wgas_token', 'wneo_token', 'neo_gas_rewards'].forEach((contractName) => {
             assert(expectedContracts.includes(contractName), `expected-contracts.json missing ${contractName}`);
+            assert(productionExpectedContracts.includes(contractName), `tests/expected-contracts.json missing ${contractName}`);
         });
         assertAllIncludes(docs.contractPortal, [
             '31 genesis-deployed smart contracts',

@@ -373,7 +373,7 @@ const SEARCH_INDEX = [
     { title: 'getNeoGasRewardsPosition', desc: 'Read wallet-level Neo GAS rewards position', url: 'rpc-reference.html#getNeoGasRewardsPosition', category: 'Neo' },
     { title: 'getNeoZkProofServiceStatus', desc: 'Read Neo reserve liability proof verifier metadata', url: 'rpc-reference.html#getNeoZkProofServiceStatus', category: 'Neo' },
     { title: 'verifyNeoReserveLiabilityProof', desc: 'Verify Neo reserve liability STARK proof envelopes', url: 'rpc-reference.html#verifyNeoReserveLiabilityProof', category: 'Neo' },
-    { title: 'Neo Agent Compute', desc: 'Opt-in agent spending caps, PQ action hashes, and COMPUTE policy helpers', url: 'contract-reference.html#compute-market', category: 'Neo' },
+    { title: 'Neo Agent Compute', desc: 'Opt-in agent spending caps, PQ action hashes, and COMPUTE policy helpers', url: 'contract-reference.html#compute', category: 'Neo' },
     { title: 'getWneoStats', desc: 'Read wrapped NEO reserve and supply stats', url: 'rpc-reference.html#getWneoStats', category: 'Neo' },
     { title: 'getWgasStats', desc: 'Read wrapped GAS reserve and supply stats', url: 'rpc-reference.html#getWgasStats', category: 'Neo' },
     { title: 'Wrapped Assets', desc: 'wBNB, wNEO, and wGAS wrapped asset custody and reserve model', url: 'contract-reference.html#wneo-token', category: 'Neo' },
