@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.41] - 2026-05-17
+
+### Fixed
+- Resumed validators now leave the pre-consensus sync gate when peers are observed at the same canonical tip as the local node, restoring BFT liveness after a full-cluster stall without requiring a reset or state copy. Validators still wait when peers are ahead so catch-up remains deterministic before proposing.
+
 ## [0.5.40] - 2026-05-17
 
 ### Fixed
