@@ -288,6 +288,96 @@ impl SharedOraclePrices {
     }
 }
 
+fn symbol_registered(state: &StateStore, symbol: &str) -> bool {
+    matches!(state.get_symbol_registry(symbol), Ok(Some(_)))
+}
+
+fn neo_wrapped_oracle_assets_enabled(state: &StateStore) -> (bool, bool) {
+    (
+        symbol_registered(state, "WNEO"),
+        symbol_registered(state, "WGAS"),
+    )
+}
+
+fn oracle_asset_symbols(state: &StateStore) -> Vec<&'static str> {
+    let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(state);
+    let mut assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
+    if wneo_enabled {
+        assets.push("wNEO");
+    }
+    if wgas_enabled {
+        assets.push("wGAS");
+    }
+    assets
+}
+
+fn oracle_pair_prices(
+    licn_usd: f64,
+    wsol_usd: f64,
+    weth_usd: f64,
+    wbnb_usd: f64,
+    wneo_usd: f64,
+    wgas_usd: f64,
+    wneo_enabled: bool,
+    wgas_enabled: bool,
+) -> Vec<(u64, f64)> {
+    let mut pair_prices = vec![
+        (1, licn_usd),
+        (2, wsol_usd),
+        (3, weth_usd),
+        (
+            4,
+            if licn_usd > 0.0 {
+                wsol_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (
+            5,
+            if licn_usd > 0.0 {
+                weth_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (6, wbnb_usd),
+        (
+            7,
+            if licn_usd > 0.0 {
+                wbnb_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+    ];
+
+    if wneo_enabled {
+        pair_prices.push((8, wneo_usd));
+        pair_prices.push((
+            9,
+            if licn_usd > 0.0 {
+                wneo_usd / licn_usd
+            } else {
+                0.0
+            },
+        ));
+    }
+    if wgas_enabled {
+        pair_prices.push((10, wgas_usd));
+        pair_prices.push((
+            11,
+            if licn_usd > 0.0 {
+                wgas_usd / licn_usd
+            } else {
+                0.0
+            },
+        ));
+    }
+
+    pair_prices
+}
+
 /// Sync request fanout: send block-range requests to top-N peers by score
 /// instead of broadcasting to all peers.
 const SYNC_REQUEST_FANOUT: usize = 3;
@@ -3023,15 +3113,21 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wNEO").unwrap_or(0.0);
     let wgas_usd =
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wGAS").unwrap_or(0.0);
+    let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(state);
 
-    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 && wneo_usd <= 0.0 && wgas_usd <= 0.0 {
+    if wsol_usd <= 0.0
+        && weth_usd <= 0.0
+        && wbnb_usd <= 0.0
+        && (!wneo_enabled || wneo_usd <= 0.0)
+        && (!wgas_enabled || wgas_usd <= 0.0)
+    {
         return;
     }
 
     let licn_usd = lichen_core::consensus::licn_price_from_state(state);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
-    for asset in ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS"] {
+    for asset in oracle_asset_symbols(state) {
         let consensus_feed =
             lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
                 .map(|(price_raw, decimals, _)| (price_raw, decimals));
@@ -3062,54 +3158,16 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
-    let pair_prices: [(u64, f64); 11] = [
-        (1, licn_usd),
-        (2, wsol_usd),
-        (3, weth_usd),
-        (
-            4,
-            if licn_usd > 0.0 {
-                wsol_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (
-            5,
-            if licn_usd > 0.0 {
-                weth_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (6, wbnb_usd),
-        (
-            7,
-            if licn_usd > 0.0 {
-                wbnb_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (8, wneo_usd),
-        (
-            9,
-            if licn_usd > 0.0 {
-                wneo_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-        (10, wgas_usd),
-        (
-            11,
-            if licn_usd > 0.0 {
-                wgas_usd / licn_usd
-            } else {
-                0.0
-            },
-        ),
-    ];
+    let pair_prices = oracle_pair_prices(
+        licn_usd,
+        wsol_usd,
+        weth_usd,
+        wbnb_usd,
+        wneo_usd,
+        wgas_usd,
+        wneo_enabled,
+        wgas_enabled,
+    );
 
     if dex_pk.0 != [0u8; 32] {
         for (pair_id, price_f64) in &pair_prices {
@@ -5460,14 +5518,20 @@ fn spawn_oracle_price_feeder(
             // This feeder submits signed native oracle attestation txs and
             // reads consensus-written state to broadcast WS events.
 
-            for (asset, price_raw) in [
+            let (wneo_enabled, wgas_enabled) = neo_wrapped_oracle_assets_enabled(&state);
+            let mut attestation_prices = vec![
                 ("LICN", GenesisPrices::default().licn_usd_8dec),
                 ("wSOL", cur_wsol.saturating_mul(100)),
                 ("wETH", cur_weth.saturating_mul(100)),
                 ("wBNB", cur_wbnb.saturating_mul(100)),
-                ("wNEO", cur_wneo.saturating_mul(100)),
-                ("wGAS", cur_wgas.saturating_mul(100)),
-            ] {
+            ];
+            if wneo_enabled {
+                attestation_prices.push(("wNEO", cur_wneo.saturating_mul(100)));
+            }
+            if wgas_enabled {
+                attestation_prices.push(("wGAS", cur_wgas.saturating_mul(100)));
+            }
+            for (asset, price_raw) in attestation_prices {
                 if price_raw == 0 {
                     continue;
                 }
@@ -5505,54 +5569,16 @@ fn spawn_oracle_price_feeder(
             let current_slot = state.get_last_slot().unwrap_or(0);
 
             let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
-            let pair_prices: [(u64, f64); 11] = [
-                (1, licn_usd),
-                (2, wsol_usd),
-                (3, weth_usd),
-                (
-                    4,
-                    if licn_usd > 0.0 {
-                        wsol_usd / licn_usd
-                    } else {
-                        0.0
-                    },
-                ),
-                (
-                    5,
-                    if licn_usd > 0.0 {
-                        weth_usd / licn_usd
-                    } else {
-                        0.0
-                    },
-                ),
-                (6, wbnb_usd),
-                (
-                    7,
-                    if licn_usd > 0.0 {
-                        wbnb_usd / licn_usd
-                    } else {
-                        0.0
-                    },
-                ),
-                (8, wneo_usd),
-                (
-                    9,
-                    if licn_usd > 0.0 {
-                        wneo_usd / licn_usd
-                    } else {
-                        0.0
-                    },
-                ),
-                (10, wgas_usd),
-                (
-                    11,
-                    if licn_usd > 0.0 {
-                        wgas_usd / licn_usd
-                    } else {
-                        0.0
-                    },
-                ),
-            ];
+            let pair_prices = oracle_pair_prices(
+                licn_usd,
+                wsol_usd,
+                weth_usd,
+                wbnb_usd,
+                wneo_usd,
+                wgas_usd,
+                wneo_enabled,
+                wgas_enabled,
+            );
 
             for (pair_id, price_f64) in &pair_prices {
                 if *price_f64 <= 0.0 {
@@ -17707,6 +17733,84 @@ mod tests {
             u64::from_le_bytes(analytics_price[0..8].try_into().expect("analytics raw")),
             82_500_000_000
         );
+    }
+
+    #[test]
+    fn apply_oracle_from_block_skips_neo_pairs_until_symbols_exist() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        register_test_symbol(&state, "ORACLE", Pubkey([1u8; 32]));
+        register_test_symbol(&state, "ANALYTICS", Pubkey([2u8; 32]));
+        register_test_symbol(&state, "DEX", Pubkey([3u8; 32]));
+
+        let genesis_key = Keypair::generate();
+        state
+            .set_genesis_pubkey(&genesis_key.pubkey())
+            .expect("put genesis pubkey");
+
+        state
+            .put_oracle_consensus_price("LICN", GenesisPrices::default().licn_usd_8dec, 8, 7, 3)
+            .expect("seed LICN consensus price");
+        state
+            .put_oracle_consensus_price("wSOL", 8_250_000_000, 8, 7, 3)
+            .expect("seed wSOL consensus price");
+        state
+            .put_oracle_consensus_price("wNEO", 307_500_000, 8, 7, 3)
+            .expect("seed wNEO consensus price");
+        state
+            .put_oracle_consensus_price("wGAS", 165_000_000, 8, 7, 3)
+            .expect("seed wGAS consensus price");
+
+        let mut block = make_block_with_txs(vec![]);
+        block.header.slot = 8;
+        block.header.timestamp = 1_700_000_000;
+
+        apply_oracle_from_block(&state, &block);
+
+        let oracle_program = state
+            .get_symbol_registry("ORACLE")
+            .expect("get ORACLE registry")
+            .expect("ORACLE registry present")
+            .program;
+        let dex_program = state
+            .get_symbol_registry("DEX")
+            .expect("get DEX registry")
+            .expect("DEX registry present")
+            .program;
+
+        assert!(state
+            .get_contract_storage(&oracle_program, b"price_wSOL")
+            .expect("read wSOL oracle storage")
+            .is_some());
+        assert!(state
+            .get_contract_storage(&oracle_program, b"price_wNEO")
+            .expect("read wNEO oracle storage")
+            .is_none());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_2")
+            .expect("read wSOL DEX band")
+            .is_some());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_8")
+            .expect("read wNEO DEX band")
+            .is_none());
+
+        register_test_symbol(&state, "WNEO", Pubkey([4u8; 32]));
+        apply_oracle_from_block(&state, &block);
+
+        assert!(state
+            .get_contract_storage(&oracle_program, b"price_wNEO")
+            .expect("read active wNEO oracle storage")
+            .is_some());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_8")
+            .expect("read active wNEO DEX band")
+            .is_some());
+        assert!(state
+            .get_contract_storage(&dex_program, b"dex_band_10")
+            .expect("read inactive wGAS DEX band")
+            .is_none());
     }
 
     #[test]
