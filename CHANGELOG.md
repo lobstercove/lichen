@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.40] - 2026-05-17
+
+### Fixed
+- Existing chains can roll forward to the Neo-enabled validator without resetting state: Neo oracle attestations and DEX pair bands are now emitted only after `WNEO` or `WGAS` are present in the live symbol registry, preventing mixed-release validators from deriving Neo-only side effects before the public activation gate.
+- Validator bootstrap tip probing now falls back from fail-closed `getSlot` responses to `getHealth.result.slot`, allowing a recovering validator to observe stale direct peers and catch up instead of deadlocking during pre-consensus startup.
+
+### Changed
+- Deployment docs now spell out the two Neo activation modes: normal signed rolling release first for an existing chain, then governed post-genesis activation after every validator is upgraded; fresh genesis remains owner-approved and requires a passing NX-900 manifest with seed-first joiner sync and no state copy.
+
 ## [0.5.30] - 2026-05-11
 
 ### Fixed
