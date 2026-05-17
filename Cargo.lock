@@ -3311,7 +3311,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-cli"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-custody"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "axum",
  "base64",
@@ -3370,7 +3370,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-faucet"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "axum",
  "chrono",
@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-genesis"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "bincode",
  "chrono",
@@ -3404,7 +3404,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-p2p"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-rpc"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "alloy-primitives 0.8.26",
  "axum",
@@ -3462,7 +3462,7 @@ dependencies = [
 
 [[package]]
 name = "lichen-validator"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "anyhow",
  "axum",
@@ -3505,7 +3505,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lobstercove-lichen-core"
-version = "0.5.41"
+version = "0.5.42"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",

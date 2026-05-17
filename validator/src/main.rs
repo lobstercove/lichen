@@ -3726,7 +3726,9 @@ fn validate_consensus_proposal_before_prevote(
             expected_validators_hash.to_hex(),
         ));
     }
-    if Pubkey(block.header.validator) != proposal.proposer {
+    // Fresh proposals must be signed by the block producer. Valid-round
+    // re-proposals may carry forward a block signed by an earlier proposer.
+    if proposal.valid_round < 0 && Pubkey(block.header.validator) != proposal.proposer {
         return Err(format!(
             "proposal h={} r={} rejected: block signer {} does not match proposal signer {}",
             proposal.height,
@@ -16927,6 +16929,75 @@ mod tests {
         assert_eq!(state.compute_state_root_cold_start(), root_before);
         assert!(state.get_account(&bob).expect("read bob").is_none());
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
+    fn consensus_proposal_validation_allows_valid_round_reproposal_by_later_leader() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let original_kp = Keypair::generate();
+        let original_proposer = original_kp.pubkey();
+        let later_kp = Keypair::generate();
+        let later_proposer = later_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            genesis_root,
+            original_proposer.0,
+            Vec::new(),
+            0,
+        );
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            state.compute_state_root_cold_start(),
+            original_proposer.0,
+            Vec::new(),
+            1,
+        );
+        block.header.validators_hash = validators_hash;
+        block.sign(&original_kp);
+        let block_hash = block.hash();
+
+        let reproposal = Proposal {
+            height: 1,
+            round: 2,
+            block: block.clone(),
+            valid_round: 0,
+            proposer: later_proposer,
+            signature: later_kp.sign(&Proposal::signable_bytes_static(1, 2, &block_hash, 0)),
+        };
+        validate_consensus_proposal_before_prevote(
+            &state,
+            &reproposal,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect("valid-round reproposal may carry an earlier proposer's block");
+
+        let fresh_mismatch = Proposal {
+            height: 1,
+            round: 3,
+            block,
+            valid_round: -1,
+            proposer: later_proposer,
+            signature: later_kp.sign(&Proposal::signable_bytes_static(1, 3, &block_hash, -1)),
+        };
+        let err = validate_consensus_proposal_before_prevote(
+            &state,
+            &fresh_mismatch,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect_err("fresh proposal with mismatched block signer must be rejected");
+        assert!(err.contains("block signer"));
     }
 
     #[test]
