@@ -49,6 +49,7 @@ Rolling-release rules:
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
 - Any release that changes fee charging or block commit batching must prove the public `getTotalBurned` value increases after a finalized fee-bearing transaction or drill. Do not accept explorer fee display alone as proof; it can be derived from the transaction while the consensus burned counter remains stale.
+- For an existing chain, Neo route/rewards/proof/agent code ships as a normal signed rolling release first. Do not set `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1`, do not inject fresh-genesis Neo env, and do not activate Neo post-genesis payloads until every validator is running the new release and health/WS/DEX smokes pass.
 - If a rolling release exposes a state-root mismatch, split tip, or stalled BFT height, stop every validator service, keep state/logs intact for evidence, fix and tag the code, then use the owner-approved clean-slate path only after the fix is verified. Do not copy RocksDB state between validators to "heal" the split.
 - A full reset is not a code-deploy mechanism. Use it only when the chain identity or genesis state must intentionally change, or after captured evidence proves the whole network state is unrecoverable.
 
@@ -473,6 +474,17 @@ The manifest must include owner/governance/security/custody/legal/deployment app
 Start from `docs/deployment/NEO_PUBLIC_BETA_GATE_TEMPLATE.json`. The template intentionally does not pass validation until every placeholder is replaced with real values and every approval/evidence boolean is true.
 
 This gate does not approve deployment by itself. It only proves the approval package is complete enough for the owner to make a deployment decision.
+
+Existing-chain Neo deployment is a two-step process:
+
+1. Roll the signed release to every validator with `scripts/rolling-release-deploy.sh`, preserving all validator state.
+2. After all validators are healthy on the new binary, activate Neo through the approved post-genesis governance payload from the manifest. Do not use fresh-genesis env variables on a running chain.
+
+Fresh-genesis Neo deployment is a separate owner-approved reset or launch path:
+
+1. Stop services and flush state only through `scripts/clean-slate-redeploy.sh` with the exact reset approval variables.
+2. Seed-01 creates genesis with the approved `LICHEN_GENESIS_NEO_GAS_REWARDS_*` values and a passing NX-900 manifest.
+3. Other validators join from empty state and sync from peers. No RocksDB state, genesis wallet, genesis keys, peer cache, or consensus WAL may be copied.
 
 Developer-facing route, rewards, DEX, SDK, and PQ evidence examples live in `docs/guides/NEO_DEVELOPER_INTEGRATION.md`. Keep those examples aligned with this gate: examples may prove local integration, but public rewards activation still requires this manifest.
 
