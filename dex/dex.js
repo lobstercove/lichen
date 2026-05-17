@@ -1002,6 +1002,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 23: sync_lp_rewards(provider[32], position_id[8])
+    function buildSyncLpRewardsArgs(provider, positionId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 23);
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, positionId);
+        return arr;
+    }
+
     // ── SporePump (Launchpad) instruction builders ──
     // Uses named-export ABI — function names instead of opcode bytes
     // create_token(creator_ptr[32], fee_paid[8]) = 40 bytes
@@ -1126,17 +1137,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const GOVERNANCE_SLOT_SECONDS = 0.4;
     const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
     const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';
+    const WHOLE_NEO_LOT = 1_000_000_000;
 
     // Display-inversion helpers for LICN-quoted wrapped pairs.
-    // On-chain pairs are stored as wBNB/LICN (base=wBNB, quote=LICN) with price
-    // in LICN/wBNB (~5850). The UI displays these as LICN/wBNB with price in
-    // wBNB/LICN (~0.000171). All data from the API/WS must be inverted to match
+    // On-chain pairs are stored as wrapped/LICN (base=wrapped, quote=LICN) with price
+    // in LICN per wrapped asset. The UI displays these as LICN/wrapped with price in
+    // wrapped per LICN. All data from the API/WS must be inverted to match
     // the display convention before reaching the chart.
+    const DISPLAY_INVERTED_WRAPPED_BASES = ['WSOL', 'WETH', 'WBNB', 'WNEO', 'WGAS'];
+    const WRAPPED_DISPLAY_SYMBOLS = { WBNB: 'BNB', WNEO: 'NEO', WGAS: 'GAS' };
+    const WHOLE_LOT_NEO_SYMBOLS = ['WNEO', 'NEO'];
+
     function isDisplayInvertedPair(pair) {
         if (!pair) return false;
         const base = (pair.base || '').toUpperCase();
         const quote = (pair.quote || '').toUpperCase();
-        return quote === 'LICN' && ['WSOL', 'WETH', 'WBNB'].includes(base);
+        return quote === 'LICN' && DISPLAY_INVERTED_WRAPPED_BASES.includes(base);
     }
 
     function invertPrice(price) {
@@ -1153,6 +1169,32 @@ document.addEventListener('DOMContentLoaded', () => {
             close: invertPrice(c.close),
             volume: c.volume
         };
+    }
+
+    function pairBaseRequiresWholeNeoLot(pair) {
+        const base = String(pair?.base || pair?.baseSymbol || '').toUpperCase();
+        return WHOLE_LOT_NEO_SYMBOLS.includes(base);
+    }
+
+    function pairMentionsWholeNeoLot(pair) {
+        const base = String(pair?.base || pair?.baseSymbol || '').toUpperCase();
+        const quote = String(pair?.quote || pair?.quoteSymbol || '').toUpperCase();
+        return WHOLE_LOT_NEO_SYMBOLS.includes(base) || WHOLE_LOT_NEO_SYMBOLS.includes(quote);
+    }
+
+    function isWholeNeoLotAmount(amount) {
+        const numeric = Number(amount);
+        if (!Number.isFinite(numeric) || numeric <= 0) return false;
+        const baseUnits = Math.round(numeric * WHOLE_NEO_LOT);
+        return baseUnits > 0
+            && baseUnits % WHOLE_NEO_LOT === 0
+            && Math.abs(numeric - Math.round(numeric)) < 1e-9;
+    }
+
+    function updateNeoLotWarning() {
+        const warning = document.getElementById('neoLotWarning');
+        if (!warning) return;
+        warning.classList.toggle('hidden', !pairMentionsWholeNeoLot(state.activePair));
     }
 
     const state = {
@@ -1297,7 +1339,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const display = (sym) => {
             const upper = String(sym || '').toUpperCase();
-            if (upper === 'WBNB') return 'BNB';
+            if (WRAPPED_DISPLAY_SYMBOLS[upper]) return WRAPPED_DISPLAY_SYMBOLS[upper];
             return sym || '';
         };
 
@@ -1309,12 +1351,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const quoteUpper = quote.toUpperCase();
         const baseUpper = base.toUpperCase();
 
-        if (quoteUpper === 'LICN' && ['WSOL', 'WETH', 'WBNB'].includes(baseUpper)) {
+        if (quoteUpper === 'LICN' && DISPLAY_INVERTED_WRAPPED_BASES.includes(baseUpper)) {
             return { id: `LICN/${base}`, baseDisplay: 'LICN', quoteDisplay: display(base) };
         }
 
-        if (baseUpper === 'WBNB' && quoteUpper === 'LUSD') {
-            return { id: 'BNB/lUSD', baseDisplay: 'BNB', quoteDisplay: 'lUSD' };
+        if (WRAPPED_DISPLAY_SYMBOLS[baseUpper] && quoteUpper === 'LUSD') {
+            const unwrappedBase = WRAPPED_DISPLAY_SYMBOLS[baseUpper];
+            return { id: `${unwrappedBase}/lUSD`, baseDisplay: unwrappedBase, quoteDisplay: 'lUSD' };
         }
 
         const id = fallbackSymbol || `${base}/${quote}`;
@@ -1338,7 +1381,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         price: p.lastPrice || 0, change: p.change24h ?? 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
                         hasMarketPrice: (p.lastPrice || 0) > 0,
                     };
-                    // Invert API price for display-inverted pairs (on-chain wBNB/LICN → display LICN/wBNB)
+                    // Invert API price for display-inverted wrapped/LICN pairs.
                     if (isDisplayInvertedPair(pair) && pair.price > 0) {
                         pair.price = invertPrice(pair.price);
                     }
@@ -1374,6 +1417,7 @@ document.addEventListener('DOMContentLoaded', () => {
             pairs = [{ pairId: 1, id: 'LICN/lUSD', base: 'LICN', quote: 'lUSD', price: LICHEN_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'LICN/lUSD', hasMarketPrice: false }];
             state.activePair = pairs[0]; state.activePairId = 1; state.lastPrice = LICHEN_GENESIS_PRICE;
         }
+        updateNeoLotWarning();
         // Populate all select dropdowns from real pairs
         populateSelectsFromPairs();
     }
@@ -1616,7 +1660,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         dexWs.subscribe(`trades:${pairId}`, (d) => {
             if (d.price) {
-                // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
+                // Invert on-chain price for display-inverted wrapped/LICN pairs.
                 const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.price) : d.price;
                 if (state.activePair) {
                     state.activePair.hasMarketPrice = true;
@@ -1777,6 +1821,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Task 5.4: Remember last selected pair
         localStorage.setItem('dexLastPair', String(pair.pairId));
         if (pairActive) pairActive.querySelector('.pair-name').textContent = pair.id;
+        updateNeoLotWarning();
         updateOrderBookLabels(pair);
         updatePairStats(pair); updateTickerDisplay(); renderPairList();
         await Promise.all([loadOrderBook(), loadRecentTrades()]);
@@ -2217,6 +2262,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let disabledReason = '';
         if (amount <= 0) disabledReason = 'Enter an amount';
+        else if (pairBaseRequiresWholeNeoLot(state.activePair) && !isWholeNeoLotAmount(amount)) disabledReason = 'wNEO requires whole NEO lots';
         else if (state.orderType !== 'market' && price <= 0) disabledReason = 'Enter a valid price';
         else if (state.orderType === 'market' && price <= 0) disabledReason = 'Waiting for market price';
         else if (state.orderType === 'stop-limit' && stopPrice <= 0) disabledReason = 'Enter stop price';
@@ -2475,6 +2521,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (orderType === 'market' && effectivePrice <= 0) return { ok: false, error: 'Waiting for market price', code: 'BAD_PRICE' };
         if (amount > 9_000_000) return { ok: false, error: 'Amount too large (max 9M)', code: 'OVERFLOW_AMOUNT' };
         if (effectivePrice > 9_000_000) return { ok: false, error: 'Price too large (max 9M)', code: 'OVERFLOW_PRICE' };
+        if (pairBaseRequiresWholeNeoLot(pair) && !isWholeNeoLotAmount(amount)) {
+            return { ok: false, error: 'wNEO orders require whole NEO lots', code: 'WNEO_LOT' };
+        }
 
         // 3. Contract availability
         if (!contracts.dex_core) return { ok: false, error: 'Contract addresses not loaded', code: 'NO_CONTRACT' };
@@ -4292,9 +4341,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if ((base === 'WSOL' || base === 'SOL') && oracleRefPrices['wSOL'] > 0) extPrice = oracleRefPrices['wSOL'];
             else if ((base === 'WETH' || base === 'ETH') && oracleRefPrices['wETH'] > 0) extPrice = oracleRefPrices['wETH'];
             else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB'] > 0) extPrice = oracleRefPrices['wBNB'];
+            else if ((base === 'WNEO' || base === 'NEO') && oracleRefPrices['wNEO'] > 0) extPrice = oracleRefPrices['wNEO'];
+            else if ((base === 'WGAS' || base === 'GAS') && oracleRefPrices['wGAS'] > 0) extPrice = oracleRefPrices['wGAS'];
 
             // Safety guard: display-inverted pairs should NEVER show price > 1
-            // (LICN/wSOL ≈ 0.001, LICN/wETH ≈ 0.00005, LICN/wBNB ≈ 0.00016)
+            // (LICN/wSOL, LICN/wETH, LICN/wBNB, LICN/wNEO, LICN/wGAS)
             // If price > 1 it means the raw on-chain LICN-denominated price leaked through
             if (!p.hasMarketPrice && extPrice <= 0 && isDisplayInvertedPair(p) && p.price > 1) {
                 p.price = invertPrice(p.price);
@@ -4305,7 +4356,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (p.hasMarketPrice) continue;
             if (extPrice <= 0) continue;
 
-            // For LICN-quoted pairs (on-chain: wSOL/LICN, display: LICN/wSOL),
+            // For LICN-quoted pairs (on-chain: wrapped/LICN, display: LICN/wrapped),
             // the display price = LICN_USD / asset_USD (how much asset per 1 LICN)
             if (quote === 'LICN' && licnUsd > 0) extPrice = licnUsd / extPrice;
             else if (quote !== 'LUSD' && quote !== 'USD') continue;
@@ -5510,8 +5561,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 const pending = data.pending ? data.pending / 1e9 : 0;
-                el('rewardsPending', formatAmount(pending) + ' LICN');
-                el('rewardsPendingUsd', `≈ $${formatAmount(pending * state.lastPrice)}`);
+                const lpPending = data.lpPending ? data.lpPending / 1e9 : 0;
+                const totalPending = pending + lpPending;
+                el('rewardsPending', formatAmount(totalPending) + ' LICN');
+                el('rewardsPendingUsd', `≈ $${formatAmount(totalPending * state.lastPrice)}`);
                 // F13.2: Compute tier from totalVolume (camelCase from RPC)
                 const volume = data.totalVolume || 0;
                 const tierNum = computeRewardTier(volume);
@@ -5553,10 +5606,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const claimed = data.claimed ? data.claimed / 1e9 : 0;
                 el('rewardTradeMonth', '—');
                 el('rewardTradeAll', formatAmount(claimed + pending) + ' LICN');
-                // LP Mining card — no per-user LP reward data in contract; show pending or —
-                el('rewardLpPending', '—');
-                el('rewardLpPositions', '—');
-                el('rewardLpLiquidity', '—');
+                el('rewardLpPending', formatAmount(lpPending) + ' LICN');
+                el('rewardLpPositions', `${data.lpPositions ?? 0}`);
+                el('rewardLpLiquidity', data.lpLiquidity ? formatAmount(data.lpLiquidity / 1e9) : '0');
                 // F13.3: Referral card metrics — use camelCase field names from RPC
                 el('rewardRefCount', (data.referralCount ?? 0) + ' traders');
                 el('rewardRefEarnings', formatAmount(data.referralEarnings ? data.referralEarnings / 1e9 : 0) + ' LICN');
@@ -7352,6 +7404,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) { showNotification('Connect wallet to claim LP rewards', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         if (!contracts.dex_rewards) { showNotification('Rewards contract not loaded', 'error'); return; }
+        if (!contracts.dex_amm) { showNotification('AMM contract not loaded', 'error'); return; }
 
         claimLpBtn.disabled = true;
         const origText = claimLpBtn.innerHTML;
@@ -7359,10 +7412,14 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get(`/pools/positions?owner=${wallet.address}`);
             const positions = Array.isArray(data) ? data : [];
-            const instructions = positions
+            const positionIds = positions
                 .map(pos => Number(pos.positionId || pos.id || 0))
-                .filter(positionId => Number.isFinite(positionId) && positionId > 0)
-                .map(positionId => contractIx(contracts.dex_rewards, buildClaimLpRewardsArgs(wallet.address, positionId)));
+                .filter(positionId => Number.isFinite(positionId) && positionId > 0);
+            const instructions = positionIds
+                .flatMap(positionId => [
+                    contractIx(contracts.dex_amm, buildSyncLpRewardsArgs(wallet.address, positionId)),
+                    contractIx(contracts.dex_rewards, buildClaimLpRewardsArgs(wallet.address, positionId)),
+                ]);
 
             if (!instructions.length) {
                 showNotification('No LP positions found to claim', 'warning');
@@ -7370,13 +7427,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             await wallet.sendTransaction(instructions);
-            showNotification(`LP rewards claimed for ${instructions.length} position(s)`, 'success');
+            showNotification(`LP rewards claimed for ${positionIds.length} position(s)`, 'success');
             loadRewardsStats().catch(() => { });
         } catch (e) {
             showNotification(`LP claim failed: ${e.message}`, 'error');
+        } finally {
+            claimLpBtn.disabled = false;
+            claimLpBtn.innerHTML = origText;
         }
-        claimLpBtn.disabled = false;
-        claimLpBtn.innerHTML = origText;
     });
 
     const marginLiquidateBtn = document.getElementById('marginLiquidateBtn');
@@ -7912,7 +7970,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await loadOrderBook();
                     const t = await loadTicker(state.activePairId);
                     if (t?.lastPrice) {
-                        // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
+                        // Invert on-chain price for display-inverted wrapped/LICN pairs.
                         const dp = isDisplayInvertedPair(state.activePair) ? invertPrice(t.lastPrice) : t.lastPrice;
                         state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair);
                         // H2-FIX: Don't inject zero-volume synthetic bars from REST poll — let WS candle subscription handle chart updates

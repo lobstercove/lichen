@@ -88,6 +88,7 @@ const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 const SERVICE_FLEET_CACHE_TTL_MS: u128 = 10_000;
 const SIGNED_METADATA_MANIFEST_SCHEMA_VERSION: u64 = 1;
 const LIVE_SIGNED_METADATA_SOURCE_RPC: &str = "live-rpc";
+const NEO_GAS_REWARDS_SYMBOL: &str = "NEOGASRWD";
 const SOLANA_SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_TOKEN_ACCOUNT_SPACE: usize = 165;
 const SOLANA_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS: u64 = 2_039_280;
@@ -5053,6 +5054,10 @@ async fn handle_rpc(
         "getWethStats" => handle_get_weth_stats(&state).await,
         "getWsolStats" => handle_get_wsol_stats(&state).await,
         "getWbnbStats" => handle_get_wbnb_stats(&state).await,
+        "getWneoStats" => handle_get_wneo_stats(&state).await,
+        "getWgasStats" => handle_get_wgas_stats(&state).await,
+        "getNeoGasRewardsStats" => handle_get_neo_gas_rewards_stats(&state).await,
+        "getNeoGasRewardsPosition" => handle_get_neo_gas_rewards_position(&state, req.params).await,
         // Platform contract stats — previously missing RPC wiring
         "getSporeVaultStats" => handle_get_sporevault_stats(&state).await,
         "getLichenBridgeStats" => handle_get_lichenbridge_stats(&state).await,
@@ -11266,6 +11271,24 @@ fn ensure_bridge_route_not_paused(
     }
 
     Ok(())
+}
+
+fn is_known_bridge_deposit_chain(chain: &str) -> bool {
+    matches!(chain, "solana" | "ethereum" | "bnb" | "bsc" | "neox")
+}
+
+fn is_known_bridge_deposit_asset(asset: &str) -> bool {
+    matches!(asset, "sol" | "eth" | "bnb" | "usdc" | "usdt" | "gas")
+}
+
+fn is_supported_bridge_deposit_route(chain: &str, asset: &str) -> bool {
+    match chain {
+        "solana" => matches!(asset, "sol" | "usdc" | "usdt"),
+        "ethereum" => matches!(asset, "eth" | "usdc" | "usdt"),
+        "bnb" | "bsc" => matches!(asset, "bnb" | "usdc" | "usdt"),
+        "neox" => matches!(asset, "gas"),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -18459,6 +18482,67 @@ fn cf_stats_bool(state: &RpcState, symbol: &str, key: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+fn cf_stats_u128(state: &RpcState, symbol: &str, key: &[u8]) -> u128 {
+    state
+        .state
+        .get_program_storage(symbol, key)
+        .map(|d| {
+            let mut bytes = [0u8; 16];
+            let len = d.len().min(bytes.len());
+            bytes[..len].copy_from_slice(&d[..len]);
+            u128::from_le_bytes(bytes)
+        })
+        .unwrap_or(0)
+}
+
+fn cf_stats_pubkey(state: &RpcState, symbol: &str, key: &[u8]) -> Option<String> {
+    state.state.get_program_storage(symbol, key).and_then(|d| {
+        if d.len() < 32 {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&d[..32]);
+        Some(Pubkey(bytes).to_base58())
+    })
+}
+
+fn storage_key_with_pubkey_hex(prefix: &str, pubkey: &Pubkey) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 64);
+    key.extend_from_slice(prefix.as_bytes());
+    key.extend_from_slice(hex::encode(pubkey.0).as_bytes());
+    key
+}
+
+fn storage_key_with_u64_le(prefix: &[u8], value: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 8);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&value.to_le_bytes());
+    key
+}
+
+fn read_le_u64_at(data: &[u8], offset: usize) -> Option<u64> {
+    let end = offset.checked_add(8)?;
+    let bytes = data.get(offset..end)?;
+    Some(u64::from_le_bytes(bytes.try_into().ok()?))
+}
+
+fn neo_gas_rewards_last_evidence_record(state: &RpcState, evidence_count: u64) -> (u64, u64, u64) {
+    if evidence_count == 0 {
+        return (0, 0, 0);
+    }
+    let key = storage_key_with_u64_le(b"ngr_evd_rec_", evidence_count - 1);
+    let Some(record) = state
+        .state
+        .get_program_storage(NEO_GAS_REWARDS_SYMBOL, &key)
+    else {
+        return (0, 0, 0);
+    };
+    let amount = read_le_u64_at(&record, 0).unwrap_or(0);
+    let evidence_slot = read_le_u64_at(&record, 8).unwrap_or(0);
+    let import_slot = read_le_u64_at(&record, 88).unwrap_or(0);
+    (amount, evidence_slot, import_slot)
+}
+
 /// Resolve a symbol to its program Pubkey.
 fn resolve_symbol_pubkey(state: &RpcState, symbol: &str) -> Result<Pubkey, RpcError> {
     state
@@ -18717,51 +18801,167 @@ async fn handle_get_musd_stats(state: &RpcState) -> Result<serde_json::Value, Rp
     }))
 }
 
+fn wrapped_token_stats(
+    state: &RpcState,
+    symbol: &str,
+    storage_prefix: &str,
+) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, symbol)?;
+    let key = |suffix: &str| format!("{}_{}", storage_prefix, suffix).into_bytes();
+    Ok(serde_json::json!({
+        "supply": cf_stats_u64(state, symbol, &key("supply")),
+        "total_minted": cf_stats_u64(state, symbol, &key("minted")),
+        "total_burned": cf_stats_u64(state, symbol, &key("burned")),
+        "mint_events": cf_stats_u64(state, symbol, &key("mint_evt")),
+        "burn_events": cf_stats_u64(state, symbol, &key("burn_evt")),
+        "transfer_count": cf_stats_u64(state, symbol, &key("xfer_cnt")),
+        "attestation_count": cf_stats_u64(state, symbol, &key("att_count")),
+        "reserve_attested": cf_stats_u64(state, symbol, &key("reserve_att")),
+        "paused": cf_stats_bool(state, symbol, &key("paused")),
+    }))
+}
+
 /// getWethStats — Wrapped ETH stats
 async fn handle_get_weth_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "WETH")?;
-    Ok(serde_json::json!({
-        "supply": cf_stats_u64(state, "WETH", b"weth_supply"),
-        "total_minted": cf_stats_u64(state, "WETH", b"weth_minted"),
-        "total_burned": cf_stats_u64(state, "WETH", b"weth_burned"),
-        "mint_events": cf_stats_u64(state, "WETH", b"weth_mint_evt"),
-        "burn_events": cf_stats_u64(state, "WETH", b"weth_burn_evt"),
-        "transfer_count": cf_stats_u64(state, "WETH", b"weth_xfer_cnt"),
-        "attestation_count": cf_stats_u64(state, "WETH", b"weth_att_count"),
-        "reserve_attested": cf_stats_u64(state, "WETH", b"weth_reserve_att"),
-        "paused": cf_stats_bool(state, "WETH", b"weth_paused"),
-    }))
+    wrapped_token_stats(state, "WETH", "weth")
 }
 
 /// getWsolStats — Wrapped SOL stats
 async fn handle_get_wsol_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "WSOL")?;
-    Ok(serde_json::json!({
-        "supply": cf_stats_u64(state, "WSOL", b"wsol_supply"),
-        "total_minted": cf_stats_u64(state, "WSOL", b"wsol_minted"),
-        "total_burned": cf_stats_u64(state, "WSOL", b"wsol_burned"),
-        "mint_events": cf_stats_u64(state, "WSOL", b"wsol_mint_evt"),
-        "burn_events": cf_stats_u64(state, "WSOL", b"wsol_burn_evt"),
-        "transfer_count": cf_stats_u64(state, "WSOL", b"wsol_xfer_cnt"),
-        "attestation_count": cf_stats_u64(state, "WSOL", b"wsol_att_count"),
-        "reserve_attested": cf_stats_u64(state, "WSOL", b"wsol_reserve_att"),
-        "paused": cf_stats_bool(state, "WSOL", b"wsol_paused"),
-    }))
+    wrapped_token_stats(state, "WSOL", "wsol")
 }
 
 /// getWbnbStats — Wrapped BNB stats
 async fn handle_get_wbnb_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "WBNB")?;
+    wrapped_token_stats(state, "WBNB", "wbnb")
+}
+
+/// getWneoStats — Wrapped NEO stats
+async fn handle_get_wneo_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    wrapped_token_stats(state, "WNEO", "wneo")
+}
+
+/// getWgasStats — Wrapped GAS stats
+async fn handle_get_wgas_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    wrapped_token_stats(state, "WGAS", "wgas")
+}
+
+/// getNeoGasRewardsStats — NEO GAS rewards vault accounting and configuration stats
+async fn handle_get_neo_gas_rewards_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let program = resolve_symbol_pubkey(state, NEO_GAS_REWARDS_SYMBOL)?;
+    let total_imported = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_total_imp");
+    let total_claimed = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_total_clm");
+    let caps_configured = cf_stats_bool(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_caps_set");
+    let reward_importer = cf_stats_pubkey(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_importer");
+    let wneo_token = cf_stats_pubkey(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_wneo");
+    let wgas_token = cf_stats_pubkey(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_wgas");
+    let disclosure_version = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_disc_ver");
+    let policy_version = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_pol_ver");
+    let evidence_count = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_evd_count");
+    let (last_reward_amount, last_evidence_slot, last_import_slot) =
+        neo_gas_rewards_last_evidence_record(state, evidence_count);
+    let configured = caps_configured
+        && wneo_token.is_some()
+        && wgas_token.is_some()
+        && disclosure_version > 0
+        && policy_version > 0;
+
     Ok(serde_json::json!({
-        "supply": cf_stats_u64(state, "WBNB", b"wbnb_supply"),
-        "total_minted": cf_stats_u64(state, "WBNB", b"wbnb_minted"),
-        "total_burned": cf_stats_u64(state, "WBNB", b"wbnb_burned"),
-        "mint_events": cf_stats_u64(state, "WBNB", b"wbnb_mint_evt"),
-        "burn_events": cf_stats_u64(state, "WBNB", b"wbnb_burn_evt"),
-        "transfer_count": cf_stats_u64(state, "WBNB", b"wbnb_xfer_cnt"),
-        "attestation_count": cf_stats_u64(state, "WBNB", b"wbnb_att_count"),
-        "reserve_attested": cf_stats_u64(state, "WBNB", b"wbnb_reserve_att"),
-        "paused": cf_stats_bool(state, "WBNB", b"wbnb_paused"),
+        "program": program.to_base58(),
+        "reward_importer": reward_importer,
+        "wneo_token": wneo_token,
+        "wgas_token": wgas_token,
+        "caps_configured": caps_configured,
+        "configured": configured,
+        "paused": cf_stats_bool(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_paused"),
+        "total_principal": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_total_prn"),
+        "total_imported": total_imported,
+        "total_claimed": total_claimed,
+        "outstanding_rewards": total_imported.saturating_sub(total_claimed),
+        "reward_index": cf_stats_u128(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_idx").to_string(),
+        "reward_dust": cf_stats_u128(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_dust").to_string(),
+        "evidence_count": evidence_count,
+        "last_reward_amount": last_reward_amount,
+        "last_evidence_slot": last_evidence_slot,
+        "last_import_slot": last_import_slot,
+        "deposit_count": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_dep_count"),
+        "exit_count": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_exit_count"),
+        "claim_count": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_claim_count"),
+        "route_cap": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_route_cap"),
+        "per_user_cap": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_user_cap"),
+        "daily_import_cap": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_imp_cap"),
+        "daily_import_used": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_imp_wused"),
+        "daily_claim_cap": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_clm_cap"),
+        "daily_claim_used": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_clm_wused"),
+        "campaign_budget": cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_budget"),
+        "disclosure_version": disclosure_version,
+        "policy_version": policy_version,
+    }))
+}
+
+/// getNeoGasRewardsPosition [address] — Per-user NEO GAS rewards vault accounting
+async fn handle_get_neo_gas_rewards_position(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, NEO_GAS_REWARDS_SYMBOL)?;
+    let user = parse_pubkey_param(
+        params,
+        &["address", "user", "owner"],
+        "Expected params: [address] or { address }",
+        "address",
+    )?;
+    const NEO_GAS_REWARDS_INDEX_SCALE: u128 = 1_000_000_000_000_000_000;
+
+    let principal = cf_stats_u64(
+        state,
+        NEO_GAS_REWARDS_SYMBOL,
+        &storage_key_with_pubkey_hex("ngr_prn_", &user),
+    );
+    let paid_index = cf_stats_u128(
+        state,
+        NEO_GAS_REWARDS_SYMBOL,
+        &storage_key_with_pubkey_hex("ngr_paid_", &user),
+    );
+    let reward_index = cf_stats_u128(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_idx");
+    let pending = cf_stats_u64(
+        state,
+        NEO_GAS_REWARDS_SYMBOL,
+        &storage_key_with_pubkey_hex("ngr_pend_", &user),
+    );
+    let claimed = cf_stats_u64(
+        state,
+        NEO_GAS_REWARDS_SYMBOL,
+        &storage_key_with_pubkey_hex("ngr_uclm_", &user),
+    );
+    let accepted_disclosure_version = cf_stats_u64(
+        state,
+        NEO_GAS_REWARDS_SYMBOL,
+        &storage_key_with_pubkey_hex("ngr_disc_acc_", &user),
+    );
+    let disclosure_version = cf_stats_u64(state, NEO_GAS_REWARDS_SYMBOL, b"ngr_disc_ver");
+
+    let accrued = if principal > 0 && reward_index > paid_index {
+        (principal as u128).saturating_mul(reward_index - paid_index) / NEO_GAS_REWARDS_INDEX_SCALE
+    } else {
+        0
+    };
+    let accrued_capped = accrued.min(u64::MAX as u128) as u64;
+    let claimable = pending.saturating_add(accrued_capped);
+
+    Ok(serde_json::json!({
+        "address": user.to_base58(),
+        "principal": principal,
+        "pending": pending,
+        "accrued": accrued_capped,
+        "claimable": claimable,
+        "claimed": claimed,
+        "paid_index": paid_index.to_string(),
+        "reward_index": reward_index.to_string(),
+        "accepted_disclosure_version": accepted_disclosure_version,
+        "disclosure_version": disclosure_version,
+        "disclosure_current_accepted": disclosure_version > 0
+            && accepted_disclosure_version >= disclosure_version,
     }))
 }
 
@@ -18852,18 +19052,22 @@ async fn handle_create_bridge_deposit(
         message: "Missing auth: expected wallet-signed bridge access".to_string(),
     })?;
 
-    let valid_chains = ["solana", "ethereum", "bnb", "bsc"];
-    let valid_assets = ["sol", "eth", "bnb", "usdc", "usdt"];
-    if !valid_chains.contains(&chain) {
+    if !is_known_bridge_deposit_chain(chain) {
         return Err(RpcError {
             code: -32602,
             message: format!("Invalid chain: {}", chain),
         });
     }
-    if !valid_assets.contains(&asset) {
+    if !is_known_bridge_deposit_asset(asset) {
         return Err(RpcError {
             code: -32602,
             message: format!("Invalid asset: {}", asset),
+        });
+    }
+    if !is_supported_bridge_deposit_route(chain, asset) {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid bridge route: {}:{}", chain, asset),
         });
     }
 
@@ -19122,10 +19326,21 @@ async fn handle_get_lichendao_stats(state: &RpcState) -> Result<serde_json::Valu
 /// getLichenOracleStats — Oracle price feed stats
 async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "ORACLE")?;
-    let tracked_assets = ["LICN", "wSOL", "wETH", "wBNB"];
+    let mut tracked_assets = vec!["LICN", "wSOL", "wETH", "wBNB"];
+    for (symbol, asset) in [("WNEO", "wNEO"), ("WGAS", "wGAS")] {
+        if state
+            .state
+            .get_symbol_registry(symbol)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            tracked_assets.push(asset);
+        }
+    }
     let mut consensus_feeds = 0u64;
     let mut native_attestations = 0u64;
-    for asset in tracked_assets {
+    for asset in &tracked_assets {
         if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
             if price.price > 0 {
                 consensus_feeds = consensus_feeds.saturating_add(1);
@@ -19137,7 +19352,8 @@ async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::V
     let contract_feeds = cf_stats_u64(state, "ORACLE", b"stats_feeds");
     let contract_attestations = cf_stats_u64(state, "ORACLE", b"stats_attestations");
     let paused = cf_stats_bool(state, "ORACLE", b"oracle_paused");
-    let operational = contract_feeds >= 4 && consensus_feeds >= 4 && !paused;
+    let operational =
+        contract_feeds >= 4 && consensus_feeds >= tracked_assets.len() as u64 && !paused;
     Ok(serde_json::json!({
         "queries": cf_stats_u64(state, "ORACLE", b"stats_queries"),
         "feeds": contract_feeds,
@@ -19167,6 +19383,8 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
         ("WSOL", "wSOL"),
         ("WETH", "wETH"),
         ("WBNB", "wBNB"),
+        ("WGAS", "wGAS"),
+        ("WNEO", "wNEO"),
     ];
     let mut symbol_for_addr: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -19248,7 +19466,7 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
 
 /// getOraclePrices — Returns current oracle prices for all known assets.
 async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let assets = ["LICN", "wSOL", "wETH", "wBNB", "lUSD"];
+    let assets = ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS", "lUSD"];
     let mut prices = serde_json::Map::new();
     prices.insert("source".to_string(), serde_json::json!("native_consensus"));
     for asset in &assets {
@@ -19280,9 +19498,11 @@ mod tests {
         handle_get_bridge_deposit, handle_get_bridge_route_restriction_status,
         handle_get_code_hash_restriction_status, handle_get_contract_info,
         handle_get_contract_lifecycle_status, handle_get_governance_events,
-        handle_get_incident_status, handle_get_program, handle_get_program_stats,
-        handle_get_recent_blocks, handle_get_restriction, handle_get_restriction_status,
-        handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
+        handle_get_incident_status, handle_get_lichenoracle_stats,
+        handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats, handle_get_program,
+        handle_get_program_stats, handle_get_recent_blocks, handle_get_restriction,
+        handle_get_restriction_status, handle_get_service_fleet_status,
+        handle_get_signed_metadata_manifest, handle_get_wgas_stats, handle_get_wneo_stats,
         handle_list_active_restrictions, handle_list_restrictions, handle_set_fee_config,
         handle_solana_get_account_info, handle_solana_get_token_account_balance,
         handle_solana_get_token_accounts_by_owner, live_signed_metadata_source_rpc,
@@ -19290,7 +19510,8 @@ mod tests {
         parse_governance_event, parse_rpc_request, parse_rpc_tier_probe, parse_topic_hash,
         pq_signature_json, privileged_rpc_mutation_test_output, put_cached_program_list_response,
         rpc_readiness, rpc_readiness_json, rpc_unready_error,
-        solana_method_allowed_when_rpc_unready, strip_admin_token_from_params,
+        solana_method_allowed_when_rpc_unready, storage_key_with_pubkey_hex,
+        storage_key_with_u64_le, strip_admin_token_from_params,
         validate_incoming_transaction_limits, validate_solana_encoding,
         validate_solana_transaction_details, verify_admin_auth, verify_bridge_access_auth_at,
         AirdropCooldowns, MethodTier, RateLimiter, RpcError, RpcResponse, RpcState,
@@ -23148,6 +23369,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_bridge_deposit_forwards_neox_gas_to_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let response = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                53, "neox", "gas"
+            )])),
+        )
+        .await
+        .expect("Neo X GAS bridge deposit creation should reach custody");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["chain"], serde_json::json!("neox"));
+        assert_eq!(requests[0]["asset"], serde_json::json!("gas"));
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_rejects_cross_chain_asset_pair() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let error = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                54, "solana", "gas"
+            )])),
+        )
+        .await
+        .expect_err("GAS must not become a Solana bridge-deposit asset");
+
+        assert_eq!(error.code, -32602);
+        assert_eq!(error.message, "Invalid bridge route: solana:gas");
+        assert!(custody_state.requests.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_create_bridge_deposit_forwards_bridge_auth_to_custody() {
         let tmp = tempdir().unwrap();
         let state = StateStore::open(tmp.path()).unwrap();
@@ -23700,6 +23989,324 @@ mod tests {
         assert_eq!(result[0], 0xdd);
         assert_eq!(result[1], 0xf2);
         assert_eq!(result[31], 0xef);
+    }
+
+    #[tokio::test]
+    async fn test_oracle_stats_require_neo_feeds_only_when_neo_symbols_registered() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let oracle = Pubkey([0x40u8; 32]);
+        let wneo = Pubkey([0x41u8; 32]);
+
+        state
+            .register_symbol(
+                "ORACLE",
+                SymbolRegistryEntry {
+                    symbol: "ORACLE".to_string(),
+                    program: oracle,
+                    owner: Pubkey([0x42u8; 32]),
+                    name: Some("Lichen Oracle".to_string()),
+                    template: Some("oracle".to_string()),
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .unwrap();
+        state
+            .put_contract_storage(&oracle, b"stats_feeds", &4u64.to_le_bytes())
+            .unwrap();
+        for (asset, slot) in [
+            ("LICN", 10u64),
+            ("wSOL", 11u64),
+            ("wETH", 12u64),
+            ("wBNB", 13u64),
+        ] {
+            state
+                .put_oracle_consensus_price(asset, 1_000_000, 8, slot, 3)
+                .unwrap();
+        }
+
+        let rpc_state = make_test_rpc_state(state.clone());
+        let legacy_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("legacy oracle stats should serialize");
+        assert_eq!(legacy_stats["consensus_feeds"], serde_json::json!(4u64));
+        assert_eq!(legacy_stats["operational"], serde_json::json!(true));
+
+        state
+            .register_symbol(
+                "WNEO",
+                SymbolRegistryEntry {
+                    symbol: "WNEO".to_string(),
+                    program: wneo,
+                    owner: Pubkey([0x43u8; 32]),
+                    name: Some("Wrapped NEO".to_string()),
+                    template: Some("wrapped".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        let missing_neo_feed_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("neo-aware oracle stats should serialize");
+        assert_eq!(
+            missing_neo_feed_stats["consensus_feeds"],
+            serde_json::json!(4u64)
+        );
+        assert_eq!(
+            missing_neo_feed_stats["operational"],
+            serde_json::json!(false)
+        );
+
+        state
+            .put_oracle_consensus_price("wNEO", 15_000_000, 8, 14, 3)
+            .unwrap();
+        let neo_ready_stats = handle_get_lichenoracle_stats(&rpc_state)
+            .await
+            .expect("neo-ready oracle stats should serialize");
+        assert_eq!(neo_ready_stats["consensus_feeds"], serde_json::json!(5u64));
+        assert_eq!(neo_ready_stats["operational"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn test_neo_wrapped_stats_report_reserve_counters() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let wneo = Pubkey([0x44u8; 32]);
+        let wgas = Pubkey([0x45u8; 32]);
+
+        state
+            .register_symbol(
+                "WNEO",
+                SymbolRegistryEntry {
+                    symbol: "WNEO".to_string(),
+                    program: wneo,
+                    owner: Pubkey([0x46u8; 32]),
+                    name: Some("Wrapped NEO".to_string()),
+                    template: Some("wrapped".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        state
+            .register_symbol(
+                "WGAS",
+                SymbolRegistryEntry {
+                    symbol: "WGAS".to_string(),
+                    program: wgas,
+                    owner: Pubkey([0x47u8; 32]),
+                    name: Some("Wrapped GAS".to_string()),
+                    template: Some("wrapped".to_string()),
+                    metadata: None,
+                    decimals: Some(9),
+                },
+            )
+            .unwrap();
+        state
+            .put_contract_storage(&wneo, b"wneo_supply", &2_000_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wneo, b"wneo_reserve_att", &2_000_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wneo, b"wneo_att_count", &3u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wgas, b"wgas_supply", &5_000_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wgas, b"wgas_reserve_att", &6_000_000_000u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&wgas, b"wgas_paused", &[1])
+            .unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+
+        let wneo_stats = handle_get_wneo_stats(&rpc_state)
+            .await
+            .expect("wNEO stats should serialize");
+        assert_eq!(wneo_stats["supply"], serde_json::json!(2_000_000_000u64));
+        assert_eq!(
+            wneo_stats["reserve_attested"],
+            serde_json::json!(2_000_000_000u64)
+        );
+        assert_eq!(wneo_stats["attestation_count"], serde_json::json!(3u64));
+        assert_eq!(wneo_stats["paused"], serde_json::json!(false));
+
+        let wgas_stats = handle_get_wgas_stats(&rpc_state)
+            .await
+            .expect("wGAS stats should serialize");
+        assert_eq!(wgas_stats["supply"], serde_json::json!(5_000_000_000u64));
+        assert_eq!(
+            wgas_stats["reserve_attested"],
+            serde_json::json!(6_000_000_000u64)
+        );
+        assert_eq!(wgas_stats["paused"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn test_neo_gas_rewards_stats_and_position_use_accounting_keys() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+        let rewards = Pubkey([0x48u8; 32]);
+        let owner = Pubkey([0x49u8; 32]);
+        let wneo = Pubkey([0x4au8; 32]);
+        let wgas = Pubkey([0x4bu8; 32]);
+        let user = Pubkey([0x4cu8; 32]);
+        let importer = Pubkey([0x4du8; 32]);
+
+        state
+            .register_symbol(
+                "NEOGASRWD",
+                SymbolRegistryEntry {
+                    symbol: "NEOGASRWD".to_string(),
+                    program: rewards,
+                    owner,
+                    name: Some("Neo GAS Rewards Vault".to_string()),
+                    template: Some("vault".to_string()),
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .unwrap();
+
+        let reward_index = 4u128 * 1_000_000_000_000_000_000u128;
+        let paid_index = 1_000_000_000_000_000_000u128;
+        let user_key = |prefix: &str| storage_key_with_pubkey_hex(prefix, &user);
+
+        for (key, value) in [
+            (b"ngr_total_prn".as_slice(), 10_000_000_000u64),
+            (b"ngr_total_imp".as_slice(), 1_000_000u64),
+            (b"ngr_total_clm".as_slice(), 250_000u64),
+            (b"ngr_evd_count".as_slice(), 3u64),
+            (b"ngr_dep_count".as_slice(), 2u64),
+            (b"ngr_exit_count".as_slice(), 1u64),
+            (b"ngr_claim_count".as_slice(), 4u64),
+            (b"ngr_route_cap".as_slice(), 500_000u64),
+            (b"ngr_user_cap".as_slice(), 9_000_000_000u64),
+            (b"ngr_imp_cap".as_slice(), 2_000_000u64),
+            (b"ngr_imp_wused".as_slice(), 750_000u64),
+            (b"ngr_clm_cap".as_slice(), 1_500_000u64),
+            (b"ngr_clm_wused".as_slice(), 300_000u64),
+            (b"ngr_budget".as_slice(), 10_000_000u64),
+            (b"ngr_disc_ver".as_slice(), 7u64),
+            (b"ngr_pol_ver".as_slice(), 11u64),
+        ] {
+            state
+                .put_contract_storage(&rewards, key, &value.to_le_bytes())
+                .unwrap();
+        }
+        state
+            .put_contract_storage(&rewards, b"ngr_caps_set", &[1])
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, b"ngr_paused", &[1])
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, b"ngr_importer", &importer.0)
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, b"ngr_wneo", &wneo.0)
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, b"ngr_wgas", &wgas.0)
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, b"ngr_idx", &reward_index.to_le_bytes())
+            .unwrap();
+        let mut evidence_record = Vec::new();
+        evidence_record.extend_from_slice(&42u64.to_le_bytes());
+        evidence_record.extend_from_slice(&123u64.to_le_bytes());
+        evidence_record.extend_from_slice(&11u64.to_le_bytes());
+        evidence_record.extend_from_slice(&[0xabu8; 32]);
+        evidence_record.extend_from_slice(&[0xcdu8; 32]);
+        evidence_record.extend_from_slice(&130u64.to_le_bytes());
+        state
+            .put_contract_storage(
+                &rewards,
+                &storage_key_with_u64_le(b"ngr_evd_rec_", 2),
+                &evidence_record,
+            )
+            .unwrap();
+        state
+            .put_contract_storage(
+                &rewards,
+                &user_key("ngr_prn_"),
+                &2_000_000_000u64.to_le_bytes(),
+            )
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, &user_key("ngr_paid_"), &paid_index.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, &user_key("ngr_pend_"), &15u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, &user_key("ngr_uclm_"), &25u64.to_le_bytes())
+            .unwrap();
+        state
+            .put_contract_storage(&rewards, &user_key("ngr_disc_acc_"), &7u64.to_le_bytes())
+            .unwrap();
+
+        let rpc_state = make_test_rpc_state(state);
+
+        let stats = handle_get_neo_gas_rewards_stats(&rpc_state)
+            .await
+            .expect("NEO GAS rewards stats should serialize");
+        assert_eq!(stats["program"], serde_json::json!(rewards.to_base58()));
+        assert_eq!(
+            stats["reward_importer"],
+            serde_json::json!(importer.to_base58())
+        );
+        assert_eq!(stats["wneo_token"], serde_json::json!(wneo.to_base58()));
+        assert_eq!(stats["wgas_token"], serde_json::json!(wgas.to_base58()));
+        assert_eq!(stats["configured"], serde_json::json!(true));
+        assert_eq!(stats["paused"], serde_json::json!(true));
+        assert_eq!(
+            stats["total_principal"],
+            serde_json::json!(10_000_000_000u64)
+        );
+        assert_eq!(stats["outstanding_rewards"], serde_json::json!(750_000u64));
+        assert_eq!(
+            stats["reward_index"],
+            serde_json::json!(reward_index.to_string())
+        );
+        assert_eq!(stats["evidence_count"], serde_json::json!(3u64));
+        assert_eq!(stats["last_reward_amount"], serde_json::json!(42u64));
+        assert_eq!(stats["last_evidence_slot"], serde_json::json!(123u64));
+        assert_eq!(stats["last_import_slot"], serde_json::json!(130u64));
+        assert_eq!(stats["daily_import_used"], serde_json::json!(750_000u64));
+        assert_eq!(stats["daily_claim_used"], serde_json::json!(300_000u64));
+        assert_eq!(stats["disclosure_version"], serde_json::json!(7u64));
+        assert_eq!(stats["policy_version"], serde_json::json!(11u64));
+
+        let position = handle_get_neo_gas_rewards_position(
+            &rpc_state,
+            Some(serde_json::json!([{ "address": user.to_base58() }])),
+        )
+        .await
+        .expect("NEO GAS rewards position should serialize");
+        assert_eq!(position["address"], serde_json::json!(user.to_base58()));
+        assert_eq!(position["principal"], serde_json::json!(2_000_000_000u64));
+        assert_eq!(position["pending"], serde_json::json!(15u64));
+        assert_eq!(position["accrued"], serde_json::json!(6_000_000_000u64));
+        assert_eq!(position["claimable"], serde_json::json!(6_000_000_015u64));
+        assert_eq!(position["claimed"], serde_json::json!(25u64));
+        assert_eq!(
+            position["paid_index"],
+            serde_json::json!(paid_index.to_string())
+        );
+        assert_eq!(
+            position["reward_index"],
+            serde_json::json!(reward_index.to_string())
+        );
+        assert_eq!(
+            position["disclosure_current_accepted"],
+            serde_json::json!(true)
+        );
     }
 
     #[tokio::test]

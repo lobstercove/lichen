@@ -157,6 +157,13 @@
             </div>
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
+                <div class="sidebar-heading">Restrictions / Neo</div>
+                <a href="#restriction-route-status" class="sidebar-link">restriction status bridge-route</a>
+                <a href="#restriction-route-build" class="sidebar-link">restriction build route</a>
+                <a href="#neo-symbols" class="sidebar-link">Neo symbols</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
                 <div class="sidebar-heading">Config</div>
                 <a href="#config-show" class="sidebar-link">config show</a>
                 <a href="#config-set" class="sidebar-link">config set</a>
@@ -210,9 +217,9 @@
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-terminal"></i> Surface Coverage</div>
-                Implementation-verified for <code>v0.5.10</code>: <strong>34 top-level commands</strong> and
-                <strong>51 subcommands</strong>, plus the global <code>--rpc-url</code> and <code>--output</code>
-                flags documented below.
+                Implementation-verified for <code>v0.5.37</code>: the CLI covers wallet, identity, validator, staking,
+                contract, token, governance, restriction, symbol, NFT, DeFi, and utility commands, plus the global
+                <code>--rpc-url</code> and <code>--output</code> flags documented below.
             </div>
 
             <div class="callout callout-info">
@@ -2966,7 +2973,7 @@ Total: 2 active proposals</code></pre>
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>$ lichen version
-lichen 0.5.10</code></pre>
+	lichen 0.5.37</code></pre>
                 </div>
             </div>
 
@@ -3007,6 +3014,62 @@ lichen 0.5.10</code></pre>
                     <div class="code-block-header"><span class="code-lang">Shell</span><button
                             class="code-copy-btn">Copy</button></div>
                     <pre><code>lichen host-functions</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                    RESTRICTION / NEO ROUTES                      -->
+            <!-- ================================================================ -->
+            <h2>Restriction / Neo Route Commands</h2>
+            <p>Neo route controls use the same restriction-governance CLI as every other route. Status commands are
+                read-only. Build commands produce unsigned governance proposal transactions and do not mutate chain state
+                by themselves.</p>
+
+            <div class="cmd-section" id="restriction-route-status">
+                <h3><code>lichen restriction status bridge-route</code></h3>
+                <p>Check whether a bridge route is active or paused. Neo route identifiers are <code>neox gas</code> and
+                    <code>neox neo</code>.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen restriction status bridge-route neox gas
+lichen restriction status bridge-route neox neo
+
+lichen --output json restriction status bridge-route neox gas</code></pre>
+                </div>
+            </div>
+
+            <div class="cmd-section" id="restriction-route-build">
+                <h3><code>lichen restriction build pause-bridge-route</code></h3>
+                <p>Build governed route pause/resume proposal payloads. These commands are used for incident response and
+                    public activation review; they are not deployment shortcuts.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen restriction build pause-bridge-route neox gas \
+  --proposer "$PROPOSER" \
+  --governance-authority "$GOVERNANCE_AUTHORITY" \
+  --reason bridge_compromise \
+  --evidence-hash "$HEX32"
+
+lichen restriction build resume-bridge-route neox gas \
+  --proposer "$PROPOSER" \
+  --governance-authority "$GOVERNANCE_AUTHORITY" \
+  --lift-reason incident_resolved</code></pre>
+                </div>
+            </div>
+
+            <div class="cmd-section" id="neo-symbols">
+                <h3>Neo symbol lookups</h3>
+                <p>Resolve Neo-related contracts from the on-chain symbol registry instead of hard-coding addresses.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Shell</span><button
+                            class="code-copy-btn">Copy</button></div>
+                    <pre><code>lichen symbol lookup WNEO
+lichen symbol lookup WGAS
+lichen symbol lookup NEOGASRWD
+lichen token info WNEO
+lichen token info WGAS</code></pre>
                 </div>
             </div>
 

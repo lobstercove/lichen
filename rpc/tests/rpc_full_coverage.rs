@@ -2639,6 +2639,7 @@ async fn test_all_stats_endpoints_return_valid_json() {
         "getLichenAuctionStats",
         "getLichenPunksStats",
         "getPredictionMarketStats",
+        "getNeoGasRewardsStats",
     ];
     for method in stats_methods {
         let resp = rpc(&app, "/", method).await.unwrap();

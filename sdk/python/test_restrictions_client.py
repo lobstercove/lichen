@@ -5,6 +5,8 @@ from typing import Optional
 
 from lichen import (
     AccountAssetRestrictionTarget,
+    BRIDGE_ASSET_GAS,
+    BRIDGE_CHAIN_NEOX,
     Keypair,
     RestrictAccountParams,
     RestrictionGovernanceClient,
@@ -109,8 +111,8 @@ async def test_restriction_client_builder_payloads() -> None:
         ResumeBridgeRouteParams(
             proposer=proposer,
             governance_authority=authority,
-            chain="ethereum",
-            asset="eth",
+            chain=BRIDGE_CHAIN_NEOX,
+            asset=BRIDGE_ASSET_GAS,
             restriction_id=5,
             lift_reason="testnet_drill_complete",
         )
@@ -153,8 +155,8 @@ async def test_restriction_client_builder_payloads() -> None:
                 {
                     "proposer": str(proposer),
                     "governance_authority": str(authority),
-                    "chain": "ethereum",
-                    "asset": "eth",
+                    "chain": "neox",
+                    "asset": "gas",
                     "restriction_id": 5,
                     "lift_reason": "testnet_drill_complete",
                 }

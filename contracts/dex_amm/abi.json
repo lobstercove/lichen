@@ -283,6 +283,62 @@
       "name": "get_amm_stats",
       "opcode": 19,
       "params": []
+    },
+    {
+      "name": "set_fee_treasury_address",
+      "opcode": 20,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "treasury",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "collect_protocol_fees",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pool_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_rewards_address",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "rewards",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "sync_lp_rewards",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "provider",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
     }
   ]
 }

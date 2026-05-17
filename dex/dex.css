@@ -248,6 +248,17 @@
     grid-row: 1;
 }
 
+.neo-lot-warning {
+    margin: 10px 0 0;
+    padding: 8px 10px;
+    border: 1px solid rgba(255, 210, 63, 0.35);
+    border-radius: var(--radius-sm);
+    color: var(--yellow-warning, #f59e0b);
+    background: rgba(255, 210, 63, 0.08);
+    font-size: 0.75rem;
+    line-height: 1.35;
+}
+
 .book-trades-row {
     grid-column: 1;
     grid-row: 2;

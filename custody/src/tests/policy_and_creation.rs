@@ -725,6 +725,90 @@ async fn test_create_withdrawal_rejects_per_transaction_cap_breach() {
 }
 
 #[tokio::test]
+async fn test_create_withdrawal_accepts_wgas_to_neox_pending_burn() {
+    let state = test_state();
+    let mut request = test_withdrawal_request();
+    request.asset = "wGAS".to_string();
+    request.amount = 1_000_000_000;
+    request.dest_chain = "neox".to_string();
+    request.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut request, 41);
+
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(request)).await;
+    let job_id = response
+        .0
+        .get("job_id")
+        .and_then(|value| value.as_str())
+        .expect("wGAS Neo X withdrawal should create a pending burn job")
+        .to_string();
+
+    let stored = fetch_withdrawal_job(&state.db, &job_id)
+        .expect("fetch stored wGAS withdrawal")
+        .expect("stored wGAS withdrawal exists");
+    assert_eq!(stored.asset, "wgas");
+    assert_eq!(stored.dest_chain, "neox");
+    assert_eq!(stored.status, "pending_burn");
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_rejects_wgas_wrong_evm_route() {
+    let state = test_state();
+    let mut request = test_withdrawal_request();
+    request.asset = "wGAS".to_string();
+    request.dest_chain = "ethereum".to_string();
+    request.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut request, 42);
+
+    let response = create_withdrawal(State(state), test_auth_headers(), Json(request)).await;
+    assert_eq!(
+        response.0.get("error").and_then(|value| value.as_str()),
+        Some("cannot withdraw wgas to ethereum")
+    );
+}
+
+#[tokio::test]
+async fn test_create_withdrawal_rejects_wneo_fractional_wrong_route_and_gated_route() {
+    let state = test_state();
+
+    let mut fractional = test_withdrawal_request();
+    fractional.asset = "wNEO".to_string();
+    fractional.amount = 1_500_000_000;
+    fractional.dest_chain = "neox".to_string();
+    fractional.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut fractional, 43);
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(fractional)).await;
+    assert_eq!(
+        response.0.get("error").and_then(|value| value.as_str()),
+        Some("wNEO withdrawals must be exact whole NEO lots")
+    );
+
+    let mut wrong_route = test_withdrawal_request();
+    wrong_route.asset = "wNEO".to_string();
+    wrong_route.dest_chain = "ethereum".to_string();
+    wrong_route.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut wrong_route, 44);
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(wrong_route)).await;
+    assert_eq!(
+        response.0.get("error").and_then(|value| value.as_str()),
+        Some("cannot withdraw wneo to ethereum")
+    );
+
+    let mut gated = test_withdrawal_request();
+    gated.asset = "wNEO".to_string();
+    gated.dest_chain = "neox".to_string();
+    gated.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut gated, 45);
+    let response = create_withdrawal(State(state), test_auth_headers(), Json(gated)).await;
+    assert_eq!(
+        response.0.get("error").and_then(|value| value.as_str()),
+        Some("wNEO withdrawals are gated until an official Neo X NEO source route is configured")
+    );
+}
+
+#[tokio::test]
 async fn test_create_withdrawal_returns_elevated_velocity_policy_metadata() {
     let mut state = test_state();
     state.config.signer_endpoints = vec![

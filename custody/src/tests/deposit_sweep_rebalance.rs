@@ -1,4 +1,5 @@
 use super::*;
+use crate::chain_config::{NEOX_MAINNET_CHAIN_ID, NEOX_TESTNET_T4_CHAIN_ID};
 
 #[tokio::test]
 async fn test_create_deposit_uses_dedicated_deposit_seed_and_persists_source() {
@@ -96,6 +97,63 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth()
 
     let dr = state.deposit_rate.lock().await;
     assert_eq!(dr.count_this_minute, 1);
+}
+
+#[tokio::test]
+async fn test_create_deposit_neox_gas_uses_chain_id_scoped_path_and_gates_neo() {
+    let mut state = test_state();
+    state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
+    let (user_id, auth) = test_bridge_access_auth_payload(31);
+
+    let response = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id,
+            chain: "neox".to_string(),
+            asset: "gas".to_string(),
+            auth: Some(auth),
+        }),
+    )
+    .await
+    .expect("Neo X GAS deposit should be created");
+
+    let stored = fetch_deposit(&state.db, &response.0.deposit_id)
+        .expect("fetch Neo X deposit")
+        .expect("Neo X deposit exists");
+    assert_eq!(stored.chain, "neox");
+    assert_eq!(stored.asset, "gas");
+    assert!(
+        stored.derivation_path.starts_with("m/44'/12227332'/"),
+        "Neo X deposit path must be chain-ID scoped: {}",
+        stored.derivation_path
+    );
+    let expected = derive_deposit_address(
+        "neox",
+        "gas",
+        &stored.derivation_path,
+        &state.config.deposit_master_seed,
+    )
+    .expect("derive Neo X deposit address");
+    assert_eq!(stored.address, expected);
+
+    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(32);
+    let err = create_deposit(
+        State(state),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: neo_user_id,
+            chain: "neox".to_string(),
+            asset: "neo".to_string(),
+            auth: Some(neo_auth),
+        }),
+    )
+    .await
+    .expect_err("NEO deposits must stay gated until a source route is configured");
+    assert_eq!(err.code, "invalid_request");
+    assert!(err
+        .message
+        .contains("Neo X custody currently supports asset=gas only"));
 }
 
 #[tokio::test]
@@ -323,6 +381,112 @@ fn test_build_credit_job_uses_native_solana_credited_amount() {
     assert_eq!(credit.amount_spores, 10_000);
 }
 
+#[test]
+fn test_build_credit_job_neox_gas_exact_conversion_and_gated_neo() {
+    let mut state = test_state();
+    state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
+    state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+    state.config.wgas_contract_addr = Some("WGAS_CONTRACT_999".to_string());
+    state.config.wneo_contract_addr = Some("WNEO_CONTRACT_999".to_string());
+
+    let gas_deposit = DepositRequest {
+        deposit_id: "dep-neox-gas-credit-1".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "neox".to_string(),
+        asset: "gas".to_string(),
+        address: "0x5555555555555555555555555555555555555555".to_string(),
+        derivation_path: "m/44'/12227332'/0'/0/3".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT.to_string(),
+        created_at: 1000,
+        status: "swept".to_string(),
+    };
+    store_deposit(&state.db, &gas_deposit).expect("store Neo X GAS deposit");
+
+    let gas_sweep = SweepJob {
+        job_id: "sweep-neox-gas-credit-1".to_string(),
+        deposit_id: gas_deposit.deposit_id.clone(),
+        chain: "neox".to_string(),
+        asset: "gas".to_string(),
+        from_address: gas_deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "tx".to_string(),
+        amount: Some("1000000000000000000".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: Some("sweep-hash".to_string()),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_confirmed".to_string(),
+        created_at: 1000,
+    };
+    let credit = build_credit_job(&state, &gas_sweep)
+        .expect("build Neo X GAS credit job")
+        .expect("Neo X GAS credit job should be created");
+    assert_eq!(credit.amount_spores, 1_000_000_000);
+    assert_eq!(credit.source_chain, "neox");
+    assert_eq!(credit.source_asset, "gas");
+
+    let dust_sweep = SweepJob {
+        job_id: "sweep-neox-gas-dust-1".to_string(),
+        deposit_id: gas_deposit.deposit_id.clone(),
+        chain: "neox".to_string(),
+        asset: "gas".to_string(),
+        from_address: gas_deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "tx".to_string(),
+        amount: Some("1000000000000000001".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: Some("sweep-hash".to_string()),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_confirmed".to_string(),
+        created_at: 1000,
+    };
+    let err = build_credit_job(&state, &dust_sweep)
+        .expect_err("non-exact Neo X GAS conversion must be rejected");
+    assert!(err.contains("non-exact deposit decimal conversion rejected"));
+
+    let neo_deposit = DepositRequest {
+        deposit_id: "dep-neox-neo-credit-1".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "neox".to_string(),
+        asset: "neo".to_string(),
+        address: "0x6666666666666666666666666666666666666666".to_string(),
+        derivation_path: "m/44'/12227332'/0'/0/4".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT.to_string(),
+        created_at: 1000,
+        status: "swept".to_string(),
+    };
+    store_deposit(&state.db, &neo_deposit).expect("store gated Neo X NEO deposit");
+    let neo_sweep = SweepJob {
+        job_id: "sweep-neox-neo-credit-1".to_string(),
+        deposit_id: neo_deposit.deposit_id.clone(),
+        chain: "neox".to_string(),
+        asset: "neo".to_string(),
+        from_address: neo_deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "tx".to_string(),
+        amount: Some("1000000000".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: Some("sweep-hash".to_string()),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_confirmed".to_string(),
+        created_at: 1000,
+    };
+    assert!(
+        build_credit_job(&state, &neo_sweep)
+            .expect("gated Neo X NEO should not error without a source route")
+            .is_none(),
+        "gated NEO must not create a credit job"
+    );
+}
+
 #[tokio::test]
 async fn test_process_sweep_jobs_native_solana_dust_retries_instead_of_failing() {
     let state = test_state();
@@ -391,6 +555,7 @@ fn test_bip44_coin_type() {
     assert_eq!(bip44_coin_type("ethereum").unwrap(), 60);
     assert_eq!(bip44_coin_type("bsc").unwrap(), 60);
     assert_eq!(bip44_coin_type("bnb").unwrap(), 60);
+    assert_eq!(bip44_coin_type("neox").unwrap(), 60);
     assert_eq!(bip44_coin_type("btc").unwrap(), 0);
     assert_eq!(bip44_coin_type("bitcoin").unwrap(), 0);
     assert_eq!(bip44_coin_type("lichen").unwrap(), 9999);
@@ -429,6 +594,16 @@ fn test_bip44_derivation_path() {
     let path_bsc = bip44_derivation_path("bsc", 7, 5).unwrap();
     assert_eq!(path_eth, path_bsc);
 
+    let mut config = test_config();
+    config.neox_chain_id = NEOX_TESTNET_T4_CHAIN_ID;
+    let path_neox = bip44_derivation_path_for_config(&config, "neox", 7, 5).unwrap();
+    assert!(
+        path_neox.starts_with("m/44'/12227332'/"),
+        "Neo X path must be chain-ID scoped: {}",
+        path_neox
+    );
+    assert_ne!(path_eth, path_neox);
+
     let path_sol_1 = bip44_derivation_path("solana", 7, 1).unwrap();
     assert_ne!(path_sol, path_sol_1);
 
@@ -437,6 +612,12 @@ fn test_bip44_derivation_path() {
 
     let path_again = bip44_derivation_path("solana", 7, 0).unwrap();
     assert_eq!(path_sol, path_again);
+}
+
+#[test]
+fn test_neox_chain_id_constants_match_official_networks() {
+    assert_eq!(NEOX_TESTNET_T4_CHAIN_ID, 12_227_332);
+    assert_eq!(NEOX_MAINNET_CHAIN_ID, 47_763);
 }
 
 #[test]
@@ -544,6 +725,25 @@ fn test_resolve_token_contract_bnb() {
     assert_eq!(
         resolve_token_contract(&config, "bsc", "bnb"),
         Some("WBNB_CONTRACT_321".to_string())
+    );
+}
+
+#[test]
+fn test_resolve_token_contract_neox_gas_and_gated_neo() {
+    let mut config = test_config();
+    config.wgas_contract_addr = Some("WGAS_CONTRACT_999".to_string());
+    config.wneo_contract_addr = Some("WNEO_CONTRACT_999".to_string());
+
+    assert_eq!(
+        resolve_token_contract(&config, "neox", "gas"),
+        Some("WGAS_CONTRACT_999".to_string())
+    );
+    assert_eq!(resolve_token_contract(&config, "neox", "neo"), None);
+
+    config.neox_neo_token_contract = Some("0x1111111111111111111111111111111111111111".to_string());
+    assert_eq!(
+        resolve_token_contract(&config, "neox", "neo"),
+        Some("WNEO_CONTRACT_999".to_string())
     );
 }
 
@@ -1392,6 +1592,146 @@ async fn test_process_sweep_jobs_confirmed_enqueues_credit_and_updates_status() 
 
     let requests = rpc_requests.lock().await;
     assert!(requests.iter().any(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) == Some("eth_getTransactionReceipt")
+    }));
+}
+
+#[tokio::test]
+async fn test_process_sweep_jobs_neox_gas_waits_for_confirmed_sweep_before_credit() {
+    let mut state = test_state();
+    let pending_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let pending_rpc: Router =
+        Router::new()
+            .route("/", post(mock_rpc_handler))
+            .with_state(MockRpcState {
+                safe_nonce_hex: "0x0".to_string(),
+                safe_tx_hash_hex: "0x0".to_string(),
+                send_raw_tx_hash_hex: None,
+                transaction_receipt: None,
+                requests: pending_requests.clone(),
+            });
+    let pending_rpc_url = spawn_mock_server(pending_rpc).await;
+    let confirmed_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let confirmed_rpc: Router =
+        Router::new()
+            .route("/", post(mock_rpc_handler))
+            .with_state(MockRpcState {
+                safe_nonce_hex: "0x0".to_string(),
+                safe_tx_hash_hex: "0x0".to_string(),
+                send_raw_tx_hash_hex: None,
+                transaction_receipt: Some(json!({ "status": "0x1" })),
+                requests: confirmed_requests.clone(),
+            });
+    let confirmed_rpc_url = spawn_mock_server(confirmed_rpc).await;
+
+    state.config.neox_rpc_url = Some(pending_rpc_url);
+    state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
+    state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+    state.config.wgas_contract_addr = Some("WGAS_CONTRACT_999".to_string());
+
+    let deposit = DepositRequest {
+        deposit_id: "dep-neox-gas-sweep-confirm-1".to_string(),
+        user_id: "11111111111111111111111111111111".to_string(),
+        chain: "neox".to_string(),
+        asset: "gas".to_string(),
+        address: "0x5555555555555555555555555555555555555555".to_string(),
+        derivation_path: "m/44'/12227332'/0'/0/8".to_string(),
+        deposit_seed_source: DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT.to_string(),
+        created_at: 1000,
+        status: "sweep_queued".to_string(),
+    };
+    store_deposit(&state.db, &deposit).expect("store Neo X GAS deposit");
+    if let Err(e) = update_status_index(
+        &state.db,
+        "deposits",
+        "issued",
+        "sweep_queued",
+        &deposit.deposit_id,
+    ) {
+        tracing::error!("Failed update_status_index: {e}");
+    }
+
+    let job = SweepJob {
+        job_id: "test-neox-gas-sweep-confirm-worker".to_string(),
+        deposit_id: deposit.deposit_id.clone(),
+        chain: "neox".to_string(),
+        asset: "gas".to_string(),
+        from_address: deposit.address.clone(),
+        to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+        tx_hash: "deposit-observed-hash".to_string(),
+        amount: Some("1000000000000000000".to_string()),
+        credited_amount: None,
+        signatures: Vec::new(),
+        sweep_tx_hash: Some(
+            "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string(),
+        ),
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        status: "sweep_submitted".to_string(),
+        created_at: 1000,
+    };
+    store_sweep_job(&state.db, &job).expect("store submitted Neo X sweep job");
+
+    process_sweep_jobs(&state)
+        .await
+        .expect("pending Neo X sweep check should not fail");
+    assert!(
+        list_credit_jobs_by_status(&state.db, "queued")
+            .expect("list queued credit jobs")
+            .is_empty(),
+        "credit must not be queued before sweep confirmation"
+    );
+    assert_eq!(
+        list_sweep_jobs_by_status(&state.db, "sweep_submitted")
+            .expect("list submitted sweeps")
+            .len(),
+        1
+    );
+
+    state.config.neox_rpc_url = Some(confirmed_rpc_url);
+    process_sweep_jobs(&state)
+        .await
+        .expect("confirmed Neo X sweep should enqueue credit");
+
+    let confirmed_jobs =
+        list_sweep_jobs_by_status(&state.db, "sweep_confirmed").expect("list confirmed sweeps");
+    assert_eq!(confirmed_jobs.len(), 1);
+    assert_eq!(
+        confirmed_jobs[0].job_id,
+        "test-neox-gas-sweep-confirm-worker"
+    );
+
+    let queued_credit_jobs =
+        list_credit_jobs_by_status(&state.db, "queued").expect("list queued credit jobs");
+    assert_eq!(queued_credit_jobs.len(), 1);
+    assert_eq!(queued_credit_jobs[0].deposit_id, deposit.deposit_id);
+    assert_eq!(queued_credit_jobs[0].source_chain, "neox");
+    assert_eq!(queued_credit_jobs[0].source_asset, "gas");
+    assert_eq!(queued_credit_jobs[0].amount_spores, 1_000_000_000);
+
+    let deposit_after = fetch_deposit(&state.db, &deposit.deposit_id)
+        .expect("fetch updated Neo X deposit")
+        .expect("Neo X deposit exists after confirmation");
+    assert_eq!(deposit_after.status, "swept");
+
+    process_sweep_jobs(&state)
+        .await
+        .expect("reprocessing confirmed Neo X sweep should be idempotent");
+    assert_eq!(
+        list_credit_jobs_by_status(&state.db, "queued")
+            .expect("list queued credit jobs after replay")
+            .len(),
+        1,
+        "confirmed sweep replay must not duplicate credit jobs"
+    );
+
+    let pending_requests = pending_requests.lock().await;
+    assert!(pending_requests.iter().any(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) == Some("eth_getTransactionReceipt")
+    }));
+    let confirmed_requests = confirmed_requests.lock().await;
+    assert!(confirmed_requests.iter().any(|payload| {
         payload.get("method").and_then(|value| value.as_str()) == Some("eth_getTransactionReceipt")
     }));
 }

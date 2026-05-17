@@ -85,6 +85,7 @@ const SWAP_COUNT_KEY: &[u8] = b"amm_swap_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"amm_total_volume";
 const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
 const POOL_PAIR_INDEX_PREFIX: &[u8] = b"amm_pair_idx_";
+const REWARDS_ADDRESS_KEY: &[u8] = b"amm_rewards_addr";
 
 // ============================================================================
 // HELPERS
@@ -431,6 +432,41 @@ fn send_tokens(token: &[u8; 32], to: &[u8; 32], amount: u64) -> bool {
     }
     let contract = get_contract_address();
     call_token_transfer(Address(*token), contract, Address(*to), amount).unwrap_or(false)
+}
+
+fn call_lp_rewards_accrual(provider: &[u8; 32], position_id: u64, pos_data: &[u8]) -> u32 {
+    let rewards_addr = load_addr(REWARDS_ADDRESS_KEY);
+    if is_zero(&rewards_addr) {
+        return 3;
+    }
+    let liquidity = decode_pos_liquidity(pos_data);
+    if liquidity == 0 {
+        return 0;
+    }
+    let pool_id = decode_pos_pool_id(pos_data);
+    let from_slot = decode_pos_created_slot(pos_data);
+
+    let mut args = Vec::with_capacity(65);
+    args.push(22u8); // dex_rewards::accrue_lp_rewards_for
+    args.extend_from_slice(provider);
+    args.extend_from_slice(&u64_to_bytes(position_id));
+    args.extend_from_slice(&u64_to_bytes(liquidity));
+    args.extend_from_slice(&u64_to_bytes(pool_id));
+    args.extend_from_slice(&u64_to_bytes(from_slot));
+
+    let call = CrossCall::new(Address(rewards_addr), "call", args).with_value(0);
+    match call_contract(call) {
+        Ok(result) if result.len() >= 8 => {
+            let rc = bytes_to_u64(&result[..8]);
+            if rc <= u32::MAX as u64 {
+                rc as u32
+            } else {
+                4
+            }
+        }
+        Ok(_) => 4,
+        Err(_) => 4,
+    }
 }
 
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
@@ -1487,6 +1523,10 @@ pub fn remove_liquidity_with_deadline(
         return 3;
     }
 
+    // Campaign rewards are best-effort accounting. They must never trap LP
+    // funds or block exits if the rewards contract is paused or unavailable.
+    let _ = call_lp_rewards_accrual(&p, position_id, &pos_data);
+
     // AUDIT-FIX AMM-8: Compute uncollected V3 fees before reducing liquidity
     let pool_id = decode_pos_pool_id(&pos_data);
     let pool_pk = pool_key(pool_id);
@@ -1606,6 +1646,9 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
         Some(d) if d.len() >= POOL_SIZE => d,
         _ => return 3,
     };
+
+    let _ = call_lp_rewards_accrual(&p, position_id, &pos_data);
+
     let current_tick = decode_pool_tick(&pool_data);
     let lower = decode_pos_lower_tick(&pos_data);
     let upper = decode_pos_upper_tick(&pos_data);
@@ -1948,6 +1991,61 @@ pub fn set_fee_treasury_address(caller: *const u8, treasury: *const u8) -> u32 {
     }
     storage_set(FEE_TREASURY_ADDR_KEY, &t);
     0
+}
+
+/// Set the DEX rewards contract used for LP campaign accrual (admin only).
+/// Returns: 0=success, 1=not admin, 3=zero address, 4=already configured,
+///          200=caller mismatch.
+pub fn set_rewards_address(caller: *const u8, rewards: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut r = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(rewards, r.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&r) {
+        return 3;
+    }
+    if has_configured_address(REWARDS_ADDRESS_KEY) {
+        return 4;
+    }
+    storage_set(REWARDS_ADDRESS_KEY, &r);
+    0
+}
+
+/// Sync LP campaign rewards for a position without changing AMM liquidity.
+/// Returns: 0=success/no-op, 1=position not found, 2=not owner,
+///          3=rewards address not configured, 4=rewards call failed,
+///          200=caller mismatch.
+pub fn sync_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
+    let mut p = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        return 200;
+    }
+
+    let pos_data = match storage_get(&position_key(position_id)) {
+        Some(d) if d.len() >= POSITION_SIZE => d,
+        _ => return 1,
+    };
+    if decode_pos_owner(&pos_data) != p {
+        return 2;
+    }
+
+    match call_lp_rewards_accrual(&p, position_id, &pos_data) {
+        0 | 1 => 0,
+        other => other,
+    }
 }
 
 /// Collect accrued protocol fees for a pool (admin only).
@@ -2326,6 +2424,22 @@ pub extern "C" fn call() -> u32 {
             // collect_protocol_fees(caller[32], pool_id[8])
             if args.len() >= 41 {
                 let r = collect_protocol_fees(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        22 => {
+            // set_rewards_address(caller[32], rewards[32])
+            if args.len() >= 65 {
+                let r = set_rewards_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
+                _rc = r as u32;
+            }
+        }
+        23 => {
+            // sync_lp_rewards(provider[32], position_id[8])
+            if args.len() >= 41 {
+                let r = sync_lp_rewards(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 _rc = r as u32;
             }
@@ -3031,6 +3145,75 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_fee_treasury_address(admin.as_ptr(), second.as_ptr()), 4);
         assert_eq!(load_addr(FEE_TREASURY_ADDR_KEY), first);
+    }
+
+    #[test]
+    fn test_set_rewards_address() {
+        let (admin, _pool_id) = setup_with_pool();
+        let rewards = [44u8; 32];
+        let second = [45u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_address(admin.as_ptr(), [0u8; 32].as_ptr()), 3);
+        assert_eq!(set_rewards_address(admin.as_ptr(), rewards.as_ptr()), 0);
+        assert_eq!(load_addr(REWARDS_ADDRESS_KEY), rewards);
+        assert_eq!(set_rewards_address(admin.as_ptr(), second.as_ptr()), 4);
+        assert_eq!(load_addr(REWARDS_ADDRESS_KEY), rewards);
+    }
+
+    #[test]
+    fn test_sync_lp_rewards_calls_rewards_contract_with_position_state() {
+        let (admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let rewards = [44u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_address(admin.as_ptr(), rewards.as_ptr()), 0);
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000),
+            0
+        );
+
+        test_mock::set_cross_call_response(Some(0u64.to_le_bytes().to_vec()));
+        assert_eq!(sync_lp_rewards(provider.as_ptr(), 1), 0);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("sync must call rewards");
+        assert_eq!(target, rewards);
+        assert_eq!(function, "call");
+        assert_eq!(value, 0);
+        assert_eq!(args[0], 22);
+        assert_eq!(&args[1..33], &provider);
+        assert_eq!(bytes_to_u64(&args[33..41]), 1);
+        assert!(bytes_to_u64(&args[41..49]) > 0);
+        assert_eq!(bytes_to_u64(&args[49..57]), pool_id);
+        assert_eq!(bytes_to_u64(&args[57..65]), 100);
+    }
+
+    #[test]
+    fn test_remove_liquidity_ignores_rewards_failure_so_exits_remain_available() {
+        let (admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let rewards = [44u8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_rewards_address(admin.as_ptr(), rewards.as_ptr()), 0);
+        test_mock::set_slot(100);
+        test_mock::set_caller(provider);
+        assert_eq!(
+            add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000),
+            0
+        );
+
+        let liq = decode_pos_liquidity(&storage_get(&position_key(1)).unwrap());
+        test_mock::set_cross_call_responses(std::vec![
+            6u64.to_le_bytes().to_vec(),
+            transfer_success_response(),
+            transfer_success_response(),
+        ]);
+        assert_eq!(remove_liquidity(provider.as_ptr(), 1, liq / 2), 0);
     }
 
     #[test]

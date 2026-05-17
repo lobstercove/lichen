@@ -685,11 +685,15 @@ test('CC-4 home.js has escapeHtml function', () => {
 test('CC-4b bridge-service supports BNB/BSC chains', () => {
   assert.ok(bridgeServiceSrc.includes("'bsc'"), 'bridge-service missing bsc support');
   assert.ok(bridgeServiceSrc.includes("'bnb'"), 'bridge-service missing bnb alias support');
-  assert.ok(bridgeServiceSrc.includes("normalizedChain === 'bnb' ? 'bsc' : normalizedChain"), 'bridge-service missing bnb->bsc canonicalization');
+  assert.ok(
+    bridgeServiceSrc.includes("function canonicalBridgeChain(chain)") &&
+    bridgeServiceSrc.includes("if (normalized === 'bnb') return 'bsc'"),
+    'bridge-service missing bnb->bsc canonicalization'
+  );
 });
 
 test('CC-4c home bridge selector exposes BNB chain', () => {
-  assert.ok(homeSrc.includes("'bsc'"), 'home.js bridge chain allowlist missing bsc');
+  assert.ok(homeSrc.includes('bsc:'), 'home.js bridge chain allowlist missing bsc');
   assert.ok(homeHtmlSrc.includes('option value="bsc"'), 'home.html bridge chain dropdown missing bsc option');
 });
 
@@ -697,6 +701,17 @@ test('CC-4d full page bridge modal exposes and wires BNB chain', () => {
   assert.ok(fullSrc.includes("Bridge from BNB Chain"), 'full.js missing BNB bridge card label');
   assert.ok(fullSrc.includes("startExtensionDeposit('bsc')"), 'full.js missing BSC click handler wiring');
   assert.ok(fullSrc.includes("bsc: 'BNB Chain'"), 'full.js missing bsc chain label mapping');
+});
+
+test('CC-4e extension bridge surfaces expose Neo X GAS with route-status preflight', () => {
+  assert.ok(bridgeServiceSrc.includes("'neox'"), 'bridge-service missing Neo X support');
+  assert.ok(bridgeServiceSrc.includes("'gas'"), 'bridge-service missing GAS asset support');
+  assert.ok(bridgeServiceSrc.includes('getBridgeRouteRestrictionStatus'), 'bridge-service should preflight bridge route status');
+  assert.ok(fullSrc.includes("Bridge from Neo X"), 'full.js missing Neo X bridge card label');
+  assert.ok(fullSrc.includes("startExtensionDeposit('neox')"), 'full.js missing Neo X click handler wiring');
+  assert.ok(popupSrc.includes("NEOX: { name: 'Neo X'"), 'popup.js missing Neo X chain metadata');
+  assert.ok(popupHtmlSrc.includes('data-bridge-chain="NEOX"'), 'popup.html missing Neo X deposit button');
+  assert.ok(homeHtmlSrc.includes('option value="neox"'), 'home.html bridge chain dropdown missing Neo X option');
 });
 
 test('CC-5 no other inline onclick handlers in extension JS files', () => {

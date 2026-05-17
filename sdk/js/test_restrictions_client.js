@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import {
+  BRIDGE_ASSETS,
+  BRIDGE_CHAINS,
   PublicKey,
   RestrictionGovernanceClient,
 } from './dist/index.js';
@@ -119,8 +121,8 @@ assert.deepEqual(connection.calls.at(-1), {
 await client.buildResumeBridgeRouteTx({
   proposer,
   governanceAuthority: authority,
-  chain: 'ethereum',
-  asset: 'eth',
+  chain: BRIDGE_CHAINS.NEOX,
+  asset: BRIDGE_ASSETS.GAS,
   restrictionId: 12,
   liftReason: 'testnet_drill_complete',
 });
@@ -129,8 +131,8 @@ assert.deepEqual(connection.calls.at(-1), {
   params: [{
     proposer: proposer.toBase58(),
     governance_authority: authority.toBase58(),
-    chain: 'ethereum',
-    asset: 'eth',
+    chain: 'neox',
+    asset: 'gas',
     restriction_id: 12,
     lift_reason: 'testnet_drill_complete',
   }],

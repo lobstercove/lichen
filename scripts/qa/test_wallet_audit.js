@@ -58,6 +58,8 @@ const walletSharedUtilsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'w
 const walletCssSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'wallet.css'), 'utf8');
 const shieldedSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'shielded.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'js', 'identity.js'), 'utf8');
+const extensionFullSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'extension', 'src', 'pages', 'full.js'), 'utf8');
+const extensionPopupSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'extension', 'src', 'popup', 'popup.js'), 'utf8');
 const lichenidAbi = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'contracts', 'lichenid', 'abi.json'), 'utf8'));
 const walletHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'wallet', 'index.html'), 'utf8');
 const explorerAddressSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'explorer', 'js', 'address.js'), 'utf8');
@@ -895,6 +897,27 @@ test('wallet.js pins bridge control-plane methods to trusted RPC', () => {
         'bridge deposit creation should use trustedRpcCall');
     assert(walletSrc.includes("trustedRpcCall('getBridgeDeposit'"),
         'bridge deposit polling should use trustedRpcCall');
+});
+
+test('wallet.js exposes Neo X bridge controls with route status and reserve context', () => {
+    assert(walletHtml.includes('data-wallet-arg="NEOX"'),
+        'wallet receive modal should expose the Neo X deposit route');
+    assert(walletSrc.includes("NEOX: { name: 'Neo X'"),
+        'wallet.js should define Neo X chain metadata');
+    assert(walletSrc.includes("tokens: ['GAS']"),
+        'Neo X deposit UI should expose GAS only while NEO custody is gated');
+    assert(walletSrc.includes("trustedRpcCall('getBridgeRouteRestrictionStatus'"),
+        'wallet bridge deposit flow should preflight route status');
+    assert(walletSrc.includes("getWneoStats") && walletSrc.includes("getWgasStats"),
+        'wallet asset list should read Neo wrapped reserve stats');
+    assert(walletSrc.includes("trustedRpcCall('getNeoGasRewardsStats'") && walletSrc.includes("trustedRpcCall('getNeoGasRewardsPosition'"),
+        'wallet asset list should read Neo GAS rewards vault stats and positions through trusted RPC');
+    assert(extensionFullSrc.includes("getNeoGasRewardsStats") && extensionFullSrc.includes("getNeoGasRewardsPosition"),
+        'extension full-page asset list should display Neo GAS rewards vault accounting');
+    assert(extensionPopupSrc.includes("getNeoGasRewardsStats") && extensionPopupSrc.includes("getNeoGasRewardsPosition"),
+        'extension popup asset list should display Neo GAS rewards vault accounting');
+    assert(walletSrc.includes('wNEO transfers require whole NEO lots'),
+        'wallet sends should reject fractional wNEO');
 });
 
 test('identity.js pins LichenID resolution to trusted metadata RPC', () => {

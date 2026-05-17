@@ -496,6 +496,33 @@ sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 LICN</code></pre>
                 <p class="method-desc">Get accumulated staking rewards.</p>
             </div>
 
+            <h3 id="connection-neo">Neo X Route &amp; Rewards</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_neo_gas_rewards_stats() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Read Neo GAS rewards vault configuration, caps, evidence/import/claim counters,
+                    and outstanding claim liability.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_neo_gas_rewards_position(address: PublicKey | str) -&gt; Dict[str, Any]
+                </h3>
+                <p class="method-desc">Read one wallet's Neo GAS rewards principal, claimable amount, claimed amount,
+                    reward index, and disclosure acceptance state.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>from lichen import BRIDGE_ASSET_GAS, BRIDGE_CHAIN_NEOX, RestrictionGovernanceClient
+
+restrictions = RestrictionGovernanceClient(conn)
+route = await restrictions.get_bridge_route_restriction_status(BRIDGE_CHAIN_NEOX, BRIDGE_ASSET_GAS)
+rewards = await conn.get_neo_gas_rewards_stats()
+position = await conn.get_neo_gas_rewards_position(kp.pubkey())
+
+print(route["paused"], rewards["configured"], position["claimable"])</code></pre>
+                </div>
+            </div>
+
             <!-- Contract Methods -->
             <h3 id="connection-contract">Contract Methods</h3>
 

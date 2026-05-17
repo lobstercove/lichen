@@ -52,7 +52,7 @@ pub(super) async fn broadcast_self_custody_solana_withdrawal(
         job.amount,
         &job.dest_chain,
         outbound_asset,
-    ))
+    )?)
     .map_err(|_| "solana token withdrawal amount overflow".to_string())?;
     let message = build_solana_token_transfer_message(
         &from_pubkey,

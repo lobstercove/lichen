@@ -120,6 +120,8 @@ pub(crate) fn validate_withdrawal_request_destination(
     req: &WithdrawalRequest,
     asset_lower: &str,
 ) -> Result<(), Json<Value>> {
+    const WNEO_WHOLE_LOT: u64 = 1_000_000_000;
+
     match req.dest_chain.as_str() {
         "solana" => {
             if bs58::decode(&req.dest_address)
@@ -133,7 +135,7 @@ pub(crate) fn validate_withdrawal_request_destination(
                 })));
             }
         }
-        "ethereum" | "eth" | "bsc" | "bnb" => {
+        chain if is_evm_chain(chain) => {
             let trimmed = req.dest_address.trim_start_matches("0x");
             if trimmed.len() != 40 || hex::decode(trimmed).is_err() {
                 return Err(Json(json!({
@@ -153,6 +155,8 @@ pub(crate) fn validate_withdrawal_request_destination(
         "wsol" => "sol",
         "weth" => "eth",
         "wbnb" => "bnb",
+        "wgas" => "gas",
+        "wneo" => "neo",
         _ => {
             return Err(Json(json!({
                 "error": format!("unsupported withdrawal asset: {}", req.asset)
@@ -164,6 +168,8 @@ pub(crate) fn validate_withdrawal_request_destination(
         "sol" => req.dest_chain == "solana",
         "eth" => req.dest_chain == "ethereum" || req.dest_chain == "eth",
         "bnb" => req.dest_chain == "bsc" || req.dest_chain == "bnb",
+        "gas" => canonical_evm_chain(&req.dest_chain) == Some("neox"),
+        "neo" => canonical_evm_chain(&req.dest_chain) == Some("neox"),
         "stablecoin" => {
             req.dest_chain == "solana"
                 || req.dest_chain == "ethereum"
@@ -176,6 +182,16 @@ pub(crate) fn validate_withdrawal_request_destination(
     if !valid_chain {
         return Err(Json(json!({
             "error": format!("cannot withdraw {} to {}", req.asset, req.dest_chain)
+        })));
+    }
+    if asset_lower == "wneo" {
+        if req.amount % WNEO_WHOLE_LOT != 0 {
+            return Err(Json(json!({
+                "error": "wNEO withdrawals must be exact whole NEO lots"
+            })));
+        }
+        return Err(Json(json!({
+            "error": "wNEO withdrawals are gated until an official Neo X NEO source route is configured"
         })));
     }
 
@@ -198,7 +214,12 @@ pub(crate) fn resolve_withdrawal_preferred_stablecoin(
         })));
     }
 
-    let chain_amount = spores_to_chain_amount(req.amount, &req.dest_chain, &pref);
+    let chain_amount =
+        spores_to_chain_amount(req.amount, &req.dest_chain, &pref).map_err(|error| {
+            Json(json!({
+                "error": error
+            }))
+        })?;
     let chain_amount_u64 = u64::try_from(chain_amount).unwrap_or(u64::MAX);
 
     let reserve = get_reserve_balance(db, &req.dest_chain, &pref).unwrap_or(0);

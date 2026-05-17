@@ -186,9 +186,7 @@ async fn main() -> Result<()> {
             wallet_arg
         }
     };
-    let max_functions: usize = parse_cli_arg("--max-functions", "0")
-        .parse()
-        .unwrap_or(0);
+    let max_functions: usize = parse_cli_arg("--max-functions", "0").parse().unwrap_or(0);
 
     let wallet_raw = fs::read_to_string(&wallet_path)
         .with_context(|| format!("read wallet file failed: {}", wallet_path))?;
@@ -250,7 +248,8 @@ async fn main() -> Result<()> {
             }
         };
 
-        let abi_result = match rpc(&client, &rpc_url, "getContractAbi", json!([c.program_id])).await {
+        let abi_result = match rpc(&client, &rpc_url, "getContractAbi", json!([c.program_id])).await
+        {
             Ok(v) => v,
             Err(e) => {
                 let msg = format!("abi rpc error: {}", e);
@@ -317,10 +316,7 @@ async fn main() -> Result<()> {
             match sim_res {
                 Ok(v) => {
                     let return_code = v.get("returnCode").and_then(Value::as_i64);
-                    let ok = v
-                        .get("success")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
+                    let ok = v.get("success").and_then(Value::as_bool).unwrap_or(false)
                         && return_code.unwrap_or(1) == 0;
                     if ok {
                         ok_count += 1;
@@ -343,7 +339,9 @@ async fn main() -> Result<()> {
                         error: if ok {
                             None
                         } else {
-                            v.get("error").and_then(Value::as_str).map(|s| s.to_string())
+                            v.get("error")
+                                .and_then(Value::as_str)
+                                .map(|s| s.to_string())
                         },
                     });
                 }

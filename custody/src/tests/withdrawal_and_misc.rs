@@ -708,6 +708,43 @@ async fn test_process_broadcasting_withdrawals_marks_reverted_evm_tx_failed() {
     );
 }
 
+#[tokio::test]
+async fn test_broadcast_wgas_neox_rejects_rpc_chain_id_mismatch() {
+    let mut state = test_state();
+    let requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let rpc_app: Router =
+        Router::new()
+            .route("/", post(mock_rpc_handler))
+            .with_state(MockRpcState {
+                safe_nonce_hex: "0x0".to_string(),
+                safe_tx_hash_hex: "0x0".to_string(),
+                send_raw_tx_hash_hex: Some("0xsent".to_string()),
+                transaction_receipt: None,
+                requests: requests.clone(),
+            });
+    let rpc_url = spawn_mock_server(rpc_app).await;
+    state.config.neox_rpc_url = Some(rpc_url);
+
+    let mut job = test_withdrawal_job();
+    job.job_id = "withdrawal-neox-chain-id-mismatch".to_string();
+    job.dest_chain = "neox".to_string();
+    job.asset = "wGAS".to_string();
+    job.amount = 1_000_000_000;
+    job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+
+    let err = broadcast_outbound_withdrawal(&state, &job)
+        .await
+        .expect_err("Neo X withdrawal must reject an RPC on the wrong chain ID");
+    assert!(err.contains("RPC chain ID mismatch for neox: expected 12227332, got 1"));
+    let requests = requests.lock().await;
+    assert!(requests.iter().any(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) == Some("eth_chainId")
+    }));
+    assert!(!requests.iter().any(|payload| {
+        payload.get("method").and_then(|value| value.as_str()) == Some("eth_sendRawTransaction")
+    }));
+}
+
 #[test]
 fn test_count_withdrawal_jobs_with_index_includes_expired() {
     let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_withdrawal");
@@ -836,63 +873,70 @@ fn test_webhook_hmac_signature() {
 #[test]
 fn test_source_chain_decimals() {
     // Native tokens
-    assert_eq!(source_chain_decimals("ethereum", "eth"), 18);
-    assert_eq!(source_chain_decimals("eth", "eth"), 18);
-    assert_eq!(source_chain_decimals("bsc", "bnb"), 18);
-    assert_eq!(source_chain_decimals("bnb", "bnb"), 18);
-    assert_eq!(source_chain_decimals("solana", "sol"), 9);
-    assert_eq!(source_chain_decimals("sol", "sol"), 9);
+    assert_eq!(source_chain_decimals("ethereum", "eth").unwrap(), 18);
+    assert_eq!(source_chain_decimals("eth", "eth").unwrap(), 18);
+    assert_eq!(source_chain_decimals("bsc", "bnb").unwrap(), 18);
+    assert_eq!(source_chain_decimals("bnb", "bnb").unwrap(), 18);
+    assert_eq!(source_chain_decimals("neox", "gas").unwrap(), 18);
+    assert_eq!(source_chain_decimals("solana", "sol").unwrap(), 9);
+    assert_eq!(source_chain_decimals("sol", "sol").unwrap(), 9);
 
     // Stablecoins on Ethereum: 6 decimals
-    assert_eq!(source_chain_decimals("ethereum", "usdt"), 6);
-    assert_eq!(source_chain_decimals("eth", "usdc"), 6);
+    assert_eq!(source_chain_decimals("ethereum", "usdt").unwrap(), 6);
+    assert_eq!(source_chain_decimals("eth", "usdc").unwrap(), 6);
 
     // Stablecoins on BSC: 18 decimals (BEP-20)
-    assert_eq!(source_chain_decimals("bsc", "usdt"), 18);
-    assert_eq!(source_chain_decimals("bnb", "usdc"), 18);
+    assert_eq!(source_chain_decimals("bsc", "usdt").unwrap(), 18);
+    assert_eq!(source_chain_decimals("bnb", "usdc").unwrap(), 18);
 
     // Stablecoins on Solana: 6 decimals (SPL)
-    assert_eq!(source_chain_decimals("solana", "usdt"), 6);
-    assert_eq!(source_chain_decimals("sol", "usdc"), 6);
+    assert_eq!(source_chain_decimals("solana", "usdt").unwrap(), 6);
+    assert_eq!(source_chain_decimals("sol", "usdc").unwrap(), 6);
+    assert!(source_chain_decimals("neox", "neo").is_err());
+    assert!(source_chain_decimals("unknown", "eth").is_err());
 }
 
 #[test]
 fn test_spores_to_chain_amount() {
     // ETH: 1 wETH = 1_000_000_000 spores → 1_000_000_000_000_000_000 wei
     assert_eq!(
-        spores_to_chain_amount(1_000_000_000, "ethereum", "eth"),
+        spores_to_chain_amount(1_000_000_000, "ethereum", "eth").unwrap(),
         1_000_000_000_000_000_000u128
     );
 
     // BNB: 0.05 wBNB = 50_000_000 spores → 50_000_000_000_000_000 wei
     assert_eq!(
-        spores_to_chain_amount(50_000_000, "bsc", "bnb"),
+        spores_to_chain_amount(50_000_000, "bsc", "bnb").unwrap(),
         50_000_000_000_000_000u128
     );
 
     // SOL: 1 wSOL = 1_000_000_000 spores → 1_000_000_000 lamports (same)
     assert_eq!(
-        spores_to_chain_amount(1_000_000_000, "solana", "sol"),
+        spores_to_chain_amount(1_000_000_000, "solana", "sol").unwrap(),
         1_000_000_000u128
     );
 
     // USDT on Ethereum: 100 lUSD = 100_000_000_000 spores → 100_000_000 atoms (6 dec)
     assert_eq!(
-        spores_to_chain_amount(100_000_000_000, "ethereum", "usdt"),
+        spores_to_chain_amount(100_000_000_000, "ethereum", "usdt").unwrap(),
         100_000_000u128
     );
 
     // USDT on BSC: 100 lUSD = 100_000_000_000 spores → 100_000_000_000_000_000_000 atoms (18 dec)
     assert_eq!(
-        spores_to_chain_amount(100_000_000_000, "bsc", "usdt"),
+        spores_to_chain_amount(100_000_000_000, "bsc", "usdt").unwrap(),
         100_000_000_000_000_000_000u128
     );
 
     // USDC on Solana: 100 lUSD = 100_000_000_000 spores → 100_000_000 atoms (6 dec)
     assert_eq!(
-        spores_to_chain_amount(100_000_000_000, "solana", "usdc"),
+        spores_to_chain_amount(100_000_000_000, "solana", "usdc").unwrap(),
         100_000_000u128
     );
+
+    assert!(spores_to_chain_amount(1, "solana", "usdc").is_err());
+    assert!(spores_to_chain_amount(1_000_000_000, "neox", "gas").is_ok());
+    assert!(spores_to_chain_amount(1_000_000_000, "neox", "neo").is_err());
 }
 
 #[test]
@@ -902,22 +946,31 @@ fn test_deposit_credit_conversion_roundtrip() {
 
     // 1 ETH deposit: 10^18 wei → 10^9 spores → 10^18 wei
     let raw_eth: u128 = 1_000_000_000_000_000_000;
-    let dec = source_chain_decimals("ethereum", "eth");
+    let dec = source_chain_decimals("ethereum", "eth").unwrap();
     let spores = (raw_eth / 10u128.pow(dec - 9)) as u64;
     assert_eq!(spores, 1_000_000_000);
-    assert_eq!(spores_to_chain_amount(spores, "ethereum", "eth"), raw_eth);
+    assert_eq!(
+        spores_to_chain_amount(spores, "ethereum", "eth").unwrap(),
+        raw_eth
+    );
 
     // 100 USDT on ETH: 100_000_000 (6 dec) → 100_000_000_000 spores → 100_000_000 (6 dec)
     let raw_usdt: u128 = 100_000_000;
-    let dec = source_chain_decimals("ethereum", "usdt");
+    let dec = source_chain_decimals("ethereum", "usdt").unwrap();
     let spores = (raw_usdt * 10u128.pow(9 - dec)) as u64;
     assert_eq!(spores, 100_000_000_000);
-    assert_eq!(spores_to_chain_amount(spores, "ethereum", "usdt"), raw_usdt);
+    assert_eq!(
+        spores_to_chain_amount(spores, "ethereum", "usdt").unwrap(),
+        raw_usdt
+    );
 
     // 1 SOL: 1_000_000_000 lamports → 1_000_000_000 spores → 1_000_000_000 lamports
     let raw_sol: u128 = 1_000_000_000;
-    let dec = source_chain_decimals("solana", "sol");
+    let dec = source_chain_decimals("solana", "sol").unwrap();
     assert_eq!(dec, 9);
     let spores = raw_sol as u64;
-    assert_eq!(spores_to_chain_amount(spores, "solana", "sol"), raw_sol);
+    assert_eq!(
+        spores_to_chain_amount(spores, "solana", "sol").unwrap(),
+        raw_sol
+    );
 }

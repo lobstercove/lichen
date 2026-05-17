@@ -1,25 +1,41 @@
 use super::*;
 
+async fn checked_evm_chain_id(
+    state: &CustodyState,
+    url: &str,
+    dest_chain: &str,
+) -> Result<u64, String> {
+    let chain_id = evm_get_chain_id(&state.http, url).await?;
+    let expected = evm_route_for_chain(&state.config, dest_chain)
+        .map(|route| route.chain_id)
+        .ok_or_else(|| format!("unsupported EVM destination chain: {}", dest_chain))?;
+    if chain_id != expected {
+        return Err(format!(
+            "RPC chain ID mismatch for {}: expected {}, got {}",
+            dest_chain, expected, chain_id
+        ));
+    }
+    Ok(chain_id)
+}
+
 pub(super) async fn broadcast_self_custody_evm_withdrawal(
     state: &CustodyState,
     url: &str,
     job: &WithdrawalJob,
     outbound_asset: &str,
 ) -> Result<String, String> {
-    let treasury_chain = match job.dest_chain.as_str() {
-        "bsc" | "bnb" => "custody/treasury/bnb",
-        _ => "custody/treasury/ethereum",
-    };
+    let treasury_chain = evm_treasury_derivation_path(&job.dest_chain)
+        .ok_or_else(|| format!("unsupported EVM destination chain: {}", job.dest_chain))?;
     let signing_key = derive_evm_signing_key(treasury_chain, &state.config.master_seed)?;
     let from_address = derive_evm_address(treasury_chain, &state.config.master_seed)?;
     let to_address = &job.dest_address;
 
     let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let gas_price = evm_get_gas_price(&state.http, url).await?;
-    let chain_id = evm_get_chain_id(&state.http, url).await?;
+    let chain_id = checked_evm_chain_id(state, url, &job.dest_chain).await?;
 
-    if outbound_asset == "eth" || outbound_asset == "bnb" {
-        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
+    if outbound_asset == "eth" || outbound_asset == "bnb" || outbound_asset == "gas" {
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset)?;
         let gas_limit = evm_estimate_gas(
             &state.http,
             url,
@@ -49,7 +65,7 @@ pub(super) async fn broadcast_self_custody_evm_withdrawal(
             .ok_or_else(|| "no tx hash returned".to_string())
     } else {
         let contract = evm_contract_for_asset(&state.config, outbound_asset)?;
-        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset)?;
         let transfer_data = evm_encode_erc20_transfer(to_address, chain_amount)?;
         let gas_limit = evm_estimate_gas(
             &state.http,
@@ -159,7 +175,7 @@ pub(super) async fn assemble_signed_evm_tx(
     let executor_key = derive_evm_signing_key(executor_path, &state.config.master_seed)?;
     let nonce = evm_get_transaction_count(&state.http, &url, &executor_address).await?;
     let gas_price = evm_get_gas_price(&state.http, &url).await?;
-    let chain_id = evm_get_chain_id(&state.http, &url).await?;
+    let chain_id = checked_evm_chain_id(state, &url, &job.dest_chain).await?;
     let gas_limit = evm_estimate_gas(
         &state.http,
         &url,

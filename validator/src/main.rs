@@ -267,6 +267,8 @@ struct SharedOraclePrices {
     wsol_micro: Arc<AtomicU64>,
     weth_micro: Arc<AtomicU64>,
     wbnb_micro: Arc<AtomicU64>,
+    wneo_micro: Arc<AtomicU64>,
+    wgas_micro: Arc<AtomicU64>,
     ws_healthy: Arc<AtomicBool>,
     /// Epoch-millis of the last WS message received (for staleness detection)
     last_ws_update_ms: Arc<AtomicU64>,
@@ -278,6 +280,8 @@ impl SharedOraclePrices {
             wsol_micro: Arc::new(AtomicU64::new(0)),
             weth_micro: Arc::new(AtomicU64::new(0)),
             wbnb_micro: Arc::new(AtomicU64::new(0)),
+            wneo_micro: Arc::new(AtomicU64::new(0)),
+            wgas_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
             last_ws_update_ms: Arc::new(AtomicU64::new(0)),
         }
@@ -3015,15 +3019,19 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
     let wbnb_usd =
         lichen_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
+    let wneo_usd =
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wNEO").unwrap_or(0.0);
+    let wgas_usd =
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wGAS").unwrap_or(0.0);
 
-    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
+    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 && wneo_usd <= 0.0 && wgas_usd <= 0.0 {
         return;
     }
 
     let licn_usd = lichen_core::consensus::licn_price_from_state(state);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
-    for asset in ["LICN", "wSOL", "wETH", "wBNB"] {
+    for asset in ["LICN", "wSOL", "wETH", "wBNB", "wNEO", "wGAS"] {
         let consensus_feed =
             lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
                 .map(|(price_raw, decimals, _)| (price_raw, decimals));
@@ -3054,7 +3062,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
-    let pair_prices: [(u64, f64); 7] = [
+    let pair_prices: [(u64, f64); 11] = [
         (1, licn_usd),
         (2, wsol_usd),
         (3, weth_usd),
@@ -3079,6 +3087,24 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
             7,
             if licn_usd > 0.0 {
                 wbnb_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (8, wneo_usd),
+        (
+            9,
+            if licn_usd > 0.0 {
+                wneo_usd / licn_usd
+            } else {
+                0.0
+            },
+        ),
+        (10, wgas_usd),
+        (
+            11,
+            if licn_usd > 0.0 {
+                wgas_usd / licn_usd
             } else {
                 0.0
             },
@@ -5022,9 +5048,9 @@ struct VerifiedCheckpointAnchor {
 /// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
 const MICRO_SCALE: f64 = 1_000_000.0;
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade/neousdt@aggTrade/gasusdt@aggTrade";
 const DEFAULT_BINANCE_REST_URL: &str =
-    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22,%22NEOUSDT%22,%22GASUSDT%22]";
 
 fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
     let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
@@ -5277,6 +5303,8 @@ fn spawn_oracle_price_feeder(
         let wsol_micro = shared_prices.wsol_micro.clone();
         let weth_micro = shared_prices.weth_micro.clone();
         let wbnb_micro = shared_prices.wbnb_micro.clone();
+        let wneo_micro = shared_prices.wneo_micro.clone();
+        let wgas_micro = shared_prices.wgas_micro.clone();
         let ws_healthy = shared_prices.ws_healthy.clone();
 
         // Spawn WebSocket reader task FIRST so prices start flowing immediately
@@ -5286,11 +5314,16 @@ fn spawn_oracle_price_feeder(
             let ws_wsol = wsol_micro.clone();
             let ws_weth = weth_micro.clone();
             let ws_wbnb = wbnb_micro.clone();
+            let ws_wneo = wneo_micro.clone();
+            let ws_wgas = wgas_micro.clone();
             let ws_flag = ws_healthy.clone();
             let ws_last = last_ws_update_ms.clone();
             let ws_url = oracle_ws_url.clone();
             tokio::spawn(async move {
-                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_last, ws_url).await;
+                binance_ws_loop(
+                    ws_wsol, ws_weth, ws_wbnb, ws_wneo, ws_wgas, ws_flag, ws_last, ws_url,
+                )
+                .await;
             });
         }
 
@@ -5360,6 +5393,8 @@ fn spawn_oracle_price_feeder(
             let mut cur_wsol = wsol_micro.load(Ordering::Relaxed);
             let mut cur_weth = weth_micro.load(Ordering::Relaxed);
             let mut cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
+            let mut cur_wneo = wneo_micro.load(Ordering::Relaxed);
+            let mut cur_wgas = wgas_micro.load(Ordering::Relaxed);
 
             // REST fallback if WebSocket is not healthy, no prices yet,
             // or WS data is stale (no message received within 15 seconds).
@@ -5377,7 +5412,11 @@ fn spawn_oracle_price_feeder(
             };
             if !ws_healthy.load(Ordering::Relaxed)
                 || ws_stale
-                || (cur_wsol == 0 && cur_weth == 0 && cur_wbnb == 0)
+                || (cur_wsol == 0
+                    && cur_weth == 0
+                    && cur_wbnb == 0
+                    && cur_wneo == 0
+                    && cur_wgas == 0)
             {
                 if let Ok(resp) = http.get(&rest_url).send().await {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
@@ -5400,6 +5439,14 @@ fn spawn_oracle_price_feeder(
                                     wbnb_micro.store(micro, Ordering::Relaxed);
                                     cur_wbnb = micro;
                                 }
+                                "NEOUSDT" => {
+                                    wneo_micro.store(micro, Ordering::Relaxed);
+                                    cur_wneo = micro;
+                                }
+                                "GASUSDT" => {
+                                    wgas_micro.store(micro, Ordering::Relaxed);
+                                    cur_wgas = micro;
+                                }
                                 _ => {}
                             }
                         }
@@ -5418,6 +5465,8 @@ fn spawn_oracle_price_feeder(
                 ("wSOL", cur_wsol.saturating_mul(100)),
                 ("wETH", cur_weth.saturating_mul(100)),
                 ("wBNB", cur_wbnb.saturating_mul(100)),
+                ("wNEO", cur_wneo.saturating_mul(100)),
+                ("wGAS", cur_wgas.saturating_mul(100)),
             ] {
                 if price_raw == 0 {
                     continue;
@@ -5440,8 +5489,15 @@ fn spawn_oracle_price_feeder(
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
             let wbnb_usd = cur_wbnb as f64 / MICRO_SCALE;
+            let wneo_usd = cur_wneo as f64 / MICRO_SCALE;
+            let wgas_usd = cur_wgas as f64 / MICRO_SCALE;
 
-            if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
+            if wsol_usd <= 0.0
+                && weth_usd <= 0.0
+                && wbnb_usd <= 0.0
+                && wneo_usd <= 0.0
+                && wgas_usd <= 0.0
+            {
                 continue;
             }
 
@@ -5449,7 +5505,7 @@ fn spawn_oracle_price_feeder(
             let current_slot = state.get_last_slot().unwrap_or(0);
 
             let licn_usd: f64 = lichen_core::consensus::licn_price_from_state(&state);
-            let pair_prices: [(u64, f64); 7] = [
+            let pair_prices: [(u64, f64); 11] = [
                 (1, licn_usd),
                 (2, wsol_usd),
                 (3, weth_usd),
@@ -5474,6 +5530,24 @@ fn spawn_oracle_price_feeder(
                     7,
                     if licn_usd > 0.0 {
                         wbnb_usd / licn_usd
+                    } else {
+                        0.0
+                    },
+                ),
+                (8, wneo_usd),
+                (
+                    9,
+                    if licn_usd > 0.0 {
+                        wneo_usd / licn_usd
+                    } else {
+                        0.0
+                    },
+                ),
+                (10, wgas_usd),
+                (
+                    11,
+                    if licn_usd > 0.0 {
+                        wgas_usd / licn_usd
                     } else {
                         0.0
                     },
@@ -5558,8 +5632,8 @@ fn spawn_oracle_price_feeder(
             }
 
             debug!(
-                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2}",
-                wsol_usd, weth_usd, wbnb_usd
+                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2} wNEO=${:.2} wGAS=${:.2}",
+                wsol_usd, weth_usd, wbnb_usd, wneo_usd, wgas_usd
             );
         }
     });
@@ -5572,6 +5646,8 @@ async fn binance_ws_loop(
     wsol: Arc<AtomicU64>,
     weth: Arc<AtomicU64>,
     wbnb: Arc<AtomicU64>,
+    wneo: Arc<AtomicU64>,
+    wgas: Arc<AtomicU64>,
     healthy: Arc<AtomicBool>,
     last_ws_update_ms: Arc<AtomicU64>,
     ws_url: String,
@@ -5580,7 +5656,7 @@ async fn binance_ws_loop(
 
     // Read timeout: if no WS message arrives within this window,
     // treat the connection as dead and reconnect.  Binance aggTrade
-    // streams for SOL/ETH/BNB produce messages every ~100ms during
+    // streams for SOL/ETH/BNB/NEO/GAS produce messages during
     // active trading.  30s silence is a clear signal of a stale
     // connection (TCP half-open, silent Binance-side close, etc.).
     const WS_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -5631,6 +5707,8 @@ async fn binance_ws_loop(
                                             "SOLUSDT" => wsol.store(micro, Ordering::Relaxed),
                                             "ETHUSDT" => weth.store(micro, Ordering::Relaxed),
                                             "BNBUSDT" => wbnb.store(micro, Ordering::Relaxed),
+                                            "NEOUSDT" => wneo.store(micro, Ordering::Relaxed),
+                                            "GASUSDT" => wgas.store(micro, Ordering::Relaxed),
                                             _ => {}
                                         }
                                     }
@@ -13100,7 +13178,7 @@ async fn run_validator() {
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
 
     // Start the oracle price feeder background task
-    // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
+    // Connects to Binance WebSocket (aggTrade) for real-time wrapped-asset prices
     // and submits signed native oracle-attestation transactions.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
     // Can be disabled via LICHEN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).

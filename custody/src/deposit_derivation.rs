@@ -12,12 +12,22 @@ pub(super) fn bip44_coin_type(chain: &str) -> Result<u32, String> {
     path::bip44_coin_type(chain)
 }
 
+#[cfg(test)]
 pub(super) fn bip44_derivation_path(
     chain: &str,
     account: u32,
     index: u64,
 ) -> Result<String, String> {
     path::bip44_derivation_path(chain, account, index)
+}
+
+pub(super) fn bip44_derivation_path_for_config(
+    config: &CustodyConfig,
+    chain: &str,
+    account: u32,
+    index: u64,
+) -> Result<String, String> {
+    path::bip44_derivation_path_for_config(config, chain, account, index)
 }
 
 pub(super) fn default_deposit_seed_source() -> String {

@@ -6,6 +6,43 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 GENESIS_BIN="${LICHEN_GENESIS_BIN:-$ROOT_DIR/target/release/lichen-genesis}"
 
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+run_neo_public_beta_gate_if_needed() {
+    local gate_required=0
+    local gate_manifest="${LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST:-}"
+
+    if truthy "${LICHEN_NEO_PUBLIC_BETA_GATE_REQUIRED:-}"; then
+        gate_required=1
+    elif ! truthy "${LICHEN_LOCAL_DEV:-}" && truthy "${LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE:-}"; then
+        gate_required=1
+    fi
+
+    if [[ "$gate_required" != "1" ]]; then
+        return 0
+    fi
+
+    if [[ -z "$gate_manifest" ]]; then
+        print_error "LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST is required before public Neo beta/rewards genesis activation"
+        exit 2
+    fi
+    if [[ ! -f "$gate_manifest" ]]; then
+        print_error "Neo public beta gate manifest not found: $gate_manifest"
+        exit 2
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        print_error "Node.js is required to validate the Neo public beta gate manifest"
+        exit 2
+    fi
+
+    node "$ROOT_DIR/scripts/qa/check_neo_public_beta_gate.js" --manifest "$gate_manifest"
+}
+
 usage() {
     cat <<'EOF'
 Lichen genesis wrapper for the canonical PQ launch path.
@@ -27,6 +64,8 @@ Options:
   --db-path <path>                 Required for genesis DB creation
   --wallet-file <path>             Required for genesis DB creation
   --initial-validator <base58>     Repeatable explicit validator address
+  --bridge-validator <base58>      Repeatable bridge committee operator address
+  --oracle-operator <base58>       Repeatable oracle committee operator address
   --validator-keypair <path>       Derive the validator address from a canonical keypair file
   --config <path>                  Optional genesis config override passed through to lichen-genesis
   --genesis-prices-file <path>     Optional audited price snapshot for genesis market seeds
@@ -80,6 +119,8 @@ VALIDATOR_KEYPAIR=""
 CONFIG_PATH=""
 GENESIS_PRICES_FILE=""
 INITIAL_VALIDATORS=()
+BRIDGE_VALIDATORS=()
+ORACLE_OPERATORS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -110,6 +151,16 @@ while [[ $# -gt 0 ]]; do
         --initial-validator)
             require_value "$1" "${2:-}"
             INITIAL_VALIDATORS+=("$2")
+            shift 2
+            ;;
+        --bridge-validator)
+            require_value "$1" "${2:-}"
+            BRIDGE_VALIDATORS+=("$2")
+            shift 2
+            ;;
+        --oracle-operator)
+            require_value "$1" "${2:-}"
+            ORACLE_OPERATORS+=("$2")
             shift 2
             ;;
         --validator-keypair)
@@ -186,6 +237,14 @@ else
     for validator in "${INITIAL_VALIDATORS[@]}"; do
         COMMAND+=(--initial-validator "$validator")
     done
+    for validator in "${BRIDGE_VALIDATORS[@]}"; do
+        COMMAND+=(--bridge-validator "$validator")
+    done
+    for operator in "${ORACLE_OPERATORS[@]}"; do
+        COMMAND+=(--oracle-operator "$operator")
+    done
+
+    run_neo_public_beta_gate_if_needed
 fi
 
 echo "[generate-genesis] Executing: ${COMMAND[*]}"

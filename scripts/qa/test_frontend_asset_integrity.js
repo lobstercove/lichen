@@ -331,6 +331,12 @@ function validateMonitoringIncidentControls() {
         recentBlocksBody.includes("rpc('getRecentBlocks'") && !/rpc\(['"]getBlock['"]/.test(recentBlocksBody),
         'monitoring recent blocks use indexed getRecentBlocks instead of per-slot getBlock fanout'
     );
+
+    const oracleBridgeBody = extractFunctionBody(js, 'updateOracleBridgeHealthBoard');
+    assert(
+        js.includes('NEOGASRWD') && oracleBridgeBody.includes("rpc('getNeoGasRewardsStats'"),
+        'monitoring tracks Neo GAS rewards vault registry and health stats'
+    );
 }
 
 function validateMonitoringRiskConsole() {

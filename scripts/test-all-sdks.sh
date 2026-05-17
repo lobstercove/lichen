@@ -12,6 +12,9 @@ echo ""
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 RPC_URL="${RPC_URL:-http://localhost:8899}"
+if [[ "$PYTHON_BIN" == */* && "$PYTHON_BIN" != /* ]]; then
+    PYTHON_BIN="$ROOT_DIR/${PYTHON_BIN#./}"
+fi
 if [[ ! -x "$PYTHON_BIN" ]]; then
     PYTHON_BIN="python3"
 fi

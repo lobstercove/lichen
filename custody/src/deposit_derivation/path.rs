@@ -14,9 +14,7 @@ pub(super) fn derive_deposit_address(
 ) -> Result<String, String> {
     match (chain, asset) {
         ("sol", _) | ("solana", _) => derive_solana_address(path, master_seed),
-        ("eth", _) | ("ethereum", _) | ("bsc", _) | ("bnb", _) => {
-            derive_evm_address(path, master_seed)
-        }
+        _ if is_supported_evm_chain(chain) => derive_evm_address(path, master_seed),
         _ => Err(format!("Unsupported chain: {}", chain)),
     }
 }
@@ -27,6 +25,7 @@ pub(super) fn bip44_coin_type(chain: &str) -> Result<u32, String> {
     match chain {
         "sol" | "solana" => Ok(501),
         "eth" | "ethereum" | "bsc" | "bnb" => Ok(60),
+        "neox" | "neo-x" | "neo_x" => Ok(60),
         "btc" | "bitcoin" => Ok(0),
         "ltc" | "litecoin" => Ok(2),
         "lichen" | "licn" => Ok(9999),
@@ -35,7 +34,7 @@ pub(super) fn bip44_coin_type(chain: &str) -> Result<u32, String> {
 }
 
 pub(super) fn is_evm_chain(chain: &str) -> bool {
-    matches!(chain, "eth" | "ethereum" | "bsc" | "bnb")
+    is_supported_evm_chain(chain)
 }
 
 /// F2-01: Build BIP-44-structured derivation path.
@@ -47,10 +46,40 @@ pub(super) fn bip44_derivation_path(
     index: u64,
 ) -> Result<String, String> {
     let coin_type = super::bip44_coin_type(chain)?;
+    bip44_derivation_path_with_coin_type(coin_type, account, 0, index)
+}
+
+pub(super) fn bip44_derivation_path_for_config(
+    config: &CustodyConfig,
+    chain: &str,
+    account: u32,
+    index: u64,
+) -> Result<String, String> {
+    if canonical_evm_chain(chain) == Some("neox") {
+        let coin_type = u32::try_from(config.neox_chain_id).map_err(|_| {
+            format!(
+                "Neo X chain ID {} exceeds BIP-44 path range",
+                config.neox_chain_id
+            )
+        })?;
+        return bip44_derivation_path_with_coin_type(coin_type, account, 0, index);
+    }
+    bip44_derivation_path(chain, account, index)
+}
+
+fn bip44_derivation_path_with_coin_type(
+    coin_type: u32,
+    account: u32,
+    change: u32,
+    index: u64,
+) -> Result<String, String> {
     if account > MAX_BIP44_ACCOUNT_INDEX {
         return Err("derivation account index exceeds BIP-44 hardened range".to_string());
     }
-    Ok(format!("m/44'/{}'/{}'/{}/{}", coin_type, account, 0, index))
+    Ok(format!(
+        "m/44'/{}'/{}'/{}/{}",
+        coin_type, account, change, index
+    ))
 }
 
 pub(super) fn derive_solana_owner_pubkey(path: &str, master_seed: &str) -> Result<String, String> {

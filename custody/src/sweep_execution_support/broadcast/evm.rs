@@ -110,7 +110,8 @@ async fn broadcast_evm_token_sweep(
             from_address, native_balance, fee, gas_grant
         );
 
-        let fund_tx_hash = fund_evm_gas_for_sweep(state, url, &from_address, gas_grant).await?;
+        let fund_tx_hash =
+            fund_evm_gas_for_sweep(state, url, &job.chain, &from_address, gas_grant).await?;
         info!(
             "M16 gas funding tx submitted: {} → {} ({})",
             fund_tx_hash, from_address, gas_grant
@@ -178,14 +179,12 @@ async fn broadcast_evm_token_sweep(
 async fn fund_evm_gas_for_sweep(
     state: &CustodyState,
     url: &str,
+    chain: &str,
     to_address: &str,
     amount_wei: u128,
 ) -> Result<String, String> {
-    let treasury_chain = if state.config.bnb_rpc_url.as_deref() == Some(url) {
-        "custody/treasury/bnb"
-    } else {
-        "custody/treasury/ethereum"
-    };
+    let treasury_chain = evm_treasury_derivation_path(chain)
+        .ok_or_else(|| format!("unsupported EVM sweep chain: {}", chain))?;
 
     let treasury_addr = derive_evm_address(treasury_chain, &state.config.master_seed)?;
 

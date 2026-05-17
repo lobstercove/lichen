@@ -122,6 +122,16 @@
                     subscription methods plus DEX and prediction-market multiplexed channels.</p>
             </div>
 
+            <div class="callout callout-info">
+                <p><strong>Neo X Integration:</strong> WebSocket remains the live event channel for blocks,
+                    transactions, logs, token-balance updates, and DEX streams. Neo route status, wNEO/wGAS reserves, and
+                    GAS rewards vault health are read through JSON-RPC methods such as
+                    <code>getBridgeRouteRestrictionStatus</code>, <code>getWneoStats</code>,
+                    <code>getWgasStats</code>, <code>getNeoGasRewardsStats</code>, and <code>getDexPairs</code>.
+                    Clients should combine WS freshness with those indexed RPC reads rather than inferring route health
+                    from frontend candles.</p>
+            </div>
+
             <!-- Connection -->
             <section id="connection">
                 <h2>Connection</h2>

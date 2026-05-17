@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, Literal, Mapping, Optional, Union
 
 from .connection import Connection
 from .publickey import PublicKey
@@ -15,6 +15,37 @@ RestrictionAssetInput = Union[PublicKey, str]
 RestrictionReasonInput = Union[str, int]
 RestrictionLiftReasonInput = Union[str, int]
 RestrictionModeInput = Union[str, int]
+BridgeChain = Literal["solana", "ethereum", "bsc", "bnb", "neox"]
+BridgeAsset = Literal["sol", "eth", "bnb", "gas", "neo", "usdc", "usdt"]
+
+BRIDGE_CHAIN_SOLANA: BridgeChain = "solana"
+BRIDGE_CHAIN_ETHEREUM: BridgeChain = "ethereum"
+BRIDGE_CHAIN_BSC: BridgeChain = "bsc"
+BRIDGE_CHAIN_BNB: BridgeChain = "bnb"
+BRIDGE_CHAIN_NEOX: BridgeChain = "neox"
+BRIDGE_ASSET_SOL: BridgeAsset = "sol"
+BRIDGE_ASSET_ETH: BridgeAsset = "eth"
+BRIDGE_ASSET_BNB: BridgeAsset = "bnb"
+BRIDGE_ASSET_GAS: BridgeAsset = "gas"
+BRIDGE_ASSET_NEO: BridgeAsset = "neo"
+BRIDGE_ASSET_USDC: BridgeAsset = "usdc"
+BRIDGE_ASSET_USDT: BridgeAsset = "usdt"
+BRIDGE_CHAINS = (
+    BRIDGE_CHAIN_SOLANA,
+    BRIDGE_CHAIN_ETHEREUM,
+    BRIDGE_CHAIN_BSC,
+    BRIDGE_CHAIN_BNB,
+    BRIDGE_CHAIN_NEOX,
+)
+BRIDGE_ASSETS = (
+    BRIDGE_ASSET_SOL,
+    BRIDGE_ASSET_ETH,
+    BRIDGE_ASSET_BNB,
+    BRIDGE_ASSET_GAS,
+    BRIDGE_ASSET_NEO,
+    BRIDGE_ASSET_USDC,
+    BRIDGE_ASSET_USDT,
+)
 
 _MISSING = object()
 
@@ -52,8 +83,8 @@ class CodeHashRestrictionTarget:
 
 @dataclass(frozen=True)
 class BridgeRouteRestrictionTarget:
-    chain: str
-    asset: str
+    chain: Union[BridgeChain, str]
+    asset: Union[BridgeAsset, str]
     type: str = "bridge_route"
 
 
@@ -185,8 +216,8 @@ class UnbanCodeHashParams:
 class BridgeRouteRestrictionParams:
     proposer: AddressInput
     governance_authority: AddressInput
-    chain: str
-    asset: str
+    chain: Union[BridgeChain, str]
+    asset: Union[BridgeAsset, str]
     reason: RestrictionReasonInput
     recent_blockhash: Optional[str] = None
     evidence_hash: Optional[str] = None
@@ -198,8 +229,8 @@ class BridgeRouteRestrictionParams:
 class ResumeBridgeRouteParams:
     proposer: AddressInput
     governance_authority: AddressInput
-    chain: str
-    asset: str
+    chain: Union[BridgeChain, str]
+    asset: Union[BridgeAsset, str]
     lift_reason: RestrictionLiftReasonInput
     restriction_id: Optional[int] = None
     recent_blockhash: Optional[str] = None
@@ -456,7 +487,11 @@ class RestrictionGovernanceClient:
     async def get_code_hash_restriction_status(self, code_hash: str) -> Dict[str, Any]:
         return await self._rpc("getCodeHashRestrictionStatus", [code_hash])
 
-    async def get_bridge_route_restriction_status(self, chain: str, asset: str) -> Dict[str, Any]:
+    async def get_bridge_route_restriction_status(
+        self,
+        chain: Union[BridgeChain, str],
+        asset: Union[BridgeAsset, str],
+    ) -> Dict[str, Any]:
         return await self._rpc("getBridgeRouteRestrictionStatus", [chain, asset])
 
     async def can_send(self, params: Union[MovementRestrictionParams, Mapping[str, Any]]) -> Dict[str, Any]:

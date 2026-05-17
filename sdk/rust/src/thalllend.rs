@@ -54,7 +54,9 @@ pub struct ThallLendClient {
 }
 
 fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        1 + layout.len() + chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+    );
     out.push(0xAB);
     out.extend_from_slice(layout);
     for chunk in chunks {
@@ -64,7 +66,10 @@ fn build_layout_args(layout: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn encode_user_amount_args(user: &Pubkey, amount: u64) -> Vec<u8> {
-    build_layout_args(&[0x20, 0x08], &[user.as_ref().to_vec(), amount.to_le_bytes().to_vec()])
+    build_layout_args(
+        &[0x20, 0x08],
+        &[user.as_ref().to_vec(), amount.to_le_bytes().to_vec()],
+    )
 }
 
 fn encode_user_lookup_args(user: &Pubkey) -> Vec<u8> {
@@ -89,12 +94,9 @@ fn ensure_readonly_success(
 ) -> Result<()> {
     let code = result.return_code.unwrap_or(0);
     if !allowed_codes.contains(&code) {
-        return Err(Error::RpcError(
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("ThallLend {} returned code {}", function_name, code)),
-        ));
+        return Err(Error::RpcError(result.error.clone().unwrap_or_else(|| {
+            format!("ThallLend {} returned code {}", function_name, code)
+        })));
     }
     if !result.success {
         return Err(Error::RpcError(
@@ -127,9 +129,9 @@ fn decode_u64(bytes: &[u8], start: usize, function_name: &str) -> Result<u64> {
             function_name,
         )));
     }
-    let slice: [u8; 8] = bytes[start..end]
-        .try_into()
-        .map_err(|_| Error::ParseError(format!("ThallLend {} payload was malformed", function_name)))?;
+    let slice: [u8; 8] = bytes[start..end].try_into().map_err(|_| {
+        Error::ParseError(format!("ThallLend {} payload was malformed", function_name))
+    })?;
     Ok(u64::from_le_bytes(slice))
 }
 
@@ -222,10 +224,9 @@ impl ThallLendClient {
                 continue;
             };
             let program_id = Pubkey::from_base58(program).map_err(Error::ParseError)?;
-            *self
-                .program_id
-                .lock()
-                .map_err(|_| Error::ConfigError("ThallLendClient program cache lock poisoned".into()))? = Some(program_id);
+            *self.program_id.lock().map_err(|_| {
+                Error::ConfigError("ThallLendClient program cache lock poisoned".into())
+            })? = Some(program_id);
             return Ok(program_id);
         }
 
@@ -237,7 +238,12 @@ impl ThallLendClient {
     pub async fn get_account_info(&self, user: &Pubkey) -> Result<ThallLendAccountInfo> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_account_info", encode_user_lookup_args(user), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_account_info",
+                encode_user_lookup_args(user),
+                None,
+            )
             .await?;
         decode_account_info(&result)
     }
@@ -245,7 +251,12 @@ impl ThallLendClient {
     pub async fn get_protocol_stats(&self) -> Result<ThallLendProtocolStats> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_protocol_stats", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_protocol_stats",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_protocol_stats(&result)
     }
@@ -253,7 +264,12 @@ impl ThallLendClient {
     pub async fn get_interest_rate(&self) -> Result<ThallLendInterestRate> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_interest_rate", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_interest_rate",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_interest_rate(&result)
     }
@@ -261,7 +277,12 @@ impl ThallLendClient {
     pub async fn get_deposit_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_deposit_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_deposit_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_deposit_count")
     }
@@ -269,7 +290,12 @@ impl ThallLendClient {
     pub async fn get_borrow_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_borrow_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_borrow_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_borrow_count")
     }
@@ -277,7 +303,12 @@ impl ThallLendClient {
     pub async fn get_liquidation_count(&self) -> Result<u64> {
         let result = self
             .client
-            .call_readonly_contract(&self.get_program_id().await?, "get_liquidation_count", Vec::new(), None)
+            .call_readonly_contract(
+                &self.get_program_id().await?,
+                "get_liquidation_count",
+                Vec::new(),
+                None,
+            )
             .await?;
         decode_u64_result(&result, "get_liquidation_count")
     }
@@ -290,28 +321,52 @@ impl ThallLendClient {
     pub async fn deposit(&self, depositor: &Keypair, amount: u64) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
-            .call_contract(depositor, &program_id, "deposit", encode_user_amount_args(&depositor.pubkey(), amount), amount)
+            .call_contract(
+                depositor,
+                &program_id,
+                "deposit",
+                encode_user_amount_args(&depositor.pubkey(), amount),
+                amount,
+            )
             .await
     }
 
     pub async fn withdraw(&self, depositor: &Keypair, amount: u64) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
-            .call_contract(depositor, &program_id, "withdraw", encode_user_amount_args(&depositor.pubkey(), amount), 0)
+            .call_contract(
+                depositor,
+                &program_id,
+                "withdraw",
+                encode_user_amount_args(&depositor.pubkey(), amount),
+                0,
+            )
             .await
     }
 
     pub async fn borrow(&self, borrower: &Keypair, amount: u64) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
-            .call_contract(borrower, &program_id, "borrow", encode_user_amount_args(&borrower.pubkey(), amount), 0)
+            .call_contract(
+                borrower,
+                &program_id,
+                "borrow",
+                encode_user_amount_args(&borrower.pubkey(), amount),
+                0,
+            )
             .await
     }
 
     pub async fn repay(&self, borrower: &Keypair, amount: u64) -> Result<String> {
         let program_id = self.get_program_id().await?;
         self.client
-            .call_contract(borrower, &program_id, "repay", encode_user_amount_args(&borrower.pubkey(), amount), amount)
+            .call_contract(
+                borrower,
+                &program_id,
+                "repay",
+                encode_user_amount_args(&borrower.pubkey(), amount),
+                amount,
+            )
             .await
     }
 
@@ -354,7 +409,10 @@ mod tests {
 
         assert_eq!(&encoded[..3], &[0xAB, 0x20, 0x08]);
         assert_eq!(&encoded[3..35], &[7u8; 32]);
-        assert_eq!(u64::from_le_bytes(encoded[35..43].try_into().unwrap()), 1_000);
+        assert_eq!(
+            u64::from_le_bytes(encoded[35..43].try_into().unwrap()),
+            1_000
+        );
     }
 
     #[test]

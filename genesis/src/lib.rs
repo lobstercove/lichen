@@ -56,11 +56,13 @@ fn price_8dec_to_f64(price: u64) -> f64 {
     price as f64 / 100_000_000.0
 }
 
-fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 7] {
+fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 11] {
     let licn_usd = price_8dec_to_f64(prices.licn_usd_8dec);
     let wsol_usd = price_8dec_to_f64(prices.wsol_usd_8dec);
     let weth_usd = price_8dec_to_f64(prices.weth_usd_8dec);
     let wbnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
+    let wneo_usd = price_8dec_to_f64(prices.wneo_usd_8dec);
+    let wgas_usd = price_8dec_to_f64(prices.wgas_usd_8dec);
 
     [
         (1, licn_usd),
@@ -70,6 +72,10 @@ fn genesis_pair_prices(prices: &GenesisPrices) -> [(u64, f64); 7] {
         (5, weth_usd / licn_usd),
         (6, wbnb_usd),
         (7, wbnb_usd / licn_usd),
+        (8, wneo_usd),
+        (9, wneo_usd / licn_usd),
+        (10, wgas_usd),
+        (11, wgas_usd / licn_usd),
     ]
 }
 
@@ -79,6 +85,8 @@ pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("wsol_token", "WSOL", "Wrapped SOL", "wrapped"),
     ("weth_token", "WETH", "Wrapped ETH", "wrapped"),
     ("wbnb_token", "WBNB", "Wrapped BNB", "wrapped"),
+    ("wgas_token", "WGAS", "Wrapped GAS", "wrapped"),
+    ("wneo_token", "WNEO", "Wrapped NEO", "wrapped"),
     // DEX
     ("dex_core", "DEX", "Lichen DEX Core", "dex"),
     ("dex_amm", "DEXAMM", "DEX AMM Engine", "dex"),
@@ -102,6 +110,12 @@ pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("sporepay", "SPOREPAY", "SporePay Payments", "payments"),
     ("sporepump", "SPOREPUMP", "SporePump Launchpad", "launchpad"),
     ("sporevault", "SPOREVAULT", "SporeVault", "vault"),
+    (
+        "neo_gas_rewards",
+        "NEOGASRWD",
+        "Neo GAS Rewards Vault",
+        "vault",
+    ),
     ("bountyboard", "BOUNTY", "BountyBoard", "bounty"),
     ("compute_market", "COMPUTE", "Compute Market", "compute"),
     ("moss_storage", "MOSS", "Moss Storage", "storage"),
@@ -249,6 +263,16 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                         "fas fa-coins",
                         "https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png",
                     ),
+                    "WGAS" | "wGAS" => (
+                        "Wrapped GAS on Lichen — backed 1:1 by GAS reserves on Neo X.",
+                        "fas fa-gas-pump",
+                        "",
+                    ),
+                    "WNEO" | "wNEO" => (
+                        "Wrapped NEO on Lichen — backed 1:1 by NEO reserves with whole-unit NEO semantics.",
+                        "fas fa-cube",
+                        "https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png",
+                    ),
                     _ => ("Wrapped asset on Lichen.", "fas fa-coins", ""),
                 };
                 meta["description"] = serde_json::json!(desc);
@@ -330,12 +354,88 @@ fn require_genesis_governance_authority(state: &StateStore, phase: &str) -> Resu
 fn uses_operational_token_admin(dir_name: &str) -> bool {
     matches!(
         dir_name,
-        "lusd_token" | "wsol_token" | "weth_token" | "wbnb_token"
+        "lusd_token" | "wsol_token" | "weth_token" | "wbnb_token" | "wgas_token" | "wneo_token"
     )
 }
 
 fn operational_token_contracts() -> &'static [&'static str] {
-    &["lusd_token", "wsol_token", "weth_token", "wbnb_token"]
+    &[
+        "lusd_token",
+        "wsol_token",
+        "weth_token",
+        "wbnb_token",
+        "wgas_token",
+        "wneo_token",
+    ]
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn required_env(name: &str) -> Result<String, String> {
+    std::env::var(name)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| {
+            format!("{name} must be set when Neo GAS rewards genesis activation is enabled")
+        })
+        .and_then(|value| {
+            if value.is_empty() {
+                Err(format!(
+                    "{name} must not be empty when Neo GAS rewards genesis activation is enabled"
+                ))
+            } else {
+                Ok(value)
+            }
+        })
+}
+
+fn required_env_u64(name: &str) -> Result<u64, String> {
+    let value = required_env(name)?;
+    value
+        .parse::<u64>()
+        .map_err(|err| format!("{name} must be a u64 value: {err}"))
+}
+
+fn parse_env_addr32(name: &str, value: &str) -> Result<[u8; 32], String> {
+    if let Ok(pubkey) = Pubkey::from_base58(value) {
+        return Ok(pubkey.0);
+    }
+
+    let hex_value = value.strip_prefix("0x").unwrap_or(value);
+    let decoded = hex::decode(hex_value)
+        .map_err(|err| format!("{name} must be a base58 pubkey or 32-byte hex value: {err}"))?;
+    if decoded.len() != 32 {
+        return Err(format!(
+            "{name} must decode to 32 bytes, got {} bytes",
+            decoded.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded);
+    Ok(out)
+}
+
+fn required_env_addr32(name: &str) -> Result<[u8; 32], String> {
+    parse_env_addr32(name, &required_env(name)?)
+}
+
+fn optional_env_addr32(name: &str) -> Result<Option<[u8; 32]>, String> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(parse_env_addr32(name, value.trim())?)),
+        Ok(_) | Err(_) => Ok(None),
+    }
+}
+
+fn append_u64_arg(args: &mut Vec<u8>, value: u64) {
+    args.extend_from_slice(&value.to_le_bytes());
 }
 
 fn two_address_args(first: &[u8; 32], second: &[u8; 32]) -> Vec<u8> {
@@ -780,6 +880,16 @@ pub fn genesis_initialize_contracts(
             function: "initialize",
             args: named_init_args(&operational_token_admin),
         },
+        InitSpec {
+            dir_name: "wgas_token",
+            function: "initialize",
+            args: named_init_args(&operational_token_admin),
+        },
+        InitSpec {
+            dir_name: "wneo_token",
+            function: "initialize",
+            args: named_init_args(&operational_token_admin),
+        },
         // ── Layer 1: Identity ──
         InitSpec {
             dir_name: "lichenid",
@@ -874,6 +984,11 @@ pub fn genesis_initialize_contracts(
         },
         InitSpec {
             dir_name: "sporevault",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "neo_gas_rewards",
             function: "initialize",
             args: named_init_args(&admin),
         },
@@ -985,6 +1100,107 @@ pub fn genesis_initialize_contracts(
                 dir_name
             ));
         }
+    }
+
+    if env_truthy("LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE") {
+        let rewards_pk = address_map.get("neo_gas_rewards").ok_or_else(|| {
+            "Neo GAS rewards genesis activation requires neo_gas_rewards".to_string()
+        })?;
+        let wneo_addr = address_map
+            .get("wneo_token")
+            .ok_or_else(|| "Neo GAS rewards genesis activation requires wneo_token".to_string())?
+            .0;
+        let wgas_addr = address_map
+            .get("wgas_token")
+            .ok_or_else(|| "Neo GAS rewards genesis activation requires wgas_token".to_string())?
+            .0;
+        let importer = optional_env_addr32("LICHEN_GENESIS_NEO_GAS_REWARDS_IMPORTER_PUBKEY")?
+            .unwrap_or(operational_token_admin);
+        let route_cap = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_ROUTE_CAP")?;
+        let per_user_cap = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_PER_USER_CAP")?;
+        let daily_import_cap = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_DAILY_IMPORT_CAP")?;
+        let daily_claim_cap = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_DAILY_CLAIM_CAP")?;
+        let campaign_budget = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_CAMPAIGN_BUDGET")?;
+        let disclosure_version =
+            required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_DISCLOSURE_VERSION")?;
+        let disclosure_hash =
+            required_env_addr32("LICHEN_GENESIS_NEO_GAS_REWARDS_DISCLOSURE_HASH")?;
+        let policy_version = required_env_u64("LICHEN_GENESIS_NEO_GAS_REWARDS_POLICY_VERSION")?;
+        let policy_hash = required_env_addr32("LICHEN_GENESIS_NEO_GAS_REWARDS_POLICY_HASH")?;
+
+        let mut token_args = Vec::with_capacity(96);
+        token_args.extend_from_slice(&admin);
+        token_args.extend_from_slice(&wneo_addr);
+        token_args.extend_from_slice(&wgas_addr);
+        if !exec_as_governance(
+            rewards_pk,
+            "set_token_addresses",
+            &token_args,
+            "neo_gas_rewards(tokens)",
+        ) {
+            return Err(
+                "Failed to configure Neo GAS rewards token addresses at genesis".to_string(),
+            );
+        }
+
+        let importer_args = two_address_args(&admin, &importer);
+        if !exec_as_governance(
+            rewards_pk,
+            "set_reward_importer",
+            &importer_args,
+            "neo_gas_rewards(importer)",
+        ) {
+            return Err("Failed to configure Neo GAS rewards importer at genesis".to_string());
+        }
+
+        let mut caps_args = Vec::with_capacity(72);
+        caps_args.extend_from_slice(&admin);
+        append_u64_arg(&mut caps_args, route_cap);
+        append_u64_arg(&mut caps_args, per_user_cap);
+        append_u64_arg(&mut caps_args, daily_import_cap);
+        append_u64_arg(&mut caps_args, daily_claim_cap);
+        append_u64_arg(&mut caps_args, campaign_budget);
+        if !exec_as_governance(
+            rewards_pk,
+            "configure_caps",
+            &caps_args,
+            "neo_gas_rewards(caps)",
+        ) {
+            return Err("Failed to configure Neo GAS rewards caps at genesis".to_string());
+        }
+
+        let mut disclosure_args = Vec::with_capacity(72);
+        disclosure_args.extend_from_slice(&admin);
+        append_u64_arg(&mut disclosure_args, disclosure_version);
+        disclosure_args.extend_from_slice(&disclosure_hash);
+        if !exec_as_governance(
+            rewards_pk,
+            "set_disclosure",
+            &disclosure_args,
+            "neo_gas_rewards(disclosure)",
+        ) {
+            return Err("Failed to configure Neo GAS rewards disclosure at genesis".to_string());
+        }
+
+        let mut policy_args = Vec::with_capacity(72);
+        policy_args.extend_from_slice(&admin);
+        append_u64_arg(&mut policy_args, policy_version);
+        policy_args.extend_from_slice(&policy_hash);
+        if !exec_as_governance(
+            rewards_pk,
+            "configure_reward_policy",
+            &policy_args,
+            "neo_gas_rewards(policy)",
+        ) {
+            return Err("Failed to configure Neo GAS rewards policy at genesis".to_string());
+        }
+
+        info!(
+            "  SET neo_gas_rewards(genesis activation): route_cap={}, per_user_cap={}, importer={}",
+            route_cap,
+            per_user_cap,
+            Pubkey(importer).to_base58()
+        );
     }
 
     // LichenAuction requires TWO init calls:
@@ -1166,10 +1382,18 @@ pub fn genesis_initialize_contracts(
             .get("wbnb_token")
             .map(|p| p.0)
             .unwrap_or([0u8; 32]);
+        let wgas_addr = address_map
+            .get("wgas_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
+        let wneo_addr = address_map
+            .get("wneo_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
 
         // (token_in, token_out, pair_id, pool_id, label)
         type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
-        let route_pairs: [RoutePair; 7] = [
+        let route_pairs: [RoutePair; 11] = [
             (licn_addr, lusd_addr, 1, 1, "LICN/lUSD"),
             (wsol_addr, lusd_addr, 2, 2, "wSOL/lUSD"),
             (weth_addr, lusd_addr, 3, 3, "wETH/lUSD"),
@@ -1177,6 +1401,10 @@ pub fn genesis_initialize_contracts(
             (weth_addr, licn_addr, 5, 5, "wETH/LICN"),
             (wbnb_addr, lusd_addr, 6, 6, "wBNB/lUSD"),
             (wbnb_addr, licn_addr, 7, 7, "wBNB/LICN"),
+            (wneo_addr, lusd_addr, 8, 8, "wNEO/lUSD"),
+            (wneo_addr, licn_addr, 9, 9, "wNEO/LICN"),
+            (wgas_addr, lusd_addr, 10, 10, "wGAS/lUSD"),
+            (wgas_addr, licn_addr, 11, 11, "wGAS/LICN"),
         ];
 
         for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
@@ -1222,7 +1450,12 @@ pub fn genesis_initialize_contracts(
                 warn!("  WARN: Failed to register AMM route {}", label);
             }
         }
-        info!("  ✅ Registered 10 genesis routes (5 CLOB + 5 AMM)");
+        info!(
+            "  ✅ Registered {} genesis routes ({} CLOB + {} AMM)",
+            route_pairs.len() * 2,
+            route_pairs.len(),
+            route_pairs.len()
+        );
     }
 
     // ── DEX Core → DEX Analytics: wire analytics address for trade recording ──
@@ -1330,6 +1563,46 @@ pub fn genesis_initialize_contracts(
             info!("  SET dex_rewards(set_authorized_caller)");
         } else {
             warn!("  WARN: Failed to set dex_rewards authorized caller");
+        }
+    }
+
+    // ── DEX AMM → DEX Rewards: wire LP campaign reward accrual ──
+    // Opcode 22 = dex_amm.set_rewards_address(caller[32], rewards_addr[32]).
+    // Opcode 20 = dex_rewards.set_authorized_caller(caller[32], dex_amm_addr[32], enabled[1]).
+    // This wires reward accounting only; campaign rates and budgets still require
+    // a governed post-genesis NX-950 payload.
+    if let (Some(dex_amm_pk), Some(dex_rewards_pk)) =
+        (address_map.get("dex_amm"), address_map.get("dex_rewards"))
+    {
+        let mut amm_args = Vec::with_capacity(65);
+        amm_args.push(22u8);
+        amm_args.extend_from_slice(&admin);
+        amm_args.extend_from_slice(&dex_rewards_pk.0);
+        if exec_as_governance(
+            dex_amm_pk,
+            "call",
+            &amm_args,
+            "dex_amm(set_rewards_address)",
+        ) {
+            info!("  SET dex_amm(set_rewards_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_amm rewards address");
+        }
+
+        let mut rewards_args = Vec::with_capacity(66);
+        rewards_args.push(20u8);
+        rewards_args.extend_from_slice(&admin);
+        rewards_args.extend_from_slice(&dex_amm_pk.0);
+        rewards_args.push(1u8);
+        if exec_as_governance(
+            dex_rewards_pk,
+            "call",
+            &rewards_args,
+            "dex_rewards(set_authorized_caller dex_amm)",
+        ) {
+            info!("  SET dex_rewards(set_authorized_caller dex_amm)");
+        } else {
+            warn!("  WARN: Failed to authorize dex_amm for dex_rewards");
         }
     }
 
@@ -1665,6 +1938,16 @@ pub fn genesis_initialize_contracts(
             GenesisName {
                 label: "wbnb",
                 owner_key: "wbnb_token",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "wgas",
+                owner_key: "wgas_token",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "wneo",
+                owner_key: "wneo_token",
                 agent_type: 0,
             },
             // ── DEX ──
@@ -2084,15 +2367,29 @@ pub fn genesis_create_trading_pairs(
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    // All genesis CLOB pairs: 4 lUSD-quoted + 3 LICN-quoted = 7 pairs
-    let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
-        ("LICN/lUSD", licn_addr, lusd_addr),
-        ("wSOL/lUSD", wsol_addr, lusd_addr),
-        ("wETH/lUSD", weth_addr, lusd_addr),
-        ("wSOL/LICN", wsol_addr, licn_addr),
-        ("wETH/LICN", weth_addr, licn_addr),
-        ("wBNB/lUSD", wbnb_addr, lusd_addr),
-        ("wBNB/LICN", wbnb_addr, licn_addr),
+    let wgas_addr = derive_contract_address(deployer_pubkey, "wgas_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let wneo_addr = derive_contract_address(deployer_pubkey, "wneo_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+
+    const WNEO_WHOLE_LOT: u64 = 1_000_000_000;
+
+    // All genesis CLOB pairs: 6 lUSD-quoted + 5 LICN-quoted = 11 pairs.
+    // wNEO markets use a whole-token lot size to preserve Neo's whole-unit semantics.
+    let pairs: [(&str, [u8; 32], [u8; 32], u64); 11] = [
+        ("LICN/lUSD", licn_addr, lusd_addr, lot_size),
+        ("wSOL/lUSD", wsol_addr, lusd_addr, lot_size),
+        ("wETH/lUSD", weth_addr, lusd_addr, lot_size),
+        ("wSOL/LICN", wsol_addr, licn_addr, lot_size),
+        ("wETH/LICN", weth_addr, licn_addr, lot_size),
+        ("wBNB/lUSD", wbnb_addr, lusd_addr, lot_size),
+        ("wBNB/LICN", wbnb_addr, licn_addr, lot_size),
+        ("wNEO/lUSD", wneo_addr, lusd_addr, WNEO_WHOLE_LOT),
+        ("wNEO/LICN", wneo_addr, licn_addr, WNEO_WHOLE_LOT),
+        ("wGAS/lUSD", wgas_addr, lusd_addr, lot_size),
+        ("wGAS/LICN", wgas_addr, licn_addr, lot_size),
     ];
 
     let mut created_pairs: usize = 0;
@@ -2145,14 +2442,14 @@ pub fn genesis_create_trading_pairs(
 
     // ── Step 2: Create CLOB trading pairs via dex_core opcode 1 (create_pair) ──
     // Args: [0x01][caller 32B][base 32B][quote 32B][tick_size 8B][lot_size 8B][min_order 8B]
-    for (label, base, quote) in &pairs {
+    for (label, base, quote, pair_lot_size) in &pairs {
         let mut args = Vec::with_capacity(121);
         args.push(0x01); // opcode 1 = create_pair
         args.extend_from_slice(&admin); // caller
         args.extend_from_slice(base); // base_token
         args.extend_from_slice(quote); // quote_token
         args.extend_from_slice(&tick_size.to_le_bytes());
-        args.extend_from_slice(&lot_size.to_le_bytes());
+        args.extend_from_slice(&pair_lot_size.to_le_bytes());
         args.extend_from_slice(&min_order.to_le_bytes());
 
         if genesis_exec_contract(
@@ -2177,10 +2474,12 @@ pub fn genesis_create_trading_pairs(
     let sol_usd = price_8dec_to_f64(prices.wsol_usd_8dec);
     let eth_usd = price_8dec_to_f64(prices.weth_usd_8dec);
     let bnb_usd = price_8dec_to_f64(prices.wbnb_usd_8dec);
+    let neo_usd = price_8dec_to_f64(prices.wneo_usd_8dec);
+    let gas_usd = price_8dec_to_f64(prices.wgas_usd_8dec);
 
     info!(
-        "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-        licn_usd, sol_usd, eth_usd, bnb_usd
+        "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}, NEO=${:.2}, GAS=${:.2}",
+        licn_usd, sol_usd, eth_usd, bnb_usd, neo_usd, gas_usd
     );
 
     // sqrt_price = floor(sqrt(price) * 2^32)
@@ -2189,7 +2488,7 @@ pub fn genesis_create_trading_pairs(
 
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
-    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
+    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 11] = [
         ("LICN/lUSD", licn_addr, lusd_addr, sqrt_price(licn_usd)),
         ("wSOL/lUSD", wsol_addr, lusd_addr, sqrt_price(sol_usd)),
         ("wETH/lUSD", weth_addr, lusd_addr, sqrt_price(eth_usd)),
@@ -2211,6 +2510,20 @@ pub fn genesis_create_trading_pairs(
             wbnb_addr,
             licn_addr,
             sqrt_price(bnb_usd / licn_usd),
+        ),
+        ("wNEO/lUSD", wneo_addr, lusd_addr, sqrt_price(neo_usd)),
+        (
+            "wNEO/LICN",
+            wneo_addr,
+            licn_addr,
+            sqrt_price(neo_usd / licn_usd),
+        ),
+        ("wGAS/lUSD", wgas_addr, lusd_addr, sqrt_price(gas_usd)),
+        (
+            "wGAS/LICN",
+            wgas_addr,
+            licn_addr,
+            sqrt_price(gas_usd / licn_usd),
         ),
     ];
 
@@ -2247,7 +2560,7 @@ pub fn genesis_create_trading_pairs(
 // ========================================================================
 //  GENESIS — Register fee-exempt protocol contracts
 //  DEX contracts (and lichenswap) are exempt from the base transaction fee
-//  so that users who bridge in external assets (wSOL, wETH, wBNB, lUSD)
+//  so that users who bridge in external assets (wSOL, wETH, wBNB, wGAS, wNEO, lUSD)
 //  with zero LICN can trade on the DEX to acquire LICN before paying fees.
 //  The exempt set is stored in state and modifiable only via governance.
 // ========================================================================
@@ -2443,7 +2756,7 @@ pub fn genesis_seed_oracle(
         return Err("initial LICN oracle price submission failed".to_string());
     }
 
-    let external_feeds: [(&[u8], u64, String); 3] = [
+    let external_feeds: [(&[u8], u64, String); 5] = [
         (
             b"wSOL",
             prices.wsol_usd_8dec,
@@ -2458,6 +2771,16 @@ pub fn genesis_seed_oracle(
             b"wBNB",
             prices.wbnb_usd_8dec,
             format!("${:.2}", price_8dec_to_f64(prices.wbnb_usd_8dec)),
+        ),
+        (
+            b"wNEO",
+            prices.wneo_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.wneo_usd_8dec)),
+        ),
+        (
+            b"wGAS",
+            prices.wgas_usd_8dec,
+            format!("${:.2}", price_8dec_to_f64(prices.wgas_usd_8dec)),
         ),
     ];
 
@@ -2553,7 +2876,7 @@ pub fn genesis_seed_oracle(
     genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp, prices);
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB)");
+    info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB + wNEO + wGAS)");
     info!("──────────────────────────────────────────────────────");
     Ok(())
 }
@@ -2751,6 +3074,8 @@ pub fn genesis_seed_consensus_oracle_prices(state: &StateStore, slot: u64, price
         ("wSOL", prices.wsol_usd_8dec),
         ("wETH", prices.weth_usd_8dec),
         ("wBNB", prices.wbnb_usd_8dec),
+        ("wNEO", prices.wneo_usd_8dec),
+        ("wGAS", prices.wgas_usd_8dec),
     ] {
         if let Err(e) = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0) {
             warn!("  Failed to seed consensus oracle price for {asset}: {e}");
@@ -2967,7 +3292,7 @@ pub fn genesis_assign_achievements(
                 (38, "Stable Sender"),
                 (123, "Token Contract User"),
             ],
-            "wsol_token" | "weth_token" | "wbnb_token" => &[
+            "wsol_token" | "weth_token" | "wbnb_token" | "wgas_token" | "wneo_token" => &[
                 (54, "Wrapper"),
                 (55, "Unwrapper"),
                 (123, "Token Contract User"),
@@ -3095,6 +3420,8 @@ pub fn genesis_assign_achievements(
         "wsol_token",
         "weth_token",
         "wbnb_token",
+        "wgas_token",
+        "wneo_token",
         "dex_core",
         "dex_amm",
         "dex_router",
@@ -3353,12 +3680,14 @@ mod tests {
     fn test_genesis_pair_prices_are_deterministic() {
         let prices = GenesisPrices::default();
         let pair_prices = genesis_pair_prices(&prices);
-        assert_eq!(pair_prices.len(), 7);
+        assert_eq!(pair_prices.len(), 11);
         assert_eq!(pair_prices[0].0, 1);
         assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
         assert!((pair_prices[1].1 - 81.84).abs() < f64::EPSILON);
         assert!((pair_prices[2].1 - 1999.34).abs() < f64::EPSILON);
         assert!((pair_prices[5].1 - 609.78).abs() < f64::EPSILON);
+        assert!((pair_prices[7].1 - 3.075).abs() < f64::EPSILON);
+        assert!((pair_prices[9].1 - 1.65).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3458,6 +3787,8 @@ mod tests {
         assert!(uses_operational_token_admin("wsol_token"));
         assert!(uses_operational_token_admin("weth_token"));
         assert!(uses_operational_token_admin("wbnb_token"));
+        assert!(uses_operational_token_admin("wgas_token"));
+        assert!(uses_operational_token_admin("wneo_token"));
         assert!(!uses_operational_token_admin("dex_core"));
         assert!(!uses_operational_token_admin("lichenbridge"));
     }

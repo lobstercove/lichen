@@ -74,6 +74,10 @@ pub struct GenesisPrices {
     pub weth_usd_8dec: u64,
     /// wBNB/USD price with 8 decimals
     pub wbnb_usd_8dec: u64,
+    /// wNEO/USD price with 8 decimals
+    pub wneo_usd_8dec: u64,
+    /// wGAS/USD price with 8 decimals
+    pub wgas_usd_8dec: u64,
 }
 
 impl Default for GenesisPrices {
@@ -83,6 +87,8 @@ impl Default for GenesisPrices {
             wsol_usd_8dec: 8_184_000_000,   // $81.84
             weth_usd_8dec: 199_934_000_000, // $1,999.34
             wbnb_usd_8dec: 60_978_000_000,  // $609.78
+            wneo_usd_8dec: 307_500_000,     // $3.075
+            wgas_usd_8dec: 165_000_000,     // $1.65
         }
     }
 }

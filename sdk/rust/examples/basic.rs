@@ -5,21 +5,21 @@ use lichen_client_sdk::{Client, Keypair};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🦞 Lichen Rust SDK Example\n");
-    
+
     // 1. Create client
     let client = Client::new("http://localhost:8899");
-    
+
     // 2. Generate keypair
     println!("🔑 Generating keypair...");
     let keypair = Keypair::new();
     println!("   Public key: {}", keypair.pubkey().to_base58());
-    
+
     // 3. Get current slot
     match client.get_slot().await {
         Ok(slot) => println!("\n📍 Current slot: {}", slot),
         Err(e) => eprintln!("Failed to get slot: {}", e),
     }
-    
+
     // 4. Get network info
     match client.get_network_info().await {
         Ok(info) => {
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => eprintln!("Failed to get network info: {}", e),
     }
-    
+
     // 5. Check balance
     match client.get_balance(&keypair.pubkey()).await {
         Ok(balance) => {
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n💰 Balance: 0 LICN (account not found)");
         }
     }
-    
+
     // 6. List validators
     match client.get_validators().await {
         Ok(validators) => {
@@ -48,8 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => eprintln!("Failed to get validators: {}", e),
     }
-    
+
     println!("\n✅ Example complete!");
-    
+
     Ok(())
 }

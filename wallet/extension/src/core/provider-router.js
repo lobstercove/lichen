@@ -16,6 +16,20 @@ const pendingRequests = new Map();
 const MAX_PENDING_REQUESTS = 200;
 const PENDING_REQUEST_TTL_MS = 3 * 60 * 1000;
 const FINALIZED_REQUEST_TTL_MS = 5 * 60 * 1000;
+const EXTERNAL_EVM_NETWORKS = Object.freeze({
+  neox: {
+    chainHex: '0xba93',
+    netVersion: '47763',
+    chainName: 'Neo X Mainnet',
+    nativeCurrency: { name: 'GAS', symbol: 'GAS', decimals: 18 }
+  },
+  neoxTestnetT4: {
+    chainHex: '0xba9304',
+    netVersion: '12227332',
+    chainName: 'Neo X Testnet T4',
+    nativeCurrency: { name: 'GAS', symbol: 'GAS', decimals: 18 }
+  }
+});
 
 function getNetworkMeta(network = 'local-testnet') {
   const value = String(network || 'local-testnet').trim();
@@ -30,6 +44,14 @@ function networkFromAnyChainId(chainIdInput) {
   if (normalized === '0x2710') return 'mainnet';
   if (normalized === '0x2711') return 'testnet';
   if (normalized === '0x539') return 'local-testnet';
+  return null;
+}
+
+function externalEvmNetworkFromAnyChainId(chainIdInput) {
+  const value = String(chainIdInput || '').trim().toLowerCase();
+  const normalized = value.startsWith('0x') ? value : `0x${value}`;
+  if (normalized === EXTERNAL_EVM_NETWORKS.neox.chainHex) return EXTERNAL_EVM_NETWORKS.neox;
+  if (normalized === EXTERNAL_EVM_NETWORKS.neoxTestnetT4.chainHex) return EXTERNAL_EVM_NETWORKS.neoxTestnetT4;
   return null;
 }
 
@@ -997,6 +1019,7 @@ export async function handleProviderRequest(payload, context = {}) {
           origin,
           chainId,
           network: context.network || 'local-testnet',
+          externalEvmNetworks: EXTERNAL_EVM_NETWORKS,
           accounts: activeAddress ? [activeAddress] : [],
           hasWallet,
           isLocked: Boolean(context.isLocked),
@@ -1079,6 +1102,10 @@ export async function handleProviderRequest(payload, context = {}) {
       const targetChainId = argObject?.chainId;
       const nextNetwork = networkFromAnyChainId(targetChainId);
       if (!nextNetwork) {
+        const externalMeta = externalEvmNetworkFromAnyChainId(targetChainId);
+        if (externalMeta) {
+          return { ok: false, error: `${externalMeta.chainName} metadata is recognized, but Lichen wallet does not switch external EVM signing networks yet` };
+        }
         return { ok: false, error: 'Unsupported chainId for network switch' };
       }
 
@@ -1095,6 +1122,10 @@ export async function handleProviderRequest(payload, context = {}) {
 
       const network = networkFromAnyChainId(chainId);
       if (!network || !endpoint) {
+        const externalMeta = externalEvmNetworkFromAnyChainId(chainId);
+        if (externalMeta) {
+          return { ok: false, error: `${externalMeta.chainName} metadata is recognized, but external EVM network addition is not enabled in Lichen wallet` };
+        }
         return { ok: false, error: 'Invalid chain definition' };
       }
 
