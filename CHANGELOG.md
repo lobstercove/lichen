@@ -5,6 +5,15 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.43] - 2026-05-17
+
+### Added
+- Adds the clean Neo/GAS product release on top of the stable `v0.5.37` base: wNEO and wGAS wrapped contracts, Neo X custody route configuration, genesis catalog wiring, DEX pairs, wallet/explorer/developer surfaces, GAS rewards vault support, liquidity corridor gates, reserve/liability proof services, and agent/compute policy gates.
+- Adds local Neo-compatible genesis and local-stack support so fresh three-validator rehearsals can exercise Neo/GAS prices, route mocks, and public beta gates without touching VPSes.
+
+### Changed
+- Existing-chain Neo activation is fail-closed: validators may ship the Neo-capable binary first, but Neo oracle/DEX side effects are emitted only after the wrapped symbols exist on-chain and public activation approvals are complete.
+
 ## [0.5.30] - 2026-05-11
 
 ### Fixed
