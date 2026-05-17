@@ -929,6 +929,29 @@ fn needs_pre_consensus_tip_catch_up(current_slot: u64, network_slot: u64) -> boo
     network_slot > current_slot
 }
 
+fn should_wait_for_peer_tip_observation(
+    is_joining_network: bool,
+    current_slot: u64,
+    network_slot: u64,
+    direct_bootstrap_successes: usize,
+    direct_bootstrap_endpoints: usize,
+    elapsed: Duration,
+) -> bool {
+    if is_joining_network || current_slot == 0 {
+        return false;
+    }
+    if has_enough_direct_bootstrap_observations(
+        direct_bootstrap_successes,
+        direct_bootstrap_endpoints,
+    ) {
+        return false;
+    }
+    if network_slot >= current_slot {
+        return false;
+    }
+    direct_bootstrap_endpoints > 0 || elapsed < Duration::from_secs(10)
+}
+
 fn should_reconsider_duplicate_block(
     block_slot: u64,
     current_slot: u64,
@@ -14695,16 +14718,14 @@ async fn run_validator() {
                     direct_bootstrap_endpoints = direct_endpoints;
                 }
             }
-            if !is_joining_network
-                && current_slot > 0
-                && !has_enough_direct_bootstrap_observations(
-                    direct_bootstrap_successes,
-                    direct_bootstrap_endpoints,
-                )
-                && network_slot <= current_slot
-                && (direct_bootstrap_endpoints > 0
-                    || pre_consensus_sync_started.elapsed() < Duration::from_secs(10))
-            {
+            if should_wait_for_peer_tip_observation(
+                is_joining_network,
+                current_slot,
+                network_slot,
+                direct_bootstrap_successes,
+                direct_bootstrap_endpoints,
+                pre_consensus_sync_started.elapsed(),
+            ) {
                 info!(
                     "⏳ Waiting for peer tip observation before consensus (current: {}, observed: {})",
                     current_slot, network_slot
@@ -19120,6 +19141,42 @@ mod tests {
         assert!(has_enough_direct_bootstrap_observations(0, 0));
         assert!(!has_enough_direct_bootstrap_observations(0, 2));
         assert!(has_enough_direct_bootstrap_observations(1, 2));
+    }
+
+    #[test]
+    fn peer_tip_gate_allows_equal_tip_without_direct_rpc_success() {
+        assert!(!should_wait_for_peer_tip_observation(
+            false,
+            1173885,
+            1173885,
+            0,
+            2,
+            Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn peer_tip_gate_waits_for_lower_observation_with_direct_peers() {
+        assert!(should_wait_for_peer_tip_observation(
+            false,
+            1173885,
+            1173884,
+            0,
+            2,
+            Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn peer_tip_gate_allows_no_direct_peers() {
+        assert!(!should_wait_for_peer_tip_observation(
+            false,
+            1173885,
+            0,
+            0,
+            0,
+            Duration::from_secs(11),
+        ));
     }
 
     #[test]
