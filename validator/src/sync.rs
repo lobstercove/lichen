@@ -32,6 +32,19 @@ pub enum SyncMode {
     Warp,
 }
 
+/// Result of a timed sync batch check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncBatchOutcome {
+    /// The local tip reached the requested end slot.
+    ReachedTarget,
+    /// At least one new slot applied, but the requested end was not reached yet.
+    MadeProgress,
+    /// No new slots applied before the timeout.
+    NoProgress,
+    /// The timeout belonged to an older batch and did not mutate the active one.
+    StaleTimeout,
+}
+
 /// Minimum gap (in blocks) to trigger warp sync instead of full replay.
 /// Below this threshold, continuing sequential full validation is more
 /// efficient than downloading and verifying a state snapshot.
@@ -446,6 +459,37 @@ impl SyncManager {
         }
     }
 
+    /// Finalize a delayed sync-batch progress check.
+    ///
+    /// Timed checks run outside the block receiver. If a batch made partial
+    /// progress but did not reach its target, it must still release the active
+    /// batch guard so the next contiguous catch-up request can start from the
+    /// newly applied local tip.
+    pub async fn finish_sync_batch_check(
+        &self,
+        start: u64,
+        end: u64,
+        start_slot: u64,
+        current_slot: u64,
+    ) -> SyncBatchOutcome {
+        let outcome = if current_slot >= end {
+            self.record_sync_success().await;
+            SyncBatchOutcome::ReachedTarget
+        } else if current_slot > start_slot {
+            self.record_sync_success().await;
+            SyncBatchOutcome::MadeProgress
+        } else {
+            self.record_sync_failure().await;
+            SyncBatchOutcome::NoProgress
+        };
+
+        if self.complete_sync_if_current(start, end).await {
+            outcome
+        } else {
+            SyncBatchOutcome::StaleTimeout
+        }
+    }
+
     /// Record a sync failure — increases cooldown via exponential backoff.
     pub async fn record_sync_failure(&self) {
         let mut failures = self.consecutive_failures.lock().await;
@@ -518,15 +562,18 @@ impl SyncManager {
             }
         }
 
-        let reached_batch_end = {
+        let reached_batch = {
             let batch = self.current_sync_batch.lock().await;
-            matches!(*batch, Some((_, end)) if slot >= end)
+            match *batch {
+                Some((start, end)) if slot >= end => Some((start, end)),
+                _ => None,
+            }
         };
 
-        if reached_batch_end {
+        if let Some((start, end)) = reached_batch {
             info!("✅ Sync batch reached requested target at slot {}", slot);
             self.record_sync_success().await;
-            self.complete_sync().await;
+            self.complete_sync_if_current(start, end).await;
         }
     }
 
@@ -901,6 +948,41 @@ mod tests {
             batch.is_none(),
             "InitialSync retries are driven by batch timeout/progress, not overlapping range replacement"
         );
+    }
+
+    #[tokio::test]
+    async fn test_partial_progress_completion_unblocks_next_initial_sync_batch() {
+        let sm = SyncManager::new();
+        sm.note_seen(2_000).await;
+        sm.start_sync(1, 500).await;
+
+        let outcome = sm.finish_sync_batch_check(1, 500, 0, 250).await;
+        assert_eq!(outcome, SyncBatchOutcome::MadeProgress);
+        assert!(
+            !*sm.is_syncing.lock().await,
+            "partial progress must close the timed batch so catch-up can continue"
+        );
+
+        *sm.last_sync_triggered_at.lock().await =
+            Instant::now() - std::time::Duration::from_secs(1);
+        let batch = sm.should_sync(250).await;
+        assert_eq!(
+            batch,
+            Some((251, 750)),
+            "next initial-sync request must continue from the new local tip"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stale_partial_progress_timeout_does_not_clear_new_batch() {
+        let sm = SyncManager::new();
+        sm.start_sync(1, 500).await;
+        sm.start_sync(501, 1_000).await;
+
+        let outcome = sm.finish_sync_batch_check(1, 500, 0, 250).await;
+        assert_eq!(outcome, SyncBatchOutcome::StaleTimeout);
+        assert!(*sm.is_syncing.lock().await);
+        assert_eq!(*sm.current_sync_batch.lock().await, Some((501, 1_000)));
     }
 
     #[tokio::test]

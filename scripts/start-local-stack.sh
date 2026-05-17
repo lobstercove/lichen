@@ -350,6 +350,32 @@ except Exception:
 '
 }
 
+latest_block_fingerprint() {
+  local rpc_port=$1
+  local response
+  response=$(curl -s --max-time 3 -X POST "http://127.0.0.1:${rpc_port}" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}' 2>/dev/null || true)
+  echo "$response" | python3 -c '
+import json
+import sys
+
+try:
+    body = json.load(sys.stdin)
+    result = body.get("result") or {}
+    block = result.get("block") if isinstance(result, dict) else None
+    source = block if isinstance(block, dict) else result
+    slot = source.get("slot") or source.get("height")
+    block_hash = source.get("hash")
+    if slot is None or not block_hash:
+        print("")
+    else:
+        print(f"{slot}:{block_hash}")
+except Exception:
+    print("")
+'
+}
+
 wait_for_http_health() {
   local url=$1
   local label=$2
@@ -446,19 +472,30 @@ wait_for_validator_cluster_ready() {
 
   for second in $(seq 1 "$timeout_seconds"); do
     local all_healthy=true
+    local tips_match=true
+    local reference_tip=""
     local statuses=()
     for rpc_port in "${RPC_CANDIDATES[@]}"; do
       local status
       status=$(validator_health_status "$rpc_port")
-      statuses+=("${rpc_port}:${status}")
+      local tip
+      tip=$(latest_block_fingerprint "$rpc_port")
+      statuses+=("${rpc_port}:${status}:${tip:-no-tip}")
       if [ "$status" != "ok" ]; then
         all_healthy=false
+      fi
+      if [ -z "$tip" ]; then
+        tips_match=false
+      elif [ -z "$reference_tip" ]; then
+        reference_tip="$tip"
+      elif [ "$tip" != "$reference_tip" ]; then
+        tips_match=false
       fi
     done
 
     local staked
     staked=$(count_staked_validators "$primary_rpc")
-    if $all_healthy && [ "$staked" -ge "$expected_validators" ]; then
+    if $all_healthy && $tips_match && [ "$staked" -ge "$expected_validators" ]; then
       return 0
     fi
 

@@ -928,7 +928,7 @@ class Connection:
         port = parsed.port
         netloc = parsed.hostname
 
-        if port in {8899, 9899}:
+        if port in {8899, 8901, 8903, 9899, 9901, 9903}:
             mapped_port = port + 1
             netloc = f"{parsed.hostname}:{mapped_port}"
             path = ""

@@ -236,7 +236,7 @@ fn accrue_protocol_fee(amount_out: u64, is_token_a: bool) -> u64 {
 #[no_mangle]
 pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
     // Re-initialization guard: reject if pool is already set up
-    if storage_get(b"pool_token_a").is_some() {
+    if storage_get(b"token_a").is_some() {
         log_info("LichenSwap pool already initialized — ignoring");
         return;
     }
@@ -1226,7 +1226,7 @@ pub extern "C" fn get_pool_info() -> u32 {
 /// Tests expect `get_pool_count` — single-pool AMM, returns 1 if initialized
 #[no_mangle]
 pub extern "C" fn get_pool_count() -> u64 {
-    if storage_get(b"pool_token_a").is_some() {
+    if storage_get(b"token_a").is_some() {
         1
     } else {
         0
@@ -1322,6 +1322,28 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(ra, 0);
         assert_eq!(rb, 0);
+    }
+
+    #[test]
+    fn test_initialize_is_idempotent_and_preserves_ms_admin() {
+        setup();
+        let admin = [9u8; 32];
+        test_mock::set_caller(admin);
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let attacker = [7u8; 32];
+        let replacement_a = [3u8; 32];
+        let replacement_b = [4u8; 32];
+        test_mock::set_caller(attacker);
+        initialize(replacement_a.as_ptr(), replacement_b.as_ptr());
+
+        assert_eq!(test_mock::get_storage(b"token_a"), Some(token_a.to_vec()));
+        assert_eq!(test_mock::get_storage(b"token_b"), Some(token_b.to_vec()));
+        assert_eq!(test_mock::get_storage(MS_ADMIN_KEY), Some(admin.to_vec()));
+        assert_eq!(get_pool_count(), 1);
     }
 
     #[test]

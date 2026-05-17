@@ -8639,24 +8639,19 @@ async fn run_validator() {
                             tokio::spawn(async move {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                                 let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                                if current >= sync_end {
-                                    sync_mgr_complete.record_sync_success().await;
-                                    sync_mgr_complete
-                                        .complete_sync_if_current(sync_start, sync_end)
-                                        .await;
-                                } else if current > sync_start_slot {
-                                    sync_mgr_complete.record_sync_success().await;
-                                    if current < sync_end {
-                                        info!(
-                                            "🔄 Periodic sync progress: {} → {} (target {})",
-                                            sync_start_slot, current, sync_end
-                                        );
-                                    }
-                                } else {
-                                    sync_mgr_complete.record_sync_failure().await;
-                                    sync_mgr_complete
-                                        .complete_sync_if_current(sync_start, sync_end)
-                                        .await;
+                                let outcome = sync_mgr_complete
+                                    .finish_sync_batch_check(
+                                        sync_start,
+                                        sync_end,
+                                        sync_start_slot,
+                                        current,
+                                    )
+                                    .await;
+                                if outcome == sync::SyncBatchOutcome::MadeProgress {
+                                    info!(
+                                        "🔄 Periodic sync progress: {} → {} (target {})",
+                                        sync_start_slot, current, sync_end
+                                    );
                                 }
                             });
                         }
@@ -9996,24 +9991,19 @@ async fn run_validator() {
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            if current >= sync_end {
-                                sync_mgr_complete.record_sync_success().await;
-                                sync_mgr_complete
-                                    .complete_sync_if_current(sync_start, sync_end)
-                                    .await;
-                            } else if current > sync_start_slot {
-                                sync_mgr_complete.record_sync_success().await;
-                                if current < sync_end {
-                                    info!(
-                                        "🔄 Post-genesis sync progress: {} → {} (target {})",
-                                        sync_start_slot, current, sync_end
-                                    );
-                                }
-                            } else {
-                                sync_mgr_complete.record_sync_failure().await;
-                                sync_mgr_complete
-                                    .complete_sync_if_current(sync_start, sync_end)
-                                    .await;
+                            let outcome = sync_mgr_complete
+                                .finish_sync_batch_check(
+                                    sync_start,
+                                    sync_end,
+                                    sync_start_slot,
+                                    current,
+                                )
+                                .await;
+                            if outcome == sync::SyncBatchOutcome::MadeProgress {
+                                info!(
+                                    "🔄 Post-genesis sync progress: {} → {} (target {})",
+                                    sync_start_slot, current, sync_end
+                                );
                             }
                         });
                     }
@@ -10579,30 +10569,25 @@ async fn run_validator() {
                             };
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            if current >= sync_end {
-                                sync_mgr_complete.record_sync_success().await;
-                                sync_mgr_complete
-                                    .complete_sync_if_current(sync_start, sync_end)
-                                    .await;
-                            } else if current > sync_start_slot {
-                                // Made progress — reset backoff even if not at target
-                                sync_mgr_complete.record_sync_success().await;
-                                if current < sync_end {
-                                    info!(
-                                        "🔄 Sync progress: {} → {} (target {}), continuing",
-                                        sync_start_slot, current, sync_end
-                                    );
-                                }
-                            } else {
+                            let outcome = sync_mgr_complete
+                                .finish_sync_batch_check(
+                                    sync_start,
+                                    sync_end,
+                                    sync_start_slot,
+                                    current,
+                                )
+                                .await;
+                            if outcome == sync::SyncBatchOutcome::MadeProgress {
+                                info!(
+                                    "🔄 Sync progress: {} → {} (target {}), continuing",
+                                    sync_start_slot, current, sync_end
+                                );
+                            } else if outcome == sync::SyncBatchOutcome::NoProgress {
                                 // Zero progress — something is wrong, backoff
                                 info!(
                                     "🔄 Sync batch: no progress (stuck at {}, target {})",
                                     current, sync_end
                                 );
-                                sync_mgr_complete.record_sync_failure().await;
-                                sync_mgr_complete
-                                    .complete_sync_if_current(sync_start, sync_end)
-                                    .await;
                             }
                         });
                     }
@@ -14671,6 +14656,35 @@ async fn run_validator() {
                     );
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+
+            loop {
+                let current_slot = state.get_last_slot().unwrap_or(0);
+                let mut network_slot = sync_manager.get_highest_seen().await;
+                if let Some(bootstrap_http_client) = bootstrap_http_client_for_join.as_ref() {
+                    if let Some((bootstrap_slot, _, _)) =
+                        fetch_bootstrap_tip(bootstrap_http_client, &bootstrap_rpc_urls_for_join)
+                            .await
+                    {
+                        sync_manager.note_seen(bootstrap_slot).await;
+                        network_slot = network_slot.max(bootstrap_slot);
+                    }
+                }
+
+                if needs_pre_consensus_tip_catch_up(current_slot, network_slot) {
+                    info!(
+                        "⏳ Registration confirmed; syncing to exact network tip before voting (current: {}, network: {})",
+                        current_slot, network_slot
+                    );
+                    time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+
+                info!(
+                    "✅ Registration confirmed and local tip is voting-ready at slot {}",
+                    current_slot
+                );
+                break;
             }
         } else if needs_on_chain_registration {
             info!(

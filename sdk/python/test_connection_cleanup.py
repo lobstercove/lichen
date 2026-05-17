@@ -8,6 +8,22 @@ import pytest
 from lichen import Connection
 
 
+def test_local_validator_rpc_ports_derive_matching_ws_ports():
+    assert Connection._derive_ws_url("http://127.0.0.1:8899") == "ws://127.0.0.1:8900"
+    assert Connection._derive_ws_url("http://127.0.0.1:8901") == "ws://127.0.0.1:8902"
+    assert Connection._derive_ws_url("http://127.0.0.1:8903") == "ws://127.0.0.1:8904"
+    assert Connection._derive_ws_url("http://127.0.0.1:9899") == "ws://127.0.0.1:9900"
+    assert Connection._derive_ws_url("http://127.0.0.1:9901") == "ws://127.0.0.1:9902"
+    assert Connection._derive_ws_url("http://127.0.0.1:9903") == "ws://127.0.0.1:9904"
+
+
+def test_public_rpc_url_derives_standard_ws_path():
+    assert (
+        Connection._derive_ws_url("https://testnet-rpc.lichen.network")
+        == "wss://testnet-rpc.lichen.network/ws"
+    )
+
+
 class ConfirmCleanupConnection(Connection):
     def __init__(self):
         super().__init__("http://127.0.0.1:8899", "ws://127.0.0.1:8900")

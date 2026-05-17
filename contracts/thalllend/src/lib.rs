@@ -70,19 +70,27 @@ fn get_oracle_price() -> u64 {
 // T5.12: Reentrancy guard
 const REENTRANCY_KEY: &[u8] = b"_reentrancy";
 
-fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY)
+struct ReentrancyGuard {
+    previous: Option<Vec<u8>>,
+}
+
+impl Drop for ReentrancyGuard {
+    fn drop(&mut self) {
+        restore_storage_value(REENTRANCY_KEY, &self.previous);
+    }
+}
+
+fn reentrancy_enter() -> Option<ReentrancyGuard> {
+    let previous = storage_get(REENTRANCY_KEY);
+    if previous
+        .as_ref()
         .map(|v| v.first().copied() == Some(1))
         .unwrap_or(false)
     {
-        return false;
+        return None;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
-    true
-}
-
-fn reentrancy_exit() {
-    storage_set(REENTRANCY_KEY, &[0u8]);
+    Some(ReentrancyGuard { previous })
 }
 
 // ============================================================================
@@ -476,10 +484,13 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
         log_info("Protocol is paused");
         return 20;
     }
-    if !reentrancy_enter() {
-        log_info("Reentrancy detected");
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => {
+            log_info("Reentrancy detected");
+            return 21;
+        }
+    };
 
     let mut depositor = [0u8; 32];
     unsafe {
@@ -489,14 +500,12 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != depositor {
-        reentrancy_exit();
         return 200;
     }
 
     // AUDIT-FIX G9-01: Verify incoming value covers deposit
     let attached = get_value();
     if attached < amount {
-        reentrancy_exit();
         log_info("Insufficient value attached for deposit");
         return 30;
     }
@@ -511,13 +520,11 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     let new_total = match total.checked_add(amount) {
         Some(v) => v,
         None => {
-            reentrancy_exit();
             log_info("Total deposits overflow");
             return 5;
         }
     };
     if cap > 0 && new_total > cap {
-        reentrancy_exit();
         log_info("Would exceed deposit cap");
         return 4;
     }
@@ -528,7 +535,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     let new_deposit = match prev_deposit.checked_add(amount) {
         Some(v) => v,
         None => {
-            reentrancy_exit();
             log_info("User deposit overflow");
             return 5;
         }
@@ -543,8 +549,6 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
         DEPOSIT_COUNT_KEY,
         load_u64(DEPOSIT_COUNT_KEY).saturating_add(1),
     );
-
-    reentrancy_exit();
     log_info("Deposit successful");
     0
 }
@@ -555,9 +559,10 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     if amount == 0 {
         return 1;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     let mut depositor = [0u8; 32];
     unsafe {
@@ -567,7 +572,6 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != depositor {
-        reentrancy_exit();
         return 200;
     }
 
@@ -579,7 +583,6 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     let dep_key = make_key(b"dep:", &hex);
     let current_deposit = load_u64(&dep_key);
     if amount > current_deposit {
-        reentrancy_exit();
         log_info("Insufficient deposit balance");
         return 2;
     }
@@ -593,14 +596,12 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
         let collateral_price = match try_get_oracle_price() {
             Some(price) => price,
             None => {
-                reentrancy_exit();
                 log_info("Oracle price unavailable");
                 return 6;
             }
         };
         let max_borrow = collateral_limit(new_deposit, collateral_price, COLLATERAL_FACTOR_PERCENT);
         if current_borrow > max_borrow {
-            reentrancy_exit();
             log_info("Withdrawal would make position unhealthy");
             return 3;
         }
@@ -616,11 +617,8 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
         // Revert bookkeeping on transfer failure
         store_u64(&dep_key, current_deposit);
         restore_lending_accounting(accounting_before);
-        reentrancy_exit();
         return rc;
     }
-
-    reentrancy_exit();
     log_info("Withdrawal successful");
     0
 }
@@ -635,9 +633,10 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         log_info("Protocol is paused");
         return 20;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     let mut borrower = [0u8; 32];
     unsafe {
@@ -647,7 +646,6 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != borrower {
-        reentrancy_exit();
         return 200;
     }
 
@@ -672,7 +670,10 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let collateral_price = match try_get_oracle_price() {
         Some(price) => price,
         None => {
-            reentrancy_exit();
+            restore_storage_value(&borrow_key, &borrow_before);
+            restore_storage_value(&bix_key, &bix_before);
+            restore_storage_value(&ts_key, &ts_before);
+            restore_lending_accounting(accounting_before);
             log_info("Oracle price unavailable");
             return 6;
         }
@@ -681,14 +682,20 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let new_borrow = match current_borrow.checked_add(amount) {
         Some(v) => v,
         None => {
-            reentrancy_exit();
+            restore_storage_value(&borrow_key, &borrow_before);
+            restore_storage_value(&bix_key, &bix_before);
+            restore_storage_value(&ts_key, &ts_before);
+            restore_lending_accounting(accounting_before);
             log_info("Borrow amount overflow");
             return 5;
         }
     };
 
     if new_borrow > max_borrow {
-        reentrancy_exit();
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_storage_value(&ts_key, &ts_before);
+        restore_lending_accounting(accounting_before);
         log_info("Borrow exceeds collateral factor");
         return 2;
     }
@@ -698,7 +705,10 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let total_borrows = load_u64(b"ll_total_borrows");
     let available = total_deposits.saturating_sub(total_borrows);
     if amount > available {
-        reentrancy_exit();
+        restore_storage_value(&borrow_key, &borrow_before);
+        restore_storage_value(&bix_key, &bix_before);
+        restore_storage_value(&ts_key, &ts_before);
+        restore_lending_accounting(accounting_before);
         log_info("Insufficient pool liquidity");
         return 3;
     }
@@ -710,7 +720,11 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let new_total_borrows = match total_borrows.checked_add(amount) {
         Some(v) => v,
         None => {
-            reentrancy_exit();
+            restore_storage_value(&borrow_key, &borrow_before);
+            restore_storage_value(&bix_key, &bix_before);
+            restore_storage_value(&ts_key, &ts_before);
+            restore_storage_value(BORROW_COUNT_KEY, &borrow_count_before);
+            restore_lending_accounting(accounting_before);
             log_info("Total borrows overflow");
             return 5;
         }
@@ -735,11 +749,8 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         restore_storage_value(&ts_key, &ts_before);
         restore_storage_value(BORROW_COUNT_KEY, &borrow_count_before);
         restore_lending_accounting(accounting_before);
-        reentrancy_exit();
         return rc;
     }
-
-    reentrancy_exit();
     log_info("Borrow successful");
     0
 }
@@ -750,9 +761,10 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     if amount == 0 {
         return 1;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     let mut borrower = [0u8; 32];
     unsafe {
@@ -762,14 +774,12 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != borrower {
-        reentrancy_exit();
         return 200;
     }
 
     // AUDIT-FIX G9-01: Verify incoming value covers repayment
     let attached = get_value();
     if attached < amount {
-        reentrancy_exit();
         log_info("Insufficient value attached for repayment");
         return 30;
     }
@@ -783,7 +793,6 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     let borrow_key = make_key(b"bor:", &hex);
 
     if current_borrow == 0 {
-        reentrancy_exit();
         log_info("No outstanding borrow");
         return 2;
     }
@@ -803,8 +812,6 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     // Track repay count
     store_u64(REPAY_COUNT_KEY, load_u64(REPAY_COUNT_KEY).saturating_add(1));
-
-    reentrancy_exit();
     log_info("Repayment successful");
     0
 }
@@ -820,9 +827,10 @@ pub extern "C" fn liquidate(
     if repay_amount == 0 {
         return 1;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     let mut _liquidator = [0u8; 32];
     unsafe {
@@ -832,14 +840,12 @@ pub extern "C" fn liquidate(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != _liquidator {
-        reentrancy_exit();
         return 200;
     }
 
     // AUDIT-FIX G9-01: Verify incoming value covers liquidation repayment
     let attached = get_value();
     if attached < repay_amount {
-        reentrancy_exit();
         log_info("Insufficient value attached for liquidation");
         return 30;
     }
@@ -865,7 +871,6 @@ pub extern "C" fn liquidate(
     let current_borrow = settle_user_borrow(&hex);
 
     if current_borrow == 0 {
-        reentrancy_exit();
         log_info("No borrow to liquidate");
         return 2;
     }
@@ -875,7 +880,6 @@ pub extern "C" fn liquidate(
     let collateral_price = match try_get_oracle_price() {
         Some(price) => price,
         None => {
-            reentrancy_exit();
             log_info("Oracle price unavailable");
             return 6;
         }
@@ -883,7 +887,6 @@ pub extern "C" fn liquidate(
     let liquidation_limit =
         collateral_limit(deposit, collateral_price, LIQUIDATION_THRESHOLD_PERCENT);
     if current_borrow <= liquidation_limit {
-        reentrancy_exit();
         log_info("Position is healthy, cannot liquidate");
         return 3;
     }
@@ -938,11 +941,8 @@ pub extern "C" fn liquidate(
         restore_storage_value(&bix_key, &bix_before);
         restore_storage_value(LIQUIDATION_COUNT_KEY, &liquidation_count_before);
         restore_lending_accounting(accounting_before);
-        reentrancy_exit();
         return rc;
     }
-
-    reentrancy_exit();
     log_info("Liquidation executed");
 
     // Return seized collateral amount in return data
@@ -1098,14 +1098,14 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     if real_caller.0 != _borrower {
         return 200;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     // Check no active flash loan
     if load_u64(FLASH_BORROWED_KEY) > 0 {
         log_info("Flash loan already active");
-        reentrancy_exit();
         return 2;
     }
 
@@ -1115,7 +1115,6 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let available = total_deposits.saturating_sub(total_borrows);
     if amount > available {
         log_info("Insufficient pool liquidity for flash loan");
-        reentrancy_exit();
         return 3;
     }
 
@@ -1134,13 +1133,11 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         // Revert flash loan state on transfer failure
         store_u64(FLASH_BORROWED_KEY, 0);
         store_u64(FLASH_FEE_KEY, 0);
-        reentrancy_exit();
         return rc;
     }
 
     // Return fee in return data so borrower knows what to repay
     set_return_data(&u64_to_bytes(fee));
-    reentrancy_exit();
     log_info("Flash loan issued");
     0
 }
@@ -1158,14 +1155,14 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     if real_caller.0 != _borrower {
         return 200;
     }
-    if !reentrancy_enter() {
-        return 21;
-    }
+    let _reentrancy_guard = match reentrancy_enter() {
+        Some(guard) => guard,
+        None => return 21,
+    };
 
     let borrowed = load_u64(FLASH_BORROWED_KEY);
     if borrowed == 0 {
         log_info("No active flash loan");
-        reentrancy_exit();
         return 1;
     }
 
@@ -1174,13 +1171,11 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
         Some(v) => v,
         None => {
             log_info("Flash repayment requirement overflow");
-            reentrancy_exit();
             return 4;
         }
     };
     if repay_amount < required {
         log_info("Insufficient repayment (must include fee)");
-        reentrancy_exit();
         return 2;
     }
 
@@ -1188,7 +1183,6 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     let attached = get_value();
     if attached < required {
         log_info("Insufficient value attached for flash repay");
-        reentrancy_exit();
         return 30;
     }
 
@@ -1199,8 +1193,6 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     // Clear flash loan state
     store_u64(FLASH_BORROWED_KEY, 0);
     store_u64(FLASH_FEE_KEY, 0);
-
-    reentrancy_exit();
     log_info("Flash loan repaid");
     0
 }
@@ -1798,7 +1790,39 @@ mod tests {
         test_mock::set_caller(user);
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
+        let hex = hex_encode_addr(&user);
+        let borrow_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+        let ts_key = make_key(b"bts:", &hex);
+        let accounting_before = snapshot_lending_accounting();
+        let borrow_before = storage_get(&borrow_key);
+        let bix_before = storage_get(&bix_key);
+        let ts_before = storage_get(&ts_key);
+        let borrow_count_before = storage_get(BORROW_COUNT_KEY);
         assert_eq!(borrow(user.as_ptr(), 750_001), 2); // > 75%
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(storage_get(&borrow_key), borrow_before);
+        assert_eq!(storage_get(&bix_key), bix_before);
+        assert_eq!(storage_get(&ts_key), ts_before);
+        assert_eq!(storage_get(BORROW_COUNT_KEY), borrow_count_before);
+    }
+
+    #[test]
+    fn test_borrow_rejection_does_not_create_reentrancy_state() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        let accounting_before = snapshot_lending_accounting();
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), None);
+
+        assert_eq!(borrow(user.as_ptr(), 1_000), 2);
+
+        assert_eq!(snapshot_lending_accounting(), accounting_before);
+        assert_eq!(test_mock::get_storage(REENTRANCY_KEY), None);
     }
 
     #[test]
