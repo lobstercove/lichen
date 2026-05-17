@@ -29,9 +29,110 @@ function fmtUsd(value, sym = '$') {
 
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
-const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
-const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0 };
+const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5 };
+const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0, wNEO: 0, wGAS: 0 };
+const WHOLE_NEO_LOT = 1_000_000_000;
 let _pricesLoaded = false;
+
+function priceSymbolKey(symbol) {
+    const upper = String(symbol || '').trim().toUpperCase();
+    const map = { LICN: 'LICN', LUSD: 'lUSD', WSOL: 'wSOL', WETH: 'wETH', WBNB: 'wBNB', WNEO: 'wNEO', WGAS: 'wGAS' };
+    return map[upper] || symbol;
+}
+
+function setLivePrice(symbol, price) {
+    const key = priceSymbolKey(symbol);
+    if (!Object.prototype.hasOwnProperty.call(livePrices, key)) return;
+    const parsed = parseFloat(price);
+    if (Number.isFinite(parsed) && parsed > 0) livePrices[key] = parsed;
+}
+
+function isWholeNeoLotAmount(amount) {
+    const numeric = Number(amount);
+    if (!Number.isFinite(numeric) || numeric <= 0) return false;
+    const baseUnits = Math.round(numeric * WHOLE_NEO_LOT);
+    return baseUnits > 0
+        && baseUnits % WHOLE_NEO_LOT === 0
+        && Math.abs(numeric - Math.round(numeric)) < 1e-9;
+}
+
+function formatBaseUnitsAmount(value, decimals = 9) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return '0';
+    return fmtToken(numeric / Math.pow(10, decimals));
+}
+
+function wrappedReserveRpcMethod(symbol) {
+    return {
+        wNEO: 'getWneoStats',
+        wGAS: 'getWgasStats',
+    }[symbol] || null;
+}
+
+async function fetchWrappedReserveStats(symbols) {
+    const entries = await Promise.all(symbols.map(async (symbol) => {
+        const method = wrappedReserveRpcMethod(symbol);
+        if (!method) return [symbol, null];
+        try {
+            return [symbol, await trustedRpcCall(method, [])];
+        } catch {
+            return [symbol, null];
+        }
+    }));
+    return Object.fromEntries(entries);
+}
+
+function renderWrappedReserveNote(symbol, token, reserveStats) {
+    if (!reserveStats) return '';
+    const decimals = token?.decimals || 9;
+    const reserve = formatBaseUnitsAmount(reserveStats.reserve_attested, decimals);
+    const supply = formatBaseUnitsAmount(reserveStats.supply, decimals);
+    const asset = token?.reserveAsset || token?.symbol || symbol;
+    return `<div class="asset-note">Reserve ${reserve} ${escapeHtml(asset)} · Supply ${supply}</div>`;
+}
+
+async function fetchNeoGasRewardsSnapshot(address) {
+    try {
+        const [stats, position] = await Promise.all([
+            trustedRpcCall('getNeoGasRewardsStats', []),
+            trustedRpcCall('getNeoGasRewardsPosition', [address]),
+        ]);
+        return { stats, position };
+    } catch {
+        return null;
+    }
+}
+
+function renderNeoGasRewardsCard(snapshot) {
+    const stats = snapshot?.stats;
+    const position = snapshot?.position;
+    if (!stats || !position) return '';
+
+    const principal = Number(position.principal || 0);
+    const claimable = Number(position.claimable || 0);
+    const configured = stats.configured === true;
+    if (!configured && principal <= 0 && claimable <= 0) return '';
+
+    const status = stats.paused
+        ? 'Paused'
+        : (configured ? 'Active' : 'Pending');
+    const disclosure = position.disclosure_current_accepted ? 'Accepted' : 'Required';
+
+    return `
+        <div class="asset-item" data-asset-symbol="NEOGASRWD" style="cursor: default;">
+            <div class="asset-icon" style="color: #58BF00;"><i class="fas fa-gift"></i></div>
+            <div class="asset-info">
+                <div class="asset-name">Neo GAS Rewards</div>
+                <div class="asset-symbol">NEOGASRWD · ${escapeHtml(status)}</div>
+                <div class="asset-note">wNEO ${formatBaseUnitsAmount(principal, 9)} · Disclosure ${escapeHtml(disclosure)}</div>
+            </div>
+            <div class="asset-balance">
+                <div class="asset-amount">${formatBaseUnitsAmount(claimable, 9)}</div>
+                <div class="asset-value">Claimable wGAS</div>
+            </div>
+        </div>
+    `;
+}
 
 async function fetchLivePrices() {
     try {
@@ -39,15 +140,14 @@ async function fetchLivePrices() {
         if (result && Array.isArray(result)) {
             for (const pair of result) {
                 const base = (pair.base || '').toUpperCase();
-                if (pair.price && livePrices.hasOwnProperty(base)) {
-                    livePrices[base] = parseFloat(pair.price) || 0;
-                }
+                const quote = (pair.quote || '').toUpperCase();
+                if (pair.price && (quote === 'LUSD' || quote === 'USD')) setLivePrice(base, pair.price);
             }
             // LICN price: look for LICN/lUSD pair
             const licnPair = result.find(p =>
                 (p.base || '').toUpperCase() === 'LICN' && (p.quote || '').toUpperCase() === 'LUSD'
             );
-            if (licnPair && licnPair.price) livePrices.LICN = parseFloat(licnPair.price) || 0;
+            if (licnPair && licnPair.price) setLivePrice('LICN', licnPair.price);
             _pricesLoaded = true;
         }
     } catch {
@@ -56,10 +156,7 @@ async function fetchLivePrices() {
             const oracleResult = await rpc.call('getOraclePrices', []);
             if (oracleResult && typeof oracleResult === 'object') {
                 for (const [sym, price] of Object.entries(oracleResult)) {
-                    const key = sym.toUpperCase();
-                    if (livePrices.hasOwnProperty(key)) {
-                        livePrices[key] = parseFloat(price) || 0;
-                    }
+                    setLivePrice(sym, price);
                 }
                 _pricesLoaded = true;
             }
@@ -546,6 +643,8 @@ const DEFAULT_TOKEN_REGISTRY = {
     wSOL: { symbol: 'wSOL', name: 'Wrapped SOL', decimals: 9, icon: 'fab fa-solana', address: null, color: '#9945FF', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png' },
     wETH: { symbol: 'wETH', name: 'Wrapped ETH', decimals: 9, icon: 'fab fa-ethereum', address: null, color: '#627EEA', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png' },
     wBNB: { symbol: 'wBNB', name: 'Wrapped BNB', decimals: 9, icon: 'fas fa-coins', address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },
+    wNEO: { symbol: 'wNEO', name: 'Wrapped NEO', decimals: 9, icon: 'fas fa-cubes', address: null, color: '#00E599', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', reserveAsset: 'NEO', notice: 'Whole NEO lots only until official divisibility is enabled.' },
+    wGAS: { symbol: 'wGAS', name: 'Wrapped GAS', decimals: 9, icon: 'fas fa-fire-flame-simple', address: null, color: '#58BF00', logoUrl: null, reserveAsset: 'GAS' },
 };
 
 const TOKEN_REGISTRY = {};
@@ -575,6 +674,8 @@ async function loadTokenRegistry() {
             WSOL: 'wSOL',
             WETH: 'wETH',
             WBNB: 'wBNB',
+            WNEO: 'wNEO',
+            WGAS: 'wGAS',
         };
 
         entries.forEach((entry) => {
@@ -2324,6 +2425,10 @@ async function loadAssets() {
 
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
+    const [reserveStats, neoGasRewards] = await Promise.all([
+        fetchWrappedReserveStats(['wNEO', 'wGAS']),
+        fetchNeoGasRewardsSnapshot(wallet.address),
+    ]);
 
     // Live prices for display
     const settings = walletState.settings || {};
@@ -2371,12 +2476,16 @@ async function loadAssets() {
                 ? `<img src="${escapeHtml(safeLogoUrl)}" alt="${safeSymbol}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">`
                 : `<i class="${escapeHtml(token.icon || 'fas fa-coins')}"></i>`;
             const badges = renderAssetRestrictionBadges(restrictionStatus?.assets?.[symbol]);
+            const tokenNotice = token.notice ? `<div class="asset-note">${escapeHtml(token.notice)}</div>` : '';
+            const reserveNote = renderWrappedReserveNote(symbol, token, reserveStats[symbol]);
             html += `
                 <div class="asset-item${badges ? ' asset-restricted' : ''}" data-asset-symbol="${escapeHtml(symbol)}" style="cursor: default;">
                     <div class="asset-icon" style="color: ${safeCssColor(token.color)};">${tokenIcon}</div>
                     <div class="asset-info">
                         <div class="asset-name">${safeName}</div>
                         <div class="asset-symbol">${safeSymbol}</div>
+                        ${tokenNotice}
+                        ${reserveNote}
                         <div class="asset-restriction-badges" data-asset-restriction-badges="${escapeHtml(symbol)}">${badges}</div>
                     </div>
                     <div class="asset-balance">
@@ -2387,6 +2496,8 @@ async function loadAssets() {
             `;
         }
     }
+
+    html += renderNeoGasRewardsCard(neoGasRewards);
 
     // Token contracts are loaded dynamically from deploy-manifest; nothing to show if absent
 
@@ -3513,7 +3624,8 @@ async function showDepositInfo(chain) {
     const chainInfo = {
         SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['SOL', 'USDC', 'USDT'] },
         ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['ETH', 'USDC', 'USDT'] },
-        BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['BNB', 'USDC', 'USDT'] }
+        BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['BNB', 'USDC', 'USDT'] },
+        NEOX: { name: 'Neo X', chain: 'neox', color: '#00E599', icon: 'fas fa-cubes', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS' }
     };
     const info = chainInfo[chain];
     if (!info) return;
@@ -3527,6 +3639,7 @@ async function showDepositInfo(chain) {
         title: `Bridge from ${info.name}`,
         message: `<div style="text-align: left; font-size: 0.9rem;">
             <p style="margin-bottom: 0.75rem;">Select a token to deposit from ${escapeHtml(info.name)} → Lichen:</p>
+            ${info.detail ? `<p style="margin-top:-0.35rem;margin-bottom:0.75rem;font-size:0.8rem;color:var(--text-muted);">${escapeHtml(info.detail)}</p>` : ''}
             <div id="bridgeTokenSelect" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
                 ${tokenSelect}
             </div>
@@ -3558,16 +3671,43 @@ async function showDepositInfo(chain) {
     });
 }
 
+function bridgeRouteIsPaused(status) {
+    if (!status || typeof status !== 'object') return false;
+    return status.paused === true || status.route_paused === true || restrictionStatusIsActive(status);
+}
+
+async function assertBridgeRouteOpen(chain, asset, chainName) {
+    let status;
+    try {
+        status = await trustedRpcCall('getBridgeRouteRestrictionStatus', [{ chain, asset }]);
+    } catch (error) {
+        throw new Error(`Bridge route status unavailable for ${asset.toUpperCase()} on ${chainName}`);
+    }
+    if (bridgeRouteIsPaused(status)) {
+        const ids = formatRestrictionIds(status);
+        const suffix = ids ? ` (${ids})` : '';
+        throw new Error(`Bridge route paused for ${asset.toUpperCase()} on ${chainName}${suffix}`);
+    }
+    return status;
+}
+
 async function requestDepositAddress(chain, asset, chainName, icon) {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
     // Validate inputs
-    const validChains = ['solana', 'ethereum', 'bnb'];
-    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb'];
+    const validChains = ['solana', 'ethereum', 'bnb', 'neox'];
+    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas'];
     if (!validChains.includes(chain)) { showToast('Invalid chain selected', 'error'); return; }
     if (!validAssets.includes(asset)) { showToast('Invalid asset selected', 'error'); return; }
     if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) { showToast('Invalid wallet address', 'error'); return; }
+
+    try {
+        await assertBridgeRouteOpen(chain, asset, chainName);
+    } catch (error) {
+        showToast(error.message || 'Bridge route unavailable', 'error');
+        return;
+    }
 
     let bridgeAuth;
     try {
@@ -4098,7 +4238,8 @@ async function updateSendTokenUI() {
             balanceHint.textContent = `Available: ${fmtToken(stLicn)} stLICN`;
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
-            balanceHint.textContent = `Available: ${fmtToken(bal)} ${selectedToken}`;
+            const lotNote = selectedToken === 'wNEO' ? ' · whole NEO lots only' : '';
+            balanceHint.textContent = `Available: ${fmtToken(bal)} ${selectedToken}${lotNote}`;
         }
     } catch (error) {
         balanceHint.textContent = 'Available: --';
@@ -4117,6 +4258,11 @@ async function confirmSend() {
 
     if (!amount || amount <= 0) {
         showToast('Invalid amount', 'error');
+        return;
+    }
+
+    if (selectedToken === 'wNEO' && !isWholeNeoLotAmount(amount)) {
+        showToast('wNEO transfers require whole NEO lots', 'error');
         return;
     }
 

@@ -108,7 +108,10 @@ impl Balance {
         })
     }
 
-    pub fn from_licn_parts(whole_licn: u64, fractional_spores: u32) -> Result<Self, BalanceParseError> {
+    pub fn from_licn_parts(
+        whole_licn: u64,
+        fractional_spores: u32,
+    ) -> Result<Self, BalanceParseError> {
         if fractional_spores >= SPORES_PER_LICN as u32 {
             return Err(BalanceParseError::TooManyFractionalDigits);
         }

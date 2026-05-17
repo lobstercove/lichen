@@ -18,10 +18,7 @@ pub(crate) struct EvmSafeTransactionPlan {
 }
 
 pub(crate) fn evm_executor_derivation_path(dest_chain: &str) -> &'static str {
-    match dest_chain {
-        "bsc" | "bnb" => "custody/treasury/bnb",
-        _ => "custody/treasury/ethereum",
-    }
+    evm_treasury_derivation_path(dest_chain).unwrap_or("custody/treasury/ethereum")
 }
 
 async fn evm_call(
@@ -62,12 +59,12 @@ fn build_evm_threshold_withdrawal_intent(
     if is_erc20 {
         let contract_addr = evm_contract_for_asset(&state.config, asset)
             .map_err(|error| format!("resolve ERC-20 contract for withdrawal: {}", error))?;
-        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset)?;
         let transfer_data = evm_encode_erc20_transfer(&job.dest_address, chain_amount)
             .map_err(|error| format!("encode ERC-20 transfer: {}", error))?;
         Ok((contract_addr, 0u128, transfer_data))
     } else {
-        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset)?;
         Ok((job.dest_address.clone(), chain_amount, Vec::new()))
     }
 }
@@ -78,9 +75,9 @@ pub(crate) async fn build_evm_safe_transaction_plan(
     job: &WithdrawalJob,
     asset: &str,
 ) -> Result<EvmSafeTransactionPlan, String> {
-    let safe_address = state.config.evm_multisig_address.clone().ok_or_else(|| {
-        "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)".to_string()
-    })?;
+    let safe_address = evm_route_for_chain(&state.config, &job.dest_chain)
+        .and_then(|route| route.multisig_address)
+        .ok_or_else(|| "EVM multisig address not configured for route".to_string())?;
     let nonce = match job.safe_nonce {
         Some(nonce) => nonce,
         None => evm_safe_get_nonce(&state.http, url, &safe_address).await?,

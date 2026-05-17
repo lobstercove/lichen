@@ -272,7 +272,7 @@ impl TxProcessor {
                             }
                         }
 
-                        if sym == "WETH" || sym == "WBNB" || sym == "WSOL" {
+                        if matches!(sym, "WETH" | "WBNB" | "WSOL" | "WGAS" | "WNEO") {
                             match func {
                                 "wrap" | "deposit" | "mint" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 54, timestamp)?;

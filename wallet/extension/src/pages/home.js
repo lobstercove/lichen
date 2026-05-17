@@ -8,8 +8,14 @@ import { isValidAddress } from '../core/crypto-service.js';
 let latestState = null;
 let activeDepositId = null;
 let depositPollTimer = null;
-const BRIDGE_CHAINS = ['solana', 'ethereum', 'bsc'];
-const BRIDGE_ASSETS = ['usdc', 'usdt'];
+const BRIDGE_CHAIN_ASSETS = {
+  solana: ['sol', 'usdc', 'usdt'],
+  ethereum: ['eth', 'usdc', 'usdt'],
+  bsc: ['bnb', 'usdc', 'usdt'],
+  neox: ['gas']
+};
+const BRIDGE_CHAINS = Object.keys(BRIDGE_CHAIN_ASSETS);
+const BRIDGE_ASSETS = [...new Set(Object.values(BRIDGE_CHAIN_ASSETS).flat())];
 const BRIDGE_STATUS_MAP = {
   issued: 'Waiting for deposit...',
   pending: 'Deposit detected, confirming...',
@@ -200,6 +206,18 @@ function renderDepositCard(data) {
       .then(() => setActionStatus('Bridge deposit address copied'))
       .catch((error) => setActionStatus(`Copy failed: ${error?.message || error}`));
   });
+}
+
+function syncBridgeAssetOptions() {
+  const chainSelect = document.getElementById('bridgeChain');
+  const assetSelect = document.getElementById('bridgeAsset');
+  if (!chainSelect || !assetSelect) return;
+  const assets = BRIDGE_CHAIN_ASSETS[chainSelect.value] || [];
+  const current = assetSelect.value;
+  assetSelect.innerHTML = assets.map((asset) =>
+    `<option value="${escapeHtml(asset)}">${escapeHtml(asset.toUpperCase())}</option>`
+  ).join('');
+  if (assets.includes(current)) assetSelect.value = current;
 }
 
 async function requestDepositAddressAction() {
@@ -454,6 +472,7 @@ async function handleAddSkill() {
 }
 
 document.getElementById('refreshAll')?.addEventListener('click', loadSnapshots);
+document.getElementById('bridgeChain')?.addEventListener('change', syncBridgeAssetOptions);
 document.getElementById('requestBridgeAddress')?.addEventListener('click', requestDepositAddressAction);
 document.getElementById('refreshWs')?.addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'LICHEN_WS_SYNC' }).catch(() => null);
@@ -480,6 +499,7 @@ document.getElementById('unstakeBtn')?.addEventListener('click', handleUnstake);
 document.getElementById('registerIdentityBtn')?.addEventListener('click', handleRegisterIdentity);
 document.getElementById('addSkillBtn')?.addEventListener('click', handleAddSkill);
 
+syncBridgeAssetOptions();
 loadSnapshots();
 setActionStatus('Ready');
 

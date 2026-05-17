@@ -45,7 +45,7 @@ Choose the least destructive path that matches the evidence:
 Rolling-release rules:
 
 - A rolling release must use a published or draft GitHub Release with `SHA256SUMS` and `SHA256SUMS.sig` attached.
-- `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, waits for local health, then checks the public RPC edge.
+- `scripts/rolling-release-deploy.sh` performs the VPS disk/log preflight, refuses non-live state backup directories under `/var/lib/lichen`, installs release binaries and `seeds.json`, restarts one validator at a time, proves the service PID/start timestamp changed, verifies every running validator process in the service executes the expected release binary hash, waits for local health, then checks the public RPC edge.
 - Rolling release is the default for cadence, WebSocket, RPC indexing, and consensus performance fixes because those fixes do not require a new genesis.
 - Any release that changes replay, block import, post-block effects, fees, staking, oracle, or validator-set handling must include deterministic-state coverage for local-observer differences, including commit-certificate subsets.
 - Any release that changes fee charging or block commit batching must prove the public `getTotalBurned` value increases after a finalized fee-bearing transaction or drill. Do not accept explorer fee display alone as proof; it can be derived from the transaction while the consensus burned counter remains stale.
@@ -453,6 +453,80 @@ Important rules:
 - VPS systemd state directories are keyed by network name
 - use `--validator-keypair` or explicit `--initial-validator` inputs; the wrapper rejects the legacy handwritten flow
 
+### Neo public beta gate
+
+Neo public beta activation is fail-closed. Do not set `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1` on a VPS, staging host, or any public testnet/mainnet genesis unless the NX-900 manifest has already passed:
+
+```bash
+node scripts/qa/check_neo_public_beta_gate.js \
+  --manifest /etc/lichen/neo-public-beta-gate-testnet.json
+```
+
+When `scripts/generate-genesis.sh` sees public Neo GAS rewards genesis activation outside `LICHEN_LOCAL_DEV=1`, it requires:
+
+```bash
+export LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST=/etc/lichen/neo-public-beta-gate-testnet.json
+```
+
+The manifest must include owner/governance/security/custody/legal/deployment approvals, numeric route and rewards caps, reward funding evidence, disclosure URL and hash, rollback/monitoring metadata, and local test evidence. For fresh genesis, the manifest's `activation.fresh_genesis_env` values must exactly match the `LICHEN_GENESIS_NEO_GAS_REWARDS_*` env values used by genesis. For a running chain, use `activation.mode=post_genesis_governance` with a governed proposal id, payload hash, and timelock instead of fresh-genesis env.
+
+Start from `docs/deployment/NEO_PUBLIC_BETA_GATE_TEMPLATE.json`. The template intentionally does not pass validation until every placeholder is replaced with real values and every approval/evidence boolean is true.
+
+This gate does not approve deployment by itself. It only proves the approval package is complete enough for the owner to make a deployment decision.
+
+Developer-facing route, rewards, DEX, SDK, and PQ evidence examples live in `docs/guides/NEO_DEVELOPER_INTEGRATION.md`. Keep those examples aligned with this gate: examples may prove local integration, but public rewards activation still requires this manifest.
+
+Local parity rehearsal must force the same gate even though local launchers set `LICHEN_LOCAL_DEV=1`:
+
+```bash
+export LICHEN_NEO_PUBLIC_BETA_GATE_REQUIRED=1
+export LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST=tests/artifacts/nx-900-testnet-rehearsal-YYYYMMDD/neo-public-beta-gate-testnet.LOCAL_REHEARSAL_ONLY.json
+```
+
+For the clean seed/joiner proof, run V1 first and then start V2/V3 from empty state:
+
+```bash
+./scripts/start-local-3validators.sh start-reset-seed
+./scripts/start-local-3validators.sh start-joiners-from-seed-sync
+```
+
+The V1 log must show `NX-900 Neo public beta gate: PASS` before genesis DB creation. V2/V3 must join by network sync only; do not copy RocksDB, genesis wallets, consensus WALs, or seed state into joiner directories.
+
+The VPS clean-slate deployment path uses the same wrapper. If `LICHEN_GENESIS_NEO_GAS_REWARDS_ENABLE=1` is present in `/etc/lichen/env-<network>`, the genesis step must also carry `LICHEN_NEO_PUBLIC_BETA_GATE_MANIFEST` from that env file. Missing or failing gate validation is a deployment blocker.
+
+### Neo liquidity corridor gate
+
+Neo Liquidity Corridor incentives are a separate `NX-950` lane. They must not be bundled into base Neo route activation, Neo GAS rewards activation, or any unrelated release. Before any public `wNEO`/`wGAS` DEX incentive campaign starts, validate the lane manifest:
+
+```bash
+node scripts/qa/check_neo_liquidity_corridor_gate.js \
+  --manifest /etc/lichen/neo-liquidity-corridor-gate-testnet.json
+```
+
+Start from `docs/deployment/NEO_LIQUIDITY_CORRIDOR_GATE_TEMPLATE.json`. The template intentionally does not pass validation until every placeholder is replaced, every required approval/evidence boolean is true, and at least one approved Neo pair is enabled.
+
+The manifest is scoped to the existing `dex_rewards` contract and the existing Neo DEX pair IDs:
+
+- `wNEO/lUSD`: pair and pool `8`
+- `wNEO/LICN`: pair and pool `9`
+- `wGAS/lUSD`: pair and pool `10`
+- `wGAS/LICN`: pair and pool `11`
+
+Current campaign activation uses a governed post-genesis payload that calls `dex_rewards.configure_lp_campaign` for the approved pair IDs, with the approved rate and per-pair budget from the manifest. Fresh chains follow the same path after genesis so reset and running-chain activation use one reviewable payload format. Do not add ad hoc genesis reward-rate shortcuts.
+
+Fresh genesis and post-genesis deployments must wire LP accounting before any campaign payload is approved:
+
+- `dex_amm.set_rewards_address(dex_rewards)`
+- `dex_rewards.set_authorized_caller(dex_amm, enabled=true)`
+
+This wiring only lets AMM positions sync LP reward accounting. It does not activate incentives until governed campaign rates and budgets are configured. Pausing a campaign sets the affected pair rates to zero; LP fee collection, liquidity removal, and bridge/user exits must remain available.
+
+The gate requires product/governance/security/custody/legal/market-risk/deployment approvals, per-pool TVL/volume/reward caps, a funded LICN campaign budget, whole-lot `wNEO` preservation, route-pause behavior, user-exit proof, public disclosure, watchtower coverage, and local 3-validator DEX evidence with AMM, router, rewards, candles, and rollback checks.
+
+Passing this checker does not deploy or activate the campaign. It only proves the approval packet and evidence are complete enough for the owner to decide whether to schedule activation.
+
+Developers should treat the Neo Liquidity Corridor as an approved-manifest extension of the existing DEX rewards path. The public developer examples in `docs/guides/NEO_DEVELOPER_INTEGRATION.md` intentionally show pair IDs, LP pending surfaces, and `dex_rewards.configure_lp_campaign` without implying that a public incentive campaign is active.
+
 ## Contract deployment and post-genesis bootstrap
 
 Genesis auto-deploys the canonical contract catalog. LICN is native and is not part of that deployed contract set.
@@ -641,11 +715,16 @@ sudo install -m 600 -o lichen -g lichen \
   /var/lib/lichen/validator-keypair-testnet.json \
   /var/lib/lichen/state-testnet/validator-keypair.json
 
+cd ~/lichen
 sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
-  lichen-genesis --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
+  LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
+  ./scripts/generate-genesis.sh \
+  --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
 
 sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
-  lichen-genesis --network testnet \
+  LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
+  ./scripts/generate-genesis.sh \
+  --network testnet \
   --db-path /var/lib/lichen/state-testnet \
   --wallet-file /var/lib/lichen/genesis-keys-testnet/genesis-wallet.json \
   --initial-validator <VALIDATOR_PUBKEY>
@@ -1576,16 +1655,21 @@ ssh -p 2222 ubuntu@15.204.229.189 '
   # Prepare wallet
   LICHEN_KEYPAIR_PASSWORD=$(grep LICHEN_KEYPAIR_PASSWORD /etc/lichen/env-testnet | cut -d= -f2-)
   export LICHEN_KEYPAIR_PASSWORD
+  cd ~/lichen
   sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
     LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
-    lichen-genesis --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
+    LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
+    ./scripts/generate-genesis.sh \
+    --network testnet --prepare-wallet --output-dir /var/lib/lichen/genesis-keys-testnet
 
   # Create genesis DB. For mainnet, pass --genesis-prices-file or ensure
   # Binance/CoinGecko live price access is available; compiled market defaults
   # are testnet/dev fallback only.
   sudo -u lichen HOME=/var/lib/lichen LICHEN_HOME=/var/lib/lichen LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts \
     LICHEN_KEYPAIR_PASSWORD="$LICHEN_KEYPAIR_PASSWORD" \
-    lichen-genesis --network testnet \
+    LICHEN_GENESIS_BIN=/usr/local/bin/lichen-genesis \
+    ./scripts/generate-genesis.sh \
+    --network testnet \
     --db-path /var/lib/lichen/state-testnet \
     --wallet-file /var/lib/lichen/genesis-keys-testnet/genesis-wallet.json \
     --initial-validator "$VALIDATOR_PUBKEY" \
@@ -1848,7 +1932,17 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Treat proposal execution before prevote as a release-blocking invariant. A rolling deploy health gate must fail on stale block age, split tips, or state-root mismatch, and operators must not heal by copying another validator's RocksDB directory.
 
-### Pitfall 11: Commit-certificate subsets must not affect state
+### Pitfall 11: Rolling release installs a new binary but keeps an old process alive
+
+**Symptom**: `/usr/local/bin/lichen-validator` has the new release hash, but one validator still serves behavior from the previous release. `systemctl status` shows an old `ExecMainStartTimestamp`, and `/proc/<pid>/exe` points at `/usr/local/bin/lichen-validator (deleted)` with the old executable hash.
+
+**Root cause**: The release archive was installed on disk, but the validator service did not replace the running process. A health-only rolling gate can pass because the old process still answers RPC.
+
+**Fix**: Stop the affected service, kill the service control group only if it remains active after stop, start it again, and verify `/proc/<pid>/exe` for the main and supervised validator processes hashes to the installed release binary. Do not reset chain state or copy RocksDB state for this service-process issue.
+
+**Prevention**: Rolling deploys must fail unless the service PID/start timestamp changes and all running validator processes in the service execute the expected signed-release hash.
+
+### Pitfall 12: Commit-certificate subsets must not affect state
 
 **Symptom**: A validator accepts a fee-bearing block, then rejects the next block with `state-root mismatch`. The rejected next block may be an empty liveness block because it only exposes the state divergence from the previous committed block.
 
@@ -1858,7 +1952,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: No state-root-affecting path may depend on local vote aggregators, locally collected prevotes/precommits, commit-certificate subset size/order, wall-clock arrival order, RPC routing, or other observer-local evidence. Release tests must include "same block, different commit-signature subsets, same state root" coverage for any post-block accounting path.
 
-### Pitfall 12: Stale Caddy ingress breaks WebSocket intermittently
+### Pitfall 13: Stale Caddy ingress breaks WebSocket intermittently
 
 **Symptom**: HTTPS JSON-RPC is healthy, but `wss://testnet-rpc.lichen.network/ws` intermittently hangs or fails to subscribe.
 
@@ -1868,7 +1962,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: Treat Caddy as deployment state, not hand-edited host state. After every reset or launch, compare `/etc/caddy/Caddyfile` against `deploy/Caddyfile.common` plus the network fragment and run the public `subscribeSlots` WebSocket smoke test 10/10.
 
-### Pitfall 13: Dedicated WS hostname bypasses edge TLS
+### Pitfall 14: Dedicated WS hostname bypasses edge TLS
 
 **Symptom**: `wss://testnet-rpc.lichen.network/ws` works, but `wss://testnet-ws.lichen.network` or `wss://ws.lichen.network` fails with an untrusted certificate.
 
@@ -1878,7 +1972,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: DNS and TLS are part of the release gate. For every advertised WSS hostname, `dig +short` must show the intended edge path when `tls internal` is used, and `websocat -n1 <url>` must pass from outside the VPS network.
 
-### Pitfall 14: Native oracle consensus remains at genesis while ticker moves
+### Pitfall 15: Native oracle consensus remains at genesis while ticker moves
 
 **Symptom**: DEX pair prices move through `ticker:<pair_id>` WebSocket updates, but `/api/v1/oracle/prices` shows wrapped assets at `slot:0` with `stale:true`, and `/api/v1/pairs/<id>/candles?interval=60` keeps returning flat genesis-price candles after a reset.
 
@@ -1888,7 +1982,7 @@ command find /var/lib/lichen/contracts -maxdepth 2 -name '*.wasm' | sort | xargs
 
 **Prevention**: After every reset, launch, or rolling release, run the Step 8 DEX oracle/candle smoke. The gate must prove that wrapped-asset native consensus oracle slots advance past genesis and that 1m candles are present through the same public RPC path used by browsers.
 
-### Pitfall 15: TOFU identity prevents rejoining after state wipe
+### Pitfall 16: TOFU identity prevents rejoining after state wipe
 
 **Symptom**: Wiped validator responds on RPC but stays at slot 0. P2P connections from other validators close immediately: `Failed to accept stream: closed by peer: 0`.
 

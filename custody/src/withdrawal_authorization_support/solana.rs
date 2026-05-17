@@ -109,7 +109,7 @@ pub(crate) fn build_threshold_solana_withdrawal_message(
         job.amount,
         &job.dest_chain,
         outbound_asset,
-    ))
+    )?)
     .map_err(|_| "solana token withdrawal amount overflow".to_string())?;
 
     build_solana_token_transfer_message(

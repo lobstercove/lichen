@@ -19,6 +19,7 @@
     "lichenswap",
     "lusd_token",
     "moss_storage",
+    "neo_gas_rewards",
     "prediction_market",
     "shielded_pool",
     "sporepay",
@@ -27,6 +28,8 @@
     "thalllend",
     "wbnb_token",
     "weth_token",
+    "wgas_token",
+    "wneo_token",
     "wsol_token"
   ]
 }

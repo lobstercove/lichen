@@ -1,6 +1,7 @@
 """Connection class for Lichen RPC and WebSocket"""
 
 import asyncio
+import contextlib
 import json
 import base64
 import logging
@@ -21,6 +22,10 @@ RPC_TRANSPORT_RETRIES = max(1, int(os.getenv("LICHEN_RPC_TRANSPORT_RETRIES", "3"
 RPC_TRANSPORT_DELAY_SECS = max(0.05, float(os.getenv("LICHEN_RPC_TRANSPORT_DELAY_SECS", "0.25")))
 WS_SUBSCRIBE_TIMEOUT_SECS = max(1.0, float(os.getenv("LICHEN_WS_SUBSCRIBE_TIMEOUT_SECS", "10.0")))
 TX_CONFIRM_POLL_SECS = max(0.1, float(os.getenv("LICHEN_TX_CONFIRM_POLL_SECS", "0.5")))
+TX_CONFIRM_CLEANUP_TIMEOUT_SECS = max(
+    0.1,
+    float(os.getenv("LICHEN_TX_CONFIRM_CLEANUP_TIMEOUT_SECS", "1.0")),
+)
 
 
 class Connection:
@@ -443,6 +448,14 @@ class Connection:
         """Get aggregated SporeVault yield-vault statistics."""
         return await self._rpc("getSporeVaultStats")
 
+    async def get_neo_gas_rewards_stats(self) -> Dict[str, Any]:
+        """Get aggregated Neo GAS rewards vault statistics."""
+        return await self._rpc("getNeoGasRewardsStats")
+
+    async def get_neo_gas_rewards_position(self, address: PublicKey | str) -> Dict[str, Any]:
+        """Get per-wallet Neo GAS rewards vault accounting."""
+        return await self._rpc("getNeoGasRewardsPosition", [str(address)])
+
     async def get_bountyboard_stats(self) -> Dict[str, Any]:
         """Get aggregated BountyBoard marketplace statistics."""
         return await self._rpc("getBountyBoardStats")
@@ -543,7 +556,8 @@ class Connection:
                     # Check if this is a response to a pending request
                     if "id" in data and data["id"] in self._pending_responses:
                         future = self._pending_responses.pop(data["id"])
-                        future.set_result(data)
+                        if not future.done():
+                            future.set_result(data)
                     # Check if this is a subscription notification
                     elif data.get("method") == "subscription":
                         params = data.get("params", {})
@@ -600,6 +614,10 @@ class Connection:
     
     async def _unsubscribe(self, method: str, sub_id: int) -> bool:
         """Unsubscribe from a subscription"""
+        if not self._ws or not self._ws_is_open(self._ws):
+            self._subscriptions.pop(sub_id, None)
+            return False
+
         request_id = self._next_id
         self._next_id += 1
         
@@ -620,6 +638,9 @@ class Connection:
             self._subscriptions.pop(sub_id, None)
             return data.get("result", False)
         except asyncio.TimeoutError:
+            self._pending_responses.pop(request_id, None)
+            return False
+        except Exception:
             self._pending_responses.pop(request_id, None)
             return False
     
@@ -753,17 +774,43 @@ class Connection:
         if not self.ws_url:
             self.ws_url = self._derive_ws_url(self.rpc_url)
 
-        if self.ws_url:
+        if self.ws_url and timeout > 0.0:
+            remaining = max(0.0, deadline - loop.time())
+            ws_task = asyncio.create_task(self._confirm_via_ws(signature, remaining))
+            rpc_task = asyncio.create_task(self._confirm_via_rpc(signature, remaining))
+            pending = {ws_task, rpc_task}
             try:
-                result = await self._confirm_via_ws(signature, timeout)
-                if result:
-                    return result
-            except Exception as exc:
-                logger.warning(
-                    "WS confirmation failed for %s, falling back to RPC polling: %s",
-                    signature,
-                    exc,
-                )
+                while pending:
+                    remaining = max(0.0, deadline - loop.time())
+                    if remaining <= 0.0:
+                        return None
+                    done, pending = await asyncio.wait(
+                        pending,
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        return None
+                    for task in done:
+                        try:
+                            result = task.result()
+                        except Exception as exc:
+                            if task is ws_task:
+                                logger.warning(
+                                    "WS confirmation failed for %s, continuing RPC polling: %s",
+                                    signature,
+                                    exc,
+                                )
+                            result = None
+                        if result:
+                            return result
+                return None
+            finally:
+                for task in pending:
+                    task.cancel()
+                for task in pending:
+                    with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                        await asyncio.wait_for(task, timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS)
 
         remaining = max(0.0, deadline - loop.time())
         return await self._confirm_via_rpc(signature, remaining)
@@ -837,10 +884,13 @@ class Connection:
             return None
         finally:
             self._subscriptions.pop(sub_id, None)
-            try:
-                await self._unsubscribe("signatureUnsubscribe", sub_id)
-            except Exception:
-                pass
+            current = asyncio.current_task()
+            if not (current is not None and current.cancelling()):
+                with contextlib.suppress(Exception, asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        self._unsubscribe("signatureUnsubscribe", sub_id),
+                        timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
+                    )
 
     @staticmethod
     def _derive_ws_url(rpc_url: str) -> Optional[str]:

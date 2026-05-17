@@ -474,6 +474,27 @@ mod tests {
     }
 
     #[test]
+    fn builds_neox_gas_bridge_route_status_payload() {
+        let cli = Cli::try_parse_from([
+            "lichen",
+            "restriction",
+            "status",
+            "bridge-route",
+            "neox",
+            "gas",
+        ])
+        .unwrap();
+
+        let request = match cli.command {
+            Commands::Restriction(command) => restriction_rpc_request(command).unwrap(),
+            _ => panic!("expected restriction command"),
+        };
+
+        assert_eq!(request.method, "getBridgeRouteRestrictionStatus");
+        assert_eq!(request.params, serde_json::json!(["neox", "gas"]));
+    }
+
+    #[test]
     fn builds_lift_payload_with_required_reason() {
         let cli = Cli::try_parse_from([
             "lichen",

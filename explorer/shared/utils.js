@@ -91,7 +91,7 @@ const ACHIEVEMENT_DEFS = [
     { id: 51, name: 'Bridge Pioneer', icon: 'fa-bridge', desc: 'Bridged assets to Lichen' },
     { id: 52, name: 'Bridge Out', icon: 'fa-sign-out-alt', desc: 'Bridged assets out of Lichen' },
     { id: 53, name: 'Bridge User', icon: 'fa-exchange-alt', desc: 'Used the bridge multiple times' },
-    { id: 54, name: 'Wrapper', icon: 'fa-box', desc: 'Wrapped native tokens (WETH/WBNB/WSOL)' },
+    { id: 54, name: 'Wrapper', icon: 'fa-box', desc: 'Wrapped native tokens (WSOL/WETH/WBNB/WNEO/WGAS)' },
     { id: 55, name: 'Unwrapper', icon: 'fa-box-open', desc: 'Unwrapped tokens back to native' },
     { id: 56, name: 'Cross-chain Trader', icon: 'fa-globe', desc: 'Traded cross-chain assets' },
     // Shield/Privacy (57-60)

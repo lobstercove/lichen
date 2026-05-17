@@ -104,8 +104,10 @@ use bootstrap_support::{
     spawn_background_workers,
 };
 use chain_config::{
-    autodiscover_contract_addresses, derive_treasury_addresses_from_seed, load_config,
-    rpc_url_for_chain, treasury_for_chain,
+    autodiscover_contract_addresses, canonical_evm_chain, configured_evm_routes,
+    derive_treasury_addresses_from_seed, evm_route_confirmations, evm_route_for_chain,
+    evm_treasury_derivation_path, is_supported_evm_chain, load_config, rpc_url_for_chain,
+    treasury_for_chain,
 };
 use chain_confirmation_support::{check_evm_tx_confirmed, check_solana_tx_confirmed};
 use credit_execution_support::{
@@ -118,14 +120,14 @@ use custody_constants::*;
 use deposit_api_support::CreateDepositRequest;
 use deposit_api_support::{create_deposit, get_deposit, CreateDepositResponse};
 use deposit_cleanup_support::deposit_cleanup_loop;
-#[cfg(test)]
-use deposit_derivation::bip44_coin_type;
 use deposit_derivation::{
-    active_deposit_seed_source, bip44_derivation_path, default_deposit_seed_source,
+    active_deposit_seed_source, bip44_derivation_path_for_config, default_deposit_seed_source,
     deposit_seed_for_record, deposit_seed_for_source, derive_deposit_address,
     derive_solana_owner_pubkey, get_last_u64_index, get_or_allocate_derivation_account,
     is_evm_chain, next_deposit_index, set_last_u64_index,
 };
+#[cfg(test)]
+use deposit_derivation::{bip44_coin_type, bip44_derivation_path};
 use deposit_event_support::{
     deposit_event_already_processed, store_deposit_event, update_deposit_status,
 };

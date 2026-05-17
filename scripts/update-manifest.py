@@ -35,6 +35,9 @@ manifest = {
         'lusd_token': entries.get('LUSD', ''),
         'wsol_token': entries.get('WSOL', ''),
         'weth_token': entries.get('WETH', ''),
+        'wbnb_token': entries.get('WBNB', ''),
+        'wgas_token': entries.get('WGAS', ''),
+        'wneo_token': entries.get('WNEO', ''),
         'dex_core': entries.get('DEX', ''),
         'dex_amm': entries.get('DEXAMM', ''),
         'dex_router': entries.get('DEXROUTER', ''),
@@ -43,12 +46,16 @@ manifest = {
         'dex_governance': entries.get('DEXGOV', ''),
         'dex_analytics': entries.get('ANALYTICS', ''),
         'prediction_market': entries.get('PREDICT', ''),
+        'neo_gas_rewards': entries.get('NEOGASRWD', ''),
     },
     'token_contracts': {
         'LICN': entries.get('LICN', ''),
         'lUSD': entries.get('LUSD', ''),
         'wSOL': entries.get('WSOL', ''),
         'wETH': entries.get('WETH', ''),
+        'wBNB': entries.get('WBNB', ''),
+        'wGAS': entries.get('WGAS', ''),
+        'wNEO': entries.get('WNEO', ''),
         'MOSS': entries.get('MOSS', ''),
     },
     'dex_contracts': {
@@ -61,9 +68,13 @@ manifest = {
         'dex_analytics': entries.get('ANALYTICS', ''),
         'prediction_market': entries.get('PREDICT', ''),
     },
+    'product_contracts': {
+        'neo_gas_rewards': entries.get('NEOGASRWD', ''),
+    },
     'trading_pairs': [
-        'LICN/lUSD', 'wSOL/lUSD', 'wETH/lUSD', 'MOSS/lUSD',
-        'wSOL/LICN', 'wETH/LICN', 'MOSS/LICN',
+        'LICN/lUSD', 'wSOL/lUSD', 'wETH/lUSD', 'wBNB/lUSD',
+        'wSOL/LICN', 'wETH/LICN', 'wBNB/LICN',
+        'wNEO/lUSD', 'wNEO/LICN', 'wGAS/lUSD', 'wGAS/LICN',
     ],
 }
 
@@ -74,4 +85,6 @@ with open(out_path, 'w') as f:
 
 print(f'OK — wrote {out_path}')
 for k, v in manifest['dex_contracts'].items():
+    print(f'  {k:20s} → {v}')
+for k, v in manifest['product_contracts'].items():
     print(f'  {k:20s} → {v}')
