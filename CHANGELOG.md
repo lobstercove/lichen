@@ -5,6 +5,11 @@ All notable changes to the Lichen blockchain project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.42] - 2026-05-17
+
+### Fixed
+- BFT valid-round re-proposals are accepted when a later-round leader carries forward a block that was signed by the original proposer and already received a polka. Fresh proposals still require the block signer to match the proposal signer, and proposal validation still checks parent hash, validator-set hash, transaction root, and staged state root before prevoting.
+
 ## [0.5.41] - 2026-05-17
 
 ### Fixed
