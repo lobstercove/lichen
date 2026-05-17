@@ -75,20 +75,30 @@ pub struct GenesisPrices {
     /// wBNB/USD price with 8 decimals
     pub wbnb_usd_8dec: u64,
     /// wNEO/USD price with 8 decimals
+    #[serde(default = "default_wneo_usd_8dec")]
     pub wneo_usd_8dec: u64,
     /// wGAS/USD price with 8 decimals
+    #[serde(default = "default_wgas_usd_8dec")]
     pub wgas_usd_8dec: u64,
+}
+
+fn default_wneo_usd_8dec() -> u64 {
+    307_500_000
+}
+
+fn default_wgas_usd_8dec() -> u64 {
+    165_000_000
 }
 
 impl Default for GenesisPrices {
     fn default() -> Self {
         Self {
-            licn_usd_8dec: 10_000_000,      // $0.10
-            wsol_usd_8dec: 8_184_000_000,   // $81.84
-            weth_usd_8dec: 199_934_000_000, // $1,999.34
-            wbnb_usd_8dec: 60_978_000_000,  // $609.78
-            wneo_usd_8dec: 307_500_000,     // $3.075
-            wgas_usd_8dec: 165_000_000,     // $1.65
+            licn_usd_8dec: 10_000_000,              // $0.10
+            wsol_usd_8dec: 8_184_000_000,           // $81.84
+            weth_usd_8dec: 199_934_000_000,         // $1,999.34
+            wbnb_usd_8dec: 60_978_000_000,          // $609.78
+            wneo_usd_8dec: default_wneo_usd_8dec(), // $3.075
+            wgas_usd_8dec: default_wgas_usd_8dec(), // $1.65
         }
     }
 }
@@ -1011,6 +1021,41 @@ mod tests {
         assert!(
             !json.contains("initial_restrictions"),
             "empty initial restrictions should be omitted from genesis JSON"
+        );
+    }
+
+    #[test]
+    fn test_legacy_genesis_prices_without_neo_fields_deserialize() {
+        let json = serde_json::json!({
+            "licn_usd_8dec": 10_000_000u64,
+            "wsol_usd_8dec": 8_184_000_000u64,
+            "weth_usd_8dec": 199_934_000_000u64,
+            "wbnb_usd_8dec": 60_978_000_000u64
+        });
+        let prices: GenesisPrices = serde_json::from_value(json).unwrap();
+        assert_eq!(prices.wneo_usd_8dec, default_wneo_usd_8dec());
+        assert_eq!(prices.wgas_usd_8dec, default_wgas_usd_8dec());
+    }
+
+    #[test]
+    fn test_legacy_genesis_config_without_neo_prices_deserializes() {
+        let mut json = serde_json::to_value(GenesisConfig::default_testnet()).unwrap();
+        let prices = json
+            .get_mut("genesis_prices")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        prices.remove("wneo_usd_8dec");
+        prices.remove("wgas_usd_8dec");
+
+        let genesis: GenesisConfig = serde_json::from_value(json).unwrap();
+        assert!(genesis.validate().is_ok());
+        assert_eq!(
+            genesis.genesis_prices.wneo_usd_8dec,
+            default_wneo_usd_8dec()
+        );
+        assert_eq!(
+            genesis.genesis_prices.wgas_usd_8dec,
+            default_wgas_usd_8dec()
         );
     }
 
