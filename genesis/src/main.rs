@@ -468,6 +468,28 @@ fn load_genesis_prices_file(path: &Path) -> Result<GenesisPrices, String> {
             err
         )
     })?;
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|err| {
+        format!(
+            "Failed to parse genesis prices file {}: {}",
+            path.display(),
+            err
+        )
+    })?;
+    for key in [
+        "licn_usd_8dec",
+        "wsol_usd_8dec",
+        "weth_usd_8dec",
+        "wbnb_usd_8dec",
+        "wneo_usd_8dec",
+        "wgas_usd_8dec",
+    ] {
+        if value.get(key).is_none() {
+            return Err(format!(
+                "genesis prices file {} is missing required field {key}",
+                path.display()
+            ));
+        }
+    }
     let prices: GenesisPrices = serde_json::from_str(&contents).map_err(|err| {
         format!(
             "Failed to parse genesis prices file {}: {}",
@@ -1733,6 +1755,27 @@ mod tests {
 
         let err = load_genesis_prices_file(&path).unwrap_err();
         assert!(err.contains("wSOL"));
+    }
+
+    #[test]
+    fn load_genesis_prices_file_rejects_missing_neo_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("genesis-prices.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "licn_usd_8dec": 10_000_000u64,
+                "wsol_usd_8dec": 8_678_000_000u64,
+                "weth_usd_8dec": 199_934_000_000u64,
+                "wbnb_usd_8dec": 60_978_000_000u64,
+                "wgas_usd_8dec": 165_000_000u64
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = load_genesis_prices_file(&path).unwrap_err();
+        assert!(err.contains("wneo_usd_8dec"));
     }
 
     #[test]

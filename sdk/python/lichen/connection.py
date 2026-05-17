@@ -651,6 +651,27 @@ class Connection:
         except Exception:
             self._pending_responses.pop(request_id, None)
             return False
+
+    async def _unsubscribe_best_effort(self, method: str, sub_id: int) -> None:
+        """Send an unsubscribe even when the caller task is being cancelled."""
+        unsubscribe_task = asyncio.create_task(self._unsubscribe(method, sub_id))
+
+        def _consume_result(task: asyncio.Task) -> None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.result()
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(unsubscribe_task),
+                timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
+            )
+        except asyncio.CancelledError:
+            if not unsubscribe_task.done():
+                unsubscribe_task.add_done_callback(_consume_result)
+            raise
+        except (asyncio.TimeoutError, Exception):
+            if not unsubscribe_task.done():
+                unsubscribe_task.add_done_callback(_consume_result)
     
     async def on_slot(self, callback: Callable[[int], None]) -> int:
         """Subscribe to slot updates"""
@@ -892,13 +913,7 @@ class Connection:
             return None
         finally:
             self._subscriptions.pop(sub_id, None)
-            current = asyncio.current_task()
-            if not (current is not None and current.cancelling()):
-                with contextlib.suppress(Exception, asyncio.TimeoutError):
-                    await asyncio.wait_for(
-                        self._unsubscribe("signatureUnsubscribe", sub_id),
-                        timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
-                    )
+            await self._unsubscribe_best_effort("signatureUnsubscribe", sub_id)
 
     @staticmethod
     def _derive_ws_url(rpc_url: str) -> Optional[str]:
@@ -936,15 +951,31 @@ class Connection:
         if self._ws_task:
             self._ws_task.cancel()
             try:
-                await self._ws_task
+                await asyncio.wait_for(
+                    self._ws_task,
+                    timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
+                )
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for WebSocket reader task to stop")
+            finally:
+                self._ws_task = None
         
         if self._ws:
-            await self._ws.close()
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._ws.close(),
+                    timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
+                )
+            self._ws = None
         
         if self._client:
-            await self._client.aclose()
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._client.aclose(),
+                    timeout=TX_CONFIRM_CLEANUP_TIMEOUT_SECS,
+                )
             self._client = None
         
         self._subscriptions.clear()

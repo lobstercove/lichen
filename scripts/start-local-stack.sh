@@ -17,6 +17,8 @@ NETWORK=${1:-testnet}
 NETWORK=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
 SOLANA_RPC_URL=${2:-${CUSTODY_SOLANA_RPC_URL:-}}
 EVM_RPC_URL=${3:-${CUSTODY_EVM_RPC_URL:-}}
+LOCAL_SOLANA_RPC_PORT="${LICHEN_LOCAL_SOLANA_RPC_PORT:-18899}"
+LOCAL_EVM_RPC_PORT="${LICHEN_LOCAL_EVM_RPC_PORT:-18545}"
 
 case $NETWORK in
   testnet)
@@ -178,6 +180,8 @@ LOCAL_HEALTH_TIMEOUT_SECS="${LICHEN_LOCAL_HEALTH_TIMEOUT_SECS:-900}"
 LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 CUSTODY_PID=""
+LOCAL_SOLANA_RPC_PID=""
+LOCAL_EVM_RPC_PID=""
 LOCAL_AIRDROPS_FILE="${LOG_DIR}/airdrops.json"
 if [ "$LOCAL_CLUSTER_RESET" = "1" ]; then
   rm -f "$LOCAL_AIRDROPS_FILE" "$REPO_ROOT/airdrops.json" 2>/dev/null || true
@@ -255,6 +259,12 @@ clear_local_peer_trust_state
 
 cleanup_started_processes() {
   "$LOCAL_CLUSTER_SCRIPT" stop >/dev/null 2>&1 || true
+  if [ -n "${LOCAL_SOLANA_RPC_PID:-}" ]; then
+    kill "$LOCAL_SOLANA_RPC_PID" 2>/dev/null || true
+  fi
+  if [ -n "${LOCAL_EVM_RPC_PID:-}" ]; then
+    kill "$LOCAL_EVM_RPC_PID" 2>/dev/null || true
+  fi
   if [ -n "${CUSTODY_PID:-}" ]; then
     kill "$CUSTODY_PID" 2>/dev/null || true
   fi
@@ -358,6 +368,77 @@ wait_for_http_health() {
   return 1
 }
 
+wait_for_evm_rpc() {
+  local url=$1
+  local label=$2
+  local timeout_seconds=${3:-30}
+
+  for _ in $(seq 1 "$timeout_seconds"); do
+    local body
+    body=$(curl -s --max-time 2 -X POST "$url" \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' 2>/dev/null || true)
+    if echo "$body" | grep -q '"result"'; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "❌ Timed out waiting for ${label} JSON-RPC at ${url}" >&2
+  return 1
+}
+
+wait_for_solana_rpc() {
+  local url=$1
+  local label=$2
+  local timeout_seconds=${3:-30}
+
+  for _ in $(seq 1 "$timeout_seconds"); do
+    local body
+    body=$(curl -s --max-time 2 -X POST "$url" \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' 2>/dev/null || true)
+    if echo "$body" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|"result"[[:space:]]*:[[:space:]]*"ok"'; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "❌ Timed out waiting for ${label} JSON-RPC at ${url}" >&2
+  return 1
+}
+
+start_detached_process() {
+  local log_file="$1"
+  shift
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$log_file" "$@" <<'PY'
+import os
+import subprocess
+import sys
+
+log_file = sys.argv[1]
+cmd = sys.argv[2:]
+with open(log_file, "ab") as out:
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=out,
+        stderr=subprocess.STDOUT,
+        env=os.environ.copy(),
+        start_new_session=True,
+        close_fds=True,
+    )
+print(proc.pid)
+PY
+    return 0
+  fi
+
+  nohup "$@" >>"$log_file" 2>&1 &
+  echo "$!"
+}
+
 wait_for_validator_cluster_ready() {
   local timeout_seconds=${1:-90}
   local expected_validators=${#RPC_CANDIDATES[@]}
@@ -423,19 +504,44 @@ fi
 export CUSTODY_LICHEN_RPC_URL="$CLUSTER_RPC_URL"
 export CUSTODY_ALLOW_INSECURE_SEED="${CUSTODY_ALLOW_INSECURE_SEED:-1}"
 
-nohup ./scripts/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
-CUSTODY_PID=$!
+if [ -z "$SOLANA_RPC_URL" ]; then
+  SOLANA_RPC_URL="http://127.0.0.1:${LOCAL_SOLANA_RPC_PORT}"
+  LOCAL_SOLANA_RPC_PID="$(start_detached_process "${LOG_DIR}/solana-rpc.log" \
+    env LICHEN_LOCAL_SOLANA_PORT="$LOCAL_SOLANA_RPC_PORT" \
+    python3 "${SCRIPT_DIR}/local-solana-rpc-mock.py")"
+fi
+export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
+
+if ! wait_for_solana_rpc "$SOLANA_RPC_URL" "local Solana-compatible RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+if [ -z "$EVM_RPC_URL" ]; then
+  EVM_RPC_URL="http://127.0.0.1:${LOCAL_EVM_RPC_PORT}"
+  LOCAL_EVM_RPC_PID="$(start_detached_process "${LOG_DIR}/evm-rpc.log" \
+    env LICHEN_LOCAL_EVM_PORT="$LOCAL_EVM_RPC_PORT" \
+    python3 "${SCRIPT_DIR}/local-evm-rpc-mock.py")"
+fi
+export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
+
+if ! wait_for_evm_rpc "$EVM_RPC_URL" "local EVM RPC" "$LOCAL_HEALTH_TIMEOUT_SECS"; then
+  cleanup_started_processes
+  exit 1
+fi
+
+CUSTODY_PID="$(start_detached_process "${LOG_DIR}/custody.log" ./scripts/run-custody.sh "$NETWORK")"
 
 FAUCET_PID=""
 FAUCET_PORT=9100
 if [ "$NETWORK" = "testnet" ]; then
   # The faucet currently serves from the genesis treasury on local networks.
-  nohup env PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
+  FAUCET_PID="$(start_detached_process "${LOG_DIR}/faucet.log" \
+    env PORT=$FAUCET_PORT RPC_URL="$CLUSTER_RPC_URL" NETWORK="$NETWORK" \
     TRUSTED_PROXY="127.0.0.1,::1" \
     FAUCET_KEYPAIR="$GENESIS_TREASURY_KEYPAIR" \
     AIRDROPS_FILE="$LOCAL_AIRDROPS_FILE" \
-    ./target/release/lichen-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
-  FAUCET_PID=$!
+    ./target/release/lichen-faucet)"
 fi
 
 # ── First-boot contract deployment ──
@@ -482,10 +588,12 @@ echo "Custody PID: $CUSTODY_PID"
 if [ -n "$FAUCET_PID" ]; then
   echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"
 fi
-if [ -n "$SOLANA_RPC_URL" ]; then
-  echo "Solana RPC: $SOLANA_RPC_URL"
+echo "Solana RPC: $SOLANA_RPC_URL"
+if [ -n "$LOCAL_SOLANA_RPC_PID" ]; then
+  echo "Local Solana RPC PID: $LOCAL_SOLANA_RPC_PID (port $LOCAL_SOLANA_RPC_PORT)"
 fi
-if [ -n "$EVM_RPC_URL" ]; then
-  echo "EVM RPC: $EVM_RPC_URL"
+echo "EVM RPC: $EVM_RPC_URL"
+if [ -n "$LOCAL_EVM_RPC_PID" ]; then
+  echo "Local EVM RPC PID: $LOCAL_EVM_RPC_PID (port $LOCAL_EVM_RPC_PORT)"
 fi
 echo "Logs: $LOG_DIR"
