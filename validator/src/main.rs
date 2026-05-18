@@ -3658,13 +3658,10 @@ fn validate_consensus_proposal_before_prevote(
             expected_validators_hash.to_hex(),
         ));
     }
-    if Pubkey(block.header.validator) != proposal.proposer {
+    if !block.verify_signature() {
         return Err(format!(
-            "proposal h={} r={} rejected: block signer {} does not match proposal signer {}",
-            proposal.height,
-            proposal.round,
-            Pubkey(block.header.validator).to_base58(),
-            proposal.proposer.to_base58(),
+            "proposal h={} r={} rejected: block signature is invalid",
+            proposal.height, proposal.round,
         ));
     }
 
@@ -16932,6 +16929,123 @@ mod tests {
         assert_eq!(state.compute_state_root_cold_start(), root_before);
         assert!(state.get_account(&bob).expect("read bob").is_none());
         assert!(state.get_transaction(&tx_hash).expect("read tx").is_none());
+    }
+
+    #[test]
+    fn consensus_proposal_validation_accepts_locked_value_reproposal() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob = Pubkey([2u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+        let original_block_kp = Keypair::generate();
+        let original_block_validator = original_block_kp.pubkey();
+        let reproposer_kp = Keypair::generate();
+        let reproposer = reproposer_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).expect("set treasury");
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .expect("put treasury");
+        state
+            .put_account(&alice, &Account::new(10, alice))
+            .expect("fund alice");
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            genesis_root,
+            original_block_validator.0,
+            Vec::new(),
+            0,
+        );
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let tx = make_signed_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let speculative = TxProcessor::new_speculative(state.clone())
+            .process_transactions_speculative(std::slice::from_ref(&tx), &original_block_validator);
+        assert!(speculative.results[0].success);
+        let state_root = state.compute_state_root_for_batch(&speculative.batch);
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            state_root,
+            original_block_validator.0,
+            vec![tx],
+            1,
+        );
+        block.header.validators_hash = validators_hash;
+        block.tx_fees_paid = speculative
+            .results
+            .iter()
+            .map(|result| result.fee_paid)
+            .collect();
+        block.sign(&original_block_kp);
+        let block_hash = block.hash();
+
+        let proposal = Proposal {
+            height: 1,
+            round: 3,
+            block,
+            valid_round: 1,
+            proposer: reproposer,
+            signature: reproposer_kp.sign(&Proposal::signable_bytes_static(1, 3, &block_hash, 1)),
+        };
+
+        validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect("valid locked-value reproposal should pass before prevote");
+    }
+
+    #[test]
+    fn consensus_proposal_validation_rejects_invalid_block_signature() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+        let validators_hash = Hash([4u8; 32]);
+
+        let genesis_root = state.compute_state_root_cold_start();
+        let genesis =
+            Block::new_with_timestamp(0, Hash::default(), genesis_root, validator.0, Vec::new(), 0);
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).expect("put genesis");
+        state.set_last_slot(0).expect("set last slot");
+
+        let mut block =
+            Block::new_with_timestamp(1, genesis_hash, genesis_root, validator.0, Vec::new(), 1);
+        block.header.validators_hash = validators_hash;
+        block.sign(&validator_kp);
+        block.header.timestamp = 2;
+        let block_hash = block.hash();
+        let proposal = Proposal {
+            height: 1,
+            round: 0,
+            block,
+            valid_round: -1,
+            proposer: validator,
+            signature: validator_kp.sign(&Proposal::signable_bytes_static(1, 0, &block_hash, -1)),
+        };
+
+        let err = validate_consensus_proposal_before_prevote(
+            &state,
+            &proposal,
+            genesis_hash,
+            validators_hash,
+        )
+        .expect_err("invalid block signature must be rejected");
+
+        assert!(err.contains("block signature is invalid"));
     }
 
     #[test]
