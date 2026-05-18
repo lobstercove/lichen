@@ -1220,6 +1220,7 @@ impl PeerManager {
         let node_identity = self.node_identity.clone();
         let local_node_address = self.local_node_address;
         let identity_store = self.identity_store.clone();
+        let reserved_peers = self.reserved_peers.clone();
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -1231,6 +1232,7 @@ impl PeerManager {
                 let kademlia = kademlia.clone();
                 let node_identity = node_identity.clone();
                 let identity_store = identity_store.clone();
+                let reserved_peers = reserved_peers.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -1309,9 +1311,12 @@ impl PeerManager {
                                 return;
                             }
 
-                            if let Err(error) =
-                                identity_store.check_or_store(peer_addr, &remote_identity)
-                            {
+                            let enforce_endpoint_pin = reserved_peers.contains(&peer_addr);
+                            if let Err(error) = identity_store.check_or_store_inbound(
+                                peer_addr,
+                                &remote_identity,
+                                enforce_endpoint_pin,
+                            ) {
                                 warn!("{}", error);
                                 connection.close(quinn::VarInt::from_u32(1), b"identity_mismatch");
                                 return;
@@ -1732,6 +1737,58 @@ impl PeerIdentityStore {
                 drop(store);
                 self.save();
                 Ok(true)
+            }
+        }
+    }
+
+    fn check_or_store_inbound(
+        &self,
+        addr: SocketAddr,
+        identity: &RemoteNodeIdentity,
+        enforce_endpoint_pin: bool,
+    ) -> Result<bool, String> {
+        if enforce_endpoint_pin {
+            return self.check_or_store(addr, identity);
+        }
+
+        Ok(self.store_or_update_ephemeral_endpoint(addr, identity))
+    }
+
+    fn store_or_update_ephemeral_endpoint(
+        &self,
+        addr: SocketAddr,
+        identity: &RemoteNodeIdentity,
+    ) -> bool {
+        let addr_key = addr.to_string();
+        let candidate = KnownPeerIdentity {
+            address: identity.address.to_base58(),
+            public_key: identity.public_key_hex.clone(),
+        };
+        let mut store = self.identities.lock().unwrap_or_else(|e| e.into_inner());
+        match store.get(&addr_key) {
+            Some(known)
+                if known.address == candidate.address
+                    && known.public_key == candidate.public_key =>
+            {
+                false
+            }
+            Some(known) => {
+                info!(
+                    "P2P TOFU: Inbound non-reserved endpoint {} now presents node identity {} (was {}); accepting as a fresh transport locator",
+                    addr,
+                    candidate.address,
+                    known.address
+                );
+                store.insert(addr_key, candidate);
+                drop(store);
+                self.save();
+                true
+            }
+            None => {
+                store.insert(addr_key, candidate);
+                drop(store);
+                self.save();
+                true
             }
         }
     }
@@ -2431,6 +2488,41 @@ mod tests {
 
         assert!(store.check_or_store(addr, &identity).unwrap());
         let result = store.check_or_store(addr, &changed_identity);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("TOFU VIOLATION"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_peer_identity_store_allows_non_reserved_inbound_endpoint_reuse() {
+        let path = temp_path("lichen_peer_identity_inbound_reuse", "json");
+        let store = PeerIdentityStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let first_identity = sample_remote_identity();
+        let fresh_identity = sample_remote_identity();
+
+        assert!(store
+            .check_or_store_inbound(addr, &first_identity, false)
+            .unwrap());
+        assert!(store
+            .check_or_store_inbound(addr, &fresh_identity, false)
+            .unwrap());
+        assert!(!store.check_or_store(addr, &fresh_identity).unwrap());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_peer_identity_store_rejects_reserved_inbound_endpoint_reuse() {
+        let path = temp_path("lichen_peer_identity_inbound_reserved", "json");
+        let store = PeerIdentityStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let identity = sample_remote_identity();
+        let changed_identity = sample_remote_identity();
+
+        assert!(store.check_or_store_inbound(addr, &identity, true).unwrap());
+        let result = store.check_or_store_inbound(addr, &changed_identity, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("TOFU VIOLATION"));
 

@@ -196,13 +196,13 @@ function main() {
                 'wGAS/LICN',
             ], label);
         });
-        assertIncludes(docs.rpcPortal, 'v0.5.45', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'v0.5.46', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
     });
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.45',
+            'v0.5.46',
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',
