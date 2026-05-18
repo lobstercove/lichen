@@ -835,6 +835,16 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
     resolved
 }
 
+fn resolve_configured_seed_peers(
+    configured_peers: &[String],
+    _cached_peers: &[SocketAddr],
+) -> Vec<SocketAddr> {
+    // Cached peers stay in PeerStore for opportunistic reconnects. They must
+    // not be promoted into seed_peers because the P2P layer pins seed identities
+    // as reserved bootstrap endpoints.
+    resolve_peer_list(configured_peers)
+}
+
 fn derive_rpc_url_from_peer(peer_addr: &str) -> Option<String> {
     let (host, peer_p2p) = if let Some((host, port)) = peer_addr.rsplit_once(':') {
         (host.to_string(), port.parse::<u16>().ok()?)
@@ -7154,9 +7164,8 @@ async fn run_validator() {
         _ => None,
     };
 
-    let mut seed_peers = resolve_peer_list(&seed_file_peer_strings);
     let cached_peers = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
-    seed_peers.extend(cached_peers.iter().copied());
+    let mut seed_peers = resolve_configured_seed_peers(&seed_file_peer_strings, &cached_peers);
     let mut bootstrap_rpc_urls = seed_file_rpc_urls.clone();
 
     // Collect all local IP addresses so we can filter out self-referencing seeds
@@ -18698,6 +18707,20 @@ mod tests {
         let result = resolve_peer_list(&peers);
         // invalid hostname without port won't resolve
         assert!(!result.is_empty(), "should have at least the valid peer");
+    }
+
+    #[test]
+    fn cached_known_peers_are_not_promoted_to_configured_seeds() {
+        let configured = vec!["15.204.229.189:7001".to_string()];
+        let cached_peer: SocketAddr = "94.202.71.179:44729".parse().unwrap();
+        let seed_peers = resolve_configured_seed_peers(&configured, &[cached_peer]);
+
+        assert_eq!(seed_peers.len(), 1);
+        assert_eq!(
+            seed_peers[0],
+            "15.204.229.189:7001".parse::<SocketAddr>().unwrap()
+        );
+        assert!(!seed_peers.contains(&cached_peer));
     }
 
     #[test]

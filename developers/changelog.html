@@ -79,6 +79,25 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.47 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.47</span>
+                    <span class="changelog-date">May 18, 2026</span>
+                </div>
+                <h3 class="changelog-title">External Validator Join Stabilization</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Agent validator onboarding</strong> &mdash; keeps durable cached peers out of the
+                            configured seed list so reused NAT endpoints are not promoted into strict seed identity
+                            pins. This preserves seed/reserved-peer pinning while allowing independent fresh validators
+                            to join from signed release artifacts without manual TOFU cleanup.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.46 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

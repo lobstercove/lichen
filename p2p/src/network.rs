@@ -523,9 +523,9 @@ impl P2PNetwork {
             .filter_map(|s| s.parse().ok())
             .collect();
 
-        // Seed/bootstrap peers are implicitly reserved — their TOFU fingerprint
-        // rotations are auto-accepted so freshly joining validators can always
-        // reach the network even after seed nodes redeploy.
+        // Configured seed/bootstrap peers are implicitly reserved. Callers must
+        // keep durable PeerStore entries separate so ordinary agent endpoints
+        // are not promoted into strict bootstrap identity pins.
         for addr in &config.seed_peers {
             if !reserved_addrs.contains(addr) {
                 reserved_addrs.push(*addr);
