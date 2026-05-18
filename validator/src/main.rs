@@ -884,6 +884,13 @@ fn should_reconsider_duplicate_block(
     has_pending_blocks && block_slot == current_slot
 }
 
+fn extract_rpc_tip_slot(body: &serde_json::Value) -> Option<u64> {
+    let result = body.get("result")?;
+    result
+        .as_u64()
+        .or_else(|| result.get("slot").and_then(serde_json::Value::as_u64))
+}
+
 async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<u64> {
     let response = http_client
         .post(rpc_url)
@@ -897,7 +904,23 @@ async fn fetch_rpc_slot(http_client: &reqwest::Client, rpc_url: &str) -> Option<
         .await
         .ok()?;
     let body = response.json::<serde_json::Value>().await.ok()?;
-    body["result"].as_u64()
+    if let Some(slot) = extract_rpc_tip_slot(&body) {
+        return Some(slot);
+    }
+
+    let response = http_client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getHealth",
+            "params": []
+        }))
+        .send()
+        .await
+        .ok()?;
+    let body = response.json::<serde_json::Value>().await.ok()?;
+    extract_rpc_tip_slot(&body)
 }
 
 fn is_shared_bootstrap_rpc(rpc_url: &str) -> bool {
@@ -4627,6 +4650,100 @@ async fn apply_post_block_effects_after_store(
     reset_24h_stats_if_expired(state, block.header.timestamp);
 }
 
+fn tip_post_block_effects_complete(state: &StateStore, block: &Block) -> Result<bool, String> {
+    let slot = block.header.slot;
+    if slot == 0 || block.header.validator == [0u8; 32] {
+        return Ok(true);
+    }
+
+    let block_hash = block.hash();
+    match state.get_reward_distribution_hash(slot)? {
+        Some(hash) if hash == block_hash => {}
+        Some(hash) => {
+            warn!(
+                "⚠️  Slot {} reward marker hash {} differs from stored block hash {}; leaving state unchanged",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex(),
+            );
+            return Ok(true);
+        }
+        None => return Ok(false),
+    }
+
+    let fee_config = state
+        .get_fee_config()
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
+    if block_total_fees_paid(state, block, &fee_config) == 0 {
+        return Ok(true);
+    }
+
+    match state.get_fee_distribution_hash(slot)? {
+        Some(hash) if hash == block_hash => Ok(true),
+        Some(hash) => {
+            warn!(
+                "⚠️  Slot {} fee marker hash {} differs from stored block hash {}; leaving state unchanged",
+                slot,
+                hash.to_hex(),
+                block_hash.to_hex(),
+            );
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+async fn recover_tip_post_block_effects_if_needed(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    min_validator_stake: u64,
+    slot_duration_ms: u64,
+) -> Result<(), String> {
+    let tip = state.get_last_slot().unwrap_or(0);
+    if tip == 0 {
+        return Ok(());
+    }
+
+    let Some(block) = state.get_block_by_slot(tip)? else {
+        return Err(format!(
+            "stored tip slot {} is missing its canonical block",
+            tip
+        ));
+    };
+
+    if tip_post_block_effects_complete(state, &block)? {
+        return Ok(());
+    }
+
+    warn!(
+        "🔧 Startup recovery: completing deterministic post-block effects for stored tip {} before syncing next block",
+        tip
+    );
+    apply_post_block_effects_after_store(
+        state,
+        validator_set,
+        stake_pool,
+        &block,
+        min_validator_stake,
+        slot_duration_ms,
+    )
+    .await;
+
+    if !tip_post_block_effects_complete(state, &block)? {
+        return Err(format!(
+            "post-block effects for stored tip {} are still incomplete after recovery",
+            tip
+        ));
+    }
+
+    info!(
+        "✅ Startup recovery completed deterministic post-block effects for stored tip {}",
+        tip
+    );
+    Ok(())
+}
+
 async fn activate_pending_validators_for_height(
     state: &StateStore,
     validator_set: &Arc<RwLock<ValidatorSet>>,
@@ -8071,6 +8188,19 @@ async fn run_validator() {
             }
         }
     };
+
+    if let Err(e) = recover_tip_post_block_effects_if_needed(
+        &state,
+        &validator_set,
+        &stake_pool,
+        min_validator_stake,
+        genesis_config.consensus.slot_duration_ms.max(1),
+    )
+    .await
+    {
+        error!("Failed startup post-block recovery: {}", e);
+        std::process::exit(1);
+    }
 
     // Get starting slot (resume from last + 1)
     let last_slot = state.get_last_slot().unwrap_or(0);
@@ -18153,6 +18283,74 @@ mod tests {
             .is_some());
     }
 
+    #[test]
+    fn startup_recovery_completes_stored_tip_post_block_effects() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let producer = Keypair::generate().pubkey();
+        let block = Block::new(7, Hash::default(), Hash::default(), producer.0, vec![]);
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(test_validator_info(producer));
+
+        let mut pool = StakePool::new();
+        pool.stake(producer, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake producer");
+        state.put_stake_pool(&pool).expect("put stake pool");
+        state
+            .put_block_atomic(&block, None, None)
+            .expect("store block and tip without post effects");
+
+        assert!(
+            !tip_post_block_effects_complete(&state, &block).expect("read completion"),
+            "stored tip must look incomplete before recovery"
+        );
+
+        let stake_pool = Arc::new(RwLock::new(pool));
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+        runtime
+            .block_on(recover_tip_post_block_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                MIN_VALIDATOR_STAKE,
+                400,
+            ))
+            .expect("recover stored tip effects");
+
+        assert!(
+            tip_post_block_effects_complete(&state, &block).expect("read completion"),
+            "stored tip must be complete after recovery"
+        );
+        assert_eq!(
+            state
+                .get_reward_distribution_hash(7)
+                .expect("read reward marker"),
+            Some(block.hash())
+        );
+
+        let persisted = state.get_stake_pool().expect("read stake pool");
+        let entry = persisted.get_stake(&producer).expect("producer stake");
+        assert_eq!(entry.last_reward_slot, 7);
+        assert_eq!(entry.blocks_produced, 1);
+
+        runtime
+            .block_on(recover_tip_post_block_effects_if_needed(
+                &state,
+                &validator_set,
+                &stake_pool,
+                MIN_VALIDATOR_STAKE,
+                400,
+            ))
+            .expect("second recovery is no-op");
+
+        let persisted = state.get_stake_pool().expect("read stake pool after no-op");
+        let entry = persisted.get_stake(&producer).expect("producer stake");
+        assert_eq!(entry.blocks_produced, 1);
+    }
+
     fn test_validator_info(pubkey: Pubkey) -> ValidatorInfo {
         ValidatorInfo {
             pubkey,
@@ -18902,6 +19100,47 @@ mod tests {
         assert!(has_enough_direct_bootstrap_observations(0, 0));
         assert!(!has_enough_direct_bootstrap_observations(0, 2));
         assert!(has_enough_direct_bootstrap_observations(1, 2));
+    }
+
+    #[test]
+    fn rpc_tip_slot_accepts_ready_get_slot_response() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": 142_366
+        });
+
+        assert_eq!(extract_rpc_tip_slot(&body), Some(142_366));
+    }
+
+    #[test]
+    fn rpc_tip_slot_accepts_stale_health_response() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "status": "behind",
+                "reason": "stale_tip",
+                "slot": 142_366,
+                "block_age_secs": 1_314
+            }
+        });
+
+        assert_eq!(extract_rpc_tip_slot(&body), Some(142_366));
+    }
+
+    #[test]
+    fn rpc_tip_slot_rejects_error_without_health_slot() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32050,
+                "message": "RPC node is not ready"
+            }
+        });
+
+        assert_eq!(extract_rpc_tip_slot(&body), None);
     }
 
     #[test]
