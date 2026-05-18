@@ -1397,6 +1397,16 @@ fn disk_readiness_from_counts(
     })
 }
 
+#[cfg(all(unix, target_os = "linux"))]
+fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
+    value
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn statvfs_block_count(value: libc::fsblkcnt_t) -> u64 {
+    value as u64
+}
+
 #[cfg(unix)]
 fn disk_readiness_for_path(path: &Path) -> Option<DiskReadiness> {
     use std::ffi::CString;
@@ -1416,7 +1426,11 @@ fn disk_readiness_for_path(path: &Path) -> Option<DiskReadiness> {
         stat.f_bsize
     };
 
-    disk_readiness_from_counts(block_size, stat.f_blocks.into(), stat.f_bavail.into())
+    disk_readiness_from_counts(
+        block_size,
+        statvfs_block_count(stat.f_blocks),
+        statvfs_block_count(stat.f_bavail),
+    )
 }
 
 #[cfg(not(unix))]

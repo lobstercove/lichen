@@ -95,6 +95,8 @@ done
 
 if printf '%s' "$payload" | grep -Fq '"method":"getValidators"'; then
     printf '%s\n' '{"jsonrpc":"2.0","result":{"validators":[{"stake":1},{"stake":1},{"stake":1}]}}'
+elif printf '%s' "$payload" | grep -Fq '"method":"getLatestBlock"'; then
+    printf '%s\n' '{"jsonrpc":"2.0","result":{"slot":42,"hash":"fixture-tip"}}'
 else
     printf '%s\n' '{"jsonrpc":"2.0","result":{"status":"ok"}}'
 fi
