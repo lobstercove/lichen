@@ -533,6 +533,27 @@ function validateMonitoringRiskConsole() {
     );
 }
 
+function validateDexChartPricePrecision() {
+    const dexJsPath = path.join(repoRoot, 'dex', 'dex.js');
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    const scaleBody = extractFunctionBody(js, 'chartPriceScaleForPair');
+
+    assert(
+        scaleBody.includes('isDisplayInvertedPair(pair)) return 100000000') &&
+            scaleBody.includes('if (absPrice >= 1000) return 100') &&
+            scaleBody.includes('if (absPrice >= 1) return 10000') &&
+            scaleBody.includes('if (absPrice >= 0.001) return 1000000'),
+        'DEX TradingView price scale matches DEX display precision tiers'
+    );
+
+    assert(
+        js.includes('resolveSymbol: (name, ok, err) => {') &&
+            js.includes('const ps = chartPriceScaleForPair(p);') &&
+            !js.includes('p.price < 1 ? 10000 : 100'),
+        'DEX TradingView resolveSymbol uses shared chart price-scale helper'
+    );
+}
+
 console.log('\n── Frontend Asset Integrity ──');
 
 for (const portal of portals) {
@@ -549,6 +570,7 @@ for (const portal of portals) {
 
 validateMonitoringIncidentControls();
 validateMonitoringRiskConsole();
+validateDexChartPricePrecision();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

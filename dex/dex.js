@@ -1171,6 +1171,18 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    function chartPriceScaleForPair(pair) {
+        if (!pair) return 100;
+        if (isDisplayInvertedPair(pair)) return 100000000;
+        const price = Number(pair.price || state.lastPrice || 0);
+        if (!Number.isFinite(price) || price <= 0) return 10000;
+        const absPrice = Math.abs(price);
+        if (absPrice >= 1000) return 100;
+        if (absPrice >= 1) return 10000;
+        if (absPrice >= 0.001) return 1000000;
+        return 100000000;
+    }
+
     function pairBaseRequiresWholeNeoLot(pair) {
         const base = String(pair?.base || pair?.baseSymbol || '').toUpperCase();
         return WHOLE_LOT_NEO_SYMBOLS.includes(base);
@@ -2021,8 +2033,7 @@ document.addEventListener('DOMContentLoaded', () => {
             resolveSymbol: (name, ok, err) => {
                 const p = pairs.find(x => x.id === name || ('Lichen:' + x.id) === name) || pairs[0];
                 if (!p) { err('Not found'); return; }
-                // Display-inverted pairs have very small prices (~0.000171) — always use high pricescale
-                const ps = isDisplayInvertedPair(p) ? 100000000 : (p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100);
+                const ps = chartPriceScaleForPair(p);
                 setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'Lichen', listed_exchange: 'Lichen', minmov: 1, pricescale: ps, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], volume_precision: 2, data_status: 'streaming' }), 0);
             },
             getBars: async (si, res, pp, ok) => {
