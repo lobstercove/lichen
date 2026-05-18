@@ -4,6 +4,7 @@
 // violate Tendermint safety invariants.
 //
 // What is persisted:
+//   - Proposal blocks before any local vote can reference them.
 //   - The locked (round, value) pair whenever the validator locks.
 //   - Signed prevote/precommit choices before they are broadcast.
 //   - The current height to skip replaying completed heights.
@@ -16,7 +17,7 @@
 // applied, the WAL is truncated (checkpointed) because the committed
 // block is the new source of truth.
 
-use lichen_core::{Hash, PqSignature, Precommit, Prevote, Pubkey};
+use lichen_core::{Block, Hash, PqSignature, Precommit, Prevote, Pubkey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -40,6 +41,12 @@ pub enum WalEntry {
         height: u64,
         round: u32,
         block_hash: Hash,
+    },
+    /// Proposal block observed or produced for a height/round.
+    ProposalBlock {
+        height: u64,
+        round: u32,
+        block: Block,
     },
     /// Validator signed a local prevote or precommit.
     ///
@@ -238,6 +245,53 @@ impl ConsensusWal {
         });
     }
 
+    /// Persist a proposal block before any local vote references it.
+    pub fn log_proposal_block_result(
+        &mut self,
+        height: u64,
+        round: u32,
+        block: &Block,
+    ) -> Result<(), String> {
+        let block_hash = block.hash();
+        for entry in &self.entries {
+            let WalEntry::ProposalBlock {
+                height: existing_height,
+                round: existing_round,
+                block: existing_block,
+            } = entry
+            else {
+                continue;
+            };
+            if *existing_height == height && *existing_round == round {
+                if existing_block.hash() == block_hash {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "WAL proposal protection: refusing conflicting proposal block for height={} round={}",
+                    height, round
+                ));
+            }
+        }
+        self.append_result(WalEntry::ProposalBlock {
+            height,
+            round,
+            block: block.clone(),
+        })
+    }
+
+    pub fn has_proposal_block(&self, height: u64, block_hash: Hash) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                WalEntry::ProposalBlock {
+                    height: h,
+                    block,
+                    ..
+                } if *h == height && block.hash() == block_hash
+            )
+        })
+    }
+
     fn ensure_no_conflicting_signed_vote(&self, record: &SignedVoteRecord) -> Result<(), String> {
         for entry in &self.entries {
             let WalEntry::SignedVote(existing) = entry else {
@@ -339,6 +393,7 @@ impl ConsensusWal {
         let mut last_checkpoint: Option<u64> = None;
         let mut last_height_started: Option<u64> = None;
         let mut signed_votes: Vec<SignedVoteRecord> = Vec::new();
+        let mut proposal_blocks: Vec<(u64, u32, Block)> = Vec::new();
 
         for entry in &self.entries {
             match entry {
@@ -357,6 +412,15 @@ impl ConsensusWal {
                 }
                 WalEntry::CommitDecision { .. } => {
                     // Commit was decided but may not have been applied
+                }
+                WalEntry::ProposalBlock {
+                    height,
+                    round,
+                    block,
+                } => {
+                    if last_checkpoint.is_none_or(|cp| *height > cp) {
+                        proposal_blocks.push((*height, *round, block.clone()));
+                    }
                 }
                 WalEntry::SignedVote(record) => {
                     if last_checkpoint.is_none_or(|cp| record.height > cp) {
@@ -390,6 +454,7 @@ impl ConsensusWal {
                         }
                     }
                     signed_votes.retain(|record| record.height > *height);
+                    proposal_blocks.retain(|(proposal_height, _, _)| *proposal_height > *height);
                 }
             }
         }
@@ -399,6 +464,7 @@ impl ConsensusWal {
             last_checkpoint,
             last_height_started,
             signed_votes,
+            proposal_blocks,
         }
     }
 }
@@ -414,6 +480,8 @@ pub struct WalRecovery {
     pub last_height_started: Option<u64>,
     /// Signed local votes not superseded by a checkpoint.
     pub signed_votes: Vec<SignedVoteRecord>,
+    /// Proposal blocks not superseded by a checkpoint.
+    pub proposal_blocks: Vec<(u64, u32, Block)>,
 }
 
 impl WalRecovery {
@@ -488,6 +556,45 @@ mod tests {
         wal.checkpoint(7);
         let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
         assert!(recovered.signed_votes.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_proposal_block_recovery_and_checkpoint() {
+        let dir = temp_data_dir("proposal-block-recovery");
+        let kp = keypair(8);
+        let block = Block::new_with_timestamp(
+            21,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp.pubkey().0,
+            Vec::new(),
+            1_700_000_000,
+        );
+        let block_hash = block.hash();
+
+        let mut wal = ConsensusWal::open(dir.to_str().unwrap());
+        wal.log_height_start(21);
+        wal.log_proposal_block_result(21, 3, &block).unwrap();
+        assert!(wal.has_proposal_block(21, block_hash));
+
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert_eq!(recovered.proposal_blocks.len(), 1);
+        assert_eq!(recovered.proposal_blocks[0].0, 21);
+        assert_eq!(recovered.proposal_blocks[0].1, 3);
+        assert_eq!(recovered.proposal_blocks[0].2.hash(), block_hash);
+
+        let mut conflicting = block.clone();
+        conflicting.header.timestamp += 1;
+        let err = wal
+            .log_proposal_block_result(21, 3, &conflicting)
+            .unwrap_err();
+        assert!(err.contains("proposal protection"));
+
+        wal.checkpoint(21);
+        let recovered = ConsensusWal::open(dir.to_str().unwrap()).recover();
+        assert!(recovered.proposal_blocks.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -578,6 +685,7 @@ mod tests {
                 vote(11, 9, other.pubkey()),
                 vote(12, 20, kp.pubkey()),
             ],
+            proposal_blocks: Vec::new(),
         };
 
         assert_eq!(

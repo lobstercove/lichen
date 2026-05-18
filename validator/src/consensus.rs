@@ -330,7 +330,27 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
 
-        let (block, valid_round) = if let Some(ref vb) = self.valid_value {
+        let (block, valid_round) = if let Some(locked_hash) = self.locked_value {
+            let locked_block = self
+                .valid_value
+                .as_ref()
+                .filter(|block| block.hash() == locked_hash)
+                .cloned()
+                .or_else(|| self.proposal_blocks.get(&locked_hash).cloned());
+            let Some(block) = locked_block else {
+                warn!(
+                    "⚠️ BFT: refusing to propose a new value at h={} r={} while locked on unrecovered {}",
+                    self.height,
+                    self.round,
+                    hex::encode(&locked_hash.0[..4])
+                );
+                return ConsensusAction::ScheduleTimeout(
+                    RoundStep::Propose,
+                    self.propose_timeout(),
+                );
+            };
+            (block, self.locked_round.map(|r| r as i32).unwrap_or(-1))
+        } else if let Some(ref vb) = self.valid_value {
             (vb.clone(), self.valid_round.map(|r| r as i32).unwrap_or(-1))
         } else {
             (fresh_block, -1)
@@ -1590,6 +1610,60 @@ impl ConsensusEngine {
         }
     }
 
+    /// Restore a proposal block from WAL recovery.
+    pub fn restore_proposal_block(&mut self, height: u64, round: u32, block: Block) {
+        if height != self.height {
+            return;
+        }
+        let block_hash = block.hash();
+        info!(
+            "🔐 WAL: Restoring proposal block: h={} r={} hash={}",
+            height,
+            round,
+            hex::encode(&block_hash.0[..4])
+        );
+        self.proposal_blocks.insert(block_hash, block.clone());
+        if self.locked_value == Some(block_hash) {
+            self.valid_round = Some(round);
+            self.valid_value = Some(block);
+        }
+    }
+
+    /// Release a restored lock only when its proposal value is unrecoverable.
+    ///
+    /// Signed vote records remain restored, so the validator still cannot
+    /// double-sign any recovered height/round. This is only for legacy or
+    /// corrupted WALs that contain a lock hash but not the corresponding
+    /// proposal block; a Tendermint lock without its value cannot make progress.
+    pub fn release_unrecoverable_lock_without_value(
+        &mut self,
+        height: u64,
+        block_hash: Hash,
+    ) -> bool {
+        if height != self.height || self.locked_value != Some(block_hash) {
+            return false;
+        }
+        if self.proposal_blocks.contains_key(&block_hash) {
+            return false;
+        }
+        warn!(
+            "⚠️ BFT: releasing unrecoverable restored lock at h={} hash={} because the proposal value is absent from WAL",
+            height,
+            hex::encode(&block_hash.0[..4])
+        );
+        self.locked_round = None;
+        self.locked_value = None;
+        if self
+            .valid_value
+            .as_ref()
+            .is_some_and(|block| block.hash() == block_hash)
+        {
+            self.valid_value = None;
+            self.valid_round = None;
+        }
+        true
+    }
+
     /// Restore a signed local prevote from WAL slashing-protection state.
     pub fn restore_signed_prevote(
         &mut self,
@@ -1843,6 +1917,124 @@ mod tests {
             Some(&Some(restored_hash))
         );
         assert_eq!(engine.locked_state(), Some((0, restored_hash)));
+    }
+
+    #[test]
+    fn test_locked_proposer_requires_recovered_block_value() {
+        let (validators, vs, sp) = make_test_env(1);
+        let (kp, pk) = validators.into_iter().next().unwrap();
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(77);
+
+        let locked_hash = Hash::hash(b"locked-but-missing");
+        engine.restore_lock(77, 2, locked_hash);
+        engine.round = 3;
+        let fresh_block = Block::new_with_timestamp(
+            77,
+            Hash::default(),
+            Hash::hash(b"fresh"),
+            pk.0,
+            Vec::new(),
+            1_700_000_010,
+        );
+
+        let action = engine.create_proposal(fresh_block, &vs, &sp);
+        assert!(matches!(
+            action,
+            ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
+        ));
+        assert!(engine.signed_prevote_rounds.get(&3).is_none());
+    }
+
+    #[test]
+    fn test_release_unrecoverable_lock_keeps_signed_vote_protection() {
+        let (validators, vs, sp) = make_test_env(1);
+        let (kp, pk) = validators.into_iter().next().unwrap();
+        let restored_hash = Hash::hash(b"missing-proposal");
+        let restored_sig = kp.sign(&Prevote::signable_bytes(80, 2, &Some(restored_hash)));
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(80);
+        engine
+            .restore_signed_prevote(80, 2, Some(restored_hash), restored_sig)
+            .unwrap();
+        engine.restore_lock(80, 2, restored_hash);
+
+        assert!(engine.release_unrecoverable_lock_without_value(80, restored_hash));
+        assert_eq!(engine.locked_state(), None);
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&2),
+            Some(&Some(restored_hash))
+        );
+
+        engine.round = 3;
+        let fresh_block = Block::new_with_timestamp(
+            80,
+            Hash::default(),
+            Hash::hash(b"fresh-after-release"),
+            pk.0,
+            Vec::new(),
+            1_700_000_040,
+        );
+        let fresh_hash = fresh_block.hash();
+        let action = engine.create_proposal(fresh_block, &vs, &sp);
+        assert!(matches!(action, ConsensusAction::Multiple(_)));
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&3),
+            Some(&Some(fresh_hash))
+        );
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&2),
+            Some(&Some(restored_hash))
+        );
+    }
+
+    #[test]
+    fn test_locked_proposer_reproposes_recovered_block_value() {
+        let (validators, vs, sp) = make_test_env(1);
+        let (kp, pk) = validators.into_iter().next().unwrap();
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(78);
+
+        let locked_block = Block::new_with_timestamp(
+            78,
+            Hash::default(),
+            Hash::hash(b"locked-state"),
+            pk.0,
+            Vec::new(),
+            1_700_000_020,
+        );
+        let locked_hash = locked_block.hash();
+        engine.restore_lock(78, 2, locked_hash);
+        engine.restore_proposal_block(78, 2, locked_block.clone());
+        engine.round = 3;
+
+        let fresh_block = Block::new_with_timestamp(
+            78,
+            Hash::default(),
+            Hash::hash(b"fresh-state"),
+            pk.0,
+            Vec::new(),
+            1_700_000_030,
+        );
+        let action = engine.create_proposal(fresh_block, &vs, &sp);
+
+        let ConsensusAction::Multiple(actions) = action else {
+            panic!("expected proposal and prevote actions");
+        };
+        let proposal = actions.iter().find_map(|action| {
+            if let ConsensusAction::BroadcastProposal(proposal) = action {
+                Some(proposal)
+            } else {
+                None
+            }
+        });
+        let proposal = proposal.expect("proposal action");
+        assert_eq!(proposal.block.hash(), locked_hash);
+        assert_eq!(proposal.valid_round, 2);
+        assert_eq!(
+            engine.signed_prevote_rounds.get(&3),
+            Some(&Some(locked_hash))
+        );
     }
 
     #[test]

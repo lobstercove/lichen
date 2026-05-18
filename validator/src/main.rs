@@ -14890,6 +14890,12 @@ async fn run_validator() {
             wal_recovery.signed_votes.len()
         );
     }
+    if !wal_recovery.proposal_blocks.is_empty() {
+        info!(
+            "📋 WAL: Recovered {} proposal block(s)",
+            wal_recovery.proposal_blocks.len()
+        );
+    }
     // Track the last lock we persisted so we can detect new locks.
     let mut last_wal_lock: Option<(u32, Hash)> = None;
 
@@ -14950,9 +14956,22 @@ async fn run_validator() {
     bft_committing_slot.store(start_height, Ordering::Release);
     consensus_wal.log_height_start(start_height);
     // Restore lock from WAL recovery (G-2 fix: lock persistence across crashes)
+    let missing_recovered_lock_value =
+        wal_recovery
+            .locked_state
+            .and_then(|(lock_h, _, lock_hash)| {
+                let has_value = wal_recovery
+                    .proposal_blocks
+                    .iter()
+                    .any(|(height, _, block)| *height == lock_h && block.hash() == lock_hash);
+                (!has_value).then_some((lock_h, lock_hash))
+            });
     if let Some((lock_h, lock_r, lock_hash)) = wal_recovery.locked_state {
         bft.restore_lock(lock_h, lock_r, lock_hash);
         last_wal_lock = Some((lock_r, lock_hash));
+    }
+    for (height, round, block) in &wal_recovery.proposal_blocks {
+        bft.restore_proposal_block(*height, *round, block.clone());
     }
     for record in &wal_recovery.signed_votes {
         if record.validator != validator_pubkey {
@@ -14987,6 +15006,11 @@ async fn run_validator() {
                     error!("📋 WAL: Failed to restore signed precommit: {}", e);
                 }
             }
+        }
+    }
+    if let Some((lock_height, lock_hash)) = missing_recovered_lock_value {
+        if bft.release_unrecoverable_lock_without_value(lock_height, lock_hash) {
+            last_wal_lock = None;
         }
     }
     if let Some(recovered_round) = recovered_bft_round {
@@ -15089,7 +15113,20 @@ async fn run_validator() {
                         parent_hash,
                         expected_validators_hash,
                     ) {
-                        Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                        Ok(()) => match consensus_wal.log_proposal_block_result(
+                            proposal.height,
+                            proposal.round,
+                            &proposal.block,
+                        ) {
+                            Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                            Err(err) => {
+                                error!(
+                                    "📋 WAL: Refusing to prevote without durable proposal block: {}",
+                                    err
+                                );
+                                ConsensusAction::None
+                            }
+                        },
                         Err(err) => {
                             warn!("{}", err);
                             ConsensusAction::None
@@ -15232,7 +15269,20 @@ async fn run_validator() {
                         parent_hash,
                         expected_validators_hash,
                     ) {
-                        Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                        Ok(()) => match consensus_wal.log_proposal_block_result(
+                            proposal.height,
+                            proposal.round,
+                            &proposal.block,
+                        ) {
+                            Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                            Err(err) => {
+                                error!(
+                                    "📋 WAL: Refusing to prevote without durable proposal block: {}",
+                                    err
+                                );
+                                ConsensusAction::None
+                            }
+                        },
                         Err(err) => {
                             warn!("{}", err);
                             ConsensusAction::None
@@ -15689,7 +15739,20 @@ async fn run_validator() {
                                 parent_hash,
                                 expected_validators_hash,
                             ) {
-                                Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                                Ok(()) => match consensus_wal.log_proposal_block_result(
+                                    proposal.height,
+                                    proposal.round,
+                                    &proposal.block,
+                                ) {
+                                    Ok(()) => bft.on_proposal(proposal, &height_vs, &height_pool),
+                                    Err(err) => {
+                                        error!(
+                                            "📋 WAL: Refusing to prevote without durable proposal block: {}",
+                                            err
+                                        );
+                                        ConsensusAction::None
+                                    }
+                                },
                                 Err(err) => {
                                     warn!("{}", err);
                                     ConsensusAction::None
@@ -15914,6 +15977,19 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastProposal(proposal) => {
+            if proposal.proposer == bft.validator_pubkey {
+                if let Err(e) = consensus_wal.log_proposal_block_result(
+                    proposal.height,
+                    proposal.round,
+                    &proposal.block,
+                ) {
+                    error!(
+                        "📋 WAL: Refusing to broadcast proposal without durable proposal block: {}",
+                        e
+                    );
+                    return;
+                }
+            }
             {
                 let mut live_vs = validator_set.write().await;
                 let _ = note_validator_activity(
@@ -15947,6 +16023,16 @@ async fn execute_consensus_actions(
 
         ConsensusAction::BroadcastPrevote(prevote) => {
             if prevote.validator == bft.validator_pubkey {
+                if let Some(block_hash) = prevote.block_hash {
+                    if !consensus_wal.has_proposal_block(prevote.height, block_hash) {
+                        error!(
+                            "📋 WAL: Refusing to broadcast non-nil prevote without durable proposal block h={} hash={}",
+                            prevote.height,
+                            hex::encode(&block_hash.0[..4])
+                        );
+                        return;
+                    }
+                }
                 if let Err(e) = consensus_wal.log_signed_prevote(&prevote) {
                     error!(
                         "📋 WAL: Refusing to broadcast prevote without durable signed-vote record: {}",
@@ -15988,6 +16074,16 @@ async fn execute_consensus_actions(
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
             if precommit.validator == bft.validator_pubkey {
+                if let Some(block_hash) = precommit.block_hash {
+                    if !consensus_wal.has_proposal_block(precommit.height, block_hash) {
+                        error!(
+                            "📋 WAL: Refusing to broadcast non-nil precommit without durable proposal block h={} hash={}",
+                            precommit.height,
+                            hex::encode(&block_hash.0[..4])
+                        );
+                        return;
+                    }
+                }
                 if let Err(e) = consensus_wal.log_signed_precommit(&precommit) {
                     error!(
                         "📋 WAL: Refusing to broadcast precommit without durable signed-vote record: {}",
