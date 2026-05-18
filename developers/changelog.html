@@ -79,6 +79,25 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.48 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.48</span>
+                    <span class="changelog-date">May 18, 2026</span>
+                </div>
+                <h3 class="changelog-title">Learned Peer Endpoint Rotation</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Fresh validator agents</strong> &mdash; applies endpoint-rotation identity handling
+                            to outbound learned peers as well as inbound learned peers, while preserving strict TOFU
+                            pinning for configured seed and reserved endpoints. This prevents stale agent NAT entries in
+                            seed peer stores from causing identity mismatch noise during clean reinstalls.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.47 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

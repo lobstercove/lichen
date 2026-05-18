@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.47` with the clean Neo/GAS route, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, configured-seed/cached-peer separation for fresh external validator joins, and fail-closed public activation gates built on the stable `v0.5.37` base.
+**Current release:** signed `v0.5.48` with the clean Neo/GAS route, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, configured-seed/cached-peer separation for fresh external validator joins, learned-peer endpoint identity rotation, and fail-closed public activation gates built on the stable `v0.5.37` base.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -127,9 +127,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.47/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.47/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.47/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.48/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.48/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.48/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
