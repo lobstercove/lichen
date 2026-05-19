@@ -3810,7 +3810,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
 
     // Validate inputs
     const validChains = ['solana', 'ethereum', 'bnb', 'neox'];
-    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas'];
+    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];
     if (!validChains.includes(chain)) { showToast('Invalid chain selected', 'error'); return; }
     if (!validAssets.includes(asset)) { showToast('Invalid asset selected', 'error'); return; }
     if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) { showToast('Invalid wallet address', 'error'); return; }

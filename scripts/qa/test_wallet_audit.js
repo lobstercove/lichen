@@ -909,6 +909,12 @@ test('wallet.js exposes Neo X bridge controls with route status and reserve cont
         'wallet.js should define Neo X chain metadata');
     assert(walletSrc.includes("tokens: ['GAS', 'NEO']"),
         'Neo X deposit UI should expose GAS and NEO custody routes');
+    assert(walletSrc.includes("const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb', 'gas', 'neo'];"),
+        'Neo X NEO deposits should pass wallet-side bridge asset validation');
+    assert(extensionFullSrc.includes("neox: { label: 'Neo X'") && extensionFullSrc.includes("assets: ['gas', 'neo']"),
+        'extension full-page deposit flow should expose both Neo X GAS and NEO');
+    assert(extensionPopupSrc.includes("NEOX: { name: 'Neo X'") && extensionPopupSrc.includes("tokens: ['GAS', 'NEO']"),
+        'extension popup deposit flow should expose both Neo X GAS and NEO');
     assert(walletSrc.includes("trustedRpcCall('getBridgeRouteRestrictionStatus'"),
         'wallet bridge deposit flow should preflight route status');
     assert(walletSrc.includes("getWneoStats") && walletSrc.includes("getWgasStats"),
