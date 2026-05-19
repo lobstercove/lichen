@@ -499,17 +499,18 @@ async function displayTransaction(tx) {
     document.getElementById('detailAmount').textContent = amountDisplay;
     if (typeRaw === 'Shield') {
         upsertParticipants(fromAddress, toAddress, nameMap, {
-            toOverride: 'Shielded Pool (private)',
+            fromOverride: 'Private',
+            toOverride: 'Private',
         });
     } else if (typeRaw === 'Unshield') {
         upsertParticipants(fromAddress, toAddress, nameMap, {
-            fromOverride: 'Shielded Pool (private)',
+            fromOverride: 'Private',
+            toOverride: 'Private',
         });
     } else if (typeRaw === 'ShieldedTransfer') {
         upsertParticipants(fromAddress, toAddress, nameMap, {
-            fromOverride: 'Shielded Note(s) (private)',
-            toOverride: 'Shielded Note(s) (private)',
-            feePayer: firstInstructionAccounts[0] || null,
+            fromOverride: 'Private',
+            toOverride: 'Private',
         });
     } else {
         upsertParticipants(fromAddress, toAddress, nameMap);

@@ -135,12 +135,12 @@ async function renderTransactions() {
         const statusClass = isError ? 'error' : 'success';
 
         const fromDisplay = shieldedTx
-            ? 'Shielded Note(s) (private)'
+            ? 'Private'
             : (typeof formatAddressWithLichenName === 'function'
                 ? formatAddressWithLichenName(fromAddress, nameMap[fromAddress])
                 : formatAddress(fromAddress));
         const toDisplay = shieldedTx
-            ? 'Shielded Note(s) (private)'
+            ? 'Private'
             : (typeof formatAddressWithLichenName === 'function'
                 ? formatAddressWithLichenName(toAddress, nameMap[toAddress])
                 : formatAddress(toAddress));

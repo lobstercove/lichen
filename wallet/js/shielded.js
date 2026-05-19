@@ -985,6 +985,11 @@ async function loadNotesFromStorage() {
 function updateShieldedUI() {
     const balanceLicn = shieldedState.shieldedBalance / SPORES_PER_LICN;
     const el = (id) => document.getElementById(id);
+    if (typeof window.setWalletShieldedBalance === 'function') {
+        window.setWalletShieldedBalance(shieldedState.shieldedBalance);
+    } else {
+        window.currentShieldedBalanceSpores = shieldedState.shieldedBalance;
+    }
 
     // Shielded balance display
     const balEl = el('shieldedBalanceValue');

@@ -239,8 +239,8 @@ function renderShieldedTxs(txs) {
                     <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(signature)}" title="Copy signature"></i>
                 </td>
                 <td><span class="pill pill-${type.toLowerCase()}">${formatShieldedTypeLabel(type)}</span></td>
-                <td><span class="hash-short">Shielded Note(s) (private)</span></td>
-                <td><span class="hash-short">Shielded Note(s) (private)</span></td>
+                <td><span class="hash-short">Private</span></td>
+                <td><span class="hash-short">Private</span></td>
                 <td>${amount}</td>
                 <td>${fee}</td>
                 <td><span class="pill pill-${statusClass}" title="${escapeHtml(String(statusRaw))}"><i class="fas fa-${statusIcon}"></i> ${statusLabel}</span></td>

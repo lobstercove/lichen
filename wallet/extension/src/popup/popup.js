@@ -1251,11 +1251,13 @@ async function refreshBalance() {
     // Balance breakdown (matches wallet website)
     const breakdownEl = document.getElementById('balanceBreakdown');
     if (breakdownEl) {
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0;
+      const shieldedLicn = Math.max(0, Number(shieldedPopupState?.shieldedBalance || 0)) / 1_000_000_000;
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedLicn > 0;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (shieldedLicn > 0) parts.push(`<i class="fas fa-shield-alt"></i> Shielded: <strong>${shieldedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         breakdownEl.innerHTML = parts.join(' · ');
@@ -2079,6 +2081,7 @@ async function loadShieldPanel() {
     shieldedPopupState.shieldedBalance = notes
       .filter((note) => !note.spent)
       .reduce((sum, note) => sum + Number(note.value || 0), 0);
+    void refreshBalance();
   }
 
   // Update shielded balance display

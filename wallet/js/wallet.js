@@ -534,6 +534,39 @@ function stopBalancePolling() {
     }
 }
 
+window.currentShieldedBalanceSpores = Number(window.currentShieldedBalanceSpores || 0);
+window.currentWalletBalanceBreakdown = null;
+
+function renderWalletBalanceBreakdown() {
+    const breakdownEl = document.getElementById('balanceBreakdown');
+    const snapshot = window.currentWalletBalanceBreakdown;
+    if (!breakdownEl || !snapshot) return;
+
+    const sporesPerLicn = typeof SPORES_PER_LICN === 'number' ? SPORES_PER_LICN : 1_000_000_000;
+    const shielded = Math.max(0, Number(window.currentShieldedBalanceSpores || 0)) / sporesPerLicn;
+    const hasBreakdown = snapshot.staked > 0 || snapshot.locked > 0 || snapshot.mossStaked > 0 || shielded > 0;
+    if (!hasBreakdown) {
+        breakdownEl.innerHTML = '';
+        breakdownEl.style.display = 'none';
+        return;
+    }
+
+    const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(snapshot.spendable, 4)}</strong>`];
+    if (snapshot.staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(snapshot.staked, 4)}</strong>`);
+    if (snapshot.mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${fmtToken(snapshot.mossStaked, 4)}</strong>`);
+    if (shielded > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${fmtToken(shielded, 4)}</strong>`);
+    if (snapshot.locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(snapshot.locked, 4)}</strong>`);
+
+    breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+    breakdownEl.style.display = 'block';
+}
+
+window.setWalletShieldedBalance = function setWalletShieldedBalance(spores) {
+    const parsed = Number(spores);
+    window.currentShieldedBalanceSpores = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    renderWalletBalanceBreakdown();
+};
+
 // RPC Client (same as explorer)
 class LichenRPC {
     constructor(url) {
@@ -579,13 +612,21 @@ class LichenRPC {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
             try {
-                const statuses = await this.call('getSignatureStatuses', [[signature]]);
-                const status = statuses?.value?.[0];
-                if (status && status.confirmation_status === 'confirmed') {
+                const confirmation = await this.call('confirmTransaction', [signature]);
+                const status = confirmation?.value;
+                if (status && ['processed', 'confirmed', 'finalized'].includes(status.confirmation_status)) {
                     return { confirmed: true, status };
                 }
                 if (status && status.err) {
                     return { confirmed: false, error: status.err };
+                }
+            } catch { /* retry */ }
+            try {
+                const tx = await this.call('getTransaction', [signature]);
+                if (tx) {
+                    return tx.success === false
+                        ? { confirmed: false, error: tx.error || 'Transaction failed' }
+                        : { confirmed: true, status: { confirmation_status: 'confirmed', slot: tx.slot ?? null } };
                 }
             } catch { /* retry */ }
             await new Promise(r => setTimeout(r, 800));
@@ -2435,24 +2476,13 @@ async function refreshBalance() {
         document.getElementById('balanceUsd').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
 
         // Balance breakdown — show spendable/staked/locked/moss split when non-trivial
-        const breakdownEl = document.getElementById('balanceBreakdown');
-        if (breakdownEl) {
-            const spendable = parseFloat(balance.spendable_licn) || 0;
-            const staked = parseFloat(balance.staked_licn) || 0;
-            const locked = parseFloat(balance.locked_licn) || 0;
-            const mossStaked = parseFloat(balance.moss_staked_licn) || 0;
-            const hasBreakdown = staked > 0 || locked > 0 || mossStaked > 0;
-            if (hasBreakdown) {
-                const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(spendable)}</strong>`];
-                if (staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(staked)}</strong>`);
-                if (mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${fmtToken(mossStaked)}</strong>`);
-                if (locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(locked)}</strong>`);
-                breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
-                breakdownEl.style.display = 'block';
-            } else {
-                breakdownEl.style.display = 'none';
-            }
-        }
+        window.currentWalletBalanceBreakdown = {
+            spendable: parseFloat(balance.spendable_licn) || 0,
+            staked: parseFloat(balance.staked_licn) || 0,
+            locked: parseFloat(balance.locked_licn) || 0,
+            mossStaked: parseFloat(balance.moss_staked_licn) || 0,
+        };
+        renderWalletBalanceBreakdown();
     } catch (error) {
         // Silently handle - new wallet with no on-chain account is expected
         const settings = walletState.settings || {};
@@ -2461,8 +2491,14 @@ async function refreshBalance() {
         const sym = currencySymbols[currency] || '$';
         window.totalWalletBalance = 0;
         window.walletBalance = 0;
+        window.currentWalletBalanceBreakdown = null;
         document.getElementById('totalBalance').textContent = '0.00 LICN';
         document.getElementById('balanceUsd').textContent = `${sym}0.00 ${currency}`;
+        const breakdownEl = document.getElementById('balanceBreakdown');
+        if (breakdownEl) {
+            breakdownEl.innerHTML = '';
+            breakdownEl.style.display = 'none';
+        }
     }
 }
 

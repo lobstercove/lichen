@@ -1031,11 +1031,13 @@ async function refreshBalance() {
 
     const breakdownEl = $('balanceBreakdown');
     if (breakdownEl) {
-      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0;
+      const shieldedLicn = Math.max(0, Number(_shieldedState?.balance || 0)) / 1_000_000_000;
+      const hasBreakdown = balanceSnapshot.stakedLicn > 0 || balanceSnapshot.lockedLicn > 0 || balanceSnapshot.mossStakedLicn > 0 || balanceSnapshot.pendingRewardsLicn > 0 || shieldedLicn > 0;
       if (hasBreakdown) {
         const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${balanceSnapshot.spendableLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`];
         if (balanceSnapshot.stakedLicn > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${balanceSnapshot.stakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.mossStakedLicn > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${balanceSnapshot.mossStakedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+        if (shieldedLicn > 0) parts.push(`<i class="fas fa-shield-alt" style="opacity:0.5;"></i> Shielded: <strong>${shieldedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.pendingRewardsLicn > 0) parts.push(`<i class="fas fa-gift" style="opacity:0.5;"></i> Rewards: <strong>${balanceSnapshot.pendingRewardsLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         if (balanceSnapshot.lockedLicn > 0) parts.push(`<i class="fas fa-hourglass" style="opacity:0.5;"></i> Locked: <strong>${balanceSnapshot.lockedLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
         breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
@@ -1877,6 +1879,7 @@ async function loadShieldTab() {
   shieldedBalance = ownedNotes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
 
   _shieldedState = { ..._shieldedState, balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
+  void refreshBalance();
 
   const balLicn = (shieldedBalance / 1_000_000_000).toFixed(4);
   const poolLicn = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';

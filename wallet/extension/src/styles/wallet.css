@@ -1073,6 +1073,24 @@
     margin-bottom: 1.5rem;
 }
 
+.balance-breakdown {
+    display: none;
+    margin-top: -0.55rem;
+    margin-bottom: 1.05rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.balance-breakdown i {
+    margin-right: 0.22rem;
+}
+
+.balance-breakdown strong {
+    color: var(--text-primary);
+}
+
 .balance-actions {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
