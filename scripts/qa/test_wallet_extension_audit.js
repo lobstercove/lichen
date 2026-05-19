@@ -842,11 +842,15 @@ test('CC-18 provider router reuses shared tx-service message serializer', () => 
     'tx-service should chunk base64 encoding for proof-sized transactions');
 });
 
-test('CC-19 extension MossStake APY display is bounded for fresh tiny pools', () => {
-  assert.ok(fullSrc.includes('function formatMossStakeApyLabel('), 'full page should define bounded MossStake APY formatter');
-  assert.ok(fullSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'full page tiers should use bounded APY formatter');
-  assert.ok(popupSrc.includes('function formatMossStakeApyLabel('), 'popup should define bounded MossStake APY formatter');
-  assert.ok(popupSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'popup tiers should use bounded APY formatter');
+test('CC-19 extension MossStake tier cards use deterministic reward labels', () => {
+  assert.ok(fullSrc.includes('function formatMossStakeRewardLabel('), 'full page should define MossStake reward formatter');
+  assert.ok(fullSrc.includes('const displayTiers = tierDefaults.map'), 'full page should derive tier labels from pool metadata');
+  assert.ok(fullSrc.includes('formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier)'), 'full page tiers should use reward labels');
+  assert.ok(popupSrc.includes('function formatMossStakeRewardLabel('), 'popup should define MossStake reward formatter');
+  assert.ok(popupSrc.includes('const displayTiers = tierDefaults.map'), 'popup should derive tier labels from pool metadata');
+  assert.ok(popupSrc.includes('formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier)'), 'popup tiers should use reward labels');
+  assert.ok(!fullSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'full page should not render unstable APY caps');
+  assert.ok(!popupSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'popup should not render unstable APY caps');
 });
 
 test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
@@ -854,6 +858,17 @@ test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
   assert.ok(!fullSrc.includes('const currentSlot = Math.floor(Date.now() / 400);'), 'full page should not use wall-clock slot guesses for MossStake');
   assert.ok(fullSrc.includes('function formatLichenNameExt('), 'full page should normalize .lichen labels');
   assert.ok(popupSrc.includes('function formatLichenNamePopup('), 'popup should normalize .lichen labels');
+});
+
+test('CC-21 extension shield notes resolve commitment indexes before spending', () => {
+  assert.ok(fullSrc.includes('async function resolveExtensionShieldedCommitmentIndex('),
+    'full page should resolve shielded note indexes by commitment hash');
+  assert.ok(fullSrc.includes('const noteIndex = await resolveExtensionNoteCommitmentIndex(client, note);'),
+    'extension unshield should verify or refresh the note index before fetching the Merkle path');
+  assert.ok(fullSrc.includes('pendingIndex: !Number.isFinite(resolvedIndex)'),
+    'extension shield should mark unresolved commitment indexes pending');
+  assert.ok(fullSrc.includes('await saveExtensionShieldedNotes(wallet);'),
+    'extension should persist repaired shielded note indexes');
 });
 
 // ============================================================================

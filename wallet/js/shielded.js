@@ -263,13 +263,21 @@ async function syncShieldedState() {
 
         if (commitments.length > 0) {
             for (const entry of commitments) {
+                const entryIndex = Number(
+                    entry.index ?? entry.commitment_index ?? entry.commitmentIndex ?? shieldedState.lastSyncedIndex
+                );
                 shieldedState.commitments.push(entry.commitment);
+                const existingNote = shieldedState.ownedNotes.find((n) => n.commitment === entry.commitment);
+                if (existingNote && Number.isFinite(entryIndex) && entryIndex >= 0) {
+                    existingNote.index = entryIndex;
+                    existingNote.pendingIndex = false;
+                }
 
                 // Trial-decrypt: try to decrypt with our viewing key
                 const note = await tryDecryptNote(entry);
-                if (note) {
+                if (note && !existingNote) {
                     shieldedState.ownedNotes.push({
-                        index: shieldedState.lastSyncedIndex + shieldedState.commitments.length - 1,
+                        index: Number.isFinite(entryIndex) && entryIndex >= 0 ? entryIndex : shieldedState.lastSyncedIndex,
                         value: note.value,
                         blinding: note.blinding,
                         serial: note.serial,
@@ -306,6 +314,50 @@ async function syncShieldedState() {
     } catch (err) {
         console.error('Shielded sync error:', err);
     }
+}
+
+async function fetchShieldedCommitmentEntries(from, limit = 1000) {
+    const resp = await rpc.call('getShieldedCommitments', [{ from, limit }]);
+    return Array.isArray(resp)
+        ? resp
+        : (Array.isArray(resp?.commitments) ? resp.commitments : []);
+}
+
+async function resolveShieldedCommitmentIndex(commitmentHex, preferredIndex = null) {
+    const normalized = String(commitmentHex || '').toLowerCase();
+    if (!normalized) return null;
+
+    const preferred = Number(preferredIndex);
+    if (Number.isFinite(preferred) && preferred >= 0) {
+        const probe = await fetchShieldedCommitmentEntries(preferred, 1).catch(() => []);
+        const match = probe.find((entry) => String(entry.commitment || '').toLowerCase() === normalized);
+        const matchIndex = Number(match?.index ?? match?.commitment_index ?? match?.commitmentIndex);
+        if (match && Number.isFinite(matchIndex) && matchIndex >= 0) return matchIndex;
+    }
+
+    const pool = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
+    const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+    if (!Number.isFinite(total) || total <= 0) return null;
+
+    const pageSize = 1000;
+    for (let from = Math.max(0, total - pageSize); from >= 0; from = Math.max(0, from - pageSize)) {
+        const entries = await fetchShieldedCommitmentEntries(from, pageSize).catch(() => []);
+        const match = entries.find((entry) => String(entry.commitment || '').toLowerCase() === normalized);
+        const matchIndex = Number(match?.index ?? match?.commitment_index ?? match?.commitmentIndex);
+        if (match && Number.isFinite(matchIndex) && matchIndex >= 0) return matchIndex;
+        if (from === 0) break;
+    }
+    return null;
+}
+
+async function resolveNoteCommitmentIndex(note) {
+    const resolved = await resolveShieldedCommitmentIndex(note?.commitment, note?.index);
+    if (!Number.isFinite(resolved) || resolved < 0) {
+        throw new Error('Shielded commitment is not indexed yet; sync the shielded pool and try again');
+    }
+    note.index = resolved;
+    note.pendingIndex = false;
+    return resolved;
 }
 
 // ===== Note Encryption/Decryption =====
@@ -437,7 +489,7 @@ async function shieldLicn(amountLicn) {
 
         const proof = hexToBytes(shieldProof.proof);
         const poolBefore = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
-        const commitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
+        const expectedCommitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
@@ -445,17 +497,22 @@ async function shieldLicn(amountLicn) {
             amountSpores,
             commitment,
             proof,
-            commitmentIndex,
+            commitmentIndex: expectedCommitmentIndex,
         });
 
         if (result && result.success) {
+            const commitmentIndex = await resolveShieldedCommitmentIndex(
+                commitment,
+                result.commitment_index ?? expectedCommitmentIndex,
+            );
             // Add to our owned notes
             shieldedState.ownedNotes.push({
-                index: result.commitment_index ?? shieldedState.commitments.length,
+                index: Number.isFinite(commitmentIndex) ? commitmentIndex : null,
                 value: amountSpores,
                 blinding: blindingHex,
                 serial: bytesToHex(serial),
                 commitment: commitment,
+                pendingIndex: !Number.isFinite(commitmentIndex),
                 spent: false,
             });
             shieldedState.shieldedBalance += amountSpores;
@@ -516,7 +573,8 @@ async function unshieldLicn(amountLicn, recipientAddress) {
 
     try {
         const nullifier = await computeNullifier(noteToSpend.serial);
-        const merklePath = await rpc.call('getShieldedMerklePath', [noteToSpend.index]);
+        const noteIndex = await resolveNoteCommitmentIndex(noteToSpend);
+        const merklePath = await rpc.call('getShieldedMerklePath', [noteIndex]);
         const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || shieldedState.merkleRoot;
         if (!merkleRoot) {
             throw new Error('Shielded Merkle root unavailable');
@@ -987,7 +1045,7 @@ function renderNoteList() {
                     ${(note.value / SPORES_PER_LICN).toFixed(4)} LICN
                 </div>
                 <div class="shield-note-meta">
-                    Note #${note.index} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
+                    Note #${note.index ?? '?'} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
                 </div>
             </div>
             <span class="shield-note-badge">

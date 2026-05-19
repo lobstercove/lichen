@@ -114,13 +114,18 @@ function formatNeoGasBaseUnits(value) {
   return (raw / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
 }
 
-const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+function formatRewardMultiplierExt(multiplier) {
+  const raw = String(multiplier ?? '1').trim();
+  if (raw.endsWith('x')) return raw;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
+  }
+  return `${raw || '1'}x`;
+}
 
-function formatMossStakeApyLabel(apyPercent, multiplier) {
-  const apy = Number(apyPercent);
-  if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1} rewards`;
-  if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
-  return `${apy.toFixed(1)}% APY`;
+function formatMossStakeRewardLabel(_apyPercent, multiplier) {
+  return `${formatRewardMultiplierExt(multiplier)} rewards`;
 }
 
 function formatLichenNameExt(name) {
@@ -1239,10 +1244,19 @@ async function loadStakingTab() {
     const isLocked = lockUntil > 0 && (!hasCurrentSlot || lockUntil > currentSlot);
     const remainingDays = isLocked && hasCurrentSlot ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
 
-    const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
-    const tierMultipliers = ['1.0x', '1.6x', '2.4x', '3.6x'];
+    const tierDefaults = [
+      { name: 'Flexible', multiplier: 1 },
+      { name: '30-Day Lock', multiplier: 1.6 },
+      { name: '180-Day Lock', multiplier: 2.4 },
+      { name: '365-Day Lock', multiplier: 3.6 },
+    ];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];
+    const displayTiers = tierDefaults.map((fallback, i) => ({
+      name: poolTiers[i]?.name || fallback.name,
+      multiplier: poolTiers[i]?.multiplier ?? fallback.multiplier,
+      apyPercent: poolTiers[i]?.apy_percent,
+    }));
 
     const lockBanner = isLocked
       ? `<div style="margin-top:1rem;padding:0.75rem 1rem;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;font-size:0.85rem;color:#f97316;">
@@ -1291,14 +1305,11 @@ async function loadStakingTab() {
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.5rem;" id="fullTiersGrid">
-        ${tierNames.map((name, i) => {
-      const isActive = lockTier === name && stLicn > 0;
-      const apyVal = poolTiers[i]?.apy_percent;
-      const apyLabel = apyVal != null && apyVal > 0
-        ? formatMossStakeApyLabel(apyVal, tierMultipliers[i])
-        : tierMultipliers[i] + ' rewards';
+        ${displayTiers.map((tier, i) => {
+      const isActive = lockTier === tier.name && stLicn > 0;
+      const apyLabel = formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier);
       return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
-            <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${name}</div>
+            <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${tier.name}</div>
             <div style="font-size:0.72rem;color:var(--text-muted);">${apyLabel}</div>
             ${isActive ? '<div style="font-size:0.65rem;color:#10b981;margin-top:0.25rem;"><i class="fas fa-check-circle"></i> Active</div>' : ''}
           </div>`;
@@ -1578,6 +1589,50 @@ async function saveExtensionShieldedNotes(wallet) {
   await saveState(state);
 }
 
+async function fetchExtensionShieldedCommitments(client, from, limit = 1000) {
+  const resp = await client.call('getShieldedCommitments', [{ from, limit }]);
+  return Array.isArray(resp)
+    ? resp
+    : (Array.isArray(resp?.commitments) ? resp.commitments : []);
+}
+
+async function resolveExtensionShieldedCommitmentIndex(client, commitmentHex, preferredIndex = null) {
+  const normalized = String(commitmentHex || '').toLowerCase();
+  if (!normalized) return null;
+
+  const preferred = Number(preferredIndex);
+  if (Number.isFinite(preferred) && preferred >= 0) {
+    const probe = await fetchExtensionShieldedCommitments(client, preferred, 1).catch(() => []);
+    const match = probe.find((entry) => String(entry.commitment || '').toLowerCase() === normalized);
+    const matchIndex = Number(match?.index ?? match?.commitment_index ?? match?.commitmentIndex);
+    if (match && Number.isFinite(matchIndex) && matchIndex >= 0) return matchIndex;
+  }
+
+  const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats || null);
+  const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+
+  const pageSize = 1000;
+  for (let from = Math.max(0, total - pageSize); from >= 0; from = Math.max(0, from - pageSize)) {
+    const entries = await fetchExtensionShieldedCommitments(client, from, pageSize).catch(() => []);
+    const match = entries.find((entry) => String(entry.commitment || '').toLowerCase() === normalized);
+    const matchIndex = Number(match?.index ?? match?.commitment_index ?? match?.commitmentIndex);
+    if (match && Number.isFinite(matchIndex) && matchIndex >= 0) return matchIndex;
+    if (from === 0) break;
+  }
+  return null;
+}
+
+async function resolveExtensionNoteCommitmentIndex(client, note) {
+  const resolved = await resolveExtensionShieldedCommitmentIndex(client, note?.commitment, note?.index);
+  if (!Number.isFinite(resolved) || resolved < 0) {
+    throw new Error('Shielded commitment is not indexed yet; sync the shielded pool and try again');
+  }
+  note.index = resolved;
+  note.pendingIndex = false;
+  return resolved;
+}
+
 async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
   const client = rpc();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
@@ -1626,13 +1681,19 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
       hexToBytesAnyExt(proof.proof),
     ),
   });
+  const resolvedIndex = await resolveExtensionShieldedCommitmentIndex(
+    client,
+    proof.commitment,
+    commitmentIndex,
+  );
 
   _shieldedState.notes.push({
-    index: commitmentIndex,
+    index: Number.isFinite(resolvedIndex) ? resolvedIndex : null,
     value: amountSpores,
     blinding: bytesToHex(blinding),
     serial: bytesToHex(serial),
     commitment: proof.commitment,
+    pendingIndex: !Number.isFinite(resolvedIndex),
     spent: false,
   });
   _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, note) => sum + Number(note.value || 0), 0);
@@ -1655,7 +1716,8 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
 
   const client = rpc();
   const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats);
-  const merklePath = await client.call('getShieldedMerklePath', [note.index]);
+  const noteIndex = await resolveExtensionNoteCommitmentIndex(client, note);
+  const merklePath = await client.call('getShieldedMerklePath', [noteIndex]);
   const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot || pool?.merkle_root;
   if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
   _shieldedState.poolStats = { ...(_shieldedState.poolStats || {}), ...(pool || {}), merkleRoot };
@@ -1795,6 +1857,23 @@ async function loadShieldTab() {
   let ownedNotes = [];
   let shieldedAddress = _shieldedState.address || 'Initialize shielded wallet to derive';
   ownedNotes = Array.isArray(_shieldedState.notes) ? _shieldedState.notes : [];
+  let resolvedAnyNoteIndex = false;
+  for (const note of ownedNotes) {
+    if (note?.spent || !note?.commitment) continue;
+    const hasIndex = Number.isFinite(Number(note.index)) && Number(note.index) >= 0;
+    if (hasIndex && !note.pendingIndex) continue;
+    try {
+      const resolved = await resolveExtensionShieldedCommitmentIndex(rpcClient, note.commitment, note.index);
+      if (Number.isFinite(resolved) && resolved >= 0) {
+        note.index = resolved;
+        note.pendingIndex = false;
+        resolvedAnyNoteIndex = true;
+      }
+    } catch (_) { /* leave pending; unshield will re-check */ }
+  }
+  if (resolvedAnyNoteIndex) {
+    await saveExtensionShieldedNotes(wallet);
+  }
   shieldedBalance = ownedNotes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
 
   _shieldedState = { ..._shieldedState, balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
@@ -1809,7 +1888,7 @@ async function loadShieldTab() {
         <div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <div>
             <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} LICN</div>
-            <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index || '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index ?? '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
           </div>
           <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="fas fa-check-circle"></i> Unspent</span>
         </div>`).join('')

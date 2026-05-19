@@ -27,13 +27,18 @@ function fmtUsd(value, sym = '$') {
     return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
-const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+function formatRewardMultiplier(multiplier) {
+    const raw = String(multiplier ?? '1').trim();
+    if (raw.endsWith('x')) return raw;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) {
+        return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
+    }
+    return `${raw || '1'}x`;
+}
 
-function formatMossStakeApyLabel(apyPercent, multiplier) {
-    const apy = Number(apyPercent);
-    if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1}x rewards`;
-    if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
-    return `${apy.toFixed(1)}% APY`;
+function formatMossStakeRewardLabel(_apyPercent, multiplier) {
+    return `${formatRewardMultiplier(multiplier)} rewards`;
 }
 
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
@@ -2549,6 +2554,31 @@ let _stakingValidatorsCache = {
     validators: []
 };
 
+function activityItemKey(tx) {
+    const sig = tx?.signature || tx?.hash || tx?.txid;
+    if (sig) return `sig:${sig}`;
+    return [
+        tx?.type || '',
+        tx?.timestamp || tx?.block_time || '',
+        tx?.amount_spores || tx?.amount || '',
+        tx?.from || '',
+        tx?.to || ''
+    ].join(':');
+}
+
+function mergeActivityItems(existingItems, newItems) {
+    const itemsByKey = new Map();
+    for (const item of [...existingItems, ...newItems]) {
+        const key = activityItemKey(item);
+        const existing = itemsByKey.get(key);
+        if (!existing || (existing.isAirdrop && !item.isAirdrop)) {
+            itemsByKey.set(key, item);
+        }
+    }
+    return Array.from(itemsByKey.values())
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+}
+
 function clearStakingValidatorsCache() {
     _stakingValidatorsCache = {
         network: null,
@@ -2629,6 +2659,7 @@ async function loadActivity(reset = true) {
                     clearTimeout(timer);
                     if (resp.ok) {
                         const records = await resp.json();
+                        const chainKeys = new Set(transactions.map(activityItemKey));
                         airdrops = records.map(a => ({
                             type: 'Airdrop',
                             from: 'Treasury',
@@ -2637,7 +2668,7 @@ async function loadActivity(reset = true) {
                             timestamp: a.timestamp_ms,
                             signature: a.signature,
                             isAirdrop: true
-                        }));
+                        })).filter(a => !chainKeys.has(activityItemKey(a)));
                     }
                 }
             } catch (e) { /* faucet API unavailable — skip silently */ }
@@ -2677,8 +2708,7 @@ async function loadActivity(reset = true) {
             timestamp: (tx.block_time || tx.timestamp || 0) * 1000,
             isAirdrop: false
         })), ...airdrops];
-        _activityItems = [..._activityItems, ...newItems]
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        _activityItems = mergeActivityItems(_activityItems, newItems);
 
         if (_activityItems.length === 0) {
             activityList.innerHTML = emptyHtml;
@@ -2852,7 +2882,7 @@ async function loadStaking() {
                         <div class="tab-banner-icon"><i class="fas fa-water"></i></div>
                         <div class="tab-banner-text">
                             <h3>Liquid Staking</h3>
-                            <p>Stake LICN, receive stLICN. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
+                            <p>Stake LICN, receive stLICN. Earn rewards while keeping liquidity. Choose a lock tier for boosted rewards.</p>
                         </div>
                     </div>
 
@@ -2885,7 +2915,7 @@ async function loadStaking() {
 
                     <div id="mossstakeTiers" style="margin-bottom: 1.5rem;">
                         <h4 class="staking-tiers-heading">
-                            <i class="fas fa-layer-group"></i> Staking Tiers & APY
+                            <i class="fas fa-layer-group"></i> Staking Tiers & Rewards
                         </h4>
                         <div id="tiersGrid" class="staking-tiers-grid"></div>
                     </div>
@@ -3121,9 +3151,7 @@ async function loadMossStakePosition(address) {
             const tierColorClasses = ['flexible', 'lock30', 'lock180', 'lock365'];
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
                 const isActive = position.lock_tier === t.id && position.st_licn_amount > 0;
-                const apyDisplay = poolInfo.total_licn_staked > 0 && t.apy_percent > 0
-                    ? formatMossStakeApyLabel(t.apy_percent, t.multiplier)
-                    : `${t.multiplier}x rewards`;
+                const apyDisplay = formatMossStakeRewardLabel(t.apy_percent, t.multiplier);
                 return `
                     <div class="staking-tier-card ${tierColorClasses[i]} ${isActive ? 'staking-tier-active' : ''}">
                         <div class="staking-tier-name">${t.name}</div>

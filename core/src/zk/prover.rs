@@ -137,8 +137,12 @@ fn shield_public_values_from_circuit(
         ));
     }
 
-    let blinding_bytes = fr_to_bytes(&blinding);
-    let commitment_bytes = fr_to_bytes(&commitment);
+    let blinding_bytes = circuit
+        .blinding_bytes
+        .unwrap_or_else(|| fr_to_bytes(&blinding));
+    let commitment_bytes = circuit
+        .commitment_bytes
+        .unwrap_or_else(|| fr_to_bytes(&commitment));
     let expected_commitment = commitment_hash(amount_u64, &blinding_bytes);
     if expected_commitment != commitment_bytes {
         return Err(
@@ -677,12 +681,7 @@ mod tests {
         let amount = 1_234_567u64;
         let blinding = random_scalar_bytes();
         let commitment = commitment_hash(amount, &blinding);
-        let circuit = ShieldCircuit::new(
-            amount,
-            amount,
-            bytes_to_fr(&blinding),
-            bytes_to_fr(&commitment),
-        );
+        let circuit = ShieldCircuit::new_bytes(amount, amount, blinding, commitment);
 
         let proof = Prover::new().prove_shield(circuit).expect("prove shield");
         let public_values = ShieldAirPublicValues::new(amount, commitment);
@@ -707,6 +706,38 @@ mod tests {
         let config = build_stark_config();
         let air = ShieldAir::new(public_values);
         verify_stark(&config, &air, &stark_proof, &[]).expect("verify shield stark proof");
+    }
+
+    #[test]
+    fn test_shield_prover_preserves_native_commitment_bytes() {
+        let amount = 10_000_000_000u64;
+        let mut selected = None;
+        for seed in 0u8..=u8::MAX {
+            let mut blinding = [seed; 32];
+            blinding[31] = seed.wrapping_mul(17);
+            let commitment = commitment_hash(amount, &blinding);
+            if fr_to_bytes(&bytes_to_fr(&blinding)) != blinding {
+                selected = Some((blinding, commitment));
+                break;
+            }
+        }
+        let (blinding, commitment) =
+            selected.expect("fixture should find blinding bytes reduced by the BN254 adapter");
+
+        let proof = Prover::new()
+            .prove_shield(ShieldCircuit::new_bytes(
+                amount, amount, blinding, commitment,
+            ))
+            .expect("native shield commitment bytes must survive field adapter");
+
+        let public_values = ShieldAirPublicValues::new(amount, commitment);
+        assert_eq!(
+            proof.stark_public_inputs,
+            public_values
+                .to_stark_public_inputs()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

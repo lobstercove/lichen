@@ -1129,10 +1129,14 @@ test('H1-01: secretKey field is not directly accessible', () => {
 
 console.log('\n── MossStake Display Safety ──');
 
-test('MossStake APY display is bounded for fresh tiny pools', () => {
-    assert(walletSrc.includes('function formatMossStakeApyLabel('), 'wallet should use a MossStake APY formatter');
-    assert(walletSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'wallet should define a MossStake APY display cap');
-    assert(walletSrc.includes('formatMossStakeApyLabel(t.apy_percent, t.multiplier)'), 'tier cards should use the bounded APY formatter');
+test('MossStake tier cards show deterministic reward multipliers', () => {
+    assert(walletSrc.includes('function formatMossStakeRewardLabel('), 'wallet should use a MossStake reward formatter');
+    assert(walletSrc.includes('formatMossStakeRewardLabel(t.apy_percent, t.multiplier)'), 'wallet tier cards should use reward labels');
+    assert(extensionFullSrc.includes('function formatMossStakeRewardLabel('), 'extension full page should use reward labels');
+    assert(extensionPopupSrc.includes('function formatMossStakeRewardLabel('), 'extension popup should use reward labels');
+    assert(!walletSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'wallet should not render unstable APY caps');
+    assert(!extensionFullSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'extension full page should not render unstable APY caps');
+    assert(!extensionPopupSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'extension popup should not render unstable APY caps');
 });
 
 test('MossStake lock and claim checks use chain slot instead of wall-clock slot guesses', () => {
@@ -1145,6 +1149,26 @@ test('shielded.js uses the Merkle path root for unshield proofs when available',
         'unshield should prefer the fresh Merkle root returned with the note path');
     assert(shieldedSrc.includes('shieldedState.merkleRoot = merkleRoot'),
         'unshield should update local shielded state with the root used for proof generation');
+});
+
+test('shielded.js resolves note commitment indexes from chain commitments', () => {
+    assert(shieldedSrc.includes('async function resolveShieldedCommitmentIndex('),
+        'shielded notes should resolve their chain commitment index by commitment hash');
+    assert(shieldedSrc.includes('const noteIndex = await resolveNoteCommitmentIndex(noteToSpend);'),
+        'unshield should verify or refresh the note index before fetching the Merkle path');
+    assert(shieldedSrc.includes('existingNote.index = entryIndex'),
+        'shielded sync should repair stored note indexes from RPC commitment entries');
+    assert(shieldedSrc.includes('pendingIndex: !Number.isFinite(commitmentIndex)'),
+        'new shield notes should be marked pending instead of saving an unverified guessed index');
+});
+
+test('wallet activity deduplicates faucet API records already present on-chain', () => {
+    assert(walletSrc.includes('function activityItemKey('), 'wallet should derive stable activity keys');
+    assert(walletSrc.includes('function mergeActivityItems('), 'wallet should merge activity through one dedupe path');
+    assert(walletSrc.includes('.filter(a => !chainKeys.has(activityItemKey(a)))'),
+        'faucet API records should be hidden when the same signature is already in RPC history');
+    assert(walletSrc.includes('existing.isAirdrop && !item.isAirdrop'),
+        'on-chain activity should win over synthetic faucet records for the same signature');
 });
 
 // ============================================================================

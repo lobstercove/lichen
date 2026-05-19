@@ -41,13 +41,18 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
-const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+function formatRewardMultiplierPopup(multiplier) {
+  const raw = String(multiplier ?? '1').trim();
+  if (raw.endsWith('x')) return raw;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
+  }
+  return `${raw || '1'}x`;
+}
 
-function formatMossStakeApyLabel(apyPercent, multiplier) {
-  const apy = Number(apyPercent);
-  if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1} rewards`;
-  if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
-  return `${apy.toFixed(1)}% APY`;
+function formatMossStakeRewardLabel(_apyPercent, multiplier) {
+  return `${formatRewardMultiplierPopup(multiplier)} rewards`;
 }
 
 function formatLichenNamePopup(name) {
@@ -1177,17 +1182,23 @@ async function loadExtensionStaking() {
     `).join('');
 
     // Tier cards
-    const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
-    const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
+    const tierDefaults = [
+      { name: 'Flexible', multiplier: 1 },
+      { name: '30-Day Lock', multiplier: 1.6 },
+      { name: '180-Day Lock', multiplier: 2.4 },
+      { name: '365-Day Lock', multiplier: 3.6 },
+    ];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];
-    tiersEl.innerHTML = tierNames.map((name, i) => {
-      const isActive = tierName === name || (i === 0 && tierName === 'Flexible');
-      const apyVal = poolTiers[i]?.apy_percent;
-      const apyLabel = apyVal != null && apyVal > 0
-        ? formatMossStakeApyLabel(apyVal, tierMultipliers[i])
-        : tierMultipliers[i] + ' rewards';
-      const safeName = escapeHtml(name);
+    const displayTiers = tierDefaults.map((fallback, i) => ({
+      name: poolTiers[i]?.name || fallback.name,
+      multiplier: poolTiers[i]?.multiplier ?? fallback.multiplier,
+      apyPercent: poolTiers[i]?.apy_percent,
+    }));
+    tiersEl.innerHTML = displayTiers.map((tier, i) => {
+      const isActive = tierName === tier.name || (i === 0 && tierName === 'Flexible');
+      const apyLabel = formatMossStakeRewardLabel(tier.apyPercent, tier.multiplier);
+      const safeName = escapeHtml(tier.name);
       const safeApyLabel = escapeHtml(apyLabel);
       return `
         <div style="background:var(--card-bg);padding:0.5rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">

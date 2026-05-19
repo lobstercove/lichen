@@ -44,6 +44,11 @@ pub struct ShieldCircuit {
     pub value: Option<Fr>,
     /// The blinding factor
     pub blinding: Option<Fr>,
+
+    /// Native 32-byte blinding used by the current Plonky3 witness adapter.
+    pub blinding_bytes: Option<[u8; 32]>,
+    /// Native 32-byte commitment stored on-chain and in shielded Merkle leaves.
+    pub commitment_bytes: Option<[u8; 32]>,
 }
 
 impl ShieldCircuit {
@@ -58,17 +63,22 @@ impl ShieldCircuit {
             commitment: Some(commitment),
             value: Some(Fr::from(value)),
             blinding: Some(blinding),
+            blinding_bytes: None,
+            commitment_bytes: None,
         }
     }
 
     /// Create a new shield circuit from canonical 32-byte witness values.
     pub fn new_bytes(amount: u64, value: u64, blinding: [u8; 32], commitment: [u8; 32]) -> Self {
-        Self::new(
-            amount,
-            value,
-            bytes_to_fr(&blinding),
-            bytes_to_fr(&commitment),
-        )
+        Self {
+            poseidon_config: poseidon_config(),
+            amount: Some(Fr::from(amount)),
+            commitment: Some(bytes_to_fr(&commitment)),
+            value: Some(Fr::from(value)),
+            blinding: Some(bytes_to_fr(&blinding)),
+            blinding_bytes: Some(blinding),
+            commitment_bytes: Some(commitment),
+        }
     }
 
     /// Empty circuit for key generation (setup/ceremony phase).
@@ -82,6 +92,8 @@ impl ShieldCircuit {
             commitment: None,
             value: None,
             blinding: None,
+            blinding_bytes: None,
+            commitment_bytes: None,
         }
     }
 }

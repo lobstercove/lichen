@@ -309,6 +309,37 @@ fn encode_tx_base64(tx: &Transaction) -> String {
 // ── getShieldedPoolState ─────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn test_rpc_generate_shield_proof_accepts_native_blinding_bytes() {
+    let app = create_empty_app();
+    let amount = 10_000_000_000u64;
+    let blinding = [0xffu8; 32];
+    let commitment = commitment_hash(amount, &blinding);
+
+    let resp = rpc_call_with_params(
+        &app,
+        "generateShieldProof",
+        json!([{
+            "amount": amount,
+            "blinding": hex::encode(blinding),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    assert!(resp.get("error").is_none(), "unexpected error: {resp:?}");
+    let result = &resp["result"];
+    assert_eq!(result["type"], "shield");
+    assert_eq!(result["amount"], amount);
+    assert_eq!(result["commitment"], hex::encode(commitment));
+    assert!(
+        result["proof"]
+            .as_str()
+            .is_some_and(|proof| !proof.is_empty()),
+        "proof hex should be returned"
+    );
+}
+
+#[tokio::test]
 async fn test_rpc_get_shielded_pool_state_empty() {
     let app = create_empty_app();
     let resp = rpc_call(&app, "getShieldedPoolState").await.unwrap();
