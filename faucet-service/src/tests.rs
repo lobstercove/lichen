@@ -1,4 +1,4 @@
-use super::bootstrap::cors_origin_values;
+use super::bootstrap::{cors_origin_values, cors_origin_values_for_dev};
 use super::models::AirdropQuery;
 use super::rate_limit::RateLimiter;
 use super::storage::{load_airdrops, save_airdrops};
@@ -44,6 +44,27 @@ fn faucet_cors_allows_wallet_origin_for_history_fetches() {
             .iter()
             .any(|origin| origin == "https://lichen-network-wallet.pages.dev"),
         "wallet Pages origin must be allowed for deployment previews"
+    );
+}
+
+#[test]
+fn faucet_dev_cors_allows_local_wallet_origin() {
+    let origins: Vec<String> = cors_origin_values_for_dev(true)
+        .iter()
+        .map(|origin| origin.to_str().expect("valid header value").to_string())
+        .collect();
+
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin == "http://localhost:3009"),
+        "local wallet dev origin must be allowed when DEV_CORS is enabled"
+    );
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin == "http://127.0.0.1:3009"),
+        "127.0.0.1 wallet dev origin must be allowed when DEV_CORS is enabled"
     );
 }
 

@@ -50,6 +50,11 @@ function formatMossStakeApyLabel(apyPercent, multiplier) {
   return `${apy.toFixed(1)}% APY`;
 }
 
+function formatLichenNamePopup(name) {
+  const bare = String(name || '').trim().replace(/(?:\.lichen)+$/i, '');
+  return bare ? `${bare}.lichen` : '';
+}
+
 function securePasswordPrompt(label = 'Wallet password (for signing):') {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
@@ -1106,7 +1111,7 @@ async function loadIdentityPanel() {
     container.innerHTML = `
       <div style="text-align:center;padding:0.75rem 0;">
         <div style="font-size:1.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h4 style="margin:0.5rem 0 0.25rem;">${escapeHtml(identity.name)}${licnName ? ' <span style="color:var(--primary);">' + escapeHtml(licnName + (licnName.endsWith('.lichen') ? '' : '.lichen')) + '</span>' : ''}</h4>
+        <h4 style="margin:0.5rem 0 0.25rem;">${escapeHtml(identity.name)}${licnName ? ' <span style="color:var(--primary);">' + escapeHtml(formatLichenNamePopup(licnName)) + '</span>' : ''}</h4>
         ${nameExpiryHtml}
         <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${escapeHtml(tierName)} · ${escapeHtml(identity.agent_type_name || 'General')}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
         <div style="font-size:0.82rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>

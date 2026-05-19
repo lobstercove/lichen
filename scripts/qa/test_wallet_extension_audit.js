@@ -186,7 +186,10 @@ test('E-2.5 full.js escapes achievement names in identity tab', () => {
 });
 
 test('E-2.6 full.js escapes data.lichenName in .lichen name section', () => {
-  assert.ok(fullSrc.includes("escapeHtmlExt(data.lichenName.endsWith('.lichen')"), 'data.lichenName not escaped in .lichen section');
+  assert.ok(
+    fullSrc.includes('escapeHtmlExt(formatLichenNameExt(data.lichenName))'),
+    'data.lichenName not escaped in .lichen section'
+  );
 });
 
 test('E-2.7 full.js escapes data.endpoint in agent service section', () => {
@@ -215,7 +218,10 @@ test('E-3.2 popup.js escapes identity.name', () => {
 });
 
 test('E-3.3 popup.js escapes lichenName', () => {
-  assert.ok(popupSrc.includes('escapeHtml(licnName'), 'lichenName not escaped');
+  assert.ok(
+    popupSrc.includes('escapeHtml(formatLichenNamePopup(licnName))'),
+    'lichenName not escaped'
+  );
 });
 
 test('E-3.4 popup.js escapes tierName', () => {
@@ -841,6 +847,13 @@ test('CC-19 extension MossStake APY display is bounded for fresh tiny pools', ()
   assert.ok(fullSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'full page tiers should use bounded APY formatter');
   assert.ok(popupSrc.includes('function formatMossStakeApyLabel('), 'popup should define bounded MossStake APY formatter');
   assert.ok(popupSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'popup tiers should use bounded APY formatter');
+});
+
+test('CC-20 extension uses chain slot and normalized .lichen labels', () => {
+  assert.ok(fullSrc.includes('async function getCurrentChainSlotExt('), 'full page should resolve MossStake lock state from chain slot');
+  assert.ok(!fullSrc.includes('const currentSlot = Math.floor(Date.now() / 400);'), 'full page should not use wall-clock slot guesses for MossStake');
+  assert.ok(fullSrc.includes('function formatLichenNameExt('), 'full page should normalize .lichen labels');
+  assert.ok(popupSrc.includes('function formatLichenNamePopup('), 'popup should normalize .lichen labels');
 });
 
 // ============================================================================

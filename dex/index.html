@@ -209,7 +209,7 @@
                                 <div class="input-with-unit">
                                     <input type="number" id="marginSL" placeholder="0.00" step="any" min="0"
                                         style="font-size:0.8rem;">
-                                    <span class="input-unit" style="font-size:0.7rem;">lUSD</span>
+                                    <span class="input-unit" id="marginSLUnit" style="font-size:0.7rem;">lUSD</span>
                                 </div>
                             </div>
                             <div class="form-group" style="flex:1;margin:0;">
@@ -217,7 +217,7 @@
                                 <div class="input-with-unit">
                                     <input type="number" id="marginTP" placeholder="0.00" step="any" min="0"
                                         style="font-size:0.8rem;">
-                                    <span class="input-unit" style="font-size:0.7rem;">lUSD</span>
+                                    <span class="input-unit" id="marginTPUnit" style="font-size:0.7rem;">lUSD</span>
                                 </div>
                             </div>
                         </div>
@@ -242,21 +242,21 @@
                             <label>Price</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderPrice" placeholder="0.0000" step="any" min="0">
-                                <span class="input-unit">lUSD</span>
+                                <span class="input-unit" id="orderPriceUnit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group stop-price-group" id="stopPriceGroup" style="display: none;">
                             <label>Stop Price</label>
                             <div class="input-with-unit">
                                 <input type="number" id="stopPrice" placeholder="0.0000" step="any" min="0">
-                                <span class="input-unit">lUSD</span>
+                                <span class="input-unit" id="stopPriceUnit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label>Amount</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderAmount" placeholder="0.00" step="any" min="0">
-                                <span class="input-unit">LICN</span>
+                                <span class="input-unit" id="orderAmountUnit">LICN</span>
                             </div>
                         </div>
                         <div class="amount-presets">
@@ -269,7 +269,7 @@
                             <label>Total</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderTotal" placeholder="0.00" readonly>
-                                <span class="input-unit">lUSD</span>
+                                <span class="input-unit" id="orderTotalUnit">lUSD</span>
                             </div>
                         </div>
 

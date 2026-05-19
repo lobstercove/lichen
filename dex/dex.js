@@ -1841,6 +1841,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
         if (fe) fe.textContent = '—';
         if (re) re.textContent = '—';
+        updateOrderFormPairLabels(pair);
         calcTotal();
         updateSubmitBtn();
         // Task 5.4: Remember last selected pair
@@ -1899,6 +1900,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const base = pair?.base || pair?.baseSymbol || 'LICN';
         if (priceLabel) priceLabel.textContent = `Price (${quote})`;
         if (sizeLabel) sizeLabel.textContent = `Size (${base})`;
+    }
+
+    function setTextById(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    }
+
+    function updateOrderFormPairLabels(pair) {
+        const quote = pair?.quote || pair?.quoteSymbol || 'lUSD';
+        const base = pair?.base || pair?.baseSymbol || 'LICN';
+        setTextById('orderPriceUnit', quote);
+        setTextById('stopPriceUnit', quote);
+        setTextById('orderTotalUnit', quote);
+        setTextById('marginSLUnit', quote);
+        setTextById('marginTPUnit', quote);
+        setTextById('orderAmountUnit', base);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -4144,7 +4161,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const changeSign = change24h >= 0 ? '+' : '';
         const pnlClass = unrealizedPnl >= 0 ? 'positive' : 'negative';
         const pnlSign = unrealizedPnl >= 0 ? '+' : '';
-        container.innerHTML = `<div class="portfolio-total"><span class="portfolio-label">Portfolio Value</span><span class="portfolio-value">$${formatAmount(totalValue)}</span></div><div class="portfolio-metrics"><span class="${pnlClass}">P&L: ${pnlSign}$${formatAmount(Math.abs(unrealizedPnl))}</span><span class="portfolio-change ${changeClass}">${changeSign}$${formatAmount(Math.abs(change24h))}</span></div>`;
+        container.innerHTML = `<div class="portfolio-total"><span class="portfolio-label">Portfolio Value</span><span class="portfolio-value">$${formatAmount(totalValue)}</span></div><div class="portfolio-metrics"><span class="${pnlClass}">P&L: ${pnlSign}$${formatAmount(Math.abs(unrealizedPnl))}</span><span class="portfolio-change ${changeClass}">24h: ${changeSign}$${formatAmount(Math.abs(change24h))}</span></div>`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -8070,12 +8087,13 @@ document.addEventListener('DOMContentLoaded', () => {
         loadProtocolParams(); // async, non-blocking — populates dynamic UI text
         await loadPairs();
         loadMarginEnabledPairs(); // async, non-blocking
-        renderPairList(); renderBalances(); renderOpenOrders(); updateOrderSideLabels(); updateSubmitBtn();
+        renderPairList(); renderBalances(); renderOpenOrders(); updateOrderSideLabels(); updateOrderFormPairLabels(state.activePair); updateSubmitBtn();
         applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
         loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory(); loadPredictionHistory();
         if (state.activePair) {
             if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
             updateOrderBookLabels(state.activePair);
+            updateOrderFormPairLabels(state.activePair);
             updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
             if (priceInput) priceInput.value = formatPriceRaw(state.lastPrice);
             await Promise.all([loadOrderBook(), loadRecentTrades()]);
@@ -8085,6 +8103,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // No pairs on-chain — show empty state
             if (pairActive) pairActive.querySelector('.pair-name').textContent = 'No pairs';
             updateOrderBookLabels(null);
+            updateOrderFormPairLabels(null);
             state.orderBook = { asks: [], bids: [] }; renderOrderBook();
             const tc = document.querySelector('.trades-list');
             if (tc) tc.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>No trading pairs available. Bootstrap pairs via dex_core contract.</div>';

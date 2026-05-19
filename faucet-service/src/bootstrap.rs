@@ -82,6 +82,10 @@ fn build_cors() -> CorsLayer {
 }
 
 pub(super) fn cors_origin_values() -> Vec<HeaderValue> {
+    cors_origin_values_for_dev(std::env::var("DEV_CORS").is_ok())
+}
+
+pub(super) fn cors_origin_values_for_dev(dev_cors: bool) -> Vec<HeaderValue> {
     let mut origins: Vec<HeaderValue> = vec![
         "https://faucet.lichen.network"
             .parse::<HeaderValue>()
@@ -98,10 +102,12 @@ pub(super) fn cors_origin_values() -> Vec<HeaderValue> {
             .unwrap(),
     ];
 
-    if std::env::var("DEV_CORS").is_ok() {
+    if dev_cors {
         origins.extend([
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3009".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:3009".parse::<HeaderValue>().unwrap(),
             "http://localhost:9100".parse::<HeaderValue>().unwrap(),
             "http://localhost:9101".parse::<HeaderValue>().unwrap(),
         ]);

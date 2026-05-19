@@ -81,6 +81,28 @@ function rpc() {
   return new LichenRPC(endpoint);
 }
 
+function normalizeChainSlotExt(value) {
+  const slot = Number(value?.slot ?? value?.height ?? value?.current_slot ?? value?.currentSlot ?? value);
+  return Number.isFinite(slot) && slot > 0 ? Math.floor(slot) : 0;
+}
+
+async function getCurrentChainSlotExt(client = rpc()) {
+  try {
+    const slot = normalizeChainSlotExt(await client.call('getSlot', []));
+    if (slot > 0) return slot;
+  } catch (_) { /* fallback */ }
+  try {
+    const economics = await client.call('getStakingEconomics', []);
+    const slot = normalizeChainSlotExt(economics);
+    if (slot > 0) return slot;
+  } catch (_) { /* fallback */ }
+  try {
+    return normalizeChainSlotExt(await client.getLatestBlock());
+  } catch (_) {
+    return 0;
+  }
+}
+
 function sporesToLicn(value) {
   const raw = Number(value);
   return Number.isFinite(raw) ? raw / 1_000_000_000 : 0;
@@ -99,6 +121,15 @@ function formatMossStakeApyLabel(apyPercent, multiplier) {
   if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1} rewards`;
   if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
   return `${apy.toFixed(1)}% APY`;
+}
+
+function formatLichenNameExt(name) {
+  const bare = String(name || '').trim().replace(/(?:\.lichen)+$/i, '');
+  return bare ? `${bare}.lichen` : '';
+}
+
+function bareLichenNameExt(name) {
+  return String(name || '').trim().replace(/(?:\.lichen)+$/i, '').toLowerCase();
 }
 
 async function loadNeoGasRewardsSnapshot(address) {
@@ -1193,6 +1224,8 @@ async function loadStakingTab() {
       rpcClient.call('getStakingPosition', [wallet.address]).catch(() => null),
       rpcClient.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
     ]);
+    const currentSlot = await getCurrentChainSlotExt(rpcClient);
+    const hasCurrentSlot = currentSlot > 0;
 
     const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
     const value = Number(position?.current_value_licn || 0) / 1e9;
@@ -1203,9 +1236,8 @@ async function loadStakingTab() {
     const lockUntil = Number(position?.lock_until || 0);
 
     // Determine if position is locked
-    const currentSlot = Math.floor(Date.now() / 400);
-    const isLocked = lockUntil > 0 && lockUntil > currentSlot;
-    const remainingDays = isLocked ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
+    const isLocked = lockUntil > 0 && (!hasCurrentSlot || lockUntil > currentSlot);
+    const remainingDays = isLocked && hasCurrentSlot ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
 
     const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
     const tierMultipliers = ['1.0x', '1.6x', '2.4x', '3.6x'];
@@ -1214,7 +1246,7 @@ async function loadStakingTab() {
 
     const lockBanner = isLocked
       ? `<div style="margin-top:1rem;padding:0.75rem 1rem;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;font-size:0.85rem;color:#f97316;">
-           <i class="fas fa-lock"></i> Position locked (${lockTier}). ~${remainingDays} days remaining.
+           <i class="fas fa-lock"></i> Position locked (${lockTier}). ${hasCurrentSlot ? `~${remainingDays} days remaining.` : `Unlocks at slot ${lockUntil.toLocaleString()}.`}
          </div>`
       : '';
 
@@ -1302,13 +1334,13 @@ async function loadStakingTab() {
       $('fullPendingUnstakes').style.display = 'block';
       $('fullUnstakesList').innerHTML = pendingReqs.map(req => {
         const amt = (Number(req.licn_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
-        const cs = Math.floor(Date.now() / 400);
-        const claimable = req.claimable_at <= cs;
+        const claimable = hasCurrentSlot && req.claimable_at <= currentSlot;
+        const remainingDays = hasCurrentSlot ? ((req.claimable_at - currentSlot) / 216000).toFixed(1) : null;
         return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:600;">${amt} LICN</span>
           ${claimable
             ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
-            : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ~${((req.claimable_at - cs) / 216000).toFixed(1)} days</span>`
+            : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ${remainingDays ? `~${remainingDays} days` : 'Waiting for chain slot'}</span>`
           }
         </div>`;
       }).join('');
@@ -1457,7 +1489,11 @@ async function handleFullClaim() {
   try {
     const queue = await rpc().call('getUnstakingQueue', [wallet.address]);
     const pending = queue?.pending_requests || [];
-    const currentSlot = Math.floor(Date.now() / 400);
+    const currentSlot = await getCurrentChainSlotExt();
+    if (currentSlot <= 0) {
+      alert('Unable to confirm current chain slot');
+      return;
+    }
     const claimable = pending.filter(r => r.claimable_at <= currentSlot);
     if (claimable.length === 0) {
       alert('No matured unstakes to claim');
@@ -1619,9 +1655,10 @@ async function submitExtensionUnshield({ wallet, amountLicn, password, recipient
 
   const client = rpc();
   const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats);
-  const merkleRoot = pool?.merkleRoot || pool?.merkle_root;
-  if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
   const merklePath = await client.call('getShieldedMerklePath', [note.index]);
+  const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || pool?.merkleRoot || pool?.merkle_root;
+  if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
+  _shieldedState.poolStats = { ...(_shieldedState.poolStats || {}), ...(pool || {}), merkleRoot };
 
   statusEl.textContent = 'Generating unshield proof...';
   const proof = await client.call('generateUnshieldProof', [{
@@ -1992,12 +2029,10 @@ async function loadIdentityTab() {
     const repPct = Math.min(100, (rep / 10000) * 100);
     const agentType = getAgentTypeName(data.agentType);
     const displayName = data.name || 'Unnamed';
-    const lichenNameDisplay = data.lichenName
-      ? (data.lichenName.endsWith('.lichen') ? data.lichenName : data.lichenName + '.lichen')
-      : '';
+    const lichenNameDisplay = formatLichenNameExt(data.lichenName);
     // Avoid "name name.lichen" duplicate when display name matches licn name
-    const lichenBase = data.lichenName ? data.lichenName.replace(/\.licn$/, '').toLowerCase() : '';
-    const rawDisplayLower = (data.name || '').toLowerCase().replace(/\.licn$/, '');
+    const lichenBase = bareLichenNameExt(data.lichenName);
+    const rawDisplayLower = bareLichenNameExt(data.name);
     const showDisplayName = !lichenNameDisplay || rawDisplayLower !== lichenBase;
     const isActive = data.active;
     const skills = data.skills;
@@ -2031,7 +2066,7 @@ async function loadIdentityTab() {
 
     const vouchChips = vouchesReceived.length > 0
       ? vouchesReceived.slice(0, 12).map(v => {
-        const label = escapeHtmlExt(v.voucher_name ? v.voucher_name + '.lichen' : fmtAddr(v.voucher, 8));
+        const label = escapeHtmlExt(v.voucher_name ? formatLichenNameExt(v.voucher_name) : fmtAddr(v.voucher, 8));
         return `<span style="display:inline-block;padding:0.2rem 0.6rem;background:var(--bg-tertiary);border-radius:6px;font-size:0.75rem;margin:0.15rem;">${label}</span>`;
       }).join('')
       : '<span style="color:var(--text-muted);font-size:0.82rem;">None yet</span>';
@@ -2081,7 +2116,7 @@ async function loadIdentityTab() {
             <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .lichen Name</span>
           </div>
           ${data.lichenName ? `
-            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.lichenName.endsWith('.lichen') ? data.lichenName : data.lichenName + '.lichen')}</div>
+            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(formatLichenNameExt(data.lichenName))}</div>
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
               <button class="btn btn-small btn-secondary" id="idRenewNameBtn"><i class="fas fa-redo"></i> Renew</button>
               <button class="btn btn-small btn-secondary" id="idTransferNameBtn"><i class="fas fa-exchange-alt"></i> Transfer</button>
@@ -2307,7 +2342,7 @@ async function showIdentityRegisterNameModal() {
 
   showIdentityPrompt('Register .lichen Name', [
     { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 LICN/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 LICN/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 LICN/year (auction only)</div></div><small>Names: lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small><div id="extNameCostPreview" style="margin-top:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-card);border-radius:6px;font-size:0.82rem;display:none;"><span style="opacity:0.7;">Total cost:</span> <strong id="extNameCostValue">—</strong></div>' },
-    { id: 'name', label: 'Name (without .licn)', type: 'text', placeholder: 'myname (5+ characters)' },
+    { id: 'name', label: 'Name (without .lichen)', type: 'text', placeholder: 'myname (5+ characters)' },
     { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
@@ -2330,7 +2365,7 @@ async function showIdentityRegisterNameModal() {
       });
     }
     const updateCost = () => {
-      const n = (nameInput?.value || '').toLowerCase().replace(/\.licn$/, '').trim();
+      const n = bareLichenNameExt(nameInput?.value || '');
       const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
       if (n.length >= 5) {
         const costPerYear = n.length <= 3 ? 500 : n.length === 4 ? 100 : 20;
@@ -2349,9 +2384,9 @@ async function showIdentityRegisterNameModal() {
 async function showIdentityRenewNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.licn$/, '');
+  const name = bareLichenNameExt(currentName);
 
-  showIdentityPrompt(`Renew ${name}.licn`, [
+  showIdentityPrompt(`Renew ${name}.lichen`, [
     { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
@@ -2365,9 +2400,9 @@ async function showIdentityRenewNameModal(currentName) {
 async function showIdentityTransferNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.licn$/, '');
+  const name = bareLichenNameExt(currentName);
 
-  showIdentityPrompt(`Transfer ${name}.licn`, [
+  showIdentityPrompt(`Transfer ${name}.lichen`, [
     { type: 'info', html: 'Transfer ownership to another address. <strong>This is irreversible.</strong>' },
     { id: 'recipient', label: 'Recipient Address', type: 'text', placeholder: 'Base58 address' },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -2382,11 +2417,11 @@ async function showIdentityTransferNameModal(currentName) {
 async function showIdentityReleaseNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.licn$/, '');
+  const name = bareLichenNameExt(currentName);
 
-  if (!confirm(`Release ${name}.licn? This is permanent and cannot be undone.`)) return;
+  if (!confirm(`Release ${name}.lichen? This is permanent and cannot be undone.`)) return;
 
-  showIdentityPrompt(`Confirm Release: ${name}.licn`, [
+  showIdentityPrompt(`Confirm Release: ${name}.lichen`, [
     { type: 'info', html: `You are about to permanently release <strong>${name}.lichen</strong>. It can be re-registered by anyone.` },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {

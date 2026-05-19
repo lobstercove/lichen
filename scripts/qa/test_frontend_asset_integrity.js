@@ -571,9 +571,25 @@ function validateDexWalletAndPairState() {
     const selectPairBody = extractFunctionBody(js, 'selectPair');
     assert(
         selectPairBody.includes('priceInput.value = state.lastPrice > 0 ? formatPriceRaw(state.lastPrice)') &&
+            selectPairBody.includes('updateOrderFormPairLabels(pair);') &&
             selectPairBody.includes('calcTotal();') &&
             selectPairBody.includes('updateSubmitBtn();'),
-        'DEX pair switch refreshes order price, totals, and submit button labels'
+        'DEX pair switch refreshes order price, units, totals, and submit button labels'
+    );
+
+    const orderLabelsBody = extractFunctionBody(js, 'updateOrderFormPairLabels');
+    const dexHtml = fs.readFileSync(path.join(repoRoot, 'dex', 'index.html'), 'utf8');
+    assert(
+        orderLabelsBody.includes("setTextById('orderPriceUnit', quote)") &&
+            orderLabelsBody.includes("setTextById('orderAmountUnit', base)") &&
+            dexHtml.includes('id="orderPriceUnit"') &&
+            dexHtml.includes('id="orderAmountUnit"'),
+        'DEX order form asset units are data-driven by the active pair'
+    );
+
+    assert(
+        js.includes('P&L: ${pnlSign}$') && js.includes('24h: ${changeSign}$'),
+        'DEX portfolio summary labels P&L separately from the 24h value change'
     );
 
     const calcTotalBody = extractFunctionBody(js, 'calcTotal');
@@ -593,7 +609,8 @@ function validateDexWalletAndPairState() {
     assert(
         providerStateBody.includes('if (!this.isWindowOpen())') &&
             providerStateBody.includes('return Promise.resolve(this._lastState);') &&
-            !providerStateBody.includes('this._setDisconnected();'),
+            !providerStateBody.includes('this._setDisconnected();') &&
+            !walletConnect.includes('!provider.isWindowOpen()) {\n        return [];'),
         'DEX web-wallet provider preserves approved state when the popup is closed'
     );
 }

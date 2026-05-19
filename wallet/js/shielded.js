@@ -517,9 +517,14 @@ async function unshieldLicn(amountLicn, recipientAddress) {
     try {
         const nullifier = await computeNullifier(noteToSpend.serial);
         const merklePath = await rpc.call('getShieldedMerklePath', [noteToSpend.index]);
+        const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || shieldedState.merkleRoot;
+        if (!merkleRoot) {
+            throw new Error('Shielded Merkle root unavailable');
+        }
+        shieldedState.merkleRoot = merkleRoot;
         const unshieldProof = await generateUnshieldProof({
             amount: amountSpores,
-            merkleRoot: shieldedState.merkleRoot,
+            merkleRoot,
             recipient: recipientAddress,
             blinding: noteToSpend.blinding,
             serial: noteToSpend.serial,

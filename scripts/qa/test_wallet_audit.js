@@ -957,7 +957,7 @@ test('wallet lock screen uses the wider desktop card while preserving mobile bou
         'wallet.js should render the unlock screen through showUnlockScreen');
     assert(walletSrc.includes('class="unlock-card"'),
         'unlock screen should use the unlock-card surface');
-    assert(walletCssSrc.includes('max-width: 480px;'),
+    assert(walletCssSrc.includes('max-width: 560px;'),
         'desktop unlock card should match the wider wallet welcome surfaces');
     assert(walletCssSrc.includes('max-width: calc(100vw - 1.5rem);'),
         'mobile unlock card should remain bounded to the viewport');
@@ -1133,6 +1133,18 @@ test('MossStake APY display is bounded for fresh tiny pools', () => {
     assert(walletSrc.includes('function formatMossStakeApyLabel('), 'wallet should use a MossStake APY formatter');
     assert(walletSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'wallet should define a MossStake APY display cap');
     assert(walletSrc.includes('formatMossStakeApyLabel(t.apy_percent, t.multiplier)'), 'tier cards should use the bounded APY formatter');
+});
+
+test('MossStake lock and claim checks use chain slot instead of wall-clock slot guesses', () => {
+    assert(walletSrc.includes('async function getCurrentChainSlot('), 'wallet should centralize current chain slot lookup');
+    assert(!walletSrc.includes('Date.now() / MS_PER_SLOT'), 'wallet should not estimate MossStake slots from wall-clock time');
+});
+
+test('shielded.js uses the Merkle path root for unshield proofs when available', () => {
+    assert(shieldedSrc.includes('merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root'),
+        'unshield should prefer the fresh Merkle root returned with the note path');
+    assert(shieldedSrc.includes('shieldedState.merkleRoot = merkleRoot'),
+        'unshield should update local shielded state with the root used for proof generation');
 });
 
 // ============================================================================

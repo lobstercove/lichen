@@ -599,6 +599,31 @@ class LichenRPC {
 const rpc = new LichenRPC(getRpcEndpoint());
 const trustedRpc = new LichenRPC(getTrustedRpcEndpoint());
 
+function normalizeChainSlot(value) {
+    const slot = Number(value?.slot ?? value?.height ?? value?.current_slot ?? value?.currentSlot ?? value);
+    return Number.isFinite(slot) && slot > 0 ? Math.floor(slot) : 0;
+}
+
+async function getCurrentChainSlot(client = rpc) {
+    try {
+        const slot = normalizeChainSlot(await client.call('getSlot', []));
+        if (slot > 0) return slot;
+    } catch (_) { /* fallback */ }
+    try {
+        const economics = await client.call('getStakingEconomics', []);
+        const slot = normalizeChainSlot(economics);
+        if (slot > 0) return slot;
+    } catch (_) { /* fallback */ }
+    try {
+        const block = typeof client.getLatestBlock === 'function'
+            ? await client.getLatestBlock()
+            : await client.call('getLatestBlock', []);
+        return normalizeChainSlot(block);
+    } catch (_) {
+        return 0;
+    }
+}
+
 function getTrustedRpcClient() {
     trustedRpc.url = getTrustedRpcEndpoint();
     return trustedRpc;
@@ -3039,6 +3064,8 @@ async function loadMossStakePosition(address) {
         const poolInfo = await rpc.call('getMossStakePoolInfo');
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
+        const currentSlot = await getCurrentChainSlot();
+        const hasCurrentSlot = currentSlot > 0;
 
         // Update basic stats
         document.getElementById('userStLicn').textContent = fmtToken(position.st_licn_amount / SPORES_PER_LICN);
@@ -3059,13 +3086,13 @@ async function loadMossStakePosition(address) {
         const lockStatus = document.getElementById('lockStatus');
         const lockText = document.getElementById('lockStatusText');
         if (lockStatus && lockText && position.lock_until > 0) {
-            // Estimate time remaining
-            const currentSlotEstimate = Math.floor(Date.now() / MS_PER_SLOT);
-            if (position.lock_until > currentSlotEstimate) {
-                const remainingSlots = position.lock_until - currentSlotEstimate;
+            if (!hasCurrentSlot || position.lock_until > currentSlot) {
+                const remainingSlots = hasCurrentSlot ? position.lock_until - currentSlot : 0;
                 const remainingDays = Math.ceil(remainingSlots / SLOTS_PER_DAY);
                 lockStatus.style.display = 'block';
-                lockText.textContent = `Position locked (${position.lock_tier_name}). ~${remainingDays} days remaining until unlock at slot ${position.lock_until.toLocaleString()}.`;
+                lockText.textContent = hasCurrentSlot
+                    ? `Position locked (${position.lock_tier_name}). ~${remainingDays} days remaining until unlock at slot ${position.lock_until.toLocaleString()}.`
+                    : `Position locked (${position.lock_tier_name}) until slot ${position.lock_until.toLocaleString()}.`;
             } else {
                 lockStatus.style.display = 'none';
             }
@@ -3076,8 +3103,7 @@ async function loadMossStakePosition(address) {
         // Disable unstake button when position is locked
         const unstakeBtn = document.getElementById('mossUnstakeBtn');
         if (unstakeBtn) {
-            const currentSlot = Math.floor(Date.now() / MS_PER_SLOT);
-            const posLocked = position.lock_until > 0 && position.lock_until > currentSlot;
+            const posLocked = position.lock_until > 0 && (!hasCurrentSlot || position.lock_until > currentSlot);
             if (posLocked) {
                 unstakeBtn.disabled = true;
                 unstakeBtn.classList.add('btn-disabled');
@@ -3117,9 +3143,8 @@ async function loadMossStakePosition(address) {
             document.getElementById('pendingUnstakes').style.display = 'block';
             const unstakesList = document.getElementById('unstakesList');
             unstakesList.innerHTML = queue.pending_requests.map(req => {
-                const currentSlot = Math.floor(Date.now() / MS_PER_SLOT);
-                const isClaimable = req.claimable_at <= currentSlot;
-                const remainSlots = Math.max(0, req.claimable_at - currentSlot);
+                const isClaimable = hasCurrentSlot && req.claimable_at <= currentSlot;
+                const remainSlots = hasCurrentSlot ? Math.max(0, req.claimable_at - currentSlot) : 0;
                 const remainDays = (remainSlots / SLOTS_PER_DAY).toFixed(1);
                 return `
                     <div class="staking-unstake-item">
@@ -3129,7 +3154,7 @@ async function loadMossStakePosition(address) {
                         ? `<button class="btn btn-small btn-claim" data-wallet-action="claimMossStake">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
-                        : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
+                        : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ${hasCurrentSlot ? `~${remainDays} days` : 'Waiting for chain slot'}</span>`
                     }
                         </span>
                     </div>
@@ -3336,7 +3361,11 @@ async function claimMossStake() {
     try {
         const queue = await rpc.call('getUnstakingQueue', [wallet.address]);
         const pending = queue?.pending_requests || [];
-        const currentSlot = Math.floor(Date.now() / MS_PER_SLOT);
+        const currentSlot = await getCurrentChainSlot();
+        if (currentSlot <= 0) {
+            showToast('Unable to confirm current chain slot');
+            return;
+        }
         const claimable = pending.filter(r => r.claimable_at <= currentSlot);
         if (claimable.length === 0) {
             showToast('No matured unstakes to claim');

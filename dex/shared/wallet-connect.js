@@ -791,10 +791,6 @@ LichenWallet.prototype._readProviderAccounts = async function (provider) {
     var accounts = [];
     if (!provider) return accounts;
 
-    if (provider.isPopupWallet && typeof provider.isWindowOpen === 'function' && !provider.isWindowOpen()) {
-        return [];
-    }
-
     if (typeof provider.getProviderState === 'function') {
         var state = await provider.getProviderState().catch(function () { return null; });
         if (state && state.connected && Array.isArray(state.accounts)) {
