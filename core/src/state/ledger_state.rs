@@ -203,6 +203,7 @@ impl StateStore {
             .db
             .cf_handle(CF_TX_BY_SLOT)
             .ok_or_else(|| "TX by slot CF not found".to_string())?;
+        let shielded_txs_cf = self.db.cf_handle(CF_SHIELDED_TXS);
 
         let block_hash = block.hash();
         let mut value = Vec::with_capacity(4096);
@@ -262,6 +263,16 @@ impl StateStore {
             key.extend_from_slice(&block.header.slot.to_be_bytes());
             key.extend_from_slice(&(tx_index as u64).to_be_bytes());
             batch.put_cf(&tx_by_slot_cf, &key, sig.0);
+
+            if is_shielded_transaction(tx) {
+                if let Some(ref cf) = shielded_txs_cf {
+                    let mut shielded_key = Vec::with_capacity(48);
+                    shielded_key.extend_from_slice(&block.header.slot.to_be_bytes());
+                    shielded_key.extend_from_slice(&(tx_index as u64).to_be_bytes());
+                    shielded_key.extend_from_slice(&sig.0);
+                    batch.put_cf(cf, &shielded_key, []);
+                }
+            }
         }
 
         self.batch_index_account_transactions(block, &mut batch)?;

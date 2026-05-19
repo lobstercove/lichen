@@ -96,6 +96,17 @@ async function loadPoolStats() {
 async function loadShieldedTransactions() {
     if (!rpc) return;
 
+    try {
+        const resp = await rpc.call('getRecentShieldedTransactions', [{ limit: SHIELDED_TX_TARGET }]);
+        if (Array.isArray(resp?.transactions)) {
+            shieldedTxs = resp.transactions;
+            renderShieldedTxs(shieldedTxs);
+            return;
+        }
+    } catch (err) {
+        console.warn('Dedicated shielded transaction index unavailable, falling back to recent scan:', err);
+    }
+
     const txs = [];
     let beforeSlot = null;
     let pageCount = 0;

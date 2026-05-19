@@ -106,6 +106,7 @@ const CF_CONTRACT_MERKLE_LEAVES: &str = "contract_merkle_leaves"; // full_key(32
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
+const CF_SHIELDED_TXS: &str = "shielded_txs"; // slot(8,BE)+seq(8,BE)+tx(32) -> []
 const CF_EVM_LOGS_BY_SLOT: &str = "evm_logs_by_slot"; // slot(8,BE) -> Vec<EvmLogEntry> (Task 3.4)
 const CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots"; // pubkey(32)+slot(8,BE) -> Account (Task 3.9 archive mode)
 const CF_PENDING_VALIDATOR_CHANGES: &str = "pending_validator_changes"; // epoch(8,BE)+slot(8,BE)+pubkey(8) -> PendingValidatorChange
@@ -116,6 +117,12 @@ const CF_RESTRICTION_INDEX_CODE_HASH: &str = "restriction_index_code_hash"; // c
 
 const SOLANA_TOKEN_PROGRAM_ID_B58: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID_B58: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
+fn is_shielded_transaction(tx: &Transaction) -> bool {
+    tx.message.instructions.iter().any(|ix| {
+        ix.program_id == crate::SYSTEM_PROGRAM_ID && matches!(ix.data.first(), Some(23..=25))
+    })
+}
 
 fn decode_const_pubkey(base58: &str, label: &str) -> Result<Pubkey, String> {
     Pubkey::from_base58(base58).map_err(|e| format!("Invalid {} constant: {}", label, e))
@@ -1852,6 +1859,97 @@ mod tests {
         assert_eq!(
             state.get_holder_token_balances(&tracked, 10).unwrap(),
             vec![(token_a, 11), (token_b, 22)]
+        );
+    }
+
+    #[test]
+    fn test_recent_shielded_tx_index_queries_roundtrip() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let account_a = Pubkey([0x31; 32]);
+        let account_b = Pubkey([0x32; 32]);
+        let mut transfer_data = vec![0u8];
+        transfer_data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+        let regular_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![account_a, account_b],
+                data: transfer_data,
+            }],
+            Hash::hash(b"regular"),
+        ));
+
+        let mut shield_data = vec![23u8];
+        shield_data.extend_from_slice(&2_000_000_000u64.to_le_bytes());
+        let shield_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![account_a],
+                data: shield_data,
+            }],
+            Hash::hash(b"shield"),
+        ));
+
+        let shield_hash = shield_tx.signature();
+        let regular_block = crate::Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![regular_tx],
+            111,
+        );
+        let shield_block = crate::Block::new_with_timestamp(
+            7,
+            regular_block.hash(),
+            Hash::default(),
+            [0u8; 32],
+            vec![shield_tx],
+            222,
+        );
+
+        state.put_block(&regular_block).unwrap();
+        state.put_block(&shield_block).unwrap();
+
+        assert_eq!(
+            state.get_recent_shielded_txs(10, None).unwrap(),
+            vec![(shield_hash, 7)]
+        );
+        assert_eq!(
+            state.get_recent_shielded_txs(10, Some(7)).unwrap(),
+            Vec::<(Hash, u64)>::new()
+        );
+    }
+
+    #[test]
+    fn test_recent_shielded_tx_query_backfills_existing_tx_by_slot_data() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let account = Pubkey([0x41; 32]);
+        let mut shield_data = vec![23u8];
+        shield_data.extend_from_slice(&10_000_000_000u64.to_le_bytes());
+        let shield_tx = crate::transaction::Transaction::new(crate::transaction::Message::new(
+            vec![crate::transaction::Instruction {
+                program_id: crate::SYSTEM_PROGRAM_ID,
+                accounts: vec![account],
+                data: shield_data,
+            }],
+            Hash::hash(b"legacy-shield"),
+        ));
+        let shield_hash = shield_tx.signature();
+
+        state.put_transaction(&shield_tx).unwrap();
+        state.index_tx_by_slot(42, &shield_hash).unwrap();
+
+        assert_eq!(
+            state.get_recent_shielded_txs(10, None).unwrap(),
+            vec![(shield_hash, 42)]
+        );
+        assert_eq!(
+            state.get_recent_shielded_txs(10, None).unwrap(),
+            vec![(shield_hash, 42)]
         );
     }
 

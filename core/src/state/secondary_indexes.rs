@@ -735,6 +735,187 @@ impl StateStore {
         Ok(results)
     }
 
+    fn read_recent_shielded_tx_index(
+        &self,
+        limit: usize,
+        before_slot: Option<u64>,
+    ) -> Result<Vec<(Hash, u64)>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_TXS)
+            .ok_or_else(|| "Shielded txs CF not found".to_string())?;
+
+        let seek_key = if let Some(slot) = before_slot {
+            slot.to_be_bytes().to_vec()
+        } else {
+            u64::MAX.to_be_bytes().to_vec()
+        };
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let iter = self.db.iterator_cf_opt(
+            &cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
+        );
+
+        let mut results = Vec::with_capacity(limit.min(128));
+        for item in iter.flatten() {
+            let key = item.0;
+            if key.len() < 48 {
+                continue;
+            }
+
+            let slot = u64::from_be_bytes(
+                key[0..8]
+                    .try_into()
+                    .map_err(|_| "Corrupt slot key in shielded tx index".to_string())?,
+            );
+
+            if let Some(bs) = before_slot {
+                if slot >= bs {
+                    continue;
+                }
+            }
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(&key[16..48]);
+            results.push((Hash(hash_bytes), slot));
+
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn backfill_recent_shielded_tx_index(
+        &self,
+        limit: usize,
+        before_slot: Option<u64>,
+    ) -> Result<Vec<(Hash, u64)>, String> {
+        const MAX_BACKFILL_SCAN: usize = 100_000;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "TX by slot CF not found".to_string())?;
+        let shielded_txs_cf = self
+            .db
+            .cf_handle(CF_SHIELDED_TXS)
+            .ok_or_else(|| "Shielded txs CF not found".to_string())?;
+
+        let seek_key = if let Some(slot) = before_slot {
+            slot.to_be_bytes().to_vec()
+        } else {
+            u64::MAX.to_be_bytes().to_vec()
+        };
+
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let iter = self.db.iterator_cf_opt(
+            &tx_by_slot_cf,
+            read_opts,
+            rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
+        );
+
+        let mut results = Vec::with_capacity(limit.min(128));
+        let mut batch = WriteBatch::default();
+        let mut indexed = 0usize;
+        let mut scanned = 0usize;
+
+        for item in iter.flatten() {
+            let (key, value) = item;
+            if key.len() < 16 || value.len() != 32 {
+                continue;
+            }
+
+            let slot = u64::from_be_bytes(
+                key[0..8]
+                    .try_into()
+                    .map_err(|_| "Corrupt slot key in tx-by-slot index".to_string())?,
+            );
+            if let Some(bs) = before_slot {
+                if slot >= bs {
+                    continue;
+                }
+            }
+
+            scanned += 1;
+            if scanned > MAX_BACKFILL_SCAN {
+                break;
+            }
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(&value);
+            let hash = Hash(hash_bytes);
+            let tx = match self.get_transaction(&hash)? {
+                Some(tx) => tx,
+                None => continue,
+            };
+            if !is_shielded_transaction(&tx) {
+                continue;
+            }
+
+            let mut shielded_key = Vec::with_capacity(48);
+            shielded_key.extend_from_slice(&key[0..16]);
+            shielded_key.extend_from_slice(&hash.0);
+            batch.put_cf(&shielded_txs_cf, &shielded_key, []);
+            indexed += 1;
+            results.push((hash, slot));
+
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        if indexed > 0 {
+            self.db
+                .write(batch)
+                .map_err(|e| format!("Failed to backfill shielded tx index: {}", e))?;
+        }
+
+        Ok(results)
+    }
+
+    /// Get recent shielded transactions using the shielded transaction index.
+    /// Existing databases are lazily backfilled from the generic transaction
+    /// index only when the shielded index does not yet cover the requested page.
+    pub fn get_recent_shielded_txs(
+        &self,
+        limit: usize,
+        before_slot: Option<u64>,
+    ) -> Result<Vec<(Hash, u64)>, String> {
+        let mut results = self.read_recent_shielded_tx_index(limit, before_slot)?;
+        if results.len() >= limit {
+            return Ok(results);
+        }
+
+        let backfill_before_slot = results.last().map(|(_, slot)| *slot).or(before_slot);
+        let remaining = limit.saturating_sub(results.len());
+        let mut backfilled =
+            self.backfill_recent_shielded_tx_index(remaining, backfill_before_slot)?;
+        for item in backfilled.drain(..) {
+            if !results
+                .iter()
+                .any(|(hash, slot)| *hash == item.0 && *slot == item.1)
+            {
+                results.push(item);
+            }
+        }
+        Ok(results)
+    }
+
     /// Get all token programs a holder has balances in (reverse index scan).
     pub fn get_holder_token_balances(
         &self,

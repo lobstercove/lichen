@@ -2902,6 +2902,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getTransaction"
         | "getTransactionProof"
         | "getRecentTransactions"
+        | "getRecentShieldedTransactions"
         | "getRecentBlocks"
         | "getBlock"
         | "getBlockCommit"
@@ -4819,6 +4820,9 @@ async fn handle_rpc(
         }
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
+        "getRecentShieldedTransactions" => {
+            handle_get_recent_shielded_transactions(&state, req.params).await
+        }
         "getTokenAccounts" => handle_get_token_accounts(&state, req.params).await,
         "sendTransaction" => handle_send_transaction(&state, req.params).await,
         "confirmTransaction" => handle_confirm_transaction(&state, req.params).await,
@@ -6987,6 +6991,92 @@ async fn handle_get_recent_transactions(
 
         results.push(entry);
 
+        last_slot = Some(*slot);
+    }
+
+    Ok(serde_json::json!({
+        "transactions": results,
+        "has_more": has_more,
+        "next_before_slot": if has_more { last_slot } else { None::<u64> },
+    }))
+}
+
+async fn handle_get_recent_shielded_transactions(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let opts = params
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first());
+
+    let requested_limit = opts
+        .and_then(|v| v.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .min(500) as usize;
+    let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
+
+    let before_slot = opts
+        .and_then(|v| v.get("before_slot"))
+        .and_then(|v| v.as_u64());
+
+    let fee_config = state
+        .state
+        .get_fee_config()
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
+
+    let fetch_limit = limit.saturating_add(1);
+    let indexed = state
+        .state
+        .get_recent_shielded_txs(fetch_limit, before_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut timestamps: HashMap<u64, u64> = HashMap::new();
+    let mut last_slot: Option<u64> = None;
+
+    for (hash, slot) in page_items {
+        let tx = match state.state.get_transaction(hash) {
+            Ok(Some(tx)) => tx,
+            _ => continue,
+        };
+
+        let timestamp = if let Some(cached) = timestamps.get(slot) {
+            *cached
+        } else {
+            let ts = state
+                .state
+                .get_block_by_slot(*slot)
+                .ok()
+                .and_then(|block| block.map(|b| b.header.timestamp))
+                .unwrap_or(0);
+            timestamps.insert(*slot, ts);
+            ts
+        };
+
+        let tx_meta = state.state.get_tx_meta_full(&tx.signature()).ok().flatten();
+        let stored_cu = tx_meta.as_ref().map(|m| m.compute_units_used);
+        let mut entry = tx_to_rpc_json(&tx, *slot, timestamp, &fee_config, stored_cu, &state.state);
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("timestamp".to_string(), serde_json::json!(timestamp));
+            obj.insert(
+                "hash".to_string(),
+                serde_json::json!(tx.signature().to_hex()),
+            );
+            obj.insert("success".to_string(), serde_json::json!(true));
+        }
+
+        results.push(entry);
         last_slot = Some(*slot);
     }
 
@@ -19658,7 +19748,8 @@ mod tests {
         handle_get_incident_status, handle_get_lichenoracle_stats,
         handle_get_neo_gas_rewards_position, handle_get_neo_gas_rewards_stats,
         handle_get_neo_zk_proof_service_status, handle_get_program, handle_get_program_stats,
-        handle_get_recent_blocks, handle_get_restriction, handle_get_restriction_status,
+        handle_get_recent_blocks, handle_get_recent_shielded_transactions,
+        handle_get_recent_transactions, handle_get_restriction, handle_get_restriction_status,
         handle_get_service_fleet_status, handle_get_signed_metadata_manifest,
         handle_get_wgas_stats, handle_get_wneo_stats, handle_list_active_restrictions,
         handle_list_restrictions, handle_set_fee_config, handle_solana_get_account_info,
@@ -19815,6 +19906,81 @@ mod tests {
         assert_eq!(second_slots, vec![2, 1]);
         assert_eq!(second["has_more"].as_bool(), Some(false));
         assert!(second["next_before_slot"].is_null());
+    }
+
+    #[tokio::test]
+    async fn rpc_get_recent_shielded_transactions_uses_shielded_index() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let payer = Pubkey([0x21; 32]);
+        let recipient = Pubkey([0x22; 32]);
+        let mut shield_data = vec![23u8];
+        shield_data.extend_from_slice(&10_000_000_000u64.to_le_bytes());
+        let shield_tx = Transaction::new(lichen_core::transaction::Message::new(
+            vec![lichen_core::transaction::Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![payer],
+                data: shield_data,
+            }],
+            Hash::hash(b"shielded-rpc"),
+        ));
+        let shield_hash = shield_tx.signature();
+        let shield_block = Block::new_with_timestamp(
+            10,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![shield_tx],
+            1_700_000_010,
+        );
+        state.put_block(&shield_block).unwrap();
+
+        for slot in 11..=20 {
+            let mut transfer_data = vec![0u8];
+            transfer_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+            let tx = Transaction::new(lichen_core::transaction::Message::new(
+                vec![lichen_core::transaction::Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![payer, recipient],
+                    data: transfer_data,
+                }],
+                Hash::hash(format!("regular-{slot}").as_bytes()),
+            ));
+            let block = Block::new_with_timestamp(
+                slot,
+                Hash::default(),
+                Hash::default(),
+                [0u8; 32],
+                vec![tx],
+                1_700_000_000 + slot,
+            );
+            state.put_block(&block).unwrap();
+        }
+
+        let rpc_state = make_test_rpc_state(state);
+        let generic =
+            handle_get_recent_transactions(&rpc_state, Some(serde_json::json!([{ "limit": 5 }])))
+                .await
+                .unwrap();
+        assert!(generic["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tx| tx["type"] != "Shield"));
+
+        let shielded = handle_get_recent_shielded_transactions(
+            &rpc_state,
+            Some(serde_json::json!([{ "limit": 5 }])),
+        )
+        .await
+        .unwrap();
+        let txs = shielded["transactions"].as_array().unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["type"], "Shield");
+        assert_eq!(txs[0]["signature"], shield_hash.to_hex());
+        assert_eq!(txs[0]["slot"], 10);
+        assert_eq!(txs[0]["amount_spores"], 10_000_000_000u64);
     }
 
     #[test]
@@ -21091,6 +21257,7 @@ mod tests {
             "getMarketOffers",
             "getMarketAuctions",
             "getBridgeDeposit",
+            "getRecentShieldedTransactions",
             "getShieldedCommitments",
             "getShieldedMerklePath",
             "getPredictionPositions",
