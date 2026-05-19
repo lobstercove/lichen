@@ -36,6 +36,10 @@ pub(super) fn is_evm_token_asset(chain: &str, asset: &str) -> bool {
         || (canonical_evm_chain(chain) == Some("neox") && asset == "neo")
 }
 
+pub(super) fn is_whole_lot_source_asset(chain: &str, asset: &str) -> bool {
+    canonical_evm_chain(chain) == Some("neox") && asset.trim().eq_ignore_ascii_case("neo")
+}
+
 pub(super) fn evm_token_contract_for_asset(
     config: &CustodyConfig,
     chain: &str,
@@ -63,7 +67,7 @@ pub(super) fn evm_token_contract_for_asset(
 ///   ETH on Ethereum:             18 decimals (wei)
 ///   BNB on BSC:                  18 decimals (wei)
 ///   GAS on Neo X:                18 decimals (read-only WGAS10 verification)
-///   NEO on Neo X:                 0 decimals (whole-NEO token route)
+///   NEO on Neo X:                18 decimals (official Neo X NEO ERC-20, whole-NEO lots only)
 ///   SOL on Solana:               9 decimals (lamports)
 ///
 /// ERC-20 / SPL tokens:
@@ -77,7 +81,7 @@ pub(super) fn source_chain_decimals(chain: &str, asset: &str) -> Result<u32, Str
         ("eth" | "ethereum", "eth") => Ok(18),
         ("bsc" | "bnb", "bnb") => Ok(18),
         ("neox" | "neo-x" | "neo_x", "gas") => Ok(18),
-        ("neox" | "neo-x" | "neo_x", "neo") => Ok(0),
+        ("neox" | "neo-x" | "neo_x", "neo") => Ok(18),
         ("eth" | "ethereum", "usdt" | "usdc") => Ok(6),
         ("bsc" | "bnb", "usdt" | "usdc") => Ok(18),
         ("sol" | "solana", "sol") => Ok(9),
@@ -98,6 +102,15 @@ pub(super) fn spores_to_chain_amount(
     asset: &str,
 ) -> Result<u128, String> {
     let target_decimals = source_chain_decimals(chain, asset)?;
+    if is_whole_lot_source_asset(chain, asset) {
+        let lot = 1_000_000_000u128;
+        let spores = spores as u128;
+        if !spores.is_multiple_of(lot) {
+            return Err(format!(
+                "non-exact whole-lot withdrawal rejected (spores={spores}, lot={lot}, chain={chain}, asset={asset})"
+            ));
+        }
+    }
     if target_decimals > 9 {
         Ok((spores as u128).saturating_mul(10u128.pow(target_decimals - 9)))
     } else if target_decimals < 9 {

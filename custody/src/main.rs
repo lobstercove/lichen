@@ -85,8 +85,8 @@ use asset_support::{
     derive_associated_token_address, derive_associated_token_address_from_str,
     ensure_associated_token_account, ensure_associated_token_account_for_str, ensure_solana_config,
     evm_contract_for_asset, evm_token_contract_for_asset, is_evm_token_asset, is_solana_stablecoin,
-    load_solana_keypair, resolve_token_contract, solana_mint_for_asset, source_chain_decimals,
-    spores_to_chain_amount,
+    is_whole_lot_source_asset, load_solana_keypair, resolve_token_contract, solana_mint_for_asset,
+    source_chain_decimals, spores_to_chain_amount,
 };
 use audit_support::{
     emit_custody_event, emit_withdrawal_spike_event, emit_withdrawal_velocity_warning_event,

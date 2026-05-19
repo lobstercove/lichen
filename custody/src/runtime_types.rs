@@ -112,7 +112,7 @@ pub(super) struct CustodyConfig {
     pub(super) wbnb_contract_addr: Option<String>,
     pub(super) wgas_contract_addr: Option<String>,
     pub(super) wneo_contract_addr: Option<String>,
-    /// Optional Neo X NEO token contract. When absent, neox/neo custody remains gated.
+    /// Neo X NEO source token contract required by the neox/neo custody route.
     pub(super) neox_neo_token_contract: Option<String>,
     // Reserve rebalance settings
     pub(super) rebalance_threshold_bps: u64,

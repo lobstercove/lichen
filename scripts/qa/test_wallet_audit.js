@@ -907,8 +907,8 @@ test('wallet.js exposes Neo X bridge controls with route status and reserve cont
         'wallet receive modal should expose the Neo X deposit route');
     assert(walletSrc.includes("NEOX: { name: 'Neo X'"),
         'wallet.js should define Neo X chain metadata');
-    assert(walletSrc.includes("tokens: ['GAS']"),
-        'Neo X deposit UI should expose GAS only while NEO custody is gated');
+    assert(walletSrc.includes("tokens: ['GAS', 'NEO']"),
+        'Neo X deposit UI should expose GAS and NEO custody routes');
     assert(walletSrc.includes("trustedRpcCall('getBridgeRouteRestrictionStatus'"),
         'wallet bridge deposit flow should preflight route status');
     assert(walletSrc.includes("getWneoStats") && walletSrc.includes("getWgasStats"),

@@ -46,6 +46,14 @@ pub(crate) fn build_credit_job(
     }
 
     let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset)?;
+    if is_whole_lot_source_asset(&source_chain, &source_asset) {
+        let lot = 10u128.pow(source_decimals);
+        if !raw_amount.is_multiple_of(lot) {
+            return Err(format!(
+                "non-exact whole-lot deposit rejected (raw={raw_amount}, lot={lot}, chain={source_chain}, asset={source_asset})"
+            ));
+        }
+    }
     let amount_spores: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
         if raw_amount % divisor != 0 {

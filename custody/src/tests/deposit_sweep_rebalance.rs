@@ -487,15 +487,15 @@ fn test_build_credit_job_neox_gas_and_neo_exact_conversion() {
         status: "swept".to_string(),
     };
     store_deposit(&state.db, &neo_deposit).expect("store Neo X NEO deposit");
-    let neo_sweep = SweepJob {
-        job_id: "sweep-neox-neo-credit-1".to_string(),
+    let make_neo_sweep = |job_id: &str, amount: &str| SweepJob {
+        job_id: job_id.to_string(),
         deposit_id: neo_deposit.deposit_id.clone(),
         chain: "neox".to_string(),
         asset: "neo".to_string(),
         from_address: neo_deposit.address.clone(),
         to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
         tx_hash: "tx".to_string(),
-        amount: Some("2".to_string()),
+        amount: Some(amount.to_string()),
         credited_amount: None,
         signatures: Vec::new(),
         sweep_tx_hash: Some("sweep-hash".to_string()),
@@ -505,6 +505,8 @@ fn test_build_credit_job_neox_gas_and_neo_exact_conversion() {
         status: "sweep_confirmed".to_string(),
         created_at: 1000,
     };
+
+    let neo_sweep = make_neo_sweep("sweep-neox-neo-credit-1", "2000000000000000000");
     let credit = build_credit_job(&state, &neo_sweep)
         .expect("build Neo X NEO credit job")
         .expect("Neo X NEO credit job should be created");
@@ -512,14 +514,21 @@ fn test_build_credit_job_neox_gas_and_neo_exact_conversion() {
     assert_eq!(credit.source_chain, "neox");
     assert_eq!(credit.source_asset, "neo");
 
-    let fractional_neo_sweep = SweepJob {
-        amount: Some("1".to_string()),
-        ..neo_sweep
-    };
-    let credit = build_credit_job(&state, &fractional_neo_sweep)
+    let one_neo_sweep = make_neo_sweep("sweep-neox-neo-credit-2", "1000000000000000000");
+    let credit = build_credit_job(&state, &one_neo_sweep)
         .expect("one whole Neo X NEO should be exact")
         .expect("one whole Neo X NEO credit job should be created");
     assert_eq!(credit.amount_spores, 1_000_000_000);
+
+    let fractional_neo_sweep = make_neo_sweep("sweep-neox-neo-credit-3", "500000000000000000");
+    let err = build_credit_job(&state, &fractional_neo_sweep)
+        .expect_err("fractional Neo X NEO deposits must be rejected");
+    assert!(err.contains("non-exact whole-lot deposit rejected"));
+
+    let non_exact_neo_sweep = make_neo_sweep("sweep-neox-neo-credit-4", "1000000000000000001");
+    let err = build_credit_job(&state, &non_exact_neo_sweep)
+        .expect_err("dusty Neo X NEO deposits must be rejected");
+    assert!(err.contains("non-exact whole-lot deposit rejected"));
 }
 
 #[tokio::test]
