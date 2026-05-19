@@ -262,6 +262,52 @@ exit 1
 REMOTE
 }
 
+restart_custody_if_local() {
+  local host="$1"
+  if [ "$NETWORK" != "testnet" ]; then
+    return 0
+  fi
+
+  echo "Refresh custody after validator health ${host}"
+  ssh_run "$host" "RPC_PORT='$RPC_PORT' MAX_BLOCK_AGE_SECS='$MAX_BLOCK_AGE_SECS' bash -s" <<'REMOTE'
+set -euo pipefail
+if ! systemctl list-unit-files lichen-custody.service >/dev/null 2>&1; then
+  exit 0
+fi
+if ! systemctl is-enabled --quiet lichen-custody.service 2>/dev/null && \
+   ! systemctl is-active --quiet lichen-custody.service 2>/dev/null; then
+  exit 0
+fi
+
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${RPC_PORT}/" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' |
+    python3 -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+result = payload.get("result") or {}
+age = int(result.get("block_age_secs") or 0)
+max_age = int(os.environ.get("MAX_BLOCK_AGE_SECS", "15"))
+sys.exit(0 if result.get("status") == "ok" and age <= max_age else 1)
+'; then
+    break
+  fi
+  sleep 2
+done
+
+sudo systemctl restart lichen-custody.service
+for _ in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:9105/health" >/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+echo "Custody did not become healthy after validator restart."
+exit 1
+REMOTE
+}
+
 public_smoke() {
   local public_url
   case "$NETWORK" in
@@ -348,6 +394,7 @@ done
 for host in $HOSTS; do
   install_host "$host"
   wait_healthy "$host"
+  restart_custody_if_local "$host"
 done
 
 public_smoke
