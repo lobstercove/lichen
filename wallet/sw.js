@@ -1,10 +1,10 @@
-// LichenWallet Service Worker — Cache-first with auto-update
+// LichenWallet Service Worker — Cache-first assets with safe navigation fallback
 'use strict';
 
-const CACHE_VERSION = 'lichen-wallet-v2';
+const CACHE_VERSION = 'lichen-wallet-v3';
+const INDEX_URL = './index.html';
 const ASSETS = [
-    './',
-    './index.html',
+    INDEX_URL,
     './shared-base-styles.css',
     './shared-theme.css',
     './shared-config.js',
@@ -23,6 +23,29 @@ const ASSETS = [
     './icon-512.png',
     './favicon.ico',
 ];
+
+function isCacheableResponse(response, type) {
+    if (!response || !response.ok || response.redirected) return false;
+    if (type === 'same-origin') return response.type === 'basic';
+    return response.status === 200 && response.type !== 'opaqueredirect';
+}
+
+function fetchIndexFallback(requestUrl) {
+    const fallbackUrl = new URL(INDEX_URL, self.location.href);
+    fallbackUrl.search = requestUrl.search;
+
+    return fetch(fallbackUrl.toString(), { cache: 'reload' }).then((response) => {
+        if (isCacheableResponse(response, 'same-origin')) {
+            const clone = response.clone();
+            caches.open(CACHE_VERSION).then((cache) => {
+                cache.put(INDEX_URL, clone).catch(() => { });
+            });
+            return response;
+        }
+
+        return caches.match(INDEX_URL).then((cached) => cached || response);
+    }).catch(() => caches.match(INDEX_URL).then((cached) => cached || Response.error()));
+}
 
 // Install: pre-cache core assets
 self.addEventListener('install', (event) => {
@@ -78,12 +101,27 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    // Safari PWA rejects navigation responses served by a service worker when the
+    // response carries redirect metadata. Keep navigations network-first, and use
+    // the non-redirected app shell only when the network path redirects or fails.
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request).then((response) => {
+                if (isCacheableResponse(response, 'same-origin')) {
+                    return response;
+                }
+                return fetchIndexFallback(url);
+            }).catch(() => fetchIndexFallback(url))
+        );
+        return;
+    }
+
     // CDN resources (fonts, icons): cache on first use for offline support
     if (url.origin !== self.location.origin) {
         event.respondWith(
             caches.match(event.request).then((cached) => {
                 return cached || fetch(event.request).then((response) => {
-                    if (response && response.status === 200) {
+                    if (isCacheableResponse(response, 'cross-origin')) {
                         const clone = response.clone();
                         caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                     }
@@ -98,7 +136,7 @@ self.addEventListener('fetch', (event) => {
         caches.match(event.request).then((cached) => {
             // Return cached immediately, then update cache in background
             const fetchPromise = fetch(event.request).then((response) => {
-                if (response && response.status === 200 && response.type === 'basic') {
+                if (isCacheableResponse(response, 'same-origin')) {
                     const clone = response.clone();
                     caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone).catch(() => { }));
                 }

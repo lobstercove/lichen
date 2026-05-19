@@ -1716,12 +1716,24 @@ function clearAllInputs() {
 }
 
 // Show specific screen
+function resetWalletViewport() {
+    requestAnimationFrame(() => {
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+        document.querySelectorAll('.wallet-screen, .wallet-dashboard, .dashboard-content').forEach((el) => {
+            el.scrollTop = 0;
+        });
+    });
+}
+
 function showScreen(screenId) {
     clearAllInputs();
     document.querySelectorAll('.welcome-screen, .wallet-screen, .wallet-dashboard').forEach(el => {
         el.style.display = 'none';
     });
     document.getElementById(screenId).style.display = 'block';
+    resetWalletViewport();
 }
 
 // ===== WELCOME SCREEN =====

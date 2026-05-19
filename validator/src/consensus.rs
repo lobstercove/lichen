@@ -1943,7 +1943,7 @@ mod tests {
             action,
             ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
         ));
-        assert!(engine.signed_prevote_rounds.get(&3).is_none());
+        assert!(!engine.signed_prevote_rounds.contains_key(&3));
     }
 
     #[test]
