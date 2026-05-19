@@ -45,12 +45,158 @@ let shieldedState = {
     provingKeysLoaded: false,
 };
 
-const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false;
+const SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true;
+const SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false;
 
 function shieldedSubmissionUnavailable(action) {
     const message = `${action} requires a signed shielded transaction builder and is not available in this wallet yet`;
     showShieldedStatus(message, 'error');
     showToast(message);
+}
+
+function privateTransferUnavailable() {
+    const message = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
+    showShieldedStatus(message, 'error');
+    showToast(message);
+}
+
+function writeU64Le(target, offset, value) {
+    new DataView(target.buffer, target.byteOffset, target.byteLength)
+        .setBigUint64(offset, BigInt(value), true);
+}
+
+function concatBytes(...chunks) {
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return out;
+}
+
+function bytesToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, offset + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+}
+
+function buildShieldInstructionData(amountSpores, commitmentHex, proofBytes) {
+    const header = new Uint8Array(41);
+    header[0] = 23;
+    writeU64Le(header, 1, amountSpores);
+    header.set(hexToBytes(commitmentHex), 9);
+    return concatBytes(header, proofBytes);
+}
+
+function buildUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex, recipientHashHex, proofBytes) {
+    const header = new Uint8Array(105);
+    header[0] = 24;
+    writeU64Le(header, 1, amountSpores);
+    header.set(hexToBytes(nullifierHex), 9);
+    header.set(hexToBytes(merkleRootHex), 41);
+    header.set(hexToBytes(recipientHashHex), 73);
+    return concatBytes(header, proofBytes);
+}
+
+async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData }) {
+    if (!wallet || !wallet.encryptedKey) {
+        throw new Error('No active wallet');
+    }
+    if (!password) {
+        throw new Error('Wallet password required');
+    }
+
+    const latestBlock = await rpc.getLatestBlock();
+    const message = {
+        instructions: [{
+            program_id: Array.from(new Uint8Array(32)),
+            accounts: accounts.map((account) => Array.from(account)),
+            data: Array.from(instructionData),
+        }],
+        blockhash: latestBlock.hash,
+    };
+
+    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+    const messageBytes = serializeMessageBincode(message);
+    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
+    const transaction = { signatures: [signature], message };
+    const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
+    const txBase64 = bytesToBase64(txBytes);
+    const txSignature = await rpc.sendTransaction(txBase64);
+    if (typeof rpc.confirmTransaction === 'function') {
+        const confirmation = await rpc.confirmTransaction(txSignature, 30000);
+        if (confirmation && confirmation.confirmed === false) {
+            throw new Error(confirmation.error || 'Transaction was not confirmed');
+        }
+    }
+    return txSignature;
+}
+
+async function requestShieldedSigningPassword(title, message) {
+    if (typeof showPasswordModal !== 'function') {
+        throw new Error('Password prompt unavailable');
+    }
+    const values = await showPasswordModal({
+        title,
+        message,
+        icon: 'fas fa-shield-alt',
+        confirmText: 'Sign & Submit',
+        fields: [
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' },
+        ],
+    });
+    return values?.password || null;
+}
+
+async function submitShieldTransaction({ amountSpores, commitment, proof, commitmentIndex }) {
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    const password = await requestShieldedSigningPassword(
+        'Shield LICN',
+        `Sign shield transaction for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+    );
+    if (!password) {
+        throw new Error('Shield cancelled');
+    }
+    const signer = LichenCrypto.addressToBytes(wallet.address);
+    const signature = await signAndSubmitShieldedInstruction({
+        wallet,
+        password,
+        accounts: [signer],
+        instructionData: buildShieldInstructionData(amountSpores, commitment, proof),
+    });
+    return { success: true, signature, commitment_index: commitmentIndex };
+}
+
+async function submitUnshieldTransaction({ amountSpores, recipientAddress, nullifier, merkleRoot, recipientHash, proof }) {
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    if (!wallet || recipientAddress !== wallet.address) {
+        throw new Error('Unshield currently requires the active wallet as recipient');
+    }
+    const password = await requestShieldedSigningPassword(
+        'Unshield LICN',
+        `Sign unshield transaction for ${(amountSpores / SPORES_PER_LICN).toFixed(6)} LICN`,
+    );
+    if (!password) {
+        throw new Error('Unshield cancelled');
+    }
+    const recipient = LichenCrypto.addressToBytes(recipientAddress);
+    const signature = await signAndSubmitShieldedInstruction({
+        wallet,
+        password,
+        accounts: [recipient],
+        instructionData: buildUnshieldInstructionData(amountSpores, nullifier, merkleRoot, recipientHash, proof),
+    });
+    return { success: true, signature };
+}
+
+async function submitShieldedTransferTransaction() {
+    throw new Error('Private transfer needs native encrypted note payload storage before wallet submission can be enabled');
 }
 
 // ===== Initialization =====
@@ -107,11 +253,16 @@ async function syncShieldedState() {
 
         // Fetch new commitments since last sync
         const commitsResp = await rpc.call('getShieldedCommitments', [{
-            from_index: shieldedState.lastSyncedIndex,
+            from: shieldedState.lastSyncedIndex,
+            limit: 100,
         }]).catch(() => null);
 
-        if (commitsResp && Array.isArray(commitsResp)) {
-            for (const entry of commitsResp) {
+        const commitments = Array.isArray(commitsResp)
+            ? commitsResp
+            : (Array.isArray(commitsResp?.commitments) ? commitsResp.commitments : []);
+
+        if (commitments.length > 0) {
+            for (const entry of commitments) {
                 shieldedState.commitments.push(entry.commitment);
 
                 // Trial-decrypt: try to decrypt with our viewing key
@@ -133,7 +284,8 @@ async function syncShieldedState() {
         // Check which owned notes have been spent (nullifier check)
         for (const note of shieldedState.ownedNotes) {
             if (note.spent) continue;
-            const nullifier = await computeNullifier(note.serial);
+            const nullifier = note.nullifier || await computeNullifier(note.serial);
+            if (!nullifier) continue;
             const isSpent = await rpc.call('isNullifierSpent', [nullifier]).catch(() => rpc.call('checkNullifier', [nullifier]).catch(() => null));
             if (isSpent && isSpent.spent) {
                 note.spent = true;
@@ -284,15 +436,22 @@ async function shieldLicn(amountLicn) {
         const encryptedNote = await encryptNoteBytes(noteBytes, encKey);
 
         const proof = hexToBytes(shieldProof.proof);
+        const poolBefore = await rpc.call('getShieldedPoolState').catch(() => shieldedState.poolStats || null);
+        const commitmentIndex = Number(poolBefore?.commitmentCount ?? poolBefore?.commitment_count ?? shieldedState.commitments.length ?? 0);
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = null;
+        const result = await submitShieldTransaction({
+            amountSpores,
+            commitment,
+            proof,
+            commitmentIndex,
+        });
 
         if (result && result.success) {
             // Add to our owned notes
             shieldedState.ownedNotes.push({
-                index: result.commitment_index || shieldedState.commitments.length,
+                index: result.commitment_index ?? shieldedState.commitments.length,
                 value: amountSpores,
                 blinding: blindingHex,
                 serial: bytesToHex(serial),
@@ -305,6 +464,7 @@ async function shieldLicn(amountLicn) {
 
             showShieldedStatus('', 'idle');
             showToast(`Shielded ${amountLicn} LICN successfully!`);
+            setTimeout(() => syncShieldedState(), 1500);
             closeModal('shieldModal');
         } else {
             throw new Error(result?.error || 'Shield transaction failed');
@@ -371,10 +531,18 @@ async function unshieldLicn(amountLicn, recipientAddress) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = null;
+        const result = await submitUnshieldTransaction({
+            amountSpores,
+            recipientAddress,
+            nullifier: unshieldProof.nullifier,
+            merkleRoot: unshieldProof.merkle_root,
+            recipientHash: unshieldProof.recipient_hash,
+            proof,
+        });
 
         if (result && result.success) {
             noteToSpend.spent = true;
+            noteToSpend.nullifier = unshieldProof.nullifier;
             shieldedState.shieldedBalance -= amountSpores;
 
             // If change needed, a new note will appear in the commitment stream
@@ -383,6 +551,7 @@ async function unshieldLicn(amountLicn, recipientAddress) {
 
             showShieldedStatus('', 'idle');
             showToast(`Unshielded ${amountLicn} LICN to ${recipientAddress.slice(0, 8)}...`);
+            setTimeout(() => syncShieldedState(), 1500);
             closeModal('unshieldModal');
         } else {
             throw new Error(result?.error || 'Unshield transaction failed');
@@ -423,6 +592,10 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
 
     if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
         shieldedSubmissionUnavailable('Private transfer');
+        return;
+    }
+    if (!SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
+        privateTransferUnavailable();
         return;
     }
 
@@ -497,7 +670,12 @@ async function shieldedTransfer(amountLicn, recipientViewingKey) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const result = null;
+        const result = await submitShieldedTransferTransaction({
+            nullifiers,
+            outputCommitments,
+            merkleRoot: shieldedState.merkleRoot,
+            proof: hexToBytes(proofHex),
+        });
 
         if (result && result.success) {
             // Mark input notes as spent
@@ -886,6 +1064,11 @@ function openShieldModal() {
 function openUnshieldModal() {
     const el = document.getElementById('unshieldFeeDisplay');
     if (el) el.textContent = zkFeeDisplay('unshield');
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    const recipientInput = document.getElementById('unshieldRecipient');
+    if (recipientInput && wallet?.address) {
+        recipientInput.value = wallet.address;
+    }
     const input = document.getElementById('unshieldAmount');
     if (input) {
         input.value = '';
@@ -959,9 +1142,9 @@ function _updateUnshieldModalBtn() {
 function _updateTransferModalBtn() {
     const btn = document.querySelector('#shieldedTransferModal .modal-footer .btn-shield');
     if (!btn) return;
-    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE) {
+    if (!SHIELDED_SIGNED_SUBMISSION_AVAILABLE || !SHIELDED_PRIVATE_TRANSFER_AVAILABLE) {
         btn.disabled = true;
-        btn.title = 'Signed shielded transaction submission is not enabled yet';
+        btn.title = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
         return;
     }
     const available = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;

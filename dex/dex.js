@@ -1209,6 +1209,13 @@ document.addEventListener('DOMContentLoaded', () => {
         warning.classList.toggle('hidden', !pairMentionsWholeNeoLot(state.activePair));
     }
 
+    function formatLichenNameLabel(name) {
+        const raw = String(name || '').trim();
+        if (!raw) return '';
+        const bare = raw.replace(/(?:\.lichen)+$/i, '');
+        return bare ? `${bare}.lichen` : '';
+    }
+
     const state = {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
@@ -1830,6 +1837,12 @@ document.addEventListener('DOMContentLoaded', () => {
         state.lastPrice = pair.hasMarketPrice
             ? pair.price
             : ((pair.id === 'LICN/lUSD' || pair.base === 'LICN') ? LICHEN_GENESIS_PRICE : 0);
+        if (priceInput) priceInput.value = state.lastPrice > 0 ? formatPriceRaw(state.lastPrice) : '';
+        const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
+        if (fe) fe.textContent = '—';
+        if (re) re.textContent = '—';
+        calcTotal();
+        updateSubmitBtn();
         // Task 5.4: Remember last selected pair
         localStorage.setItem('dexLastPair', String(pair.pairId));
         if (pairActive) pairActive.querySelector('.pair-name').textContent = pair.id;
@@ -2396,20 +2409,26 @@ document.addEventListener('DOMContentLoaded', () => {
         // Debounce router quote call
         clearTimeout(_routeQuoteTimer);
         if (p > 0 && a > 0 && state.activePair) {
+            const quotePair = state.activePair;
+            const quotePairId = state.activePairId;
+            const quoteSide = state.orderSide;
+            const quoteSlippage = state.slippagePct;
             _routeQuoteTimer = setTimeout(async () => {
                 try {
-                    const tokenIn = state.orderSide === 'buy' ? state.activePair.quote : state.activePair.base;
-                    const tokenOut = state.orderSide === 'buy' ? state.activePair.base : state.activePair.quote;
+                    const tokenIn = quoteSide === 'buy' ? quotePair.quote : quotePair.base;
+                    const tokenOut = quoteSide === 'buy' ? quotePair.base : quotePair.quote;
                     const amountIn = Math.round(p * a * 1e9);
-                    const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: state.slippagePct });
+                    const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: quoteSlippage });
+                    if (state.activePairId !== quotePairId || state.orderSide !== quoteSide) return;
                     if (data && data.routeType) {
                         if (re) re.textContent = ROUTE_TYPE_LABELS[data.routeType] || data.routeType;
                         if (fe && data.feeRate !== undefined) {
                             const feeRate = data.feeRate / 10000;
-                            fe.textContent = `~${(p * a * feeRate).toFixed(4)} ${state.activePair?.quote || ''} (${data.feeRate}bps)`;
+                            fe.textContent = `~${(p * a * feeRate).toFixed(4)} ${quotePair.quote || ''} (${data.feeRate}bps)`;
                         }
                     }
                 } catch {
+                    if (state.activePairId !== quotePairId || state.orderSide !== quoteSide) return;
                     // Fallback to heuristic if API unavailable
                     if (re) re.textContent = p * a > 50000 ? 'CLOB + AMM Split' : 'CLOB Direct';
                 }
@@ -3887,7 +3906,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const reverseResult = await api.rpc('reverseLichenName', [address]);
             if (reverseResult && reverseResult.name) {
-                state.lichenName = reverseResult.name + '.lichen';
+                state.lichenName = formatLichenNameLabel(reverseResult.name);
                 displayLabel = state.lichenName;
             } else {
                 state.lichenName = null;
@@ -3959,7 +3978,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const nameMap = {};
         try {
             const result = await api.rpc('batchReverseLichenNames', [savedWallets.map(w => w.address)]);
-            if (result && typeof result === 'object') { for (const [addr, name] of Object.entries(result)) { if (name) nameMap[addr] = name + '.lichen'; } }
+            if (result && typeof result === 'object') { for (const [addr, name] of Object.entries(result)) { const label = formatLichenNameLabel(name); if (label) nameMap[addr] = label; } }
         } catch { /* RPC unavailable — show plain addresses */ }
         list.innerHTML = savedWallets.map((w, i) => {
             const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);

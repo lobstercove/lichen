@@ -94,12 +94,30 @@ async fn list_airdrops(
     State(state): State<FaucetState>,
     Query(query): Query<AirdropQuery>,
 ) -> Json<Vec<AirdropRecord>> {
-    let limit = query.limit.unwrap_or(10).min(100);
     let airdrops = state.airdrops.read().await;
-    let mut records = airdrops.clone();
+    Json(select_airdrop_records(&airdrops, &query))
+}
+
+fn select_airdrop_records(airdrops: &[AirdropRecord], query: &AirdropQuery) -> Vec<AirdropRecord> {
+    let limit = query.limit.unwrap_or(10).min(100);
+    let requested_address = query
+        .address
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let mut records: Vec<AirdropRecord> = airdrops
+        .iter()
+        .filter(|record| {
+            requested_address
+                .map(|address| record.recipient == address)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
     records.sort_by_key(|record| std::cmp::Reverse(record.timestamp_ms));
     records.truncate(limit);
-    Json(records)
+    records
 }
 
 async fn request_airdrop(

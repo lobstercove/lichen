@@ -1,6 +1,6 @@
 {
   "name": "@lobstercove/lichen-sdk",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
   "type": "module",
   "main": "dist/index.js",
@@ -52,6 +52,6 @@
   "dependencies": {
     "@noble/post-quantum": "^0.6.0",
     "bs58": "^5.0.0",
-    "ws": "^8.16.0"
+    "ws": "^8.20.1"
   }
 }

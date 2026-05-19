@@ -17,8 +17,8 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
 use lichen_core::{
     contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
-    Instruction, Keypair, Message, Precommit, Pubkey, StakeInfo, StakePool, StateStore,
-    SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
+    Instruction, Keypair, Message, MossStakePool, Precommit, Pubkey, StakeInfo, StakePool,
+    StateStore, SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
 };
 use lichen_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
 use serde_json::json;
@@ -2843,6 +2843,37 @@ fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
     (app, validator_b58)
 }
 
+fn app_with_mossstake_pool(licn_staked: u64) -> (axum::Router, MossStakePool) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    put_ready_tip(&state, 1);
+    let _ = Box::leak(Box::new(dir));
+
+    let mut moss_pool = MossStakePool::new();
+    moss_pool
+        .stake(Pubkey([9u8; 32]), licn_staked, 0)
+        .expect("stake into moss pool");
+    state
+        .put_mossstake_pool(&moss_pool)
+        .expect("put mossstake pool");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(StakePool::new()))),
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    (app, moss_pool)
+}
+
 // ── getBalance positive path (native "/") ────────────────────────────────────
 
 #[tokio::test]
@@ -3396,6 +3427,34 @@ async fn test_native_get_mossstake_pool_info_returns_data() {
     // Should return pool info (possibly empty/defaults), not null
     let result = &resp["result"];
     assert!(!result.is_null(), "mossstake pool info should return data");
+}
+
+#[tokio::test]
+async fn test_native_get_mossstake_pool_info_uses_mossstake_reward_share_for_apy() {
+    let (app, pool) = app_with_mossstake_pool(10_000_000_000);
+    let resp = rpc(&app, "/", "getMossStakePoolInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+
+    let apy = resp["result"]["average_apy_percent"]
+        .as_f64()
+        .expect("average apy percent");
+    let slots_per_day = lichen_core::consensus::SLOTS_PER_YEAR / 365;
+    let current_reward =
+        lichen_core::compute_block_reward(1, lichen_core::consensus::GENESIS_SUPPLY_SPORES);
+    let mossstake_reward = ((current_reward as u128
+        * lichen_core::MOSSSTAKE_BLOCK_SHARE_BPS as u128)
+        / 10_000u128) as u64;
+    let expected = pool.calculate_apy_bp(slots_per_day, mossstake_reward) as f64 / 100.0;
+    let full_reward_apy = pool.calculate_apy_bp(slots_per_day, current_reward) as f64 / 100.0;
+
+    assert!(
+        (apy - expected).abs() < 0.01,
+        "MossStake APY should use MossStake reward share: got {apy}, expected {expected}"
+    );
+    assert!(
+        apy < full_reward_apy,
+        "MossStake APY must not use the full validator reward pool"
+    );
 }
 
 // ── getTreasuryInfo returns treasury data ────────────────────────────────────

@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.51` with the clean Neo/GAS route, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, configured-seed/cached-peer separation for fresh external validator joins, learned-peer endpoint identity rotation, stale-cluster restart recovery, durable consensus WAL proposal recovery, Tendermint locked-value reproposal validation, and fail-closed public activation gates built on the stable `v0.5.37` base.
+**Current release:** signed `v0.5.52` with the clean Neo/GAS route, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, configured-seed/cached-peer separation for fresh external validator joins, learned-peer endpoint identity rotation, stale-cluster restart recovery, durable consensus WAL proposal recovery, Tendermint locked-value reproposal validation, and fail-closed public activation gates built on the stable `v0.5.37` base.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -127,9 +127,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.51/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.51/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.51/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.52/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.52/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.52/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 
@@ -194,6 +194,8 @@ Windows release assets are now part of the release contract, but if a given tag 
 
 Release bundles now ship `lichen-validator`, `lichen-genesis`, `lichen`, `zk-prove`, `seeds.json`, and the contract WASM bundle beside the operator tools so agents can keep shielded-transaction tooling and runtime artifacts installed with the validator. Operators should pin the current seed set under `{db-path}/seeds.json` for supervisor-managed starts, and `--auto-update=apply` refreshes that file from newer release archives during apply-mode upgrades. Validator identity keys are generated locally on first start, and external signed-metadata manifests or standalone proving/verification-key bundles are not required just to join and sync a validator.
 
+The validator identity is also the validator wallet/reward account. The address printed at startup is the account that receives bootstrap stake and validator rewards. Preserve the state directory, validator key files, and `LICHEN_KEYPAIR_PASSWORD`; an agent can restart or upgrade from the same state and catch up, but it cannot sign as the same validator if the key or password is lost.
+
 ### What Happens On First Start
 
 When an agent starts `lichen-validator` on a fresh machine, the runtime does this:
@@ -216,7 +218,7 @@ Important runtime files in the chosen `--db-path`:
 - `home/.lichen/node_identity.json`
 - `home/.lichen/peer_identities.json`
 
-Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before first start and on every restart. The validator, treasury, and signer key files are encrypted at rest, and production starts refuse plaintext keypair files.
+Outside explicit local development, set `LICHEN_KEYPAIR_PASSWORD` before first start and on every restart. The validator, treasury, and signer key files are encrypted at rest, and production starts refuse plaintext keypair files. Store this password in the operator secret store before first launch; the validator cannot decrypt the existing wallet identity without it.
 
 If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
 
@@ -379,7 +381,9 @@ cargo build --release
 ```bash
 # If you already shipped the binary to the machine, cloning the repo is optional.
 # The validator only needs the binary, a writable db path, and a seed list.
+mkdir -p ./data/state-mainnet
 cp ./seeds.json ./data/state-mainnet/seeds.json
+export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
 ./target/release/lichen-validator \
     --network mainnet \
     --p2p-port 8001 \
@@ -391,7 +395,7 @@ cp ./seeds.json ./data/state-mainnet/seeds.json
 For a repo checkout on Linux, the foreground command above is the public manual path for ad hoc starts and debugging. Hosted production automation is outside the public repository.
 
 That's it. The validator will:
-- Generate a keypair (saved to `~/.lichen/validators/validator-mainnet.json`)
+- Generate or reuse the encrypted validator wallet identity under the chosen `--db-path`
 - Import verified genesis state from block 0 and sync/replay the chain from seed nodes
 - Receive a 100K LICN bootstrap stake grant (first 200 validators only)
 - Begin producing & voting on blocks

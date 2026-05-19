@@ -1,8 +1,10 @@
+use super::bootstrap::cors_origin_values;
+use super::models::AirdropQuery;
 use super::rate_limit::RateLimiter;
 use super::storage::{load_airdrops, save_airdrops};
 use super::{
     models::{AirdropRecord, DEFAULT_COOLDOWN_SECONDS, DEFAULT_DAILY_LIMIT_PER_IP},
-    now_ms,
+    now_ms, select_airdrop_records,
 };
 use std::{
     fs,
@@ -22,6 +24,69 @@ fn temp_airdrops_file(name: &str) -> String {
         unique
     ));
     path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn faucet_cors_allows_wallet_origin_for_history_fetches() {
+    let origins: Vec<String> = cors_origin_values()
+        .iter()
+        .map(|origin| origin.to_str().expect("valid header value").to_string())
+        .collect();
+
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin == "https://wallet.lichen.network"),
+        "wallet origin must be allowed to read faucet history"
+    );
+    assert!(
+        origins
+            .iter()
+            .any(|origin| origin == "https://lichen-network-wallet.pages.dev"),
+        "wallet Pages origin must be allowed for deployment previews"
+    );
+}
+
+#[test]
+fn airdrop_history_filters_by_requested_wallet_address() {
+    let records = vec![
+        AirdropRecord {
+            signature: Some("older-target".to_string()),
+            recipient: "target-wallet".to_string(),
+            amount_licn: 5,
+            timestamp_ms: 100,
+            ip: None,
+        },
+        AirdropRecord {
+            signature: Some("other-wallet".to_string()),
+            recipient: "other-wallet".to_string(),
+            amount_licn: 10,
+            timestamp_ms: 300,
+            ip: None,
+        },
+        AirdropRecord {
+            signature: Some("newer-target".to_string()),
+            recipient: "target-wallet".to_string(),
+            amount_licn: 10,
+            timestamp_ms: 200,
+            ip: None,
+        },
+    ];
+
+    let selected = select_airdrop_records(
+        &records,
+        &AirdropQuery {
+            address: Some("target-wallet".to_string()),
+            limit: Some(10),
+        },
+    );
+
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].signature.as_deref(), Some("newer-target"));
+    assert_eq!(selected[1].signature.as_deref(), Some("older-target"));
+    assert!(selected
+        .iter()
+        .all(|record| record.recipient == "target-wallet"));
 }
 
 #[test]

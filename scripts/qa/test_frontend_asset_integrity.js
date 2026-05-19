@@ -554,6 +554,50 @@ function validateDexChartPricePrecision() {
     );
 }
 
+function validateDexWalletAndPairState() {
+    const dexJsPath = path.join(repoRoot, 'dex', 'dex.js');
+    const walletConnectPath = path.join(repoRoot, 'dex', 'shared', 'wallet-connect.js');
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    const walletConnect = fs.readFileSync(walletConnectPath, 'utf8');
+
+    const nameBody = extractFunctionBody(js, 'formatLichenNameLabel');
+    assert(
+        nameBody.includes("replace(/(?:\\.lichen)+$/i, '')") &&
+            js.includes('state.lichenName = formatLichenNameLabel(reverseResult.name)') &&
+            js.includes('const label = formatLichenNameLabel(name); if (label) nameMap[addr] = label;'),
+        'DEX normalizes reverse .lichen names without duplicating the suffix'
+    );
+
+    const selectPairBody = extractFunctionBody(js, 'selectPair');
+    assert(
+        selectPairBody.includes('priceInput.value = state.lastPrice > 0 ? formatPriceRaw(state.lastPrice)') &&
+            selectPairBody.includes('calcTotal();') &&
+            selectPairBody.includes('updateSubmitBtn();'),
+        'DEX pair switch refreshes order price, totals, and submit button labels'
+    );
+
+    const calcTotalBody = extractFunctionBody(js, 'calcTotal');
+    assert(
+        calcTotalBody.includes('const quotePair = state.activePair;') &&
+            calcTotalBody.includes('const quotePairId = state.activePairId;') &&
+            calcTotalBody.includes('if (state.activePairId !== quotePairId || state.orderSide !== quoteSide) return;') &&
+            calcTotalBody.includes('quotePair.quote ||'),
+        'DEX router quote debounce guards against stale pair writes'
+    );
+
+    const providerStart = walletConnect.indexOf('PopupLichenProvider.prototype.getProviderState = function ()');
+    const providerEnd = walletConnect.indexOf('PopupLichenProvider.prototype.isConnected', providerStart);
+    const providerStateBody = providerStart >= 0 && providerEnd > providerStart
+        ? walletConnect.slice(providerStart, providerEnd)
+        : '';
+    assert(
+        providerStateBody.includes('if (!this.isWindowOpen())') &&
+            providerStateBody.includes('return Promise.resolve(this._lastState);') &&
+            !providerStateBody.includes('this._setDisconnected();'),
+        'DEX web-wallet provider preserves approved state when the popup is closed'
+    );
+}
+
 console.log('\n── Frontend Asset Integrity ──');
 
 for (const portal of portals) {
@@ -571,6 +615,7 @@ for (const portal of portals) {
 validateMonitoringIncidentControls();
 validateMonitoringRiskConsole();
 validateDexChartPricePrecision();
+validateDexWalletAndPairState();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

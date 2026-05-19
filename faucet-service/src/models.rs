@@ -80,6 +80,7 @@ pub(super) struct FaucetState {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AirdropQuery {
+    pub(super) address: Option<String>,
     pub(super) limit: Option<usize>,
 }
 

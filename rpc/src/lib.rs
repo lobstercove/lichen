@@ -17140,7 +17140,10 @@ async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::
             .saturating_add(state.state.get_total_minted().unwrap_or(0))
             .saturating_sub(state.state.get_total_burned().unwrap_or(0));
         let current_reward = compute_block_reward(current_slot, total_supply);
-        let apy_bp = pool.calculate_apy_bp(slots_per_day, current_reward);
+        let mossstake_reward = ((current_reward as u128
+            * lichen_core::MOSSSTAKE_BLOCK_SHARE_BPS as u128)
+            / 10_000u128) as u64;
+        let apy_bp = pool.calculate_apy_bp(slots_per_day, mossstake_reward);
         (stats.active_validators, apy_bp as f64 / 100.0)
     } else {
         (0, 0.0)

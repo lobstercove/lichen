@@ -313,9 +313,12 @@ test('shielded.js confirm handlers call shield/unshield operations', () => {
         'confirmUnshield must validate recipient input');
 });
 
-test('shielded.js does not call unsupported unsigned submission RPC methods', () => {
-    assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = false'), 'Shielded submit flow must be explicitly disabled until signed tx builder is wired');
-    assert(shieldedSrc.includes('shieldedSubmissionUnavailable'), 'Shielded submit flow must show an honest unavailable state');
+test('shielded.js uses signed transaction builders for supported shielded flows', () => {
+    assert(shieldedSrc.includes('SHIELDED_SIGNED_SUBMISSION_AVAILABLE = true'), 'Shield/unshield signed submission should be enabled once the wallet builder is wired');
+    assert(shieldedSrc.includes('async function submitShieldTransaction'), 'Shield flow must build and submit a signed shield transaction');
+    assert(shieldedSrc.includes('async function submitUnshieldTransaction'), 'Unshield flow must build and submit a signed unshield transaction');
+    assert(shieldedSrc.includes('SHIELDED_PRIVATE_TRANSFER_AVAILABLE = false'), 'Private transfer should remain explicitly disabled until native encrypted note payload storage is wired');
+    assert(shieldedSrc.includes('function bytesToBase64(bytes)'), 'Shielded transaction encoding should use a chunked base64 helper for proof-sized payloads');
     assert(!shieldedSrc.includes("rpc.call('submitShieldTransaction'"), 'Shield flow must not call unsupported submitShieldTransaction RPC');
     assert(!shieldedSrc.includes("rpc.call('submitUnshieldTransaction'"), 'Unshield flow must not call unsupported submitUnshieldTransaction RPC');
     assert(!shieldedSrc.includes("rpc.call('submitShieldedTransfer'"), 'Transfer flow must not call unsupported submitShieldedTransfer RPC');
@@ -947,6 +950,19 @@ test('wallet settings explain that critical metadata stays pinned to trusted end
         'wallet.js should persist explicit unsafe RPC mode state');
 });
 
+console.log('\nW-23b: Wallet unlock desktop layout');
+
+test('wallet lock screen uses the wider desktop card while preserving mobile bounds', () => {
+    assert(walletSrc.includes('function showUnlockScreen()'),
+        'wallet.js should render the unlock screen through showUnlockScreen');
+    assert(walletSrc.includes('class="unlock-card"'),
+        'unlock screen should use the unlock-card surface');
+    assert(walletCssSrc.includes('max-width: 480px;'),
+        'desktop unlock card should match the wider wallet welcome surfaces');
+    assert(walletCssSrc.includes('max-width: calc(100vw - 1.5rem);'),
+        'mobile unlock card should remain bounded to the viewport');
+});
+
 console.log('\nW-24: Restriction status banners, asset badges, and wallet send preflight');
 
 test('shared-config exposes canonical restriction RPC method names', () => {
@@ -1109,6 +1125,14 @@ test('H1-01: secretKey field is not directly accessible', () => {
 
     // The old public 'secretKey' field should no longer exist
     assert(kp.secretKey === undefined, 'secretKey field must not be publicly accessible');
+});
+
+console.log('\n── MossStake Display Safety ──');
+
+test('MossStake APY display is bounded for fresh tiny pools', () => {
+    assert(walletSrc.includes('function formatMossStakeApyLabel('), 'wallet should use a MossStake APY formatter');
+    assert(walletSrc.includes('MOSSSTAKE_APY_DISPLAY_CAP_PERCENT'), 'wallet should define a MossStake APY display cap');
+    assert(walletSrc.includes('formatMossStakeApyLabel(t.apy_percent, t.multiplier)'), 'tier cards should use the bounded APY formatter');
 });
 
 // ============================================================================

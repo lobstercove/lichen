@@ -73,12 +73,27 @@ pub(super) fn faucet_listen_addr() -> SocketAddr {
 }
 
 fn build_cors() -> CorsLayer {
+    let origins = cors_origin_values();
+
+    CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE])
+        .allow_origin(origins)
+}
+
+pub(super) fn cors_origin_values() -> Vec<HeaderValue> {
     let mut origins: Vec<HeaderValue> = vec![
         "https://faucet.lichen.network"
             .parse::<HeaderValue>()
             .unwrap(),
+        "https://wallet.lichen.network"
+            .parse::<HeaderValue>()
+            .unwrap(),
         "https://lichen.network".parse::<HeaderValue>().unwrap(),
         "https://lichen-network-faucet.pages.dev"
+            .parse::<HeaderValue>()
+            .unwrap(),
+        "https://lichen-network-wallet.pages.dev"
             .parse::<HeaderValue>()
             .unwrap(),
     ];
@@ -92,10 +107,7 @@ fn build_cors() -> CorsLayer {
         ]);
     }
 
-    CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([axum::http::header::CONTENT_TYPE])
-        .allow_origin(origins)
+    origins
 }
 
 fn parse_env_u16(key: &str, default: u16) -> u16 {

@@ -17,7 +17,7 @@ import {
   base58Encode,
   generateEVMAddress
 } from '../core/crypto-service.js';
-import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
+import { buildSignedNativeTransferTransaction, buildSignedSingleInstructionTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
 import { requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
 import { hasBridgeAccessAuth } from '../core/bridge-service.js';
@@ -92,6 +92,15 @@ function formatNeoGasBaseUnits(value) {
   return (raw / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
 }
 
+const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+
+function formatMossStakeApyLabel(apyPercent, multiplier) {
+  const apy = Number(apyPercent);
+  if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1} rewards`;
+  if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
+  return `${apy.toFixed(1)}% APY`;
+}
+
 async function loadNeoGasRewardsSnapshot(address) {
   try {
     const client = rpc();
@@ -155,6 +164,54 @@ function hexToBytesExt(hex) {
     bytes[index / 2] = parseInt(normalized.slice(index, index + 2), 16);
   }
   return bytes;
+}
+
+function hexToBytesAnyExt(hex, expectedLength = null) {
+  const normalized = String(hex || '').replace(/^0x/i, '');
+  if (!/^[0-9a-fA-F]*$/.test(normalized) || normalized.length % 2 !== 0) {
+    throw new Error('Invalid hex bytes');
+  }
+  const bytes = new Uint8Array(normalized.length / 2);
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes[index / 2] = parseInt(normalized.slice(index, index + 2), 16);
+  }
+  if (expectedLength !== null && bytes.length !== expectedLength) {
+    throw new Error(`Expected ${expectedLength} bytes, got ${bytes.length}`);
+  }
+  return bytes;
+}
+
+function writeU64LeExt(target, offset, value) {
+  new DataView(target.buffer, target.byteOffset, target.byteLength).setBigUint64(offset, BigInt(value), true);
+}
+
+function concatBytesExt(...chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function buildExtShieldInstructionData(amountSpores, commitmentHex, proofBytes) {
+  const header = new Uint8Array(41);
+  header[0] = 23;
+  writeU64LeExt(header, 1, amountSpores);
+  header.set(hexToBytesAnyExt(commitmentHex, 32), 9);
+  return concatBytesExt(header, proofBytes);
+}
+
+function buildExtUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex, recipientHashHex, proofBytes) {
+  const header = new Uint8Array(105);
+  header[0] = 24;
+  writeU64LeExt(header, 1, amountSpores);
+  header.set(hexToBytesAnyExt(nullifierHex, 32), 9);
+  header.set(hexToBytesAnyExt(merkleRootHex, 32), 41);
+  header.set(hexToBytesAnyExt(recipientHashHex, 32), 73);
+  return concatBytesExt(header, proofBytes);
 }
 
 function zeroBytesExt(bytes) {
@@ -1205,7 +1262,9 @@ async function loadStakingTab() {
         ${tierNames.map((name, i) => {
       const isActive = lockTier === name && stLicn > 0;
       const apyVal = poolTiers[i]?.apy_percent;
-      const apyLabel = apyVal != null && apyVal > 0 ? apyVal.toFixed(1) + '% APY' : tierMultipliers[i] + ' rewards';
+      const apyLabel = apyVal != null && apyVal > 0
+        ? formatMossStakeApyLabel(apyVal, tierMultipliers[i])
+        : tierMultipliers[i] + ' rewards';
       return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
             <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${name}</div>
             <div style="font-size:0.72rem;color:var(--text-muted);">${apyLabel}</div>
@@ -1430,6 +1489,172 @@ async function handleFullClaim() {
 // ──────────────────────────────────────────
 let _shieldedState = { initialized: false, balance: 0, address: null, viewingKey: null, notes: [], poolStats: null };
 
+async function deriveExtensionShieldedStorageKey() {
+  if (!_shieldedState.spendingKey || !_shieldedState.viewingKey) return null;
+  const domain = new TextEncoder().encode('lichen-extension-shielded-storage-v1');
+  const material = new Uint8Array(
+    _shieldedState.spendingKey.length + _shieldedState.viewingKey.length + domain.length
+  );
+  material.set(_shieldedState.spendingKey, 0);
+  material.set(_shieldedState.viewingKey, _shieldedState.spendingKey.length);
+  material.set(domain, _shieldedState.spendingKey.length + _shieldedState.viewingKey.length);
+  const digest = await crypto.subtle.digest('SHA-256', material);
+  zeroBytesExt(material);
+  return crypto.subtle.importKey('raw', new Uint8Array(digest), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+async function loadExtensionShieldedNotes(wallet) {
+  try {
+    const payload = wallet?.shieldedNotes;
+    if (!payload) return;
+    if (Array.isArray(payload)) {
+      _shieldedState.notes = payload;
+      return;
+    }
+    if (payload.version !== 1 || !payload.iv || !payload.ciphertext) return;
+    const key = await deriveExtensionShieldedStorageKey();
+    if (!key) return;
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: hexToBytesAnyExt(payload.iv, 12) },
+      key,
+      hexToBytesAnyExt(payload.ciphertext),
+    );
+    const parsed = JSON.parse(new TextDecoder().decode(decrypted));
+    _shieldedState.notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+  } catch (error) {
+    console.warn('Failed to load shielded extension notes:', error?.message || error);
+  }
+}
+
+async function saveExtensionShieldedNotes(wallet) {
+  if (!wallet || !state) return;
+  const key = await deriveExtensionShieldedStorageKey();
+  if (!key) return;
+
+  const encoded = new TextEncoder().encode(JSON.stringify({ notes: _shieldedState.notes || [] }));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  wallet.shieldedNotes = {
+    version: 1,
+    iv: bytesToHex(iv),
+    ciphertext: bytesToHex(new Uint8Array(encrypted)),
+  };
+  await saveState(state);
+}
+
+async function signAndSubmitExtensionShieldedInstruction({ wallet, password, instructionDataBytes }) {
+  const client = rpc();
+  const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
+  const block = await client.getLatestBlock();
+  const tx = await buildSignedSingleInstructionTransaction({
+    privateKeyHex,
+    fromAddress: wallet.address,
+    blockhash: block.hash,
+    instructionDataBytes,
+  });
+  return client.sendTransaction(encodeTransactionBase64(tx));
+}
+
+async function submitExtensionShield({ wallet, amountLicn, password, statusEl }) {
+  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
+  if (!Number.isFinite(amountSpores) || amountSpores <= 0) throw new Error('Invalid amount');
+
+  const client = rpc();
+  if (!_shieldedState.initialized) {
+    const ok = await ensureShieldedStateInitialized(wallet, password);
+    if (!ok) throw new Error('Shielded wallet not initialized');
+  }
+
+  statusEl.textContent = 'Generating shield proof...';
+  const blinding = crypto.getRandomValues(new Uint8Array(32));
+  const serial = crypto.getRandomValues(new Uint8Array(32));
+  const proof = await client.call('generateShieldProof', [{
+    amount: amountSpores,
+    blinding: bytesToHex(blinding),
+    commitment: null,
+  }]);
+  const commitmentIndex = Number(
+    _shieldedState.poolStats?.commitmentCount
+    ?? _shieldedState.poolStats?.commitment_count
+    ?? _shieldedState.notes.length
+    ?? 0
+  );
+
+  statusEl.textContent = 'Submitting signed transaction...';
+  const signature = await signAndSubmitExtensionShieldedInstruction({
+    wallet,
+    password,
+    instructionDataBytes: buildExtShieldInstructionData(
+      amountSpores,
+      proof.commitment,
+      hexToBytesAnyExt(proof.proof),
+    ),
+  });
+
+  _shieldedState.notes.push({
+    index: commitmentIndex,
+    value: amountSpores,
+    blinding: bytesToHex(blinding),
+    serial: bytesToHex(serial),
+    commitment: proof.commitment,
+    spent: false,
+  });
+  _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, note) => sum + Number(note.value || 0), 0);
+  await saveExtensionShieldedNotes(wallet);
+  return signature;
+}
+
+async function submitExtensionUnshield({ wallet, amountLicn, password, recipient, statusEl }) {
+  if (!_shieldedState.initialized) {
+    const ok = await ensureShieldedStateInitialized(wallet, password);
+    if (!ok) throw new Error('Shielded wallet not initialized');
+  }
+  if (recipient !== wallet.address) {
+    throw new Error('Unshield currently requires the active wallet as recipient');
+  }
+
+  const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
+  const note = (_shieldedState.notes || []).find((n) => !n.spent && Number(n.value || 0) === amountSpores);
+  if (!note) throw new Error('Unshield currently requires a single note exactly matching the amount');
+
+  const client = rpc();
+  const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats);
+  const merkleRoot = pool?.merkleRoot || pool?.merkle_root;
+  if (!merkleRoot) throw new Error('Shielded Merkle root unavailable');
+  const merklePath = await client.call('getShieldedMerklePath', [note.index]);
+
+  statusEl.textContent = 'Generating unshield proof...';
+  const proof = await client.call('generateUnshieldProof', [{
+    amount: amountSpores,
+    merkle_root: merkleRoot,
+    recipient,
+    blinding: note.blinding,
+    serial: note.serial,
+    spending_key: bytesToHex(_shieldedState.spendingKey),
+    merkle_path: merklePath?.siblings || [],
+    path_bits: merklePath?.pathBits || merklePath?.path_bits || [],
+  }]);
+
+  statusEl.textContent = 'Submitting signed transaction...';
+  const signature = await signAndSubmitExtensionShieldedInstruction({
+    wallet,
+    password,
+    instructionDataBytes: buildExtUnshieldInstructionData(
+      amountSpores,
+      proof.nullifier,
+      proof.merkle_root,
+      proof.recipient_hash,
+      hexToBytesAnyExt(proof.proof),
+    ),
+  });
+
+  note.spent = true;
+  note.nullifier = proof.nullifier;
+  _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, item) => sum + Number(item.value || 0), 0);
+  await saveExtensionShieldedNotes(wallet);
+  return signature;
+}
+
 async function deriveShieldedSeedForWallet(wallet, password) {
   if (!wallet?.encryptedKey) return null;
 
@@ -1469,12 +1694,12 @@ async function deriveShieldedSeedForWallet(wallet, password) {
   }
 }
 
-async function ensureShieldedStateInitialized(wallet) {
+async function ensureShieldedStateInitialized(wallet, providedPassword = null) {
   if (_shieldedState.initialized && _shieldedState.address && _shieldedState.viewingKey) {
     return true;
   }
 
-  const password = await securePasswordPrompt('Enter your wallet password to initialize shielded privacy.');
+  const password = providedPassword || await securePasswordPrompt('Enter your wallet password to initialize shielded privacy.');
   if (!password) {
     showToast('Shielded initialization cancelled', 'info');
     return false;
@@ -1496,8 +1721,10 @@ async function ensureShieldedStateInitialized(wallet) {
       ..._shieldedState,
       initialized: true,
       address: shieldedAddress,
-      viewingKey,
+      spendingKey: new Uint8Array(spendingKey),
+      viewingKey: new Uint8Array(viewingKey),
     };
+    await loadExtensionShieldedNotes(wallet);
     showToast('Shielded privacy ready', 'success');
     return true;
   } catch (error) {
@@ -1572,11 +1799,11 @@ async function loadShieldTab() {
           <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} spores</div>
         </div>
         <div style="display:flex;gap:0.5rem;">
-          <button class="btn btn-small btn-primary" id="extShieldBtn" disabled title="Signed shielded transaction submission is not enabled yet"><i class="fas fa-arrow-down"></i> Shield</button>
-          <button class="btn btn-small btn-secondary" id="extUnshieldBtn" disabled title="Signed shielded transaction submission is not enabled yet"><i class="fas fa-arrow-up"></i> Unshield</button>
+          <button class="btn btn-small btn-primary" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
+          <button class="btn btn-small btn-secondary" id="extUnshieldBtn" ${unspent.length === 0 ? 'disabled title="No shielded balance"' : ''}><i class="fas fa-arrow-up"></i> Unshield</button>
         </div>
       </div>
-      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" disabled title="Signed shielded transaction submission is not enabled yet">
+      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;" disabled title="Private transfer needs native encrypted note payload storage before wallet submission can be enabled">
         <i class="fas fa-paper-plane"></i> Private Transfer
       </button>
     </div>
@@ -1644,9 +1871,10 @@ function showShieldModal(type) {
   const titles = { shield: 'Shield LICN', unshield: 'Unshield LICN', transfer: 'Private Transfer' };
   const icons = { shield: 'fa-arrow-down', unshield: 'fa-arrow-up', transfer: 'fa-paper-plane' };
 
+  const activeWalletForModal = getActiveWallet();
   const extraField = type === 'unshield'
     ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Address</label>
-       <input type="text" id="shieldModalRecipient" placeholder="Base58 address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+       <input type="text" id="shieldModalRecipient" value="${escapeHtmlExt(activeWalletForModal?.address || '')}" placeholder="Base58 address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
     : type === 'transfer'
       ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Viewing Key</label>
        <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
@@ -1682,6 +1910,10 @@ function showShieldModal(type) {
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     if (type !== 'shield' && !recipient) { statusEl.textContent = 'Recipient required'; return; }
+    if (type === 'transfer') {
+      statusEl.textContent = 'Private transfer needs native encrypted note payload storage before wallet submission can be enabled';
+      return;
+    }
 
     // Balance guard
     try {
@@ -1702,7 +1934,17 @@ function showShieldModal(type) {
 
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {
-      statusEl.textContent = 'Signed shielded transaction submission is not enabled yet';
+      const wallet = getActiveWallet();
+      if (!wallet) throw new Error('No active wallet');
+      const signature = type === 'shield'
+        ? await submitExtensionShield({ wallet, amountLicn: amount, password, statusEl })
+        : await submitExtensionUnshield({ wallet, amountLicn: amount, password, recipient, statusEl });
+      statusEl.innerHTML = '<i class="fas fa-check-circle" style="color:#10b981;"></i> Submitted ' + escapeHtmlExt(String(signature).slice(0, 16)) + '...';
+      showToast(type === 'shield' ? 'Shield transaction submitted' : 'Unshield transaction submitted', 'success');
+      setTimeout(() => {
+        overlay.remove();
+        loadShieldTab();
+      }, 900);
     } catch (err) {
       statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color:#ef4444;"></i> ' + escapeHtmlExt(err.message);
     }

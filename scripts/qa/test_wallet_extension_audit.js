@@ -754,11 +754,13 @@ test('CC-9 popup shield panel uses canonical getShieldedPoolState with fallback'
   assert.ok(popupSrc.includes("rpc.call('getShieldedPoolStats'"), 'popup shield panel should keep getShieldedPoolStats fallback');
 });
 
-test('CC-9b extension shield panel avoids unsupported shielded RPC calls', () => {
+test('CC-9b extension shield panel uses signed native shielded submission', () => {
   assert.ok(!popupSrc.includes("rpc.call('getShieldedNotes'"), 'popup must not call unsupported getShieldedNotes RPC');
   assert.ok(!fullSrc.includes("rpcClient.call('getShieldedNotes'"), 'full page must not call unsupported getShieldedNotes RPC');
   assert.ok(!fullSrc.includes("rpc().call('sendShieldedTransaction'"), 'full page must not call unsupported sendShieldedTransaction RPC');
-  assert.ok(fullSrc.includes('Signed shielded transaction submission is not enabled yet'), 'full page should show an honest unavailable state');
+  assert.ok(fullSrc.includes('submitExtensionShield'), 'full page should submit shield through the signed native transaction path');
+  assert.ok(fullSrc.includes('submitExtensionUnshield'), 'full page should submit unshield through the signed native transaction path');
+  assert.ok(fullSrc.includes('Private transfer needs native encrypted note payload storage'), 'private transfer should remain explicitly unavailable until note payload storage is wired');
 });
 
 test('CC-10 popup shield panel uses password-gated shield initialization', () => {
@@ -830,6 +832,15 @@ test('CC-18 provider router reuses shared tx-service message serializer', () => 
     'provider router should serialize message bytes via tx-service helper');
   assert.ok(txServiceSrc.includes('export function serializeMessageForSigning(message)'),
     'tx-service should export canonical serializeMessageForSigning helper');
+  assert.ok(txServiceSrc.includes('String.fromCharCode.apply(null, txBytes.subarray'),
+    'tx-service should chunk base64 encoding for proof-sized transactions');
+});
+
+test('CC-19 extension MossStake APY display is bounded for fresh tiny pools', () => {
+  assert.ok(fullSrc.includes('function formatMossStakeApyLabel('), 'full page should define bounded MossStake APY formatter');
+  assert.ok(fullSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'full page tiers should use bounded APY formatter');
+  assert.ok(popupSrc.includes('function formatMossStakeApyLabel('), 'popup should define bounded MossStake APY formatter');
+  assert.ok(popupSrc.includes('formatMossStakeApyLabel(apyVal, tierMultipliers[i])'), 'popup tiers should use bounded APY formatter');
 });
 
 // ============================================================================

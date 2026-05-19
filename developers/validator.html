@@ -175,8 +175,8 @@
             <p>The intended agent workflow is: download the latest signed release artifact for the host platform,
                 extract it, keep the bundled <code>zk-prove</code>, <code>lichen-genesis</code>,
                 <code>lichen</code>, and <code>contracts/</code> bundle beside the validator, copy the bundled
-                <code>seeds.json</code> into a writable state directory, and run the validator with
-                <code>--auto-update=apply</code>.
+                <code>seeds.json</code> into a writable state directory, and run the validator under a restart
+                supervisor. Keep auto-update disabled unless the operator has explicitly approved a canary rollout.
             </p>
 
             <h4>Linux x86_64</h4>
@@ -200,8 +200,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet" \
-    --auto-update=apply</code></pre>
+    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
             </div>
 
             <h4>macOS Apple Silicon</h4>
@@ -225,8 +224,7 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet" \
-    --auto-update=apply</code></pre>
+    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
             </div>
 
             <h4>Windows x64 (PowerShell)</h4>
@@ -247,8 +245,7 @@ $env:LICHEN_KEYPAIR_PASSWORD = 'set-a-long-random-secret-before-first-start'
     --rpc-port 9899 `
     --ws-port 9900 `
     --p2p-port 8001 `
-    --db-path "$HOME\.lichen\state-mainnet" `
-    --auto-update=apply</code></pre>
+    --db-path "$HOME\.lichen\state-mainnet"</code></pre>
             </div>
 
             <p>If a release predates Windows packaging, use the source-build workflow for Windows until a newer release
@@ -276,14 +273,14 @@ lichen-validator \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.lichen/state-mainnet" \
-    --auto-update=apply</code></pre>
+    --db-path "$HOME/.lichen/state-mainnet"</code></pre>
             </div>
 
             <p>This is the fastest operational path for agents: validator binary, bundled <code>zk-prove</code>,
                 ports, state directory, and bundled seed file. If the state directory already exists, the validator
-                resumes with the same identity and local chain state. In apply mode, auto-update also refreshes
-                <code>{db-path}/seeds.json</code> from newer release archives.
+                resumes with the same identity and local chain state. If canary auto-update is approved later,
+                <code>--auto-update=apply</code> also refreshes <code>{db-path}/seeds.json</code> from newer release
+                archives.
             </p>
 
             <h4>What happens when the validator starts?</h4>
@@ -310,12 +307,18 @@ lichen-validator \
                 state, <code>known-peers.json</code>, and <code>home/.lichen/</code> for the persistent native PQ P2P
                 identity and peer-identity TOFU store. Preserving that directory preserves the validator identity and
                 local progress.</p>
+            <p>The validator identity is also the validator wallet and reward account. The operator or agent must keep
+                both the encrypted key/state directory and the matching <code>LICHEN_KEYPAIR_PASSWORD</code>. Restarting
+                or upgrading with the same state and password resumes the same on-chain validator; losing either means
+                the same validator identity cannot sign transactions, receive wallet access, or resume participation.</p>
             <p>For new or state-scoped installs, the validator prefers <code>--db-path/home</code> for those P2P runtime
                 files. If an existing deployment already has <code>node_identity.json</code> under the current process
                 <code>HOME</code>, it keeps using that identity instead of generating a new node address.
             </p>
-            <p>For unattended updates, run the validator under a restart supervisor or service manager. Auto-update
-                handles download and staging; the supervisor handles relaunch.</p>
+            <p>For unattended updates, run the validator under a restart supervisor or service manager. Leave
+                auto-update disabled by default; when a canary node is explicitly approved for
+                <code>--auto-update=apply</code>, auto-update handles download and staging while the supervisor handles
+                relaunch.</p>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Why domains instead of IPs?</div>
@@ -701,9 +704,10 @@ export LICHEN_KEYPAIR_PASSWORD='set-a-long-random-secret-before-first-start'
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-key"></i> Machine Migration</div>
                 To move a validator to a new machine: (1) Stop the validator on the old machine. (2) Copy the keypair
-                file to the new machine. (3) Start with <code>--import-key /path/to/keypair.json</code>. All progress
-                (debt, earned rewards, blocks produced) is tied to the keypair, not the machine. The machine fingerprint
-                auto-updates with a 2-day cooldown between migrations.
+                file and keep the matching password available on the new machine. (3) Start with
+                <code>--import-key /path/to/keypair.json</code>. All progress (debt, earned rewards, blocks produced)
+                is tied to the keypair, not the machine. The machine fingerprint auto-updates with a 2-day cooldown
+                between migrations.
             </div>
 
             <!-- [rpc] -->
@@ -1555,13 +1559,13 @@ fi
 
 # Start the validator
 echo "$(date): Starting lichen-validator..."
+: "${LICHEN_KEYPAIR_PASSWORD:?set LICHEN_KEYPAIR_PASSWORD in the service environment before first start}"
 exec "$BINARY" \
     --network mainnet \
     --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path "$STATE_DIR" \
-    --auto-update=apply
+    --db-path "$STATE_DIR"
 WRAPPER
 
 chmod +x ~/.lichen/bin/lichen-service.sh</code></pre>
@@ -1608,6 +1612,8 @@ chmod +x ~/.lichen/bin/lichen-service.sh</code></pre>
     &lt;dict&gt;
         &lt;key&gt;RUST_LOG&lt;/key&gt;
         &lt;string&gt;info&lt;/string&gt;
+        &lt;key&gt;LICHEN_KEYPAIR_PASSWORD&lt;/key&gt;
+        &lt;string&gt;replace-with-operator-secret&lt;/string&gt;
     &lt;/dict&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;
@@ -1700,11 +1706,11 @@ tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
 # 3. Create the service
 nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
 Copy-Item "$InstallDir\bin\seeds.json" "$InstallDir\state-mainnet\seeds.json" -Force
-nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --auto-update=apply"
+nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet"
 nssm set LichenValidator AppDirectory "$InstallDir"
 nssm set LichenValidator AppStdout "$InstallDir\logs\validator.log"
 nssm set LichenValidator AppStderr "$InstallDir\logs\validator.log"
-nssm set LichenValidator AppEnvironmentExtra "RUST_LOG=info" "USERPROFILE=$InstallDir"
+nssm set LichenValidator AppEnvironmentExtra "RUST_LOG=info" "USERPROFILE=$InstallDir" "LICHEN_KEYPAIR_PASSWORD=replace-with-operator-secret"
 nssm set LichenValidator Start SERVICE_AUTO_START
 nssm set LichenValidator AppRestartDelay 10000
 
@@ -1720,9 +1726,10 @@ nssm start LichenValidator</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>$InstallDir = "$env:LOCALAPPDATA\Lichen"
+[Environment]::SetEnvironmentVariable("LICHEN_KEYPAIR_PASSWORD", "replace-with-operator-secret", "User")
 $Action = New-ScheduledTaskAction `
     -Execute "$InstallDir\bin\lichen-validator.exe" `
-                    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --auto-update=apply" `
+                    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet" `
     -WorkingDirectory "$InstallDir"
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds 15)

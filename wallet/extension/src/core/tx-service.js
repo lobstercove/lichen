@@ -85,7 +85,12 @@ export function serializeMessageForSigning(message) {
 
 export function encodeTransactionBase64(transaction) {
   const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
-  return btoa(String.fromCharCode(...txBytes));
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < txBytes.length; offset += chunkSize) {
+    binary += String.fromCharCode.apply(null, txBytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export function buildNativeTransferMessage(fromAddress, toAddress, amountLicn, blockhash) {

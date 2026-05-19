@@ -27,6 +27,15 @@ function fmtUsd(value, sym = '$') {
     return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
+const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+
+function formatMossStakeApyLabel(apyPercent, multiplier) {
+    const apy = Number(apyPercent);
+    if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1}x rewards`;
+    if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
+    return `${apy.toFixed(1)}% APY`;
+}
+
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
 const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5 };
@@ -3086,9 +3095,8 @@ async function loadMossStakePosition(address) {
             const tierColorClasses = ['flexible', 'lock30', 'lock180', 'lock365'];
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
                 const isActive = position.lock_tier === t.id && position.st_licn_amount > 0;
-                const apyStr = (t.apy_percent || 0).toFixed(1);
                 const apyDisplay = poolInfo.total_licn_staked > 0 && t.apy_percent > 0
-                    ? `${apyStr}% APY`
+                    ? formatMossStakeApyLabel(t.apy_percent, t.multiplier)
                     : `${t.multiplier}x rewards`;
                 return `
                     <div class="staking-tier-card ${tierColorClasses[i]} ${isActive ? 'staking-tier-active' : ''}">

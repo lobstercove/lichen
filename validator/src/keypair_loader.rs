@@ -5,7 +5,7 @@
 use anyhow::Result;
 use lichen_core::{
     keypair_file::{
-        copy_secure_file, load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
+        load_keypair_with_password_policy, plaintext_keypair_compat_allowed,
         require_runtime_keypair_password,
     },
     Keypair, KeypairFile,
@@ -18,27 +18,24 @@ use tracing::{info, warn};
 /// Search order:
 /// 1. Explicit `config_path` (--keypair CLI argument)
 /// 2. Data-directory-local path: `{data_dir}/validator-keypair.json`
-/// 3. Shared HOME path: `~/.lichen/validators/validator-{network}.json`
-///    (survives state-directory flushes — the keypair is NOT inside the DB)
-/// 4. Generate new keypair and save to BOTH data-dir AND shared HOME path
+/// 3. Generate new keypair and save to the data directory
 ///
-/// The shared HOME path ensures that `rm -rf state-testnet` (a common
-/// operational reset) does NOT destroy the validator identity.  Without
-/// this, every flush + restart creates a brand-new keypair, which
-/// registers as a separate validator and receives a fresh bootstrap
-/// grant — inflating the validator set and total staked supply.
+/// Validator identity is scoped to the configured state directory. Normal
+/// restarts and upgrades preserve the same identity by preserving that
+/// directory and `LICHEN_KEYPAIR_PASSWORD`. Moving an identity to another
+/// state directory is explicit via `--import-key`.
 pub fn load_or_generate_keypair(
     config_path: Option<&str>,
     _p2p_port: u16,
     data_dir: Option<&Path>,
-    network: Option<&str>,
+    _network: Option<&str>,
 ) -> Result<Keypair> {
     let password =
         require_runtime_keypair_password("validator keypair load").map_err(anyhow::Error::msg)?;
     load_or_generate_keypair_with_options(
         config_path,
         data_dir,
-        network,
+        _network,
         password.as_deref(),
         plaintext_keypair_compat_allowed(),
     )
@@ -47,7 +44,7 @@ pub fn load_or_generate_keypair(
 fn load_or_generate_keypair_with_options(
     config_path: Option<&str>,
     data_dir: Option<&Path>,
-    network: Option<&str>,
+    _network: Option<&str>,
     password: Option<&str>,
     allow_plaintext: bool,
 ) -> Result<Keypair> {
@@ -76,36 +73,8 @@ fn load_or_generate_keypair_with_options(
         }
     }
 
-    // 3. Shared HOME path by network name (survives state flushes)
-    if let Some(net) = network {
-        let shared_path = shared_validator_keypair_path(net);
-        if shared_path.exists() {
-            info!(
-                "📁 Loading validator keypair from shared path: {}",
-                shared_path.display()
-            );
-            let keypair = load_keypair_with_options(&shared_path, password, allow_plaintext)?;
-
-            // Copy into data directory for fast future loads
-            if let Some(dir) = data_dir {
-                let data_dir_path = dir.join("validator-keypair.json");
-                if !data_dir_path.exists() {
-                    match copy_secure_file(&shared_path, &data_dir_path) {
-                        Ok(()) => info!(
-                            "📋 Copied keypair into data dir: {}",
-                            data_dir_path.display()
-                        ),
-                        Err(e) => warn!("⚠️  Failed to copy keypair to data dir: {}", e),
-                    }
-                }
-            }
-
-            return Ok(keypair);
-        }
-    }
-
-    // 4. Generate new keypair
-    warn!("⚠️  No validator keypair found in the configured data or shared paths");
+    // 3. Generate new keypair
+    warn!("⚠️  No validator keypair found in the configured data path");
     info!("🔑 Generating new validator keypair...");
     let keypair = Keypair::new();
 
@@ -119,43 +88,7 @@ fn load_or_generate_keypair_with_options(
         info!("💾 Saved validator keypair to: {}", save_path.display());
     }
 
-    // Also save to shared HOME path so identity survives state flushes
-    if let Some(net) = network {
-        let shared_path = shared_validator_keypair_path(net);
-        match save_keypair_with_options(&keypair, &shared_path, password) {
-            Ok(()) => info!(
-                "💾 Saved validator keypair (shared): {}",
-                shared_path.display()
-            ),
-            Err(e) => warn!(
-                "⚠️  Failed to save shared keypair: {} (identity may not survive state flush)",
-                e
-            ),
-        }
-    }
-
     Ok(keypair)
-}
-
-/// Shared HOME-based path keyed by network name (e.g. "testnet", "mainnet").
-/// Lives OUTSIDE the state directory so it survives `rm -rf state-*` resets.
-///
-/// Uses `LICHEN_REAL_HOME` (exported by `lichen-start.sh`) to resolve
-/// the operator's actual home directory, because the start script overrides
-/// `HOME` to the data-dir for P2P identity isolation.  Without this, the
-/// "shared" path lands inside the state directory and gets wiped on flush,
-/// causing a new keypair to be generated → ghost validator.
-///
-/// Path: `$LICHEN_REAL_HOME/.lichen/validators/validator-{network}.json`
-pub fn shared_validator_keypair_path(network: &str) -> PathBuf {
-    let home = std::env::var("LICHEN_REAL_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".lichen")
-        .join("validators")
-        .join(format!("validator-{}.json", network))
 }
 
 fn load_keypair_with_options(
@@ -213,5 +146,35 @@ mod tests {
         .expect("load rotated");
         assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
         assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
+    }
+
+    #[test]
+    fn generated_keypair_is_state_scoped_and_reused() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let data_dir = temp_dir.path().join("agent-state");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let first = load_or_generate_keypair_with_options(
+            None,
+            Some(&data_dir),
+            Some("testnet"),
+            Some("test-password"),
+            false,
+        )
+        .expect("generate state-scoped keypair");
+
+        let keypair_path = data_dir.join("validator-keypair.json");
+        assert!(keypair_path.exists());
+
+        let second = load_or_generate_keypair_with_options(
+            None,
+            Some(&data_dir),
+            Some("testnet"),
+            Some("test-password"),
+            false,
+        )
+        .expect("reload state-scoped keypair");
+
+        assert_eq!(second.pubkey(), first.pubkey());
     }
 }

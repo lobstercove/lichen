@@ -41,6 +41,15 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
+const MOSSSTAKE_APY_DISPLAY_CAP_PERCENT = 9_999;
+
+function formatMossStakeApyLabel(apyPercent, multiplier) {
+  const apy = Number(apyPercent);
+  if (!Number.isFinite(apy) || apy <= 0) return `${multiplier || 1} rewards`;
+  if (apy > MOSSSTAKE_APY_DISPLAY_CAP_PERCENT) return `>${MOSSSTAKE_APY_DISPLAY_CAP_PERCENT.toLocaleString()}% APY`;
+  return `${apy.toFixed(1)}% APY`;
+}
+
 function securePasswordPrompt(label = 'Wallet password (for signing):') {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
@@ -1171,7 +1180,7 @@ async function loadExtensionStaking() {
       const isActive = tierName === name || (i === 0 && tierName === 'Flexible');
       const apyVal = poolTiers[i]?.apy_percent;
       const apyLabel = apyVal != null && apyVal > 0
-        ? apyVal.toFixed(1) + '% APY'
+        ? formatMossStakeApyLabel(apyVal, tierMultipliers[i])
         : tierMultipliers[i] + ' rewards';
       const safeName = escapeHtml(name);
       const safeApyLabel = escapeHtml(apyLabel);

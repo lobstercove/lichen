@@ -461,7 +461,6 @@ PopupLichenProvider.prototype.request = function (payload) {
 
 PopupLichenProvider.prototype.getProviderState = function () {
     if (!this.isWindowOpen()) {
-        this._setDisconnected();
         return Promise.resolve(this._lastState);
     }
     return this._request({ method: 'licn_getProviderState' }, { entry: 'web-wallet', timeoutMs: 30000 })

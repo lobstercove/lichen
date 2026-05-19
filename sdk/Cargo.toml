@@ -1,6 +1,6 @@
 [package]
 name = "lichen-contract-sdk"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen Smart Contract SDK"
@@ -23,7 +23,7 @@ p3-goldilocks = "0.5.2"
 p3-symmetric = "0.5.2"
 
 [dev-dependencies]
-lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.44", path = "../core" }
+lichen-core = { package = "lobstercove-lichen-core", version = "=0.5.52", path = "../core" }
 
 [features]
 default = []

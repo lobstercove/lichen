@@ -7583,19 +7583,6 @@ async fn run_validator() {
             error!("❌ Failed to copy keypair file for --import-key: {}", e);
             std::process::exit(1);
         }
-        if let Some(network) = network_arg.as_deref() {
-            let shared_dest = keypair_loader::shared_validator_keypair_path(network);
-            if let Some(parent) = shared_dest.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            if let Err(e) = fs::copy(source, &shared_dest) {
-                warn!(
-                    "⚠️  Failed to mirror imported keypair to shared path {}: {}",
-                    shared_dest.display(),
-                    e
-                );
-            }
-        }
         // Set restrictive permissions
         #[cfg(unix)]
         {
@@ -7612,8 +7599,7 @@ async fn run_validator() {
     // 1. --keypair CLI argument
     // 2. LICHEN_VALIDATOR_KEYPAIR env var
     // 3. {data_dir}/validator-keypair.json
-    // 4. ~/.lichen/validators/validator-{network}.json
-    // 5. Generate new and save
+    // 4. Generate new and save to {data_dir}/validator-keypair.json
 
     let keypair_path = get_flag_value(&args, &["--keypair"]);
 
@@ -13773,11 +13759,13 @@ async fn run_validator() {
         let local_addr_for_compact = p2p_config.listen_addr;
         let block_tx_for_compact_task = block_tx_for_compact;
         let bft_committing_for_compact = bft_committing_slot.clone();
+        let sync_mgr_for_compact = sync_manager.clone();
         tokio::spawn(async move {
             while let Some(msg) = compact_block_rx.recv().await {
                 let cb = msg.compact_block;
                 let sender = msg.sender;
                 let slot = cb.header.slot;
+                sync_mgr_for_compact.note_seen_bounded(slot, 500).await;
                 let live_bft_height = bft_committing_for_compact.load(Ordering::Acquire);
                 if live_bft_height > 0 && slot >= live_bft_height {
                     debug!(
@@ -15075,6 +15063,35 @@ async fn run_validator() {
     loop {
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
         let tip_slot = state.get_last_slot().unwrap_or(0);
+        let observed_tip = sync_manager.get_highest_seen().await;
+        if should_pause_live_bft_for_sync(tip_slot, bft.height, observed_tip) {
+            bft_committing_slot.store(0, Ordering::Release);
+            if let Some((start, end)) = sync_manager.should_sync(tip_slot).await {
+                info!(
+                    "⏳ BFT pausing for block sync (tip={}, bft_height={}, observed={}); requesting {}..{}",
+                    tip_slot, bft.height, observed_tip, start, end
+                );
+                sync_manager.start_sync(start, end).await;
+                for slot in start..=end {
+                    sync_manager.mark_requested(slot).await;
+                }
+                request_block_range_from_peers(
+                    &p2p_peer_manager,
+                    p2p_config.listen_addr,
+                    start,
+                    end,
+                    "bft-pause",
+                )
+                .await;
+            } else {
+                debug!(
+                    "⏳ BFT pausing for block sync (tip={}, bft_height={}, observed={})",
+                    tip_slot, bft.height, observed_tip
+                );
+            }
+            time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
         if tip_slot >= bft.height {
             // Chain advanced past our current height — start new height
             let new_height = tip_slot + 1;
@@ -15248,6 +15265,7 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
+                sync_manager.note_seen_bounded(proposal.height, 500).await;
                 let action = if proposal.height > bft.height {
                     if proposal.height <= bft.height + FUTURE_CONSENSUS_PROPOSAL_BUFFER_HEIGHTS {
                         pending_consensus_proposals
@@ -15317,6 +15335,7 @@ async fn run_validator() {
 
             // ── Incoming prevote ──
             Some(prevote) = prevote_rx.recv() => {
+                sync_manager.note_seen_bounded(prevote.height, 500).await;
                 let action = bft.on_prevote(prevote, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
@@ -15349,6 +15368,7 @@ async fn run_validator() {
 
             // ── Incoming precommit ──
             Some(precommit) = precommit_rx.recv() => {
+                sync_manager.note_seen_bounded(precommit.height, 500).await;
                 let action = bft.on_precommit(precommit, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
@@ -15932,6 +15952,85 @@ fn classify_bft_commit_storage(
     }
 }
 
+fn should_pause_live_bft_for_sync(current_tip: u64, bft_height: u64, observed_tip: u64) -> bool {
+    bft_height > current_tip.saturating_add(1) || observed_tip > current_tip.saturating_add(2)
+}
+
+async fn request_block_range_from_peers(
+    p2p_peer_manager: &Option<Arc<lichen_p2p::PeerManager>>,
+    local_addr: SocketAddr,
+    start_slot: u64,
+    end_slot: u64,
+    reason: &str,
+) {
+    if start_slot > end_slot {
+        return;
+    }
+
+    let Some(pm) = p2p_peer_manager else {
+        warn!(
+            "📡 {} sync request skipped — no P2P peer manager ({}..{})",
+            reason, start_slot, end_slot
+        );
+        return;
+    };
+
+    let mut peer_infos = pm.get_peer_infos();
+    peer_infos.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    let all_peers: Vec<SocketAddr> = peer_infos
+        .into_iter()
+        .take(SYNC_REQUEST_FANOUT.max(1))
+        .map(|(addr, _)| addr)
+        .collect();
+
+    let mut chunk_start = start_slot;
+    let mut chunk_idx: usize = 0;
+    while chunk_start <= end_slot {
+        let chunk_end = std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end_slot);
+        let request_msg = P2PMessage::new(
+            MessageType::BlockRangeRequest {
+                start_slot: chunk_start,
+                end_slot: chunk_end,
+            },
+            local_addr,
+        );
+
+        if all_peers.is_empty() {
+            pm.broadcast(request_msg).await;
+        } else {
+            let peer_addr = &all_peers[chunk_idx % all_peers.len()];
+            if let Err(e) = pm.send_to_peer(peer_addr, request_msg).await {
+                warn!(
+                    "⚠️  Failed {} sync request {}-{} to {}: {}",
+                    reason, chunk_start, chunk_end, peer_addr, e
+                );
+                pm.record_violation(peer_addr);
+            } else {
+                pm.record_success(peer_addr);
+            }
+        }
+
+        info!(
+            "📡 Sent {} sync request: {} to {} (chunk {}, peer {})",
+            reason,
+            chunk_start,
+            chunk_end,
+            chunk_end - chunk_start + 1,
+            if all_peers.is_empty() {
+                "broadcast".to_string()
+            } else {
+                all_peers[chunk_idx % all_peers.len()].to_string()
+            }
+        );
+
+        chunk_start = chunk_end + 1;
+        chunk_idx += 1;
+    }
+}
+
 /// Execute one or more ConsensusActions returned by the BFT engine.
 ///
 /// This is the bridge between the pure state machine (ConsensusEngine) and
@@ -16195,6 +16294,22 @@ async fn execute_consensus_actions(
                         height, current_tip
                     );
                     sync_manager.note_seen(height).await;
+                    bft_committing_slot.store(0, Ordering::Release);
+                    let sync_start = current_tip.saturating_add(1);
+                    if sync_start <= height {
+                        sync_manager.start_sync(sync_start, height).await;
+                        for slot in sync_start..=height {
+                            sync_manager.mark_requested(slot).await;
+                        }
+                        request_block_range_from_peers(
+                            p2p_peer_manager,
+                            p2p_config.listen_addr,
+                            sync_start,
+                            height,
+                            "missing-parent",
+                        )
+                        .await;
+                    }
                     return;
                 }
                 BftCommitStorageDecision::ConflictingStoredHash => {
@@ -16695,6 +16810,15 @@ mod tests {
             classify_bft_commit_storage(10, 10, Some(Hash([2u8; 32])), block_hash),
             BftCommitStorageDecision::ConflictingStoredHash
         );
+    }
+
+    #[test]
+    fn live_bft_pauses_when_tip_or_observation_runs_ahead() {
+        assert!(!should_pause_live_bft_for_sync(10, 11, 10));
+        assert!(!should_pause_live_bft_for_sync(10, 11, 11));
+        assert!(!should_pause_live_bft_for_sync(10, 11, 12));
+        assert!(should_pause_live_bft_for_sync(10, 12, 12));
+        assert!(should_pause_live_bft_for_sync(10, 11, 13));
     }
 
     #[test]
