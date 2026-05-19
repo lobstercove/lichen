@@ -66,6 +66,16 @@ pub struct UnshieldCircuit {
     pub merkle_path: Option<Vec<Fr>>,
     /// Merkle path direction bits (true = leaf is right child at that level)
     pub path_bits: Option<Vec<bool>>,
+
+    /// Native 32-byte public/witness values used by the Plonky3 adapter.
+    pub merkle_root_bytes: Option<[u8; 32]>,
+    pub nullifier_bytes: Option<[u8; 32]>,
+    pub recipient_bytes: Option<[u8; 32]>,
+    pub note_blinding_bytes: Option<[u8; 32]>,
+    pub note_serial_bytes: Option<[u8; 32]>,
+    pub spending_key_bytes: Option<[u8; 32]>,
+    pub recipient_preimage_bytes: Option<[u8; 32]>,
+    pub merkle_path_bytes: Option<Vec<[u8; 32]>>,
 }
 
 impl UnshieldCircuit {
@@ -99,10 +109,18 @@ impl UnshieldCircuit {
             recipient_preimage: Some(recipient_preimage),
             merkle_path: Some(merkle_path),
             path_bits: Some(path_bits),
+            merkle_root_bytes: None,
+            nullifier_bytes: None,
+            recipient_bytes: None,
+            note_blinding_bytes: None,
+            note_serial_bytes: None,
+            spending_key_bytes: None,
+            recipient_preimage_bytes: None,
+            merkle_path_bytes: None,
         }
     }
 
-    /// Create a new unshield circuit from canonical 32-byte witness values.
+    /// Create a new unshield circuit from native 32-byte witness values.
     #[allow(clippy::too_many_arguments)]
     pub fn new_bytes(
         merkle_root: [u8; 32],
@@ -117,22 +135,29 @@ impl UnshieldCircuit {
         merkle_path: Vec<[u8; 32]>,
         path_bits: Vec<bool>,
     ) -> Self {
-        Self::new(
-            bytes_to_fr(&merkle_root),
-            bytes_to_fr(&nullifier),
-            amount,
-            bytes_to_fr(&recipient),
-            note_value,
-            bytes_to_fr(&note_blinding),
-            bytes_to_fr(&note_serial),
-            bytes_to_fr(&spending_key),
-            bytes_to_fr(&recipient_preimage),
-            merkle_path
-                .into_iter()
-                .map(|sibling| bytes_to_fr(&sibling))
-                .collect(),
-            path_bits,
-        )
+        let merkle_path_fr = merkle_path.iter().map(bytes_to_fr).collect();
+        Self {
+            poseidon_config: poseidon_config(),
+            merkle_root: Some(bytes_to_fr(&merkle_root)),
+            nullifier: Some(bytes_to_fr(&nullifier)),
+            amount: Some(Fr::from(amount)),
+            recipient: Some(bytes_to_fr(&recipient)),
+            note_value: Some(Fr::from(note_value)),
+            note_blinding: Some(bytes_to_fr(&note_blinding)),
+            note_serial: Some(bytes_to_fr(&note_serial)),
+            spending_key: Some(bytes_to_fr(&spending_key)),
+            recipient_preimage: Some(bytes_to_fr(&recipient_preimage)),
+            merkle_path: Some(merkle_path_fr),
+            path_bits: Some(path_bits),
+            merkle_root_bytes: Some(merkle_root),
+            nullifier_bytes: Some(nullifier),
+            recipient_bytes: Some(recipient),
+            note_blinding_bytes: Some(note_blinding),
+            note_serial_bytes: Some(note_serial),
+            spending_key_bytes: Some(spending_key),
+            recipient_preimage_bytes: Some(recipient_preimage),
+            merkle_path_bytes: Some(merkle_path),
+        }
     }
 
     /// Empty circuit for key generation (setup/ceremony phase).
@@ -150,6 +175,14 @@ impl UnshieldCircuit {
             recipient_preimage: None,
             merkle_path: None,
             path_bits: None,
+            merkle_root_bytes: None,
+            nullifier_bytes: None,
+            recipient_bytes: None,
+            note_blinding_bytes: None,
+            note_serial_bytes: None,
+            spending_key_bytes: None,
+            recipient_preimage_bytes: None,
+            merkle_path_bytes: None,
         }
     }
 }

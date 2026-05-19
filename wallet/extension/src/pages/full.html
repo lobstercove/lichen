@@ -464,13 +464,14 @@
                 </div>
                 <div class="form-group">
                     <label>Recipient Address</label>
-                    <input type="text" id="sendTo" class="form-input"
+                    <input type="text" id="sendTo" class="form-input" data-address-input="base58"
                         placeholder="Enter Base58 address (e.g. 5Qd7x...)">
                 </div>
                 <div class="form-group">
                     <label>Amount</label>
                     <div class="amount-input">
-                        <input type="number" id="sendAmount" class="form-input" placeholder="0.00">
+                        <input type="number" id="sendAmount" class="form-input" placeholder="0.00"
+                            inputmode="decimal" data-wallet-numeric="true">
                         <span class="amount-max" id="sendMaxBtn">MAX</span>
                     </div>
                     <div id="sendAvailableBalance"

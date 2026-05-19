@@ -209,13 +209,27 @@ fn unshield_public_values_from_circuit(
         ));
     }
 
-    let merkle_root_bytes = fr_to_bytes(&merkle_root);
-    let nullifier_bytes = fr_to_bytes(&nullifier);
-    let recipient_bytes = fr_to_bytes(&recipient);
-    let note_blinding_bytes = fr_to_bytes(&note_blinding);
-    let note_serial_bytes = fr_to_bytes(&note_serial);
-    let spending_key_bytes = fr_to_bytes(&spending_key);
-    let recipient_preimage_bytes = fr_to_bytes(&recipient_preimage);
+    let merkle_root_bytes = circuit
+        .merkle_root_bytes
+        .unwrap_or_else(|| fr_to_bytes(&merkle_root));
+    let nullifier_bytes = circuit
+        .nullifier_bytes
+        .unwrap_or_else(|| fr_to_bytes(&nullifier));
+    let recipient_bytes = circuit
+        .recipient_bytes
+        .unwrap_or_else(|| fr_to_bytes(&recipient));
+    let note_blinding_bytes = circuit
+        .note_blinding_bytes
+        .unwrap_or_else(|| fr_to_bytes(&note_blinding));
+    let note_serial_bytes = circuit
+        .note_serial_bytes
+        .unwrap_or_else(|| fr_to_bytes(&note_serial));
+    let spending_key_bytes = circuit
+        .spending_key_bytes
+        .unwrap_or_else(|| fr_to_bytes(&spending_key));
+    let recipient_preimage_bytes = circuit
+        .recipient_preimage_bytes
+        .unwrap_or_else(|| fr_to_bytes(&recipient_preimage));
 
     let expected_nullifier = nullifier_hash(&note_serial_bytes, &spending_key_bytes);
     if expected_nullifier != nullifier_bytes {
@@ -234,8 +248,12 @@ fn unshield_public_values_from_circuit(
     }
 
     let commitment_bytes = commitment_hash(note_value_u64, &note_blinding_bytes);
+    let merkle_siblings = circuit
+        .merkle_path_bytes
+        .clone()
+        .unwrap_or_else(|| merkle_path.iter().map(fr_to_bytes).collect());
     let merkle_proof = MerklePath {
-        siblings: merkle_path.iter().map(fr_to_bytes).collect(),
+        siblings: merkle_siblings,
         path_bits: path_bits.clone(),
         index: merkle_path_index(path_bits),
     };
@@ -593,6 +611,47 @@ mod tests {
         let public_values = UnshieldAirPublicValues::new(merkle_root, nullifier, amount, recipient);
 
         (circuit, public_values)
+    }
+
+    #[test]
+    fn unshield_public_values_preserve_native_witness_bytes() {
+        let amount = 7_000_000_000;
+        let blinding = [0xff; 32];
+        let serial = [0xfe; 32];
+        let spending_key = [0xfd; 32];
+        let recipient_preimage = recipient_preimage_from_bytes([0xab; 32]);
+        let recipient = recipient_hash(&recipient_preimage);
+
+        let commitment = commitment_hash(amount, &blinding);
+        let nullifier = nullifier_hash(&serial, &spending_key);
+
+        let mut tree = MerkleTree::new();
+        tree.insert(commitment);
+        let merkle_root = tree.root();
+        let proof = tree.proof(0).expect("proof for the only leaf");
+
+        let circuit = UnshieldCircuit::new_bytes(
+            merkle_root,
+            nullifier,
+            amount,
+            recipient,
+            amount,
+            blinding,
+            serial,
+            spending_key,
+            recipient_preimage,
+            proof.siblings.clone(),
+            proof.path_bits.clone(),
+        );
+
+        let public_values =
+            unshield_public_values_from_circuit(&circuit).expect("native byte witness accepted");
+
+        assert_eq!(
+            public_values.to_stark_public_inputs(),
+            UnshieldAirPublicValues::new(merkle_root, nullifier, amount, recipient)
+                .to_stark_public_inputs()
+        );
     }
 
     fn build_valid_transfer_fixture(

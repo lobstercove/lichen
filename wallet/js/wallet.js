@@ -41,6 +41,138 @@ function formatMossStakeRewardLabel(_apyPercent, multiplier) {
     return `${formatRewardMultiplier(multiplier)} rewards`;
 }
 
+const WALLET_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
+
+function sanitizeWalletNumberValue(value, { allowNegative = false, allowDecimal = true } = {}) {
+    let normalized = '';
+    let sawDot = false;
+    let sawSign = false;
+    for (const char of String(value || '')) {
+        if (char >= '0' && char <= '9') {
+            normalized += char;
+            continue;
+        }
+        if (char === '.' && allowDecimal && !sawDot) {
+            normalized += char;
+            sawDot = true;
+            continue;
+        }
+        if (char === '-' && allowNegative && !sawSign && normalized.length === 0) {
+            normalized += char;
+            sawSign = true;
+        }
+    }
+    if (normalized.startsWith('.')) return `0${normalized}`;
+    if (normalized.startsWith('-.')) return normalized.replace('-.', '-0.');
+    return normalized;
+}
+
+function walletNumberAllowsNegative(input) {
+    const minValue = Number(input.min || input.dataset.min);
+    return input.dataset.allowNegative === 'true' || (Number.isFinite(minValue) && minValue < 0);
+}
+
+function walletNumberAllowsDecimal(input) {
+    if (input.dataset.integer === 'true') return false;
+    const stepValue = String(input.step || input.dataset.step || '').trim().toLowerCase();
+    if (!stepValue || stepValue === 'any') return true;
+    const numericStep = Number(stepValue);
+    return !Number.isFinite(numericStep) || !Number.isInteger(numericStep);
+}
+
+function sanitizeWalletNumberInput(input, finalize = false) {
+    const allowNegative = walletNumberAllowsNegative(input);
+    const allowDecimal = walletNumberAllowsDecimal(input);
+    const normalized = sanitizeWalletNumberValue(input.value, { allowNegative, allowDecimal });
+    if (!finalize) {
+        if (normalized !== input.value) input.value = normalized;
+        return;
+    }
+    if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+        input.value = '';
+        return;
+    }
+    let numericValue = Number(normalized);
+    if (!Number.isFinite(numericValue)) {
+        input.value = '';
+        return;
+    }
+    const minValue = Number(input.min || input.dataset.min);
+    const maxValue = Number(input.max || input.dataset.max);
+    if (Number.isFinite(minValue) && numericValue < minValue) numericValue = minValue;
+    if (Number.isFinite(maxValue) && numericValue > maxValue) numericValue = maxValue;
+    if (!allowDecimal) numericValue = Math.trunc(numericValue);
+    input.value = String(numericValue);
+}
+
+function sanitizeBase58InputValue(value) {
+    return String(value || '').split('').filter((char) => WALLET_BASE58_ALLOWED_RE.test(char)).join('');
+}
+
+function sanitizeHexInputValue(value) {
+    return String(value || '').replace(/[^0-9a-fA-F]/g, '');
+}
+
+function applyWalletInputGuards(root = document) {
+    const scope = root || document;
+    scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+        if (input.dataset.walletNumericGuarded === '1') return;
+        input.dataset.walletNumericGuarded = '1';
+        if (!input.getAttribute('inputmode')) {
+            input.setAttribute('inputmode', walletNumberAllowsDecimal(input) ? 'decimal' : 'numeric');
+        }
+        input.addEventListener('keydown', (event) => {
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key === 'e' || event.key === 'E' || event.key === '+') {
+                event.preventDefault();
+                return;
+            }
+            if (event.key === '-' && !walletNumberAllowsNegative(input)) {
+                event.preventDefault();
+                return;
+            }
+            if (event.key === '.' && !walletNumberAllowsDecimal(input)) {
+                event.preventDefault();
+            }
+        });
+        input.addEventListener('input', () => sanitizeWalletNumberInput(input, false));
+        input.addEventListener('blur', () => sanitizeWalletNumberInput(input, true));
+        input.addEventListener('paste', () => requestAnimationFrame(() => sanitizeWalletNumberInput(input, false)));
+    });
+
+    scope.querySelectorAll('input[data-address-input="base58"], #sendTo, #unshieldRecipient').forEach((input) => {
+        if (input.dataset.walletAddressGuarded === '1') return;
+        input.dataset.walletAddressGuarded = '1';
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('spellcheck', 'false');
+        input.addEventListener('input', () => {
+            const sanitized = sanitizeBase58InputValue(input.value);
+            if (sanitized !== input.value) input.value = sanitized;
+        });
+        input.addEventListener('paste', () => requestAnimationFrame(() => {
+            input.value = sanitizeBase58InputValue(input.value);
+        }));
+    });
+
+    scope.querySelectorAll('input[data-hex-input], #shieldedTransferRecipientVK').forEach((input) => {
+        if (input.dataset.walletHexGuarded === '1') return;
+        input.dataset.walletHexGuarded = '1';
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('spellcheck', 'false');
+        input.addEventListener('input', () => {
+            const sanitized = sanitizeHexInputValue(input.value);
+            if (sanitized !== input.value) input.value = sanitized;
+        });
+        input.addEventListener('paste', () => requestAnimationFrame(() => {
+            input.value = sanitizeHexInputValue(input.value);
+        }));
+    });
+}
+
+if (typeof window !== 'undefined') {
+    window.applyWalletInputGuards = applyWalletInputGuards;
+}
+
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
 const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0, wNEO: 3.0, wGAS: 1.5 };
@@ -1317,6 +1449,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (welcomeContainer) _originalWelcomeHTML = welcomeContainer.innerHTML;
 
     bindStaticControls();
+    applyWalletInputGuards();
     loadWalletState();
     loadTokenRegistry()
         .then(() => {
@@ -4721,7 +4854,12 @@ function showPasswordModal(options) {
             const minAttr = field.min !== undefined ? ` min="${field.min}"` : '';
             const maxAttr = field.max !== undefined ? ` max="${field.max}"` : '';
             const stepAttr = field.step !== undefined ? ` step="${field.step}"` : '';
-            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}></div>`;
+            const isNumber = field.type === 'number';
+            const inputKind = isNumber ? ' data-input-kind="number"' : '';
+            const integerAttr = isNumber && field.step !== undefined && Number(field.step) === 1 ? ' data-integer="true"' : '';
+            const addressAttr = /address|recipient|vouchee/i.test(`${field.id} ${field.label || ''}`) ? ' data-address-input="base58"' : '';
+            const inputMode = isNumber ? ` inputmode="${integerAttr ? 'numeric' : 'decimal'}"` : '';
+            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode}></div>`;
         }).join('');
 
         modal.innerHTML = `
@@ -4748,6 +4886,7 @@ function showPasswordModal(options) {
         `;
 
         document.body.appendChild(modal);
+        applyWalletInputGuards(modal);
         requestAnimationFrame(() => modal.classList.add('show'));
 
         // Balance guard: disable confirm when wallet balance is too low

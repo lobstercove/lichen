@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.58 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.58</span>
+                    <span class="changelog-date">May 20, 2026</span>
+                </div>
+                <h3 class="changelog-title">Shielded Unshield Witness Fix and Input Guards</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Unshield proof witness preservation</strong> &mdash; unshield proofs now preserve
+                            native wallet witness bytes through the Plonky3 adapter, so nullifier verification uses the
+                            same Poseidon2 input bytes as shield note creation.</li>
+                        <li><strong>Locked unshield recipient</strong> &mdash; wallet and extension unshield flows now
+                            return to the active wallet address and do not trust editable recipient text.</li>
+                        <li><strong>Frontend input gates</strong> &mdash; wallet, extension, DEX, and faucet inputs now
+                            reject invalid number, Base58 address, and hex-key characters before submission.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.57 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

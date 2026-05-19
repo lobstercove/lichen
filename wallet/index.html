@@ -19,7 +19,7 @@
     <meta property="og:url" content="https://wallet.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
-    <link rel="stylesheet" href="wallet.css?v=2026051903">
+    <link rel="stylesheet" href="wallet.css?v=2026052001">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
@@ -606,13 +606,14 @@
                 </div>
                 <div class="form-group">
                     <label>Recipient Address</label>
-                    <input type="text" id="sendTo" class="form-input"
+                    <input type="text" id="sendTo" class="form-input" data-address-input="base58"
                         placeholder="Enter Base58 address (e.g. 5Qd7x...)">
                 </div>
                 <div class="form-group">
                     <label>Amount</label>
                     <div class="amount-input">
-                        <input type="number" id="sendAmount" class="form-input" placeholder="0.00">
+                        <input type="number" id="sendAmount" class="form-input" placeholder="0.00"
+                            inputmode="decimal" data-wallet-numeric="true">
                         <span class="amount-max" data-wallet-action="setMaxAmount">MAX</span>
                     </div>
                     <div id="sendAvailableBalance" class="send-available-balance"></div>
@@ -1067,7 +1068,7 @@
                     <label>Amount (LICN)</label>
                     <div class="amount-input">
                         <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001"
-                            min="0">
+                            min="0" inputmode="decimal" data-wallet-numeric="true">
                         <span class="amount-max" data-wallet-action="fillShieldMax">MAX</span>
                     </div>
                 </div>
@@ -1105,13 +1106,14 @@
                     <label>Amount (LICN)</label>
                     <div class="amount-input">
                         <input type="number" id="unshieldAmount" class="form-input" placeholder="0.00" step="0.0001"
-                            min="0">
+                            min="0" inputmode="decimal" data-wallet-numeric="true">
                     </div>
                 </div>
                 <div class="form-group">
                     <label>Recipient Address</label>
-                    <input type="text" id="unshieldRecipient" class="form-input"
-                        placeholder="Enter Base58 address (e.g. 5Qd7x...)">
+                    <input type="text" id="unshieldRecipient" class="form-input" data-address-input="base58"
+                        readonly aria-readonly="true" title="Unshield returns to the active wallet address"
+                        placeholder="Active wallet address">
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>
@@ -1147,12 +1149,13 @@
                     <label>Amount (LICN)</label>
                     <div class="amount-input">
                         <input type="number" id="shieldedTransferAmount" class="form-input" placeholder="0.00"
-                            step="0.0001" min="0">
+                            step="0.0001" min="0" inputmode="decimal" data-wallet-numeric="true">
                     </div>
                 </div>
                 <div class="form-group">
                     <label>Recipient Viewing Key (hex)</label>
                     <input type="text" id="shieldedTransferRecipientVK" class="form-input shield-vk-input"
+                        data-hex-input="true"
                         placeholder="64-character hex viewing key" maxlength="64">
                     <div class="shield-vk-hint">
                         <i class="fas fa-info-circle"></i> Ask the recipient for their viewing key (not their spending
@@ -1177,10 +1180,10 @@
     <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="shared/pq.js?v=20260405"></script>
-    <script src="js/wallet.js?v=2026051903"></script>
+    <script src="js/wallet.js?v=2026052001"></script>
     <script src="js/identity.js?v=20260519"></script>
     <script src="js/crypto.js?v=20260519"></script>
-    <script src="js/shielded.js?v=2026051903"></script>
+    <script src="js/shielded.js?v=2026052001"></script>
     <script src="js/dapp-bridge.js?v=20260413"></script>
     <script src="js/wallet-bootstrap.js?v=20260403"></script>
 </body>

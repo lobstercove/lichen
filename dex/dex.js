@@ -6324,6 +6324,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function observeDexNumericInputGuards() {
+        if (window.__lichenDexNumericInputObserver) return;
+        window.__lichenDexNumericInputObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node instanceof Element) {
+                        applyDexNumericInputGuards(node);
+                    }
+                }
+            }
+        });
+        window.__lichenDexNumericInputObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+        });
+    }
+
     function refreshPredictOutcomeInputs() {
         const container = document.getElementById('outcomeInputs');
         if (!container) return;
@@ -7174,6 +7191,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bindPredictionCardEvents();
 
     applyDexNumericInputGuards();
+    observeDexNumericInputGuards();
     applyPredictTextInputGuards();
     refreshPredictOutcomeInputs();
     syncPredictTradePanel(getPredictSelectedMarket());

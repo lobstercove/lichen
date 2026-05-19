@@ -75,6 +75,131 @@ function getActiveWallet() { return state.wallets.find(w => w.id === state.activ
 function maskAddr(a) { return (!a || a.length < 14) ? (a || '') : `${a.slice(0, 8)}…${a.slice(-6)}`; }
 function decimals() { return Number(state?.settings?.decimals ?? 6); }
 
+const EXT_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
+
+function extNumberAllowsNegative(input) {
+  const minValue = Number(input.min || input.dataset.min);
+  return input.dataset.allowNegative === 'true' || (Number.isFinite(minValue) && minValue < 0);
+}
+
+function extNumberAllowsDecimal(input) {
+  if (input.dataset.integer === 'true') return false;
+  const stepValue = String(input.step || input.dataset.step || '').trim().toLowerCase();
+  if (!stepValue || stepValue === 'any') return true;
+  const numericStep = Number(stepValue);
+  return !Number.isFinite(numericStep) || !Number.isInteger(numericStep);
+}
+
+function sanitizeExtNumberValue(value, { allowNegative = false, allowDecimal = true } = {}) {
+  let normalized = '';
+  let sawDot = false;
+  let sawSign = false;
+  for (const char of String(value || '')) {
+    if (char >= '0' && char <= '9') {
+      normalized += char;
+      continue;
+    }
+    if (char === '.' && allowDecimal && !sawDot) {
+      normalized += char;
+      sawDot = true;
+      continue;
+    }
+    if (char === '-' && allowNegative && !sawSign && normalized.length === 0) {
+      normalized += char;
+      sawSign = true;
+    }
+  }
+  if (normalized.startsWith('.')) return `0${normalized}`;
+  if (normalized.startsWith('-.')) return normalized.replace('-.', '-0.');
+  return normalized;
+}
+
+function sanitizeExtNumberInput(input, finalize = false) {
+  const normalized = sanitizeExtNumberValue(input.value, {
+    allowNegative: extNumberAllowsNegative(input),
+    allowDecimal: extNumberAllowsDecimal(input),
+  });
+  if (!finalize) {
+    if (normalized !== input.value) input.value = normalized;
+    return;
+  }
+  if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+    input.value = '';
+    return;
+  }
+  let numericValue = Number(normalized);
+  if (!Number.isFinite(numericValue)) {
+    input.value = '';
+    return;
+  }
+  const minValue = Number(input.min || input.dataset.min);
+  const maxValue = Number(input.max || input.dataset.max);
+  if (Number.isFinite(minValue) && numericValue < minValue) numericValue = minValue;
+  if (Number.isFinite(maxValue) && numericValue > maxValue) numericValue = maxValue;
+  if (!extNumberAllowsDecimal(input)) numericValue = Math.trunc(numericValue);
+  input.value = String(numericValue);
+}
+
+function sanitizeExtBase58(value) {
+  return String(value || '').split('').filter((char) => EXT_BASE58_ALLOWED_RE.test(char)).join('');
+}
+
+function sanitizeExtHex(value) {
+  return String(value || '').replace(/[^0-9a-fA-F]/g, '');
+}
+
+function applyExtensionInputGuards(root = document) {
+  const scope = root || document;
+  scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+    if (input.dataset.extNumericGuarded === '1') return;
+    input.dataset.extNumericGuarded = '1';
+    if (!input.getAttribute('inputmode')) input.setAttribute('inputmode', extNumberAllowsDecimal(input) ? 'decimal' : 'numeric');
+    input.addEventListener('keydown', (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === 'e' || event.key === 'E' || event.key === '+') {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === '-' && !extNumberAllowsNegative(input)) {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === '.' && !extNumberAllowsDecimal(input)) event.preventDefault();
+    });
+    input.addEventListener('input', () => sanitizeExtNumberInput(input, false));
+    input.addEventListener('blur', () => sanitizeExtNumberInput(input, true));
+    input.addEventListener('paste', () => requestAnimationFrame(() => sanitizeExtNumberInput(input, false)));
+  });
+
+  scope.querySelectorAll('input[data-address-input="base58"], #sendTo, #shieldModalRecipient[data-address-input="base58"]').forEach((input) => {
+    if (input.dataset.extAddressGuarded === '1') return;
+    input.dataset.extAddressGuarded = '1';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('spellcheck', 'false');
+    input.addEventListener('input', () => {
+      const sanitized = sanitizeExtBase58(input.value);
+      if (sanitized !== input.value) input.value = sanitized;
+    });
+    input.addEventListener('paste', () => requestAnimationFrame(() => {
+      input.value = sanitizeExtBase58(input.value);
+    }));
+  });
+
+  scope.querySelectorAll('input[data-hex-input], #shieldModalRecipient[data-hex-input]').forEach((input) => {
+    if (input.dataset.extHexGuarded === '1') return;
+    input.dataset.extHexGuarded = '1';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('spellcheck', 'false');
+    input.addEventListener('input', () => {
+      const sanitized = sanitizeExtHex(input.value);
+      if (sanitized !== input.value) input.value = sanitized;
+    });
+    input.addEventListener('paste', () => requestAnimationFrame(() => {
+      input.value = sanitizeExtHex(input.value);
+    }));
+  });
+}
+
 function rpc() {
   const network = state?.network?.selected || 'local-testnet';
   const endpoint = getRpcEndpoint(network, state?.settings || {});
@@ -2037,10 +2162,10 @@ function showShieldModal(type) {
   const activeWalletForModal = getActiveWallet();
   const extraField = type === 'unshield'
     ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Address</label>
-       <input type="text" id="shieldModalRecipient" value="${escapeHtmlExt(activeWalletForModal?.address || '')}" placeholder="Base58 address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+       <input type="text" id="shieldModalRecipient" value="${escapeHtmlExt(activeWalletForModal?.address || '')}" placeholder="Active wallet address" readonly aria-readonly="true" data-address-input="base58" title="Unshield returns to the active wallet address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
     : type === 'transfer'
       ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Viewing Key</label>
-       <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+       <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" data-hex-input="true" maxlength="64" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
       : '';
 
   const overlay = document.createElement('div');
@@ -2050,7 +2175,7 @@ function showShieldModal(type) {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
-      <input type="number" id="shieldModalAmount" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <input type="number" id="shieldModalAmount" placeholder="0.00" min="0" step="0.0001" inputmode="decimal" data-wallet-numeric="true" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       ${extraField}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="shieldModalPassword" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
@@ -2062,12 +2187,16 @@ function showShieldModal(type) {
     </div>
   `;
   document.body.appendChild(overlay);
+  applyExtensionInputGuards(overlay);
 
   overlay.querySelector('#shieldModalCancel').addEventListener('click', () => overlay.remove());
   overlay.querySelector('#shieldModalConfirm').addEventListener('click', async () => {
     const amount = parseFloat(overlay.querySelector('#shieldModalAmount').value);
     const password = overlay.querySelector('#shieldModalPassword').value;
-    const recipient = overlay.querySelector('#shieldModalRecipient')?.value?.trim() || '';
+    const wallet = getActiveWallet();
+    const recipient = type === 'unshield'
+      ? (wallet?.address || '')
+      : (overlay.querySelector('#shieldModalRecipient')?.value?.trim() || '');
     const statusEl = overlay.querySelector('#shieldModalStatus');
 
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
@@ -2080,7 +2209,6 @@ function showShieldModal(type) {
 
     // Balance guard
     try {
-      const wallet = getActiveWallet();
       if (type === 'shield') {
         const balResult = await rpc().call('getBalance', [wallet.address]);
         const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
@@ -2097,7 +2225,6 @@ function showShieldModal(type) {
 
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {
-      const wallet = getActiveWallet();
       if (!wallet) throw new Error('No active wallet');
       const signature = type === 'shield'
         ? await submitExtensionShield({ wallet, amountLicn: amount, password, statusEl })
@@ -2344,7 +2471,12 @@ function showIdentityPrompt(title, fields, onSubmit, onRender) {
     const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
     const maxAttr = f.max !== undefined ? ` max="${f.max}"` : '';
     const stepAttr = f.step !== undefined ? ` step="${f.step}"` : '';
-    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}"${minAttr}${maxAttr}${stepAttr} style="width:100%;"></div>`;
+    const isNumber = f.type === 'number';
+    const inputKind = isNumber ? ' data-input-kind="number"' : '';
+    const integerAttr = isNumber && f.step !== undefined && Number(f.step) === 1 ? ' data-integer="true"' : '';
+    const addressAttr = /address|recipient|vouchee/i.test(`${f.id} ${f.label || ''}`) ? ' data-address-input="base58"' : '';
+    const inputMode = isNumber ? ` inputmode="${integerAttr ? 'numeric' : 'decimal'}"` : '';
+    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}"${minAttr}${maxAttr}${stepAttr}${inputKind}${integerAttr}${addressAttr}${inputMode} style="width:100%;"></div>`;
   }).join('');
 
   card.innerHTML = `
@@ -2358,6 +2490,7 @@ function showIdentityPrompt(title, fields, onSubmit, onRender) {
 
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+  applyExtensionInputGuards(card);
 
   // Call onRender callback for dynamic behavior (e.g. cost previews)
   if (typeof onRender === 'function') {
@@ -3457,6 +3590,7 @@ async function boot() {
   if (!state.network) state.network = { selected: 'local-testnet' };
 
   wireEvents();
+  applyExtensionInputGuards();
   initCarousel();
 
   if (state.wallets.length === 0) {

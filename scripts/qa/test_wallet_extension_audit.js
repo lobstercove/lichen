@@ -871,6 +871,38 @@ test('CC-21 extension shield notes resolve commitment indexes before spending', 
     'extension should persist repaired shielded note indexes');
 });
 
+test('CC-22 extension locks unshield recipient to the active wallet address', () => {
+  assert.ok(fullSrc.includes('function applyExtensionInputGuards('), 'full page should centralize input guards');
+  assert.ok(fullSrc.includes('readonly aria-readonly="true" data-address-input="base58"'),
+    'full page unshield recipient should be read-only and base58-guarded');
+  assert.ok(fullSrc.includes("title=\"Unshield returns to the active wallet address\""),
+    'full page unshield recipient should explain the locked recipient');
+  assert.ok(fullSrc.includes("type === 'unshield'\n      ? (wallet?.address || '')"),
+    'full page unshield should submit to the active wallet address');
+  assert.ok(!fullSrc.includes("type === 'unshield'\n      ? (overlay.querySelector('#shieldModalRecipient')?.value?.trim() || '')"),
+    'full page unshield should not trust editable recipient text');
+});
+
+test('CC-23 extension applies numeric, base58, and hex input guards', () => {
+  assert.ok(fullSrc.includes('function sanitizeExtNumberInput('), 'full page should sanitize numeric fields');
+  assert.ok(fullSrc.includes("event.key === 'e' || event.key === 'E' || event.key === '+'"),
+    'full page numeric fields should reject exponent/plus shortcuts');
+  assert.ok(fullSrc.includes('input[data-address-input="base58"], #sendTo, #shieldModalRecipient[data-address-input="base58"]'),
+    'full page should guard base58 address fields');
+  assert.ok(fullSrc.includes('input[data-hex-input], #shieldModalRecipient[data-hex-input]'),
+    'full page should guard hex-only fields');
+  assert.ok(popupSrc.includes('function applyPopupInputGuards('), 'popup should centralize input guards');
+  assert.ok(popupSrc.includes('function sanitizePopupNumberInput('), 'popup should sanitize numeric fields');
+  assert.ok(popupHtmlSrc.includes('id="sendTo" class="form-input" data-address-input="base58"'),
+    'popup send recipient should be base58-guarded');
+  assert.ok(popupHtmlSrc.includes('id="sendAmount"') && popupHtmlSrc.includes('data-wallet-numeric="true"'),
+    'popup send amount should be numeric-guarded');
+  assert.ok(fullHtmlSrc.includes('id="sendTo" class="form-input" data-address-input="base58"'),
+    'full-page send recipient should be base58-guarded');
+  assert.ok(fullHtmlSrc.includes('id="sendAmount"') && fullHtmlSrc.includes('data-wallet-numeric="true"'),
+    'full-page send amount should be numeric-guarded');
+});
+
 // ============================================================================
 console.log('\n' + '='.repeat(60));
 console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);

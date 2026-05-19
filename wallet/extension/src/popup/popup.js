@@ -55,6 +55,107 @@ function formatMossStakeRewardLabel(_apyPercent, multiplier) {
   return `${formatRewardMultiplierPopup(multiplier)} rewards`;
 }
 
+const POPUP_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
+
+function popupNumberAllowsNegative(input) {
+  const minValue = Number(input.min || input.dataset.min);
+  return input.dataset.allowNegative === 'true' || (Number.isFinite(minValue) && minValue < 0);
+}
+
+function popupNumberAllowsDecimal(input) {
+  if (input.dataset.integer === 'true') return false;
+  const stepValue = String(input.step || input.dataset.step || '').trim().toLowerCase();
+  if (!stepValue || stepValue === 'any') return true;
+  const numericStep = Number(stepValue);
+  return !Number.isFinite(numericStep) || !Number.isInteger(numericStep);
+}
+
+function sanitizePopupNumberInput(input, finalize = false) {
+  let normalized = '';
+  let sawDot = false;
+  let sawSign = false;
+  const allowNegative = popupNumberAllowsNegative(input);
+  const allowDecimal = popupNumberAllowsDecimal(input);
+  for (const char of String(input.value || '')) {
+    if (char >= '0' && char <= '9') {
+      normalized += char;
+      continue;
+    }
+    if (char === '.' && allowDecimal && !sawDot) {
+      normalized += char;
+      sawDot = true;
+      continue;
+    }
+    if (char === '-' && allowNegative && !sawSign && normalized.length === 0) {
+      normalized += char;
+      sawSign = true;
+    }
+  }
+  if (normalized.startsWith('.')) normalized = `0${normalized}`;
+  if (normalized.startsWith('-.')) normalized = normalized.replace('-.', '-0.');
+  if (!finalize) {
+    if (normalized !== input.value) input.value = normalized;
+    return;
+  }
+  if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+    input.value = '';
+    return;
+  }
+  let numericValue = Number(normalized);
+  if (!Number.isFinite(numericValue)) {
+    input.value = '';
+    return;
+  }
+  const minValue = Number(input.min || input.dataset.min);
+  const maxValue = Number(input.max || input.dataset.max);
+  if (Number.isFinite(minValue) && numericValue < minValue) numericValue = minValue;
+  if (Number.isFinite(maxValue) && numericValue > maxValue) numericValue = maxValue;
+  if (!allowDecimal) numericValue = Math.trunc(numericValue);
+  input.value = String(numericValue);
+}
+
+function sanitizePopupBase58(value) {
+  return String(value || '').split('').filter((char) => POPUP_BASE58_ALLOWED_RE.test(char)).join('');
+}
+
+function applyPopupInputGuards(root = document) {
+  const scope = root || document;
+  scope.querySelectorAll('input[type="number"], input[data-input-kind="number"], input[data-wallet-numeric]').forEach((input) => {
+    if (input.dataset.popupNumericGuarded === '1') return;
+    input.dataset.popupNumericGuarded = '1';
+    if (!input.getAttribute('inputmode')) input.setAttribute('inputmode', popupNumberAllowsDecimal(input) ? 'decimal' : 'numeric');
+    input.addEventListener('keydown', (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === 'e' || event.key === 'E' || event.key === '+') {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === '-' && !popupNumberAllowsNegative(input)) {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === '.' && !popupNumberAllowsDecimal(input)) event.preventDefault();
+    });
+    input.addEventListener('input', () => sanitizePopupNumberInput(input, false));
+    input.addEventListener('blur', () => sanitizePopupNumberInput(input, true));
+    input.addEventListener('paste', () => requestAnimationFrame(() => sanitizePopupNumberInput(input, false)));
+  });
+
+  scope.querySelectorAll('input[data-address-input="base58"], #sendTo').forEach((input) => {
+    if (input.dataset.popupAddressGuarded === '1') return;
+    input.dataset.popupAddressGuarded = '1';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('spellcheck', 'false');
+    input.addEventListener('input', () => {
+      const sanitized = sanitizePopupBase58(input.value);
+      if (sanitized !== input.value) input.value = sanitized;
+    });
+    input.addEventListener('paste', () => requestAnimationFrame(() => {
+      input.value = sanitizePopupBase58(input.value);
+    }));
+  });
+}
+
 function formatLichenNamePopup(name) {
   const bare = String(name || '').trim().replace(/(?:\.lichen)+$/i, '');
   return bare ? `${bare}.lichen` : '';
@@ -2598,6 +2699,7 @@ async function boot() {
   }
   bindRuntimeRealtimeHandlers();
   wireEvents();
+  applyPopupInputGuards();
   updateImportTypeUi();
   if (!state.isLocked) {
     await scheduleAutoLock(state.settings?.lockTimeout || 300000);

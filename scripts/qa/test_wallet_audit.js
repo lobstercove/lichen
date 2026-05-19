@@ -1177,6 +1177,43 @@ test('wallet activity deduplicates faucet API records already present on-chain',
         'on-chain activity should win over synthetic faucet records for the same signature');
 });
 
+console.log('\n── Wallet Input Guard Safety ──');
+
+test('wallet locks unshield recipient to the active wallet address', () => {
+    assert(walletHtml.includes('id="unshieldRecipient"'), 'unshield recipient input should exist');
+    assert(walletHtml.includes('readonly aria-readonly="true"'), 'unshield recipient should be read-only in markup');
+    assert(walletHtml.includes('data-address-input="base58"'), 'unshield recipient should be base58-guarded');
+    assert(shieldedSrc.includes("recipientInput.title = 'Unshield returns to the active wallet address';"),
+        'unshield modal should describe the locked recipient');
+    assert(shieldedSrc.includes('const wallet = typeof getActiveWallet === \'function\' ? getActiveWallet() : null;'),
+        'unshield confirmation should resolve the active wallet');
+    assert(shieldedSrc.includes("const recipient = wallet?.address || '';"),
+        'unshield confirmation should submit to the active wallet address');
+    assert(!shieldedSrc.includes("const recipient = document.getElementById('unshieldRecipient').value.trim();"),
+        'unshield should not trust editable recipient text');
+});
+
+test('wallet applies numeric, base58, and hex input guards', () => {
+    assert(walletSrc.includes('function applyWalletInputGuards('), 'wallet should centralize input guards');
+    assert(walletSrc.includes('function sanitizeWalletNumberInput('), 'wallet should sanitize numeric fields');
+    assert(walletSrc.includes("event.key === 'e' || event.key === 'E' || event.key === '+'"),
+        'wallet numeric fields should reject exponent/plus shortcuts');
+    assert(walletSrc.includes('input[data-address-input="base58"], #sendTo, #unshieldRecipient'),
+        'wallet should guard base58 address fields');
+    assert(walletSrc.includes('input[data-hex-input], #shieldedTransferRecipientVK'),
+        'wallet should guard hex-only fields');
+    assert(walletHtml.includes('id="sendTo"') && walletHtml.includes('data-address-input="base58"'),
+        'send recipient should be base58-guarded');
+    assert(walletHtml.includes('id="sendAmount"') && walletHtml.includes('data-wallet-numeric="true"'),
+        'send amount should be numeric-guarded');
+    assert(walletHtml.includes('id="shieldAmount"') && walletHtml.includes('data-wallet-numeric="true"'),
+        'shield amount should be numeric-guarded');
+    assert(walletHtml.includes('id="unshieldAmount"') && walletHtml.includes('data-wallet-numeric="true"'),
+        'unshield amount should be numeric-guarded');
+    assert(walletHtml.includes('id="shieldedTransferRecipientVK"') && walletHtml.includes('data-hex-input="true"'),
+        'private-transfer viewing key should be hex-guarded');
+});
+
 // ============================================================================
 // SUMMARY
 // ============================================================================

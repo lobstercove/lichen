@@ -615,6 +615,47 @@ function validateDexWalletAndPairState() {
     );
 }
 
+function validateFrontendInputGuards() {
+    const dexJs = fs.readFileSync(path.join(repoRoot, 'dex', 'dex.js'), 'utf8');
+    const faucetJs = fs.readFileSync(path.join(repoRoot, 'faucet', 'faucet.js'), 'utf8');
+    const faucetHtml = fs.readFileSync(path.join(repoRoot, 'faucet', 'index.html'), 'utf8');
+
+    const dexNumericGuardBody = extractFunctionBody(dexJs, 'applyDexNumericInputGuards');
+    assert(
+        dexJs.includes('function sanitizeDexNumberInput(') &&
+            dexNumericGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+'") &&
+            dexNumericGuardBody.includes("event.key === '-' && !dexInputAllowsNegative(input)") &&
+            dexNumericGuardBody.includes("event.key === '.' && !dexInputAllowsDecimal(input)") &&
+            dexNumericGuardBody.includes("input.addEventListener('paste'"),
+        'DEX numeric inputs reject exponent/sign junk and sanitize pasted values'
+    );
+
+    const dexObserverBody = extractFunctionBody(dexJs, 'observeDexNumericInputGuards');
+    assert(
+        dexObserverBody.includes('new MutationObserver') &&
+            dexObserverBody.includes('applyDexNumericInputGuards(node)') &&
+            dexJs.includes('observeDexNumericInputGuards();'),
+        'DEX applies numeric guards to dynamically inserted inputs'
+    );
+
+    const faucetGuardBody = extractFunctionBody(faucetJs, 'applyFaucetInputGuards');
+    assert(
+        faucetJs.includes('function sanitizeFaucetBase58(') &&
+            faucetHtml.includes('data-address-input="base58"') &&
+            faucetGuardBody.includes('sanitizeFaucetBase58(addressInput.value)') &&
+            faucetGuardBody.includes("addressInput.addEventListener('paste'"),
+        'faucet address input is constrained to base58 characters'
+    );
+
+    assert(
+        faucetJs.includes('function sanitizeFaucetInteger(') &&
+            faucetHtml.includes('inputmode="numeric"') &&
+            faucetGuardBody.includes("event.key === 'e' || event.key === 'E' || event.key === '+' || event.key === '-' || event.key === '.'") &&
+            faucetGuardBody.includes('sanitizeFaucetInteger(captchaInput.value)'),
+        'faucet captcha input accepts integer digits only'
+    );
+}
+
 console.log('\n── Frontend Asset Integrity ──');
 
 for (const portal of portals) {
@@ -633,6 +674,7 @@ validateMonitoringIncidentControls();
 validateMonitoringRiskConsole();
 validateDexChartPricePrecision();
 validateDexWalletAndPairState();
+validateFrontendInputGuards();
 
 console.log(`\nFrontend asset integrity: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

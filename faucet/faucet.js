@@ -10,6 +10,50 @@ const EXPLORER_BASE =
     (typeof window !== 'undefined' && window.LICHEN_CONFIG?.explorer) ||
     '../explorer';
 let LICN_PER_REQUEST = 10; // default; overwritten by /faucet/config
+const FAUCET_BASE58_ALLOWED_RE = /^[1-9A-HJ-NP-Za-km-z]$/;
+
+function sanitizeFaucetBase58(value) {
+    return String(value || '').split('').filter((char) => FAUCET_BASE58_ALLOWED_RE.test(char)).join('');
+}
+
+function sanitizeFaucetInteger(value) {
+    return String(value || '').replace(/\D/g, '');
+}
+
+function applyFaucetInputGuards() {
+    const addressInput = document.getElementById('address');
+    if (addressInput && addressInput.dataset.faucetAddressGuarded !== '1') {
+        addressInput.dataset.faucetAddressGuarded = '1';
+        addressInput.setAttribute('autocomplete', 'off');
+        addressInput.setAttribute('spellcheck', 'false');
+        addressInput.addEventListener('input', () => {
+            const sanitized = sanitizeFaucetBase58(addressInput.value);
+            if (sanitized !== addressInput.value) addressInput.value = sanitized;
+        });
+        addressInput.addEventListener('paste', () => requestAnimationFrame(() => {
+            addressInput.value = sanitizeFaucetBase58(addressInput.value);
+        }));
+    }
+
+    const captchaInput = document.getElementById('captcha');
+    if (captchaInput && captchaInput.dataset.faucetNumberGuarded !== '1') {
+        captchaInput.dataset.faucetNumberGuarded = '1';
+        captchaInput.setAttribute('inputmode', 'numeric');
+        captchaInput.addEventListener('keydown', (event) => {
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key === 'e' || event.key === 'E' || event.key === '+' || event.key === '-' || event.key === '.') {
+                event.preventDefault();
+            }
+        });
+        captchaInput.addEventListener('input', () => {
+            const sanitized = sanitizeFaucetInteger(captchaInput.value);
+            if (sanitized !== captchaInput.value) captchaInput.value = sanitized;
+        });
+        captchaInput.addEventListener('paste', () => requestAnimationFrame(() => {
+            captchaInput.value = sanitizeFaucetInteger(captchaInput.value);
+        }));
+    }
+}
 
 function formatCooldown(seconds) {
     const value = Number(seconds || 0);
@@ -129,6 +173,7 @@ async function updateStats() {
     }
 }
 document.addEventListener('DOMContentLoaded', () => {
+    applyFaucetInputGuards();
     if (document.querySelector('#recentRequests')) {
         loadRecentRequests();
     }

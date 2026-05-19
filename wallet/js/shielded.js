@@ -1184,6 +1184,9 @@ function openShieldModal() {
             if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
         };
     }
+    if (typeof window.applyWalletInputGuards === 'function') {
+        window.applyWalletInputGuards(document.getElementById('shieldModal'));
+    }
     // Disable confirm if zero transparent balance
     _updateShieldModalBtn();
     document.getElementById('shieldModal').classList.add('show');
@@ -1196,6 +1199,10 @@ function openUnshieldModal() {
     const recipientInput = document.getElementById('unshieldRecipient');
     if (recipientInput && wallet?.address) {
         recipientInput.value = wallet.address;
+        recipientInput.readOnly = true;
+        recipientInput.setAttribute('aria-readonly', 'true');
+        recipientInput.setAttribute('data-address-input', 'base58');
+        recipientInput.title = 'Unshield returns to the active wallet address';
     }
     const input = document.getElementById('unshieldAmount');
     if (input) {
@@ -1206,6 +1213,9 @@ function openUnshieldModal() {
             const maxLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
             if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
         };
+    }
+    if (typeof window.applyWalletInputGuards === 'function') {
+        window.applyWalletInputGuards(document.getElementById('unshieldModal'));
     }
     _updateUnshieldModalBtn();
     document.getElementById('unshieldModal').classList.add('show');
@@ -1223,6 +1233,9 @@ function openShieldedTransferModal() {
             const maxLicn = (shieldedState.shieldedBalance || 0) / SPORES_PER_LICN;
             if (v > maxLicn) input.value = maxLicn > 0 ? maxLicn.toFixed(6) : '';
         };
+    }
+    if (typeof window.applyWalletInputGuards === 'function') {
+        window.applyWalletInputGuards(document.getElementById('shieldedTransferModal'));
     }
     _updateTransferModalBtn();
     document.getElementById('shieldedTransferModal').classList.add('show');
@@ -1316,7 +1329,10 @@ async function confirmShield() {
 
 function confirmUnshield() {
     let amount = parseFloat(document.getElementById('unshieldAmount').value);
-    const recipient = document.getElementById('unshieldRecipient').value.trim();
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    const recipient = wallet?.address || '';
+    const recipientInput = document.getElementById('unshieldRecipient');
+    if (recipientInput) recipientInput.value = recipient;
     if (isNaN(amount) || amount <= 0) {
         showToast('Enter a valid amount');
         return;
