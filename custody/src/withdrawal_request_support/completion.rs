@@ -117,6 +117,7 @@ pub(crate) async fn enforce_withdrawal_rate_limits(
 }
 
 pub(crate) fn validate_withdrawal_request_destination(
+    config: &CustodyConfig,
     req: &WithdrawalRequest,
     asset_lower: &str,
 ) -> Result<(), Json<Value>> {
@@ -190,9 +191,11 @@ pub(crate) fn validate_withdrawal_request_destination(
                 "error": "wNEO withdrawals must be exact whole NEO lots"
             })));
         }
-        return Err(Json(json!({
-            "error": "wNEO withdrawals are gated until an official Neo X NEO source route is configured"
-        })));
+        if config.neox_neo_token_contract.is_none() {
+            return Err(Json(json!({
+                "error": "missing CUSTODY_NEOX_NEO_TOKEN_ADDR for Neo X NEO withdrawal route"
+            })));
+        }
     }
 
     Ok(())

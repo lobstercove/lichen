@@ -112,6 +112,7 @@ pub(in super::super) async fn process_burned_withdrawals(
             "weth" => "eth".to_string(),
             "wbnb" => "bnb".to_string(),
             "wgas" => "gas".to_string(),
+            "wneo" => "neo".to_string(),
             _ => continue,
         };
         let required_signer_threshold = effective_required_signer_threshold(&job, &state.config);

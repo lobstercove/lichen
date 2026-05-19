@@ -2170,7 +2170,7 @@ function showExtBridgeTokens(chain) {
     SOL: { name: 'Solana', chain: 'solana', tokens: ['SOL', 'USDC', 'USDT'] },
     ETH: { name: 'Ethereum', chain: 'ethereum', tokens: ['ETH', 'USDC', 'USDT'] },
     BNB: { name: 'BNB Chain', chain: 'bnb', tokens: ['BNB', 'USDC', 'USDT'] },
-    NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS deposits. NEO deposits stay gated until the official Neo X NEO source route is configured.' },
+    NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS', 'NEO'], detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.' },
   };
   const info = chainInfo[chain];
   if (!info) return;

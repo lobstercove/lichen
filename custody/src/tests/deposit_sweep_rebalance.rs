@@ -100,7 +100,7 @@ async fn test_create_deposit_reuses_existing_deposit_for_identical_bridge_auth()
 }
 
 #[tokio::test]
-async fn test_create_deposit_neox_gas_uses_chain_id_scoped_path_and_gates_neo() {
+async fn test_create_deposit_neox_gas_and_neo_use_chain_id_scoped_path() {
     let mut state = test_state();
     state.config.neox_rpc_url = Some("http://localhost:9545".to_string());
     let (user_id, auth) = test_bridge_access_auth_payload(31);
@@ -139,7 +139,7 @@ async fn test_create_deposit_neox_gas_uses_chain_id_scoped_path_and_gates_neo() 
 
     let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(32);
     let err = create_deposit(
-        State(state),
+        State(state.clone()),
         test_auth_headers(),
         Json(CreateDepositRequest {
             user_id: neo_user_id,
@@ -149,11 +149,35 @@ async fn test_create_deposit_neox_gas_uses_chain_id_scoped_path_and_gates_neo() 
         }),
     )
     .await
-    .expect_err("NEO deposits must stay gated until a source route is configured");
+    .expect_err("NEO deposits require configured source token contract");
     assert_eq!(err.code, "invalid_request");
-    assert!(err
-        .message
-        .contains("Neo X custody currently supports asset=gas only"));
+    assert!(err.message.contains("CUSTODY_NEOX_NEO_TOKEN_ADDR"));
+
+    state.config.neox_neo_token_contract =
+        Some("0x1111111111111111111111111111111111111111".to_string());
+    let (neo_user_id, neo_auth) = test_bridge_access_auth_payload(33);
+    let response = create_deposit(
+        State(state.clone()),
+        test_auth_headers(),
+        Json(CreateDepositRequest {
+            user_id: neo_user_id,
+            chain: "neox".to_string(),
+            asset: "neo".to_string(),
+            auth: Some(neo_auth),
+        }),
+    )
+    .await
+    .expect("Neo X NEO deposit should be created when token route is configured");
+    let stored = fetch_deposit(&state.db, &response.0.deposit_id)
+        .expect("fetch Neo X NEO deposit")
+        .expect("Neo X NEO deposit exists");
+    assert_eq!(stored.chain, "neox");
+    assert_eq!(stored.asset, "neo");
+    assert!(
+        stored.derivation_path.starts_with("m/44'/12227332'/"),
+        "Neo X NEO deposit path must be chain-ID scoped: {}",
+        stored.derivation_path
+    );
 }
 
 #[tokio::test]
@@ -382,12 +406,14 @@ fn test_build_credit_job_uses_native_solana_credited_amount() {
 }
 
 #[test]
-fn test_build_credit_job_neox_gas_exact_conversion_and_gated_neo() {
+fn test_build_credit_job_neox_gas_and_neo_exact_conversion() {
     let mut state = test_state();
     state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
     state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
     state.config.wgas_contract_addr = Some("WGAS_CONTRACT_999".to_string());
     state.config.wneo_contract_addr = Some("WNEO_CONTRACT_999".to_string());
+    state.config.neox_neo_token_contract =
+        Some("0x1111111111111111111111111111111111111111".to_string());
 
     let gas_deposit = DepositRequest {
         deposit_id: "dep-neox-gas-credit-1".to_string(),
@@ -460,7 +486,7 @@ fn test_build_credit_job_neox_gas_exact_conversion_and_gated_neo() {
         created_at: 1000,
         status: "swept".to_string(),
     };
-    store_deposit(&state.db, &neo_deposit).expect("store gated Neo X NEO deposit");
+    store_deposit(&state.db, &neo_deposit).expect("store Neo X NEO deposit");
     let neo_sweep = SweepJob {
         job_id: "sweep-neox-neo-credit-1".to_string(),
         deposit_id: neo_deposit.deposit_id.clone(),
@@ -469,7 +495,7 @@ fn test_build_credit_job_neox_gas_exact_conversion_and_gated_neo() {
         from_address: neo_deposit.address.clone(),
         to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
         tx_hash: "tx".to_string(),
-        amount: Some("1000000000".to_string()),
+        amount: Some("2".to_string()),
         credited_amount: None,
         signatures: Vec::new(),
         sweep_tx_hash: Some("sweep-hash".to_string()),
@@ -479,12 +505,21 @@ fn test_build_credit_job_neox_gas_exact_conversion_and_gated_neo() {
         status: "sweep_confirmed".to_string(),
         created_at: 1000,
     };
-    assert!(
-        build_credit_job(&state, &neo_sweep)
-            .expect("gated Neo X NEO should not error without a source route")
-            .is_none(),
-        "gated NEO must not create a credit job"
-    );
+    let credit = build_credit_job(&state, &neo_sweep)
+        .expect("build Neo X NEO credit job")
+        .expect("Neo X NEO credit job should be created");
+    assert_eq!(credit.amount_spores, 2_000_000_000);
+    assert_eq!(credit.source_chain, "neox");
+    assert_eq!(credit.source_asset, "neo");
+
+    let fractional_neo_sweep = SweepJob {
+        amount: Some("1".to_string()),
+        ..neo_sweep
+    };
+    let credit = build_credit_job(&state, &fractional_neo_sweep)
+        .expect("one whole Neo X NEO should be exact")
+        .expect("one whole Neo X NEO credit job should be created");
+    assert_eq!(credit.amount_spores, 1_000_000_000);
 }
 
 #[tokio::test]
@@ -729,7 +764,7 @@ fn test_resolve_token_contract_bnb() {
 }
 
 #[test]
-fn test_resolve_token_contract_neox_gas_and_gated_neo() {
+fn test_resolve_token_contract_neox_gas_and_neo() {
     let mut config = test_config();
     config.wgas_contract_addr = Some("WGAS_CONTRACT_999".to_string());
     config.wneo_contract_addr = Some("WNEO_CONTRACT_999".to_string());

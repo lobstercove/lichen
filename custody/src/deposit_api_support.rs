@@ -54,6 +54,34 @@ pub(super) async fn create_deposit(
         &bridge_auth,
     )?;
 
+    if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
+        ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+    }
+    if is_evm_chain(&chain) && rpc_url_for_chain(&state.config, &chain).is_none() {
+        return Err(ErrorResponse::invalid(&format!(
+            "missing RPC URL for chain {}",
+            chain
+        )));
+    }
+    if canonical_evm_chain(&chain) == Some("neox") {
+        match asset.as_str() {
+            "gas" => {}
+            "neo" => {
+                if state.config.neox_neo_token_contract.is_none() {
+                    return Err(ErrorResponse::invalid(
+                        "missing CUSTODY_NEOX_NEO_TOKEN_ADDR for Neo X NEO deposit route",
+                    ));
+                }
+            }
+            _ => {
+                return Err(ErrorResponse::invalid(&format!(
+                    "unsupported Neo X deposit asset: {}",
+                    asset
+                )));
+            }
+        }
+    }
+
     ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     ensure_deposit_restrictions_allow(&state, &user_id, &chain, &asset)
         .await
@@ -99,21 +127,6 @@ pub(super) async fn create_deposit(
         }
         dr.per_user.insert(user_id.clone(), now);
         persist_deposit_rate_state(&state.db, &dr).map_err(|e| Json(ErrorResponse::db(&e)))?;
-    }
-
-    if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
-        ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
-    }
-    if is_evm_chain(&chain) && rpc_url_for_chain(&state.config, &chain).is_none() {
-        return Err(ErrorResponse::invalid(&format!(
-            "missing RPC URL for chain {}",
-            chain
-        )));
-    }
-    if canonical_evm_chain(&chain) == Some("neox") && asset != "gas" {
-        return Err(ErrorResponse::invalid(
-            "Neo X custody currently supports asset=gas only; NEO is gated until an official source route is configured",
-        ));
     }
 
     let deposit_id = Uuid::new_v4().to_string();

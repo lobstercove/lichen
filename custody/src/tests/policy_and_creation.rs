@@ -768,8 +768,8 @@ async fn test_create_withdrawal_rejects_wgas_wrong_evm_route() {
 }
 
 #[tokio::test]
-async fn test_create_withdrawal_rejects_wneo_fractional_wrong_route_and_gated_route() {
-    let state = test_state();
+async fn test_create_withdrawal_rejects_wneo_fractional_wrong_route_and_requires_source_route() {
+    let mut state = test_state();
 
     let mut fractional = test_withdrawal_request();
     fractional.asset = "wNEO".to_string();
@@ -801,11 +801,34 @@ async fn test_create_withdrawal_rejects_wneo_fractional_wrong_route_and_gated_ro
     gated.dest_chain = "neox".to_string();
     gated.dest_address = "0x1111111111111111111111111111111111111111".to_string();
     sign_test_withdrawal_request(&mut gated, 45);
-    let response = create_withdrawal(State(state), test_auth_headers(), Json(gated)).await;
+    let response = create_withdrawal(State(state.clone()), test_auth_headers(), Json(gated)).await;
     assert_eq!(
         response.0.get("error").and_then(|value| value.as_str()),
-        Some("wNEO withdrawals are gated until an official Neo X NEO source route is configured")
+        Some("missing CUSTODY_NEOX_NEO_TOKEN_ADDR for Neo X NEO withdrawal route")
     );
+
+    state.config.neox_neo_token_contract =
+        Some("0x1111111111111111111111111111111111111111".to_string());
+    let mut accepted = test_withdrawal_request();
+    accepted.asset = "wNEO".to_string();
+    accepted.amount = 2_000_000_000;
+    accepted.dest_chain = "neox".to_string();
+    accepted.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+    sign_test_withdrawal_request(&mut accepted, 46);
+    let response =
+        create_withdrawal(State(state.clone()), test_auth_headers(), Json(accepted)).await;
+    let job_id = response
+        .0
+        .get("job_id")
+        .and_then(|value| value.as_str())
+        .expect("configured wNEO Neo X withdrawal should create a pending burn job")
+        .to_string();
+    let stored = fetch_withdrawal_job(&state.db, &job_id)
+        .expect("fetch stored wNEO withdrawal")
+        .expect("stored wNEO withdrawal exists");
+    assert_eq!(stored.asset, "wneo");
+    assert_eq!(stored.dest_chain, "neox");
+    assert_eq!(stored.status, "pending_burn");
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ pub(super) async fn broadcast_evm_sweep(
     url: &str,
     job: &SweepJob,
 ) -> Result<Option<String>, String> {
-    if matches!(job.asset.as_str(), "usdc" | "usdt") {
+    if is_evm_token_asset(&job.chain, &job.asset) {
         return broadcast_evm_token_sweep(state, url, job).await;
     }
 
@@ -82,7 +82,7 @@ async fn broadcast_evm_token_sweep(
         return Ok(None);
     };
 
-    let contract = evm_contract_for_asset(&state.config, &job.asset)?;
+    let contract = evm_token_contract_for_asset(&state.config, &job.chain, &job.asset)?;
     let from_address = deposit.address.clone();
     let to_address = job.to_treasury.clone();
 

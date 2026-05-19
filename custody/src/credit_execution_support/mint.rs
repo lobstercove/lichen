@@ -125,6 +125,8 @@ pub(super) async fn submit_wrapped_credit(
         "sol" => "wSOL",
         "eth" => "wETH",
         "bnb" => "wBNB",
+        "gas" => "wGAS",
+        "neo" => "wNEO",
         _ => "UNKNOWN",
     };
     info!(

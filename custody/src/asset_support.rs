@@ -30,6 +30,31 @@ pub(super) fn evm_contract_for_asset(
     }
 }
 
+pub(super) fn is_evm_token_asset(chain: &str, asset: &str) -> bool {
+    let asset = asset.trim().to_ascii_lowercase();
+    matches!(asset.as_str(), "usdc" | "usdt")
+        || (canonical_evm_chain(chain) == Some("neox") && asset == "neo")
+}
+
+pub(super) fn evm_token_contract_for_asset(
+    config: &CustodyConfig,
+    chain: &str,
+    asset: &str,
+) -> Result<String, String> {
+    let asset = asset.trim().to_ascii_lowercase();
+    match asset.as_str() {
+        "usdc" | "usdt" => evm_contract_for_asset(config, &asset),
+        "neo" if canonical_evm_chain(chain) == Some("neox") => config
+            .neox_neo_token_contract
+            .clone()
+            .ok_or_else(|| "missing CUSTODY_NEOX_NEO_TOKEN_ADDR".to_string()),
+        _ => Err(format!(
+            "unsupported evm token for chain={} asset={}",
+            chain, asset
+        )),
+    }
+}
+
 /// Returns the native decimal precision for a given (chain, asset) pair.
 ///
 /// Used by deposit → credit conversion AND withdrawal → outbound conversion.
@@ -38,6 +63,7 @@ pub(super) fn evm_contract_for_asset(
 ///   ETH on Ethereum:             18 decimals (wei)
 ///   BNB on BSC:                  18 decimals (wei)
 ///   GAS on Neo X:                18 decimals (read-only WGAS10 verification)
+///   NEO on Neo X:                 0 decimals (whole-NEO token route)
 ///   SOL on Solana:               9 decimals (lamports)
 ///
 /// ERC-20 / SPL tokens:
@@ -51,6 +77,7 @@ pub(super) fn source_chain_decimals(chain: &str, asset: &str) -> Result<u32, Str
         ("eth" | "ethereum", "eth") => Ok(18),
         ("bsc" | "bnb", "bnb") => Ok(18),
         ("neox" | "neo-x" | "neo_x", "gas") => Ok(18),
+        ("neox" | "neo-x" | "neo_x", "neo") => Ok(0),
         ("eth" | "ethereum", "usdt" | "usdc") => Ok(6),
         ("bsc" | "bnb", "usdt" | "usdc") => Ok(18),
         ("sol" | "solana", "sol") => Ok(9),

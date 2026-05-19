@@ -55,9 +55,9 @@ fn build_evm_threshold_withdrawal_intent(
     job: &WithdrawalJob,
     asset: &str,
 ) -> Result<(String, u128, Vec<u8>), String> {
-    let is_erc20 = matches!(asset, "usdt" | "usdc");
+    let is_erc20 = is_evm_token_asset(&job.dest_chain, asset);
     if is_erc20 {
-        let contract_addr = evm_contract_for_asset(&state.config, asset)
+        let contract_addr = evm_token_contract_for_asset(&state.config, &job.dest_chain, asset)
             .map_err(|error| format!("resolve ERC-20 contract for withdrawal: {}", error))?;
         let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset)?;
         let transfer_data = evm_encode_erc20_transfer(&job.dest_address, chain_amount)

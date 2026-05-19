@@ -37,7 +37,9 @@ pub(super) async fn create_withdrawal(
         return response;
     }
 
-    if let Err(response) = validate_withdrawal_request_destination(&req, &asset_lower) {
+    if let Err(response) =
+        validate_withdrawal_request_destination(&state.config, &req, &asset_lower)
+    {
         return response;
     }
 

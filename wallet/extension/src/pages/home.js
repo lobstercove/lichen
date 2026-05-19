@@ -12,7 +12,7 @@ const BRIDGE_CHAIN_ASSETS = {
   solana: ['sol', 'usdc', 'usdt'],
   ethereum: ['eth', 'usdc', 'usdt'],
   bsc: ['bnb', 'usdc', 'usdt'],
-  neox: ['gas']
+  neox: ['gas', 'neo']
 };
 const BRIDGE_CHAINS = Object.keys(BRIDGE_CHAIN_ASSETS);
 const BRIDGE_ASSETS = [...new Set(Object.values(BRIDGE_CHAIN_ASSETS).flat())];

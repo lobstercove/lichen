@@ -76,8 +76,12 @@ fn build_withdrawal_approval_message(
             source_token_account = Some(from_token_account);
             destination_token_account = Some(to_token_account);
         }
-    } else if matches!(outbound_asset, "usdt" | "usdc") {
-        token_contract = Some(evm_contract_for_asset(&state.config, outbound_asset)?);
+    } else if is_evm_token_asset(&job.dest_chain, outbound_asset) {
+        token_contract = Some(evm_token_contract_for_asset(
+            &state.config,
+            &job.dest_chain,
+            outbound_asset,
+        )?);
     }
 
     serde_json::to_vec(&WithdrawalApprovalMessage {

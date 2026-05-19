@@ -44,6 +44,7 @@ pub(super) async fn broadcast_outbound_withdrawal(
                 "weth" => "eth".to_string(),
                 "wbnb" => "bnb".to_string(),
                 "wgas" => "gas".to_string(),
+                "wneo" => "neo".to_string(),
                 "musd" => job.preferred_stablecoin.clone(),
                 _ => return Err(format!("unsupported EVM withdrawal: {}", job.asset)),
             };

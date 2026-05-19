@@ -500,10 +500,19 @@ fn test_solana_mint_for_asset() {
 
 #[test]
 fn test_evm_contract_for_asset() {
-    let config = test_config();
+    let mut config = test_config();
     assert!(evm_contract_for_asset(&config, "usdc").is_ok());
     assert!(evm_contract_for_asset(&config, "usdt").is_ok());
     assert!(evm_contract_for_asset(&config, "eth").is_err());
+    assert!(!is_evm_token_asset("neox", "gas"));
+    assert!(is_evm_token_asset("neox", "neo"));
+    assert!(is_evm_token_asset("ethereum", "usdc"));
+    assert!(evm_token_contract_for_asset(&config, "neox", "neo").is_err());
+    config.neox_neo_token_contract = Some("0x1111111111111111111111111111111111111111".to_string());
+    assert_eq!(
+        evm_token_contract_for_asset(&config, "neox", "neo").unwrap(),
+        "0x1111111111111111111111111111111111111111"
+    );
 }
 
 #[test]

@@ -878,6 +878,7 @@ fn test_source_chain_decimals() {
     assert_eq!(source_chain_decimals("bsc", "bnb").unwrap(), 18);
     assert_eq!(source_chain_decimals("bnb", "bnb").unwrap(), 18);
     assert_eq!(source_chain_decimals("neox", "gas").unwrap(), 18);
+    assert_eq!(source_chain_decimals("neox", "neo").unwrap(), 0);
     assert_eq!(source_chain_decimals("solana", "sol").unwrap(), 9);
     assert_eq!(source_chain_decimals("sol", "sol").unwrap(), 9);
 
@@ -892,7 +893,6 @@ fn test_source_chain_decimals() {
     // Stablecoins on Solana: 6 decimals (SPL)
     assert_eq!(source_chain_decimals("solana", "usdt").unwrap(), 6);
     assert_eq!(source_chain_decimals("sol", "usdc").unwrap(), 6);
-    assert!(source_chain_decimals("neox", "neo").is_err());
     assert!(source_chain_decimals("unknown", "eth").is_err());
 }
 
@@ -936,7 +936,11 @@ fn test_spores_to_chain_amount() {
 
     assert!(spores_to_chain_amount(1, "solana", "usdc").is_err());
     assert!(spores_to_chain_amount(1_000_000_000, "neox", "gas").is_ok());
-    assert!(spores_to_chain_amount(1_000_000_000, "neox", "neo").is_err());
+    assert_eq!(
+        spores_to_chain_amount(1_000_000_000, "neox", "neo").unwrap(),
+        1
+    );
+    assert!(spores_to_chain_amount(500_000_000, "neox", "neo").is_err());
 }
 
 #[test]

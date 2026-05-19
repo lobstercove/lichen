@@ -56,6 +56,7 @@ fn withdrawal_route_asset(asset: &str, preferred_stablecoin: &str) -> Result<Str
         "weth" => Ok("eth".to_string()),
         "wbnb" => Ok("bnb".to_string()),
         "wgas" => Ok("gas".to_string()),
+        "wneo" => Ok("neo".to_string()),
         _ => Err(format!(
             "unsupported withdrawal asset for custody route restriction check: {}",
             asset

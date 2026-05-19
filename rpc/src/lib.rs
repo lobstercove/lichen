@@ -11300,7 +11300,10 @@ fn is_known_bridge_deposit_chain(chain: &str) -> bool {
 }
 
 fn is_known_bridge_deposit_asset(asset: &str) -> bool {
-    matches!(asset, "sol" | "eth" | "bnb" | "usdc" | "usdt" | "gas")
+    matches!(
+        asset,
+        "sol" | "eth" | "bnb" | "usdc" | "usdt" | "gas" | "neo"
+    )
 }
 
 fn is_supported_bridge_deposit_route(chain: &str, asset: &str) -> bool {
@@ -11308,7 +11311,7 @@ fn is_supported_bridge_deposit_route(chain: &str, asset: &str) -> bool {
         "solana" => matches!(asset, "sol" | "usdc" | "usdt"),
         "ethereum" => matches!(asset, "eth" | "usdc" | "usdt"),
         "bnb" | "bsc" => matches!(asset, "bnb" | "usdc" | "usdt"),
-        "neox" => matches!(asset, "gas"),
+        "neox" => matches!(asset, "gas" | "neo"),
         _ => false,
     }
 }
@@ -23558,6 +23561,43 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["chain"], serde_json::json!("neox"));
         assert_eq!(requests[0]["asset"], serde_json::json!("gas"));
+    }
+
+    #[tokio::test]
+    async fn test_create_bridge_deposit_forwards_neox_neo_to_custody() {
+        let tmp = tempdir().unwrap();
+        let state = StateStore::open(tmp.path()).unwrap();
+
+        let custody_state = MockCustodyState::default();
+        let custody_url = spawn_mock_server(
+            Router::new()
+                .route("/deposits", post(mock_custody_create_deposit))
+                .with_state(custody_state.clone()),
+        )
+        .await;
+
+        let mut rpc_state = make_test_rpc_state(state);
+        rpc_state.custody_url = Some(custody_url);
+        rpc_state.custody_auth_token = Some("test-auth-token".to_string());
+
+        let response = handle_create_bridge_deposit(
+            &rpc_state,
+            Some(serde_json::json!([signed_bridge_deposit_payload(
+                54, "neox", "neo"
+            )])),
+        )
+        .await
+        .expect("Neo X NEO bridge deposit creation should reach custody");
+
+        assert_eq!(
+            response["deposit_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+
+        let requests = custody_state.requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["chain"], serde_json::json!("neox"));
+        assert_eq!(requests[0]["asset"], serde_json::json!("neo"));
     }
 
     #[tokio::test]

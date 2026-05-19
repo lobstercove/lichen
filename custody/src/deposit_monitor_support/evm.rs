@@ -15,6 +15,9 @@ pub(super) async fn process_evm_deposits_for_chains(
     }
 
     for deposit in deposits {
+        if is_evm_token_asset(&deposit.chain, &deposit.asset) {
+            continue;
+        }
         let balance = evm_get_balance(&state.http, url, &deposit.address).await?;
         if balance == 0 {
             continue;
@@ -103,6 +106,9 @@ pub(super) async fn process_evm_deposits(state: &CustodyState, url: &str) -> Res
     }
 
     for deposit in deposits {
+        if is_evm_token_asset(&deposit.chain, &deposit.asset) {
+            continue;
+        }
         let balance = evm_get_balance(&state.http, url, &deposit.address).await?;
         if balance == 0 {
             continue;
@@ -183,15 +189,26 @@ async fn process_evm_erc20_deposits(
 ) -> Result<(), String> {
     let token_deposits: Vec<&DepositRequest> = deposits
         .iter()
-        .filter(|deposit| matches!(deposit.asset.as_str(), "usdc" | "usdt"))
+        .filter(|deposit| is_evm_token_asset(&deposit.chain, &deposit.asset))
         .collect();
     if token_deposits.is_empty() {
         return Ok(());
     }
 
-    let mut address_map = std::collections::HashMap::new();
+    let mut address_map: std::collections::HashMap<String, Vec<&DepositRequest>> =
+        std::collections::HashMap::new();
+    let mut token_scans: std::collections::BTreeMap<(String, String), String> =
+        std::collections::BTreeMap::new();
     for deposit in token_deposits {
-        address_map.insert(deposit.address.to_lowercase(), deposit);
+        let contract = evm_token_contract_for_asset(&state.config, &deposit.chain, &deposit.asset)?;
+        address_map
+            .entry(deposit.address.to_lowercase())
+            .or_default()
+            .push(deposit);
+        token_scans.insert(
+            (deposit.asset.to_lowercase(), contract.to_lowercase()),
+            contract,
+        );
     }
 
     let cursor_scope = chains
@@ -200,8 +217,7 @@ async fn process_evm_erc20_deposits(
         .next()
         .unwrap_or("legacy");
 
-    for asset in ["usdc", "usdt"] {
-        let contract = evm_contract_for_asset(&state.config, asset)?;
+    for ((asset, contract_lower), contract) in token_scans {
         let cursor_key = format!("evm_logs:{}:{}", cursor_scope, contract.to_lowercase());
         let from_block = get_last_u64_index(&state.db, &cursor_key)?
             .unwrap_or(block_number.saturating_sub(1000));
@@ -218,58 +234,71 @@ async fn process_evm_erc20_deposits(
         let logs = evm_get_transfer_logs(&state.http, url, &contract, from_block, to_block).await?;
         for log in logs {
             if let Some((to, amount, tx_hash)) = decode_transfer_log(&log) {
-                if let Some(deposit) = address_map.get(&to.to_lowercase()) {
-                    store_deposit_event(
-                        &state.db,
-                        &DepositEvent {
-                            event_id: Uuid::new_v4().to_string(),
-                            deposit_id: deposit.deposit_id.clone(),
-                            tx_hash: tx_hash.clone(),
-                            confirmations: state.config.evm_confirmations,
-                            amount: u64::try_from(amount).ok(),
-                            status: "confirmed".to_string(),
-                            observed_at: chrono::Utc::now().timestamp(),
-                        },
-                    )?;
-                    update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
-                    emit_custody_event(
-                        state,
-                        "deposit.confirmed",
-                        &deposit.deposit_id,
-                        Some(&deposit.deposit_id),
-                        Some(&tx_hash),
-                        Some(&serde_json::json!({
-                            "chain": deposit.chain,
-                            "asset": deposit.asset,
-                            "address": deposit.address,
-                            "user_id": deposit.user_id,
-                            "amount": amount
-                        })),
-                    );
-
-                    if let Some(treasury) = treasury_for_chain(&state.config, &deposit.chain) {
-                        enqueue_sweep_job(
+                if let Some(deposits) = address_map.get(&to.to_lowercase()) {
+                    for deposit in deposits.iter().copied().filter(|deposit| {
+                        deposit.asset.eq_ignore_ascii_case(&asset)
+                            && evm_token_contract_for_asset(
+                                &state.config,
+                                &deposit.chain,
+                                &deposit.asset,
+                            )
+                            .map(|deposit_contract| {
+                                deposit_contract.eq_ignore_ascii_case(&contract_lower)
+                            })
+                            .unwrap_or(false)
+                    }) {
+                        store_deposit_event(
                             &state.db,
-                            &SweepJob {
-                                job_id: Uuid::new_v4().to_string(),
+                            &DepositEvent {
+                                event_id: Uuid::new_v4().to_string(),
                                 deposit_id: deposit.deposit_id.clone(),
-                                chain: deposit.chain.clone(),
-                                asset: deposit.asset.clone(),
-                                from_address: deposit.address.clone(),
-                                to_treasury: treasury,
-                                tx_hash,
-                                amount: Some(amount.to_string()),
-                                credited_amount: None,
-                                signatures: Vec::new(),
-                                sweep_tx_hash: None,
-                                attempts: 0,
-                                last_error: None,
-                                next_attempt_at: None,
-                                status: "queued".to_string(),
-                                created_at: chrono::Utc::now().timestamp(),
+                                tx_hash: tx_hash.clone(),
+                                confirmations: state.config.evm_confirmations,
+                                amount: u64::try_from(amount).ok(),
+                                status: "confirmed".to_string(),
+                                observed_at: chrono::Utc::now().timestamp(),
                             },
                         )?;
-                        update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+                        update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+                        emit_custody_event(
+                            state,
+                            "deposit.confirmed",
+                            &deposit.deposit_id,
+                            Some(&deposit.deposit_id),
+                            Some(&tx_hash),
+                            Some(&serde_json::json!({
+                                "chain": deposit.chain,
+                                "asset": deposit.asset,
+                                "address": deposit.address,
+                                "user_id": deposit.user_id,
+                                "amount": amount
+                            })),
+                        );
+
+                        if let Some(treasury) = treasury_for_chain(&state.config, &deposit.chain) {
+                            enqueue_sweep_job(
+                                &state.db,
+                                &SweepJob {
+                                    job_id: Uuid::new_v4().to_string(),
+                                    deposit_id: deposit.deposit_id.clone(),
+                                    chain: deposit.chain.clone(),
+                                    asset: deposit.asset.clone(),
+                                    from_address: deposit.address.clone(),
+                                    to_treasury: treasury,
+                                    tx_hash: tx_hash.clone(),
+                                    amount: Some(amount.to_string()),
+                                    credited_amount: None,
+                                    signatures: Vec::new(),
+                                    sweep_tx_hash: None,
+                                    attempts: 0,
+                                    last_error: None,
+                                    next_attempt_at: None,
+                                    status: "queued".to_string(),
+                                    created_at: chrono::Utc::now().timestamp(),
+                                },
+                            )?;
+                            update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+                        }
                     }
                 }
             }

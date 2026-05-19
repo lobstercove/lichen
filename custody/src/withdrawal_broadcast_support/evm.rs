@@ -34,7 +34,7 @@ pub(super) async fn broadcast_self_custody_evm_withdrawal(
     let gas_price = evm_get_gas_price(&state.http, url).await?;
     let chain_id = checked_evm_chain_id(state, url, &job.dest_chain).await?;
 
-    if outbound_asset == "eth" || outbound_asset == "bnb" || outbound_asset == "gas" {
+    if !is_evm_token_asset(&job.dest_chain, outbound_asset) {
         let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset)?;
         let gas_limit = evm_estimate_gas(
             &state.http,
@@ -64,7 +64,8 @@ pub(super) async fn broadcast_self_custody_evm_withdrawal(
             .map(|value| value.to_string())
             .ok_or_else(|| "no tx hash returned".to_string())
     } else {
-        let contract = evm_contract_for_asset(&state.config, outbound_asset)?;
+        let contract =
+            evm_token_contract_for_asset(&state.config, &job.dest_chain, outbound_asset)?;
         let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset)?;
         let transfer_data = evm_encode_erc20_transfer(to_address, chain_amount)?;
         let gas_limit = evm_estimate_gas(

@@ -2940,7 +2940,7 @@ const BRIDGE_CHAINS_EXT = {
   solana: { label: 'Solana', assets: ['sol', 'usdc', 'usdt'] },
   ethereum: { label: 'Ethereum', assets: ['eth', 'usdc', 'usdt'] },
   bsc: { label: 'BNB Chain', assets: ['bnb', 'usdc', 'usdt'] },
-  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS deposits. NEO deposits stay gated until the official Neo X NEO source route is configured.', assets: ['gas'] }
+  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS and whole-lot NEO deposits.', assets: ['gas', 'neo'] }
 };
 let extDepositPollTimer = null;
 let extActiveDepositId = null;
@@ -3123,7 +3123,7 @@ function restoreDepositTab(container) {
       </div>
       <div class="deposit-card" id="depositNEOX">
         <div class="deposit-card-icon" style="background:rgba(0,229,153,0.12);color:#00E599;"><i class="fas fa-cubes"></i></div>
-        <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · NEO route gated</span></div>
+        <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · NEO</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card disabled">
