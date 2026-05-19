@@ -2104,14 +2104,17 @@ async function loadShieldPanel() {
   if (notesRoot) {
     const unspentNotes = shieldedPopupState.ownedNotes.filter((note) => !note.spent);
     notesRoot.innerHTML = unspentNotes.length > 0
-      ? unspentNotes.map((note) => `
+      ? unspentNotes.map((note) => {
+        const label = note.pendingConfirmation ? 'Submitted' : (note.pendingIndex ? 'Indexing' : 'Unspent');
+        return `
           <div style="padding:0.65rem 0.75rem;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;margin-bottom:0.45rem;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
             <div>
               <div style="font-weight:600;color:var(--text-primary);">${(Number(note.value || 0) / 1_000_000_000).toFixed(4)} LICN</div>
               <div style="font-size:0.7rem;color:var(--text-muted);">Note #${note.index ?? '?'} · ${(note.commitment || '').slice(0, 12)}...</div>
             </div>
-            <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.45rem;border-radius:999px;white-space:nowrap;">Unspent</span>
-          </div>`).join('')
+            <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.45rem;border-radius:999px;white-space:nowrap;">${label}</span>
+          </div>`;
+      }).join('')
       : `
           <div class="popup-shield-empty">
             <i class="fas fa-shield-alt"></i>
@@ -2167,7 +2170,7 @@ function showExtBridgeTokens(chain) {
     SOL: { name: 'Solana', chain: 'solana', tokens: ['SOL', 'USDC', 'USDT'] },
     ETH: { name: 'Ethereum', chain: 'ethereum', tokens: ['ETH', 'USDC', 'USDT'] },
     BNB: { name: 'BNB Chain', chain: 'bnb', tokens: ['BNB', 'USDC', 'USDT'] },
-    NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS' },
+    NEOX: { name: 'Neo X', chain: 'neox', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS deposits. NEO deposits stay gated until the official Neo X NEO source route is configured.' },
   };
   const info = chainInfo[chain];
   if (!info) return;

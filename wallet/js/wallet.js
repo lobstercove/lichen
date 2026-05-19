@@ -3738,7 +3738,7 @@ async function showDepositInfo(chain) {
         SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['SOL', 'USDC', 'USDT'] },
         ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['ETH', 'USDC', 'USDT'] },
         BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['BNB', 'USDC', 'USDT'] },
-        NEOX: { name: 'Neo X', chain: 'neox', color: '#00E599', icon: 'fas fa-cubes', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS' }
+        NEOX: { name: 'Neo X', chain: 'neox', color: '#00E599', icon: 'fas fa-cubes', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1376.png', tokens: ['GAS'], detail: 'Chain ID 47763 · GAS deposits. NEO deposits stay gated until the official Neo X NEO source route is configured.' }
     };
     const info = chainInfo[chain];
     if (!info) return;

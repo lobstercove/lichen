@@ -1591,6 +1591,26 @@ async function saveExtensionShieldedNotes(wallet) {
   await saveState(state);
 }
 
+function recalculateExtensionShieldedBalance() {
+  _shieldedState.balance = (_shieldedState.notes || [])
+    .filter(n => !n.spent)
+    .reduce((sum, note) => sum + Number(note.value || 0), 0);
+}
+
+async function upsertExtensionShieldedNote(wallet, note) {
+  const commitment = String(note?.commitment || '').toLowerCase();
+  if (!commitment) return;
+  if (!Array.isArray(_shieldedState.notes)) _shieldedState.notes = [];
+  const existing = _shieldedState.notes.find((n) => String(n.commitment || '').toLowerCase() === commitment);
+  if (existing) {
+    Object.assign(existing, note);
+  } else {
+    _shieldedState.notes.push(note);
+  }
+  recalculateExtensionShieldedBalance();
+  await saveExtensionShieldedNotes(wallet);
+}
+
 async function fetchExtensionShieldedCommitments(client, from, limit = 1000) {
   const resp = await client.call('getShieldedCommitments', [{ from, limit }]);
   return Array.isArray(resp)
@@ -1683,23 +1703,41 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
       hexToBytesAnyExt(proof.proof),
     ),
   });
-  const resolvedIndex = await resolveExtensionShieldedCommitmentIndex(
-    client,
-    proof.commitment,
-    commitmentIndex,
-  );
 
-  _shieldedState.notes.push({
-    index: Number.isFinite(resolvedIndex) ? resolvedIndex : null,
+  const ownedNote = {
+    index: null,
     value: amountSpores,
     blinding: bytesToHex(blinding),
     serial: bytesToHex(serial),
     commitment: proof.commitment,
-    pendingIndex: !Number.isFinite(resolvedIndex),
+    pendingIndex: true,
+    pendingConfirmation: true,
+    signature,
     spent: false,
+    createdAt: Date.now(),
+    broadcastAt: Date.now(),
+  };
+  await upsertExtensionShieldedNote(wallet, ownedNote);
+
+  let resolvedIndex = null;
+  try {
+    resolvedIndex = await resolveExtensionShieldedCommitmentIndex(
+      client,
+      proof.commitment,
+      commitmentIndex,
+    );
+  } catch (error) {
+    console.warn('Shielded commitment index not resolved yet:', error?.message || error);
+  }
+
+  await upsertExtensionShieldedNote(wallet, {
+    ...ownedNote,
+    index: Number.isFinite(resolvedIndex) ? resolvedIndex : null,
+    pendingIndex: !Number.isFinite(resolvedIndex),
+    pendingConfirmation: false,
+    confirmed: true,
+    confirmedAt: Date.now(),
   });
-  _shieldedState.balance = _shieldedState.notes.filter(n => !n.spent).reduce((sum, note) => sum + Number(note.value || 0), 0);
-  await saveExtensionShieldedNotes(wallet);
   return signature;
 }
 
@@ -1869,6 +1907,8 @@ async function loadShieldTab() {
       if (Number.isFinite(resolved) && resolved >= 0) {
         note.index = resolved;
         note.pendingIndex = false;
+        note.pendingConfirmation = false;
+        note.confirmed = true;
         resolvedAnyNoteIndex = true;
       }
     } catch (_) { /* leave pending; unshield will re-check */ }
@@ -1887,14 +1927,18 @@ async function loadShieldTab() {
   const unspent = ownedNotes.filter(n => !n.spent);
 
   const notesHtml = unspent.length > 0
-    ? unspent.map(n => `
+    ? unspent.map(n => {
+      const label = n.pendingConfirmation ? 'Submitted' : (n.pendingIndex ? 'Indexing' : 'Unspent');
+      const icon = n.pendingConfirmation || n.pendingIndex ? 'fas fa-clock' : 'fas fa-check-circle';
+      return `
         <div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <div>
             <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} LICN</div>
             <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index ?? '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
           </div>
-          <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="fas fa-check-circle"></i> Unspent</span>
-        </div>`).join('')
+          <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="${icon}"></i> ${label}</span>
+        </div>`;
+    }).join('')
     : `<div style="text-align:center;padding:1.5rem;color:var(--text-muted);">
         <i class="fas fa-shield-alt" style="font-size:1.5rem;opacity:0.4;display:block;margin-bottom:0.5rem;"></i>
         <p style="margin:0 0 0.25rem;">No shielded notes yet</p>
@@ -2896,7 +2940,7 @@ const BRIDGE_CHAINS_EXT = {
   solana: { label: 'Solana', assets: ['sol', 'usdc', 'usdt'] },
   ethereum: { label: 'Ethereum', assets: ['eth', 'usdc', 'usdt'] },
   bsc: { label: 'BNB Chain', assets: ['bnb', 'usdc', 'usdt'] },
-  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS', assets: ['gas'] }
+  neox: { label: 'Neo X', detail: 'Chain ID 47763 · GAS deposits. NEO deposits stay gated until the official Neo X NEO source route is configured.', assets: ['gas'] }
 };
 let extDepositPollTimer = null;
 let extActiveDepositId = null;
@@ -3079,7 +3123,7 @@ function restoreDepositTab(container) {
       </div>
       <div class="deposit-card" id="depositNEOX">
         <div class="deposit-card-icon" style="background:rgba(0,229,153,0.12);color:#00E599;"><i class="fas fa-cubes"></i></div>
-        <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · Chain ID 47763</span></div>
+        <div class="deposit-card-info"><strong>Bridge from Neo X</strong><span>GAS · NEO route gated</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card disabled">

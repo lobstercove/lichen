@@ -104,7 +104,7 @@ function buildUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex,
     return concatBytes(header, proofBytes);
 }
 
-async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData }) {
+async function signAndSubmitShieldedInstruction({ wallet, password, accounts, instructionData, onSubmitted }) {
     if (!wallet || !wallet.encryptedKey) {
         throw new Error('No active wallet');
     }
@@ -129,6 +129,9 @@ async function signAndSubmitShieldedInstruction({ wallet, password, accounts, in
     const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
     const txBase64 = bytesToBase64(txBytes);
     const txSignature = await rpc.sendTransaction(txBase64);
+    if (typeof onSubmitted === 'function') {
+        await onSubmitted(txSignature);
+    }
     if (typeof rpc.confirmTransaction === 'function') {
         const confirmation = await rpc.confirmTransaction(txSignature, 30000);
         if (confirmation && confirmation.confirmed === false) {
@@ -154,7 +157,7 @@ async function requestShieldedSigningPassword(title, message) {
     return values?.password || null;
 }
 
-async function submitShieldTransaction({ amountSpores, commitment, proof, commitmentIndex }) {
+async function submitShieldTransaction({ amountSpores, commitment, proof, commitmentIndex, onSubmitted }) {
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     const password = await requestShieldedSigningPassword(
         'Shield LICN',
@@ -169,6 +172,7 @@ async function submitShieldTransaction({ amountSpores, commitment, proof, commit
         password,
         accounts: [signer],
         instructionData: buildShieldInstructionData(amountSpores, commitment, proof),
+        onSubmitted,
     });
     return { success: true, signature, commitment_index: commitmentIndex };
 }
@@ -271,6 +275,8 @@ async function syncShieldedState() {
                 if (existingNote && Number.isFinite(entryIndex) && entryIndex >= 0) {
                     existingNote.index = entryIndex;
                     existingNote.pendingIndex = false;
+                    existingNote.pendingConfirmation = false;
+                    existingNote.confirmed = true;
                 }
 
                 // Trial-decrypt: try to decrypt with our viewing key
@@ -301,9 +307,7 @@ async function syncShieldedState() {
         }
 
         // Recalculate shielded balance
-        shieldedState.shieldedBalance = shieldedState.ownedNotes
-            .filter(n => !n.spent)
-            .reduce((sum, n) => sum + n.value, 0);
+        recalculateShieldedBalance();
 
         // Persist to localStorage
         await saveNotesToStorage();
@@ -321,6 +325,28 @@ async function fetchShieldedCommitmentEntries(from, limit = 1000) {
     return Array.isArray(resp)
         ? resp
         : (Array.isArray(resp?.commitments) ? resp.commitments : []);
+}
+
+function recalculateShieldedBalance() {
+    shieldedState.shieldedBalance = shieldedState.ownedNotes
+        .filter(n => !n.spent)
+        .reduce((sum, n) => sum + Number(n.value || 0), 0);
+}
+
+async function upsertOwnedShieldedNote(note) {
+    const commitment = String(note?.commitment || '').toLowerCase();
+    if (!commitment) return;
+
+    const existing = shieldedState.ownedNotes.find((n) => String(n.commitment || '').toLowerCase() === commitment);
+    if (existing) {
+        Object.assign(existing, note);
+    } else {
+        shieldedState.ownedNotes.push(note);
+    }
+
+    recalculateShieldedBalance();
+    await saveNotesToStorage();
+    updateShieldedUI();
 }
 
 async function resolveShieldedCommitmentIndex(commitmentHex, preferredIndex = null) {
@@ -459,6 +485,7 @@ async function shieldLicn(amountLicn) {
     }
 
     showShieldedStatus('Generating ZK proof...', 'pending');
+    let broadcastedSignature = null;
 
     try {
         // Generate random blinding factor (32 bytes)
@@ -493,31 +520,53 @@ async function shieldLicn(amountLicn) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
+        const ownedNote = {
+            index: null,
+            value: amountSpores,
+            blinding: blindingHex,
+            serial: bytesToHex(serial),
+            commitment,
+            pendingIndex: true,
+            pendingConfirmation: true,
+            spent: false,
+            createdAt: Date.now(),
+        };
+
         const result = await submitShieldTransaction({
             amountSpores,
             commitment,
             proof,
             commitmentIndex: expectedCommitmentIndex,
+            onSubmitted: async (signature) => {
+                broadcastedSignature = signature;
+                await upsertOwnedShieldedNote({
+                    ...ownedNote,
+                    signature,
+                    broadcastAt: Date.now(),
+                });
+            },
         });
 
         if (result && result.success) {
-            const commitmentIndex = await resolveShieldedCommitmentIndex(
-                commitment,
-                result.commitment_index ?? expectedCommitmentIndex,
-            );
-            // Add to our owned notes
-            shieldedState.ownedNotes.push({
+            let commitmentIndex = null;
+            try {
+                commitmentIndex = await resolveShieldedCommitmentIndex(
+                    commitment,
+                    result.commitment_index ?? expectedCommitmentIndex,
+                );
+            } catch (indexError) {
+                console.warn('Shielded commitment index not resolved yet:', indexError?.message || indexError);
+            }
+
+            await upsertOwnedShieldedNote({
+                ...ownedNote,
+                signature: result.signature || broadcastedSignature,
                 index: Number.isFinite(commitmentIndex) ? commitmentIndex : null,
-                value: amountSpores,
-                blinding: blindingHex,
-                serial: bytesToHex(serial),
-                commitment: commitment,
                 pendingIndex: !Number.isFinite(commitmentIndex),
-                spent: false,
+                pendingConfirmation: false,
+                confirmed: true,
+                confirmedAt: Date.now(),
             });
-            shieldedState.shieldedBalance += amountSpores;
-            await saveNotesToStorage();
-            updateShieldedUI();
 
             showShieldedStatus('', 'idle');
             showToast(`Shielded ${amountLicn} LICN successfully!`);
@@ -528,7 +577,13 @@ async function shieldLicn(amountLicn) {
         }
     } catch (err) {
         showShieldedStatus('', 'idle');
-        showToast('Shield failed: ' + err.message);
+        if (typeof broadcastedSignature === 'string' && broadcastedSignature.length > 0) {
+            showToast('Shield transaction submitted; syncing confirmation...');
+            setTimeout(() => syncShieldedState(), 1500);
+            closeModal('shieldModal');
+        } else {
+            showToast('Shield failed: ' + err.message);
+        }
     }
 }
 
@@ -1042,22 +1097,27 @@ function renderNoteList() {
         return;
     }
 
-    container.innerHTML = unspent.map((note, i) => `
-        <div class="shield-note-item">
-            <div>
-                <div class="shield-note-amount">
-                    <i class="fas fa-lock"></i>
-                    ${(note.value / SPORES_PER_LICN).toFixed(4)} LICN
+    container.innerHTML = unspent.map((note, i) => {
+        const pending = note.pendingConfirmation || note.pendingIndex;
+        const badgeIcon = pending ? 'fas fa-clock' : 'fas fa-check-circle';
+        const badgeText = note.pendingConfirmation ? 'Submitted' : (note.pendingIndex ? 'Indexing' : 'Unspent');
+        return `
+            <div class="shield-note-item">
+                <div>
+                    <div class="shield-note-amount">
+                        <i class="fas fa-lock"></i>
+                        ${(Number(note.value || 0) / SPORES_PER_LICN).toFixed(4)} LICN
+                    </div>
+                    <div class="shield-note-meta">
+                        Note #${note.index ?? '?'} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
+                    </div>
                 </div>
-                <div class="shield-note-meta">
-                    Note #${note.index ?? '?'} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
-                </div>
+                <span class="shield-note-badge">
+                    <i class="${badgeIcon}"></i> ${badgeText}
+                </span>
             </div>
-            <span class="shield-note-badge">
-                <i class="fas fa-check-circle"></i> Unspent
-            </span>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function showShieldedStatus(message, state) {
