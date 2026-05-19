@@ -52,6 +52,11 @@ function read(relativePath) {
     return fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
 }
 
+function readOptional(relativePath) {
+    const absolutePath = path.join(ROOT, relativePath);
+    return fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf8') : null;
+}
+
 function readJson(relativePath) {
     return JSON.parse(read(relativePath));
 }
@@ -91,10 +96,19 @@ function countLiteral(source, needle) {
 
 function main() {
     const docs = Object.fromEntries(
-        Object.entries(FILES).map(([key, relativePath]) => [key, read(relativePath)])
+        Object.entries(FILES).map(([key, relativePath]) => [key, readOptional(relativePath)])
     );
     const expectedContracts = readJson(FILES.expectedContracts).contracts;
     const packageJson = readJson(FILES.packageJson);
+
+    function testWhenPresent(keys, name, fn) {
+        const missing = keys.filter((key) => docs[key] === null);
+        if (missing.length > 0) {
+            process.stdout.write(`  SKIP ${name}: private docs absent (${missing.join(', ')})\n`);
+            return;
+        }
+        test(name, fn);
+    }
 
     process.stdout.write('\nNeo Developer Docs QA\n\n');
 
@@ -129,12 +143,15 @@ function main() {
             FILES.searchIndex,
             FILES.testsReadme,
         ].forEach((relativePath) => {
-            const source = read(relativePath);
+            const source = readOptional(relativePath);
+            if (source === null) {
+                return;
+            }
             STALE_ACTIVE_PATTERNS.forEach((needle) => assertNotIncludes(source, needle, relativePath));
         });
     });
 
-    test('canonical Neo developer guide covers route, reserves, DEX, rewards, watchtower, and SDK examples', () => {
+    testWhenPresent(['developerGuide'], 'canonical Neo developer guide covers route, reserves, DEX, rewards, watchtower, and SDK examples', () => {
         assertAllIncludes(docs.developerGuide, [
             'getBridgeRouteRestrictionStatus',
             'getWgasStats',
@@ -175,29 +192,50 @@ function main() {
         ], FILES.searchIndex);
     });
 
-    test('RPC portal and canonical RPC docs list Neo route, reserve, rewards, and DEX methods', () => {
-        [
-            [docs.rpcPortal, FILES.rpcPortal],
-            [docs.rpcMarkdown, FILES.rpcMarkdown],
-        ].forEach(([source, label]) => {
-            assertAllIncludes(source, [
-                'getBridgeRouteRestrictionStatus',
-                'getWneoStats',
-                'getWgasStats',
-                'getNeoGasRewardsStats',
-                'getNeoGasRewardsPosition',
-                'getNeoZkProofServiceStatus',
-                'verifyNeoReserveLiabilityProof',
-                'neox/gas',
-                'neox/neo',
-                'wNEO/lUSD',
-                'wNEO/LICN',
-                'wGAS/lUSD',
-                'wGAS/LICN',
-            ], label);
-        });
+    test('RPC portal lists Neo route, reserve, rewards, and DEX methods', () => {
+        assertAllIncludes(docs.rpcPortal, [
+            'getBridgeRouteRestrictionStatus',
+            'getWneoStats',
+            'getWgasStats',
+            'getNeoGasRewardsStats',
+            'getNeoGasRewardsPosition',
+            'getNeoZkProofServiceStatus',
+            'verifyNeoReserveLiabilityProof',
+            'neox/gas',
+            'neox/neo',
+            'wNEO/lUSD',
+            'wNEO/LICN',
+            'wGAS/lUSD',
+            'wGAS/LICN',
+            'pair/pool ID',
+            '<code>8</code>',
+            '<code>9</code>',
+            '<code>10</code>',
+            '<code>11</code>',
+            'reserve_ratio',
+            'last_attestation_slot',
+            'dex_rewards.configure_lp_campaign',
+        ], FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'v0.5.48', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
+    });
+
+    testWhenPresent(['rpcMarkdown'], 'canonical RPC docs list Neo route, reserve, rewards, and DEX methods', () => {
+        assertAllIncludes(docs.rpcMarkdown, [
+            'getBridgeRouteRestrictionStatus',
+            'getWneoStats',
+            'getWgasStats',
+            'getNeoGasRewardsStats',
+            'getNeoGasRewardsPosition',
+            'getNeoZkProofServiceStatus',
+            'verifyNeoReserveLiabilityProof',
+            'neox/gas',
+            'neox/neo',
+            'wNEO/lUSD',
+            'wNEO/LICN',
+            'wGAS/lUSD',
+            'wGAS/LICN',
+        ], FILES.rpcMarkdown);
     });
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
@@ -210,6 +248,12 @@ function main() {
             'lichen symbol lookup WNEO',
             'lichen symbol lookup WGAS',
             'lichen symbol lookup NEOGASRWD',
+            'neo-rpc-reads',
+            'getWgasStats',
+            'getWneoStats',
+            'getNeoGasRewardsStats',
+            'getNeoGasRewardsPosition',
+            'Reserve and rewards accounting are',
             'zk-prove reserve-liability',
             'zk-prove verify-reserve-liability',
         ], FILES.cliPortal);
@@ -251,7 +295,7 @@ function main() {
         ], FILES.contractsPortal);
     });
 
-    test('SDK docs expose Neo route constants and rewards helpers', () => {
+    testWhenPresent(['jsSdkMarkdown', 'pythonSdkMarkdown', 'rustSdkMarkdown'], 'canonical SDK docs expose Neo route constants and rewards helpers', () => {
         assertAllIncludes(docs.jsSdkMarkdown, [
             'getNeoGasRewardsStats',
             'getNeoGasRewardsPosition',
@@ -276,12 +320,15 @@ function main() {
             'get_neo_zk_proof_service_status',
             'verify_neo_reserve_liability_proof',
         ], FILES.rustSdkMarkdown);
+    });
+
+    test('SDK portal docs expose Neo route constants and rewards helpers', () => {
         assertAllIncludes(docs.jsSdkPortal, ['getNeoGasRewardsStats', 'BRIDGE_CHAINS.NEOX', 'verifyNeoReserveLiabilityProof'], FILES.jsSdkPortal);
         assertAllIncludes(docs.pythonSdkPortal, ['get_neo_gas_rewards_stats', 'BRIDGE_CHAIN_NEOX', 'verify_neo_reserve_liability_proof'], FILES.pythonSdkPortal);
         assertAllIncludes(docs.rustSdkPortal, ['get_neo_gas_rewards_stats', 'BridgeChain::NeoX', 'verify_neo_reserve_liability_proof'], FILES.rustSdkPortal);
     });
 
-    test('wrapped asset and custody docs cover wBNB, wGAS, wNEO, route env, and 31-contract catalog', () => {
+    testWhenPresent(['wrappedAssets', 'custodyDeployment'], 'wrapped asset and custody docs cover wBNB, wGAS, wNEO, route env, and 31-contract catalog', () => {
         assertAllIncludes(docs.wrappedAssets, [
             'wBNB',
             'wGAS',
@@ -304,7 +351,7 @@ function main() {
         ], FILES.custodyDeployment);
     });
 
-    test('operator deployment docs link Neo developer guide and public gates', () => {
+    testWhenPresent(['productionDeployment'], 'operator deployment docs link Neo developer guide and public gates', () => {
         assertAllIncludes(docs.productionDeployment, [
             'NEO_DEVELOPER_INTEGRATION.md',
             'NEO_PUBLIC_BETA_GATE_TEMPLATE.json',

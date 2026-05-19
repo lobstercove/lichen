@@ -26,7 +26,7 @@
     "prepare-wallet-extension-release": "npm run validate-wallet-extension-release && npm run package-wallet-extension"
   },
   "dependencies": {
-    "ws": "^8.19.0"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@noble/post-quantum": "^0.6.0",

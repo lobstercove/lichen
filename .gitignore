@@ -2,9 +2,9 @@
 # Lichen — Public Open-Source Repository
 # ============================================================
 # This .gitignore is tuned for a PUBLIC repo.
-# Public code, docs, deployment manifests, infra configs, and frontend sources
-# are tracked here. Only machine-local state, credentials, and explicitly
-# private operator material stay ignored.
+# Public code, frontend sources, and public templates are tracked here.
+# Machine-local state, credentials, private operator docs, private deployment
+# manifests, and private infra configs stay ignored/local.
 # ============================================================
 
 # ── Rust build artifacts ────────────────────────────────────
@@ -141,6 +141,7 @@ contracts/*/target/rls/
 
 # ── Internal-only dev docs ─────────────────────────────────
 docs/
+infra/
 internal-docs/
 FIX_PLAN.md
 FIX_PLAN_V2.md
@@ -181,7 +182,7 @@ programs/deploy-services.sh
 # Test files across all frontends
 **/*.test.js
 
-# Public frontend, infra, docs, tooling, and app sources are tracked.
+# Public frontend, tooling, and app sources are tracked.
 # Keep only explicitly private operator material and machine-local artifacts
 # in ignored paths.
 EU/
