@@ -79,6 +79,48 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.57 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.57</span>
+                    <span class="changelog-date">May 19, 2026</span>
+                </div>
+                <h3 class="changelog-title">Neo X Custody Parity and Shielded Privacy Reads</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li><strong>Shielded privacy index</strong> &mdash; explorer privacy pages now read shield,
+                            unshield, and private-transfer activity from a dedicated shielded transaction index.</li>
+                        <li><strong>Neo X deposit surface</strong> &mdash; wallet and extension deposit flows expose
+                            both GAS and whole-lot NEO when the custody route is configured.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-arrow-up" style="color: var(--accent)"></i> Improvements</h4>
+                    <ul>
+                        <li><strong>Clean-slate deployment parity</strong> &mdash; the runbook now distributes custody
+                            route configuration to every public RPC host and verifies Neo X route keys before joiners
+                            are considered ready.</li>
+                        <li><strong>Agent validator release path</strong> &mdash; signed release instructions keep the
+                            same encrypted validator identity across restart and upgrade by reusing the same state path
+                            and <code>LICHEN_KEYPAIR_PASSWORD</code>.</li>
+                        <li><strong>SDK publishing</strong> &mdash; Rust and JavaScript SDK packages expose the current
+                            Neo X route, rewards, and reserve/liability proof helpers against the latest core release.</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Shield note persistence</strong> &mdash; wallet shield submissions persist the
+                            owned note before waiting for confirmation, so a later confirmation failure cannot hide the
+                            note from the local wallet.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.48 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

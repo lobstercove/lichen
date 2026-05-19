@@ -1,6 +1,6 @@
 {
   "name": "@lobstercove/lichen-sdk",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
   "type": "module",
   "main": "dist/index.js",

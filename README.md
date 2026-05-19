@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Mu
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-00C9DB.svg)](https://www.rust-lang.org)
 
-**Current release:** signed `v0.5.55` with full Neo X GAS/NEO custody routing, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, configured-seed/cached-peer separation for fresh external validator joins, learned-peer endpoint identity rotation, stale-cluster restart recovery, durable consensus WAL proposal recovery, Tendermint locked-value reproposal validation, native shield proof witness preservation, and fail-closed public activation gates built on the stable `v0.5.37` base.
+**Current release:** signed `v0.5.57` with full Neo X GAS/NEO custody routing, wNEO/wGAS contracts, Neo GAS rewards vault, reserve/liability proof services, agent/compute policy gates, wallet/DEX/RPC/SDK surfaces, DEX chart precision for Neo pairs, independent validator joiner P2P admission, stale-restart recovery, native shield proof witness preservation, indexed shielded privacy reads, and fail-closed public activation gates built on the stable `v0.5.37` base.
 
 **Website:** https://lichen.network  
 **Documentation:** https://developers.lichen.network  
@@ -49,13 +49,12 @@ lichen/
 ├── explorer/    # Block explorer
 ├── dex/         # SporeSwap decentralized exchange
 ├── developers/  # Developer portal & documentation hub
-├── deploy/      # Systemd services, Caddy configs
-├── infra/       # Docker Compose, Prometheus, Grafana
+├── deploy/      # Public service and Caddy templates
 ├── scripts/     # Build, local validation, and helper scripts
 └── tests/       # Local-private E2E harness, intentionally not shipped in the public clone
 ```
 
-The public repository does not ship the local-private `tests/` harness. Tracked automation now skips those checks when the private bundle is absent, while local operator workflows can still use the same paths when that harness is present.
+The public repository does not ship local-private `docs/`, `infra/`, or `tests/` operator material. Tracked automation skips private harness checks when the private bundle is absent, while local operator workflows can still use the same paths when those bundles are present.
 
 Tracked CI-facing static and integration QA checks now live under `scripts/qa/`.
 
@@ -75,6 +74,13 @@ Four binaries ship from this repo:
 - Browser token, registry, and contract-resolution metadata is verified from release-signed manifests served by `getSignedMetadataManifest`; custom RPC overrides remain transport-only for generic reads.
 - Local helper launchers such as `run-validator.sh` and `scripts/run-custody.sh` fail closed unless `LICHEN_LOCAL_DEV=1` is set explicitly. Production operator automation is kept outside the public repo.
 - Supply-chain policy in CI includes all-lockfile `cargo audit`, `cargo deny`, reproducible npm lockfile installs plus production `npm audit`, Python SDK dependency consistency checks, Rust CycloneDX SBOM artifact generation, OpenSSF Scorecard reporting, and GitHub artifact provenance attestations for release bundles.
+
+## Deployment Invariants
+
+- Clean-slate testnet and mainnet deployments never copy RocksDB state. The genesis host creates slot 0; every other validator starts from empty chain state and syncs from seed peers.
+- All public RPC hosts run local custody with `CUSTODY_URL` pointed at `127.0.0.1`. For Neo X to work everywhere, every host must receive the same `/etc/lichen/custody-env` on testnet or `/etc/lichen/custody-env-mainnet` on mainnet, including `CUSTODY_NEOX_RPC_URL`, `CUSTODY_NEOX_CHAIN_ID`, and `CUSTODY_NEOX_NEO_TOKEN_ADDR`.
+- `keypairs/deployer.json` is machine-local and ignored. If an old root-owned copy exists on a VPS, deployment sync must exclude it rather than trying to overwrite it; the canonical deployer material comes from the approved operator secret path.
+- Neo X NEO deposits and withdrawals are enabled only when the configured source token route exists in custody env. GAS and NEO route config must be treated as custody configuration, not wallet-only UI state.
 
 ---
 
@@ -127,9 +133,9 @@ https://github.com/lobstercove/lichen/releases/download/<tag>/lichen-validator-<
 ```
 
 Examples:
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.55/lichen-validator-linux-x86_64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.55/lichen-validator-darwin-aarch64.tar.gz`
-- `https://github.com/lobstercove/lichen/releases/download/v0.5.55/lichen-validator-windows-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.57/lichen-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.57/lichen-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/lichen/releases/download/v0.5.57/lichen-validator-windows-x86_64.tar.gz`
 
 Linux x86_64:
 

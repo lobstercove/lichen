@@ -216,7 +216,7 @@ function main() {
             'last_attestation_slot',
             'dex_rewards.configure_lp_campaign',
         ], FILES.rpcPortal);
-        assertIncludes(docs.rpcPortal, 'v0.5.48', FILES.rpcPortal);
+        assertIncludes(docs.rpcPortal, 'v0.5.57', FILES.rpcPortal);
         assertIncludes(docs.rpcPortal, 'neo-x-route-rewards', FILES.rpcPortal);
     });
 
@@ -240,7 +240,7 @@ function main() {
 
     test('CLI docs expose route status, governed route payloads, and Neo symbol lookups', () => {
         assertAllIncludes(docs.cliPortal, [
-            'v0.5.48',
+            'v0.5.57',
             'lichen restriction status bridge-route neox gas',
             'lichen restriction status bridge-route neox neo',
             'lichen restriction build pause-bridge-route neox gas',

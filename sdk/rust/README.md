@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lichen-client-sdk = "0.1.3"
+lichen-client-sdk = "0.1.4"
 tokio = { version = "1.35", features = ["full"] }
 ```
 

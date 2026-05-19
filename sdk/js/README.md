@@ -43,6 +43,7 @@ See the [JavaScript SDK reference](https://developers.lichen.network/sdk-js.html
 - ✅ Transaction builder
 - ✅ TypeScript types
 - ✅ Address and PQ public-key utilities
+- ✅ Neo X route, rewards, and reserve/liability proof helpers
 - ✅ Full blockchain interaction
 
 ## License
