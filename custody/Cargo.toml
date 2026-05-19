@@ -1,6 +1,6 @@
 [package]
 name = "lichen-custody"
-version = "0.5.54"
+version = "0.5.55"
 edition = "2021"
 authors = ["Lichen Labs <hello@lichen.network>"]
 description = "Lichen custody service"
