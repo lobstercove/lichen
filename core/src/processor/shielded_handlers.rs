@@ -58,10 +58,7 @@ fn parse_shield_deposit_payload(
     Ok((data[41..].to_vec(), None))
 }
 
-fn validate_shielded_note_payload(
-    payload: &[u8],
-    commitment: &[u8; 32],
-) -> Result<(), String> {
+fn validate_shielded_note_payload(payload: &[u8], commitment: &[u8; 32]) -> Result<(), String> {
     let json: serde_json::Value = serde_json::from_slice(payload)
         .map_err(|e| format!("Shield: encrypted note payload is not valid JSON: {}", e))?;
     let obj = json
@@ -83,8 +80,8 @@ fn validate_shielded_note_payload(
         .get("ephemeral_pk")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Shield: ephemeral_pk is required".to_string())?;
-    let ephemeral_bytes = hex::decode(ephemeral_pk)
-        .map_err(|e| format!("Shield: ephemeral_pk is not hex: {}", e))?;
+    let ephemeral_bytes =
+        hex::decode(ephemeral_pk).map_err(|e| format!("Shield: ephemeral_pk is not hex: {}", e))?;
     if ephemeral_bytes.len() != 32 {
         return Err("Shield: ephemeral_pk must be 32 bytes".to_string());
     }

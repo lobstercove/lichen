@@ -733,14 +733,15 @@ pub(crate) async fn handle_compute_shield_nullifier(
         message: "Invalid params: expected [{ serial, spending_key }]".to_string(),
     })?;
 
-    let serial = parse_hex_32(
-        obj.get("serial")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Invalid params: serial (hex) is required".to_string(),
-            })?,
-    )?;
+    let serial =
+        parse_hex_32(
+            obj.get("serial")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Invalid params: serial (hex) is required".to_string(),
+                })?,
+        )?;
     let spending_key = parse_hex_32(
         obj.get("spending_key")
             .and_then(|v| v.as_str())

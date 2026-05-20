@@ -43,11 +43,7 @@ impl StateStore {
     }
 
     /// Store the encrypted note payload associated with a commitment index.
-    pub fn insert_shielded_note_payload(
-        &self,
-        index: u64,
-        payload: &[u8],
-    ) -> Result<(), String> {
+    pub fn insert_shielded_note_payload(&self, index: u64, payload: &[u8]) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)

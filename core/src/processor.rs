@@ -5710,7 +5710,10 @@ mod tests {
         let stored_commitment = state.get_shielded_commitment(0).unwrap();
         assert_eq!(stored_commitment, Some(commitment));
         let stored_note_payload = state.get_shielded_note_payload(0).unwrap();
-        assert_eq!(stored_note_payload.as_deref(), Some(note_payload.as_slice()));
+        assert_eq!(
+            stored_note_payload.as_deref(),
+            Some(note_payload.as_slice())
+        );
 
         // Merkle root should be updated to reflect the single leaf
         let mut expected_tree = crate::zk::MerkleTree::new();
