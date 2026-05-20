@@ -748,6 +748,18 @@ function hexToBytesLocal(hex) {
   return bytes;
 }
 
+function hexToBytesLocalAny(hex) {
+  const normalized = String(hex || '').replace(/^0x/i, '');
+  if (!/^[0-9a-fA-F]*$/.test(normalized) || normalized.length % 2 !== 0) {
+    throw new Error('Invalid hex bytes');
+  }
+  const bytes = new Uint8Array(normalized.length / 2);
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes[index / 2] = parseInt(normalized.slice(index, index + 2), 16);
+  }
+  return bytes;
+}
+
 function zeroBytesLocal(bytes) {
   if (bytes instanceof Uint8Array) {
     bytes.fill(0);
@@ -1027,7 +1039,20 @@ async function loadAssets() {
   }
 }
 
-async function loadActivity() {
+let popupActivityBeforeSlot = null;
+let popupActivityHasMore = true;
+const POPUP_ACTIVITY_LIMIT = 12;
+
+function getPopupActivityCursor(result, txs, previousCursor) {
+  const rpcNextBeforeSlot = Number(result?.next_before_slot);
+  if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
+  const last = txs[txs.length - 1] || {};
+  const lastSlot = Number(last.slot || last.block_height || last.block);
+  if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== previousCursor) return lastSlot;
+  return null;
+}
+
+async function loadActivity(reset = true) {
   const wallet = getActiveWallet();
   const activityList = document.getElementById('activityList');
   if (!wallet || !activityList) return;
@@ -1035,21 +1060,39 @@ async function loadActivity() {
   const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
   const rpc = new LichenRPC(endpoint);
 
-  activityList.innerHTML = '<div class="popup-status">Loading activity...</div>';
+  if (reset) {
+    popupActivityBeforeSlot = null;
+    popupActivityHasMore = true;
+    activityList.innerHTML = '<div class="popup-status">Loading activity...</div>';
+  } else {
+    const previousButton = activityList.querySelector('.popup-activity-load-more');
+    if (previousButton) previousButton.remove();
+  }
 
   try {
-    const result = await rpc.getTransactionsByAddress(wallet.address, {
-      limit: 12
-    });
+    const requestBeforeSlot = popupActivityBeforeSlot;
+    const opts = { limit: POPUP_ACTIVITY_LIMIT };
+    if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
+    const result = await rpc.getTransactionsByAddress(wallet.address, opts);
 
     const txs = result?.transactions || (Array.isArray(result) ? result : []);
+    const rpcHasMore = typeof result?.has_more === 'boolean' ? result.has_more : txs.length >= POPUP_ACTIVITY_LIMIT;
+    if (rpcHasMore) {
+      const nextCursor = getPopupActivityCursor(result, txs, requestBeforeSlot);
+      popupActivityHasMore = !!nextCursor;
+      popupActivityBeforeSlot = nextCursor;
+    } else {
+      popupActivityHasMore = false;
+      popupActivityBeforeSlot = null;
+    }
 
-    if (!txs.length) {
+    if (!txs.length && reset) {
       activityList.innerHTML = '<div class="popup-status">No recent activity</div>';
       return;
     }
+    if (!txs.length) return;
 
-    activityList.innerHTML = txs.map((tx) => {
+    const html = txs.map((tx) => {
       const sig = tx.signature || tx.hash || tx.txid || 'unknown';
       const shortSig = `${String(sig).slice(0, 8)}...${String(sig).slice(-4)}`;
       const isSent = (tx.from === wallet.address);
@@ -1067,11 +1110,15 @@ async function loadActivity() {
         'MossStakeTransfer': 'Transfer (stLICN)',
         'RegisterEvmAddress': 'EVM Registration',
         'Contract': 'Contract Call',
+        'ContractCall': 'Contract Call',
         'DeployContract': 'Deploy Contract',
         'SetContractABI': 'Set Contract ABI',
         'FaucetAirdrop': 'Faucet Airdrop',
         'RegisterSymbol': 'Register Symbol',
         'CreateAccount': 'Create Account',
+        'Shield': 'Shielded',
+        'Unshield': 'Unshielded',
+        'ShieldedTransfer': 'Private Transfer',
         'CreateCollection': 'Created Collection',
         'MintNFT': 'Minted NFT',
         'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
@@ -1090,14 +1137,20 @@ async function loadActivity() {
       let color = isSent ? '#00C9DB' : '#4ade80';
       let sign = isSent ? '-' : '+';
 
-      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
+      if (tx.type === 'Shield') {
+        icon = 'fa-shield-alt'; color = '#a78bfa'; sign = '-';
+      } else if (tx.type === 'Unshield') {
+        icon = 'fa-unlock'; color = '#4ade80'; sign = '+';
+      } else if (tx.type === 'ShieldedTransfer') {
+        icon = 'fa-user-shield'; color = '#a78bfa'; sign = '';
+      } else if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
         || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake'
         || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
         if (tx.type === 'MossStakeDeposit' || tx.type === 'Stake') sign = '-';
       } else if (tx.type === 'RegisterEvmAddress') {
         icon = 'fa-link'; color = '#94a3b8';
-      } else if (tx.type === 'Contract' || tx.type === 'DeployContract' || tx.type === 'SetContractABI') {
+      } else if (tx.type === 'Contract' || tx.type === 'ContractCall' || tx.type === 'DeployContract' || tx.type === 'SetContractABI') {
         icon = 'fa-file-code'; color = '#f59e0b';
       } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint' || tx.type === 'GrantRepay') {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
@@ -1105,14 +1158,16 @@ async function loadActivity() {
         icon = 'fa-parachute-box'; color = '#60a5fa';
       }
 
-      const address = isSent ? (tx.to || '') : (tx.from || '');
+      const address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
+        ? 'Shielded Pool'
+        : (isSent ? (tx.to || '') : (tx.from || ''));
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
 
       // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
       const isFeeOnly = tx.type === 'RegisterEvmAddress' || tx.type === 'CreateAccount'
         || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
-        || (tx.type === 'Contract' && isZeroAmount);
+        || ((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount);
       const feeSpores = tx.fee_spores || tx.fee || 0;
       const feeAmt = (feeSpores / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} LICN`;
@@ -1143,8 +1198,21 @@ async function loadActivity() {
         </div>
       `;
     }).join('');
+
+    if (reset) activityList.innerHTML = html;
+    else activityList.insertAdjacentHTML('beforeend', html);
+
+    if (popupActivityHasMore) {
+      const loadMore = document.createElement('button');
+      loadMore.type = 'button';
+      loadMore.className = 'popup-status popup-activity-load-more';
+      loadMore.style.cursor = 'pointer';
+      loadMore.textContent = 'Load More';
+      loadMore.addEventListener('click', () => loadActivity(false));
+      activityList.appendChild(loadMore);
+    }
   } catch (error) {
-    activityList.innerHTML = '<div class="popup-status">Failed to load activity</div>';
+    if (reset) activityList.innerHTML = '<div class="popup-status">Failed to load activity</div>';
   }
 }
 
@@ -2051,6 +2119,39 @@ let shieldedPopupState = {
   ownedNotes: [],
 };
 
+async function derivePopupShieldedStorageKey() {
+  if (!shieldedPopupState.spendingKey || !shieldedPopupState.viewingKey) return null;
+  const domain = new TextEncoder().encode('lichen-extension-shielded-storage-v1');
+  const material = new Uint8Array(
+    shieldedPopupState.spendingKey.length + shieldedPopupState.viewingKey.length + domain.length
+  );
+  material.set(shieldedPopupState.spendingKey, 0);
+  material.set(shieldedPopupState.viewingKey, shieldedPopupState.spendingKey.length);
+  material.set(domain, shieldedPopupState.spendingKey.length + shieldedPopupState.viewingKey.length);
+  const digest = await crypto.subtle.digest('SHA-256', material);
+  zeroBytesLocal(material);
+  return crypto.subtle.importKey('raw', new Uint8Array(digest), { name: 'AES-GCM' }, false, ['decrypt']);
+}
+
+async function loadPopupShieldedNotes(wallet) {
+  try {
+    const payload = wallet?.shieldedNotes;
+    if (!payload) return;
+    if (payload.version !== 1 || !payload.iv || !payload.ciphertext) return;
+    const key = await derivePopupShieldedStorageKey();
+    if (!key) return;
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: hexToBytesLocalAny(payload.iv) },
+      key,
+      hexToBytesLocalAny(payload.ciphertext),
+    );
+    const parsed = JSON.parse(new TextDecoder().decode(decrypted));
+    shieldedPopupState.ownedNotes = Array.isArray(parsed.notes) ? parsed.notes : [];
+  } catch (error) {
+    console.warn('Failed to load shielded popup notes:', error?.message || error);
+  }
+}
+
 function resetShieldedPopupState() {
   shieldedPopupState = {
     initialized: false,
@@ -2134,6 +2235,7 @@ async function initializeShieldedPopupForActiveWallet() {
       return false;
     }
     await initShieldedPopup(shieldSeed);
+    await loadPopupShieldedNotes(wallet);
     setStatus('Shielded privacy ready');
     return true;
   } catch (error) {
@@ -2152,6 +2254,7 @@ async function loadShieldPanel() {
   if (!shieldedPopupState.initialized) {
     await initializeShieldedPopupForActiveWallet();
   }
+  await loadPopupShieldedNotes(wallet);
 
   const addrEl = document.getElementById('extShieldedAddress');
   if (addrEl) {

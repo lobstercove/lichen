@@ -10,7 +10,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use base64::{engine::general_purpose, Engine as _};
 use lichen_core::zk::{
-    circuits::shield::ShieldCircuit, commitment_hash, MerkleTree, Prover, ShieldedPoolState,
+    circuits::shield::ShieldCircuit, commitment_hash, nullifier_hash, MerkleTree, Prover,
+    ShieldedPoolState,
 };
 use lichen_core::{
     Account, Block, Hash, Instruction, Keypair, Message, StateStore, Transaction, SYSTEM_PROGRAM_ID,
@@ -560,6 +561,86 @@ async fn test_rpc_get_shielded_commitments_all() {
         comms[0]["commitment"].as_str().unwrap(),
         hex::encode(test_commitment(0))
     );
+}
+
+#[tokio::test]
+async fn test_rpc_get_shielded_commitments_returns_encrypted_note_payload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let commitment = test_commitment(0);
+    let encrypted_note = format!("a1:{}:{}", "00".repeat(12), "11".repeat(16));
+    let ephemeral_pk = hex::encode([0x22u8; 32]);
+    let payload = json!({
+        "commitment": hex::encode(commitment),
+        "encrypted_note": encrypted_note.clone(),
+        "ephemeral_pk": ephemeral_pk.clone(),
+    })
+    .to_string();
+
+    state
+        .insert_shielded_commitment(0, &commitment)
+        .expect("insert commitment");
+    state
+        .insert_shielded_note_payload(0, payload.as_bytes())
+        .expect("insert encrypted note payload");
+
+    let mut tree = MerkleTree::new();
+    tree.insert(commitment);
+    state
+        .put_shielded_pool_state(&ShieldedPoolState {
+            merkle_root: tree.root(),
+            commitment_count: 1,
+            total_shielded: 1_000_000_000,
+            nullifier_count: 0,
+            shield_count: 1,
+            unshield_count: 0,
+            transfer_count: 0,
+        })
+        .expect("put pool state");
+    put_ready_tip(&state, 1);
+
+    let _ = Box::leak(Box::new(dir));
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let resp = rpc_call(&app, "getShieldedCommitments").await.unwrap();
+    let entry = &resp["result"]["commitments"].as_array().unwrap()[0];
+    assert_eq!(entry["commitment"], hex::encode(commitment));
+    assert_eq!(entry["encrypted_note"], encrypted_note);
+    assert_eq!(entry["ephemeral_pk"], ephemeral_pk);
+}
+
+#[tokio::test]
+async fn test_rpc_compute_shield_nullifier_matches_core_poseidon2() {
+    let app = create_empty_app();
+    let serial = [0x11u8; 32];
+    let spending_key = [0x22u8; 32];
+    let expected = nullifier_hash(&serial, &spending_key);
+
+    let resp = rpc_call_with_params(
+        &app,
+        "computeShieldNullifier",
+        json!([{
+            "serial": hex::encode(serial),
+            "spending_key": hex::encode(spending_key),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["result"]["serial"], hex::encode(serial));
+    assert_eq!(resp["result"]["nullifier"], hex::encode(expected));
 }
 
 #[tokio::test]

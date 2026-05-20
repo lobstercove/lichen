@@ -422,6 +422,20 @@ test('E-9.3 full.js creates Load More button via DOM API', () => {
     'createElement not used for Load More button');
 });
 
+test('E-9.4 full.js activity pagination uses RPC cursor instead of unsupported offset', () => {
+  assert.ok(fullSrc.includes('opts.before_slot = requestBeforeSlot'), 'full page should request older activity with before_slot');
+  assert.ok(fullSrc.includes('result?.next_before_slot'), 'full page should consume RPC next_before_slot');
+  assert.ok(fullSrc.includes('result?.has_more'), 'full page should consume RPC has_more');
+  assert.ok(!fullSrc.includes('offset: _activityPage * ACTIVITY_PER_PAGE'), 'full page should not send unsupported offset pagination');
+});
+
+test('E-9.5 popup activity exposes cursor pagination', () => {
+  assert.ok(popupSrc.includes('POPUP_ACTIVITY_LIMIT'), 'popup should define an activity page size');
+  assert.ok(popupSrc.includes('opts.before_slot = requestBeforeSlot'), 'popup should request older activity with before_slot');
+  assert.ok(popupSrc.includes('popupActivityHasMore'), 'popup should track whether more activity exists');
+  assert.ok(popupSrc.includes("loadMore.addEventListener('click'"), 'popup Load More should use addEventListener');
+});
+
 // ── E-10: Trusted RPC split for critical extension flows ──
 console.log('\n── E-10: Trusted RPC Split For Critical Flows ──');
 
@@ -769,6 +783,18 @@ test('CC-9b extension shield panel uses signed native shielded submission', () =
   assert.ok(fullSrc.includes('Private transfer needs native encrypted note payload storage'), 'private transfer should remain explicitly unavailable until note payload storage is wired');
 });
 
+test('CC-9c extension shield deposits persist encrypted note payloads on-chain', () => {
+  assert.ok(fullSrc.includes('SHIELDED_NOTE_PAYLOAD_MAGIC_EXT'), 'extension shield data should include the encrypted-note envelope magic');
+  assert.ok(fullSrc.includes('encrypted_note: encryptedNote'), 'extension shield deposits should include encrypted_note payload');
+  assert.ok(fullSrc.includes('ephemeral_pk: ephemeralPk'), 'extension shield deposits should include ephemeral public key payload');
+  assert.ok(fullSrc.includes('syncExtensionShieldedNotesFromChain'), 'extension full page should rescan chain payloads to restore notes');
+  assert.ok(fullSrc.includes('entry?.encrypted_note || entry?.encryptedNote'), 'extension note recovery should accept snake_case and camelCase note payload fields');
+  assert.ok(!fullSrc.includes('if (Array.isArray(payload))'), 'extension shielded notes should not accept unencrypted local note arrays');
+  assert.ok(!popupSrc.includes('if (Array.isArray(payload))'), 'popup shielded notes should not accept unencrypted local note arrays');
+  assert.ok(fullSrc.includes("client.call('computeShieldNullifier'"), 'extension should use the core/RPC native nullifier helper');
+  assert.ok(fullSrc.includes("client.call('isNullifierSpent'"), 'extension should mark recovered notes spent from canonical nullifier state');
+});
+
 test('CC-10 popup shield panel uses password-gated shield initialization', () => {
   assert.ok(popupSrc.includes('initializeShieldedPopupForActiveWallet'), 'popup missing shield initialization flow');
   assert.ok(popupSrc.includes("securePasswordPrompt('Enter your wallet password to initialize shielded privacy.')"), 'popup shield init should prompt for the wallet password');
@@ -901,6 +927,28 @@ test('CC-23 extension applies numeric, base58, and hex input guards', () => {
     'full-page send recipient should be base58-guarded');
   assert.ok(fullHtmlSrc.includes('id="sendAmount"') && fullHtmlSrc.includes('data-wallet-numeric="true"'),
     'full-page send amount should be numeric-guarded');
+});
+
+test('CC-24 extension activity identifies shield and unshield transactions explicitly', () => {
+  assert.ok(popupSrc.includes("'Shield': 'Shielded'"), 'popup should label Shield activity');
+  assert.ok(popupSrc.includes("'Unshield': 'Unshielded'"), 'popup should label Unshield activity');
+  assert.ok(fullSrc.includes("'Shield': 'Shielded'"), 'full page should label Shield activity');
+  assert.ok(fullSrc.includes("'Unshield': 'Unshielded'"), 'full page should label Unshield activity');
+  assert.ok(popupSrc.includes("tx.type === 'Unshield'"), 'popup should special-case Unshield direction');
+  assert.ok(fullSrc.includes("tx.type === 'Unshield'"), 'full page should special-case Unshield direction');
+  assert.ok(popupSrc.includes("? 'Shielded Pool'"), 'popup should show shielded pool counterpart');
+  assert.ok(fullSrc.includes("? 'Shielded Pool'"), 'full page should show shielded pool counterpart');
+});
+
+test('CC-25 extension activity treats ContractCall as fee-only contract activity', () => {
+  assert.ok(popupSrc.includes("'ContractCall': 'Contract Call'"), 'popup should label ContractCall activity');
+  assert.ok(fullSrc.includes("'ContractCall': 'Contract Call'"), 'full page should label ContractCall activity');
+  assert.ok(popupSrc.includes("tx.type === 'Contract' || tx.type === 'ContractCall'"), 'popup should share contract icon handling');
+  assert.ok(fullSrc.includes("tx.type === 'Contract' || tx.type === 'ContractCall'"), 'full page should share contract icon handling');
+  assert.ok(popupSrc.includes("((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount)"),
+    'popup should show ContractCall fee when amount is zero');
+  assert.ok(fullSrc.includes("((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount)"),
+    'full page should show ContractCall fee when amount is zero');
 });
 
 // ============================================================================

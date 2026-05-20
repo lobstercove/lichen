@@ -2922,11 +2922,15 @@ async function loadActivity(reset = true) {
                     'MossStakeTransfer': 'Transfer (stLICN)',
                     'RegisterEvmAddress': 'EVM Registration',
                     'Contract': 'Contract Call',
+                    'ContractCall': 'Contract Call',
                     'DeployContract': 'Deploy Contract',
                     'SetContractABI': 'Set Contract ABI',
                     'FaucetAirdrop': 'Faucet Airdrop',
                     'RegisterSymbol': 'Register Symbol',
                     'CreateAccount': 'Create Account',
+                    'Shield': 'Shielded',
+                    'Unshield': 'Unshielded',
+                    'ShieldedTransfer': 'Private Transfer',
                     'CreateCollection': 'Created Collection',
                     'MintNFT': 'Minted NFT',
                     'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
@@ -2937,7 +2941,7 @@ async function loadActivity(reset = true) {
                 };
                 type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
                 // Enhance Contract Call labels with function name from RPC
-                if (tx.type === 'Contract' && tx.contract_function) {
+                if ((tx.type === 'Contract' || tx.type === 'ContractCall') && tx.contract_function) {
                     const fnMap = {
                         'register_identity': 'Register Identity',
                         'register_name': 'Name Registration',
@@ -2957,7 +2961,13 @@ async function loadActivity(reset = true) {
                 icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
                 color = isSent ? '#00C9DB' : '#4ade80';
                 // Special icons/colors for non-transfer types
-                if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
+                if (tx.type === 'Shield') {
+                    icon = 'fa-shield-alt'; color = '#a78bfa'; sign = '-';
+                } else if (tx.type === 'Unshield') {
+                    icon = 'fa-unlock'; color = '#4ade80'; sign = '+';
+                } else if (tx.type === 'ShieldedTransfer') {
+                    icon = 'fa-user-shield'; color = '#a78bfa'; sign = '';
+                } else if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
                     || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake'
                     || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
                     icon = 'fa-coins'; color = '#a78bfa';
@@ -2967,7 +2977,7 @@ async function loadActivity(reset = true) {
                     }
                 } else if (tx.type === 'RegisterEvmAddress') {
                     icon = 'fa-link'; color = '#94a3b8';
-                } else if (tx.type === 'Contract') {
+                } else if (tx.type === 'Contract' || tx.type === 'ContractCall') {
                     icon = 'fa-file-code'; color = '#f59e0b';
                 } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
                     icon = 'fa-gift'; color = '#4ade80'; sign = '+';
@@ -2978,7 +2988,9 @@ async function loadActivity(reset = true) {
                 } else if (tx.type === 'CreateAccount') {
                     icon = 'fa-user-plus'; color = '#94a3b8';
                 }
-                address = isSent ? (tx.to || '') : (tx.from || '');
+                address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
+                    ? 'Shielded Pool'
+                    : (isSent ? (tx.to || '') : (tx.from || ''));
                 const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
                 amount = fmtToken(amountVal / SPORES_PER_LICN);
                 sign = sign || (isSent ? '-' : '+');
@@ -2993,9 +3005,10 @@ async function loadActivity(reset = true) {
                 : '../explorer';
             const explorerLink = sig ? `${explorerBase}/transaction.html?sig=${encodeURIComponent(sig)}` : '#';
             const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
+                || tx.type === 'ContractCall'
                 || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
                 || tx.type === 'CreateAccount');
-            const isPaidContract = tx.type === 'Contract' && amount !== '0' && parseFloat(amount) > 0;
+            const isPaidContract = (tx.type === 'Contract' || tx.type === 'ContractCall') && amount !== '0' && parseFloat(amount) > 0;
             const feeSpores = tx.fee_spores || tx.fee || 0;
             const feeAmt = fmtToken(feeSpores / SPORES_PER_LICN);
             const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} LICN`;

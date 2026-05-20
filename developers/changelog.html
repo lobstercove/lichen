@@ -79,6 +79,28 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.5.59 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.5.59</span>
+                    <span class="changelog-date">May 20, 2026</span>
+                </div>
+                <h3 class="changelog-title">Durable Shielded Note Recovery</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: var(--warning)"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Recoverable shield notes</strong> &mdash; shield deposits now persist an encrypted
+                            note payload with the commitment so the owning wallet can rescan and restore spendable notes
+                            after a browser restart or local storage loss.</li>
+                        <li><strong>Native nullifier parity</strong> &mdash; wallet and extension note recovery now ask
+                            RPC to compute the same Poseidon2 nullifier used by consensus before checking spend status.</li>
+                        <li><strong>Encrypted wallet note storage</strong> &mdash; wallet and extension shielded notes
+                            remain encrypted locally and unreadable payloads are not overwritten by an empty balance.</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.5.58 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">

@@ -19,6 +19,7 @@
 //   isNullifierSpent           — args: [hex_hash]
 //   checkNullifier             — args: [hex_hash] (alias of isNullifierSpent)
 //   getShieldedCommitments     — args: [{from, limit}]
+//   computeShieldNullifier     — args: [{serial, spending_key}]
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use axum::{
@@ -97,6 +98,26 @@ fn api_not_found(msg: &str) -> Response {
         .into_response()
 }
 
+fn shielded_note_payload_fields(
+    state: &lichen_core::StateStore,
+    index: u64,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(payload) = state.get_shielded_note_payload(index)? else {
+        return Ok((None, None));
+    };
+    let parsed: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|e| format!("Invalid shielded note payload at index {}: {}", index, e))?;
+    let encrypted_note = parsed
+        .get("encrypted_note")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let ephemeral_pk = parsed
+        .get("ephemeral_pk")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    Ok((encrypted_note, ephemeral_pk))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Structures
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +173,10 @@ struct CommitmentsResponse {
 struct CommitmentEntry {
     index: u64,
     commitment: String,
+    #[serde(rename = "encrypted_note", skip_serializing_if = "Option::is_none")]
+    encrypted_note: Option<String>,
+    #[serde(rename = "ephemeral_pk", skip_serializing_if = "Option::is_none")]
+    ephemeral_pk: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -306,10 +331,16 @@ async fn rest_get_commitments(
 
     for i in from..end {
         match state.state.get_shielded_commitment(i) {
-            Ok(Some(comm)) => entries.push(CommitmentEntry {
-                index: i,
-                commitment: hex::encode(comm),
-            }),
+            Ok(Some(comm)) => {
+                let (encrypted_note, ephemeral_pk) =
+                    shielded_note_payload_fields(&state.state, i).unwrap_or((None, None));
+                entries.push(CommitmentEntry {
+                    index: i,
+                    commitment: hex::encode(comm),
+                    encrypted_note,
+                    ephemeral_pk,
+                });
+            }
             Ok(None) => break,
             Err(e) => return api_err(&format!("Failed to read commitment {}: {}", i, e)),
         }
@@ -622,10 +653,21 @@ pub(crate) async fn handle_get_shielded_commitments(
 
     for i in from..end {
         match state.state.get_shielded_commitment(i) {
-            Ok(Some(comm)) => entries.push(serde_json::json!({
-                "index": i,
-                "commitment": hex::encode(comm),
-            })),
+            Ok(Some(comm)) => {
+                let (encrypted_note, ephemeral_pk) =
+                    shielded_note_payload_fields(&state.state, i).unwrap_or((None, None));
+                let mut entry = serde_json::json!({
+                    "index": i,
+                    "commitment": hex::encode(comm),
+                });
+                if let Some(note) = encrypted_note {
+                    entry["encrypted_note"] = serde_json::Value::String(note);
+                }
+                if let Some(pk) = ephemeral_pk {
+                    entry["ephemeral_pk"] = serde_json::Value::String(pk);
+                }
+                entries.push(entry);
+            }
             Ok(None) => break,
             Err(e) => {
                 return Err(RpcError {
@@ -677,6 +719,41 @@ pub(crate) async fn handle_compute_shield_commitment(
         "amount": amount,
         "blinding": hex::encode(blinding),
         "commitment": hex::encode(commitment),
+    }))
+}
+
+/// JSON-RPC: computeShieldNullifier
+/// Params: [{ "serial": "hex32", "spending_key": "hex32" }]
+pub(crate) async fn handle_compute_shield_nullifier(
+    _state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [{ serial, spending_key }]".to_string(),
+    })?;
+
+    let serial = parse_hex_32(
+        obj.get("serial")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: serial (hex) is required".to_string(),
+            })?,
+    )?;
+    let spending_key = parse_hex_32(
+        obj.get("spending_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: spending_key (hex) is required".to_string(),
+            })?,
+    )?;
+    let nullifier = nullifier_hash(&serial, &spending_key);
+
+    Ok(serde_json::json!({
+        "serial": hex::encode(serial),
+        "nullifier": hex::encode(nullifier),
     }))
 }
 

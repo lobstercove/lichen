@@ -15,6 +15,7 @@ import {
   privateKeyToKeypair,
   bytesToHex,
   base58Encode,
+  base58Decode,
   generateEVMAddress
 } from '../core/crypto-service.js';
 import { buildSignedNativeTransferTransaction, buildSignedSingleInstructionTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
@@ -46,6 +47,8 @@ import {
 } from '../core/restriction-service.js';
 
 const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
+const SHIELDED_NOTE_PAYLOAD_MAGIC_EXT = new TextEncoder().encode('LNP1');
+const NOTE_ENCRYPTION_V1_PREFIX_EXT = 'a1:';
 
 /* ──────────────────────────────────────────
    State
@@ -346,6 +349,10 @@ function writeU64LeExt(target, offset, value) {
   new DataView(target.buffer, target.byteOffset, target.byteLength).setBigUint64(offset, BigInt(value), true);
 }
 
+function writeU32LeExt(target, offset, value) {
+  new DataView(target.buffer, target.byteOffset, target.byteLength).setUint32(offset, Number(value), true);
+}
+
 function concatBytesExt(...chunks) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
@@ -357,12 +364,24 @@ function concatBytesExt(...chunks) {
   return out;
 }
 
-function buildExtShieldInstructionData(amountSpores, commitmentHex, proofBytes) {
+function buildExtShieldInstructionData(amountSpores, commitmentHex, proofBytes, encryptedNote, ephemeralPk) {
+  if (!encryptedNote || !ephemeralPk) {
+    throw new Error('Encrypted shielded note payload is required');
+  }
   const header = new Uint8Array(41);
   header[0] = 23;
   writeU64LeExt(header, 1, amountSpores);
   header.set(hexToBytesAnyExt(commitmentHex, 32), 9);
-  return concatBytesExt(header, proofBytes);
+  const notePayload = new TextEncoder().encode(JSON.stringify({
+    commitment: commitmentHex,
+    encrypted_note: encryptedNote,
+    ephemeral_pk: ephemeralPk,
+  }));
+  const envelopeHeader = new Uint8Array(12);
+  envelopeHeader.set(SHIELDED_NOTE_PAYLOAD_MAGIC_EXT, 0);
+  writeU32LeExt(envelopeHeader, 4, proofBytes.length);
+  writeU32LeExt(envelopeHeader, 8, notePayload.length);
+  return concatBytesExt(header, envelopeHeader.subarray(0, 8), proofBytes, envelopeHeader.subarray(8), notePayload);
 }
 
 function buildExtUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex, recipientHashHex, proofBytes) {
@@ -1681,10 +1700,6 @@ async function loadExtensionShieldedNotes(wallet) {
   try {
     const payload = wallet?.shieldedNotes;
     if (!payload) return;
-    if (Array.isArray(payload)) {
-      _shieldedState.notes = payload;
-      return;
-    }
     if (payload.version !== 1 || !payload.iv || !payload.ciphertext) return;
     const key = await deriveExtensionShieldedStorageKey();
     if (!key) return;
@@ -1741,6 +1756,122 @@ async function fetchExtensionShieldedCommitments(client, from, limit = 1000) {
   return Array.isArray(resp)
     ? resp
     : (Array.isArray(resp?.commitments) ? resp.commitments : []);
+}
+
+async function encryptExtensionShieldedNoteBytes(noteBytes, encKey) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aesKey = await crypto.subtle.importKey('raw', encKey, { name: 'AES-GCM' }, false, ['encrypt']);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, noteBytes);
+  return `${NOTE_ENCRYPTION_V1_PREFIX_EXT}${bytesToHex(iv)}:${bytesToHex(new Uint8Array(ciphertext))}`;
+}
+
+async function tryDecryptExtensionShieldedNote(client, entry) {
+  const encryptedNote = entry?.encrypted_note || entry?.encryptedNote;
+  const ephemeralPk = entry?.ephemeral_pk || entry?.ephemeralPk;
+  if (!_shieldedState.viewingKey || !encryptedNote || !ephemeralPk) return null;
+  if (!String(encryptedNote).startsWith(NOTE_ENCRYPTION_V1_PREFIX_EXT)) return null;
+
+  try {
+    const keyMaterial = new Uint8Array([
+      ...hexToBytesAnyExt(ephemeralPk, 32),
+      ..._shieldedState.viewingKey,
+    ]);
+    const decKeyHash = await crypto.subtle.digest('SHA-256', keyMaterial);
+    const aesKey = await crypto.subtle.importKey('raw', new Uint8Array(decKeyHash), { name: 'AES-GCM' }, false, ['decrypt']);
+    const parts = String(encryptedNote).split(':');
+    if (parts.length !== 3) return null;
+    const iv = hexToBytesAnyExt(parts[1], 12);
+    const ciphertext = hexToBytesAnyExt(parts[2]);
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+    const plaintext = new Uint8Array(decrypted);
+    if (plaintext.length < 104) return null;
+    const value = Number(new DataView(plaintext.buffer, plaintext.byteOffset + 32, 8).getBigUint64(0, true));
+    const blinding = bytesToHex(plaintext.slice(40, 72));
+    const serial = bytesToHex(plaintext.slice(72, 104));
+    const commitmentResp = await client.call('computeShieldCommitment', [{ amount: value, blinding }]).catch(() => null);
+    if (!commitmentResp?.commitment || String(commitmentResp.commitment).toLowerCase() !== String(entry.commitment || '').toLowerCase()) {
+      return null;
+    }
+    return { value, blinding, serial };
+  } catch {
+    return null;
+  }
+}
+
+async function computeExtensionShieldedNullifier(client, note) {
+  if (note?.nullifier) return note.nullifier;
+  if (!_shieldedState.spendingKey || !note?.serial) return null;
+  const resp = await client.call('computeShieldNullifier', [{
+    serial: note.serial,
+    spending_key: bytesToHex(_shieldedState.spendingKey),
+  }]);
+  return resp?.nullifier || null;
+}
+
+async function syncExtensionShieldedNotesFromChain(wallet, client) {
+  if (!_shieldedState.initialized || !_shieldedState.viewingKey) return false;
+  const pool = await client.call('getShieldedPoolState', []).catch(() => _shieldedState.poolStats || null);
+  const total = Number(pool?.commitment_count ?? pool?.commitmentCount ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return false;
+
+  const pageSize = 1000;
+  const startFrom = Math.max(0, total - 10_000);
+  let changed = false;
+  for (let from = startFrom; from < total; from += pageSize) {
+    const entries = await fetchExtensionShieldedCommitments(client, from, pageSize).catch(() => []);
+    if (!entries.length) break;
+    for (const entry of entries) {
+      const commitment = String(entry.commitment || '').toLowerCase();
+      if (!commitment) continue;
+      const existing = (_shieldedState.notes || []).find((note) => String(note.commitment || '').toLowerCase() === commitment);
+      const entryIndex = Number(entry.index ?? entry.commitment_index ?? entry.commitmentIndex);
+      if (existing) {
+        if (Number.isFinite(entryIndex) && entryIndex >= 0 && existing.index !== entryIndex) {
+          existing.index = entryIndex;
+          existing.pendingIndex = false;
+          existing.pendingConfirmation = false;
+          existing.confirmed = true;
+          changed = true;
+        }
+        continue;
+      }
+      const note = await tryDecryptExtensionShieldedNote(client, entry);
+      if (!note) continue;
+      _shieldedState.notes.push({
+        index: Number.isFinite(entryIndex) && entryIndex >= 0 ? entryIndex : null,
+        value: note.value,
+        blinding: note.blinding,
+        serial: note.serial,
+        commitment,
+        pendingIndex: !Number.isFinite(entryIndex),
+        pendingConfirmation: false,
+        confirmed: true,
+        spent: false,
+        recoveredAt: Date.now(),
+      });
+      changed = true;
+    }
+    if (entries.length < pageSize) break;
+  }
+  for (const note of _shieldedState.notes || []) {
+    if (note?.spent) continue;
+    const nullifier = await computeExtensionShieldedNullifier(client, note).catch(() => null);
+    if (!nullifier) continue;
+    const spent = await client.call('isNullifierSpent', [nullifier]).catch(() => null);
+    if (spent?.spent) {
+      note.spent = true;
+      note.nullifier = nullifier;
+      changed = true;
+    } else if (!note.nullifier) {
+      note.nullifier = nullifier;
+      changed = true;
+    }
+  }
+  if (changed) {
+    recalculateExtensionShieldedBalance();
+    await saveExtensionShieldedNotes(wallet);
+  }
+  return changed;
 }
 
 async function resolveExtensionShieldedCommitmentIndex(client, commitmentHex, preferredIndex = null) {
@@ -1806,6 +1937,16 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
   statusEl.textContent = 'Generating shield proof...';
   const blinding = crypto.getRandomValues(new Uint8Array(32));
   const serial = crypto.getRandomValues(new Uint8Array(32));
+  const noteBytes = new Uint8Array(104);
+  const ownerBytes = base58Decode(_shieldedState.address);
+  noteBytes.set(ownerBytes.slice(0, 32), 0);
+  new DataView(noteBytes.buffer).setBigUint64(32, BigInt(amountSpores), true);
+  noteBytes.set(blinding, 40);
+  noteBytes.set(serial, 72);
+  const ephemeralKey = crypto.getRandomValues(new Uint8Array(32));
+  const encKeyMaterial = new Uint8Array([...ephemeralKey, ..._shieldedState.viewingKey]);
+  const encKeyHash = await crypto.subtle.digest('SHA-256', encKeyMaterial);
+  const encryptedNote = await encryptExtensionShieldedNoteBytes(noteBytes, new Uint8Array(encKeyHash));
   const proof = await client.call('generateShieldProof', [{
     amount: amountSpores,
     blinding: bytesToHex(blinding),
@@ -1826,6 +1967,8 @@ async function submitExtensionShield({ wallet, amountLicn, password, statusEl })
       amountSpores,
       proof.commitment,
       hexToBytesAnyExt(proof.proof),
+      encryptedNote,
+      bytesToHex(ephemeralKey),
     ),
   });
 
@@ -2017,6 +2160,8 @@ async function loadShieldTab() {
     const res = await rpcClient.call('getShieldedPoolState', []).catch(() => rpcClient.call('getShieldedPoolStats', []));
     poolStats = res || null;
   } catch (_) { }
+
+  await syncExtensionShieldedNotesFromChain(wallet, rpcClient);
 
   let shieldedBalance = 0;
   let ownedNotes = [];
@@ -2761,8 +2906,18 @@ async function loadAssets() {
   }
 }
 
-let _activityPage = 0;
+let _activityBeforeSlot = null;
+let _activityHasMore = true;
 const ACTIVITY_PER_PAGE = 20;
+
+function getActivityCursor(result, txs, previousCursor) {
+  const rpcNextBeforeSlot = Number(result?.next_before_slot);
+  if (Number.isFinite(rpcNextBeforeSlot) && rpcNextBeforeSlot > 0) return rpcNextBeforeSlot;
+  const last = txs[txs.length - 1] || {};
+  const lastSlot = Number(last.slot || last.block_height || last.block);
+  if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== previousCursor) return lastSlot;
+  return null;
+}
 
 async function loadActivity(reset = true) {
   const wallet = getActiveWallet();
@@ -2770,18 +2925,35 @@ async function loadActivity(reset = true) {
   if (!wallet || !list) return;
 
   if (reset) {
-    _activityPage = 0;
+    _activityBeforeSlot = null;
+    _activityHasMore = true;
     list.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  } else {
+    const prevBtn = list.querySelector('.activity-load-more');
+    if (prevBtn) prevBtn.remove();
   }
 
   try {
-    const result = await rpc().getTransactionsByAddress(wallet.address, { limit: ACTIVITY_PER_PAGE, offset: _activityPage * ACTIVITY_PER_PAGE });
+    const requestBeforeSlot = _activityBeforeSlot;
+    const opts = { limit: ACTIVITY_PER_PAGE };
+    if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
+    const result = await rpc().getTransactionsByAddress(wallet.address, opts);
     const txs = result?.transactions || (Array.isArray(result) ? result : []);
+    const rpcHasMore = typeof result?.has_more === 'boolean' ? result.has_more : txs.length >= ACTIVITY_PER_PAGE;
+    if (rpcHasMore) {
+      const nextCursor = getActivityCursor(result, txs, requestBeforeSlot);
+      _activityHasMore = !!nextCursor;
+      _activityBeforeSlot = nextCursor;
+    } else {
+      _activityHasMore = false;
+      _activityBeforeSlot = null;
+    }
 
-    if (!txs.length && _activityPage === 0) {
+    if (!txs.length && reset) {
       list.innerHTML = '<div class="empty-state"><span class="empty-icon"><i class="fas fa-history"></i></span><p>No recent activity</p></div>';
       return;
     }
+    if (!txs.length) return;
 
     const explorerBase = '../explorer/transaction.html?sig=';
     const html = txs.map(tx => {
@@ -2798,6 +2970,7 @@ async function loadActivity(reset = true) {
         'ClaimUnstake': 'Claimed Unstake',
         'RegisterEvmAddress': 'EVM Registration',
         'Contract': 'Contract Call',
+        'ContractCall': 'Contract Call',
         'CreateCollection': 'Created Collection',
         'MintNFT': 'Minted NFT',
         'TransferNFT': isSend ? 'Sent NFT' : 'Received NFT',
@@ -2814,6 +2987,9 @@ async function loadActivity(reset = true) {
         'RegisterSymbol': 'Register Symbol',
         'CreateAccount': 'Create Account',
         'GrantRepay': 'Grant Repay',
+        'Shield': 'Shielded',
+        'Unshield': 'Unshielded',
+        'ShieldedTransfer': 'Private Transfer',
       };
       const type = typeMap[tx.type] || (isSend ? 'Sent' : 'Received');
 
@@ -2822,11 +2998,17 @@ async function loadActivity(reset = true) {
       let color = isSend ? '#00C9DB' : '#4ade80';
       let sign = isSend ? '-' : '+';
 
-      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake' || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
+      if (tx.type === 'Shield') {
+        icon = 'fa-shield-alt'; color = '#a78bfa'; sign = '-';
+      } else if (tx.type === 'Unshield') {
+        icon = 'fa-unlock'; color = '#4ade80'; sign = '+';
+      } else if (tx.type === 'ShieldedTransfer') {
+        icon = 'fa-user-shield'; color = '#a78bfa'; sign = '';
+      } else if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake' || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
       } else if (tx.type === 'RegisterEvmAddress' || tx.type === 'RegisterSymbol' || tx.type === 'SetContractABI') {
         icon = 'fa-link'; color = '#94a3b8';
-      } else if (tx.type === 'Contract' || tx.type === 'DeployContract') {
+      } else if (tx.type === 'Contract' || tx.type === 'ContractCall' || tx.type === 'DeployContract') {
         icon = 'fa-file-code'; color = '#f59e0b';
       } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint' || tx.type === 'GrantRepay') {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
@@ -2836,7 +3018,9 @@ async function loadActivity(reset = true) {
         icon = 'fa-user-plus'; color = '#94a3b8';
       }
 
-      const address = isSend ? (tx.to || '') : (tx.from || '');
+      const address = (tx.type === 'Shield' || tx.type === 'Unshield' || tx.type === 'ShieldedTransfer')
+        ? 'Shielded Pool'
+        : (isSend ? (tx.to || '') : (tx.from || ''));
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '…' + address.slice(-4) : (address || '');
       const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
       const amt = (Number(amountVal) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -2845,7 +3029,8 @@ async function loadActivity(reset = true) {
 
       // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
-      const isFeeOnly = tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount);
+      const isFeeOnly = tx.type === 'RegisterEvmAddress'
+        || ((tx.type === 'Contract' || tx.type === 'ContractCall') && isZeroAmount);
       const feeSpores = tx.fee_spores || tx.fee || 0;
       const feeAmt = (Number(feeSpores) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} LICN`;
@@ -2870,15 +3055,10 @@ async function loadActivity(reset = true) {
     if (reset) {
       list.innerHTML = html;
     } else {
-      // Remove previous "Load More" button before appending
-      const prevBtn = list.querySelector('.activity-load-more');
-      if (prevBtn) prevBtn.remove();
       list.insertAdjacentHTML('beforeend', html);
     }
 
-    // Add "Load More" if we got a full page
-    if (txs.length >= ACTIVITY_PER_PAGE) {
-      _activityPage++;
+    if (_activityHasMore) {
       const loadMoreDiv = document.createElement('div');
       loadMoreDiv.className = 'activity-load-more';
       loadMoreDiv.style.cssText = 'text-align:center;padding:1rem;';
@@ -2891,7 +3071,7 @@ async function loadActivity(reset = true) {
       list.appendChild(loadMoreDiv);
     }
   } catch {
-    if (_activityPage === 0) list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+    if (reset) list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
   }
 }
 

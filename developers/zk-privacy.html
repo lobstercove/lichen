@@ -581,15 +581,40 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
 { "spent": true }</code></pre>
                 </div>
 
+                <h3><code>computeShieldNullifier</code></h3>
+                <p>Computes the native Poseidon2 nullifier for a note serial and spending key. Wallets use this
+                    before <code>isNullifierSpent</code> so recovered notes use the same nullifier as consensus.</p>
+                <div class="code-block">
+                    <pre><code>// Request
+{"jsonrpc":"2.0","id":1,"method":"computeShieldNullifier","params":[
+  { "serial": "8580318ad00a9c2a...", "spending_key": "7b19f4..." }
+]}
+
+// Response
+{
+  "serial": "8580318ad00a9c2a...",
+  "nullifier": "51d4a86b..."
+}</code></pre>
+                </div>
+
                 <h3><code>getShieldedCommitments</code></h3>
-                <p>Paginated list of all commitments in the Merkle tree.</p>
+                <p>Paginated list of all commitments in the Merkle tree. Shield deposits may include
+                    <code>encrypted_note</code> and <code>ephemeral_pk</code>; these let the owning wallet recover its
+                    private note after a restart without revealing note secrets to the chain.</p>
                 <div class="code-block">
                     <pre><code>// Request (optional: from, limit)
 {"jsonrpc":"2.0","id":1,"method":"getShieldedCommitments","params":[0, 100]}
 
 // Response
 {
-  "commitments": ["912f53dd...", "c716601c...", ...],
+  "commitments": [
+    {
+      "index": 0,
+      "commitment": "912f53dd...",
+      "encrypted_note": "a1:4d2f...:8b91...",
+      "ephemeral_pk": "c716601c..."
+    }
+  ],
   "total": 4,
   "from": 0,
   "limit": 100

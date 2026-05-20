@@ -1,6 +1,107 @@
 use super::*;
 use crate::restrictions::{ProtocolModuleId, RestrictionTransferDirection};
 
+const SHIELDED_NOTE_PAYLOAD_MAGIC: &[u8; 4] = b"LNP1";
+const MAX_SHIELDED_NOTE_PAYLOAD_BYTES: usize = 4096;
+
+fn parse_shield_deposit_payload(
+    data: &[u8],
+    commitment: &[u8; 32],
+) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    if data.len() >= 45 && &data[41..45] == SHIELDED_NOTE_PAYLOAD_MAGIC {
+        if data.len() < 53 {
+            return Err("Shield: encrypted note payload header is truncated".to_string());
+        }
+
+        let proof_len = u32::from_le_bytes(
+            data[45..49]
+                .try_into()
+                .map_err(|_| "Shield: invalid proof length encoding".to_string())?,
+        ) as usize;
+        let proof_start = 49usize;
+        let proof_end = proof_start
+            .checked_add(proof_len)
+            .ok_or_else(|| "Shield: proof length overflow".to_string())?;
+        let note_len_start = proof_end;
+        let note_len_end = note_len_start
+            .checked_add(4)
+            .ok_or_else(|| "Shield: note length offset overflow".to_string())?;
+        if data.len() < note_len_end {
+            return Err("Shield: encrypted note payload length is missing".to_string());
+        }
+
+        let note_len = u32::from_le_bytes(
+            data[note_len_start..note_len_end]
+                .try_into()
+                .map_err(|_| "Shield: invalid note payload length encoding".to_string())?,
+        ) as usize;
+        if note_len == 0 || note_len > MAX_SHIELDED_NOTE_PAYLOAD_BYTES {
+            return Err(format!(
+                "Shield: encrypted note payload length {} is out of bounds",
+                note_len
+            ));
+        }
+
+        let note_start = note_len_end;
+        let note_end = note_start
+            .checked_add(note_len)
+            .ok_or_else(|| "Shield: encrypted note payload length overflow".to_string())?;
+        if data.len() != note_end {
+            return Err("Shield: encrypted note payload has trailing bytes".to_string());
+        }
+
+        let note_payload = data[note_start..note_end].to_vec();
+        validate_shielded_note_payload(&note_payload, commitment)?;
+        return Ok((data[proof_start..proof_end].to_vec(), Some(note_payload)));
+    }
+
+    Ok((data[41..].to_vec(), None))
+}
+
+fn validate_shielded_note_payload(
+    payload: &[u8],
+    commitment: &[u8; 32],
+) -> Result<(), String> {
+    let json: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| format!("Shield: encrypted note payload is not valid JSON: {}", e))?;
+    let obj = json
+        .as_object()
+        .ok_or_else(|| "Shield: encrypted note payload must be a JSON object".to_string())?;
+
+    let encrypted_note = obj
+        .get("encrypted_note")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Shield: encrypted_note is required".to_string())?;
+    if encrypted_note.is_empty() || encrypted_note.len() > MAX_SHIELDED_NOTE_PAYLOAD_BYTES {
+        return Err("Shield: encrypted_note length is invalid".to_string());
+    }
+    if !encrypted_note.starts_with("a1:") {
+        return Err("Shield: encrypted_note must use the a1 format".to_string());
+    }
+
+    let ephemeral_pk = obj
+        .get("ephemeral_pk")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Shield: ephemeral_pk is required".to_string())?;
+    let ephemeral_bytes = hex::decode(ephemeral_pk)
+        .map_err(|e| format!("Shield: ephemeral_pk is not hex: {}", e))?;
+    if ephemeral_bytes.len() != 32 {
+        return Err("Shield: ephemeral_pk must be 32 bytes".to_string());
+    }
+
+    let payload_commitment = obj
+        .get("commitment")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Shield: note payload commitment is required".to_string())?;
+    let payload_commitment_bytes = hex::decode(payload_commitment)
+        .map_err(|e| format!("Shield: note payload commitment is not hex: {}", e))?;
+    if payload_commitment_bytes.as_slice() != commitment {
+        return Err("Shield: note payload commitment does not match instruction".to_string());
+    }
+
+    Ok(())
+}
+
 impl TxProcessor {
     /// System instruction type 23: Shield deposit (transparent → shielded).
     ///
@@ -69,7 +170,7 @@ impl TxProcessor {
             ));
         }
 
-        let proof_bytes = ix.data[41..].to_vec();
+        let (proof_bytes, note_payload) = parse_shield_deposit_payload(&ix.data, &commitment)?;
         let zk_proof = ZkProof::plonky3(
             ProofType::Shield,
             proof_bytes,
@@ -105,6 +206,9 @@ impl TxProcessor {
                 let mut pool = batch.get_shielded_pool_state()?;
                 let index = pool.commitment_count;
                 batch.insert_shielded_commitment(index, &commitment)?;
+                if let Some(payload) = note_payload.as_deref() {
+                    batch.insert_shielded_note_payload(index, payload)?;
+                }
                 pool.commitment_count += 1;
                 pool.shield_count = pool.shield_count.saturating_add(1);
                 pool.total_shielded = pool
@@ -122,6 +226,9 @@ impl TxProcessor {
                 let mut pool = self.state.get_shielded_pool_state()?;
                 let index = pool.commitment_count;
                 self.state.insert_shielded_commitment(index, &commitment)?;
+                if let Some(payload) = note_payload.as_deref() {
+                    self.state.insert_shielded_note_payload(index, payload)?;
+                }
                 pool.commitment_count += 1;
                 pool.shield_count = pool.shield_count.saturating_add(1);
                 pool.total_shielded = pool

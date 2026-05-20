@@ -42,6 +42,34 @@ impl StateStore {
         }
     }
 
+    /// Store the encrypted note payload associated with a commitment index.
+    pub fn insert_shielded_note_payload(
+        &self,
+        index: u64,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)
+            .ok_or_else(|| "Shielded note payloads CF not found".to_string())?;
+
+        self.db
+            .put_cf(&cf, index.to_be_bytes(), payload)
+            .map_err(|e| format!("Failed to insert shielded note payload: {}", e))
+    }
+
+    /// Retrieve the encrypted note payload associated with a commitment index.
+    pub fn get_shielded_note_payload(&self, index: u64) -> Result<Option<Vec<u8>>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)
+            .ok_or_else(|| "Shielded note payloads CF not found".to_string())?;
+
+        self.db
+            .get_cf(&cf, index.to_be_bytes())
+            .map_err(|e| format!("Database error reading shielded note payload: {}", e))
+    }
+
     /// Check whether a nullifier has been spent.
     pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<bool, String> {
         let cf = self

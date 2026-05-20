@@ -809,6 +809,24 @@ test('wallet.js activity explorer links use LICHEN_CONFIG.explorer base', () => 
     assert(walletSrc.includes('/transaction.html?sig='), 'wallet activity links should keep transaction route');
 });
 
+test('wallet.js activity identifies shield and unshield transactions explicitly', () => {
+    assert(walletSrc.includes("'Shield': 'Shielded'"), 'wallet activity should label Shield transactions');
+    assert(walletSrc.includes("'Unshield': 'Unshielded'"), 'wallet activity should label Unshield transactions');
+    assert(walletSrc.includes("tx.type === 'Shield'"), 'wallet activity should special-case Shield direction');
+    assert(walletSrc.includes("tx.type === 'Unshield'"), 'wallet activity should special-case Unshield direction');
+    assert(walletSrc.includes("? 'Shielded Pool'"), 'wallet activity should show shielded pool counterpart');
+});
+
+test('wallet.js activity treats ContractCall as contract activity and fee-only when amount is zero', () => {
+    assert(walletSrc.includes("'ContractCall': 'Contract Call'"), 'wallet activity should label ContractCall transactions');
+    assert(walletSrc.includes("tx.type === 'Contract' || tx.type === 'ContractCall'"),
+        'wallet activity should share contract icon/function handling across Contract and ContractCall');
+    assert(walletSrc.includes("|| tx.type === 'ContractCall'"),
+        'wallet activity should include ContractCall in zero-amount fee-only detection');
+    assert(walletSrc.includes("(tx.type === 'Contract' || tx.type === 'ContractCall') && amount !== '0'"),
+        'wallet activity should include ContractCall in paid contract detection');
+});
+
 console.log('\nW-19: Staking validator fetch optimization');
 
 test('wallet.js caches validator list for staking tab reuse', () => {
@@ -859,26 +877,54 @@ test('wallet.js derives shielded seed from decrypted secret material (not public
         'shielded seed must not be derived from public address');
 });
 
-test('shielded.js encrypts notes with AES-GCM and keeps legacy decrypt fallback', () => {
+test('shielded.js encrypts notes with AES-GCM and rejects non-versioned note payloads', () => {
     assert(shieldedSrc.includes("{ name: 'AES-GCM' }"),
         'shielded note encryption should use AES-GCM');
     assert(shieldedSrc.includes('NOTE_ENCRYPTION_V1_PREFIX'),
         'shielded notes should carry an explicit encryption version prefix');
-    assert(shieldedSrc.includes("entry.encrypted_note.startsWith(NOTE_ENCRYPTION_V1_PREFIX)"),
+    assert(shieldedSrc.includes('encryptedNote.startsWith(NOTE_ENCRYPTION_V1_PREFIX)'),
         'shielded decrypt should parse AES-GCM note format');
-    assert(shieldedSrc.includes('Legacy compatibility: decrypt historical XOR-encrypted notes.'),
-        'shielded decrypt should preserve compatibility for legacy XOR notes');
+    assert(!shieldedSrc.includes('Legacy compatibility: decrypt historical XOR-encrypted notes.'),
+        'shielded decrypt should not silently accept old unversioned note formats');
 });
 
-test('shielded.js stores encrypted shielded-note payload in localStorage', () => {
+test('shielded.js stores encrypted shielded-note payloads locally and in shield tx data', () => {
     assert(shieldedSrc.includes('async function deriveShieldedStorageKey()'),
         'shielded storage should derive an encryption key from shielded state keys');
+    assert(shieldedSrc.includes('function getShieldedStorageKeyName()'),
+        'shielded storage should derive a wallet-scoped storage key');
+    assert(shieldedSrc.includes('lichen_shielded_notes:${address}'),
+        'shielded note storage should be scoped by wallet address');
     assert(shieldedSrc.includes('ciphertext'),
         'shielded storage payload should include ciphertext field');
     assert(shieldedSrc.includes('version: SHIELDED_STORAGE_VERSION'),
         'shielded storage payload should be versioned for future migrations');
-    assert(shieldedSrc.includes('Legacy migration path: previous plaintext object format.'),
-        'shielded storage loader should migrate legacy plaintext data to encrypted format');
+    assert(shieldedSrc.includes('SHIELDED_NOTE_PAYLOAD_MAGIC'),
+        'shielded deposits should include a typed encrypted-note payload envelope');
+    assert(shieldedSrc.includes('encrypted_note: encryptedNote'),
+        'shielded deposits should include the encrypted note in instruction data');
+    assert(shieldedSrc.includes('ephemeral_pk: ephemeralPk'),
+        'shielded deposits should include the ephemeral public key in instruction data');
+});
+
+test('shielded.js does not overwrite encrypted note storage after a failed decrypt', () => {
+    assert(shieldedSrc.includes('storageLoadFailed'),
+        'shielded state should track failed local note storage loads');
+    assert(shieldedSrc.includes('Shielded notes were not saved because local note storage failed to decrypt'),
+        'shielded storage save should refuse to overwrite after a decrypt failure');
+    assert(shieldedSrc.includes('Shielded note storage could not be decrypted. Not overwriting local notes.'),
+        'shielded storage load should surface failed decrypt without overwriting notes');
+    assert(!shieldedSrc.includes("localStorage.getItem('lichen_shielded_notes')"),
+        'shielded storage should not fall back to unscoped local note storage');
+});
+
+test('shielded.js rescans commitment pages to restore owned notes from encrypted payloads', () => {
+    assert(shieldedSrc.includes('while (!Number.isFinite(totalCommitments) || totalCommitments <= 0 || from < totalCommitments)'),
+        'shielded sync should page through commitments instead of reading one short page');
+    assert(shieldedSrc.includes('const note = await tryDecryptNote(entry);'),
+        'shielded sync should attempt to decrypt encrypted note payloads from RPC');
+    assert(shieldedSrc.includes('entry?.encrypted_note || entry?.encryptedNote'),
+        'shielded sync should accept canonical snake_case and REST camelCase encrypted-note fields');
 });
 
 console.log('\nW-23: Trusted RPC split for critical wallet flows');
@@ -1166,6 +1212,13 @@ test('shielded.js resolves note commitment indexes from chain commitments', () =
         'shielded sync should repair stored note indexes from RPC commitment entries');
     assert(shieldedSrc.includes('pendingIndex: !Number.isFinite(commitmentIndex)'),
         'new shield notes should be marked pending instead of saving an unverified guessed index');
+});
+
+test('shielded.js asks RPC for native Poseidon2 nullifiers', () => {
+    assert(shieldedSrc.includes("rpc.call('computeShieldNullifier'"),
+        'wallet must use the core/RPC native nullifier helper');
+    assert(!shieldedSrc.includes('const data = new Uint8Array([\n        ...hexToBytes(serialHex),'),
+        'wallet must not derive shielded nullifiers with an ad hoc client hash');
 });
 
 test('wallet activity deduplicates faucet API records already present on-chain', () => {

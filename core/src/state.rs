@@ -104,6 +104,7 @@ const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (
 const CF_CONTRACT_MERKLE_LEAVES: &str = "contract_merkle_leaves"; // full_key(32+N) hash -> leaf_hash(32) (contract storage Merkle cache)
                                                                   // Shielded pool (ZK privacy layer)
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
+const CF_SHIELDED_NOTE_PAYLOADS: &str = "shielded_note_payloads"; // index(8,BE) -> encrypted note payload JSON
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
 const CF_SHIELDED_TXS: &str = "shielded_txs"; // slot(8,BE)+seq(8,BE)+tx(32) -> []
@@ -320,6 +321,8 @@ pub struct StateBatch {
     /// Track shielded commitments inserted inside this batch so reads and
     /// Merkle rebuilds stay batch-consistent.
     shielded_commitment_overlay: std::collections::BTreeMap<u64, [u8; 32]>,
+    /// Track encrypted shielded note payloads inserted inside this batch.
+    shielded_note_payload_overlay: std::collections::BTreeMap<u64, Vec<u8>>,
     /// Track singleton shielded pool state updates inside this batch so
     /// repeated shielded ops see prior in-flight pool mutations.
     shielded_pool_overlay: Option<crate::zk::ShieldedPoolState>,

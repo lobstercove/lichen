@@ -15,6 +15,7 @@ const SHIELDED_POOL_PROGRAM_ID = 'ShieldPool11111111111111111111111111111111';
 const MERKLE_TREE_DEPTH = 32;
 const NOTE_ENCRYPTION_V1_PREFIX = 'a1:';
 const SHIELDED_STORAGE_VERSION = 1;
+const SHIELDED_NOTE_PAYLOAD_MAGIC = new TextEncoder().encode('LNP1');
 
 // ===== Shielded Wallet State =====
 let shieldedState = {
@@ -35,6 +36,8 @@ let shieldedState = {
 
     // Pool stats
     poolStats: null,
+    storageLoadFailed: false,
+    storageKeyName: null,
 
     // Proof generation state
     provingKeys: {
@@ -65,6 +68,11 @@ function writeU64Le(target, offset, value) {
         .setBigUint64(offset, BigInt(value), true);
 }
 
+function writeU32Le(target, offset, value) {
+    new DataView(target.buffer, target.byteOffset, target.byteLength)
+        .setUint32(offset, Number(value), true);
+}
+
 function concatBytes(...chunks) {
     const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
     const out = new Uint8Array(total);
@@ -86,12 +94,24 @@ function bytesToBase64(bytes) {
     return btoa(binary);
 }
 
-function buildShieldInstructionData(amountSpores, commitmentHex, proofBytes) {
+function buildShieldInstructionData(amountSpores, commitmentHex, proofBytes, encryptedNote, ephemeralPk) {
+    if (!encryptedNote || !ephemeralPk) {
+        throw new Error('Encrypted shielded note payload is required');
+    }
     const header = new Uint8Array(41);
     header[0] = 23;
     writeU64Le(header, 1, amountSpores);
     header.set(hexToBytes(commitmentHex), 9);
-    return concatBytes(header, proofBytes);
+    const notePayload = new TextEncoder().encode(JSON.stringify({
+        commitment: commitmentHex,
+        encrypted_note: encryptedNote,
+        ephemeral_pk: ephemeralPk,
+    }));
+    const payloadHeader = new Uint8Array(12);
+    payloadHeader.set(SHIELDED_NOTE_PAYLOAD_MAGIC, 0);
+    writeU32Le(payloadHeader, 4, proofBytes.length);
+    writeU32Le(payloadHeader, 8, notePayload.length);
+    return concatBytes(header, payloadHeader.subarray(0, 8), proofBytes, payloadHeader.subarray(8), notePayload);
 }
 
 function buildUnshieldInstructionData(amountSpores, nullifierHex, merkleRootHex, recipientHashHex, proofBytes) {
@@ -157,7 +177,7 @@ async function requestShieldedSigningPassword(title, message) {
     return values?.password || null;
 }
 
-async function submitShieldTransaction({ amountSpores, commitment, proof, commitmentIndex, onSubmitted }) {
+async function submitShieldTransaction({ amountSpores, commitment, proof, encryptedNote, ephemeralPk, commitmentIndex, onSubmitted }) {
     const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
     const password = await requestShieldedSigningPassword(
         'Shield LICN',
@@ -171,7 +191,7 @@ async function submitShieldTransaction({ amountSpores, commitment, proof, commit
         wallet,
         password,
         accounts: [signer],
-        instructionData: buildShieldInstructionData(amountSpores, commitment, proof),
+        instructionData: buildShieldInstructionData(amountSpores, commitment, proof, encryptedNote, ephemeralPk),
         onSubmitted,
     });
     return { success: true, signature, commitment_index: commitmentIndex };
@@ -231,6 +251,8 @@ async function initShielded(walletSeed) {
     shieldedState.shieldedAddress = bs58.encode(new Uint8Array(addrHash).slice(0, 32));
 
     shieldedState.initialized = true;
+    shieldedState.storageLoadFailed = false;
+    shieldedState.storageKeyName = getShieldedStorageKeyName();
 
     // Load owned notes from localStorage
     await loadNotesFromStorage();
@@ -255,23 +277,35 @@ async function syncShieldedState() {
             shieldedState.merkleRoot = statsResp.merkle_root || statsResp.merkleRoot || null;
         }
 
-        // Fetch new commitments since last sync
-        const commitsResp = await rpc.call('getShieldedCommitments', [{
-            from: shieldedState.lastSyncedIndex,
-            limit: 100,
-        }]).catch(() => null);
+        // Fetch all commitment pages needed for recovery. A wallet with no
+        // local notes must rescan the pool so encrypted payloads can restore
+        // notes after a browser restart or storage loss.
+        const totalCommitments = Number(
+            shieldedState.poolStats?.commitment_count
+            ?? shieldedState.poolStats?.commitmentCount
+            ?? 0
+        );
+        const pageSize = 1000;
+        const startFrom = shieldedState.ownedNotes.length === 0
+            ? 0
+            : Math.max(0, Number(shieldedState.lastSyncedIndex || 0));
+        let nextSyncedIndex = Math.max(0, Number(shieldedState.lastSyncedIndex || 0));
+        let recoveredOwnedNote = false;
+        let from = startFrom;
 
-        const commitments = Array.isArray(commitsResp)
-            ? commitsResp
-            : (Array.isArray(commitsResp?.commitments) ? commitsResp.commitments : []);
+        while (!Number.isFinite(totalCommitments) || totalCommitments <= 0 || from < totalCommitments) {
+            const commitments = await fetchShieldedCommitmentEntries(from, pageSize).catch(() => []);
+            if (!commitments.length) break;
 
-        if (commitments.length > 0) {
+            let maxEntryIndex = from - 1;
             for (const entry of commitments) {
                 const entryIndex = Number(
-                    entry.index ?? entry.commitment_index ?? entry.commitmentIndex ?? shieldedState.lastSyncedIndex
+                    entry.index ?? entry.commitment_index ?? entry.commitmentIndex ?? from
                 );
-                shieldedState.commitments.push(entry.commitment);
-                const existingNote = shieldedState.ownedNotes.find((n) => n.commitment === entry.commitment);
+                if (!shieldedState.commitments.includes(entry.commitment)) {
+                    shieldedState.commitments.push(entry.commitment);
+                }
+                const existingNote = shieldedState.ownedNotes.find((n) => String(n.commitment || '').toLowerCase() === String(entry.commitment || '').toLowerCase());
                 if (existingNote && Number.isFinite(entryIndex) && entryIndex >= 0) {
                     existingNote.index = entryIndex;
                     existingNote.pendingIndex = false;
@@ -290,10 +324,24 @@ async function syncShieldedState() {
                         commitment: entry.commitment,
                         spent: false,
                     });
+                    recoveredOwnedNote = true;
                 }
-                shieldedState.lastSyncedIndex++;
+                if (Number.isFinite(entryIndex) && entryIndex >= 0) {
+                    maxEntryIndex = Math.max(maxEntryIndex, entryIndex);
+                    nextSyncedIndex = Math.max(nextSyncedIndex, entryIndex + 1);
+                } else {
+                    nextSyncedIndex = Math.max(nextSyncedIndex, from + 1);
+                }
             }
+
+            if (commitments.length < pageSize) break;
+            const nextFrom = maxEntryIndex + 1;
+            if (nextFrom <= from) break;
+            from = nextFrom;
+
+            if (!Number.isFinite(totalCommitments) || totalCommitments <= 0) break;
         }
+        shieldedState.lastSyncedIndex = nextSyncedIndex;
 
         // Check which owned notes have been spent (nullifier check)
         for (const note of shieldedState.ownedNotes) {
@@ -310,6 +358,9 @@ async function syncShieldedState() {
         recalculateShieldedBalance();
 
         // Persist to localStorage
+        if (recoveredOwnedNote) {
+            shieldedState.storageLoadFailed = false;
+        }
         await saveNotesToStorage();
 
         // Update UI
@@ -345,6 +396,7 @@ async function upsertOwnedShieldedNote(note) {
     }
 
     recalculateShieldedBalance();
+    shieldedState.storageLoadFailed = false;
     await saveNotesToStorage();
     updateShieldedUI();
 }
@@ -393,48 +445,40 @@ async function resolveNoteCommitmentIndex(note) {
  * Returns the plaintext note if successful, null otherwise.
  */
 async function tryDecryptNote(entry) {
-    if (!shieldedState.viewingKey || !entry.encrypted_note) return null;
+    const encryptedNote = entry?.encrypted_note || entry?.encryptedNote;
+    const ephemeralPk = entry?.ephemeral_pk || entry?.ephemeralPk;
+    if (!shieldedState.viewingKey || !encryptedNote || !ephemeralPk) return null;
 
     try {
         // Derive decryption key: SHA-256(ephemeral_pk || viewing_key)
         const keyMaterial = new Uint8Array([
-            ...hexToBytes(entry.ephemeral_pk),
+            ...hexToBytes(ephemeralPk),
             ...shieldedState.viewingKey,
         ]);
         const decKeyHash = await crypto.subtle.digest('SHA-256', keyMaterial);
         const decKey = new Uint8Array(decKeyHash);
 
-        let plaintext = null;
-        if (entry.encrypted_note.startsWith(NOTE_ENCRYPTION_V1_PREFIX)) {
-            const parts = entry.encrypted_note.split(':');
-            if (parts.length !== 3) return null;
-            const iv = hexToBytes(parts[1]);
-            const ciphertext = hexToBytes(parts[2]);
-            if (iv.length !== 12 || ciphertext.length === 0) return null;
+        if (!encryptedNote.startsWith(NOTE_ENCRYPTION_V1_PREFIX)) return null;
+        const parts = encryptedNote.split(':');
+        if (parts.length !== 3) return null;
+        const iv = hexToBytes(parts[1]);
+        const ciphertext = hexToBytes(parts[2]);
+        if (iv.length !== 12 || ciphertext.length === 0) return null;
 
-            const aesKey = await crypto.subtle.importKey(
-                'raw',
-                decKey,
-                { name: 'AES-GCM' },
-                false,
-                ['decrypt']
-            );
+        const aesKey = await crypto.subtle.importKey(
+            'raw',
+            decKey,
+            { name: 'AES-GCM' },
+            false,
+            ['decrypt']
+        );
 
-            const decrypted = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv },
-                aesKey,
-                ciphertext
-            );
-            plaintext = new Uint8Array(decrypted);
-        } else {
-            // Legacy compatibility: decrypt historical XOR-encrypted notes.
-            const ciphertext = hexToBytes(entry.encrypted_note);
-            const legacyPlaintext = new Uint8Array(ciphertext.length);
-            for (let i = 0; i < ciphertext.length; i++) {
-                legacyPlaintext[i] = ciphertext[i] ^ decKey[i % 32];
-            }
-            plaintext = legacyPlaintext;
-        }
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv },
+            aesKey,
+            ciphertext
+        );
+        const plaintext = new Uint8Array(decrypted);
 
         // Parse note: 32 bytes owner + 8 bytes value + 32 bytes blinding + 32 bytes serial = 104 bytes
         if (plaintext.length < 104) return null;
@@ -446,7 +490,7 @@ async function tryDecryptNote(entry) {
 
         // Verify commitment matches
         const expectedCommitment = await computeCommitmentHash(Number(value), blinding);
-        if (expectedCommitment !== entry.commitment) {
+        if (expectedCommitment !== String(entry.commitment || '').toLowerCase()) {
             return null; // Wrong key or corrupted
         }
 
@@ -536,6 +580,8 @@ async function shieldLicn(amountLicn) {
             amountSpores,
             commitment,
             proof,
+            encryptedNote,
+            ephemeralPk: bytesToHex(ephemeralKey),
             commitmentIndex: expectedCommitmentIndex,
             onSubmitted: async (signature) => {
                 broadcastedSignature = signature;
@@ -627,7 +673,6 @@ async function unshieldLicn(amountLicn, recipientAddress) {
     showShieldedStatus('Generating ZK proof (may take ~3s)...', 'pending');
 
     try {
-        const nullifier = await computeNullifier(noteToSpend.serial);
         const noteIndex = await resolveNoteCommitmentIndex(noteToSpend);
         const merklePath = await rpc.call('getShieldedMerklePath', [noteIndex]);
         const merkleRoot = merklePath?.root || merklePath?.merkleRoot || merklePath?.merkle_root || shieldedState.merkleRoot;
@@ -885,12 +930,14 @@ async function computeCommitmentHash(value, blindingHex) {
 
 async function computeNullifier(serialHex) {
     if (!shieldedState.spendingKey) return null;
-    const data = new Uint8Array([
-        ...hexToBytes(serialHex),
-        ...shieldedState.spendingKey,
-    ]);
-    const hash = await crypto.subtle.digest('SHA-256', data);
-    return bytesToHex(new Uint8Array(hash));
+    const resp = await rpc.call('computeShieldNullifier', [{
+        serial: serialHex,
+        spending_key: bytesToHex(shieldedState.spendingKey),
+    }]);
+    if (!resp?.nullifier) {
+        throw new Error('RPC did not return shielded nullifier');
+    }
+    return resp.nullifier;
 }
 
 async function encryptNoteForRecipient(value, blinding, serial, recipientViewingKeyHex) {
@@ -955,6 +1002,12 @@ async function encryptNoteBytes(noteBytes, encKey) {
 
 // ===== Storage =====
 
+function getShieldedStorageKeyName() {
+    const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+    const address = wallet?.address || shieldedState.shieldedAddress || 'default';
+    return `lichen_shielded_notes:${address}`;
+}
+
 async function deriveShieldedStorageKey() {
     if (!shieldedState.spendingKey || !shieldedState.viewingKey) return null;
     const domain = new TextEncoder().encode('lichen-shielded-storage-v1');
@@ -977,8 +1030,13 @@ async function deriveShieldedStorageKey() {
 
 async function saveNotesToStorage() {
     try {
+        if (shieldedState.storageLoadFailed) {
+            console.warn('Shielded notes were not saved because local note storage failed to decrypt');
+            return;
+        }
         const key = await deriveShieldedStorageKey();
         if (!key) return;
+        const storageKey = getShieldedStorageKeyName();
 
         const data = {
             ownedNotes: shieldedState.ownedNotes,
@@ -994,11 +1052,12 @@ async function saveNotesToStorage() {
             encoded
         );
 
-        localStorage.setItem('lichen_shielded_notes', JSON.stringify({
+        localStorage.setItem(storageKey, JSON.stringify({
             version: SHIELDED_STORAGE_VERSION,
             iv: bytesToHex(iv),
             ciphertext: bytesToHex(new Uint8Array(encrypted)),
         }));
+        shieldedState.storageKeyName = storageKey;
     } catch (e) {
         console.error('Failed to save shielded notes:', e);
     }
@@ -1006,32 +1065,32 @@ async function saveNotesToStorage() {
 
 async function loadNotesFromStorage() {
     try {
-        const raw = localStorage.getItem('lichen_shielded_notes');
+        const storageKey = getShieldedStorageKeyName();
+        const raw = storageKey ? localStorage.getItem(storageKey) : null;
         if (!raw) return;
 
         const parsed = JSON.parse(raw);
-        if (parsed && parsed.version === SHIELDED_STORAGE_VERSION && parsed.iv && parsed.ciphertext) {
-            const key = await deriveShieldedStorageKey();
-            if (!key) return;
-            const decrypted = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: hexToBytes(parsed.iv) },
-                key,
-                hexToBytes(parsed.ciphertext)
-            );
-            const data = JSON.parse(new TextDecoder().decode(decrypted));
-            shieldedState.ownedNotes = data.ownedNotes || [];
-            shieldedState.lastSyncedIndex = data.lastSyncedIndex || 0;
-            shieldedState.shieldedBalance = data.shieldedBalance || 0;
-            return;
+        if (!parsed || parsed.version !== SHIELDED_STORAGE_VERSION || !parsed.iv || !parsed.ciphertext) {
+            throw new Error('Unsupported shielded note storage payload');
         }
 
-        // Legacy migration path: previous plaintext object format.
-        shieldedState.ownedNotes = parsed.ownedNotes || [];
-        shieldedState.lastSyncedIndex = parsed.lastSyncedIndex || 0;
-        shieldedState.shieldedBalance = parsed.shieldedBalance || 0;
-        await saveNotesToStorage();
+        const key = await deriveShieldedStorageKey();
+        if (!key) return;
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: hexToBytes(parsed.iv) },
+            key,
+            hexToBytes(parsed.ciphertext)
+        );
+        const data = JSON.parse(new TextDecoder().decode(decrypted));
+        shieldedState.ownedNotes = data.ownedNotes || [];
+        shieldedState.lastSyncedIndex = data.lastSyncedIndex || 0;
+        shieldedState.shieldedBalance = data.shieldedBalance || 0;
+        shieldedState.storageLoadFailed = false;
+        shieldedState.storageKeyName = storageKey;
     } catch (e) {
+        shieldedState.storageLoadFailed = true;
         console.error('Failed to load shielded notes:', e);
+        showToast('Shielded note storage could not be decrypted. Not overwriting local notes.');
     }
 }
 

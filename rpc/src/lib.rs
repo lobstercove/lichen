@@ -5117,6 +5117,9 @@ async fn handle_rpc(
         "computeShieldCommitment" => {
             shielded::handle_compute_shield_commitment(&state, req.params).await
         }
+        "computeShieldNullifier" => {
+            shielded::handle_compute_shield_nullifier(&state, req.params).await
+        }
         "generateShieldProof" => shielded::handle_generate_shield_proof(&state, req.params).await,
         "generateUnshieldProof" => {
             shielded::handle_generate_unshield_proof(&state, req.params).await

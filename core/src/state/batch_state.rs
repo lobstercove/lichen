@@ -31,6 +31,7 @@ impl StateStore {
             symbol_overlay: std::collections::HashSet::new(),
             spent_nullifier_overlay: std::collections::HashSet::new(),
             shielded_commitment_overlay: std::collections::BTreeMap::new(),
+            shielded_note_payload_overlay: std::collections::BTreeMap::new(),
             shielded_pool_overlay: None,
             governed_proposal_overlay: std::collections::HashMap::new(),
             governed_proposal_counter: None,
@@ -159,6 +160,7 @@ impl StateBatch {
             symbol_overlay: self.symbol_overlay.clone(),
             spent_nullifier_overlay: self.spent_nullifier_overlay.clone(),
             shielded_commitment_overlay: self.shielded_commitment_overlay.clone(),
+            shielded_note_payload_overlay: self.shielded_note_payload_overlay.clone(),
             shielded_pool_overlay: self.shielded_pool_overlay.clone(),
             governed_proposal_overlay: self.governed_proposal_overlay.clone(),
             governed_proposal_counter: self.governed_proposal_counter,
@@ -1252,6 +1254,37 @@ impl StateBatch {
         self.batch.put_cf(&cf, index.to_be_bytes(), commitment);
         self.shielded_commitment_overlay.insert(index, *commitment);
         Ok(())
+    }
+
+    /// Insert an encrypted shielded note payload into the WriteBatch.
+    pub fn insert_shielded_note_payload(
+        &mut self,
+        index: u64,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)
+            .ok_or_else(|| "Shielded note payloads CF not found".to_string())?;
+        self.batch.put_cf(&cf, index.to_be_bytes(), payload);
+        self.shielded_note_payload_overlay
+            .insert(index, payload.to_vec());
+        Ok(())
+    }
+
+    /// Retrieve an encrypted shielded note payload, including batch overlay writes.
+    pub fn get_shielded_note_payload(&self, index: u64) -> Result<Option<Vec<u8>>, String> {
+        if let Some(payload) = self.shielded_note_payload_overlay.get(&index) {
+            return Ok(Some(payload.clone()));
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NOTE_PAYLOADS)
+            .ok_or_else(|| "Shielded note payloads CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, index.to_be_bytes())
+            .map_err(|e| format!("Database error reading shielded note payload: {}", e))
     }
 
     /// Collect all commitment leaves [0..count), including any uncommitted inserts.

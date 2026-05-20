@@ -185,7 +185,7 @@
                     <code>8900</code>.
                 </p>
                 <div class="callout callout-info">
-                    <p><strong>Implementation-verified surface for v0.5.58:</strong> the live server exposes native,
+                    <p><strong>Implementation-verified surface for v0.5.59:</strong> the live server exposes native,
                         Solana-compatible, and EVM-compatible JSON-RPC dispatch, plus REST route families across the
                         DEX, prediction market, launchpad, shielded APIs, and Neo X route/rewards reads.</p>
                 </div>
@@ -2378,8 +2378,11 @@
                     <li><code>getShieldedMerklePath</code> — Merkle proof for a leaf index</li>
                     <li><code>isNullifierSpent</code> — check if a nullifier has been spent</li>
                     <li><code>checkNullifier</code> — alias for <code>isNullifierSpent</code></li>
-                    <li><code>getShieldedCommitments</code> — list commitments in the tree</li>
+                    <li><code>getShieldedCommitments</code> — list commitments in the tree, including encrypted
+                        wallet note payloads when present</li>
                     <li><code>computeShieldCommitment</code> — compute commitment hash for shield operation</li>
+                    <li><code>computeShieldNullifier</code> — compute the native Poseidon2 nullifier from a note serial
+                        and spending key</li>
                     <li><code>generateShieldProof</code> — generate ZK proof for shield (deposit)</li>
                     <li><code>generateUnshieldProof</code> — generate ZK proof for unshield (withdraw)</li>
                     <li><code>generateTransferProof</code> — generate ZK proof for private transfer</li>

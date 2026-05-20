@@ -5655,11 +5655,24 @@ mod tests {
         // 2. Generate proof
         let zk_proof = Prover::new().prove_shield(circuit).unwrap();
 
-        // 3. Build instruction data
+        // 3. Build instruction data with the encrypted-note recovery payload
+        let encrypted_note = format!("a1:{}:{}", "00".repeat(12), "11".repeat(16));
+        let ephemeral_pk = hex::encode([0x22u8; 32]);
+        let note_payload = serde_json::json!({
+            "commitment": hex::encode(commitment),
+            "encrypted_note": encrypted_note,
+            "ephemeral_pk": ephemeral_pk,
+        })
+        .to_string()
+        .into_bytes();
         let mut data = vec![23u8];
         data.extend_from_slice(&amount.to_le_bytes());
         data.extend_from_slice(&commitment);
+        data.extend_from_slice(b"LNP1");
+        data.extend_from_slice(&(zk_proof.proof_bytes.len() as u32).to_le_bytes());
         data.extend_from_slice(&zk_proof.proof_bytes);
+        data.extend_from_slice(&(note_payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(&note_payload);
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -5696,6 +5709,8 @@ mod tests {
         // Commitment should be stored
         let stored_commitment = state.get_shielded_commitment(0).unwrap();
         assert_eq!(stored_commitment, Some(commitment));
+        let stored_note_payload = state.get_shielded_note_payload(0).unwrap();
+        assert_eq!(stored_note_payload.as_deref(), Some(note_payload.as_slice()));
 
         // Merkle root should be updated to reflect the single leaf
         let mut expected_tree = crate::zk::MerkleTree::new();
